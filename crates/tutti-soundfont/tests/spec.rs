@@ -502,30 +502,20 @@ fn a_key_off_ends_the_note_after_its_release() {
 
 /// The node's tail is the longest release any voice can have (the zone's 5 s
 /// here, a generator-38 figure of 2786 timecents, 9.3: a time ratio 2^(t/1200)
-/// from one second), and with the effects on, the effects ringing out too.
+/// from one second) and nothing more: the effects after the unit declare their
+/// own tails, so none is added here.
 ///
-/// Mutation (run): the tail left at the default fails the first; leaving the
-/// effects out of the second fails it.
+/// Mutation (run): a second added to the tail fails it.
 #[test]
 fn the_unit_declares_the_longest_release_as_its_tail() {
     let font = kit();
-    let release = |rig: &Rig| match rig.hand.shape().tail {
-        Tail::Finite(n) => n.get(),
-        other => panic!("not a finite tail: {other:?}"),
+    let Tail::Finite(n) = Rig::dry(&font).hand.shape().tail else {
+        panic!("not a finite tail")
     };
-    let dry = release(&Rig::dry(&font));
-    let seconds = dry as f64 / 44_100.0;
+    let seconds = n.get() as f64 / 44_100.0;
     assert!(
         (seconds - 2f64.powf(2786.0 / 1200.0)).abs() < 0.01,
         "{seconds} s"
-    );
-    let wet = release(&Rig::with(
-        &font,
-        &tutti_soundfont::Settings::new(support::rig::RATE),
-    ));
-    assert!(
-        wet > dry + 44_100,
-        "the effects ring on after the voices: {wet} vs {dry}"
     );
 }
 

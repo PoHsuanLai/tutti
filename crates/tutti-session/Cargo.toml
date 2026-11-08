@@ -168,6 +168,11 @@ required-features = ["export"]
 name = "plugin"
 required-features = ["clap", "export"]
 
+# The General MIDI setup of a SoundFont unit (`Session::add_general_midi`).
+[[test]]
+name = "general_midi"
+required-features = ["soundfont"]
+
 # The instrument contract (`tests/instrument_support`): the same cases against
 # `PolySynth`, the SoundFont unit and a hosted plugin. The plugin subject needs
 # a built `plugin-server`, and fails without it.

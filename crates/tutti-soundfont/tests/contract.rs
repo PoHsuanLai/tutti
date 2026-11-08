@@ -52,7 +52,7 @@ fn soundfont_row() -> Row {
     Row::new(
         "SoundFontUnit",
         move || {
-            let settings = Settings::new(SAMPLE_RATE).with_reverb_and_chorus(false);
+            let settings = Settings::new(SAMPLE_RATE);
             Box::new(SoundFontUnit::new(Arc::clone(&font), &settings).expect("the unit builds"))
         },
         Excite::Event {

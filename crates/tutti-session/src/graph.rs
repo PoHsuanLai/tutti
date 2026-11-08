@@ -1344,6 +1344,12 @@ impl Graph {
         true
     }
 
+    /// How many nodes the graph holds.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// Whether `node` is in the graph, a modulation lane or signal node
     /// included (staged, committed or not).
     pub fn contains(&self, node: NodeKey) -> bool {
@@ -1589,8 +1595,29 @@ impl Graph {
 
     /// Feeds **every** global output from `node`: channel `c` from its port
     /// `c % node_outputs(node)`, or silence if it has no outputs.
+    ///
+    /// A node whose outputs are not all for the speakers (an instrument with
+    /// effect sends, such as the SoundFont unit) wraps its sends onto a root
+    /// wider than its main pair: use
+    /// [`set_outputs_from_ports`](Self::set_outputs_from_ports) with the pair.
     pub fn set_outputs_from(&mut self, node: NodeKey) {
         let outs = self.node_outputs(node);
+        self.feed_outputs(node, outs, |c| c % outs.max(1));
+    }
+
+    /// Feeds **every** global output from `node`, channel `c` from port
+    /// `ports[c % ports.len()]`, or silence if `ports` is empty or names a port
+    /// the node lacks. For an instrument, `ports` is its main pair
+    /// (`InstrumentHandle::main_outputs`, feature `midi`),
+    /// so a wide root never reaches its sends.
+    pub fn set_outputs_from_ports(&mut self, node: NodeKey, ports: &[usize]) {
+        let outs = self.node_outputs(node);
+        let ports = ports.to_vec();
+        let have = !ports.is_empty() && ports.iter().all(|&p| p < outs);
+        self.feed_outputs(node, usize::from(have), |c| ports[c % ports.len()]);
+    }
+
+    fn feed_outputs(&mut self, node: NodeKey, usable: usize, port: impl Fn(usize) -> usize) {
         for (c, source) in self
             .editor
             .spec_mut()
@@ -1599,12 +1626,12 @@ impl Graph {
             .iter_mut()
             .enumerate()
         {
-            *source = if outs == 0 {
+            *source = if usable == 0 {
                 Source::Zero
             } else {
                 Source::Node(OutPort {
                     node,
-                    port: (c % outs) as u16,
+                    port: port(c) as u16,
                 })
             };
         }

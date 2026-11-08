@@ -5,8 +5,10 @@
 //! "Rings out" is the last frame after the note-off whose sample is at or above
 //! [`THRESHOLD`], 1e-4 of full scale (-80 dBFS), on either channel. The voices
 //! themselves end at 1e-3 of their own envelope (-60 dB), so the figure is
-//! measured well below where the tail is promised. The effects are on, the
-//! unit's default, so the reverb's ring is in the figure.
+//! measured well below where the tail is promised. The effects are not in the
+//! unit: the dry pair is measured, and each effect after it declares its own
+//! tail (`tutti-session`'s `general_midi` suite measures a note through all of
+//! them).
 
 mod support;
 

@@ -123,6 +123,10 @@ pub use downmix_unit::DownmixNode;
 mod strip;
 pub use strip::{BusStripNode, STRIP_PARAMS};
 
+// The reverb send: a Freeverb (`tutti_dsp::Freeverb`), mono in, stereo wet out.
+mod reverb;
+pub use reverb::ReverbNode;
+
 // Spatial panners (VBAP, binaural) are `tutti-spatial`'s, which depends on
 // this crate; nothing here names it.
 

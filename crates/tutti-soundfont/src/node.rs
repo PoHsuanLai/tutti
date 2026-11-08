@@ -7,28 +7,34 @@
 //! preset.
 
 use tutti_graph::{
-    Cx, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SortedEvents, Status,
+    ConstantMask, Cx, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask,
+    SortedEvents, Status,
 };
 use tutti_types::ChannelLayout;
 
 use crate::SoundFontUnit;
+use crate::player::Plane;
 
 impl Node for SoundFontUnit {
-    /// No audio in, stereo out, one MIDI event input, placed to the 8-frame
-    /// chunk the voices render in, and the tail of the longest release.
+    /// No audio in, five out (dry left and right, chorus send left and right,
+    /// reverb send), one MIDI event input, placed to the 8-frame chunk the
+    /// voices render in, and the tail of the longest release.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
-            .with_events(1, 0)
-            .with_event_resolution(Resolution::Frames(crate::SYNTH_BLOCK_FRAMES as u32))
-            // Sample playback, filters and effects per voice: measured 76 ns
-            // per frame and channel with one note held, 140 with eight,
-            // against `SvfFilterNode`'s 7.2 (doc 013, "The cost model and coarsening").
-            // The default, stated.
-            .with_cost(tutti_graph::Cost::Heavy)
-            // The longest a voice rings after its key is up, and the effects
-            // after it: an export that ends at the last note-off extends by
-            // this, and keeps the release.
-            .with_tail(self.shape_tail())
+        Shape::audio(
+            ChannelLayout::EMPTY,
+            ChannelLayout::from_count(Plane::COUNT as u16),
+        )
+        .with_events(1, 0)
+        .with_event_resolution(Resolution::Frames(crate::SYNTH_BLOCK_FRAMES as u32))
+        // Sample playback and filters per voice: measured 76 ns
+        // per frame and channel with one note held, 140 with eight,
+        // against `SvfFilterNode`'s 7.2 (doc 013, "The cost model and coarsening").
+        // The default, stated.
+        .with_cost(tutti_graph::Cost::Heavy)
+        // The longest a voice rings after its key is up: an export that
+        // ends at the last note-off extends by this, and keeps the
+        // release. The effects after the unit declare their own.
+        .with_tail(self.shape_tail())
     }
 
     /// Re-rate to the prepared rate (keeping the preset), and size the
@@ -41,14 +47,17 @@ impl Node for SoundFontUnit {
             *self = unit;
         }
         let frames = p.max_block().get();
-        if self.left_buffer.len() < frames {
-            self.left_buffer.resize(frames, 0.0);
-            self.right_buffer.resize(frames, 0.0);
+        for plane in &mut self.planes {
+            if plane.len() < frames {
+                plane.resize(frames, 0.0);
+            }
         }
     }
 
-    /// Always [`Status::Modified`]: ringing after its last event, it must
-    /// never be parked.
+    /// What the block did: [`Status::Idle`] when no voice is left to sound and
+    /// nothing was written; else [`Status::Masked`] naming the planes no voice
+    /// sent anything to (exact zeros, written), and [`Status::Modified`] when
+    /// every plane has something in it.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         // No clamp: `prepare` sized the scratch to the prepared `MaxBlock`,
         // and the graph never hands a node a longer block.
@@ -60,15 +69,26 @@ impl Node for SoundFontUnit {
         };
         let count = tutti_midi_runtime::gather_midi(events, &mut self.midi_buffer);
         self.render_events(size, count);
+        let heard = self.take_heard();
+        if self.is_idle() && !heard.has_any() {
+            return Status::Idle;
+        }
         let (_, mut outputs) = io.split();
-        let mut channels = outputs.iter_mut();
-        if let Some(left) = channels.next() {
-            left[..size].copy_from_slice(&self.left_buffer[..size]);
+        let mut silent = SilenceMask::NONE;
+        for (c, (out, plane)) in outputs.iter_mut().zip(&self.planes).enumerate() {
+            out[..size].copy_from_slice(&plane[..size]);
+            if !heard.has(Plane::ALL[c]) {
+                silent = silent.with(c);
+            }
         }
-        if let Some(right) = channels.next() {
-            right[..size].copy_from_slice(&self.right_buffer[..size]);
+        if silent == SilenceMask::NONE {
+            Status::Modified
+        } else {
+            Status::Masked {
+                silent,
+                constant: ConstantMask::NONE,
+            }
         }
-        Status::Modified
     }
 
     fn reset(&mut self) {
@@ -92,6 +112,10 @@ impl IntoNode for SoundFontUnit {
     }
 }
 
-/// A SoundFont unit is an instrument: MIDI on event input 0, its stereo pair on
-/// outputs 0 and 1.
-impl tutti_graph::Instrument for SoundFontUnit {}
+/// A SoundFont unit is an instrument: MIDI on event input 0, its dry pair on
+/// outputs 0 and 1. The other three outputs are the effect sends.
+impl tutti_graph::Instrument for SoundFontUnit {
+    fn main_outputs(&self) -> [u16; 2] {
+        [Plane::DryLeft as u16, Plane::DryRight as u16]
+    }
+}

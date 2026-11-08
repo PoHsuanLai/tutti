@@ -7,21 +7,27 @@ slower) than real time. The `tutti` facade re-exports this crate as
 ## What is here
 
 The graph is *pulled* to a known frame count that `RenderConfig` fixes up front,
-then resampled, dithered and encoded on the way out. Three entry points, and the
+then resampled, dithered and encoded on the way out. The entry points, and the
 names say which path a caller is on:
 
 - `render_to_file` — render straight to disk. Streams: the pipeline pulls the
   graph one block at a time and no PCM is held whole.
 - `render_to_buffers` — render into memory, as planar `Vec<f32>` planes.
 - `write_buffers` — encode planes a caller already holds.
+- `render_normalized_to_file` — render, measure, apply a gain, write: two
+  passes, so the whole render is held in memory. It is a separate function on
+  purpose — see below.
 
-`render_normalized_to_file` is the fourth, and it is separate on purpose — see
-below. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each behind its own feature
-(`wav`, `flac`, `aiff`, `ogg`). **None is on by default**: `ogg` links the C
-Vorbis library, so a consumer names the formats it writes. The umbrellas
-(`tutti`, `bevy-tutti`, `tutti-session`) forward them as `export-wav`,
+Each has a `_with` twin that takes a tick (progress and cancel) except
+`write_buffers`, which has none. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each
+behind its own feature (`wav`, `flac`, `aiff`, `ogg`). **None is on by default**:
+`ogg` links the C Vorbis library, so a consumer names the formats it writes. The
+umbrellas (`tutti`, `bevy-tutti`, `tutti-session`) forward them as `export-wav`,
 `export-flac`, `export-aiff` and `export-ogg`; their `export` feature implies
 `export-wav` only, so `export-ogg` is the one path to C.
+
+One `ExportConfig` serves all of them, and each reads only some of it; the
+list is on `ExportConfig`.
 
 ## What this crate does not own
 

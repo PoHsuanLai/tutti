@@ -22,8 +22,9 @@
 //! # let _ = config;
 //! ```
 //!
-//! A literal is what keeps a setter off a path that ignores it: the fields a
-//! stage reads are the fields in the struct it is handed.
+//! A literal is not a guarantee that every field is read: one config serves
+//! four entry points, and each ignores some of it. What each reads is on
+//! [`ExportConfig`].
 //!
 //! This module is data, and only data. No method here reads a graph, opens a
 //! file, or decides anything — the derivations live next to the code that needs
@@ -206,6 +207,24 @@ impl Resample {
 /// [`render_normalized_to_file`](crate::render_normalized_to_file), or measure
 /// with [`tutti_dsp::measure_loudness`], take `Loudness::gain_to` and
 /// apply it with [`Rendered::apply_gain`](crate::Rendered::apply_gain).
+///
+/// # What each entry point reads
+///
+/// One config serves every entry point, and a field an entry point has no use
+/// for is ignored, not refused:
+///
+/// - [`render_to_file`](crate::render_to_file): all of it.
+/// - [`render_normalized_to_file`](crate::render_normalized_to_file): all of
+///   it; `resample` is applied before the measurement, and for an integer
+///   format the peak target and ceiling are pulled down to leave the format's
+///   headroom.
+/// - [`render_to_buffers`](crate::render_to_buffers): `render`, and
+///   `encode.channels` and `encode.topology` for the fold. **Ignores**
+///   `encode.format`, `resample` and `dither`: the planes are not an output.
+/// - [`write_buffers`](crate::write_buffers): `encode`, `resample` and
+///   `dither`, and `render.on_event_loss` for the planes' own loss count.
+///   **Ignores** the rest of `render` (`sample_rate`, `duration_seconds`,
+///   `latency`, `tail`): the frames exist and carry their own rate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportConfig {
     /// What to produce, and for how long.

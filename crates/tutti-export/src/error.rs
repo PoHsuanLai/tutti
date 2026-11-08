@@ -49,8 +49,8 @@ pub enum Error {
     /// The frame width is a runtime `ChannelLayout`, so any positive count
     /// exports — including the 3- and 5-wide masters a fixed enumeration of
     /// widths could not express.
-    #[error("Unsupported channel count: {0} (a render needs at least one channel)")]
-    UnsupportedChannels(u16),
+    #[error("Unsupported channel count: 0 (a render needs at least one channel)")]
+    UnsupportedChannels,
 
     /// A loudness measurement was asked for and the audio cannot be
     /// normalized by it (`reason` says why): the meter rejects it, or the

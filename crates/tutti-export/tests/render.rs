@@ -1248,8 +1248,8 @@ fn a_zero_width_export_is_rejected_not_a_divide_by_zero() {
     )
     .expect_err("a zero-channel render must not report success");
     assert!(
-        matches!(err, tutti_export::Error::UnsupportedChannels(0)),
-        "expected UnsupportedChannels(0), got {err:?}"
+        matches!(err, tutti_export::Error::UnsupportedChannels),
+        "expected UnsupportedChannels, got {err:?}"
     );
 }
 

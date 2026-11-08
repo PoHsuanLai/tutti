@@ -455,7 +455,7 @@ where
 {
     let ch = usize::from(layout.count());
     if ch == 0 {
-        return Err(crate::Error::UnsupportedChannels(0));
+        return Err(crate::Error::UnsupportedChannels);
     }
     // Heap, not a stack array: at 12 channels a 1024-frame graph block is
     // 48 KiB. Derived once, never inside the loop.

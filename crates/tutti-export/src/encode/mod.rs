@@ -187,7 +187,7 @@ where
     let on_loss = config.render.on_event_loss;
     let ch = usize::from(layout.count());
     if ch == 0 {
-        return Err(crate::Error::UnsupportedChannels(0));
+        return Err(crate::Error::UnsupportedChannels);
     }
 
     let mut dither = crate::process::DitherState::for_config(config);

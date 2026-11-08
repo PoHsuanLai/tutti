@@ -11,12 +11,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tutti_types::SampleRate;
+use tutti_types::{ChannelLayout, SampleRate};
 
 use super::prefetch::TakeVoiceError;
 use super::{ChannelPlan, RtState};
 use crate::voice::LoopSetting;
 use crate::voice::disk_voice::DiskSource;
+use crate::voice::interp::Place;
+use crate::voice_width;
 
 /// The butler thread is gone, so a stream-control command was discarded.
 ///
@@ -48,21 +50,29 @@ impl std::error::Error for ButlerGone {}
 ///
 /// [`TakeVoiceError::NotStreaming`] while the butler hasn't installed the
 /// [`ChannelPlan`] link yet; [`TakeVoiceError::ReaderTaken`] once the stream
-/// has its reader.
+/// has its reader; [`TakeVoiceError::Place`] when the file's channels cannot
+/// be placed into `width` (the placement is built before the reader is
+/// taken, so a refusal leaves the stream's one reader where it was).
+/// `width` is `None` for the file's own ([`voice_width`]).
 pub(crate) fn take_streaming_unit(
     plans: &Arc<DashMap<usize, ChannelPlan>>,
     channel_index: usize,
+    width: Option<ChannelLayout>,
     placed: bool,
 ) -> Result<(DiskSource, Arc<RtState>, SampleRate, StreamOrigin), TakeVoiceError> {
     let plan = plans
         .get(&channel_index)
         .ok_or(TakeVoiceError::NotStreaming)?;
     let link = plan.link.as_ref().ok_or(TakeVoiceError::NotStreaming)?;
+    let consumer = link.consumer.clone();
+    let width = voice_width(width.unwrap_or_else(|| consumer.channels()));
+    // Build the placement (and so refuse) before the single reader is taken.
+    let place = Place::for_topology(consumer.topology(), width)?;
     let reader = link.consumer.take_reader(placed)?;
-    let (consumer, file_rate) = (link.consumer.clone(), link.file_rate);
+    let file_rate = link.file_rate;
     let origin = StreamOrigin(Arc::clone(&link.record));
     let rt_state = plan.rt_state();
-    let unit = DiskSource::with_reader(consumer, Some(reader), Arc::clone(&rt_state));
+    let unit = DiskSource::with_reader(consumer, Some(reader), Arc::clone(&rt_state), width, place);
     Ok((unit, rt_state, file_rate, origin))
 }
 

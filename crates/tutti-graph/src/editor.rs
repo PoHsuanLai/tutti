@@ -492,9 +492,12 @@ impl Editor {
     /// nothing.
     ///
     /// Nothing is validated here. A lane naming a node port or global input
-    /// that does not exist ([`Invalid::TapOutOfRange`](tutti_types::graph::Invalid))
-    /// makes **every** commit fail until the tap is closed or the source
-    /// exists. A latency change that resizes an aligned tap's delay shifts
+    /// that does not exist (a node replaced by one with fewer outputs, a
+    /// removed node) reads silence, and the commit succeeds: a display or a
+    /// recording must not wedge the graph. The reader is not told: the lane is
+    /// zeros, counted neither as data lost nor as a loss, and a lane that
+    /// should have sound is the author's to notice (the spec still names the
+    /// port, so it plays again if a node with that port returns). A latency change that resizes an aligned tap's delay shifts
     /// the stream by the difference with no marker for the reader, as it does
     /// an output. A tap sees the signal before the engine's declick fader.
     pub fn open_tap(
@@ -1281,6 +1284,8 @@ impl Editor {
                 *s = Source::Zero;
             }
         }
+        // A key is the author's and can be inserted again after a removal, so
+        // a tap left naming it would read the new node.
         for spec in t.taps.values_mut() {
             for s in &mut spec.sources {
                 if matches!(s, Source::Node(p) if p.node == key) {

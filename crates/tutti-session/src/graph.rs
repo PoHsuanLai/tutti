@@ -1606,8 +1606,9 @@ impl Graph {
     /// output). A source that keeps running through the stop (live input, a
     /// tail) has none. A start steps alike in both: `Play` is not declicked.
     ///
-    /// A source that does not exist (a node port past its width) fails every
-    /// commit until the tap is closed; nothing is validated here. A latency
+    /// A source that does not exist (a node port past its width, a removed
+    /// node) reads silence and the commit succeeds; nothing is validated here
+    /// and the reader is not told. A latency
     /// change that resizes an aligned tap's delay shifts the stream with no
     /// marker for the reader, as it does an output. What the reader does not
     /// drain is dropped and counted, and a recording closes up over the gap.

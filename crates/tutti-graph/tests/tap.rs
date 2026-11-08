@@ -531,8 +531,11 @@ fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
 /// Removing a node a tap reads leaves the tap on silence in that lane, as an
 /// output wired to it would be, and the graph still commits.
 ///
-/// Mutation (run, recorded here): delete the tap loop in `Editor::remove`
-/// -> the commit is refused (`TapOutOfRange`) and `commit` panics.
+/// Mutation (run, recorded here): index `audio_out_val[&p]` for a tap lane in
+/// `compile` instead of `.get` -> the commit panics on the removed node's
+/// port. (Deleting the tap loop in `Editor::remove` no longer fails this
+/// test, since the compiler silences a missing node; it fails
+/// `a_reused_key_is_not_read_by_the_old_tap`.)
 #[test]
 fn removing_a_tapped_node_silences_its_lane() {
     let mut r = rig(1, false);
@@ -794,4 +797,166 @@ fn pop_planes_reads_whole_frames_and_keeps_the_lanes_level() {
     let n = reader.pop_planes([&mut a[..], &mut b[..], &mut c[..]], Samples(8));
     assert_eq!(n.get(), 1);
     assert_eq!((a[0], b[0], c[0]), (3.0, 30.0, 300.0));
+}
+
+/// A wide `Const` node (key 1, two outputs of `value`) outside the outputs.
+fn wide(r: &mut Rig, value: f32, width: usize) {
+    r.ed.insert(NodeKey(1), "const", Forkable(Kind::Const { value, width }));
+}
+
+fn port(node: u64, port: u16) -> Source {
+    Source::Node(OutPort {
+        node: NodeKey(node),
+        port,
+    })
+}
+
+/// A node replaced by one with fewer outputs leaves the tap's lanes past the
+/// new width on silence, and the commit succeeds: a recording or a display
+/// must not wedge the graph. The silence is zeros in the stream, not a loss
+/// (`take_lost` stays 0) and not a gap (the stream keeps its length), and the
+/// other lanes play on, on the serial and the pooled executor alike.
+///
+/// Mutation (run, recorded here): index `audio_out_val[&p]` for a tap lane in
+/// `compile` instead of `.get` -> the commit panics (also fails the aligned
+/// test below). `_ => continue` for a missing lane instead of `Zero` -> the
+/// lanes shift and this test and the aligned one fail.
+#[test]
+fn a_narrowed_node_silences_the_tap_lanes_past_its_width_and_commits() {
+    for (workers, gated) in [(1, false), (3, true)] {
+        let mut r = rig(workers, gated);
+        wide(&mut r, 0.5, 2);
+        let mut tap = r.ed.open_tap(
+            TapId(1),
+            vec![port(1, 0), port(1, 1)],
+            TapAlign::Raw,
+            Samples(4096),
+        );
+        commit(&mut r);
+        block(&mut r, 100, 0);
+        wide(&mut r, 0.25, 1);
+        commit(&mut r);
+        block(&mut r, 100, 100);
+        let mut got = Vec::new();
+        drain(&mut tap, &mut got);
+        assert_eq!(got.len(), 400, "the stream keeps its length");
+        assert!(lane(&got, 2, 0)[..100].iter().all(|&x| x == 0.5));
+        assert!(lane(&got, 2, 1)[..100].iter().all(|&x| x == 0.5));
+        assert!(lane(&got, 2, 0)[100..].iter().all(|&x| x == 0.25));
+        assert!(
+            lane(&got, 2, 1)[100..].iter().all(|&x| x == 0.0),
+            "the vanished port reads silence"
+        );
+        assert_eq!(tap.take_lost().get(), 0, "silence is not a loss");
+    }
+}
+
+/// A global input past the declared width is the same: silence, not a refused
+/// commit.
+///
+/// Mutation (run, recorded here): index `global_val[&ch]` for a tap lane in
+/// `compile` instead of `.get` -> the commit panics.
+#[test]
+fn a_tap_on_a_missing_global_input_reads_silence() {
+    let mut r = rig(1, false);
+    let mut tap = r.ed.open_tap(
+        TapId(1),
+        vec![Source::Global(0), Source::Global(3)],
+        TapAlign::Raw,
+        Samples(1024),
+    );
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    let mut got = Vec::new();
+    drain(&mut tap, &mut got);
+    let want: Vec<f32> = (0..100).map(input_at).collect();
+    assert_eq!(lane(&got, 2, 0), want);
+    assert!(lane(&got, 2, 1).iter().all(|&x| x == 0.0));
+}
+
+/// A key is the author's and can be inserted again after a removal: a tap left
+/// naming the removed node must not start reading the new one.
+///
+/// Mutation (run, recorded here): delete the tap loop in `Editor::remove` ->
+/// the lane reads the new node's 0.125 and the assertion fails.
+#[test]
+fn a_reused_key_is_not_read_by_the_old_tap() {
+    let mut r = rig(1, false);
+    wide(&mut r, 0.25, 1);
+    let mut tap =
+        r.ed.open_tap(TapId(1), vec![port(1, 0)], TapAlign::Raw, Samples(1024));
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    r.ed.remove(NodeKey(1));
+    wide(&mut r, 0.125, 1);
+    commit(&mut r);
+    block(&mut r, 100, 100);
+    let mut got = Vec::new();
+    drain(&mut tap, &mut got);
+    assert_eq!(got.len(), 200);
+    assert!(got[..100].iter().all(|&x| x == 0.25));
+    assert!(
+        got[100..].iter().all(|&x| x == 0.0),
+        "the tap followed the removal, not the key"
+    );
+}
+
+/// An aligned tap across a narrowing: the lane that lost its port goes silent
+/// at once (it has no delay ring to drain), and the other lanes, aligned by
+/// rings of their own, neither shift nor leak: the surviving constant lane
+/// still carries the old value for the `LATENCY` frames its ring held, and the
+/// latent chain's lane is the analytic aligned signal throughout.
+///
+/// Mutation (run, recorded here): give a found node port no alignment delay
+/// in `compile` (`Latency::ZERO` for `departure(n)`) -> the surviving
+/// constant lane is not `LATENCY` frames late and its assertion fails (so do
+/// the other aligned-tap tests). `_ => continue` for a missing lane -> the
+/// stream's width is wrong and this test fails.
+#[test]
+fn an_aligned_tap_across_a_narrowing_keeps_the_other_lanes_level() {
+    let mut r = rig(1, false);
+    wide(&mut r, 0.5, 2);
+    let mut tap = r.ed.open_tap(
+        TapId(1),
+        vec![port(1, 0), port(1, 1), r.gains[3]],
+        TapAlign::ToOutput,
+        Samples(4096),
+    );
+    commit(&mut r);
+    for i in 0..3 {
+        block(&mut r, 100, i * 100);
+    }
+    wide(&mut r, 0.25, 1);
+    commit(&mut r);
+    for i in 3..6 {
+        block(&mut r, 100, i * 100);
+    }
+    let mut got = Vec::new();
+    drain(&mut tap, &mut got);
+    assert_eq!(got.len(), 600 * 3, "the stream keeps its length");
+    let at = LATENCY as usize;
+    // The constant is `LATENCY` frames late; the narrowing lands at frame 300.
+    let lane0: Vec<f32> = (0..600usize)
+        .map(|t| match t {
+            t if t < at => 0.0,
+            t if t - at < 300 => 0.5,
+            _ => 0.25,
+        })
+        .collect();
+    let lane1: Vec<f32> = (0..600usize)
+        .map(|t| if t >= at && t < 300 { 0.5 } else { 0.0 })
+        .collect();
+    let lane2: Vec<f32> = (0..600u64).map(|t| aligned_at(3, t)).collect();
+    assert_eq!(
+        lane(&got, 3, 0),
+        lane0,
+        "the surviving constant keeps its ring"
+    );
+    assert_eq!(
+        lane(&got, 3, 1),
+        lane1,
+        "the vanished lane is silent at once"
+    );
+    assert_eq!(lane(&got, 3, 2), lane2, "the latent lane is untouched");
+    assert_eq!(tap.take_lost().get(), 0);
 }

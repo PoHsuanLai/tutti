@@ -318,7 +318,8 @@ pub struct Topology {
     /// master graph, which has none.
     pub inputs: ChannelLayout,
     /// Copy-out points ("tap these sources"). A closed tap is absent: nothing
-    /// is compiled for it.
+    /// is compiled for it. [`validate`](Self::validate) does not check a tap's
+    /// sources: a lane naming a port that does not exist reads silence.
     pub taps: BTreeMap<TapId, TapSpec>,
     /// Level meters ("measure these sources"). A closed meter is absent:
     /// nothing is compiled for it.
@@ -410,7 +411,9 @@ pub enum TapAlign {
 /// "Tap these sources": one lane per source, any ports, any number.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TapSpec {
-    /// One per lane.
+    /// One per lane. A lane naming a port that does not exist (a node
+    /// replaced by one with fewer outputs, a removed node, a global input
+    /// past the declared width) reads silence; it does not fail a commit.
     pub sources: Vec<Source>,
     /// Where the copy sits in time.
     pub align: TapAlign,
@@ -482,16 +485,6 @@ pub enum Invalid {
         channel: usize,
         /// The port it names.
         from: OutPort,
-    },
-    /// A tap lane is sourced from a node port or a global input that does not
-    /// exist.
-    TapOutOfRange {
-        /// Which tap.
-        tap: TapId,
-        /// Which of its lanes.
-        lane: usize,
-        /// What it names.
-        source: Source,
     },
     /// A cycle **not** broken by an [`Edge::Feedback`] edge.
     Cycle {
@@ -619,22 +612,6 @@ impl Topology {
                     .is_some_and(|n| from.port < n.outputs.count());
                 if !resolves {
                     errs.push(Invalid::OutputOutOfRange { channel, from });
-                }
-            }
-        }
-
-        for (&tap, spec) in &self.taps {
-            for (lane, &source) in spec.sources.iter().enumerate() {
-                let resolves = match source {
-                    Source::Node(from) => self
-                        .nodes
-                        .get(&from.node)
-                        .is_some_and(|n| from.port < n.outputs.count()),
-                    Source::Global(channel) => channel < self.inputs.count(),
-                    Source::Zero => true,
-                };
-                if !resolves {
-                    errs.push(Invalid::TapOutOfRange { tap, lane, source });
                 }
             }
         }

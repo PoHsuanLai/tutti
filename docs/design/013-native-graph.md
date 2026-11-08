@@ -341,9 +341,14 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
 
 - **The value.** `Topology.taps: BTreeMap<TapId, TapSpec>`; `TapSpec { sources:
   Vec<Source>, align: TapAlign }`, one lane a source, any ports, any width.
-  `Topology::validate` refuses a lane naming a node port or global input that
-  does not exist (`Invalid::TapOutOfRange`); `Editor::remove` turns a lane on a
-  removed node into silence, as it does an output.
+  A lane naming a node port or global input that does not exist reads silence
+  and the commit succeeds (there is no `Invalid` for it: a display or a
+  recording must not wedge the graph; the compiler resolves the missing port
+  to `Zero`, with no delay ring, and the other lanes' rings are keyed by their
+  own lane and source, so they do not move). `TapReader` does not report it:
+  the lane is zeros, neither data lost nor a loss. `Editor::remove` turns a
+  lane on a removed node into `Zero`, as it does an output and a meter, because
+  a key is the author's and may be inserted again (`a_reused_key_is_not_read_by_the_old_tap`).
 - **The compiler.** One `Op::Tap { tap, srcs }` per tap, beside
   `Op::Output`, plus, for `TapAlign::ToOutput`, a `Delay` (`DelayKey::Tap`)
   with the compensation an output of the same source gets, so an aligned tap
@@ -470,7 +475,7 @@ block and is not audio.
   by one with fewer outputs, or removed, leaves the lanes past its width on
   `Zero`; there is no `Invalid` for it, so a display never wedges a commit
   (`a_narrowed_node_silences_the_lanes_past_its_width_and_commits`). The plan
-  tap still fails every commit in the same case; that is a separate follow-up.
+  tap does the same (`a_narrowed_node_silences_the_tap_lanes_past_its_width_and_commits`).
 - **The cell is `tutti-rt`'s `level_cell`, with a loom model.** A lane is two
   slots (peak, frames, an `f64` sum of squares) and a flip. The op folds into
   the active slot (wait-free); a read stores the other index, fences, waits

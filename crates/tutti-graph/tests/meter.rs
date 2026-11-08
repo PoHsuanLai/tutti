@@ -543,8 +543,7 @@ fn a_meter_changes_no_output_bit() {
 
 /// A node replaced by one with fewer outputs leaves the meter's lanes past the
 /// new width on silence, and the commit succeeds: a display must not wedge the
-/// graph. (A tap naming such a port still fails every commit; that is the
-/// tap's, not changed here.)
+/// graph. (A tap does the same: `tests/tap.rs`.)
 ///
 /// Mutation (run, recorded here): see the list at the end of this file.
 #[test]

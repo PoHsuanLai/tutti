@@ -959,14 +959,24 @@ pub fn compile(
     // Taps: one lane per source, any ports. An aligned lane is delayed to the
     // graph's output time (the compensation an output of the same source
     // gets); a raw one reads the source as it leaves its node. A closed tap
-    // is not in the topology, so nothing here is emitted for it.
+    // is not in the topology, so nothing here is emitted for it. A lane whose
+    // port does not exist (a node replaced by a narrower one, a removed node,
+    // a global input past the declared width) reads silence rather than
+    // failing the commit, as a meter's does; it gets no delay ring, and the
+    // other lanes' rings are keyed by their own lane and source.
     let mut tap_ids: Vec<tutti_types::TapId> = Vec::new();
     for (&tap, spec) in &topology.taps {
         let mut srcs = Vec::with_capacity(spec.sources.len());
         for (lane, source) in spec.sources.iter().enumerate() {
             let (mut src, dep) = match *source {
-                Source::Node(p) => (ARef::Val(audio_out_val[&p]), departure(dense[&p.node])),
-                Source::Global(ch) => (ARef::Val(global_val[&ch]), Latency::ZERO),
+                Source::Node(p) => match (audio_out_val.get(&p), dense.get(&p.node)) {
+                    (Some(&v), Some(&n)) => (ARef::Val(v), departure(n)),
+                    _ => (ARef::Zero, Latency::ZERO),
+                },
+                Source::Global(ch) => match global_val.get(&ch) {
+                    Some(&v) => (ARef::Val(v), Latency::ZERO),
+                    None => (ARef::Zero, Latency::ZERO),
+                },
                 Source::Zero => (ARef::Zero, Latency::ZERO),
             };
             if spec.align == tutti_types::TapAlign::ToOutput && src != ARef::Zero {

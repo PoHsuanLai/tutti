@@ -12,7 +12,7 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::{
     ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiOutControls, MidiOutNode,
-    MidiQueueNode, TimedMidiEvent,
+    MidiQueueNode, TimedMidiEvent, TimedQueueNode,
 };
 use tutti_midi_types::MidiEvent;
 use tutti_types::graph::{OutPort, Source};
@@ -193,6 +193,7 @@ fn every_midi_node_is_light() {
     assert_eq!(HarmonyNode::new([]).shape().cost, Cost::Light);
     assert_eq!(ClockNode::new().shape().cost, Cost::Light);
     assert_eq!(MidiQueueNode::new().shape().cost, Cost::Light);
+    assert_eq!(TimedQueueNode::new().0.shape().cost, Cost::Light);
     assert_eq!(MidiOutNode::new().shape().cost, Cost::Light);
     assert_eq!(MidiInputNode::new(None).shape().cost, Cost::Light);
 }

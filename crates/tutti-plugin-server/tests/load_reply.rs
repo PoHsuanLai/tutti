@@ -55,6 +55,7 @@ fn load(stream: &mut Stream, path: &Path) -> BridgeMessage {
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: "load-reply".into(),
+            state: None,
         },
     )
     .expect("send LoadPlugin");

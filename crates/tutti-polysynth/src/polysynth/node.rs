@@ -172,5 +172,9 @@ impl IntoNode for PolySynth {
     }
 }
 
+/// The synth is an instrument: MIDI on event input 0, its stereo pair on
+/// outputs 0 and 1.
+impl tutti_graph::Instrument for PolySynth {}
+
 #[cfg(test)]
 mod tests;

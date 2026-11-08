@@ -7,7 +7,7 @@ use crate::error::{BridgeError, Result};
 use crate::host::node::MAX_CHUNK;
 use crate::protocol::{
     BridgeMessage, BusChannels, ChannelLayout, HostMessage, LoadedPlugin, PluginDescriptor,
-    SampleFormat,
+    SampleFormat, StagedState,
 };
 use crate::util::config::BridgeConfig;
 use crate::util::transport::control::{self as ipc, ControlStream};
@@ -41,6 +41,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// the common case returns in single-digit milliseconds.
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(2);
 
+/// How long the server may take to restore a staged state once it has said it
+/// began ([`BridgeMessage::RestoringState`]). A restore is one opaque plugin call
+/// with nothing inside it to measure progress by, so this is one flat, generous
+/// window, not the bridge's 5 s: a large state restoring slowly is legal, and a
+/// plugin that has not answered in a minute is hung.
+pub(crate) const STATE_RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub struct LaunchedServer {
     pub process: Child,
     /// Catalog identity (name, vendor, class, editor).
@@ -49,6 +56,9 @@ pub struct LaunchedServer {
     pub loaded: LoadedPlugin,
     pub format: SampleFormat,
     pub audio_buffer: Arc<AudioSlab>,
+    /// What became of the state the launch was given: `None` when it had none,
+    /// else the plugin's refusal as text (`Ok` when it took it).
+    pub state_restore: Option<std::result::Result<(), String>>,
 }
 
 /// Spawn a plugin-server and bring it to the point where the RT bridge thread
@@ -70,8 +80,16 @@ pub fn launch(
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: SampleRate,
+    state: Option<&[u8]>,
 ) -> Result<LaunchedServer> {
-    launch_with(&ServerLocator::from_env(), config, plugin_path, sample_rate)
+    launch_with_state(
+        &ServerLocator::from_env(),
+        config,
+        plugin_path,
+        sample_rate,
+        state,
+        STATE_RESTORE_TIMEOUT,
+    )
 }
 
 /// [`launch`], with the server binary named explicitly rather than searched
@@ -83,11 +101,34 @@ pub fn launch(
 /// binary, so under a parallel runner one test's stand-in is another's
 /// production lookup. A save/restore guard does not close that window; it *is*
 /// the window.
+#[cfg(all(test, unix))]
 pub(super) fn launch_with(
     locator: &ServerLocator,
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: SampleRate,
+) -> Result<LaunchedServer> {
+    launch_with_state(
+        locator,
+        config,
+        plugin_path,
+        sample_rate,
+        None,
+        STATE_RESTORE_TIMEOUT,
+    )
+}
+
+/// `launch_with`, restoring `state` into the plugin before it is activated:
+/// staged ahead of the load (`HostMessage::StageStateChunk`), applied by the
+/// server between opening the plugin and activating it, so the activation, and
+/// the reply's buses and latency, are the state's.
+pub(super) fn launch_with_state(
+    locator: &ServerLocator,
+    config: &BridgeConfig,
+    plugin_path: &Path,
+    sample_rate: SampleRate,
+    state: Option<&[u8]>,
+    restore_timeout: Duration,
 ) -> Result<LaunchedServer> {
     let mut process = spawn_process(locator, config)?;
 
@@ -97,19 +138,46 @@ pub(super) fn launch_with(
     let result = (|process: &mut Child| {
         let mut stream = handshake(config, process)?;
         let shm_name = next_shm_name();
-        let (descriptor, loaded, format) =
-            load_plugin(&mut stream, config, plugin_path, sample_rate, &shm_name)?;
+        // A state the server would not take (over the limit, a broken sequence)
+        // is a refusal like any other: the plugin loads at its defaults. A stage
+        // that got no answer is not: the stream may have a late reply in flight,
+        // so the launch ends.
+        let staged = match state {
+            Some(state) => Some(stage_state(&mut stream, config, state)?),
+            None => None,
+        };
+        let declared = match (&staged, state) {
+            (Some(Ok(())), Some(state)) => Some(StagedState {
+                len: state.len() as u64,
+            }),
+            _ => None,
+        };
+        let (descriptor, loaded, format, loaded_error) = load_plugin(
+            &mut stream,
+            config,
+            plugin_path,
+            sample_rate,
+            &shm_name,
+            declared,
+            restore_timeout,
+        )?;
+        let state_restore = match staged {
+            Some(Err(e)) => Some(Err(e)),
+            Some(Ok(())) => Some(loaded_error.map_or(Ok(()), Err)),
+            None => None,
+        };
         let audio_buffer = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
-        Ok((descriptor, loaded, format, audio_buffer))
+        Ok((descriptor, loaded, format, audio_buffer, state_restore))
     })(&mut process);
 
     match result {
-        Ok((descriptor, loaded, format, audio_buffer)) => Ok(LaunchedServer {
+        Ok((descriptor, loaded, format, audio_buffer, state_restore)) => Ok(LaunchedServer {
             process,
             descriptor: *descriptor,
             loaded,
             format,
             audio_buffer,
+            state_restore,
         }),
         Err(e) => {
             // Best-effort and deliberately un-propagated: the launch error is
@@ -199,7 +267,14 @@ fn load_plugin(
     plugin_path: &Path,
     sample_rate: SampleRate,
     shm_name: &str,
-) -> Result<(Box<PluginDescriptor>, LoadedPlugin, SampleFormat)> {
+    state: Option<StagedState>,
+    restore_timeout: Duration,
+) -> Result<(
+    Box<PluginDescriptor>,
+    LoadedPlugin,
+    SampleFormat,
+    Option<String>,
+)> {
     ipc::send(
         stream,
         &HostMessage::LoadPlugin {
@@ -208,20 +283,78 @@ fn load_plugin(
             block_size: config.max_buffer_size,
             preferred_format: config.preferred_format,
             shm_name: shm_name.to_string(),
+            state,
         },
     )?;
 
+    // The open (library, instance, init) runs under the bridge's timeout. When the
+    // server says it has begun restoring the state, the wait changes: a restore
+    // is one opaque plugin call with no signal inside it to measure progress by,
+    // and a large state is legitimately slow to restore, so it gets a window of
+    // its own. A failure from then on is the state's to answer for
+    // ([`BridgeError::StateRestoreError`]); one before it is a load failure, and
+    // blames nothing.
+    let mut timeout = Duration::from_millis(config.timeout_ms);
+    let mut restoring = false;
+    loop {
+        let reply = match ipc::recv_within(stream, timeout) {
+            Ok(reply) => reply,
+            Err(e) if restoring => {
+                return Err(BridgeError::StateRestoreError(format!(
+                    "the plugin did not finish restoring its state: {e}"
+                )));
+            }
+            Err(e) => return Err(e),
+        };
+        match reply {
+            BridgeMessage::RestoringState => {
+                restoring = true;
+                timeout = restore_timeout;
+            }
+            BridgeMessage::PluginLoaded {
+                descriptor,
+                loaded,
+                negotiated_format,
+                state_error,
+            } => return Ok((descriptor, loaded, negotiated_format, state_error)),
+            BridgeMessage::Error { message } => {
+                return Err(BridgeError::load_from_server(plugin_path, message));
+            }
+            ref other => return Err(BridgeError::unexpected_message("PluginLoaded", other)),
+        }
+    }
+}
+
+/// Hands the server `state` for the plugin its next load opens. The inner `Err`
+/// is the server's refusal (too large, a broken sequence): the plugin then loads
+/// without it. The outer `Err` is a stage that got no answer, and ends the launch.
+fn stage_state(
+    stream: &mut ControlStream,
+    config: &BridgeConfig,
+    state: &[u8],
+) -> Result<std::result::Result<(), String>> {
+    if state.len() > crate::protocol::MAX_STATE_BYTES {
+        return Ok(Err(format!(
+            "state is {} bytes, over the {}-byte limit",
+            state.len(),
+            crate::protocol::MAX_STATE_BYTES
+        )));
+    }
+    for (seq, last, bytes) in crate::util::transport::state_chunk::split(state) {
+        ipc::send(
+            stream,
+            &HostMessage::StageStateChunk {
+                seq,
+                last,
+                bytes: bytes.to_vec(),
+            },
+        )?;
+    }
     let timeout = Duration::from_millis(config.timeout_ms);
     match ipc::recv_within(stream, timeout)? {
-        BridgeMessage::PluginLoaded {
-            descriptor,
-            loaded,
-            negotiated_format,
-        } => Ok((descriptor, loaded, negotiated_format)),
-        BridgeMessage::Error { message } => {
-            Err(BridgeError::load_from_server(plugin_path, message))
-        }
-        ref other => Err(BridgeError::unexpected_message("PluginLoaded", other)),
+        BridgeMessage::StateLoaded { error: None } => Ok(Ok(())),
+        BridgeMessage::StateLoaded { error: Some(e) } => Ok(Err(e)),
+        other => Err(BridgeError::unexpected_message("StateLoaded", &other)),
     }
 }
 
@@ -340,7 +473,7 @@ mod tests {
     /// # Keeping it deterministic under parallel load
     ///
     /// **The stand-in is chosen with a [`ServerLocator`]** passed to
-    /// [`launch_with`], not through `TUTTI_PLUGIN_SERVER`: an env var is
+    /// `launch_with`, not through `TUTTI_PLUGIN_SERVER`: an env var is
     /// process-global, so every other thread in this binary would see it.
     ///
     /// **Liveness is not checked with a process-table scan** (`pgrep`): the
@@ -429,6 +562,136 @@ mod tests {
             "a failed launch ({err}) left stand-in server pid {pid} running — a \
              bare `?` after the spawn strands the subprocess, because \
              `Child::drop` neither kills nor reaps"
+        );
+    }
+
+    /// A launch that restores a staged state, against the reference plugin, with
+    /// its switches set in this process's environment (the server inherits it;
+    /// nextest runs each test in a process of its own).
+    #[cfg(all(unix, feature = "clap"))]
+    fn stateful_launch(
+        label: &str,
+        env: &[(&str, &str)],
+        timeout_ms: u64,
+        restore_timeout: Duration,
+    ) -> (Result<LaunchedServer>, Duration) {
+        for (k, v) in env {
+            // SAFETY: each test runs in a process of its own, before any thread
+            // of it reads the environment.
+            unsafe { std::env::set_var(k, v) };
+        }
+        let dir = TempDir::new(label);
+        let config = BridgeConfig {
+            socket_path: dir.path().join("s.sock"),
+            timeout_ms,
+            ..Default::default()
+        };
+        let plugin = tutti_fixtures::publish_with_extension(
+            &tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin"),
+            "clap",
+        );
+        let started = Instant::now();
+        let launched = launch_with_state(
+            &ServerLocator::at(tutti_fixtures::plugin_server()),
+            &config,
+            &plugin,
+            SampleRate(48_000.0),
+            Some(&[0u8; 16]),
+            restore_timeout,
+        );
+        (launched, started.elapsed())
+    }
+
+    #[cfg(all(unix, feature = "clap"))]
+    fn reap(server: Result<LaunchedServer>) {
+        if let Ok(mut server) = server {
+            let _ = server.process.kill();
+            let _ = server.process.wait();
+        }
+    }
+
+    /// **A slow restore that succeeds is a load.** The plugin takes 2.5 s over
+    /// its state, longer than the bridge's 1 s timeout, and the launch waits for
+    /// it: the server said it began restoring, and a restore has the window of its
+    /// own.
+    ///
+    /// Mutation (run): not changing the wait on `RestoringState` (the bridge's
+    /// timeout kept) times the launch out, as `StateRestoreError`, and this fails.
+    /// Needs `cargo build -p tutti-plugin-server` first.
+    #[test]
+    #[cfg(all(unix, feature = "clap"))]
+    fn a_slow_restore_that_succeeds_is_a_load() {
+        let (launched, took) = stateful_launch(
+            "slow-restore",
+            &[("TUTTI_CLAP_PROBE_STATE_LOAD_SLEEP_MS", "2500")],
+            1_000,
+            Duration::from_secs(20),
+        );
+        assert!(took >= Duration::from_millis(2_500), "{took:?}");
+        let server = launched.expect("a slow restore is not a failure");
+        assert!(server.state_restore.is_some(), "a restore was attempted");
+        reap(Ok(server));
+    }
+
+    /// **A restore that never returns is the state's to answer for**: past its
+    /// window the launch fails as `StateRestoreError`.
+    ///
+    /// Mutation (run): the failure after `RestoringState` returned as the plain
+    /// timeout (`Err(e) if restoring` disabled) fails the `matches!`.
+    #[test]
+    #[cfg(all(unix, feature = "clap"))]
+    fn a_restore_that_outlasts_its_window_is_blamed_on_the_state() {
+        let (launched, _) = stateful_launch(
+            "hung-restore",
+            &[("TUTTI_CLAP_PROBE_STATE_LOAD_SLEEP_MS", "6000")],
+            1_000,
+            Duration::from_millis(1_500),
+        );
+        assert!(
+            matches!(&launched, Err(BridgeError::StateRestoreError(_))),
+            "{:?}",
+            launched.as_ref().err()
+        );
+    }
+
+    /// **A plugin that dies in its state restore is blamed on the state.**
+    ///
+    /// Mutation (run): the failure after `RestoringState` returned as the plain
+    /// error fails the `matches!`.
+    #[test]
+    #[cfg(all(unix, feature = "clap"))]
+    fn a_crash_in_the_restore_is_blamed_on_the_state() {
+        let (launched, _) = stateful_launch(
+            "crash-restore",
+            &[("TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD", "1")],
+            2_000,
+            Duration::from_secs(20),
+        );
+        assert!(
+            matches!(&launched, Err(BridgeError::StateRestoreError(_))),
+            "{:?}",
+            launched.as_ref().err()
+        );
+    }
+
+    /// **A plugin that dies before the restore is not blamed on the state**: it
+    /// dies initializing, which comes first, and the launch fails as any load does.
+    ///
+    /// Mutation (run): `restoring` true from the start of `load_plugin` makes
+    /// this a `StateRestoreError` and fails the `matches!`.
+    #[test]
+    #[cfg(all(unix, feature = "clap"))]
+    fn a_crash_before_the_restore_is_not_blamed_on_the_state() {
+        let (launched, _) = stateful_launch(
+            "crash-open",
+            &[("TUTTI_CLAP_PROBE_CRASH_ON_INIT", "1")],
+            2_000,
+            Duration::from_secs(20),
+        );
+        assert!(
+            launched.is_err() && !matches!(&launched, Err(BridgeError::StateRestoreError(_))),
+            "{:?}",
+            launched.as_ref().err()
         );
     }
 

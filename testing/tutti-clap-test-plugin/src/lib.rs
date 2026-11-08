@@ -295,6 +295,7 @@ unsafe extern "C" fn plugin_init(plugin: *const clap_plugin) -> bool {
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
     // arguments valid per the CLAP ABI.
     unsafe { threading::record_thread_roles(threading::Site::Init, plugin_host(plugin)) };
+    subprocess::die_if_init_crashes();
     true
 }
 

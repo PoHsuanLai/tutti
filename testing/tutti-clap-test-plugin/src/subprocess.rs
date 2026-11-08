@@ -109,6 +109,14 @@ static PARKED_BLOCKS: AtomicU64 = AtomicU64::new(0);
 /// Abort when a state is loaded: `TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD`.
 static CRASH_ON_STATE_LOAD: AtomicBool = AtomicBool::new(false);
 
+/// Milliseconds a state load takes before it answers:
+/// `TUTTI_CLAP_PROBE_STATE_LOAD_SLEEP_MS`. A large state restoring slowly.
+static SLEEP_ON_STATE_LOAD_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Abort when the plugin is initialized, which is before a state can be
+/// loaded: `TUTTI_CLAP_PROBE_CRASH_ON_INIT`.
+static CRASH_ON_INIT: AtomicBool = AtomicBool::new(false);
+
 /// Frames a replacement server (see `configure`) adds to its latency.
 static RESTART_LATENCY: AtomicU32 = AtomicU32::new(0);
 
@@ -189,6 +197,12 @@ pub(crate) fn configure() {
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD") {
         CRASH_ON_STATE_LOAD.store(n != 0, Ordering::SeqCst);
     }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_STATE_LOAD_SLEEP_MS") {
+        SLEEP_ON_STATE_LOAD_MS.store(n, Ordering::SeqCst);
+    }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_INIT") {
+        CRASH_ON_INIT.store(n != 0, Ordering::SeqCst);
+    }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD") {
         REFUSE_STATE_LOAD.store(n != 0, Ordering::SeqCst);
     }
@@ -265,7 +279,18 @@ pub(crate) fn refuse_state_load() -> bool {
     // survive. It dies when one is loaded, as a plugin with a bug in its
     // loader does.
     die_if_state_load_crashes();
+    let slow = SLEEP_ON_STATE_LOAD_MS.load(Ordering::SeqCst);
+    if slow > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(slow)));
+    }
     REFUSE_STATE_LOAD.load(Ordering::SeqCst)
+}
+
+/// Aborts the process if `TUTTI_CLAP_PROBE_CRASH_ON_INIT` is set.
+pub(crate) fn die_if_init_crashes() {
+    if CRASH_ON_INIT.load(Ordering::SeqCst) {
+        die();
+    }
 }
 
 /// Aborts the process if `TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD` is set.

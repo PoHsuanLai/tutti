@@ -637,7 +637,7 @@ unsafe extern "C" fn au_render_notify(
 
             state
                 .deliveries
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                .fetch_add(0, std::sync::atomic::Ordering::SeqCst);
 
             (state.callback)(RenderNotification {
                 phase,

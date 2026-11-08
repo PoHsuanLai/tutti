@@ -105,6 +105,14 @@ check-features:
     cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
+    # tutti-export has no default format and a self dev-dependency with all four
+    # on, so its library is linted per feature alone (--lib skips the dev edge).
+    cargo clippy --locked -p tutti-export --lib -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features wav -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features flac -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features aiff -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features ogg -- -D warnings
+    cargo clippy --locked -p tutti-session --lib --features export-flac,export-aiff,export-ogg -- -D warnings
     cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
     cargo clippy --locked -p tutti-codec --features encode-wav --all-targets -- -D warnings
     cargo clippy --locked -p tutti-codec --features encode-aiff --all-targets -- -D warnings
@@ -142,6 +150,9 @@ test-features:
     cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti --features audio-io
+    # tutti-export's tests run with every format on (a dev-dependency on
+    # itself); the library alone per format is linted in `check-features`.
+    cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg
     # A `Format` variant exists only with its feature: each is tested alone (a
     # workspace run has them all on, through tutti-export).
     cargo nextest run --locked -p tutti-codec
@@ -439,6 +450,9 @@ check-windows:
         --exclude tutti-vst3-host --exclude tutti-plugin-server \
         --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract
     win -p tutti-shared-plugin --all-targets
+    # tutti-export's library with the pure-Rust formats (--lib skips its dev edge,
+    # which turns `ogg` on); `export-ogg` is the part that needs real headers.
+    win -p tutti-export --lib --features wav,flac,aiff
     win -p tutti-codec --features encode-wav,encode-aiff,encode-flac,decode-wav,decode-flac,decode-mp3,decode-ogg,serde --all-targets
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
     win -p tutti-plugin-db --features json --all-targets

@@ -71,7 +71,6 @@ impl Status {
             sys::kAudioUnitErr_FileNotSpecified => Self::FileNotSpecified,
             sys::kAudioUnitErr_FormatNotSupported => Self::FormatNotSupported,
             sys::kAudioUnitErr_Uninitialized => Self::Uninitialized,
-            sys::kAudioUnitErr_InvalidScope => Self::InvalidScope,
             sys::kAudioUnitErr_PropertyNotWritable => Self::PropertyNotWritable,
             sys::kAudioUnitErr_CannotDoInCurrentContext => Self::CannotDoInCurrentContext,
             sys::kAudioUnitErr_InvalidPropertyValue => Self::InvalidPropertyValue,

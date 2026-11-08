@@ -386,24 +386,24 @@ impl Property for OfflineRender {
     type Value = u32;
 }
 
-/// The crate-private property `HostCallbacks`.
-pub(crate) struct HostCallbacksProperty;
+/// The property `HostCallbacks`.
+pub struct HostCallbacksProperty;
 
 impl Property for HostCallbacksProperty {
     const ID: u32 = sys::kAudioUnitProperty_HostCallbacks;
     type Value = crate::transport::HostCallbackInfo;
 }
 
-/// The crate-private property `MidiOutputCallback`.
-pub(crate) struct MidiOutputCallbackProperty;
+/// The property `MidiOutputCallback`.
+pub struct MidiOutputCallbackProperty;
 
 impl Property for MidiOutputCallbackProperty {
     const ID: u32 = sys::kAudioUnitProperty_MIDIOutputCallback;
     type Value = crate::midi_out::AuMidiOutputCallbackStruct;
 }
 
-/// The crate-private property `ParameterClumpName`.
-pub(crate) struct ParameterClumpName;
+/// The property `ParameterClumpName`.
+pub struct ParameterClumpName;
 
 impl Property for ParameterClumpName {
     const ID: u32 = sys::kAudioUnitProperty_ParameterClumpName;

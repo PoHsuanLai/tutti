@@ -17,7 +17,7 @@ use crate::unit::Unit;
 /// `clump_name_request_matches_the_c_abi`.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) struct ClumpNameRequest {
+pub struct ClumpNameRequest {
     in_id: u32,
     out_name: sys::CFStringRef,
 }

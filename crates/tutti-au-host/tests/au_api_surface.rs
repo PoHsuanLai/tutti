@@ -136,10 +136,6 @@ use support::corpus::{DELAY, DISTORTION, MULTI_CHANNEL_MIXER, N_BAND_EQ};
 use tutti_au_host::component::{self, AuType};
 use tutti_au_host::midi_out::MidiOutputInfo;
 use tutti_au_host::parameters::{self, ParamAddress};
-use tutti_au_host::types::{
-    self, AudioComponentDescription, BypassEffect::ID, K_AUDIO_UNIT_TYPE_EFFECT, Latency::ID,
-    PresentPreset::ID,
-};
 use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_au_host::{BusDirection, TransportInfo, TransportState};
 

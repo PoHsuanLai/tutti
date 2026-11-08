@@ -54,7 +54,6 @@ use tutti_au_ffi::Scope;
 
 use tutti_au_host::BusDirection;
 use tutti_au_host::parameters::{self, DependentParam, MetaScope, ParamAddress};
-use tutti_au_host::types::{Scope::GLOBAL, Scope::INPUT, Scope::OUTPUT};
 use tutti_types::Seconds;
 
 const RATE: f64 = 48_000.0;

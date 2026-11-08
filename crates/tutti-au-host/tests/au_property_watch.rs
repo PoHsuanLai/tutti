@@ -49,7 +49,6 @@ use std::time::{Duration, Instant};
 use tutti_au_ffi::Property;
 use tutti_au_ffi::property::{Latency, ParameterList, TailTime};
 
-use tutti_au_host::types::{Latency::ID, ParameterList::ID, TailTime::ID};
 use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_types::Samples;
 

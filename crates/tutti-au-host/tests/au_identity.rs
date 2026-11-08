@@ -389,7 +389,7 @@ fn the_overview_decodes_every_entry_the_au_reported() {
             coreaudio_sys::AudioUnitGetPropertyInfo(
                 au.raw_unit(),
                 ParametersForOverview::ID,
-                Scope::GLOBAL,
+                Scope::GLOBAL.raw(),
                 0,
                 &mut size,
                 &mut writable,

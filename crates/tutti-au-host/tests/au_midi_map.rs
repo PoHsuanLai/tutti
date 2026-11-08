@@ -75,7 +75,6 @@ use support::corpus::{
 };
 
 use tutti_au_host::AuInstance;
-use tutti_au_host::types::{MidiControlMapping::ID, Scope::GLOBAL, Scope::INPUT, Scope::OUTPUT};
 use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 

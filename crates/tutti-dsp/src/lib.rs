@@ -70,6 +70,12 @@
 //! - Interpolation: [`cubic_hermite`], the four-tap Catmull-Rom kernel the delay
 //!   line and the sampler's readers share.
 //! - Reverb: [`Freeverb`], mono in and stereo out, with its figures fixed.
+//! - Reverb model (design 022): a [`Network`] of [`Stage`]s, a feedback delay
+//!   network as a plain fixed-capacity value, with analytic queries
+//!   ([`Network::rt60`], [`tail`](Network::tail), [`is_stable`](Network::is_stable),
+//!   the densities) and a [`Bounds`] worst case; a [`Design`] maps its controls
+//!   to one ([`FreeverbDesign`] for [`Freeverb`]); [`loop_gain`] and
+//!   [`rt60_from_gain`] are the RT60 formula both ways.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Resampling: [`FftResampler`], a fixed-input FFT block resampler on the
 //!   same scalar FFT, failing with a [`ResampleError`]; and
@@ -94,8 +100,10 @@ mod interp;
 mod swept_delay;
 mod waveshape;
 
+mod network;
 mod resample;
 mod reverb;
+mod reverb_design;
 #[cfg(test)]
 mod test_support;
 
@@ -118,8 +126,14 @@ pub use filter::{
     SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
 };
 pub use interp::cubic_hermite;
+pub use network::{
+    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Design, Fdn, FirSummary, Full, Gains,
+    Inline, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation,
+    Network, OutputMap, Ring, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
+};
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler};
 pub use reverb::Freeverb;
+pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

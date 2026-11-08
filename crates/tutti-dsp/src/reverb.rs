@@ -35,38 +35,40 @@ impl Freeverb {
     /// The gain the input is scaled by.
     pub const FIXED_GAIN: f32 = 0.015;
     /// The comb feedback: Freeverb's room size 0.5 scaled (`0.5 * 0.28 + 0.7`).
-    /// A bare `f32`: a loop coefficient, not a unit the vocabulary has.
-    const ROOM_FEEDBACK: f32 = 0.5 * 0.28 + 0.7;
+    /// A bare `f32` because the comb loop multiplies it per sample and this
+    /// change leaves that code alone; the design carries it as an `Amplitude`
+    /// (`Feedback` would also hold it, but caps at 0.99 and is for a control).
+    pub(crate) const ROOM_FEEDBACK: f32 = 0.5 * 0.28 + 0.7;
     /// The comb damping: Freeverb's damp 0.5 scaled (`0.5 * 0.4`).
-    const DAMPING: f32 = 0.5 * 0.4;
+    pub(crate) const DAMPING: f32 = 0.5 * 0.4;
     /// The all-pass feedback.
-    const ALLPASS_FEEDBACK: f32 = 0.5;
-    const STEREO_SPREAD: usize = 23;
+    pub(crate) const ALLPASS_FEEDBACK: f32 = 0.5;
+    pub(crate) const STEREO_SPREAD: usize = 23;
 
-    const CF_TUNING_L1: usize = 1116;
-    const CF_TUNING_R1: usize = 1116 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L2: usize = 1188;
-    const CF_TUNING_R2: usize = 1188 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L3: usize = 1277;
-    const CF_TUNING_R3: usize = 1277 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L4: usize = 1356;
-    const CF_TUNING_R4: usize = 1356 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L5: usize = 1422;
-    const CF_TUNING_R5: usize = 1422 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L6: usize = 1491;
-    const CF_TUNING_R6: usize = 1491 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L7: usize = 1557;
-    const CF_TUNING_R7: usize = 1557 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L8: usize = 1617;
-    const CF_TUNING_R8: usize = 1617 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L1: usize = 556;
-    const APF_TUNING_R1: usize = 556 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L2: usize = 441;
-    const APF_TUNING_R2: usize = 441 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L3: usize = 341;
-    const APF_TUNING_R3: usize = 341 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L4: usize = 225;
-    const APF_TUNING_R4: usize = 225 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L1: usize = 1116;
+    pub(crate) const CF_TUNING_R1: usize = 1116 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L2: usize = 1188;
+    pub(crate) const CF_TUNING_R2: usize = 1188 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L3: usize = 1277;
+    pub(crate) const CF_TUNING_R3: usize = 1277 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L4: usize = 1356;
+    pub(crate) const CF_TUNING_R4: usize = 1356 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L5: usize = 1422;
+    pub(crate) const CF_TUNING_R5: usize = 1422 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L6: usize = 1491;
+    pub(crate) const CF_TUNING_R6: usize = 1491 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L7: usize = 1557;
+    pub(crate) const CF_TUNING_R7: usize = 1557 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L8: usize = 1617;
+    pub(crate) const CF_TUNING_R8: usize = 1617 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L1: usize = 556;
+    pub(crate) const APF_TUNING_R1: usize = 556 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L2: usize = 441;
+    pub(crate) const APF_TUNING_R2: usize = 441 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L3: usize = 341;
+    pub(crate) const APF_TUNING_R3: usize = 341 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L4: usize = 225;
+    pub(crate) const APF_TUNING_R4: usize = 225 + Freeverb::STEREO_SPREAD;
 
     /// A reverb at `rate`, rounded to whole hertz. Allocates the filter lines.
     #[must_use]
@@ -145,7 +147,7 @@ impl Freeverb {
         }
     }
 
-    fn scale_tuning(rate: SampleRate, tuning: usize) -> usize {
+    pub(crate) fn scale_tuning(rate: SampleRate, tuning: usize) -> usize {
         (rate.get() / 44100_f64 * (tuning as f64)).round() as usize
     }
 
@@ -182,6 +184,24 @@ impl Freeverb {
         }
     }
 
+    /// The comb and all-pass lengths and the first comb's coefficients, for the
+    /// design's tests: `(left combs, right combs, left all-passes, right
+    /// all-passes, (feedback, damp1, damp2))`.
+    #[cfg(test)]
+    pub(crate) fn figures(&self) -> Figures {
+        let len = |v: &[CombFilter]| v.iter().map(|c| c.buffer.len()).collect();
+        let alen = |v: &[AllPassFilter]| v.iter().map(|a| a.buffer.len()).collect();
+        let c = &self.cfs_l[0];
+        Figures {
+            combs_left: len(&self.cfs_l),
+            combs_right: len(&self.cfs_r),
+            all_passes_left: alen(&self.apfs_l),
+            all_passes_right: alen(&self.apfs_r),
+            comb: (c.feedback, c.damp1, c.damp2),
+            all_pass_feedback: self.apfs_l[0].feedback,
+        }
+    }
+
     /// How long the wet signal takes to fall to `floor` of what it carried
     /// when the input stops. Each trip round the longest comb loop keeps the
     /// room size's fraction of what it carried (at the lowest frequency the
@@ -203,6 +223,17 @@ impl Freeverb {
         let loops = (floor.to_amplitude().get().ln() / Self::ROOM_FEEDBACK.ln()).ceil() + 1_f32;
         Seconds((loops * longest as f32 + chain as f32) / self.rate.get() as f32)
     }
+}
+
+/// What [`Freeverb::figures`] reads.
+#[cfg(test)]
+pub(crate) struct Figures {
+    pub(crate) combs_left: Vec<usize>,
+    pub(crate) combs_right: Vec<usize>,
+    pub(crate) all_passes_left: Vec<usize>,
+    pub(crate) all_passes_right: Vec<usize>,
+    pub(crate) comb: (f32, f32, f32),
+    pub(crate) all_pass_feedback: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -340,5 +371,59 @@ impl AllPassFilter {
             self.buffer_index += rem;
             block_index += rem;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Freeverb's all-pass is `H(z) = ((1 + g) z^-D - 1) / (1 - g z^-D)`, the
+    /// network's `AllPassForm::Freeverb`, not the unit-magnitude lattice. Its
+    /// impulse response, from the transfer function, is -1 at frame 0 and
+    /// `g^(k-1)` at frame `k D` for `k >= 1`, and zero elsewhere; its gain is 1
+    /// at DC for `g = 0.5` and `(2 + g) / (1 + g)` where `D w = pi`.
+    ///
+    /// Mutations (run): `bufout - input` -> `input - bufout` in
+    /// `AllPassFilter::process` flips the sign and fails the first assertion;
+    /// `input + bufout * feedback` -> `input` removes the recirculation and
+    /// fails the `g^(k-1)` train.
+    #[test]
+    fn the_all_pass_is_the_freeverb_form_not_the_lattice() {
+        let (d, g) = (8usize, 0.5f32);
+        let mut ap = AllPassFilter::new(d);
+        ap.feedback = g;
+        let mut h = vec![0.0f32; 18 * d + 1];
+        h[0] = 1.0;
+        ap.process(&mut h);
+        assert!((h[0] + 1.0).abs() < 1e-6, "h[0] = {}", h[0]);
+        for k in 1..=17usize {
+            assert!(
+                (h[k * d] - g.powi(k as i32 - 1)).abs() < 1e-5,
+                "h[{}] = {}",
+                k * d,
+                h[k * d]
+            );
+        }
+        assert!((0..h.len()).filter(|n| n % d != 0).all(|n| h[n] == 0.0));
+        let gain_at = |omega: f64| {
+            let (re, im) = h
+                .iter()
+                .enumerate()
+                .fold((0.0f64, 0.0f64), |(re, im), (n, &x)| {
+                    let a = omega * n as f64;
+                    (
+                        re + f64::from(x) * libm::cos(a),
+                        im - f64::from(x) * libm::sin(a),
+                    )
+                });
+            re.hypot(im)
+        };
+        assert!((gain_at(0.0) - 1.0).abs() < 1e-3, "DC {}", gain_at(0.0));
+        let peak = gain_at(std::f64::consts::PI / d as f64);
+        assert!(
+            (peak - (2.0 + 0.5) / (1.0 + 0.5)).abs() < 1e-3,
+            "peak {peak}"
+        );
     }
 }

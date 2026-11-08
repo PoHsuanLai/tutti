@@ -25,10 +25,11 @@ test *ARGS: plugin-server
 
 # The AU mapping-family claim, which needs third-party Audio Units installed.
 # It hard-fails rather than skipping when none is present — deliberately — so it
-# is excluded from CI and run on purpose here, on a machine that has them.
+# is behind the `installed-units` feature: CI lints it, and it runs on purpose
+# here, on a macOS machine that has them.
 test-au-installed:
-    cargo test --locked -p tutti-au-host --test au_midi_map \
-        no_installed_third_party_unit_implements_the_mapping_family
+    cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass \
+        -E 'test(no_installed_third_party_unit_implements_the_mapping_family)'
 
 # The custom-harness editor tests. `cargo test` just execs the binary, which is
 # what a `harness = false` main wants.
@@ -60,7 +61,7 @@ test-release:
     cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph
 
 # Everything.
-test-all: test test-features test-editor test-doc test-release
+test-all: test test-features test-editor test-au-installed test-doc test-release
 
 # Lint the feature-gated code that no other recipe compiles.
 #
@@ -96,6 +97,7 @@ test-all: test test-features test-editor test-doc test-release
 # Not `--all-features`: that would pull every plugin-format SDK and (once it
 # exists) JACK, which needs libjack on the box. Name the combinations.
 check-features:
+    cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
     cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features audio-io --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features soundfont --all-targets -- -D warnings
@@ -141,6 +143,8 @@ check-features:
 # `tutti-plugin-contract`'s server suite, which spawn it; it needs the VST3 SDK
 # submodules, as in CI.
 test-features:
+    # Empty off macOS; on a Mac with the units installed it runs the AU claim.
+    cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass
     cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
     cargo nextest run --locked -p tutti-cpal --features capture
     cargo nextest run --locked -p bevy-tutti --features audio-io

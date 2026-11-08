@@ -836,7 +836,7 @@ fn the_one_unit_that_implements_process_multiple_renders_through_it() {
 
         // Every output buffer must report the full frame count. A short write
         // would be invisible in the samples.
-        let sizes = unsafe { offline::output_byte_sizes(&scratch) };
+        let sizes = offline::output_byte_sizes(&scratch);
         let expected = BLOCK * std::mem::size_of::<f32>() as u32;
         assert_eq!(
             sizes,

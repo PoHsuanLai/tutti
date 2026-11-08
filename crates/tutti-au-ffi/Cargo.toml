@@ -1,0 +1,56 @@
+[package]
+name = "tutti-au-ffi"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The unsafe half of the AU host: safe handles over AudioToolbox and CoreFoundation"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-au-ffi"
+readme = "README.md"
+keywords = ["audio-unit", "au", "audio", "plugin", "ffi"]
+categories = ["multimedia::audio", "os::macos-apis"]
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# The hooks a test uses to reach what the safe API hides: the raw
+# `AudioUnit` behind a `Unit`, and the raw packet-list walkers. Off in a
+# production build; the host crate's tests turn it on.
+test-support = []
+
+[dependencies]
+# `WindowHandle` (the parent window of an editor), `TransportInfo`, `MidiEvent`
+# and the MIDI 1.0 decoder: the values the AU surface is spoken in.
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+# `Bpm`, `Beat` on the host transport figures.
+tutti-types = { path = "../tutti-types", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+coreaudio-sys = "0.2"
+# `relax-void-encoding`: the AU Cocoa view factory protocol takes the unit as
+# `AudioUnit`, an opaque pointer each plugin SDK binds under its own struct name
+# (`ComponentInstanceRecord` from JUCE, `OpaqueAudioComponentInstance` from
+# Apple's own view factories). objc2's debug-build encoding check compares what
+# we send against the *plugin's* declared signature, so no single Rust type can
+# satisfy every plugin. This feature lets `*mut c_void` stand in for any
+# pointer, which is the case objc2 documents it for. It relaxes only pointer
+# identity at the top level; arity, scalar types and struct layouts are still
+# verified. See `cocoa.rs`.
+objc2 = { version = "0.6", features = ["relax-void-encoding"] }
+# `AUEventListenerCreateWithDispatchQueue` takes an Objective-C *block*, not a
+# function pointer, and it is the only listener constructor that works without a
+# running CFRunLoop (see `listener.rs`).
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeometry", "NSObject"] }
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -3,7 +3,7 @@
 # Plugin FFI `unsafe` lives only in the per-format `-ffi` crates; the host
 # crates and the code that drives them forbid it (design 016 §2.9).
 #
-# This gate fails if, for CLAP and VST3 (`<fmt>` below is each):
+# This gate fails if, for CLAP, VST3 and AU (`<fmt>` below is each):
 #
 # - any `unsafe` token appears in `tutti-<fmt>-host` (the whole of `src/`,
 #   tests inside it included: the crate is `#![forbid(unsafe_code)]`);
@@ -52,6 +52,10 @@ FORMATS = [
             "crates/tutti-plugin/src/format/gui/vst3.rs",
         ],
     ),
+    # The AU loaders still carry two `unsafe` sites of their own
+    # (`WindowHandle::from_raw`, doc 016 step 5), so only the host and the FFI
+    # crate are held here.
+    ("AU", "crates/tutti-au-host", "crates/tutti-au-ffi", []),
 ]
 
 
@@ -144,5 +148,5 @@ for b in bad:
     print(b, file=sys.stderr)
 if bad:
     sys.exit(1)
-print(f"check-plugin-ffi: {scanned} files, no CLAP or VST3 unsafe outside the -ffi crates")
+print(f"check-plugin-ffi: {scanned} files, no CLAP, VST3 or AU unsafe outside the -ffi crates")
 PY

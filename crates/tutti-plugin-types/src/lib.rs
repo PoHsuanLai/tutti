@@ -89,7 +89,7 @@ pub use lifecycle::{
     step,
 };
 pub use load_stage::LoadStage;
-pub use main_thread::{assert_main_thread, is_main_thread, mark_main_thread};
+pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, BusTopologies, Layout, LoadedPlugin, PluginTail};
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents};
 pub use midi1_decoder::{

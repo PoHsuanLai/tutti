@@ -92,7 +92,7 @@ impl RenderBufferList {
                 // `*`, so `frames * size_of::<f32>() as u32` multiplies two
                 // u32s and wraps for `frames > u32::MAX / 4`, handing the
                 // plugin a byte size far smaller than the buffer it is given.
-                // the host\'s `process` rejects `num_frames > block_size`
+                // the host's `process` rejects `num_frames > block_size`
                 // before reaching here, so this is not reachable today; `bind`
                 // is public and should not depend on a caller's guard for it.
                 // Same form as `instance.rs`'s output-size report.
@@ -555,7 +555,7 @@ impl PushScratch {
     /// On a zero `block_size`, which would size every channel vector to empty
     /// and make each render a no-op that still reported success — the same
     /// degenerate value
-    /// the host\'s `set_block_size`
+    /// the host's `set_block_size`
     /// refuses.
     pub fn new(inputs: &[ChannelLayout], outputs: &[ChannelLayout], block_size: u32) -> Self {
         assert!(block_size > 0, "PushScratch block_size must be non-zero");
@@ -617,7 +617,7 @@ impl PushScratch {
     /// The push twin of the pull path's cursor restart, and it has to be a
     /// separate call because the two cursors are separate objects with separate
     /// owners: the pull cursor lives inside the instance, so
-    /// the host\'s `reset` can restart it
+    /// the host's `reset` can restart it
     /// directly, while this one is host-owned — the host constructs it and
     /// lends it per render, and `reset` never sees it. A host driving the push
     /// path over a discontinuity therefore calls both, in either order; they

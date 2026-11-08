@@ -463,10 +463,10 @@ impl Unit {
 
     /// Reads a pointer-sized, copy-rule property value.
     fn get_cf<T: Copy>(&self, id: u32, scope: u32, element: u32) -> Result<T> {
-        debug_assert_eq!(size_of::<T>(), size_of::<*const c_void>());
+        const { assert!(size_of::<T>() == size_of::<*const c_void>()) };
         let raw: *const c_void = self.get_raw(id, scope, element)?;
         // SAFETY: `T` is one of the `CF*Ref` pointer typedefs, the same size as
-        // `*const c_void` (asserted above), so the bits are the same pointer.
+        // `*const c_void` (asserted at compile time above), so the bits are the same pointer.
         Ok(unsafe { std::mem::transmute_copy::<*const c_void, T>(&raw) })
     }
 

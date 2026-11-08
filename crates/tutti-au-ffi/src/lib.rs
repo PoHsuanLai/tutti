@@ -27,7 +27,7 @@ pub use cf::{
     NotADictionary, PresetFacts, cfstring_to_string_checked, preset_facts, preset_with_identity,
 };
 pub use component::ComponentRef;
-pub use editor::AuEditor;
+pub use editor::{AuEditor, leaked_editor_views};
 pub use error::{Error, OsError, Result, check};
 pub use listener::{
     AuEvent, AuParameterListener, EventAddress, emit_gesture, notify_all_parameters,

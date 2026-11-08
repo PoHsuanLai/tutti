@@ -87,7 +87,7 @@ pub type TransportStateProc2 = unsafe extern "C" fn(
 /// read by the AU through the C procs. See the module docs for why this is a
 /// set of atomics rather than an `ArcLend` cell.
 ///
-/// Lives behind a `Box` owned by the the host instance so its address is stable for
+/// Lives behind a `Box` owned by the owning registration so its address is stable for
 /// the `hostUserData` pointer the AU retains — the same pinning discipline
 /// `RenderScratch` uses for the input render callback.
 #[derive(Debug)]
@@ -356,24 +356,14 @@ impl TransportState {
     }
 }
 
-/// Recover the `TransportState` from the `hostUserData` pointer.
-///
-/// # Safety
-/// `user_data` must be null or point at a live [`TransportState`] that outlives
-/// the call. The the host instance guarantees this by boxing the state and clearing
-/// the property before the box is freed.
 /// Stores `value` through `ptr` when the AU asked for that field.
 ///
-/// Every out-param in `HostCallbackInfo`'s procs is documented nullable — the
-/// AU passes null for anything it does not want — so each write must be guarded.
-/// Writing blind through one of these is a null dereference on the render
-/// thread, and TAL-NoiseMaker does pass null for fields it ignores.
+/// Every out-param in `HostCallbackInfo`'s procs is documented nullable: the AU
+/// passes null for anything it does not want, so each write is guarded.
 ///
 /// # Safety
 /// `ptr` must be null or a valid, writable, aligned `*mut T`.
 #[inline]
-/// # Safety
-/// `ptr` is null or valid for a write of `T`.
 unsafe fn write_opt<T>(ptr: *mut T, value: T) {
     if !ptr.is_null() {
         // SAFETY: non-null, and valid for a write by the caller's contract.

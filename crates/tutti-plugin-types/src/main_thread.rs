@@ -9,7 +9,8 @@
 //!
 //! Call [`mark_main_thread`] once, on the UI thread, at host startup. Until it
 //! is called the guard is a no-op, so headless tests and tooling that never
-//! mark a main thread never false-fire.
+//! mark a main thread never false-fire. Code whose soundness depends on the
+//! thread (the AU editor) does not rely on this guard: it asks the OS.
 
 use std::sync::OnceLock;
 use std::thread::ThreadId;
@@ -23,13 +24,6 @@ static MAIN: OnceLock<ThreadId> = OnceLock::new();
 /// wins). Until it is called the checks are a no-op.
 pub fn mark_main_thread() {
     let _ = MAIN.set(std::thread::current().id());
-}
-
-/// Whether the caller is on the thread [`mark_main_thread`] marked; `true` while
-/// none is marked. Unlike [`assert_main_thread`] it is a real answer in release
-/// builds too, for code whose soundness depends on it.
-pub fn is_main_thread() -> bool {
-    MAIN.get().is_none_or(|m| *m == std::thread::current().id())
 }
 
 /// Asserts that the caller is on the thread [`mark_main_thread`] marked.

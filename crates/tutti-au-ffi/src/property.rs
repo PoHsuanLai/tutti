@@ -2,10 +2,30 @@
 
 use coreaudio_sys as sys;
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// An AudioUnit property: its id and the value it carries. `Value` is `()` for a
 /// property read through a dedicated method (a string, an array, a property
 /// list, raw bytes).
-pub trait Property {
+///
+/// It is sealed: only this crate pairs an id with the value type the unit really
+/// reads and writes there, because `Unit::set` hands that value to AudioToolbox
+/// as bytes and a wrong pairing would be undefined behaviour from safe code.
+///
+/// ```compile_fail
+/// use tutti_au_ffi::Property;
+///
+/// struct Mine;
+/// impl sealed::Sealed for Mine {}
+
+impl Property for Mine {
+///     const ID: u32 = 0;
+///     type Value = u8;
+/// }
+/// ```
+pub trait Property: sealed::Sealed {
     /// The `AudioUnitPropertyID`.
     const ID: u32;
     /// The plain value a [`Unit::get`](crate::Unit::get) returns.
@@ -48,6 +68,8 @@ impl Element {
 #[derive(Debug, Clone, Copy)]
 pub struct ClassInfo;
 
+impl sealed::Sealed for ClassInfo {}
+
 impl Property for ClassInfo {
     const ID: u32 = sys::kAudioUnitProperty_ClassInfo;
     type Value = ();
@@ -56,6 +78,8 @@ impl Property for ClassInfo {
 /// `ClassInfoFromDocument`: The document-restore twin of `ClassInfo` (id 50, absent from the generated bindings); a host restoring a document tries it first.
 #[derive(Debug, Clone, Copy)]
 pub struct ClassInfoFromDocument;
+
+impl sealed::Sealed for ClassInfoFromDocument {}
 
 impl Property for ClassInfoFromDocument {
     const ID: u32 = 50;
@@ -66,6 +90,8 @@ impl Property for ClassInfoFromDocument {
 #[derive(Debug, Clone, Copy)]
 pub struct SampleRate;
 
+impl sealed::Sealed for SampleRate {}
+
 impl Property for SampleRate {
     const ID: u32 = sys::kAudioUnitProperty_SampleRate;
     type Value = f64;
@@ -74,6 +100,8 @@ impl Property for SampleRate {
 /// `ParameterList`: The parameter ids of a scope.
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterList;
+
+impl sealed::Sealed for ParameterList {}
 
 impl Property for ParameterList {
     const ID: u32 = sys::kAudioUnitProperty_ParameterList;
@@ -84,6 +112,8 @@ impl Property for ParameterList {
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterInfo;
 
+impl sealed::Sealed for ParameterInfo {}
+
 impl Property for ParameterInfo {
     const ID: u32 = sys::kAudioUnitProperty_ParameterInfo;
     type Value = sys::AudioUnitParameterInfo;
@@ -92,6 +122,8 @@ impl Property for ParameterInfo {
 /// `StreamFormat`: The stream format of a bus.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamFormat;
+
+impl sealed::Sealed for StreamFormat {}
 
 impl Property for StreamFormat {
     const ID: u32 = sys::kAudioUnitProperty_StreamFormat;
@@ -102,6 +134,8 @@ impl Property for StreamFormat {
 #[derive(Debug, Clone, Copy)]
 pub struct ElementCount;
 
+impl sealed::Sealed for ElementCount {}
+
 impl Property for ElementCount {
     const ID: u32 = sys::kAudioUnitProperty_ElementCount;
     type Value = u32;
@@ -110,6 +144,8 @@ impl Property for ElementCount {
 /// `Latency`: The latency the unit adds, in seconds.
 #[derive(Debug, Clone, Copy)]
 pub struct Latency;
+
+impl sealed::Sealed for Latency {}
 
 impl Property for Latency {
     const ID: u32 = sys::kAudioUnitProperty_Latency;
@@ -120,6 +156,8 @@ impl Property for Latency {
 #[derive(Debug, Clone, Copy)]
 pub struct TailTime;
 
+impl sealed::Sealed for TailTime {}
+
 impl Property for TailTime {
     const ID: u32 = sys::kAudioUnitProperty_TailTime;
     type Value = f64;
@@ -128,6 +166,8 @@ impl Property for TailTime {
 /// `PresentationLatency`: The latency downstream of a bus, in seconds; write-only.
 #[derive(Debug, Clone, Copy)]
 pub struct PresentationLatency;
+
+impl sealed::Sealed for PresentationLatency {}
 
 impl Property for PresentationLatency {
     const ID: u32 = sys::kAudioUnitProperty_PresentationLatency;
@@ -138,6 +178,8 @@ impl Property for PresentationLatency {
 #[derive(Debug, Clone, Copy)]
 pub struct DependentParameters;
 
+impl sealed::Sealed for DependentParameters {}
+
 impl Property for DependentParameters {
     const ID: u32 = sys::kAudioUnitProperty_DependentParameters;
     type Value = sys::AUDependentParameter;
@@ -146,6 +188,8 @@ impl Property for DependentParameters {
 /// `SupportedNumChannels`: The channel-count pairs the unit accepts.
 #[derive(Debug, Clone, Copy)]
 pub struct SupportedNumChannels;
+
+impl sealed::Sealed for SupportedNumChannels {}
 
 impl Property for SupportedNumChannels {
     const ID: u32 = sys::kAudioUnitProperty_SupportedNumChannels;
@@ -156,6 +200,8 @@ impl Property for SupportedNumChannels {
 #[derive(Debug, Clone, Copy)]
 pub struct MaximumFramesPerSlice;
 
+impl sealed::Sealed for MaximumFramesPerSlice {}
+
 impl Property for MaximumFramesPerSlice {
     const ID: u32 = sys::kAudioUnitProperty_MaximumFramesPerSlice;
     type Value = u32;
@@ -164,6 +210,8 @@ impl Property for MaximumFramesPerSlice {
 /// `SetRenderCallback`: The input-pull callback of an input bus.
 #[derive(Debug, Clone, Copy)]
 pub struct SetRenderCallback;
+
+impl sealed::Sealed for SetRenderCallback {}
 
 impl Property for SetRenderCallback {
     const ID: u32 = sys::kAudioUnitProperty_SetRenderCallback;
@@ -174,6 +222,8 @@ impl Property for SetRenderCallback {
 #[derive(Debug, Clone, Copy)]
 pub struct FactoryPresets;
 
+impl sealed::Sealed for FactoryPresets {}
+
 impl Property for FactoryPresets {
     const ID: u32 = sys::kAudioUnitProperty_FactoryPresets;
     type Value = ();
@@ -182,6 +232,8 @@ impl Property for FactoryPresets {
 /// `RenderQuality`: Render quality, 0 to 127.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderQuality;
+
+impl sealed::Sealed for RenderQuality {}
 
 impl Property for RenderQuality {
     const ID: u32 = sys::kAudioUnitProperty_RenderQuality;
@@ -192,6 +244,8 @@ impl Property for RenderQuality {
 #[derive(Debug, Clone, Copy)]
 pub struct InPlaceProcessing;
 
+impl sealed::Sealed for InPlaceProcessing {}
+
 impl Property for InPlaceProcessing {
     const ID: u32 = sys::kAudioUnitProperty_InPlaceProcessing;
     type Value = u32;
@@ -200,6 +254,8 @@ impl Property for InPlaceProcessing {
 /// `ElementName`: A bus name.
 #[derive(Debug, Clone, Copy)]
 pub struct ElementName;
+
+impl sealed::Sealed for ElementName {}
 
 impl Property for ElementName {
     const ID: u32 = sys::kAudioUnitProperty_ElementName;
@@ -210,6 +266,8 @@ impl Property for ElementName {
 #[derive(Debug, Clone, Copy)]
 pub struct ContextName;
 
+impl sealed::Sealed for ContextName {}
+
 impl Property for ContextName {
     const ID: u32 = sys::kAudioUnitProperty_ContextName;
     type Value = ();
@@ -218,6 +276,8 @@ impl Property for ContextName {
 /// `NickName`: The instance's own name.
 #[derive(Debug, Clone, Copy)]
 pub struct NickName;
+
+impl sealed::Sealed for NickName {}
 
 impl Property for NickName {
     const ID: u32 = sys::kAudioUnitProperty_NickName;
@@ -228,6 +288,8 @@ impl Property for NickName {
 #[derive(Debug, Clone, Copy)]
 pub struct ParametersForOverview;
 
+impl sealed::Sealed for ParametersForOverview {}
+
 impl Property for ParametersForOverview {
     const ID: u32 = sys::kAudioUnitProperty_ParametersForOverview;
     type Value = sys::AudioUnitParameter;
@@ -236,6 +298,8 @@ impl Property for ParametersForOverview {
 /// `IconLocation`: A URL of the unit's icon.
 #[derive(Debug, Clone, Copy)]
 pub struct IconLocation;
+
+impl sealed::Sealed for IconLocation {}
 
 impl Property for IconLocation {
     const ID: u32 = sys::kAudioUnitProperty_IconLocation;
@@ -246,6 +310,8 @@ impl Property for IconLocation {
 #[derive(Debug, Clone, Copy)]
 pub struct AudioChannelLayoutProperty;
 
+impl sealed::Sealed for AudioChannelLayoutProperty {}
+
 impl Property for AudioChannelLayoutProperty {
     const ID: u32 = sys::kAudioUnitProperty_AudioChannelLayout;
     type Value = sys::AudioChannelLayout;
@@ -254,6 +320,8 @@ impl Property for AudioChannelLayoutProperty {
 /// `SupportedChannelLayoutTags`: The channel orders a bus accepts.
 #[derive(Debug, Clone, Copy)]
 pub struct SupportedChannelLayoutTags;
+
+impl sealed::Sealed for SupportedChannelLayoutTags {}
 
 impl Property for SupportedChannelLayoutTags {
     const ID: u32 = sys::kAudioUnitProperty_SupportedChannelLayoutTags;
@@ -264,6 +332,8 @@ impl Property for SupportedChannelLayoutTags {
 #[derive(Debug, Clone, Copy)]
 pub struct MidiOutputCallbackInfo;
 
+impl sealed::Sealed for MidiOutputCallbackInfo {}
+
 impl Property for MidiOutputCallbackInfo {
     const ID: u32 = sys::kAudioUnitProperty_MIDIOutputCallbackInfo;
     type Value = ();
@@ -272,6 +342,8 @@ impl Property for MidiOutputCallbackInfo {
 /// `AllParameterMidiMappings`: Read or write the whole parameter-to-MIDI mapping table (id 41).
 #[derive(Debug, Clone, Copy)]
 pub struct AllParameterMidiMappings;
+
+impl sealed::Sealed for AllParameterMidiMappings {}
 
 impl Property for AllParameterMidiMappings {
     const ID: u32 = 41;
@@ -282,6 +354,8 @@ impl Property for AllParameterMidiMappings {
 #[derive(Debug, Clone, Copy)]
 pub struct AddParameterMidiMapping;
 
+impl sealed::Sealed for AddParameterMidiMapping {}
+
 impl Property for AddParameterMidiMapping {
     const ID: u32 = 42;
     type Value = ();
@@ -290,6 +364,8 @@ impl Property for AddParameterMidiMapping {
 /// `RemoveParameterMidiMapping`: Drop mappings from the table (id 43, write-only).
 #[derive(Debug, Clone, Copy)]
 pub struct RemoveParameterMidiMapping;
+
+impl sealed::Sealed for RemoveParameterMidiMapping {}
 
 impl Property for RemoveParameterMidiMapping {
     const ID: u32 = 43;
@@ -300,6 +376,8 @@ impl Property for RemoveParameterMidiMapping {
 #[derive(Debug, Clone, Copy)]
 pub struct HotMapParameterMidiMapping;
 
+impl sealed::Sealed for HotMapParameterMidiMapping {}
+
 impl Property for HotMapParameterMidiMapping {
     const ID: u32 = 44;
     type Value = ();
@@ -308,6 +386,8 @@ impl Property for HotMapParameterMidiMapping {
 /// `MidiControlMapping`: The deprecated read-only CC mapping (id 17), implemented by no installed unit.
 #[derive(Debug, Clone, Copy)]
 pub struct MidiControlMapping;
+
+impl sealed::Sealed for MidiControlMapping {}
 
 impl Property for MidiControlMapping {
     const ID: u32 = 17;
@@ -318,6 +398,8 @@ impl Property for MidiControlMapping {
 #[derive(Debug, Clone, Copy)]
 pub struct BypassEffect;
 
+impl sealed::Sealed for BypassEffect {}
+
 impl Property for BypassEffect {
     const ID: u32 = sys::kAudioUnitProperty_BypassEffect;
     type Value = u32;
@@ -326,6 +408,8 @@ impl Property for BypassEffect {
 /// `LastRenderError`: The status of the unit's last failed render.
 #[derive(Debug, Clone, Copy)]
 pub struct LastRenderError;
+
+impl sealed::Sealed for LastRenderError {}
 
 impl Property for LastRenderError {
     const ID: u32 = sys::kAudioUnitProperty_LastRenderError;
@@ -336,6 +420,8 @@ impl Property for LastRenderError {
 #[derive(Debug, Clone, Copy)]
 pub struct PresentPreset;
 
+impl sealed::Sealed for PresentPreset {}
+
 impl Property for PresentPreset {
     const ID: u32 = sys::kAudioUnitProperty_PresentPreset;
     type Value = sys::AUPreset;
@@ -344,6 +430,8 @@ impl Property for PresentPreset {
 /// `CocoaUi`: Where the unit's Cocoa view lives.
 #[derive(Debug, Clone, Copy)]
 pub struct CocoaUi;
+
+impl sealed::Sealed for CocoaUi {}
 
 impl Property for CocoaUi {
     const ID: u32 = sys::kAudioUnitProperty_CocoaUI;
@@ -354,6 +442,8 @@ impl Property for CocoaUi {
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterValueStrings;
 
+impl sealed::Sealed for ParameterValueStrings {}
+
 impl Property for ParameterValueStrings {
     const ID: u32 = sys::kAudioUnitProperty_ParameterValueStrings;
     type Value = ();
@@ -362,6 +452,8 @@ impl Property for ParameterValueStrings {
 /// `ParameterStringFromValue`: The unit's text for a value.
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterStringFromValue;
+
+impl sealed::Sealed for ParameterStringFromValue {}
 
 impl Property for ParameterStringFromValue {
     const ID: u32 = sys::kAudioUnitProperty_ParameterStringFromValue;
@@ -372,6 +464,8 @@ impl Property for ParameterStringFromValue {
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterValueFromString;
 
+impl sealed::Sealed for ParameterValueFromString {}
+
 impl Property for ParameterValueFromString {
     const ID: u32 = sys::kAudioUnitProperty_ParameterValueFromString;
     type Value = sys::AudioUnitParameterValueFromString;
@@ -381,6 +475,8 @@ impl Property for ParameterValueFromString {
 #[derive(Debug, Clone, Copy)]
 pub struct OfflineRender;
 
+impl sealed::Sealed for OfflineRender {}
+
 impl Property for OfflineRender {
     const ID: u32 = sys::kAudioUnitProperty_OfflineRender;
     type Value = u32;
@@ -388,6 +484,8 @@ impl Property for OfflineRender {
 
 /// The crate-private property `HostCallbacks`.
 pub(crate) struct HostCallbacksProperty;
+
+impl sealed::Sealed for HostCallbacksProperty {}
 
 impl Property for HostCallbacksProperty {
     const ID: u32 = sys::kAudioUnitProperty_HostCallbacks;
@@ -397,6 +495,8 @@ impl Property for HostCallbacksProperty {
 /// The property `MidiOutputCallback`.
 pub(crate) struct MidiOutputCallbackProperty;
 
+impl sealed::Sealed for MidiOutputCallbackProperty {}
+
 impl Property for MidiOutputCallbackProperty {
     const ID: u32 = sys::kAudioUnitProperty_MIDIOutputCallback;
     type Value = crate::midi_out::AuMidiOutputCallbackStruct;
@@ -404,6 +504,8 @@ impl Property for MidiOutputCallbackProperty {
 
 /// The crate-private property `ParameterClumpName`.
 pub(crate) struct ParameterClumpName;
+
+impl sealed::Sealed for ParameterClumpName {}
 
 impl Property for ParameterClumpName {
     const ID: u32 = sys::kAudioUnitProperty_ParameterClumpName;

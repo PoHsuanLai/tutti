@@ -20,6 +20,24 @@ use crate::error::Result;
 use crate::property::{CocoaUi, Element, Scope};
 use crate::unit::Unit;
 
+unsafe extern "C" {
+    fn pthread_main_np() -> std::os::raw::c_int;
+}
+
+/// Whether the caller is AppKit's main thread, by the OS's own answer (no
+/// marking needed, so it cannot be fooled by marking the wrong thread).
+fn on_main_thread() -> bool {
+    // SAFETY: `pthread_main_np` takes no arguments and reads no memory.
+    unsafe { pthread_main_np() != 0 }
+}
+
+static LEAKED_VIEWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many editor views were leaked because they were closed off the main thread.
+pub fn leaked_editor_views() -> usize {
+    LEAKED_VIEWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Owned handle to an AU's Cocoa editor view.
 ///
 /// The editor view is released when the handle is dropped. The handle is
@@ -64,7 +82,7 @@ impl AuEditor {
     ///
     /// [`mark_main_thread`]: tutti_plugin_types::mark_main_thread
     pub fn open(unit: &Unit, parent: Option<WindowHandle>, preferred: EditorSize) -> Result<Self> {
-        if !tutti_plugin_types::is_main_thread() {
+        if !on_main_thread() {
             return Err(crate::Error::Invalid(
                 "an AU editor opens only on the main thread".into(),
             ));
@@ -101,9 +119,8 @@ impl AuEditor {
     /// leaked instead. This is the single teardown path; `Drop` routes through it.
     pub fn close(&mut self) {
         if !self.view.is_null() {
-            if !tutti_plugin_types::is_main_thread() {
-                // Not safe to touch AppKit from here: leak the view.
-                self.view = std::ptr::null_mut();
+            if !on_main_thread() {
+                self.leak_view();
                 return;
             }
             // SAFETY: `view` is the live +1 view this editor owns (non-null,
@@ -120,7 +137,7 @@ impl AuEditor {
     /// Editor view frame size in points. Returns
     /// `EditorSize { width: 0, height: 0 }` after [`close`](Self::close).
     pub fn editor_size(&self) -> EditorSize {
-        if self.view.is_null() || !tutti_plugin_types::is_main_thread() {
+        if self.view.is_null() || !on_main_thread() {
             return EditorSize {
                 width: 0,
                 height: 0,
@@ -134,6 +151,19 @@ impl AuEditor {
                 height: frame.size.height as u32,
             }
         }
+    }
+
+    /// Gives up the view without touching AppKit, off the main thread.
+    ///
+    /// The view stays in its window and may still talk to the unit, so a clone of
+    /// the unit is leaked too: the instance must outlive the view. Counted in
+    /// [`leaked_editor_views`] and logged once, so it is never silent.
+    fn leak_view(&mut self) {
+        std::mem::forget(self.unit.clone());
+        if LEAKED_VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            eprintln!("[tutti-au-ffi] an AU editor was closed off the main thread; its view is leaked");
+        }
+        self.view = std::ptr::null_mut();
     }
 
     /// Raw `NSView*` pointer, useful for embedding the editor in a host-owned
@@ -150,10 +180,8 @@ impl AuEditor {
 
 impl Drop for AuEditor {
     fn drop(&mut self) {
-        // Single teardown path: route through `close`, which asserts main-thread
-        // affinity (debug builds). Dropping an `AuEditor` off the main thread is
-        // an AppKit UB hazard — the assert turns that latent corruption into a
-        // located panic rather than silently bypassing the check.
+        // Single teardown path. Off the main thread `close` leaks the view rather
+        // than call AppKit from the wrong thread.
         self.close();
     }
 }
@@ -176,5 +204,35 @@ mod tests {
         let unit = Unit::new(comp).expect("instantiate");
         unit.initialize().expect("initialize");
         let _has = AuEditor::has_editor(&unit);
+    }
+
+    /// `open` off the main thread is refused, whatever thread was "marked".
+    ///
+    /// Mutation (run): drop the `on_main_thread` check in `open` -> the call
+    /// proceeds and fails with a different error, so this fails.
+    #[test]
+    fn open_off_the_main_thread_is_refused() {
+        let desc = coreaudio_sys::AudioComponentDescription {
+            componentType: coreaudio_sys::kAudioUnitType_Effect,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let comp = ComponentRef::first_matching(&desc).expect("AUDelay should be present");
+        let unit = Unit::new(comp).expect("instantiate");
+        let refused = std::thread::spawn(move || {
+            let size = EditorSize {
+                width: 100,
+                height: 100,
+            };
+            match AuEditor::open(&unit, None, size) {
+                Err(crate::Error::Invalid(why)) => why.contains("main thread"),
+                _ => false,
+            }
+        })
+        .join()
+        .expect("thread");
+        assert!(refused);
     }
 }

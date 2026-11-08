@@ -44,7 +44,12 @@ pub struct RenderConfig {
     /// Rate the graph is rendered at. The output rate may differ — see
     /// [`ExportConfig::resample`].
     pub sample_rate: SampleRate,
-    /// Length of the audible span, in seconds. `f64` deliberately — see
+    /// Length of the audible span, in seconds; a render of no frames (this
+    /// default's `0.0`, with no [`tail`](Self::tail)) is
+    /// [`ConfigError::EmptyRender`](crate::ConfigError::EmptyRender), and a
+    /// NaN, infinite or negative value
+    /// [`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration).
+    /// `f64` deliberately — see
     /// [`duration_to_frames`](crate::duration_to_frames), which explains why
     /// `Seconds` (an f32) cannot carry an hour-long render.
     pub duration_seconds: f64,
@@ -189,9 +194,12 @@ impl Resample {
 /// optional resample and dither on the way out.
 ///
 /// Plain data, built by struct literal with `..Default::default()` for the rest
-/// (see the [crate-level example](crate)). The default is a zero-length
-/// render at 44.1 kHz to a stereo WAV with triangular dither and no resample,
-/// so set at least [`RenderConfig::duration_seconds`].
+/// (see the [crate-level example](crate)). The default renders at 44.1 kHz to
+/// a stereo WAV with triangular dither and no resample, and has **no
+/// duration**: a render of no frames is
+/// [`ConfigError::EmptyRender`](crate::ConfigError::EmptyRender), so set at
+/// least [`RenderConfig::duration_seconds`] (a NaN, infinite or negative one
+/// is [`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration)).
 ///
 /// There is no `normalize` field: normalization needs the whole signal
 /// measured before a gain can be chosen, which is two passes. Use
@@ -211,8 +219,8 @@ pub struct ExportConfig {
     pub dither: Dither,
 }
 
-/// A zero-length render to a 24-bit stereo WAV. Only with the `wav` feature,
-/// like [`EncodeConfig`]'s.
+/// A 24-bit stereo WAV with no duration, which a render refuses until one is
+/// set. Only with the `wav` feature, like [`EncodeConfig`]'s.
 #[cfg(feature = "wav")]
 impl Default for ExportConfig {
     fn default() -> Self {

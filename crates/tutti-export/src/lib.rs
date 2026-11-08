@@ -237,7 +237,9 @@ fn finished<T>(outcome: Outcome<T>) -> T {
 /// # Errors
 ///
 /// As [`write_buffers`], plus [`Error::InvalidConfig`] if the graph was
-/// prepared at another rate or its editor does not feed its executor, and
+/// prepared at another rate or its editor does not feed its executor, or the
+/// render has no length ([`ConfigError::EmptyRender`],
+/// [`ConfigError::InvalidDuration`]), and
 /// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
 /// render — checked before the file is put in place, so `path` keeps what it
 /// held — and
@@ -273,7 +275,7 @@ pub fn render_to_file_with(
 ) -> Result<Outcome<Written>> {
     frame_width(config.encode.channels)?;
     let path = path.as_ref();
-    let plan = render::RenderPlan::new(&config.render);
+    let plan = render::RenderPlan::new(&config.render)?;
     let mut control = Control::new(Pass::ONLY, tick);
     // The loss check is inside `encode_to_file`, before the rename.
     render::with_source(
@@ -349,6 +351,14 @@ pub fn render_to_buffers_with(
     render_pass(graph, config, clock, &mut Control::new(Pass::ONLY, tick))
 }
 
+/// The error for planes that cannot be held.
+fn too_large(plan: &render::RenderPlan, config: &ExportConfig) -> Error {
+    Error::RenderTooLarge {
+        frames: plan.output_length,
+        channels: config.encode.channels,
+    }
+}
+
 /// One render into memory, reporting through `control`.
 fn render_pass(
     mut graph: impl BorrowMut<RenderGraph>,
@@ -357,13 +367,25 @@ fn render_pass(
     control: &mut Control<'_>,
 ) -> Result<Outcome<Rendered>> {
     let ch = frame_width(config.encode.channels)?;
-    let plan = render::RenderPlan::new(&config.render);
+    let plan = render::RenderPlan::new(&config.render)?;
 
     // `vec![Vec::with_capacity(n); ch]` would clone ONE empty Vec `ch` times,
     // and a clone does not carry capacity — every plane would reallocate.
-    let mut planes: Vec<Vec<f32>> = (0..ch)
-        .map(|_| Vec::with_capacity(plan.output_length.get()))
-        .collect();
+    //
+    // Reserved fallibly: the duration is the caller's, and an hour of 7.1.4
+    // (or a typo) is a plain `Err` here where `with_capacity` would abort the
+    // process.
+    let mut planes: Vec<Vec<f32>> = Vec::new();
+    planes
+        .try_reserve_exact(ch)
+        .map_err(|_| too_large(&plan, config))?;
+    for _ in 0..ch {
+        let mut plane = Vec::new();
+        plane
+            .try_reserve_exact(plan.output_length.get())
+            .map_err(|_| too_large(&plan, config))?;
+        planes.push(plane);
+    }
     let (driven, lost) = render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,

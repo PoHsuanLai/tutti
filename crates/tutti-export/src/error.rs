@@ -6,6 +6,7 @@
 
 use std::io;
 use thiserror::Error;
+use tutti_types::ChannelLayout;
 
 /// Anything that can go wrong rendering or writing an export.
 ///
@@ -105,6 +106,19 @@ pub enum Error {
         count: u64,
     },
 
+    /// The render would hold its planes in memory ([`render_to_buffers`](crate::render_to_buffers),
+    /// [`render_normalized_to_file`](crate::render_normalized_to_file)) and
+    /// the allocation for `frames` frames of `channels` channels failed or
+    /// overflowed. Nothing was rendered. A file export streams and never asks
+    /// for this much.
+    #[error("Cannot hold the render in memory: {frames:?} frames of {channels:?} channels")]
+    RenderTooLarge {
+        /// Frames per plane the render needed.
+        frames: tutti_types::Samples,
+        /// The planes it needed them for.
+        channels: ChannelLayout,
+    },
+
     /// A forked unit failed while the render ran: a hosted plugin's
     /// server crashed, or stopped answering (`kind`). Past that point the
     /// render holds silence where the unit's output belongs, so the export is
@@ -132,6 +146,15 @@ pub enum ConfigError {
     /// The graph's editor does not feed its executor.
     #[error("the graph's editor does not feed its executor; pass the pair built together")]
     UnpairedGraph,
+    /// `duration_seconds` is NaN, infinite or negative: not a length a
+    /// render can have.
+    #[error("the render's duration_seconds must be a finite, non-negative number")]
+    InvalidDuration,
+    /// The render is zero frames long: no duration (or one shorter than a
+    /// frame) and no tail. [`RenderConfig::default`](crate::RenderConfig)
+    /// has no duration, so a render that means to produce audio names one.
+    #[error("the render is zero frames long; set RenderConfig::duration_seconds")]
+    EmptyRender,
     /// The graph is prepared at another rate than the render.
     #[error(
         "the graph is prepared at {prepared} Hz and the render is at {render} Hz; \

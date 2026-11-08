@@ -105,7 +105,7 @@ fn a_generator_index_past_the_generators_is_a_clean_error() {
     let ibag = chunk(&file, b"ibag");
     // The terminal bag's generator index.
     put(&mut file, ibag + 4, 40, 2);
-    let error = load(file).err().expect("it loaded");
+    let error = load(file).expect_err("it loaded");
     assert!(matches!(error, Error::InvalidGeneratorList), "{error:?}");
 }
 

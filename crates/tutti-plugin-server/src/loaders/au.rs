@@ -585,12 +585,24 @@ impl AuInstance {
             let output_topology =
                 core::iter::once(bus_topology(tutti_au_host::BusDirection::Output)).collect();
 
+            // `num_inputs`/`num_outputs` are `u32` off the AU element count. A
+            // count no layout holds fails the load, naming the side, as
+            // `AuError::BusTooWide` does inside the host.
+            let bus_of = |scope: &'static str, channels: u32| {
+                tutti_plugin::server::ChannelLayout::try_from(channels)
+                    .map(single_bus)
+                    .map_err(|_| BridgeError::LoadFailed {
+                        path: path.to_path_buf(),
+                        stage: LoadStage::Initialization,
+                        reason: tutti_au_host::AuError::BusTooWide { scope, channels }.to_string(),
+                    })
+            };
+            let inputs = bus_of("input", inner.num_inputs())?;
+            let outputs = bus_of("output", inner.num_outputs())?;
+
             let loaded = LoadedPlugin {
-                // `num_inputs`/`num_outputs` are `u32` off the AU element
-                // count; `From<u32>` canonicalizes them, so the `as usize`
-                // hop is gone.
-                inputs: single_bus(inner.num_inputs()),
-                outputs: single_bus(inner.num_outputs()),
+                inputs,
+                outputs,
                 input_topology,
                 output_topology,
                 latency_samples: latency,

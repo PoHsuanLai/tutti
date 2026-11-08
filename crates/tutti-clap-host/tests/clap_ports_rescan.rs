@@ -15,6 +15,7 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
@@ -125,11 +126,15 @@ fn a_rescan_rereads_the_f64_flag() {
     assert!(!loaded.supports_f64(), "fixture: f32-only at load");
 
     probe.ports_64bit(BOTH_SIDES);
-    loaded.rescan_audio_ports().expect("deactivated");
+    loaded
+        .rescan_audio_ports(&main_thread())
+        .expect("deactivated");
     assert!(loaded.supports_f64(), "the plugin now flags its ports");
 
     probe.ports_64bit(PORTS_64BIT_OUTPUTS);
-    loaded.rescan_audio_ports().expect("deactivated");
+    loaded
+        .rescan_audio_ports(&main_thread())
+        .expect("deactivated");
     assert!(
         !loaded.supports_f64(),
         "one unflagged side vetoes 64-bit, as at load"
@@ -200,7 +205,7 @@ fn a_rescan_of_an_active_plugin_is_refused() {
 
     probe.ports_64bit(BOTH_SIDES);
     let err = active
-        .rescan_audio_ports()
+        .rescan_audio_ports(&main_thread())
         .expect_err("the plugin is active");
     assert!(matches!(err, ClapError::NotSupported(_)), "got {err}");
     assert!(

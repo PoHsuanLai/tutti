@@ -1,6 +1,7 @@
 //! The cases. Each is a plain generic function over a [`Format`]; `contract!`
 //! makes a test of each. Expected figures come from [`spec`].
 
+use crate::active::main_thread;
 use tutti_midi_types::MidiEvent;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
@@ -15,11 +16,11 @@ use crate::{
 };
 
 fn read<C: Control + ?Sized>(c: &C, param: Param) -> Option<f64> {
-    c.parameter(param.id()).map(Normalized::get)
+    c.parameter(&main_thread(), param.id()).map(Normalized::get)
 }
 
 fn write<C: Control + ?Sized>(c: &mut C, param: Param, value: f64) {
-    c.set_parameter(param.id(), Normalized::clamped(value));
+    c.set_parameter(&main_thread(), param.id(), Normalized::clamped(value));
 }
 
 fn activate<L: Loaded>(loaded: L, block: usize) -> Active<L> {
@@ -100,10 +101,17 @@ pub fn reconfigure_keeps_rendering<F: Format>() {
 // Mutation (run): each host reporting the latency plus one -> fails.
 pub fn latency_reported<F: Format>() {
     assert_eq!(
-        active_in::<F>(Mode::Delay).controller().latency(),
+        active_in::<F>(Mode::Delay)
+            .controller()
+            .latency(&main_thread()),
         spec::LATENCY
     );
-    assert_eq!(active_in::<F>(Mode::Tag).controller().latency(), Samples(0));
+    assert_eq!(
+        active_in::<F>(Mode::Tag)
+            .controller()
+            .latency(&main_thread()),
+        Samples(0)
+    );
 }
 
 /// The reported latency is the delay the plugin applies, across blocks.
@@ -133,7 +141,7 @@ pub fn latency_applied<F: Format>() {
 // Mutation (run): each host reporting the tail plus one -> fails.
 pub fn tail_reported<F: Format>() {
     assert_eq!(
-        active_in::<F>(Mode::Tag).controller().tail(),
+        active_in::<F>(Mode::Tag).controller().tail(&main_thread()),
         PluginTail::Finite(spec::TAIL)
     );
 }
@@ -145,7 +153,7 @@ pub fn tail_reported<F: Format>() {
 //   core.rs or in the C++ controller -> fails; the CLAP host reporting automatable as hidden
 //   -> fails.
 pub fn parameters_listed<F: Format>() {
-    let mut got = F::load().parameters();
+    let mut got = F::load().parameters(&main_thread());
     got.sort_by_key(|p| p.id.get());
     assert_eq!(got.len(), Param::ALL.len(), "the listed parameters");
     for (info, &(param, default)) in got.iter().zip(&Param::ALL) {
@@ -175,9 +183,17 @@ pub fn parameter_round_trip<F: Format>() {
 //   0) -> fails.
 pub fn unlisted_parameter_is_none<F: Format>() {
     let loaded = F::load();
-    assert_eq!(loaded.parameter(spec::UNLISTED), None, "loaded");
+    assert_eq!(
+        loaded.parameter(&main_thread(), spec::UNLISTED),
+        None,
+        "loaded"
+    );
     let mut a = activate(loaded, BLOCK);
-    assert_eq!(a.controller().parameter(spec::UNLISTED), None, "active");
+    assert_eq!(
+        a.controller().parameter(&main_thread(), spec::UNLISTED),
+        None,
+        "active"
+    );
 }
 
 /// A write to an active plugin is applied at the head of its next block.
@@ -278,10 +294,10 @@ pub fn state_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);
     write(&mut loaded, Param::Aux, 0.5);
-    let saved = loaded.save_state().expect("saves");
+    let saved = loaded.save_state(&main_thread()).expect("saves");
     write(&mut loaded, Param::Level, 0.125);
     write(&mut loaded, Param::Aux, 0.0);
-    loaded.load_state(&saved).expect("loads");
+    loaded.load_state(&main_thread(), &saved).expect("loads");
     assert_eq!(read(&loaded, Param::Level), Some(0.75));
     assert_eq!(read(&loaded, Param::Aux), Some(0.5));
 }
@@ -307,9 +323,9 @@ pub fn loaded_write_survives_a_save<F: Format>() {
     let mut loaded = F::load();
     set_mode::<F, _>(&mut loaded, Mode::Level);
     write(&mut loaded, Param::Level, 0.75);
-    let saved = loaded.save_state().expect("saves");
+    let saved = loaded.save_state(&main_thread()).expect("saves");
     let mut other = F::load();
-    other.load_state(&saved).expect("loads");
+    other.load_state(&main_thread(), &saved).expect("loads");
     assert_eq!(read(&other, Param::Level), Some(0.75), "read");
     let out = activate(other, BLOCK).silent(BLOCK);
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
@@ -328,7 +344,7 @@ pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
     let mut loaded = F::load();
     set_mode::<F, _>(&mut loaded, Mode::Level);
     set_level::<F, _>(&mut loaded, 0.75);
-    let _refused = loaded.load_state(b"not the plugin's state");
+    let _refused = loaded.load_state(&main_thread(), b"not the plugin's state");
     assert_eq!(read(&loaded, Param::Level), Some(0.75));
     let out = activate(loaded, BLOCK).silent(BLOCK);
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
@@ -338,9 +354,15 @@ pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
 // Mutation (run): each host skipping the identity check -> fails.
 pub fn halves_of_two_activations_are_stuck<F: Format>() {
     let p = prepare(RATE, BLOCK, SampleFormat::Float32);
-    let (pa, ca) = F::load().activate(p).map_err(|r| r.reason).expect("first");
-    let (pb, cb) = F::load().activate(p).map_err(|r| r.reason).expect("second");
-    let stuck = <F::L as Loaded>::deactivate(pa, cb);
+    let (pa, ca) = F::load()
+        .activate(&main_thread(), p)
+        .map_err(|r| r.reason)
+        .expect("first");
+    let (pb, cb) = F::load()
+        .activate(&main_thread(), p)
+        .map_err(|r| r.reason)
+        .expect("second");
+    let stuck = <F::L as Loaded>::deactivate(&main_thread(), pa, cb);
     assert!(stuck.is_err(), "halves of two activations joined");
     drop((stuck, pb, ca));
 }

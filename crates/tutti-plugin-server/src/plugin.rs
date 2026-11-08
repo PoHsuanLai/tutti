@@ -16,6 +16,7 @@ use tutti_plugin::server::{
     SampleFormat, Samples,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
+use tutti_plugin_types::MainThread;
 
 #[cfg(feature = "vst2")]
 use crate::loaders::vst2::Vst2Instance;
@@ -117,7 +118,7 @@ impl Plugin {
     /// does not exist, or `LoadStage::Opening` if the extension names no format
     /// this build supports.
     #[allow(unreachable_code, unused_variables)] // With no format features, every match arm is cfg'd out.
-    pub(crate) fn probe(path: &Path) -> Result<PluginDescriptor> {
+    pub(crate) fn probe(main: &MainThread, path: &Path) -> Result<PluginDescriptor> {
         if !path.exists() {
             return Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
@@ -135,7 +136,7 @@ impl Plugin {
             #[cfg(all(feature = "au", target_os = "macos"))]
             "component" => AuInstance::probe(path),
             #[cfg(feature = "vst2")]
-            "vst" | "dll" | "so" => Vst2Instance::probe(path),
+            "vst" | "dll" | "so" => Vst2Instance::probe(main, path),
             _ => Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,
@@ -161,12 +162,14 @@ impl Plugin {
     #[allow(unreachable_code, unused_variables)] // With no format features, every match arm is cfg'd out.
     #[cfg(test)]
     pub(crate) fn load(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         preferred_format: SampleFormat,
     ) -> Result<(Self, PluginDescriptor, LoadedPlugin, SampleFormat)> {
         Self::load_with_state(
+            main,
             path,
             sample_rate,
             block_size,
@@ -184,6 +187,7 @@ impl Plugin {
     /// defaults.
     #[allow(unreachable_code, unused_variables, clippy::type_complexity)]
     pub(crate) fn load_with_state(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
@@ -212,6 +216,7 @@ impl Plugin {
                 "vst3" => {
                     let prefer_f64 = preferred_format == SampleFormat::Float64;
                     let (i, e) = Vst3Instance::load_with_state(
+                        main,
                         path,
                         sample_rate,
                         block_size,
@@ -225,6 +230,7 @@ impl Plugin {
                 #[cfg(feature = "vst2")]
                 "vst" | "dll" | "so" => {
                     let (i, e) = Vst2Instance::load_with_state(
+                        main,
                         path,
                         sample_rate,
                         block_size,
@@ -238,6 +244,7 @@ impl Plugin {
                 #[cfg(feature = "clap")]
                 "clap" => {
                     let (i, e) = ClapInstance::load_with_state(
+                        main,
                         path,
                         sample_rate,
                         block_size,
@@ -251,6 +258,7 @@ impl Plugin {
                 #[cfg(all(feature = "au", target_os = "macos"))]
                 "component" => {
                     let (i, e) = AuInstance::load_with_state(
+                        main,
                         path,
                         sample_rate,
                         block_size,
@@ -348,16 +356,17 @@ impl Plugin {
     /// VST2 has `audioMasterIOChanged` and nothing finer, so the host re-reads
     /// latency, tail and pins after it and after every resume, and reports a
     /// move here.
-    pub(crate) fn poll_async_events(&mut self) -> Vec<AsyncEvent> {
+    pub(crate) fn poll_async_events(&mut self, main: &MainThread) -> Vec<AsyncEvent> {
+        let _ = main;
         #[allow(unused_mut)] // only mutated under vst2/clap/vst3 features
         let mut out = Vec::new();
         match self {
             #[cfg(feature = "vst2")]
-            Plugin::Vst2(vst2) => out.extend(vst2.poll()),
+            Plugin::Vst2(vst2) => out.extend(vst2.poll(main)),
             #[cfg(feature = "vst3")]
-            Plugin::Vst3(vst3) => out.extend(vst3.poll()),
+            Plugin::Vst3(vst3) => out.extend(vst3.poll(main)),
             #[cfg(feature = "clap")]
-            Plugin::Clap(clap) => out.extend(clap.poll()),
+            Plugin::Clap(clap) => out.extend(clap.poll(main)),
             #[cfg(all(feature = "au", target_os = "macos"))]
             Plugin::Au(au) => {
                 let changes = au.poll_changes();
@@ -389,6 +398,12 @@ impl Plugin {
 mod tests {
     use super::*;
 
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     /// An AU to run the property-notification tests below against.
     ///
     /// Deliberately a *bundled* unit, not a named third-party one: nothing these
@@ -408,7 +423,8 @@ mod tests {
     #[cfg(all(feature = "au", target_os = "macos"))]
     fn au_fixture() -> Option<String> {
         fn loadable(name: &str) -> bool {
-            crate::loaders::au::AuInstance::load(Path::new(name), 44100.0, 512).is_ok()
+            crate::loaders::au::AuInstance::load(&main_thread(), Path::new(name), 44100.0, 512)
+                .is_ok()
         }
 
         if let Ok(named) = std::env::var("AU_SAMPLE_PLUGIN") {
@@ -427,7 +443,7 @@ mod tests {
 
     #[test]
     fn probe_missing_path_errors() {
-        let result = Plugin::probe(Path::new("/nonexistent/plugin.vst3"));
+        let result = Plugin::probe(&main_thread(), Path::new("/nonexistent/plugin.vst3"));
         match result {
             Err(BridgeError::LoadFailed { stage, reason, .. }) => {
                 assert_eq!(stage, LoadStage::Scanning);
@@ -440,6 +456,7 @@ mod tests {
     #[test]
     fn load_missing_path_errors() {
         let result = Plugin::load(
+            &main_thread(),
             Path::new("/nonexistent/plugin.vst3"),
             44100.0,
             512,
@@ -470,6 +487,7 @@ mod tests {
         let instance = {
             let _without = crate::test_utils::clap_probe_without_tail();
             ClapInstance::load(
+                &main_thread(),
                 Path::new(crate::test_utils::clap_probe_path()),
                 44100.0,
                 512,
@@ -491,7 +509,7 @@ mod tests {
         };
         tutti_plugin_types::Request::TailChanged.raise(&clap.clap_loaded().host_state().requests);
 
-        let events = plugin.poll_async_events();
+        let events = plugin.poll_async_events(&main_thread());
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -527,14 +545,20 @@ mod tests {
         fn clap_plugin() -> &'static str {
             crate::test_utils::clap_probe_path()
         }
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
-            .expect("failed to load the CLAP test plugin");
+        let instance = ClapInstance::load(
+            &main_thread(),
+            Path::new(clap_plugin()),
+            44100.0,
+            512,
+            false,
+        )
+        .expect("failed to load the CLAP test plugin");
         let mut plugin = Plugin::Clap(instance);
 
         // Nothing pending: the drain must be empty, or the assertions below
         // would pass on a stuck flag rather than on the one raised here.
         assert!(
-            plugin.poll_async_events().is_empty(),
+            plugin.poll_async_events(&main_thread()).is_empty(),
             "a freshly loaded plugin reported an async event nobody raised"
         );
 
@@ -556,7 +580,7 @@ mod tests {
         tutti_plugin_types::Request::TailChanged.raise(requests);
         tutti_plugin_types::Request::LatencyChanged.raise(requests);
 
-        let events = plugin.poll_async_events();
+        let events = plugin.poll_async_events(&main_thread());
         assert!(
             events
                 .iter()
@@ -573,7 +597,7 @@ mod tests {
         // Both flags are consumed, so a second drain is quiet — an event that
         // re-fires every block would spam the host with resyncs.
         assert!(
-            plugin.poll_async_events().is_empty(),
+            plugin.poll_async_events(&main_thread()).is_empty(),
             "the change flags were not cleared by the drain"
         );
     }
@@ -609,14 +633,14 @@ mod tests {
         let Some(fixture) = au_fixture() else {
             return;
         };
-        let instance = AuInstance::load(Path::new(&fixture), 44100.0, 512)
+        let instance = AuInstance::load(&main_thread(), Path::new(&fixture), 44100.0, 512)
             .expect("the AU fixture resolved but would not load");
         let mut plugin = Plugin::Au(instance);
 
         // Nothing pending: the drain must be empty, or the assertions below
         // would pass on a stuck flag rather than on the ones raised here.
         assert!(
-            plugin.poll_async_events().is_empty(),
+            plugin.poll_async_events(&main_thread()).is_empty(),
             "a freshly loaded plugin reported an async event nobody raised"
         );
 
@@ -640,7 +664,7 @@ mod tests {
         flags.tail.store(true, Ordering::Release);
         flags.param_list.store(true, Ordering::Release);
 
-        let events = plugin.poll_async_events();
+        let events = plugin.poll_async_events(&main_thread());
         assert!(
             events
                 .iter()
@@ -665,7 +689,7 @@ mod tests {
         // that re-fired every block would spam the host with resyncs, and a
         // latency event does a PDC re-plan each time.
         assert!(
-            plugin.poll_async_events().is_empty(),
+            plugin.poll_async_events(&main_thread()).is_empty(),
             "the change flags were not cleared by the drain"
         );
     }
@@ -689,7 +713,7 @@ mod tests {
         let Some(fixture) = au_fixture() else {
             return;
         };
-        let mut au = AuInstance::load(Path::new(&fixture), 44100.0, 512)
+        let mut au = AuInstance::load(&main_thread(), Path::new(&fixture), 44100.0, 512)
             .expect("the AU fixture resolved but would not load");
 
         let flags = std::sync::Arc::clone(
@@ -738,7 +762,7 @@ mod tests {
     fn load_unsupported_extension_errors() {
         let tmp = std::env::temp_dir().join(format!("fake_plugin_{}.xyz", std::process::id()));
         std::fs::write(&tmp, b"fake").unwrap();
-        let result = Plugin::load(&tmp, 44100.0, 512, SampleFormat::Float32);
+        let result = Plugin::load(&main_thread(), &tmp, 44100.0, 512, SampleFormat::Float32);
         let _ = std::fs::remove_file(&tmp);
         match result {
             Err(BridgeError::LoadFailed { stage, reason, .. }) => {

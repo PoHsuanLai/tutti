@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 // The VST2 FFI layer is our fork of vst-rs (`vst-tutti`), which adds

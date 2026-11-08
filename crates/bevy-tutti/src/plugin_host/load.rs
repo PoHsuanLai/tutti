@@ -37,15 +37,15 @@ use tutti_session::{PluginLoadRequest, PluginLoaded};
 use tutti_types::SampleRate;
 
 use crate::graph::{AudioGraphRes, AudioNode, CapturedControls};
-use crate::plugin_host::PluginsRes;
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
+use crate::plugin_host::{PluginEditorMainThread, PluginsRes};
 
 /// Compile-time proof that a loaded plugin can cross a thread boundary, which
 /// is what lets the load run on the task pool rather than the frame thread.
 ///
 /// Load-bearing rather than decorative: this module is inside a subsystem whose
-/// editor calls are main-thread-pinned and guarded by `assert_main_thread`, so
+/// editor calls are main-thread-pinned (they take the `MainThread` token), so
 /// "which thread may hold this?" is a live question here in a way it is not for
 /// an ordinary node.
 const _: () = {
@@ -285,8 +285,8 @@ pub fn plugin_load_start(
 /// the same reason `poll_exports` is ungated while `start_exports` is not. The
 /// graph write is guarded on its own resource instead.
 ///
-/// **Pinned to the main thread** ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)):
-/// `Session::add_plugin` is a main-thread call (it asserts it). It opens an
+/// **Pinned to the main thread** (its `NonSend<PluginEditorMainThread>` param):
+/// `Session::add_plugin` is a main-thread call (it takes the token). It opens an
 /// in-process VST2 plugin there, which VST2 confines to the main thread, and
 /// it edits the graph whose collect may drop a plugin with an editor. A
 /// multi-threaded executor otherwise runs this system on a pool thread.
@@ -301,7 +301,7 @@ pub fn plugin_load_start(
     reason = "`add_plugin` hosts the node it returns, so looking it up cannot miss"
 )]
 pub fn plugin_load_promote(
-    _main: bevy_ecs::system::NonSendMarker,
+    main_thread: NonSend<PluginEditorMainThread>,
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     mut pending: Query<(Entity, &mut PendingPlugin)>,
@@ -324,7 +324,7 @@ pub fn plugin_load_promote(
         // `Session::add_plugin`: the node goes in unwired, and its health,
         // latency, render mode and (`modulation`) parameter mirror are the
         // session's from here.
-        let outcome = match graph.session().add_plugin(result) {
+        let outcome = match graph.session().add_plugin(main_thread.token(), result) {
             Ok(node) => {
                 let hosted = graph
                     .session()

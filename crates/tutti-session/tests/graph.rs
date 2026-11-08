@@ -685,7 +685,8 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
 fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    tutti_plugin_types::mark_main_thread();
+    // The test thread is the process's main thread.
+    let _main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
     let mut s = detached(1);
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.update();

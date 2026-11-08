@@ -32,7 +32,11 @@ impl<'a, T: 'a + Float> AudioBuffer<'a, T> {
         samples: usize,
     ) -> Self {
         Self {
+            // SAFETY: the caller upholds this fn's `# Safety` contract: `inputs_raw` points
+            // at `input_count` valid channel pointers that outlive `'a`.
             inputs: unsafe { slice::from_raw_parts(inputs_raw, input_count) },
+            // SAFETY: as above for `outputs_raw`/`output_count`, which the caller
+            // guarantees are not aliased elsewhere.
             outputs: unsafe { slice::from_raw_parts_mut(outputs_raw, output_count) },
             samples,
         }
@@ -117,12 +121,17 @@ where
         if self.index < self.audio_buffer.inputs.len()
             && self.index < self.audio_buffer.outputs.len()
         {
+            // SAFETY: `AudioBuffer`'s constructor contract (`from_raw`/`HostBuffer`) says
+            // each channel pointer addresses at least `samples` live elements; the index
+            // is bounds-checked by the `if` above.
             let input = unsafe {
                 slice::from_raw_parts(
                     self.audio_buffer.inputs[self.index],
                     self.audio_buffer.samples,
                 )
             };
+            // SAFETY: as for `input`; output channels do not alias each other or the
+            // inputs (constructor contract), and the iterator yields each index once.
             let output = unsafe {
                 slice::from_raw_parts_mut(
                     self.audio_buffer.outputs[self.index],
@@ -161,6 +170,8 @@ impl<'a, T> Inputs<'a, T> {
 
     /// Access channel at the given index
     pub fn get(&self, i: usize) -> &'a [T] {
+        // SAFETY: `i` is bounds-checked by the indexing; the `AudioBuffer` constructor
+        // contract says each channel pointer addresses `samples` live elements for `'a`.
         unsafe { slice::from_raw_parts(self.bufs[i], self.samples) }
     }
 
@@ -239,11 +250,16 @@ impl<'a, T> Outputs<'a, T> {
 
     /// Access channel at the given index
     pub fn get(&self, i: usize) -> &'a [T] {
+        // SAFETY: `i` is bounds-checked by the indexing; the `AudioBuffer` constructor
+        // contract says each channel pointer addresses `samples` live elements for `'a`.
         unsafe { slice::from_raw_parts(self.bufs[i], self.samples) }
     }
 
     /// Mutably access channel at the given index
     pub fn get_mut(&mut self, i: usize) -> &'a mut [T] {
+        // SAFETY: NOT ESTABLISHED: bounds and length are as in `get`, but the returned
+        // `&'a mut` outlives the `&mut self` borrow, so two calls with the same `i`
+        // yield aliasing `&mut [T]`; nothing prevents that.
         unsafe { slice::from_raw_parts_mut(self.bufs[i], self.samples) }
     }
 
@@ -335,6 +351,9 @@ impl<T: WriteIntoPlaceholder> WriteIntoPlaceholder for &T {
 
 impl WriteIntoPlaceholder for MidiEvent {
     fn write_into(&self, out: &mut PlaceholderEvent) {
+        // SAFETY: `PlaceholderEvent` (`SysExEvent`, 48 bytes, align 8) is larger than
+        // and at least as aligned as `api::MidiEvent` (32 bytes, align 4), so `out` can
+        // be viewed as one; the target type is inferred from the assignment below.
         let out = unsafe { &mut *(out as *mut _ as *mut _) };
         *out = api::MidiEvent {
             event_type: api::EventType::Midi,
@@ -385,6 +404,8 @@ impl<'a> WriteIntoPlaceholder for Event<'a> {
                 ev.write_into(out);
             }
             Event::Deprecated(e) => {
+                // SAFETY: `PlaceholderEvent` is larger than and at least as aligned as
+                // `api::Event` (32 bytes), the type inferred from the assignment.
                 let out = unsafe { &mut *(out as *mut _ as *mut _) };
                 *out = e;
             }
@@ -424,6 +445,8 @@ impl SendEventBuffer {
         let header_size = mem::size_of::<api::Events>() - (mem::size_of::<*mut api::Event>() * 2);
         let body_size = mem::size_of::<*mut api::Event>() * capacity;
         let mut buf = vec![0u8; header_size + body_size];
+        // SAFETY: all-zero is a valid `SysExEvent`: integers, null pointers and
+        // `EventType::_Placeholder` (discriminant 0).
         let api_events = vec![unsafe { mem::zeroed::<PlaceholderEvent>() }; capacity];
         {
             let ptrs = {
@@ -488,6 +511,9 @@ impl SendEventBuffer {
     #[inline(always)]
     pub fn events(&self) -> &api::Events {
         #[allow(clippy::cast_ptr_alignment)]
+        // SAFETY: NOT ESTABLISHED: `buf` is a `Vec<u8>` (align 1, not guaranteed to be 8)
+        // and for `capacity < 2` it is shorter than `size_of::<api::Events>()`; both are
+        // assumed to hold in practice (allocator alignment, default capacity 1024).
         unsafe {
             &*(self.buf.as_ptr() as *const api::Events)
         }
@@ -502,6 +528,8 @@ impl SendEventBuffer {
     #[inline(always)]
     fn buf_as_api_events(buf: &mut [u8]) -> &mut api::Events {
         #[allow(clippy::cast_ptr_alignment)]
+        // SAFETY: NOT ESTABLISHED: same as `events`: `Vec<u8>` alignment is not
+        // guaranteed to satisfy `api::Events` and the buffer is short for `capacity < 2`.
         unsafe {
             &mut *(buf.as_mut_ptr() as *mut api::Events)
         }
@@ -540,6 +568,8 @@ mod tests {
 
         let inputs = [in1.as_ptr(), in2.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr()];
+        // SAFETY: `inputs`/`outputs` hold the stated counts of pointers to live Vecs of
+        // `SIZE` samples, distinct per channel, all outliving `buffer`.
         let mut buffer =
             unsafe { AudioBuffer::from_raw(2, 2, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };
 
@@ -568,6 +598,8 @@ mod tests {
 
         let inputs = [in1.as_ptr(), in2.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr(), out3.as_mut_ptr()];
+        // SAFETY: `inputs`/`outputs` hold the stated counts of pointers to live Vecs of
+        // `SIZE` samples, distinct per channel, all outliving `buffer`.
         let mut buffer =
             unsafe { AudioBuffer::from_raw(2, 3, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };
 
@@ -602,6 +634,8 @@ mod tests {
 
         let inputs = [in1.as_ptr(), in2.as_ptr(), in3.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr()];
+        // SAFETY: `inputs`/`outputs` hold the stated counts of pointers to live Vecs of
+        // `SIZE` samples, distinct per channel, all outliving `buffer`.
         let mut buffer =
             unsafe { AudioBuffer::from_raw(3, 2, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };
 
@@ -635,6 +669,8 @@ mod tests {
 
         let inputs = [in1.as_ptr(), in2.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr()];
+        // SAFETY: `inputs`/`outputs` hold the stated counts of pointers to live Vecs of
+        // `SIZE` samples, distinct per channel, all outliving `buffer`.
         let mut buffer =
             unsafe { AudioBuffer::from_raw(2, 2, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };
 

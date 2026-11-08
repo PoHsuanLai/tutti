@@ -958,7 +958,13 @@ impl Default for HostCallback {
     }
 }
 
+// SAFETY: NOT ESTABLISHED. The value is a `Copy` function pointer plus the plugin's own
+// `*mut AEffect`; neither is mutated through `&HostCallback`. Whether calling the host's
+// `audioMaster` callback concurrently from several threads is sound is up to the host, and
+// VST2 only requires that for a subset of opcodes; nothing here enforces it.
 unsafe impl Send for HostCallback {}
+// SAFETY: as for `Send`; shared access only reads the two fields, but concurrent calls into
+// the host callback are not established as sound for every opcode.
 unsafe impl Sync for HostCallback {}
 
 impl HostCallback {
@@ -987,6 +993,10 @@ impl HostCallback {
     #[doc(hidden)]
     fn is_effect_valid(&self) -> bool {
         // Check whether `effect` points to a valid AEffect struct
+        //
+        // SAFETY: NOT ESTABLISHED. `effect` is dereferenced unchecked: it is null for a
+        // `HostCallback` made by `Default` (this method would then be UB), and otherwise it is
+        // the plugin's own `AEffect`, live while the plugin is.
         unsafe { (*self.effect).magic == VST_MAGIC }
     }
 
@@ -1161,6 +1171,9 @@ impl Host for HostCallback {
 
         match ptr {
             0 => None,
+            // SAFETY: for `audioMasterGetTime` a non-zero return is, per the VST2 contract, the
+            // address of a host-owned `TimeInfo`; the host must keep it valid until the next
+            // call. That is trusted, not checked (alignment included); `TimeInfo` is `Copy`.
             ptr => Some(unsafe { *(ptr as *const TimeInfo) }),
         }
     }
@@ -1325,6 +1338,8 @@ mod tests {
     #[test]
     fn host_callbacks() {
         let aeffect = instance();
+        // SAFETY: `aeffect` is the non-null `AEffect` that `main` just built for `TestPlugin` and
+        // leaves alive for the process; reading its `dispatcher` field copies an `Option<fn>`.
         let dispatcher = unsafe { (*aeffect).dispatcher }.expect("this crate installs dispatcher");
         // SAFETY: `aeffect` is this crate's own instance and `dispatcher` the
         // entry point it installs; `Initialize` reads none of the pointer args.

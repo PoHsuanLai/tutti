@@ -476,12 +476,11 @@ thread unchecked. `remove` is not on the list: it frees
 nothing itself, and Bevy calls it from parallel systems (a clip whose target
 lost its event input); the node it removes is freed at the next collect.
 
-- With `plugin` on, each asserts it with `tutti-plugin`'s existing
-  debug-only guard (`assert_main_thread`, `tutti-plugin-types`
-  `main_thread.rs:40`). The host marks its main thread with
-  `mark_main_thread()` at startup, as `bevy-tutti` does
-  (`plugin_host/mod.rs:188`). The guard is a no-op until marked, so a
-  test rig without a UI thread is unaffected.
+- The debug guard (`assert_main_thread`) is gone (doc 016 §2.9a). The entries
+  that open an in-process plugin, `add_plugin` and `land_reload`, take a
+  `MainThread` token; the session's own paths that free a unit keep a
+  `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
+  claims its main thread).
 - `Session: Send` stays, because a Bevy resource must be `Send`. A host may
   build the session on one thread and hand it to its main thread before
   the first plugin loads.

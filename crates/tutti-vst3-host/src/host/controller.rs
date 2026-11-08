@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use tutti_plugin_types::MainThread;
 
 use tutti_rt::{DrainMark, DrainWatch};
 
@@ -209,47 +210,52 @@ impl Control for Vst3Controller {
         Control::info(&**self)
     }
 
-    fn wiring(&self) -> LoadedPlugin {
-        Control::wiring(&**self)
+    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+        Control::wiring(&**self, main)
     }
 
-    fn parameters(&self) -> Vec<ParameterInfo> {
-        Control::parameters(&**self)
+    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+        Control::parameters(&**self, main)
     }
 
-    fn parameter(&self, id: ParamId) -> Option<Normalized> {
-        Control::parameter(&**self, id)
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+        Control::parameter(&**self, main, id)
     }
 
     /// Applied to the edit controller now, so a read-back and the plugin's
     /// editor see it, and queued to the Processor, which puts it in the next
     /// block's `inputParameterChanges`: a plugin whose component is separate
     /// from its controller has no other way to hear of it.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
-        Control::set_parameter(&mut **self, id, value);
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+        Control::set_parameter(&mut **self, main, id, value);
         self.queue_edit(id, value);
     }
 
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(&**self, id, value)
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        Control::parameter_text(&**self, main, id, value)
     }
 
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        Control::parameter_value_from_text(&**self, id, text)
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
+        Control::parameter_value_from_text(&**self, main, id, text)
     }
 
     /// Saves the state, with the writes no block has taken yet beside the
     /// component's stream, which does not hold them.
-    fn save_state(&mut self) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         let undrained = self.undrained();
-        self.save_state_with(&undrained)
+        self.save_state_with(main, &undrained)
     }
 
     /// Restores the state, and makes the writes queued before it stale. The
     /// writes the blob carries are queued to the Processor, which the
     /// component's own stream did not hold.
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        let result = self.restore_state(bytes);
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+        let result = self.restore_state(main, bytes);
         self.reset_edits();
         for (id, value) in result? {
             self.queue_edit(id, value);
@@ -257,42 +263,42 @@ impl Control for Vst3Controller {
         Ok(())
     }
 
-    fn presets(&mut self) -> Vec<Preset> {
-        Control::presets(&mut **self)
+    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+        Control::presets(&mut **self, main)
     }
 
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        match self.program_write(id) {
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+        match self.program_write(main, id) {
             Some((param, value)) => {
                 // A program replaces the plugin's other parameters too: what
                 // was queued before it is stale.
                 self.reset_edits();
-                Control::set_parameter(self, param, value);
+                Control::set_parameter(self, main, param, value);
                 true
             }
             None => false,
         }
     }
 
-    fn current_preset(&mut self) -> Option<PresetId> {
-        Control::current_preset(&mut **self)
+    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+        Control::current_preset(&mut **self, main)
     }
 
-    fn set_automation_state(&mut self, mode: AutomationMode) {
-        Control::set_automation_state(&mut **self, mode);
+    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+        Control::set_automation_state(&mut **self, main, mode);
     }
 
-    fn rescan_parameters(&mut self, scope: RescanScope) {
-        Control::rescan_parameters(&mut **self, scope);
+    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
+        Control::rescan_parameters(&mut **self, main, scope);
     }
 
-    fn rebuild_midi_mapping(&mut self) {
-        Control::rebuild_midi_mapping(&mut **self);
+    fn rebuild_midi_mapping(&mut self, main: &MainThread) {
+        Control::rebuild_midi_mapping(&mut **self, main);
     }
 
     /// Retries what the ring refused, oldest first, and lets the retired
     /// midi-mapping tables go.
-    fn flush_edits(&mut self) {
+    fn flush_edits(&mut self, _main: &MainThread) {
         self.midi_cc.reclaim();
         // A tick is a control-side moment: plugins whose last holder was a
         // Processor are destroyed here, not on its thread.
@@ -319,12 +325,12 @@ impl Controller for Vst3Controller {
     type Loaded = Vst3Loaded;
     type Processor = ProcessorAny;
 
-    fn latency(&self) -> Samples {
-        Samples(self.latency_samples() as usize)
+    fn latency(&self, main: &MainThread) -> Samples {
+        Samples(self.latency_samples(main) as usize)
     }
 
-    fn tail(&self) -> PluginTail {
-        PluginTail::from_vst3_samples(self.tail_samples())
+    fn tail(&self, main: &MainThread) -> PluginTail {
+        PluginTail::from_vst3_samples(self.tail_samples(main))
     }
 }
 
@@ -345,20 +351,15 @@ impl Vst3Loaded {
     /// [`Refused`] carries the **unconsumed** `Vst3Loaded` beside the reason, so
     /// a refusal costs the configuration and not the instance: a plugin that
     /// declines 64-bit audio is retried at `f32` against the same instance.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     // The `Err` variant deliberately hands `self` (a large `Vst3Loaded`) back so
     // the caller can retry or fall back; boxing it would defeat that ownership
     // return and add a heap alloc on the (rare) failure path.
     #[allow(clippy::result_large_err)]
     pub fn activate_typed<T: Vst3Sample>(
         mut self,
+        main: &MainThread,
         prepare: Prepare,
     ) -> std::result::Result<(Vst3Processor<T>, Vst3Controller), Refused<Self>> {
-        tutti_plugin_types::assert_main_thread();
         super::shell::warm_retirement();
         super::shell::reap();
         let mode = if prepare.mode().is_offline() {
@@ -369,17 +370,22 @@ impl Vst3Loaded {
         // What an earlier rejoin carried over reaches the plugin in the first
         // block, unless this activation is refused, which keeps it.
         let carried = std::mem::take(&mut self.carried);
-        let staged =
-            match Staged::<T>::stage(self, prepare.rate().0, prepare.max_block().get(), mode) {
-                Ok(staged) => staged,
-                Err((mut plugin, error)) => {
-                    plugin.carried = carried;
-                    return Err(Refused {
-                        plugin: Some(plugin),
-                        reason: plugin_error(error),
-                    });
-                }
-            };
+        let staged = match Staged::<T>::stage(
+            main,
+            self,
+            prepare.rate().0,
+            prepare.max_block().get(),
+            mode,
+        ) {
+            Ok(staged) => staged,
+            Err((mut plugin, error)) => {
+                plugin.carried = carried;
+                return Err(Refused {
+                    plugin: Some(plugin),
+                    reason: plugin_error(error),
+                });
+            }
+        };
         let Staged { loaded, audio, .. } = staged;
         // The plugin may announce its latency from inside `setActive`; the
         // figure is read right after every activation, so the announcement is
@@ -430,6 +436,7 @@ impl Vst3Loaded {
     /// activation.
     #[allow(clippy::result_large_err)]
     fn rejoin<P>(
+        _main: &MainThread,
         mut processor: P,
         mut controller: Vst3Controller,
         shell_of: impl Fn(&P) -> &Arc<Shell>,
@@ -476,10 +483,12 @@ impl Vst3Loaded {
     /// The halves come back, with the reason, when they are of two activations.
     #[allow(clippy::result_large_err)]
     pub fn deactivate_typed<T: Vst3Sample>(
+        main: &MainThread,
         processor: Vst3Processor<T>,
         controller: Vst3Controller,
     ) -> Result<Vst3Loaded, (Vst3Processor<T>, Vst3Controller, PluginError)> {
         Self::rejoin(
+            main,
             processor,
             controller,
             |p| p.shell(),
@@ -526,22 +535,28 @@ impl Loaded for Vst3Loaded {
     /// VST3 restarts for latency and for the buses (`kIoChanged`).
     const RESTARTS: RestartRules = RestartRules::VST3;
 
-    fn activate(self, prepare: Prepare) -> Result<(ProcessorAny, Vst3Controller), Refused<Self>> {
+    fn activate(
+        self,
+        main: &MainThread,
+        prepare: Prepare,
+    ) -> Result<(ProcessorAny, Vst3Controller), Refused<Self>> {
         match prepare.format() {
             SampleFormat::Float64 => self
-                .activate_typed::<f64>(prepare)
+                .activate_typed::<f64>(main, prepare)
                 .map(|(p, c)| (ProcessorAny::F64(p), c)),
             _ => self
-                .activate_typed::<f32>(prepare)
+                .activate_typed::<f32>(main, prepare)
                 .map(|(p, c)| (ProcessorAny::F32(p), c)),
         }
     }
 
     fn deactivate(
+        main: &MainThread,
         processor: ProcessorAny,
         controller: Vst3Controller,
     ) -> Result<Self, Stuck<ProcessorAny, Vst3Controller>> {
         Self::rejoin(
+            main,
             processor,
             controller,
             |p| p.shell(),
@@ -558,8 +573,8 @@ impl Loaded for Vst3Loaded {
     /// Loads the plugin again from where it came, state and all, and drops the
     /// old instance (`kReloadComponent`). The new instance is built first, so a
     /// refusal leaves the old one in place.
-    fn rebuild(mut self) -> Result<Self, Refused<Self>> {
-        let state = self.save_state().ok();
+    fn rebuild(mut self, main: &MainThread) -> Result<Self, Refused<Self>> {
+        let state = self.save_state(main).ok();
         let options = match &self.origin.class {
             Some(class) => super::loaded::LoadOptions::new().class(class.clone()),
             None => super::loaded::LoadOptions::new(),
@@ -576,7 +591,7 @@ impl Loaded for Vst3Loaded {
         if let Some(state) = state {
             // A plugin that refuses its own state leaves the fresh instance at
             // its defaults.
-            let _ = fresh.load_state(&state);
+            let _ = fresh.load_state(main, &state);
         }
         fresh.carried = std::mem::take(&mut self.carried);
         Ok(fresh)

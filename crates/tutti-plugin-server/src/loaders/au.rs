@@ -19,6 +19,7 @@ use tutti_plugin::server::{
     PluginResult, PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
     RenderMode, WindowHandle,
 };
+use tutti_plugin_types::MainThread;
 
 use crate::loaders::common::{Meta, single_bus};
 use tutti_plugin::{BridgeError, LoadStage, Result};
@@ -377,8 +378,13 @@ impl AuInstance {
     /// AU plugins are registered system-wide; the path is used for identification
     /// but the actual loading goes through AudioComponentFindNext.
     #[cfg(test)]
-    pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
-        Self::load_with_state(path, sample_rate, block_size, None, &mut || {})
+    pub fn load(
+        main: &MainThread,
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+    ) -> Result<Self> {
+        Self::load_with_state(main, path, sample_rate, block_size, None, &mut || {})
             .map(|(instance, _)| instance)
     }
 
@@ -390,6 +396,7 @@ impl AuInstance {
     /// Not built or run here: AU compiles only on macOS, and no machine for it was
     /// at hand. The change mirrors the other formats' and is minimal.
     pub fn load_with_state(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
@@ -470,7 +477,7 @@ impl AuInstance {
             let state_error = state.and_then(|data| {
                 before_restore();
                 inner
-                    .set_state(data)
+                    .set_state(main, data)
                     .err()
                     .map(|e| BridgeError::StateRestoreError(e.to_string()).to_string())
             });
@@ -608,7 +615,7 @@ impl AuInstance {
 
         #[cfg(not(all(target_os = "macos", feature = "au")))]
         {
-            let _ = (path, sample_rate, block_size, state, before_restore);
+            let _ = (main, path, sample_rate, block_size, state, before_restore);
             Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,
@@ -850,7 +857,7 @@ impl PluginAudio for AuInstance {
         Ok(())
     }
 
-    fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+    fn set_sample_rate(&mut self, _main: &MainThread, rate: f64) -> PluginResult<()> {
         // A new rate breaks the previous block's prediction of the playhead.
         self.playhead.reset();
         self.inner
@@ -870,7 +877,7 @@ impl PluginAudio for AuInstance {
     /// live probe behind [`Features::RENDER_MODE`]. A re-initialization failure
     /// also reports `false`: the caller asked for a mode and did not get it,
     /// and that is the question this bool answers.
-    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
         self.inner
             .set_offline_render_bracketed(mode.is_offline())
             .unwrap_or(false)
@@ -890,7 +897,7 @@ impl PluginParams for AuInstance {
     /// against; its plain value is reported unchanged rather than scaled by a
     /// guess. `read_param_ranges` lists every parameter the AU declares, so an
     /// absence means the AU did not declare it.
-    fn get_parameter(&self, id: ParamId) -> f64 {
+    fn get_parameter(&self, _main: &MainThread, id: ParamId) -> f64 {
         let Ok(plain) = parameters::get(self.inner.unit(), id.get()) else {
             return 0.0;
         };
@@ -903,7 +910,7 @@ impl PluginParams for AuInstance {
     /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter) —
     /// so this pair round-trips. `AudioUnitSetParameter` takes plain units, so
     /// the value is denormalized against the same table.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         let plain = match lookup_bounds(&self.param_ranges, id.get()) {
             Some(bounds) => bounds.to_plain(value.get()),
             None => value.get() as f32,
@@ -924,7 +931,7 @@ impl PluginParams for AuInstance {
     /// third-party AUs do implement it, and the alternative is a host that
     /// cannot display their values. See
     /// `tutti-au-host`'s `au_param_display` suite, which pins the absence.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
         let plain = match lookup_bounds(&self.param_ranges, id.get()) {
             Some(bounds) => bounds.to_plain(value.get()),
             None => value.get() as f32,
@@ -937,7 +944,12 @@ impl PluginParams for AuInstance {
     ///
     /// As with [`parameter_text`](Self::parameter_text), no Apple AU implements
     /// the underlying property on macOS 15.6.
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
+    fn parameter_value_from_text(
+        &self,
+        _main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
         let plain = parameters::value_from_string(self.inner.unit(), id.get(), text)?;
         let normalized = match lookup_bounds(&self.param_ranges, id.get()) {
             Some(bounds) => bounds.to_normalized(plain),
@@ -946,7 +958,7 @@ impl PluginParams for AuInstance {
         Some(Normalized::clamped(normalized))
     }
 
-    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self, _main: &MainThread) -> Vec<ParameterInfo> {
         let unit = self.inner.unit();
         let params = parameters::list(unit);
 
@@ -1016,6 +1028,7 @@ impl PluginEditorHost for AuInstance {
     /// logical pixels and reads its backing scale itself.
     fn open_editor(
         &mut self,
+        main: &MainThread,
         parent: WindowHandle,
         _scale: ContentScale,
     ) -> PluginResult<EditorSize> {
@@ -1031,7 +1044,7 @@ impl PluginEditorHost for AuInstance {
         };
         let size = self
             .inner
-            .open_editor(parent_handle, preferred)
+            .open_editor(main, parent_handle, preferred)
             .map_err(|e| BridgeError::EditorError(e.to_string()))?;
         Ok(EditorSize {
             width: size.width,
@@ -1039,22 +1052,22 @@ impl PluginEditorHost for AuInstance {
         })
     }
 
-    fn close_editor(&mut self) {
-        self.inner.close_editor();
+    fn close_editor(&mut self, main: &MainThread) {
+        self.inner.close_editor(main);
     }
 }
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginState for AuInstance {
-    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
+    fn get_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         self.inner
-            .get_state()
+            .get_state(main)
             .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
     }
 
-    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
         self.inner
-            .set_state(data)
+            .set_state(main, data)
             .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
     }
 }
@@ -1087,7 +1100,7 @@ impl PluginPresets for AuInstance {
     ///
     /// `bank` is `None`: AU exposes one flat factory set, and inventing a bank
     /// name would be a claim the format never made.
-    fn get_presets(&mut self) -> Vec<Preset> {
+    fn get_presets(&mut self, _main: &MainThread) -> Vec<Preset> {
         self.inner
             .factory_presets()
             .into_iter()
@@ -1102,7 +1115,7 @@ impl PluginPresets for AuInstance {
     /// answers `kAudioUnitErr_InvalidPropertyValue` for a number the unit does
     /// not advertise, and the AU is still renderable afterwards with its
     /// parameters untouched.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
+    fn load_preset(&mut self, _main: &MainThread, id: &PresetId) -> bool {
         match au_selector(id) {
             Some(number) => self.inner.load_factory_preset(number).is_ok(),
             None => false,
@@ -1113,7 +1126,7 @@ impl PluginPresets for AuInstance {
     /// `kAudioUnitProperty_PresentPreset`, which `current_preset` reports as an
     /// error precisely because there is no honest value to fabricate — a
     /// "preset 0" would be a claim about the unit's state the host cannot back.
-    fn get_current_preset(&mut self) -> Option<PresetId> {
+    fn get_current_preset(&mut self, _main: &MainThread) -> Option<PresetId> {
         self.inner
             .current_preset()
             .ok()
@@ -1125,6 +1138,12 @@ impl PluginPresets for AuInstance {
 #[cfg(all(target_os = "macos", feature = "au"))]
 mod tests {
     use super::*;
+
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
 
     // Apple's built-in AUDelay should always be available on macOS.
     // Note: AU loading by path requires the component name to match the bundle name.
@@ -1144,7 +1163,7 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = component::find_component(&desc)?;
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }.ok()?;
+        let mut inner = tutti_au_host::AuInstance::new(comp, 44_100.0, 512).ok()?;
         inner.initialize().ok()?;
         Some(inner)
     }
@@ -1166,15 +1185,16 @@ mod tests {
         // `get_parameter_list` itself rather than a copy of its mapping. AU
         // resolves by matching the file stem against the component registry, so
         // the path need not exist on disk.
-        let instance = match AuInstance::load(Path::new("AUDistortion"), 44_100.0, 512) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("AUDistortion unavailable ({e:?}); skipping");
-                return;
-            }
-        };
+        let instance =
+            match AuInstance::load(&main_thread(), Path::new("AUDistortion"), 44_100.0, 512) {
+                Ok(i) => i,
+                Err(e) => {
+                    eprintln!("AUDistortion unavailable ({e:?}); skipping");
+                    return;
+                }
+            };
 
-        let params = instance.get_parameter_list();
+        let params = instance.get_parameter_list(&main_thread());
         assert!(!params.is_empty(), "AUDistortion declares parameters");
 
         let groups: std::collections::BTreeSet<&str> = params
@@ -1315,8 +1335,8 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = component::find_component(&effect).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44_100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let tail = match inner.get_tail_time() {
             Err(_) => PluginTail::Unknown,
@@ -1338,7 +1358,7 @@ mod tests {
             componentFlagsMask: 0,
         };
         if let Some(comp) = component::find_component(&instrument) {
-            let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
+            let mut inner = tutti_au_host::AuInstance::new(comp, 44_100.0, 512)
                 .expect("Should create instance");
             inner.initialize().expect("Should initialize");
             let mapped = match inner.get_tail_time() {
@@ -1372,7 +1392,7 @@ mod tests {
                 eprintln!("SKIP: TAL Reverb 4 not installed; the Unbounded arm is unexercised here")
             }
             Some(comp) => {
-                let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
+                let mut inner = tutti_au_host::AuInstance::new(comp, 44_100.0, 512)
                     .expect("Should create instance");
                 inner.initialize().expect("Should initialize");
                 let seconds = inner
@@ -1426,8 +1446,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1439,7 +1459,7 @@ mod tests {
             meta: Meta::default(),
         };
 
-        let params = au.get_parameter_list();
+        let params = au.get_parameter_list(&main_thread());
         assert!(
             !params.is_empty(),
             "AUDelay should have parameters via PluginInstance trait"
@@ -1462,8 +1482,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1525,7 +1545,8 @@ mod tests {
         const RATE: f64 = 44_100.0;
         const FRAMES: usize = 512;
 
-        let mut au = AuInstance::load(Path::new("AUDelay"), RATE, FRAMES).expect("AUDelay loads");
+        let mut au = AuInstance::load(&main_thread(), Path::new("AUDelay"), RATE, FRAMES)
+            .expect("AUDelay loads");
         assert!(
             au.loaded().features.contains(Features::TRANSPORT),
             "the loader must offer transport to every unit that accepts it"
@@ -1660,7 +1681,8 @@ mod tests {
             AudioBuffer as TuttiAudioBuffer, AudioBufferMut, TransportInfo,
         };
 
-        let mut au = AuInstance::load(Path::new("AUDelay"), 44_100.0, 512).expect("AUDelay loads");
+        let mut au = AuInstance::load(&main_thread(), Path::new("AUDelay"), 44_100.0, 512)
+            .expect("AUDelay loads");
         au.meta.loaded.features.remove(Features::TRANSPORT);
 
         let input = vec![vec![0.0f32; 512]; 2];
@@ -1709,8 +1731,8 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1729,7 +1751,7 @@ mod tests {
         };
         let addr = cutoff_id.into();
 
-        au.set_parameter(addr, Normalized::of(1.0));
+        au.set_parameter(&main_thread(), addr, Normalized::of(1.0));
         let plain = parameters::get(au.inner.unit(), cutoff_id).expect("cutoff is readable");
         assert!(
             (plain - bounds.max).abs() < 1.0,
@@ -1741,10 +1763,10 @@ mod tests {
             "a plain {plain} means the normalized value went through unscaled — \
              the inaudible-filter bug"
         );
-        assert!((au.get_parameter(addr) - 1.0).abs() < 1e-3);
+        assert!((au.get_parameter(&main_thread(), addr) - 1.0).abs() < 1e-3);
 
-        au.set_parameter(addr, Normalized::of(0.0));
-        assert!((au.get_parameter(addr)).abs() < 1e-3);
+        au.set_parameter(&main_thread(), addr, Normalized::of(0.0));
+        assert!((au.get_parameter(&main_thread(), addr)).abs() < 1e-3);
     }
 
     #[test]
@@ -1762,8 +1784,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1775,10 +1797,11 @@ mod tests {
             meta: Meta::default(),
         };
 
-        let state = au.get_state().expect("save should succeed");
+        let state = au.get_state(&main_thread()).expect("save should succeed");
         assert!(!state.is_empty(), "State should not be empty");
 
-        au.set_state(&state).expect("restore should succeed");
+        au.set_state(&main_thread(), &state)
+            .expect("restore should succeed");
     }
 
     /// Pure unit half: the normalized→plain map itself.
@@ -1902,8 +1925,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1918,7 +1941,7 @@ mod tests {
         // Pick a writable parameter with a genuinely wide plain range — one
         // whose max is far from 1.0, so identity-vs-denormalized is decidable.
         let target = au
-            .get_parameter_list()
+            .get_parameter_list(&main_thread())
             .into_iter()
             .find(|p| {
                 p.range.bounds().is_some_and(|(_, max)| max > 2.0)
@@ -1982,7 +2005,7 @@ mod tests {
 
             // And the read path inverts it: `PluginParams` is normalized for
             // every format, so what went in comes back out.
-            let read_back = au.get_parameter(target.id);
+            let read_back = au.get_parameter(&main_thread(), target.id);
             assert!(
                 (read_back - normalized).abs() <= 1e-4,
                 "param {} ('{}'): should read back as the normalized {normalized}, \
@@ -2041,7 +2064,7 @@ mod tests {
         };
 
         let target = au
-            .get_parameter_list()
+            .get_parameter_list(&main_thread())
             .into_iter()
             .find(|p| p.range.bounds().is_some_and(|(_, max)| max > 2.0))
             .expect("AUDelay should expose a wide-range parameter");
@@ -2064,7 +2087,7 @@ mod tests {
 
         // And that is the same value `set_parameter` writes, so the string a
         // third-party AU returns describes the value the parameter is at.
-        au.set_parameter(target.id, Normalized::of(1.0));
+        au.set_parameter(&main_thread(), target.id, Normalized::of(1.0));
         let after = parameters::get(au.inner.unit(), opaque).expect("param is readable");
         assert!(
             (after - plain_at_full).abs() <= tolerance,
@@ -2074,7 +2097,7 @@ mod tests {
 
         // The AU is asked, and declines — see the doc comment.
         assert_eq!(
-            au.parameter_text(target.id, Normalized::of(1.0)),
+            au.parameter_text(&main_thread(), target.id, Normalized::of(1.0)),
             None,
             "param {} ('{}'): no Apple AU implements ParameterStringFromValue. \
              A Some() here means macOS gained the property — re-measure and \
@@ -2083,7 +2106,7 @@ mod tests {
             target.name,
         );
         assert_eq!(
-            au.parameter_value_from_text(target.id, "1000 Hz"),
+            au.parameter_value_from_text(&main_thread(), target.id, "1000 Hz"),
             None,
             "nor ParameterValueFromString — a fabricated number here would be \
              written into the user's preset",

@@ -17,6 +17,12 @@ use crate::{
     ProcessOutput, RenderMode, Request, RequestWord, SampleFormat, Samples, Stage, taken,
 };
 
+/// The test process's main thread: nextest runs each test in its own process,
+/// so the claim always succeeds.
+fn main() -> MainThread {
+    MainThread::claim().expect("one test, one process")
+}
+
 fn prepare(rate: f64) -> Prepare {
     Prepare::new(SampleRate(rate), MaxBlock::of(Samples(64)))
         .expect("the tests use real rates")
@@ -49,7 +55,7 @@ impl Rig {
         let notices = &mut self.notices;
         self.state = self
             .lifecycle
-            .drive(state, event, &mut self.hand, |n| notices.push(n));
+            .drive(state, event, &mut self.hand, &main(), |n| notices.push(n));
     }
 
     fn op(&mut self, op: HostOp) {
@@ -175,7 +181,7 @@ fn a_lost_plugin_poisons_and_the_refusal_is_still_told() {
     ));
     assert!(rig.lifecycle.control().is_none());
     assert!(Hosted::info(&rig.lifecycle).is_none());
-    assert!(Hosted::save_state(&mut rig.lifecycle).is_err());
+    assert!(Hosted::save_state(&mut rig.lifecycle, &main()).is_err());
 }
 
 /// **A panic in `activate` poisons the same way.**
@@ -234,16 +240,16 @@ fn stuck_restores_both_halves() {
 #[test]
 fn a_pair_from_two_activations_is_refused() {
     let (plugin, loaded) = FakePlugin::new();
-    let (p1, c1) = loaded.activate(prepare(48_000.0)).unwrap();
-    let c1 = FakeLoaded::deactivate(p1, c1).unwrap();
-    let (p1, c1) = c1.activate(prepare(48_000.0)).unwrap();
+    let (p1, c1) = loaded.activate(&main(), prepare(48_000.0)).unwrap();
+    let c1 = FakeLoaded::deactivate(&main(), p1, c1).unwrap();
+    let (p1, c1) = c1.activate(&main(), prepare(48_000.0)).unwrap();
     let (_, other) = FakePlugin::new();
-    let (p2, c2) = other.activate(prepare(48_000.0)).unwrap();
+    let (p2, c2) = other.activate(&main(), prepare(48_000.0)).unwrap();
 
-    let stuck = FakeLoaded::deactivate(p1, c2).unwrap_err();
+    let stuck = FakeLoaded::deactivate(&main(), p1, c2).unwrap_err();
     assert!(stuck.reason.to_string().contains("two activations"));
     // Both halves are back and still pair with their own.
-    FakeLoaded::deactivate(p2, c1).expect_err("crossed again");
+    FakeLoaded::deactivate(&main(), p2, c1).expect_err("crossed again");
     drop(plugin);
 }
 
@@ -365,19 +371,19 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
     rig.lifecycle
         .control()
         .unwrap()
-        .set_parameter(a, Normalized::of(0.5));
+        .set_parameter(&main(), a, Normalized::of(0.5));
     assert_eq!(rig.plugin.calls(), [Call::SetParameter(a)]);
     rig.plugin.clear_calls();
 
     rig.op(HostOp::Activate(prepare(48_000.0)));
     assert_eq!(
-        Hosted::parameter(&rig.lifecycle, a).map(Normalized::get),
+        Hosted::parameter(&rig.lifecycle, &main(), a).map(Normalized::get),
         Some(0.5),
         "values survive the split"
     );
     rig.plugin.clear_calls();
-    Hosted::set_parameter(&mut rig.lifecycle, a, Normalized::of(0.25));
-    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::of(0.75));
+    Hosted::set_parameter(&mut rig.lifecycle, &main(), a, Normalized::of(0.25));
+    Hosted::set_parameter(&mut rig.lifecycle, &main(), b, Normalized::of(0.75));
     rig.render(64).unwrap();
     rig.render(64).unwrap();
     assert_eq!(
@@ -423,7 +429,7 @@ fn control_is_reachable_loaded_active_and_refused() {
     assert!(rig.lifecycle.control().is_some());
     rig.op(HostOp::Activate(prepare(48_000.0)));
     assert!(rig.lifecycle.control().is_some());
-    assert!(Hosted::wiring(&rig.lifecycle).is_some());
+    assert!(Hosted::wiring(&rig.lifecycle, &main()).is_some());
     rig.plugin.refuse_rate(Some(SampleRate(1_000.0)));
     rig.op(HostOp::Reconfigure(prepare(1_000.0)));
     assert!(matches!(rig.lifecycle, Lifecycle::Refused { .. }));
@@ -437,9 +443,12 @@ fn control_is_reachable_loaded_active_and_refused() {
 #[test]
 fn state_round_trips_through_hosted() {
     let mut rig = Rig::new();
-    Hosted::load_state(&mut rig.lifecycle, b"abc").unwrap();
+    Hosted::load_state(&mut rig.lifecycle, &main(), b"abc").unwrap();
     rig.op(HostOp::Activate(prepare(48_000.0)));
-    assert_eq!(Hosted::save_state(&mut rig.lifecycle).unwrap(), b"abc");
+    assert_eq!(
+        Hosted::save_state(&mut rig.lifecycle, &main()).unwrap(),
+        b"abc"
+    );
 }
 
 /// **A block through the Processor, and the edit drain at its head, neither
@@ -613,10 +622,10 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
     rig.plugin.edit_capacity(1);
     rig.op(HostOp::Activate(prepare(48_000.0)));
     let (a, b) = (ParamId::new(1), ParamId::new(2));
-    Hosted::set_parameter(&mut rig.lifecycle, a, Normalized::of(0.1));
+    Hosted::set_parameter(&mut rig.lifecycle, &main(), a, Normalized::of(0.1));
     // The ring holds one: these are refused, `b` twice.
-    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::of(0.2));
-    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::of(0.9));
+    Hosted::set_parameter(&mut rig.lifecycle, &main(), b, Normalized::of(0.2));
+    Hosted::set_parameter(&mut rig.lifecycle, &main(), b, Normalized::of(0.9));
     rig.plugin.clear_calls();
     rig.render(64).unwrap();
     assert_eq!(
@@ -632,7 +641,7 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
         [Call::Edit(b, Normalized::of(0.9)), Call::Process(64)]
     );
     assert_eq!(
-        Hosted::parameter(&rig.lifecycle, b).map(Normalized::get),
+        Hosted::parameter(&rig.lifecycle, &main(), b).map(Normalized::get),
         Some(0.9)
     );
     rig.tick();

@@ -10,6 +10,7 @@ use clap_sys::ext::audio_ports::CLAP_AUDIO_PORT_SUPPORTS_64BITS;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tutti_clap_ffi::{AudioPortInfo, Bundle, DescriptorInfo, LoadError, PortKind, Stage};
+use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{BusChannels, ChannelLayout};
 use tutti_types::ChannelCountOutOfRange;
 
@@ -86,8 +87,7 @@ impl ClapLoaded {
     /// [`ClapError::NotSupported`] while the plugin is active;
     /// [`ClapError::PortTooWide`] when a port reports more channels than a
     /// layout holds.
-    pub fn rescan_audio_ports(&mut self) -> Result<()> {
-        self.assert_main_thread();
+    pub fn rescan_audio_ports(&mut self, _main: &MainThread) -> Result<()> {
         if self.flags.active {
             return Err(ClapError::NotSupported(
                 "audio ports can be re-read only while the plugin is deactivated".to_string(),

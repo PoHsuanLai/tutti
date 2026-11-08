@@ -16,9 +16,9 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::{
-    Control, Controller, Effect, Event, Layout, Loaded, LoadedPlugin, Normalized, Notice, ParamId,
-    ParameterInfo, PluginDescriptor, PluginError, PluginResult, Prepare, Processor, Refused, Reply,
-    SampleRate, State, Stuck, step,
+    Control, Controller, Effect, Event, Layout, Loaded, LoadedPlugin, MainThread, Normalized,
+    Notice, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult, Prepare,
+    Processor, Refused, Reply, SampleRate, State, Stuck, step,
 };
 
 /// The main thread's end of the Processor's trip to the realtime thread.
@@ -145,14 +145,19 @@ impl<L: Loaded> Lifecycle<L> {
     /// half-moved plugin, whichever call it came from. `hand` is unused until a
     /// threaded hand exists: a local one needs nothing from the effects that
     /// move the Processor.
-    pub fn apply(&mut self, effect: Effect, hand: &mut Hand<L::Processor>) -> Reply {
+    pub fn apply(
+        &mut self,
+        effect: Effect,
+        hand: &mut Hand<L::Processor>,
+        main: &MainThread,
+    ) -> Reply {
         let _ = hand;
         match effect {
-            Effect::CallActivate(prepare) => self.activate(prepare),
-            Effect::CallDeactivate => self.deactivate(),
-            Effect::Rebuild => self.rebuild(),
+            Effect::CallActivate(prepare) => self.activate(main, prepare),
+            Effect::CallDeactivate => self.deactivate(main),
+            Effect::Rebuild => self.rebuild(main),
             other => self
-                .guarded(|this| this.apply_in_place(other))
+                .guarded(|this| this.apply_in_place(other, main))
                 .unwrap_or(Reply::NotActive),
         }
     }
@@ -171,7 +176,7 @@ impl<L: Loaded> Lifecycle<L> {
     }
 
     /// The effects that act on a plugin where it is.
-    fn apply_in_place(&mut self, effect: Effect) -> Reply {
+    fn apply_in_place(&mut self, effect: Effect, main: &MainThread) -> Reply {
         match effect {
             Effect::CallActivate(_) | Effect::CallDeactivate | Effect::Rebuild => {
                 unreachable!("transitions are applied by `apply`")
@@ -195,24 +200,24 @@ impl<L: Loaded> Lifecycle<L> {
                 _ => Reply::NotActive,
             },
             Effect::ReadLatency => match self {
-                Self::Active { controller, .. } => Reply::Latency(controller.latency()),
+                Self::Active { controller, .. } => Reply::Latency(controller.latency(main)),
                 _ => Reply::NotActive,
             },
             Effect::ReadTail => match self {
-                Self::Active { controller, .. } => Reply::Tail(controller.tail()),
+                Self::Active { controller, .. } => Reply::Tail(controller.tail(main)),
                 _ => Reply::NotActive,
             },
             Effect::ReadLayout => match self {
                 Self::Active { controller, .. } => {
-                    Reply::Layout(Layout::from(&controller.wiring()))
+                    Reply::Layout(Layout::from(&controller.wiring(main)))
                 }
                 _ => Reply::NotActive,
             },
-            Effect::ReadParams(scope) => self.with_control(|c| c.rescan_parameters(scope)),
-            Effect::RebuildMidiMapping => self.with_control(|c| c.rebuild_midi_mapping()),
-            Effect::RunMainThread => self.with_control(|c| c.run_main_thread()),
-            Effect::RunTimer(id) => self.with_control(|c| c.run_timer(id)),
-            Effect::ServiceFd(id) => self.with_control(|c| c.service_fd(id)),
+            Effect::ReadParams(scope) => self.with_control(|c| c.rescan_parameters(main, scope)),
+            Effect::RebuildMidiMapping => self.with_control(|c| c.rebuild_midi_mapping(main)),
+            Effect::RunMainThread => self.with_control(|c| c.run_main_thread(main)),
+            Effect::RunTimer(id) => self.with_control(|c| c.run_timer(main, id)),
+            Effect::ServiceFd(id) => self.with_control(|c| c.service_fd(main, id)),
             Effect::Notify(_) => Reply::Done,
         }
     }
@@ -227,7 +232,7 @@ impl<L: Loaded> Lifecycle<L> {
         }
     }
 
-    fn activate(&mut self, prepare: Prepare) -> Reply {
+    fn activate(&mut self, main: &MainThread, prepare: Prepare) -> Reply {
         let plugin = match std::mem::replace(self, Self::Poisoned) {
             Self::Loaded(plugin) | Self::Refused { plugin, .. } => plugin,
             other => {
@@ -235,7 +240,7 @@ impl<L: Loaded> Lifecycle<L> {
                 return Reply::NotActive;
             }
         };
-        match catch_unwind(AssertUnwindSafe(|| plugin.activate(prepare))) {
+        match catch_unwind(AssertUnwindSafe(|| plugin.activate(main, prepare))) {
             Ok(Ok((processor, controller))) => {
                 *self = Self::Active {
                     seat: Seat::Held(processor),
@@ -256,7 +261,7 @@ impl<L: Loaded> Lifecycle<L> {
         }
     }
 
-    fn deactivate(&mut self) -> Reply {
+    fn deactivate(&mut self, main: &MainThread) -> Reply {
         let (controller, processor) = match std::mem::replace(self, Self::Poisoned) {
             Self::Active {
                 seat: Seat::Held(processor),
@@ -267,7 +272,9 @@ impl<L: Loaded> Lifecycle<L> {
                 return Reply::NotActive;
             }
         };
-        match catch_unwind(AssertUnwindSafe(|| L::deactivate(processor, controller))) {
+        match catch_unwind(AssertUnwindSafe(|| {
+            L::deactivate(main, processor, controller)
+        })) {
             Ok(Ok(plugin)) => {
                 *self = Self::Loaded(plugin);
                 Reply::Deactivated
@@ -287,7 +294,7 @@ impl<L: Loaded> Lifecycle<L> {
         }
     }
 
-    fn rebuild(&mut self) -> Reply {
+    fn rebuild(&mut self, main: &MainThread) -> Reply {
         let (plugin, rate) = match std::mem::replace(self, Self::Poisoned) {
             Self::Loaded(plugin) => (plugin, None),
             Self::Refused { plugin, rate } => (plugin, rate),
@@ -296,7 +303,7 @@ impl<L: Loaded> Lifecycle<L> {
                 return Reply::NotActive;
             }
         };
-        match catch_unwind(AssertUnwindSafe(|| plugin.rebuild())) {
+        match catch_unwind(AssertUnwindSafe(|| plugin.rebuild(main))) {
             Ok(Ok(plugin)) => {
                 *self = Self::Loaded(plugin);
                 Reply::Rebuilt
@@ -332,6 +339,7 @@ impl<L: Loaded> Lifecycle<L> {
         state: State,
         event: Event,
         hand: &mut Hand<L::Processor>,
+        main: &MainThread,
         mut notify: impl FnMut(Notice),
     ) -> State {
         if matches!(event, Event::Tick) {
@@ -339,7 +347,7 @@ impl<L: Loaded> Lifecycle<L> {
             // ring refused.
             self.guarded(|this| {
                 if let Some(control) = this.control() {
-                    control.flush_edits();
+                    control.flush_edits(main);
                 }
             });
             if self.is_poisoned() {
@@ -362,7 +370,7 @@ impl<L: Loaded> Lifecycle<L> {
                 effect,
                 Effect::CallActivate(_) | Effect::CallDeactivate | Effect::Rebuild
             );
-            let reply = self.apply(effect, hand);
+            let reply = self.apply(effect, hand, main);
             let (next, effects) = step(state, Event::Replied(reply));
             state = next;
             for effect in effects.into_iter().rev() {
@@ -418,31 +426,32 @@ pub trait Hosted {
         state: State,
         event: Event,
         hand: &mut Hand<Self::Processor>,
+        main: &MainThread,
         notify: impl FnMut(Notice),
     ) -> State;
 
     /// The plugin's identity, while there is a plugin.
     fn info(&self) -> Option<&PluginDescriptor>;
     /// The plugin's wiring, read now.
-    fn wiring(&self) -> Option<LoadedPlugin>;
+    fn wiring(&self, main: &MainThread) -> Option<LoadedPlugin>;
     /// Every parameter. Empty when there is no plugin.
-    fn parameters(&self) -> Vec<ParameterInfo>;
+    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo>;
     /// A parameter's value.
-    fn parameter(&self, id: ParamId) -> Option<Normalized>;
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized>;
     /// Sets a parameter; nothing when there is no plugin.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized);
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
     /// The plugin's state.
     ///
     /// # Errors
     ///
     /// [`PluginError::Other`] when there is no plugin; otherwise the plugin's.
-    fn save_state(&mut self) -> PluginResult<Vec<u8>>;
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
     /// Restores state.
     ///
     /// # Errors
     ///
     /// [`PluginError::Other`] when there is no plugin; otherwise the plugin's.
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()>;
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()>;
 }
 
 fn lost() -> PluginError {
@@ -461,41 +470,42 @@ impl<L: Loaded> Hosted for Lifecycle<L> {
         state: State,
         event: Event,
         hand: &mut Hand<L::Processor>,
+        main: &MainThread,
         notify: impl FnMut(Notice),
     ) -> State {
-        Lifecycle::drive(self, state, event, hand, notify)
+        Lifecycle::drive(self, state, event, hand, main, notify)
     }
 
     fn info(&self) -> Option<&PluginDescriptor> {
         self.control_ref().map(Control::info)
     }
 
-    fn wiring(&self) -> Option<LoadedPlugin> {
-        self.control_ref().map(Control::wiring)
+    fn wiring(&self, main: &MainThread) -> Option<LoadedPlugin> {
+        self.control_ref().map(|c| c.wiring(main))
     }
 
-    fn parameters(&self) -> Vec<ParameterInfo> {
+    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
         self.control_ref()
-            .map(Control::parameters)
+            .map(|c| c.parameters(main))
             .unwrap_or_default()
     }
 
-    fn parameter(&self, id: ParamId) -> Option<Normalized> {
-        self.control_ref().and_then(|c| c.parameter(id))
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+        self.control_ref().and_then(|c| c.parameter(main, id))
     }
 
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         if let Some(control) = self.control() {
-            control.set_parameter(id, value);
+            control.set_parameter(main, id, value);
         }
     }
 
-    fn save_state(&mut self) -> PluginResult<Vec<u8>> {
-        self.control().ok_or_else(lost)?.save_state()
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        self.control().ok_or_else(lost)?.save_state(main)
     }
 
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        self.control().ok_or_else(lost)?.load_state(bytes)
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+        self.control().ok_or_else(lost)?.load_state(main, bytes)
     }
 }
 

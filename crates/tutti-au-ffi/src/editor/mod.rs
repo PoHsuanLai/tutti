@@ -76,11 +76,8 @@ impl AuEditor {
     /// its pointer is a live `NSView`.
     ///
     /// # Errors
-    /// `Error::Invalid` off the main thread (the one [`mark_main_thread`]
-    /// marked; any thread while none is marked), or if the AU advertises no
-    /// Cocoa view or the view factory fails to load.
-    ///
-    /// [`mark_main_thread`]: tutti_plugin_types::mark_main_thread
+    /// `Error::Invalid` off the OS main thread (`pthread_main_np`), or if the AU
+    /// advertises no Cocoa view or the view factory fails to load.
     pub fn open(unit: &Unit, parent: Option<WindowHandle>, preferred: EditorSize) -> Result<Self> {
         if !on_main_thread() {
             return Err(crate::Error::Invalid(

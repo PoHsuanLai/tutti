@@ -79,6 +79,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tutti_plugin::MainThread;
 
 use tutti_plugin::catalog::{AudioConfig, Plugin, PluginId};
 use tutti_plugin::handles::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
@@ -173,7 +174,7 @@ impl PluginLoad {
         let opened = if self.opens_in_process() {
             Opened::OnMain(self)
         } else {
-            Opened::Done(Box::new(self.open()))
+            Opened::Done(Box::new(self.open(None)))
         };
         PluginLoaded {
             path,
@@ -182,13 +183,15 @@ impl PluginLoad {
         }
     }
 
-    /// [`run`](Self::run)'s open, on this thread.
-    fn open(self) -> Open {
+    /// [`run`](Self::run)'s open, on this thread. `main` is the proof that it is
+    /// the main thread, which a plugin hosted in process needs.
+    fn open(self, main: Option<&MainThread>) -> Open {
         // The state goes in **before the plugin is activated** (`open_with_state`):
         // a plugin may take its mode from the state at activation. A refusal
         // does not abort the load: a plugin at its defaults beats no plugin. But
         // it is not silent.
         let (plugin, restore) = match Plugin::open_with_state(
+            main,
             &self.config,
             &self.path,
             self.rate,
@@ -834,10 +837,11 @@ impl Session {
     /// As [`add_plugin`](Self::add_plugin).
     pub fn add_plugin_blocking(
         &mut self,
+        main: &MainThread,
         request: PluginLoadRequest,
     ) -> Result<NodeKey, BridgeError> {
         let done = self.plugin_load(request).run();
-        self.add_plugin(done)
+        self.add_plugin(main, done)
     }
 
     /// Inserts a loaded plugin into the graph (unwired) and hosts it: its
@@ -856,7 +860,11 @@ impl Session {
     /// # Errors
     ///
     /// Why the load failed.
-    pub fn add_plugin(&mut self, loaded: PluginLoaded) -> Result<NodeKey, BridgeError> {
+    pub fn add_plugin(
+        &mut self,
+        main: &MainThread,
+        loaded: PluginLoaded,
+    ) -> Result<NodeKey, BridgeError> {
         crate::main_thread();
         let path = loaded.path;
         let config = loaded.config;
@@ -868,7 +876,7 @@ impl Session {
         } = match loaded.opened {
             Opened::Done(open) => *open,
             // A plugin hosted in process opens here, on the main thread.
-            Opened::OnMain(load) => load.open(),
+            Opened::OnMain(load) => load.open(Some(main)),
         };
         let plugin = plugin?;
         let handle = plugin.handle().clone();
@@ -1007,7 +1015,7 @@ impl Session {
     /// [`SessionEvent::PluginGaveUp`] and the node's removal.
     ///
     /// A main-thread call.
-    pub fn land_reload(&mut self, done: PluginReloaded) -> Vec<SessionEvent> {
+    pub fn land_reload(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
         crate::main_thread();
         let now = self.plugins_now;
         let PluginReloaded {
@@ -1030,7 +1038,7 @@ impl Session {
         hosted.reload.in_flight = false;
         let opened = match loaded.opened {
             Opened::Done(open) => *open,
-            Opened::OnMain(load) => load.open(),
+            Opened::OnMain(load) => load.open(Some(main)),
         };
         let Open {
             plugin,
@@ -1643,7 +1651,11 @@ mod tests {
                 .clone()
                 .ok_or(tutti_plugin::error::StateError::NoStateRoute)
         }
-        fn load_state(&self, _data: &[u8]) -> Result<(), tutti_plugin::error::StateError> {
+        fn load_state(
+            &self,
+            _main: &tutti_plugin::MainThread,
+            _data: &[u8],
+        ) -> Result<(), tutti_plugin::error::StateError> {
             Ok(())
         }
     }

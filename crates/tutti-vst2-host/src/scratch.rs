@@ -57,6 +57,7 @@ impl std::fmt::Debug for RenderScratch {
 // in-process backend serializes via Mutex). `Sync` rests on the same
 // serialization: every actual touch of the pointers is exclusive.
 unsafe impl Send for RenderScratch {}
+// SAFETY: as for `Send` above; shared references never touch the pointers.
 unsafe impl Sync for RenderScratch {}
 
 impl RenderScratch {

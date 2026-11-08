@@ -661,7 +661,7 @@ fn state_round_trips_through_the_plugins_own_blob() {
             .collect();
 
         let blob = au
-            .get_state()
+            .get_state(&main_thread())
             .unwrap_or_else(|e| panic!("{}: get_state failed: {e:?}", unit.label));
         assert!(
             !blob.is_empty(),
@@ -685,7 +685,7 @@ fn state_round_trips_through_the_plugins_own_blob() {
             unit.label
         );
 
-        au.set_state(&blob)
+        au.set_state(&main_thread(), &blob)
             .unwrap_or_else(|e| panic!("{}: set_state failed: {e:?}", unit.label));
 
         for (id, saved) in &saved_values {
@@ -736,12 +736,12 @@ fn a_foreign_state_blob_is_refused_and_leaves_the_unit_usable() {
     };
 
     let nm_blob = open(&nm, TAL_NOISEMAKER.label)
-        .get_state()
+        .get_state(&main_thread())
         .expect("NoiseMaker get_state");
     let mut nova_au = open(&nova, TDR_NOVA.label);
 
     let err = nova_au
-        .set_state(&nm_blob)
+        .set_state(&main_thread(), &nm_blob)
         .expect_err("TDR Nova must not accept TAL-NoiseMaker's ClassInfo blob");
     // The status is the plugin's, not one the host invented — measured -10851.
     assert!(
@@ -1341,9 +1341,9 @@ fn engage_processing(au: &mut AuInstance, label: &str) {
 #[test]
 fn a_written_aupreset_round_trips_and_a_foreign_one_is_refused() {
     let _g = lock();
-    // `save_preset_file`/`load_preset_file` call `assert_main_thread`, which is a
-    // no-op until some target marks a main thread. No harness target does, so
-    // these are safe to call here — the same reason `au_aupreset.rs` can.
+    // `save_preset_file`/`load_preset_file` take a `MainThread`, which this
+    // test process claims for the worker thread it runs on: the preset calls
+    // are plist I/O, not AppKit, so the OS main thread is not needed.
 
     let dir = std::env::temp_dir().join(format!(
         "au_third_party_presets_{}_{}",
@@ -1362,7 +1362,7 @@ fn a_written_aupreset_round_trips_and_a_foreign_one_is_refused() {
             String::from_utf8_lossy(unit.sub_type)
         ));
 
-        au.save_preset_file(&path, "ThirdPartyRoundTrip")
+        au.save_preset_file(&main_thread(), &path, "ThirdPartyRoundTrip")
             .unwrap_or_else(|e| panic!("{}: save_preset_file failed: {e:?}", unit.label));
 
         let identity = tutti_au_host::read_preset_metadata(&path)
@@ -1389,7 +1389,7 @@ fn a_written_aupreset_round_trips_and_a_foreign_one_is_refused() {
             unit.label,
         );
 
-        au.load_preset_file(&path)
+        au.load_preset_file(&main_thread(), &path)
             .unwrap_or_else(|e| panic!("{}: could not reload its own preset: {e:?}", unit.label));
         assert_renders_finite(&mut au, unit.label, "after reloading its own .aupreset");
     });
@@ -1402,7 +1402,7 @@ fn a_written_aupreset_round_trips_and_a_foreign_one_is_refused() {
     if let (Some(nm), true) = (TAL_NOISEMAKER.find(), nova_path.exists()) {
         let mut nm_au = open(&nm, TAL_NOISEMAKER.label);
         let err = nm_au
-            .load_preset_file(&nova_path)
+            .load_preset_file(&main_thread(), &nova_path)
             .expect_err("TAL-NoiseMaker must refuse TDR Nova's .aupreset");
         assert!(
             matches!(err, AuError::PresetIdentityMismatch(_)),
@@ -1617,8 +1617,8 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
 /// Whether the caller owns the process main thread.
 ///
 /// `pthread_main_np` is the only way to ask, for the reason
-/// `au_gui_lifecycle.rs` documents: `assert_main_thread` compares against a
-/// thread *marked* by `mark_main_thread`, which no harness target calls.
+/// `au_gui_lifecycle.rs` documents: a claimed `MainThread` is the first thread
+/// that claimed, which under the test harness is a worker thread.
 fn is_main_thread() -> bool {
     // SAFETY: `pthread_main_np` takes no arguments and reads no memory.
     unsafe {
@@ -1686,4 +1686,10 @@ fn refused_optional_properties_stay_refused() {
         },
     );
     eprintln!("refused_optional_properties_stay_refused: exercised {found} unit(s)");
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

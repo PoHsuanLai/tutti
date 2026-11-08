@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::time::Instant;
+use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
@@ -212,13 +213,8 @@ impl ClapLoaded {
     /// Timers and callbacks are served only while the host keeps calling this
     /// and feeding the requests to the core: a loop that blocks waiting for the
     /// next message serves none until one arrives.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn take_requests(&mut self, out: &mut Vec<Request>) {
-        self.take_requests_with(Instant::now, out);
+    pub fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+        self.take_requests_with(main, Instant::now, out);
     }
 
     /// Only what the plugin raised since the last take, with no timer or
@@ -233,10 +229,10 @@ impl ClapLoaded {
     /// Returns which scans it ran.
     pub(crate) fn take_requests_with(
         &mut self,
+        _main: &MainThread,
         clock: impl FnOnce() -> Instant,
         out: &mut Vec<Request>,
     ) -> WorkRan {
-        self.assert_main_thread();
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
         let (ran, due_timers) = self.due_work(clock);
         out.extend(due_timers.into_iter().map(|id| Request::Timer(TimerId(id))));
@@ -261,7 +257,7 @@ impl Control for ClapLoaded {
     /// The wiring read from the plugin now. Latency is read only while the
     /// plugin is active, which is when CLAP lets it change; a loaded plugin
     /// reports none.
-    fn wiring(&self) -> LoadedPlugin {
+    fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
         let layout = self.layout();
         let latency_samples = if self.flags.active {
             Samples(self.latency_samples() as usize)
@@ -280,13 +276,13 @@ impl Control for ClapLoaded {
         }
     }
 
-    fn parameters(&self) -> Vec<ParameterInfo> {
+    fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
         self.parameter_list()
     }
 
     /// Normalized `0..=1`; CLAP has no normalization concept, so the plugin
     /// answers in its plain range and the declared bounds map it back.
-    fn parameter(&self, id: ParamId) -> Option<Normalized> {
+    fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
         let plain = self.plain_value(id.get())?;
         Some(Normalized::clamped(normalize(
             self.parameter_range(id.get()),
@@ -296,21 +292,26 @@ impl Control for ClapLoaded {
 
     /// Applied now, as a flushed `PARAM_VALUE` event. CLAP events carry the
     /// plain value, so the declared range denormalizes it.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         let plain = denormalize(self.parameter_range(id.get()), value);
-        self.set_plain_value(id.get(), plain);
+        self.set_plain_value(main, id.get(), plain);
     }
 
     /// The plugin's own display string. `value_to_text` takes a plain value, so
     /// the same range conversion `set_parameter` applies is applied here.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
         let plain = denormalize(self.parameter_range(id.get()), value);
         self.value_to_text(id.get(), plain)
     }
 
     /// The inverse, re-normalized so the result round-trips into
     /// [`set_parameter`](Self::set_parameter).
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
+    fn parameter_value_from_text(
+        &self,
+        _main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
         let plain = self.text_to_value(id.get(), text)?;
         Some(Normalized::clamped(normalize(
             self.parameter_range(id.get()),
@@ -318,12 +319,12 @@ impl Control for ClapLoaded {
         )))
     }
 
-    fn save_state(&mut self) -> PluginResult<Vec<u8>> {
-        self.read_state().map_err(plugin_error)
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        self.read_state(main).map_err(plugin_error)
     }
 
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        self.write_state(bytes).map_err(plugin_error)
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+        self.write_state(main, bytes).map_err(plugin_error)
     }
 
     /// Loads the preset a [`PresetId::Location`] names, via
@@ -338,32 +339,32 @@ impl Control for ClapLoaded {
     /// preset-discovery extension, which this host does not bind, so `presets`
     /// keeps its empty default. That is not the same claim as an empty list from
     /// AU: `Features::PRESET_LIST` is *unprobed* for CLAP.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
         match preset_path(id) {
-            Some(path) => self.load_preset_file(path).is_ok(),
+            Some(path) => self.load_preset_file(main, path).is_ok(),
             None => false,
         }
     }
 
     /// Nothing is cached here to re-read: the Processor's ranges are the
     /// Controller's to republish.
-    fn rescan_parameters(&mut self, scope: RescanScope) {
+    fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
         let _ = scope;
     }
 
-    fn run_main_thread(&mut self) {
-        self.on_main_thread();
+    fn run_main_thread(&mut self, main: &MainThread) {
+        self.on_main_thread(main);
     }
 
-    fn run_timer(&mut self, id: TimerId) {
-        self.fire_timer(id.0);
+    fn run_timer(&mut self, main: &MainThread, id: TimerId) {
+        self.fire_timer(main, id.0);
     }
 
-    fn service_fd(&mut self, id: FdId) {
+    fn service_fd(&mut self, main: &MainThread, id: FdId) {
         #[cfg(unix)]
-        self.fire_fd(id.0);
+        self.fire_fd(main, id.0);
         #[cfg(not(unix))]
-        let _ = id;
+        let _ = (main, id);
     }
 }
 
@@ -386,46 +387,51 @@ impl Control for ClapController {
         Control::info(&**self)
     }
 
-    fn wiring(&self) -> LoadedPlugin {
-        Control::wiring(&**self)
+    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+        Control::wiring(&**self, main)
     }
 
-    fn parameters(&self) -> Vec<ParameterInfo> {
-        Control::parameters(&**self)
+    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+        Control::parameters(&**self, main)
     }
 
-    fn parameter(&self, id: ParamId) -> Option<Normalized> {
-        Control::parameter(&**self, id)
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+        Control::parameter(&**self, main, id)
     }
 
     /// Queued to the Processor and applied at the head of its next block. A full
     /// ring keeps the latest value per parameter and retries on the next tick.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         self.queue_edit(id, value);
     }
 
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(&**self, id, value)
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        Control::parameter_text(&**self, main, id, value)
     }
 
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        Control::parameter_value_from_text(&**self, id, text)
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
+        Control::parameter_value_from_text(&**self, main, id, text)
     }
 
-    fn save_state(&mut self) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut **self)
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        Control::save_state(&mut **self, main)
     }
 
     /// Restores the state, and makes the writes queued before it stale.
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        let result = Control::load_state(&mut **self, bytes);
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+        let result = Control::load_state(&mut **self, main, bytes);
         self.reset_edits();
         result
     }
 
     /// Loads the preset, and makes the writes queued before it stale.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        let loaded = Control::load_preset(&mut **self, id);
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+        let loaded = Control::load_preset(&mut **self, main, id);
         if loaded {
             self.reset_edits();
         }
@@ -435,26 +441,26 @@ impl Control for ClapController {
     /// An `INFO` or `ALL` rescan changed what the parameters are, so the ranges
     /// the Processor denormalizes against are read again and republished. A
     /// rescan of values or text changes neither.
-    fn rescan_parameters(&mut self, scope: RescanScope) {
+    fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
         if matches!(scope, RescanScope::Info | RescanScope::All) {
             self.republish_ranges();
         }
     }
 
-    fn flush_edits(&mut self) {
+    fn flush_edits(&mut self, _main: &MainThread) {
         self.retry_edits();
     }
 
-    fn run_main_thread(&mut self) {
-        Control::run_main_thread(&mut **self);
+    fn run_main_thread(&mut self, main: &MainThread) {
+        Control::run_main_thread(&mut **self, main);
     }
 
-    fn run_timer(&mut self, id: TimerId) {
-        Control::run_timer(&mut **self, id);
+    fn run_timer(&mut self, main: &MainThread, id: TimerId) {
+        Control::run_timer(&mut **self, main, id);
     }
 
-    fn service_fd(&mut self, id: FdId) {
-        Control::service_fd(&mut **self, id);
+    fn service_fd(&mut self, main: &MainThread, id: FdId) {
+        Control::service_fd(&mut **self, main, id);
     }
 }
 

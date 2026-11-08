@@ -129,6 +129,7 @@ where
 
 fn reset_switches(path: &Path) {
     probe_call(path, b"tutti_vst2_probe_reset_switches\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
@@ -137,6 +138,7 @@ fn reset_switches(path: &Path) {
 /// Set the probe's `effCanDo` answer. `answer` is a `CanDoAnswer` discriminant.
 fn set_can_do(path: &Path, answer: i32, custom: isize) {
     probe_call(path, b"tutti_vst2_probe_set_can_do\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(i32, isize) = unsafe { std::mem::transmute(*sym) };
         f(answer, custom);
     });
@@ -145,6 +147,7 @@ fn set_can_do(path: &Path, answer: i32, custom: isize) {
 /// Make the probe accept (or keep refusing) `effSetBypass`.
 fn set_accept_soft_bypass(path: &Path, enable: bool) {
     probe_call(path, b"tutti_vst2_probe_set_accept_soft_bypass\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
         f(enable);
     });
@@ -154,6 +157,7 @@ fn set_accept_soft_bypass(path: &Path, enable: bool) {
 /// `1` bypass.
 fn last_bypass(path: &Path) -> i32 {
     probe_call(path, b"tutti_vst2_probe_last_bypass\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() -> i32 = unsafe { std::mem::transmute(*sym) };
         f()
     })
@@ -162,10 +166,12 @@ fn last_bypass(path: &Path) -> i32 {
 /// The probe's packed preset-opcode trace and its length.
 fn preset_trace(path: &Path) -> Vec<i32> {
     let packed = probe_call(path, b"tutti_vst2_probe_preset_trace\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() -> i32 = unsafe { std::mem::transmute(*sym) };
         f()
     });
     let len = probe_call(path, b"tutti_vst2_probe_preset_trace_len\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() -> i32 = unsafe { std::mem::transmute(*sym) };
         f()
     });
@@ -251,7 +257,7 @@ fn opening_an_editor_on_an_editorless_plugin_says_so() {
     let parent = unsafe { tutti_vst2_host::WindowHandle::from_raw(std::ptr::null_mut()) };
 
     let err = instance
-        .open_editor(parent)
+        .open_editor(&main_thread(), parent)
         .expect_err("a plugin with no editor must not report a successful open");
 
     let msg = err.to_string();
@@ -582,10 +588,12 @@ fn chunk_state_round_trips() {
     let mut seeded = b"CHK\0".to_vec();
     seeded.extend_from_slice(b"probe-state-v1");
     instance
-        .load_state(&seeded)
+        .load_state(&main_thread(), &seeded)
         .expect("probe accepts any chunk");
 
-    let saved = instance.save_state().expect("get_state should succeed");
+    let saved = instance
+        .save_state(&main_thread())
+        .expect("get_state should succeed");
     assert_eq!(
         &saved[..4],
         b"CHK\0",
@@ -594,7 +602,9 @@ fn chunk_state_round_trips() {
     );
     assert_eq!(&saved[4..], b"probe-state-v1");
 
-    instance.load_state(&saved).expect("restore should succeed");
+    instance
+        .load_state(&main_thread(), &saved)
+        .expect("restore should succeed");
 }
 
 /// The benign half of the `copy_chunk` split: "nothing saved" must still fall
@@ -613,7 +623,7 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
     let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
     let saved = instance
-        .save_state()
+        .save_state(&main_thread())
         .expect("no chunk support is not a failure — fall back, don't error");
     assert_eq!(
         &saved[..4],
@@ -642,7 +652,7 @@ fn restoring_a_chunk_into_a_chunkless_plugin_reports_the_plugin_answer() {
     // The probe's `load_preset_data` is unconditional, so it accepts; what is
     // asserted is that the host relayed that answer rather than inventing one.
     instance
-        .load_state(&chunk)
+        .load_state(&main_thread(), &chunk)
         .expect("the probe accepts chunks, so the host must report success");
 }
 
@@ -655,18 +665,36 @@ fn parameter_state_round_trips() {
     assert!(instance.write_parameter(pid(0), Normalized::of(0.25)));
     assert!(instance.write_parameter(pid(1), Normalized::of(0.75)));
 
-    let state = instance.save_state().expect("get_state should succeed");
+    let state = instance
+        .save_state(&main_thread())
+        .expect("get_state should succeed");
     assert_eq!(&state[..4], b"PRM\0");
 
     assert!(instance.write_parameter(pid(0), Normalized::of(0.9)));
     assert!(instance.write_parameter(pid(1), Normalized::of(0.1)));
 
     instance
-        .load_state(&state)
+        .load_state(&main_thread(), &state)
         .expect("set_state should succeed");
 
-    assert!((instance.parameter(pid(0)).map(|n| n.get() as f32).unwrap() - 0.25).abs() < 0.02);
-    assert!((instance.parameter(pid(1)).map(|n| n.get() as f32).unwrap() - 0.75).abs() < 0.02);
+    assert!(
+        (instance
+            .parameter(&main_thread(), pid(0))
+            .map(|n| n.get() as f32)
+            .unwrap()
+            - 0.25)
+            .abs()
+            < 0.02
+    );
+    assert!(
+        (instance
+            .parameter(&main_thread(), pid(1))
+            .map(|n| n.get() as f32)
+            .unwrap()
+            - 0.75)
+            .abs()
+            < 0.02
+    );
 }
 
 /// Malformed state blobs are rejected rather than half-applied.
@@ -675,18 +703,30 @@ fn state_restore_rejects_malformed_blobs() {
     let _guard = lock_probe();
     let mut instance = load_probe();
 
-    assert!(instance.load_state(&[]).is_err(), "empty blob");
-    assert!(instance.load_state(&[0, 1, 2]).is_err(), "short header");
-    assert!(instance.load_state(&[0xFF; 4]).is_err(), "unknown header");
     assert!(
-        instance.load_state(b"CHK\0").is_err(),
+        instance.load_state(&main_thread(), &[]).is_err(),
+        "empty blob"
+    );
+    assert!(
+        instance.load_state(&main_thread(), &[0, 1, 2]).is_err(),
+        "short header"
+    );
+    assert!(
+        instance.load_state(&main_thread(), &[0xFF; 4]).is_err(),
+        "unknown header"
+    );
+    assert!(
+        instance.load_state(&main_thread(), b"CHK\0").is_err(),
         "empty chunk payload"
     );
 
     let mut bad = b"PRM\0".to_vec();
     bad.extend_from_slice(&2i32.to_le_bytes()); // claims 2 params
     bad.extend_from_slice(&0.5f32.to_le_bytes()); // only 1 value follows
-    assert!(instance.load_state(&bad).is_err(), "count/length mismatch");
+    assert!(
+        instance.load_state(&main_thread(), &bad).is_err(),
+        "count/length mismatch"
+    );
 }
 
 /// A plugin declaring a negative `numParams` must not take the host down.
@@ -707,7 +747,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
     ]);
 
     let state = instance
-        .save_state()
+        .save_state(&main_thread())
         .expect("a negative numParams should produce an empty snapshot, not an abort");
 
     assert_eq!(&state[..4], b"PRM\0");
@@ -726,7 +766,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
 
     // The blob must survive the round trip it just claimed to be.
     instance
-        .load_state(&state)
+        .load_state(&main_thread(), &state)
         .expect("a state blob this host wrote must be one it can read");
 }
 
@@ -1040,7 +1080,13 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     // And the live value really did move, so the assertion above is not
     // passing because the writes were dropped.
     assert!(
-        (instance.parameter(pid(0)).map(|n| n.get() as f32).unwrap() - 0.9).abs() < 0.02,
+        (instance
+            .parameter(&main_thread(), pid(0))
+            .map(|n| n.get() as f32)
+            .unwrap()
+            - 0.9)
+            .abs()
+            < 0.02,
         "the set_parameter writes did not land, so nothing was proven"
     );
 }
@@ -1067,7 +1113,7 @@ fn parameter_set_get_roundtrip() {
 
     let read = |i| {
         instance
-            .parameter(pid(i))
+            .parameter(&main_thread(), pid(i))
             .map(|n| n.get() as f32)
             .expect("the probe must expose getParameter")
     };
@@ -1202,4 +1248,10 @@ fn many_midi_events_in_one_block() {
 fn load_nonexistent_path() {
     let result = Active::load(Path::new("/nonexistent/plugin.vst"), SAMPLE_RATE, BLOCK);
     assert!(result.is_err());
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

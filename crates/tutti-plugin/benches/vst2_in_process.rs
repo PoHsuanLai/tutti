@@ -44,7 +44,7 @@ const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 
 fn unit() -> Direct<InProcessVst2Client> {
-    let (unit, _handle) = in_process_vst2_client(probe_path::probe_path(), SR)
+    let (unit, _handle) = in_process_vst2_client(&main_thread(), probe_path::probe_path(), SR)
         .expect("the reference VST2 plugin must be built — see tutti-fixtures");
     Direct::new(unit, SampleRate(SR), BLOCK)
 }
@@ -86,3 +86,9 @@ fn bench_many(c: &mut Criterion) {
 
 criterion_group!(benches, bench_one, bench_many);
 criterion_main!(benches);
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+}

@@ -176,8 +176,8 @@ None. Platform gating is `cfg`, not a feature.
 `AuInstance::process` belongs on the audio thread and does not allocate in the
 steady state: render buffers are sized at initialization. Loading,
 initialization, state, presets and the editor belong on the main thread; the
-editor, state and preset-file methods assert this in debug builds once
-`tutti_plugin_types::mark_main_thread` has been called.
+editor, state and preset-file methods take a `tutti_plugin_types::MainThread`,
+and `AuEditor` also asks the OS (`pthread_main_np`).
 
 ## License
 

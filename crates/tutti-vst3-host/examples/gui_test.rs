@@ -91,7 +91,7 @@ impl ApplicationHandler for App {
                 println!("Closing...");
                 // Close editor before exiting
                 if let Some(plugin) = &mut self.plugin {
-                    plugin.close_editor();
+                    plugin.close_editor(&main_thread());
                 }
                 event_loop.exit();
             }
@@ -134,7 +134,7 @@ impl ApplicationHandler for App {
                     println!("Opening plugin editor...");
                     let handle = unsafe { WindowHandle::from_raw(parent) };
                     let scale = ContentScale::new(window.scale_factor()).unwrap_or_default();
-                    match plugin.open_editor(handle, scale) {
+                    match plugin.open_editor(&main_thread(), handle, scale) {
                         Ok(size) => {
                             println!("Editor opened: {}x{}", size.width, size.height);
                             // Resize window to fit editor
@@ -170,4 +170,10 @@ fn main() {
 
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("Event loop error");
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

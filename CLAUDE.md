@@ -67,6 +67,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `AudioIn::take_lost` through `Recorder::lost`).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
+- **Main-thread entries take a token.** An editor, timer, run-loop, state or
+  controller call a format requires on the UI thread takes
+  `&tutti_plugin_types::MainThread` (`!Send`, from `MainThread::claim()`, once
+  per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
+  no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
+  `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
 - Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the
   `Loaded` typestate trait whose `activate` splits a plugin into a realtime
   `Processor` and a main-thread `Controller`, and `Lifecycle<L>` per
@@ -126,7 +132,7 @@ scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no be
 scripts/check-adapter.sh           # bevy-tutti composes nothing, holds no policy (clock reads, usize/Duration consts); tutti-session re-exports no crate
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
-scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids
+scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
 scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
 just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
@@ -142,7 +148,9 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
   `tutti-vst3-ffi` and `tutti-au-ffi`); host crates forbid `unsafe`
-  (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
+  (`scripts/check-plugin-ffi.sh`, design 016 §2.9). VST2 has no `-ffi` crate yet:
+  its `unsafe` is `vst-tutti` and `tutti-vst2-host`, which deny
+  `undocumented_unsafe_blocks` and `missing_safety_doc`, with the callers pinned.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.

@@ -25,6 +25,7 @@
 //!   [`HostParams`], rather than a standalone trait too thin to stand alone.
 
 use std::ffi::c_void;
+use tutti_plugin_types::MainThread;
 
 use tutti_types::SampleRate;
 
@@ -201,14 +202,14 @@ pub trait HostState: Send + Sync {
     /// a state saved by an older build is loaded into a newer one, when a file
     /// is truncated, or when a chunk from a different plugin is fed in. Report
     /// it to the user rather than leaving the plugin silently at defaults.
-    fn load_state(&self, data: &[u8]) -> Result<(), StateError>;
+    fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError>;
 }
 
 /// Hosts the plugin's editor window. **Optional.**
 ///
 /// A backend implements this only if it can show the plugin's editor; for one
 /// that cannot, `PluginHandle::editor()` returns `None`. Call these on the main
-/// (UI) thread.
+/// (UI) thread: each method takes the [`MainThread`] token that proves it.
 ///
 /// `parent` is a raw platform window pointer (not a generic `HasWindowHandle`) so
 /// the trait stays object-safe; the ergonomic `HasWindowHandle` entry lives on
@@ -224,6 +225,7 @@ pub trait HostEditor: Send + Sync {
     /// create or attach it, or if the backend is gone.
     fn open_editor(
         &self,
+        main: &MainThread,
         parent: *mut c_void,
         scale: ContentScale,
     ) -> Result<EditorSize, EditorError>;
@@ -240,22 +242,22 @@ pub trait HostEditor: Send + Sync {
     /// Returns an [`EditorError`] if the format or plugin has no floating
     /// editor (the default implementation always does) or the plugin failed
     /// to open it.
-    fn open_floating_editor(&self) -> Result<(), EditorError> {
+    fn open_floating_editor(&self, _main: &MainThread) -> Result<(), EditorError> {
         Err(EditorError::PluginError(
             "this plugin format has no floating-window editor".into(),
         ))
     }
 
     /// Closes the editor, whether embedded or floating.
-    fn close_editor(&self);
+    fn close_editor(&self, main: &MainThread);
 
     /// Services the editor; call periodically (about 30 Hz) while it is open.
-    fn editor_idle(&self);
+    fn editor_idle(&self, main: &MainThread);
 
     /// Returns what this editor supports: resizing, DPI scaling and the rest.
     ///
     /// Defaults to [`EditorCapabilities::default`].
-    fn editor_capabilities(&self) -> EditorCapabilities {
+    fn editor_capabilities(&self, _main: &MainThread) -> EditorCapabilities {
         EditorCapabilities::default()
     }
 
@@ -266,7 +268,11 @@ pub trait HostEditor: Send + Sync {
     ///
     /// Returns an [`EditorError`] if the editor cannot be resized (the default
     /// implementation always does) or the plugin refused.
-    fn set_editor_size(&self, _requested: EditorSize) -> Result<EditorSize, EditorError> {
+    fn set_editor_size(
+        &self,
+        _main: &MainThread,
+        _requested: EditorSize,
+    ) -> Result<EditorSize, EditorError> {
         Err(EditorError::PluginError(
             "set_editor_size not supported".into(),
         ))
@@ -276,7 +282,7 @@ pub trait HostEditor: Send + Sync {
     ///
     /// Polled rather than delivered by callback: the request arrives on the
     /// plugin's own thread, and the host resizes its window on the UI thread.
-    fn poll_editor_resize_request(&self) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&self, _main: &MainThread) -> Option<EditorSize> {
         None
     }
 }

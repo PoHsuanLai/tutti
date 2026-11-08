@@ -36,13 +36,17 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-/// With `plugin`, the main-thread guard of design 015 §4.2 (a no-op until a
-/// host marks its main thread); otherwise nothing. Called wherever a retired
-/// unit can be freed: the editor's collect, and the session's drop.
+/// With `plugin`, the main-thread check of design 015 §4.2 (a `debug_assert!`
+/// that is silent until a host claims its main thread); otherwise nothing.
+/// Called wherever a retired unit can be freed: the editor's collect, and the
+/// session's drop. These paths take no `MainThread` token, so they check.
 #[inline]
 pub(crate) fn main_thread() {
     #[cfg(feature = "plugin")]
-    tutti_plugin_types::assert_main_thread();
+    debug_assert!(
+        !tutti_plugin_types::MainThread::claimed_elsewhere(),
+        "plugin main-thread call made off the main thread"
+    );
 }
 
 mod builder;

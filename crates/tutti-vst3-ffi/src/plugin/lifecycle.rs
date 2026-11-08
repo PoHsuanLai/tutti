@@ -253,8 +253,8 @@ impl Drop for Plugin {
         // refuses on `retired`, which it checks under the lock, and the rest is
         // control-side teardown that must not hold it.
         drop(state);
-        // No main-thread assert: Drop has no main-thread guarantee.
-        self.close_editor();
+        // No token: Drop has no main-thread guarantee.
+        self.release_editor();
         // Mirror the load-time connect in reverse: for a separate controller,
         // tear the component↔controller connection down before terminating
         // either half. No-op for same-object / no controller.

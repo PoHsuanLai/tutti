@@ -574,17 +574,19 @@ pub enum RootTopologyStatus {
 /// this side: [`render_frame`](Self::render_frame)).
 ///
 /// `Send`, not `Sync`: one control thread owns it. With `plugin` on, every
-/// path that frees a retired unit asserts the main thread
-/// (`tutti_plugin_types::assert_main_thread`, a no-op until a host marks
-/// one), because what it frees may be an in-process plugin whose `Drop`
-/// tears down an editor. A unit is freed only when the executor hands it
-/// back, at the editor's collect, so the guard is there: the
-/// [`Collect`](Phase::Collect) phase, a commit (on a detached session, which
-/// applies and collects at once: [`commit`](Self::commit),
+/// path that frees a retired unit checks the main thread (a `debug_assert!`
+/// on `tutti_plugin_types::MainThread::claimed_elsewhere`, silent until a host
+/// claims its main thread), because what it frees may be an in-process plugin
+/// whose `Drop` tears down an editor. These paths take no `MainThread` token (a
+/// headless session has no main thread to be handed); the entries that open an
+/// in-process plugin do (`add_plugin`, `land_reload`). A unit is freed only
+/// when the executor hands it back, at the editor's collect, so the check is
+/// there: the [`Collect`](Phase::Collect) phase, a commit (on a detached
+/// session, which applies and collects at once: [`commit`](Self::commit),
 /// [`render_frame`](Self::render_frame), [`Graph::set_sample_rate`]), and
 /// dropping the session. [`update`](Self::update) and the
 /// [`Commit`](Phase::Commit) and [`AfterCommit`](Phase::AfterCommit) phases
-/// assert it too. Editing the graph (an insert, [`remove`](Self::remove), a
+/// check it too. Editing the graph (an insert, [`remove`](Self::remove), a
 /// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```

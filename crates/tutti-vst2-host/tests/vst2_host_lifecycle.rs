@@ -92,6 +92,7 @@ where
 
 fn call_void(symbol: &[u8]) {
     probe_call(symbol, |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
@@ -105,8 +106,11 @@ fn reset_probe() {
 fn read_capture() -> ProcessCapture {
     let mut cap = ProcessCapture::empty();
     probe_call(b"tutti_vst2_probe_capture\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: unsafe extern "C" fn(*mut ProcessCapture) -> bool =
             unsafe { std::mem::transmute(*sym) };
+        // SAFETY: `f` is the probe's capture export; it writes one
+        // `ProcessCapture` through the pointer, and `cap` is a live local.
         unsafe { f(&mut cap) }
     });
     cap
@@ -115,12 +119,14 @@ fn read_capture() -> ProcessCapture {
 /// The lifecycle trace as `(opcode, value)`, oldest first.
 fn trace() -> Vec<(i32, i32)> {
     let len = probe_call(b"tutti_vst2_probe_trace_len\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() -> u32 = unsafe { std::mem::transmute(*sym) };
         f()
     });
     (0..len)
         .map(|i| {
             let packed = probe_call(b"tutti_vst2_probe_trace_at\0", |sym| {
+                // SAFETY: the probe exports this symbol with exactly this signature.
                 let f: extern "C" fn(u32) -> i64 = unsafe { std::mem::transmute(*sym) };
                 f(i)
             });
@@ -135,6 +141,7 @@ fn clear_trace() {
 
 fn set_late_latency(samples: i32) {
     probe_call(b"tutti_vst2_probe_set_late_latency\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(i32) = unsafe { std::mem::transmute(*sym) };
         f(samples);
     });
@@ -253,7 +260,8 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
     );
 
     clear_trace();
-    let loaded = Vst2Loaded::load(probe_path::probe_path()).expect("the probe loads");
+    let loaded =
+        Vst2Loaded::load(&main_thread(), probe_path::probe_path()).expect("the probe loads");
     drop(loaded);
     assert_eq!(
         trace(),
@@ -269,7 +277,7 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
 /// The requests the plugin has raised since the last call.
 fn requests(instance: &Active) -> Vec<Request> {
     let mut asked = Vec::new();
-    instance.take_requests(&mut asked);
+    instance.take_requests(&main_thread(), &mut asked);
     asked
 }
 
@@ -290,6 +298,7 @@ fn an_io_change_is_answered_and_re_read() {
     assert_eq!(requests(&instance), [], "nothing yet");
 
     let answered = probe_call(b"tutti_vst2_probe_fire_io_changed\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(i32, i32) -> isize = unsafe { std::mem::transmute(*sym) };
         f(2048, 4)
     });
@@ -304,7 +313,10 @@ fn an_io_change_is_answered_and_re_read() {
         ],
         "the plugin reported an I/O change"
     );
-    assert_eq!(instance.wiring().latency_samples, Samples(2048));
+    assert_eq!(
+        instance.wiring(&main_thread()).latency_samples,
+        Samples(2048)
+    );
     assert_eq!(instance.pins().0.count(), 4, "the pin count was re-read");
     assert_eq!(instance.latency_samples(), Samples(2048));
 
@@ -324,12 +336,18 @@ fn a_rate_change_that_moves_latency_is_read() {
     let _guard = lock_probe();
     set_late_latency(0);
     let mut instance = load(512);
-    assert_eq!(Controller::latency(&*instance), Samples(0));
+    assert_eq!(Controller::latency(&*instance, &main_thread()), Samples(0));
     set_late_latency(1537);
     instance.set_sample_rate(96_000.0);
 
-    assert_eq!(Controller::latency(&*instance), Samples(1537));
-    assert_eq!(instance.wiring().latency_samples, Samples(1537));
+    assert_eq!(
+        Controller::latency(&*instance, &main_thread()),
+        Samples(1537)
+    );
+    assert_eq!(
+        instance.wiring(&main_thread()).latency_samples,
+        Samples(1537)
+    );
     assert_eq!(
         requests(&instance),
         [],
@@ -338,7 +356,7 @@ fn a_rate_change_that_moves_latency_is_read() {
 
     set_late_latency(0);
     instance.set_sample_rate(44_100.0);
-    assert_eq!(Controller::latency(&*instance), Samples(0));
+    assert_eq!(Controller::latency(&*instance, &main_thread()), Samples(0));
     set_late_latency(0);
 }
 
@@ -408,8 +426,11 @@ fn can_do_answers_reach_the_plugin() {
     let ask = |name: &str| {
         let name = std::ffi::CString::new(name).unwrap();
         probe_call(b"tutti_vst2_probe_ask_host_can_do\0", |sym| {
+            // SAFETY: the probe exports this symbol with exactly this signature.
             let f: unsafe extern "C" fn(*const std::os::raw::c_char) -> isize =
                 unsafe { std::mem::transmute(*sym) };
+            // SAFETY: `f` is the probe's `ask_host_can_do` export, and `name` is a
+            // NUL-terminated C string that outlives the call.
             unsafe { f(name.as_ptr()) }
         })
     };
@@ -436,24 +457,27 @@ fn editor_idle_reaches_an_open_editor() {
     let _guard = lock_probe();
     let mut instance = load_with_env(512, &[("TUTTI_VST2_PROBE_EDITOR", "1")]);
     probe_call(b"tutti_vst2_probe_set_editor_opens\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
         f(true);
     });
     let idles = || trace().iter().filter(|e| e.0 == EDIT_IDLE).count();
 
-    instance.editor_idle();
+    instance.editor_idle(&main_thread());
     assert_eq!(idles(), 0, "no editor is open yet");
 
     // SAFETY: the probe's editor never touches the parent.
     let parent = unsafe { WindowHandle::from_raw(std::ptr::null_mut()) };
-    instance.open_editor(parent).expect("the probe opens");
-    instance.editor_idle();
-    instance.editor_idle();
-    instance.editor_idle();
+    instance
+        .open_editor(&main_thread(), parent)
+        .expect("the probe opens");
+    instance.editor_idle(&main_thread());
+    instance.editor_idle(&main_thread());
+    instance.editor_idle(&main_thread());
     assert_eq!(idles(), 3, "one effEditIdle per call while open");
 
-    instance.close_editor();
-    instance.editor_idle();
+    instance.close_editor(&main_thread());
+    instance.editor_idle(&main_thread());
     assert_eq!(idles(), 3, "none once closed");
 }
 
@@ -626,4 +650,10 @@ fn a_bar_line_in_a_later_piece_moves_the_bar_start() {
     let before = cap.time_sample_pos;
     render_f32(&mut instance, 200, &[], None, 0.0);
     assert_eq!(read_capture().time_sample_pos, before);
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

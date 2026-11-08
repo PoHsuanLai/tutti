@@ -60,6 +60,7 @@ Walk the stages, then render one block. `no_run`: the load needs a real `.vst3`
 bundle on disk.
 
 ```rust,no_run
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
 use tutti_vst3_host::{
@@ -78,7 +79,7 @@ println!("{} by {}", loaded.plugin_info().name, loaded.plugin_info().vendor);
 let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
     .expect("a real rate");
 let (mut processor, controller) = loaded
-    .activate_typed::<f32>(prepare)
+    .activate_typed::<f32>(&main, prepare)
     .map_err(|refused| tutti_vst3_host::Vst3Error::NotSupported(refused.reason.to_string()))?;
 
 // 512 is the block length in FRAMES; each channel slice holds that many.
@@ -103,7 +104,7 @@ let out = processor
 println!("plugin emitted {} MIDI events", out.midi_events.len());
 
 // The halves rejoin into the plugin, deactivated.
-let _loaded = Vst3Loaded::deactivate_typed(processor, controller)
+let _loaded = Vst3Loaded::deactivate_typed(&main, processor, controller)
     .map_err(|(_, _, reason)| tutti_vst3_host::Vst3Error::NotSupported(reason.to_string()))?;
 # Ok::<(), tutti_vst3_host::Vst3Error>(())
 ```
@@ -119,6 +120,7 @@ reason as above.
 # use tutti_plugin_types::{Control, Normalized, ParamId};
 # use tutti_vst3_host::{LoadOptions, Vst3Loaded};
 # fn ex() -> Result<(), Box<dyn std::error::Error>> {
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 let mut plugin = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 
 // Parameters are addressed by an opaque, plugin-chosen `ParamID`, never by
@@ -139,13 +141,13 @@ for id in plugin.parameter_ids() {
 
 // The write takes the id and a normalized `0..=1` value.
 if let Some(&id) = plugin.parameter_ids().first() {
-    plugin.set_parameter(id, Normalized::of(0.75));
+    plugin.set_parameter(&main, id, Normalized::of(0.75));
 }
 
 // State save/restore is legal before any buffer exists — a project load
 // restores state before the transport rolls.
-let saved = plugin.save_state()?;
-plugin.load_state(&saved)?;
+let saved = plugin.save_state(&main)?;
+plugin.load_state(&main, &saved)?;
 
 // One drain, four kinds of news — not a poller per kind. Edits, progress and
 // unit news come to the closure in arrival order; `restartComponent` requests
@@ -154,7 +156,7 @@ plugin.load_state(&saved)?;
 // collected for you, so the poll allocates nothing.
 use tutti_vst3_host::PluginNotification;
 let mut edits = 0;
-let restart = plugin.poll_plugin_notifications(|news| {
+let restart = plugin.poll_plugin_notifications(&main, |news| {
     if let PluginNotification::Edit(_) = news {
         edits += 1;
     }
@@ -169,14 +171,15 @@ println!("{edits} param edits; latency changed: {}", restart.latency_changed);
 # use std::path::Path;
 # use tutti_vst3_host::{ContentScale, LoadOptions, Vst3Loaded, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst3_host::Result<()> {
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 if plugin.has_editor() {
     // The only unsafe boundary in the public API.
     let handle = unsafe { WindowHandle::from_raw(native_view_ptr) };
-    let size = plugin.open_editor(handle, ContentScale::IDENTITY)?;
+    let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);
 }
-plugin.close_editor();
+plugin.close_editor(&main);
 # Ok(()) }
 ```
 

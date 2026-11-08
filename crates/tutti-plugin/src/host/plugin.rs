@@ -7,6 +7,7 @@
 //! note expression, reached here through capability accessors.
 
 use std::path::Path;
+use tutti_plugin_types::MainThread;
 
 use crate::error::Result;
 use crate::host::handles::PluginHandle;
@@ -51,7 +52,7 @@ enum Backend {
 /// use tutti_types::SampleRate;
 /// use tutti_plugin::catalog::Plugin;
 ///
-/// let plugin = Plugin::open("/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
+/// let plugin = Plugin::open(None, "/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
 /// println!("{} ({:?})", plugin.descriptor().name, plugin.role());
 /// if plugin.takes_midi() {
 ///     // wire a MIDI source to the node's event input
@@ -89,7 +90,7 @@ impl Plugin {
     /// ```no_run
     /// # fn ex() -> tutti_plugin::Result<()> {
     /// use tutti_plugin::catalog::Plugin;
-    /// let plugin = Plugin::open("/Library/Audio/Plug-Ins/VST3/Foo.vst3", 48_000.0)?;
+    /// let plugin = Plugin::open(None, "/Library/Audio/Plug-Ins/VST3/Foo.vst3", 48_000.0)?;
     /// # Ok(()) }
     /// ```
     ///
@@ -102,6 +103,11 @@ impl Plugin {
     /// `plugin-server` subprocess with an IPC bridge. This call blocks while
     /// the subprocess starts and the plugin loads, so call it off the audio
     /// thread.
+    ///
+    /// `main` is the proof that the caller is on the main thread. Only an
+    /// in-process format (VST2) needs it, and refuses to load without it; every
+    /// other format loads in a subprocess from any thread, so a caller that is
+    /// not on the main thread passes `None`.
     ///
     /// **The blacklist is not consulted** — that is catalog state, and this
     /// path does not have one. A host that wants the scanner's crash history
@@ -119,8 +125,12 @@ impl Plugin {
     /// [`Plugins`]: super::plugins::Plugins
     /// [`Plugins::is_blacklisted`]: super::plugins::Plugins::is_blacklisted
     /// [`AudioConfig`]: crate::BridgeConfig
-    pub fn open(path: impl AsRef<Path>, sample_rate: impl Into<SampleRate>) -> Result<Self> {
-        Self::open_with(&AudioConfig::default(), path.as_ref(), sample_rate)
+    pub fn open(
+        main: Option<&MainThread>,
+        path: impl AsRef<Path>,
+        sample_rate: impl Into<SampleRate>,
+    ) -> Result<Self> {
+        Self::open_with(main, &AudioConfig::default(), path.as_ref(), sample_rate)
     }
 
     /// Opens a plugin file with explicit bridge settings.
@@ -131,11 +141,12 @@ impl Plugin {
     ///
     /// The same as [`open`](Self::open).
     pub fn open_with(
+        main: Option<&MainThread>,
         audio: &AudioConfig,
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
     ) -> Result<Self> {
-        Self::open_with_state(audio, path, sample_rate, None).map(|(plugin, _)| plugin)
+        Self::open_with_state(main, audio, path, sample_rate, None).map(|(plugin, _)| plugin)
     }
 
     /// [`open_with`](Self::open_with), restoring `state` into the plugin
@@ -149,6 +160,7 @@ impl Plugin {
     ///
     /// The same as [`open`](Self::open).
     pub fn open_with_state(
+        main: Option<&MainThread>,
         audio: &AudioConfig,
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
@@ -156,15 +168,30 @@ impl Plugin {
     ) -> Result<(Self, Option<std::result::Result<(), String>>)> {
         let path = path.as_ref();
         let sample_rate = sample_rate.into();
+        #[cfg(not(feature = "vst2"))]
+        let _ = main;
 
         #[cfg(feature = "vst2")]
         if Self::opens_in_process(path) {
+            // A VST2 plugin loads in this process, on the main thread: the
+            // caller says it is there by passing the token.
+            let Some(main) = main else {
+                return Err(crate::error::BridgeError::LoadFailed {
+                    path: path.to_path_buf(),
+                    stage: crate::error::LoadStage::Opening,
+                    reason: "a VST2 plugin loads in the host process and needs the main \
+                             thread"
+                        .into(),
+                });
+            };
             let mut restore = state.map(|data| {
                 move |loaded: &mut tutti_vst2_host::Vst2Loaded| {
-                    tutti_plugin_types::Control::load_state(loaded, data).map_err(|e| e.to_string())
+                    tutti_plugin_types::Control::load_state(loaded, main, data)
+                        .map_err(|e| e.to_string())
                 }
             });
             let (client, handle, restored) = crate::format::vst2_in_process::load_client_restoring(
+                main,
                 path,
                 sample_rate,
                 restore.as_mut().map(|r| r as _),

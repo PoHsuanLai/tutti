@@ -49,11 +49,13 @@ pub(crate) struct Vst2Handle {
 
 /// Wrapper to make `Box<dyn Editor>` `Send`.
 ///
-/// SAFETY: the editor is only accessed from one thread at a time, because it
+/// The editor is only accessed from one thread at a time, because it
 /// lives in the `Vst2Loaded` the Controller reaches through `&mut self` (clause
 /// 2 of the invariant on `Shell`). GUI methods (`open`, `close`, `idle`) are
 /// called on the main thread; the audio thread never touches the editor.
 pub(crate) struct SendEditor(pub(crate) Box<dyn vst::editor::Editor>);
+// SAFETY: the editor is only accessed from one thread at a time (see the type's
+// docs); the audio thread never touches it.
 unsafe impl Send for SendEditor {}
 
 impl Vst2Handle {
@@ -78,10 +80,16 @@ impl Vst2Handle {
 impl Drop for Vst2Handle {
     fn drop(&mut self) {
         // `effMainsChanged(0)` and `effClose` below are main-thread opcodes,
-        // like the `load` that opened the instance. Not while unwinding: a
-        // second panic in a drop aborts, and the first one is the finding.
+        // like the `load` that opened the instance. A drop cannot be handed a
+        // `MainThread`, so it checks (debug builds, once a host has claimed its
+        // main thread): the VST2 lane that splits the handles makes it a type.
+        // Not while unwinding: a second panic in a drop aborts, and the first
+        // one is the finding.
         if !std::thread::panicking() {
-            tutti_plugin_types::assert_main_thread();
+            debug_assert!(
+                !tutti_plugin_types::MainThread::claimed_elsewhere(),
+                "VST2 plugin dropped off the main thread"
+            );
         }
 
         // Close the editor first — some plugins read audio state during

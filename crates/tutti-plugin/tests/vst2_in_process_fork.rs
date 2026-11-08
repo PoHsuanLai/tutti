@@ -150,7 +150,7 @@ impl Drop for ProbeEnv {
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
     let path = probe_path::probe_path();
-    in_process_vst2_client(path, SAMPLE_RATE)
+    in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
@@ -208,7 +208,7 @@ fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
     let (client, handle) = load();
     handle
         .state()
-        .load_state(&chunk_state(&[7, 1, 2]))
+        .load_state(&main_thread(), &chunk_state(&[7, 1, 2]))
         .expect("the probe takes a chunk");
 
     let key = NodeKey(1);
@@ -263,7 +263,7 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
         .set_parameter_value(ParamId::new(0), Normalized::of(0.75));
 
     let fork = client
-        .fork_instance(ForkMode::Live)
+        .fork_instance(&main_thread(), ForkMode::Live)
         .expect("the probe forks");
     let key = NodeKey(2);
     let (mut editor, exec) = Editor::new(prepare_at(SAMPLE_RATE));
@@ -346,12 +346,12 @@ fn a_state_the_second_instance_refuses_is_a_named_fork_error() {
     let (client, handle) = load();
     handle
         .state()
-        .load_state(&chunk_state(&[9]))
+        .load_state(&main_thread(), &chunk_state(&[9]))
         .expect("the probe takes a chunk");
     refuse_chunk_load(true);
 
     let err = client
-        .fork_instance(ForkMode::Live)
+        .fork_instance(&main_thread(), ForkMode::Live)
         .expect_err("the second instance refuses the state");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),
@@ -427,12 +427,16 @@ fn a_plugin_handed_back_by_into_client_forks() {
     let _lock = lock_probe();
     reset_probe();
     let _env = ProbeEnv::new(true);
-    let plugin = tutti_plugin::catalog::Plugin::open(probe_path::probe_path(), SAMPLE_RATE)
-        .expect("the probe opens");
+    let plugin = tutti_plugin::catalog::Plugin::open(
+        Some(&main_thread()),
+        probe_path::probe_path(),
+        SAMPLE_RATE,
+    )
+    .expect("the probe opens");
     let handle = plugin.handle().clone();
     handle
         .state()
-        .load_state(&chunk_state(&[5]))
+        .load_state(&main_thread(), &chunk_state(&[5]))
         .expect("the probe takes a chunk");
     let Err(plugin) = plugin.into_client() else {
         panic!("an in-process VST2 plugin is not a PluginClient");
@@ -538,7 +542,9 @@ fn a_live_fork_keeps_the_live_render_mode() {
         (RenderMode::Offline, LEVEL_OFFLINE),
     ] {
         assert!(client.set_render_mode(mode));
-        let fork = client.fork_instance(ForkMode::Live).expect("forks");
+        let fork = client
+            .fork_instance(&main_thread(), ForkMode::Live)
+            .expect("forks");
         let key = NodeKey(7);
         let (mut editor, exec) = Editor::new(prepare_at(SAMPLE_RATE));
         editor.insert(key, "fork", tutti_graph::Unforkable(fork));
@@ -565,7 +571,7 @@ fn a_second_instance_of_another_plugin_is_a_mismatch() {
     let (client, handle) = load();
     env.set("TUTTI_VST2_PROBE_UNIQUE_ID", "4242");
     let err = client
-        .fork_instance(ForkMode::Live)
+        .fork_instance(&main_thread(), ForkMode::Live)
         .expect_err("a different plugin is not a fork");
     match err {
         PluginForkError::Mismatch {
@@ -597,7 +603,7 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     assert!(presets.load_preset(&PresetId::Number(1)));
     env.set("TUTTI_VST2_PROBE_PROGRAMS", "1");
     let err = client
-        .fork_instance(ForkMode::Live)
+        .fork_instance(&main_thread(), ForkMode::Live)
         .expect_err("program 1 does not exist in the second instance");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),
@@ -610,4 +616,10 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
 /// The live plugin's id, as the host reports it.
 fn client_id(handle: &PluginHandle) -> String {
     handle.descriptor().id.clone()
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

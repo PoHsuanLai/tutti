@@ -103,6 +103,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Weak};
+use tutti_plugin_types::MainThread;
 
 use parking_lot::Mutex;
 use tutti_graph::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
@@ -149,7 +150,11 @@ impl Vst2Fork {
     }
 
     /// The six steps in the module docs, in order.
-    fn instance(&self, mode: ForkMode) -> Result<InProcessVst2Client, PluginForkError> {
+    fn instance(
+        &self,
+        main: &MainThread,
+        mode: ForkMode,
+    ) -> Result<InProcessVst2Client, PluginForkError> {
         // First, so a plugin that cannot save costs no second instance. The
         // `Arc` is dropped straight after: the fork holds no strong reference.
         let live = self.live.upgrade().ok_or(PluginForkError::LiveGone)?;
@@ -158,7 +163,7 @@ impl Vst2Fork {
         let (program, state, live_offline) = {
             let mut instance = live.lock();
             let program = (instance.program_count() > 0).then(|| instance.current_program());
-            let state = Control::save_state(&mut **instance)
+            let state = Control::save_state(&mut **instance, main)
                 .map_err(|e| PluginForkError::SaveState(StateError::Rejected(e.to_string())))?;
             (program, state, instance.is_offline_render())
         };
@@ -168,16 +173,21 @@ impl Vst2Fork {
         // activated**: a plugin may take its mode from the state at activation.
         let mut restore = |loaded: &mut tutti_vst2_host::Vst2Loaded| -> Result<(), String> {
             if let Some(program) = program
-                && !Control::load_preset(loaded, &tutti_plugin_types::PresetId::Number(program))
+                && !Control::load_preset(
+                    loaded,
+                    main,
+                    &tutti_plugin_types::PresetId::Number(program),
+                )
             {
                 return Err(format!(
                     "the live instance's program {program} is out of the fresh \
                      instance's range"
                 ));
             }
-            Control::load_state(loaded, &state).map_err(|e| e.to_string())
+            Control::load_state(loaded, main, &state).map_err(|e| e.to_string())
         };
         let (mut fork, handle, restored) = super::load_client_restoring(
+            main,
             &self.origin,
             tutti_types::SampleRate(self.sample_rate),
             Some(&mut restore),
@@ -214,7 +224,12 @@ impl Vst2Fork {
 
 impl ForkSource for Vst2Fork {
     fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
-        let fork = self.instance(mode).map_err(ForkCause::new)?;
+        // The gather runs on the main thread (below), which `current` confirms;
+        // off it there is no way to load a second instance, so the fork is
+        // refused rather than loaded where the format forbids it.
+        let main =
+            MainThread::current().ok_or_else(|| ForkCause::new(PluginForkError::OffMainThread))?;
+        let fork = self.instance(&main, mode).map_err(ForkCause::new)?;
         // In this process: nothing can fail while it renders that the render
         // would not see, so no health probe. Boxed bare: no fork of its own.
         Ok(Forked::new(Box::new(fork)))
@@ -263,7 +278,11 @@ impl InProcessVst2Client {
     /// plugin that cannot be instantiated twice), it is a different plugin,
     /// or it refused the program or the state. A second instance that was
     /// built is closed before this returns.
-    pub fn fork_instance(&self, mode: ForkMode) -> Result<InProcessVst2Client, PluginForkError> {
-        Vst2Fork::of(self).instance(mode)
+    pub fn fork_instance(
+        &self,
+        main: &MainThread,
+        mode: ForkMode,
+    ) -> Result<InProcessVst2Client, PluginForkError> {
+        Vst2Fork::of(self).instance(main, mode)
     }
 }

@@ -620,7 +620,7 @@ fn test_get_parameters() {
         "every index below parameter_count must yield a ParameterInfo"
     );
     for id in ids.into_iter().take(10) {
-        let value = Control::parameter(&*plugin, id)
+        let value = Control::parameter(&*plugin, &main_thread(), id)
             .expect("a listed parameter has a value")
             .get();
         assert_eq!(
@@ -655,8 +655,8 @@ fn test_set_parameter() {
             .first()
             .expect("a nonzero count lists a parameter");
         println!("Setting ParamID {id:?} to 0.5");
-        Control::set_parameter(&mut *plugin, id, Normalized::of(0.5));
-        let value = Control::parameter(&*plugin, id)
+        Control::set_parameter(&mut *plugin, &main_thread(), id, Normalized::of(0.5));
+        let value = Control::parameter(&*plugin, &main_thread(), id)
             .expect("a listed parameter reads back")
             .get();
         assert_eq!(value, plugin.get_parameter(id.get()));
@@ -672,13 +672,13 @@ fn test_set_parameter() {
         // Not silently written: it reads as `None` (`getParamNormalized`
         // answers 0 for an unknown id), and a write to it must leave every
         // listed parameter and that read unchanged.
-        assert_eq!(Control::parameter(&*plugin, unlisted), None);
+        assert_eq!(Control::parameter(&*plugin, &main_thread(), unlisted), None);
         let before: Vec<_> = listed
             .iter()
             .map(|i| plugin.get_parameter(i.get()))
             .collect();
-        Control::set_parameter(&mut *plugin, unlisted, Normalized::of(0.25));
-        assert_eq!(Control::parameter(&*plugin, unlisted), None);
+        Control::set_parameter(&mut *plugin, &main_thread(), unlisted, Normalized::of(0.25));
+        assert_eq!(Control::parameter(&*plugin, &main_thread(), unlisted), None);
         let after: Vec<_> = listed
             .iter()
             .map(|i| plugin.get_parameter(i.get()))
@@ -778,7 +778,7 @@ fn plain_range_probe_recovers_real_ranges() {
 
         let mut probed = 0usize;
         let mut non_unit = 0usize;
-        for entry in loaded.parameter_list().into_iter().take(64) {
+        for entry in loaded.parameter_list(&main_thread()).into_iter().take(64) {
             let id = entry.id;
             let Some(info) = loaded.parameter_info(id) else {
                 continue;
@@ -837,4 +837,10 @@ fn plain_range_probe_recovers_real_ranges() {
          being consulted.",
         corpus.len()
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

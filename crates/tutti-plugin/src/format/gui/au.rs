@@ -9,6 +9,7 @@
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamId, ParamRange};
+use tutti_plugin_types::MainThread;
 
 /// Look up declared bounds for `id` in a table sorted by id.
 fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
@@ -91,7 +92,12 @@ impl AuGuiInstance {
 impl PluginEditor for AuGuiInstance {
     /// `_scale` is unused: an AU view is an `NSView`, which lays out in
     /// logical pixels and reads its backing scale itself.
-    fn open_editor(&mut self, parent: WindowHandle, _scale: ContentScale) -> Result<EditorSize> {
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        _scale: ContentScale,
+    ) -> Result<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         // No size to offer here either: this entry point receives a
         // parent handle and a scale, no size. See the sibling in
@@ -99,6 +105,7 @@ impl PluginEditor for AuGuiInstance {
         let size = self
             .inner
             .open_editor(
+                main,
                 parent_handle,
                 tutti_plugin_types::EditorSize {
                     width: 800,
@@ -112,15 +119,15 @@ impl PluginEditor for AuGuiInstance {
         })
     }
 
-    fn close_editor(&mut self) {
-        self.inner.close_editor();
+    fn close_editor(&mut self, main: &MainThread) {
+        self.inner.close_editor(main);
     }
 
-    fn editor_idle(&mut self) {
+    fn editor_idle(&mut self, _main: &MainThread) {
         // AUv2 Cocoa views are driven by the AppKit run loop; no explicit idle needed.
     }
 
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         // `AudioUnitSetParameter` takes **plain** units, so the host's
         // normalized value is denormalized against the declared range — the
         // same conversion the subprocess loader applies on the audio path.
@@ -143,13 +150,13 @@ impl PluginEditor for AuGuiInstance {
         let _ = self.inner.set_parameter(id.get(), plain);
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
         self.inner
-            .set_state(data)
+            .set_state(main, data)
             .map_err(|e| BridgeError::ProtocolError(format!("AU set_state failed: {e}")))
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(ParamId, f32)> {
+    fn poll_gui_param_changes(&mut self, _main: &MainThread) -> Vec<(ParamId, f32)> {
         // AUv2 doesn't have a built-in parameter change notification from GUI.
         // Parameter changes from Cocoa views go through AudioUnitSetParameter directly.
         Vec::new()

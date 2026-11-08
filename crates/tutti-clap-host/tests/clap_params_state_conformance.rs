@@ -26,6 +26,7 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::types::StateContext;
@@ -468,7 +469,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
         "the test value must actually change it"
     );
 
-    loaded.set_plain_value(p.id, new_value);
+    loaded.set_plain_value(&main_thread(), p.id, new_value);
 
     // Both oracles: the plugin's own table, and the host's read-back.
     assert_eq!(
@@ -506,7 +507,7 @@ fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
     let mut loaded = probe.load();
     let p = param(1);
 
-    loaded.set_plain_value(p.id, -3.25);
+    loaded.set_plain_value(&main_thread(), p.id, -3.25);
 
     let cap = probe.capture();
     assert_eq!(cap.flush_calls, 1, "set_parameter must flush exactly once");
@@ -622,7 +623,7 @@ fn host_decodes_plugin_emitted_param_values() {
 
     // The probe drains its output queue in `params.flush`, which is where
     // `flush_params` will pick it up.
-    let out = inst.flush_params(Vec::new());
+    let out = inst.flush_params(&main_thread(), Vec::new());
 
     assert_eq!(out.len(), 1, "the plugin's one output event must survive");
     let hdr = out[0].header();
@@ -647,7 +648,7 @@ fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
     probe.queue_output(OUT_GESTURE_END, p.id, 0.0);
     probe.queue_output(OUT_PARAM_MOD, p.id, 0.125);
 
-    let out = inst.flush_params(Vec::new());
+    let out = inst.flush_params(&main_thread(), Vec::new());
 
     let types: Vec<u16> = out.iter().map(|e| e.header().type_).collect();
     assert_eq!(
@@ -671,7 +672,7 @@ fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
 /// core's requests.
 fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
     let mut out = Vec::new();
-    inst.take_requests(&mut out);
+    inst.take_requests(&main_thread(), &mut out);
     out
 }
 
@@ -691,7 +692,7 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
 
     probe.command(PARAM_CMD_RESCAN_VALUES);
     // The probe runs `[main-thread]` host-params calls from `on_main_thread`.
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     assert_eq!(
         requests(&mut inst),
@@ -717,7 +718,7 @@ fn host_records_a_full_rescan_as_needing_deactivation() {
     let _ = requests(&mut inst);
 
     probe.command(PARAM_CMD_RESCAN_ALL);
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     assert_eq!(
         requests(&mut inst),
@@ -739,7 +740,7 @@ fn taking_a_rescan_consumes_it() {
     let _ = requests(&mut inst);
 
     probe.command(PARAM_CMD_RESCAN_VALUES);
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
     assert_eq!(requests(&mut inst).len(), 1);
 
     let second = requests(&mut inst);
@@ -759,7 +760,7 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
     let p = param(1);
 
     probe.command(PARAM_CMD_REQUEST_FLUSH);
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     assert!(
         inst.take_params_flush_requested(),
@@ -769,7 +770,7 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
 
     // Honour the request: deliver a value with no `process` block in sight.
     let before = probe.capture().flush_calls;
-    inst.set_plain_value(p.id, 6.5);
+    inst.set_plain_value(&main_thread(), p.id, 6.5);
     let after = probe.capture();
 
     assert_eq!(
@@ -800,8 +801,10 @@ fn host_round_trips_plugin_state_through_its_streams() {
     let mut loaded = probe.load();
     let p = param(0);
 
-    loaded.set_plain_value(p.id, 999.0);
-    let saved = loaded.save_state().expect("state save should succeed");
+    loaded.set_plain_value(&main_thread(), p.id, 999.0);
+    let saved = loaded
+        .save_state(&main_thread())
+        .expect("state save should succeed");
 
     // The payload must be the plugin's, not an empty or truncated stand-in.
     assert!(
@@ -825,11 +828,11 @@ fn host_round_trips_plugin_state_through_its_streams() {
     );
 
     // Move the value away, then restore.
-    loaded.set_plain_value(p.id, 101.0);
+    loaded.set_plain_value(&main_thread(), p.id, 101.0);
     assert_eq!(probe.peek(p.id), Some(101.0));
 
     loaded
-        .load_state(&saved)
+        .load_state(&main_thread(), &saved)
         .expect("state load should succeed");
     assert_eq!(
         probe.peek(p.id),
@@ -852,15 +855,15 @@ fn state_load_restores_every_parameter_to_its_own_value() {
         .map(|(i, p)| (p.id, p.min + (i as f64 + 1.0)))
         .collect();
     for &(id, v) in &marks {
-        loaded.set_plain_value(id, v);
+        loaded.set_plain_value(&main_thread(), id, v);
     }
-    let saved = loaded.save_state().expect("save");
+    let saved = loaded.save_state(&main_thread()).expect("save");
 
     // Scramble them all, then restore.
     for &(id, _) in &marks {
-        loaded.set_plain_value(id, 0.0);
+        loaded.set_plain_value(&main_thread(), id, 0.0);
     }
-    loaded.load_state(&saved).expect("load");
+    loaded.load_state(&main_thread(), &saved).expect("load");
 
     for &(id, v) in &marks {
         assert_eq!(
@@ -878,9 +881,9 @@ fn state_load_restores_every_parameter_to_its_own_value() {
 fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let saved = loaded.save_state().expect("save");
+    let saved = loaded.save_state(&main_thread()).expect("save");
 
-    loaded.load_state(&saved).expect("load");
+    loaded.load_state(&main_thread(), &saved).expect("load");
 
     let cap = probe.capture();
     assert_eq!(cap.load_calls, 1);
@@ -909,12 +912,12 @@ fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
 fn host_reports_a_load_failure_when_the_payload_is_corrupt() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let mut saved = loaded.save_state().expect("save");
+    let mut saved = loaded.save_state(&main_thread()).expect("save");
 
     // Flip one byte of the magic.
     saved[0] ^= 0xFF;
 
-    let result = loaded.load_state(&saved);
+    let result = loaded.load_state(&main_thread(), &saved);
     assert!(
         result.is_err(),
         "a payload the plugin rejects must surface as an error, not a silent \
@@ -929,7 +932,9 @@ fn empty_state_is_a_no_op() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
 
-    loaded.load_state(&[]).expect("empty state is not an error");
+    loaded
+        .load_state(&main_thread(), &[])
+        .expect("empty state is not an error");
 
     assert_eq!(
         probe.capture().load_calls,
@@ -966,7 +971,7 @@ fn host_passes_the_state_context_through_to_the_plugin() {
     ];
     for (ctx, wire) in cases {
         let saved = loaded
-            .state_with_context(ctx)
+            .state_with_context(&main_thread(), ctx)
             .unwrap_or_else(|e| panic!("save for {ctx:?} should succeed: {e}"));
         assert_eq!(
             probe.capture().last_save_context,
@@ -990,14 +995,14 @@ fn host_loads_state_with_the_requested_context() {
     let mut loaded = probe.load();
     let p = param(2);
 
-    loaded.set_plain_value(p.id, 3.0);
+    loaded.set_plain_value(&main_thread(), p.id, 3.0);
     let saved = loaded
-        .state_with_context(StateContext::ForProject)
+        .state_with_context(&main_thread(), StateContext::ForProject)
         .expect("save");
 
-    loaded.set_plain_value(p.id, 0.0);
+    loaded.set_plain_value(&main_thread(), p.id, 0.0);
     loaded
-        .set_state_with_context(&saved, StateContext::ForProject)
+        .set_state_with_context(&main_thread(), &saved, StateContext::ForProject)
         .expect("load");
 
     assert_eq!(

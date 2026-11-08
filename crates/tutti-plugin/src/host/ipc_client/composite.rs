@@ -11,7 +11,9 @@ use crate::util::transport::shm::AudioSlab;
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::ffi::c_void;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
 use tutti_types::SampleRate;
 
 /// Composites an out-of-process audio bridge with a lazily-loaded in-process
@@ -22,6 +24,84 @@ pub struct PluginBridge {
     audio: AudioBridge,
     plugin_path: PathBuf,
     gui: Mutex<Option<Box<dyn PluginEditor>>>,
+    /// What the realtime setters want the in-process editor to show, applied by
+    /// the next [`editor_idle`](Self::editor_idle).
+    mirror: GuiMirror,
+}
+
+/// How many parameter writes wait for the next editor idle. A full ring drops
+/// the newest: the mirror is cosmetic, and the audio command is authoritative.
+const MIRROR_CAPACITY: usize = 256;
+
+/// The cosmetic mirror of the realtime setters onto the in-process editor.
+///
+/// The in-process editor is a second instance of the plugin whose parameter and
+/// automation calls are main-thread calls, and `set_parameter_rt` and
+/// `set_automation_state_rt` run wherever the node's controls are written. So
+/// they queue here (never blocking, never allocating) and the main-thread
+/// [`editor_idle`](PluginBridge::editor_idle) applies what was queued.
+struct GuiMirror {
+    params: Mutex<EditSink>,
+    drain: Mutex<EditDrain>,
+    automation: Mutex<Option<crate::protocol::AutomationMode>>,
+    /// Whether an editor is open. Nothing is queued while it is not, and what
+    /// was queued is discarded when it opens or closes: an edit made with no
+    /// editor to show it is not one to replay on the first idle.
+    open: AtomicBool,
+}
+
+impl GuiMirror {
+    fn new() -> Self {
+        let (sink, drain) = edits(MIRROR_CAPACITY);
+        Self {
+            params: Mutex::new(sink),
+            drain: Mutex::new(drain),
+            automation: Mutex::new(None),
+            open: AtomicBool::new(false),
+        }
+    }
+
+    /// Queues a parameter write for the editor, if one is open. Never blocks.
+    fn push_param(&self, id: ParamId, value: Normalized) {
+        if self.open.load(Ordering::Acquire)
+            && let Ok(mut sink) = self.params.try_lock()
+        {
+            let _ = sink.send(Edit::Param { id, value });
+        }
+    }
+
+    /// Queues the latest automation mode for the editor, if one is open.
+    fn push_automation(&self, mode: crate::protocol::AutomationMode) {
+        if self.open.load(Ordering::Acquire)
+            && let Ok(mut latest) = self.automation.try_lock()
+        {
+            *latest = Some(mode);
+        }
+    }
+
+    /// Drops everything queued.
+    fn discard(&self) {
+        if let Ok(mut drain) = self.drain.lock() {
+            drain.drain(|_| {});
+        }
+        if let Ok(mut latest) = self.automation.lock() {
+            *latest = None;
+        }
+    }
+
+    /// An editor opened (after its state sync): what was queued before it is
+    /// stale, and writes are queued from here on.
+    fn opened(&self) {
+        self.open.store(false, Ordering::Release);
+        self.discard();
+        self.open.store(true, Ordering::Release);
+    }
+
+    /// The editor closed: stop queueing and drop what waits.
+    fn closed(&self) {
+        self.open.store(false, Ordering::Release);
+        self.discard();
+    }
 }
 
 impl PluginBridge {
@@ -48,6 +128,7 @@ impl PluginBridge {
             audio,
             plugin_path,
             gui: Mutex::new(None),
+            mirror: GuiMirror::new(),
         });
         Ok((bridge, bridge_thread))
     }
@@ -71,6 +152,7 @@ impl PluginBridge {
             audio,
             plugin_path,
             gui: Mutex::new(None),
+            mirror: GuiMirror::new(),
         });
         Ok((bridge, bridge_thread))
     }
@@ -121,17 +203,12 @@ impl PluginBridge {
     }
 
     pub fn set_parameter_rt(&self, param_id: ParamId, value: Normalized) -> bool {
-        // Cosmetic GUI mirror (keeps the display in sync): `try_lock`, never
-        // block. The `_rt` contract must stay non-blocking — a blocking
-        // `lock()` here could stall the caller behind a multi-millisecond
-        // main-thread `open_editor`/`editor_idle` holding the same GUI lock. The
-        // authoritative delivery is the audio command below; a dropped GUI mirror
-        // self-heals on the next edit / editor idle.
-        if let Ok(mut guard) = self.gui.try_lock()
-            && let Some(gui) = guard.as_mut()
-        {
-            gui.set_parameter(param_id, value);
-        }
+        // Cosmetic GUI mirror (keeps the display in sync): queued for the next
+        // `editor_idle`, `try_lock` and a bounded ring so the `_rt` contract
+        // stays non-blocking and allocation-free. The authoritative delivery is
+        // the audio command below; a dropped mirror write self-heals on the next
+        // edit.
+        self.mirror.push_param(param_id, value);
         // The wire carries `f32`; the domain is enforced up to this point.
         self.audio.set_parameter_rt(param_id, value)
     }
@@ -146,14 +223,10 @@ impl PluginBridge {
         // ABI edge (the GUI instance and the server loader) — no format bitmask
         // here.
         //
-        // The GUI mirror is cosmetic, so `try_lock` (never block): the `_rt`
-        // contract stays non-blocking, and a dropped glow self-heals on the next
-        // mode change. See `set_parameter_rt` for the RT rationale.
-        if let Ok(mut guard) = self.gui.try_lock()
-            && let Some(gui) = guard.as_mut()
-        {
-            gui.set_automation_state(mode);
-        }
+        // The GUI mirror is cosmetic and a main-thread call, so the latest mode
+        // waits for the next `editor_idle` (`try_lock`, never block); a dropped
+        // glow self-heals on the next mode change.
+        self.mirror.push_automation(mode);
         self.audio.set_automation_state_rt(mode)
     }
 
@@ -240,10 +313,10 @@ impl PluginBridge {
 
     pub fn open_editor(
         &self,
+        main: &MainThread,
         parent_ptr: *mut c_void,
         scale: ContentScale,
     ) -> std::result::Result<EditorSize, EditorError> {
-        tutti_plugin_types::assert_main_thread();
         if self.audio.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
@@ -283,7 +356,7 @@ impl PluginBridge {
         // extracted by `extract_platform_ptr` from a caller-supplied
         // `RawWindowHandle`, which is alive for the open_editor call.
         let size = gui
-            .open_editor(unsafe { WindowHandle::from_ptr(parent_ptr) }, scale)
+            .open_editor(main, unsafe { WindowHandle::from_ptr(parent_ptr) }, scale)
             .map_err(|e| EditorError::PluginError(e.to_string()))?;
         tracing::info!(
             "[bridge] open_editor: editor opened {}x{}",
@@ -297,8 +370,9 @@ impl PluginBridge {
                 "[bridge] open_editor: syncing {} bytes of state post-open",
                 state.len()
             );
-            let _ = gui.set_state(&state);
+            let _ = gui.set_state(main, &state);
         }
+        self.mirror.opened();
 
         Ok(size)
     }
@@ -308,8 +382,7 @@ impl PluginBridge {
     /// Same lazy GUI load and the same post-open state sync — the editor
     /// instance and its state are the plugin's either way. What differs is only
     /// that no parent goes in and no size comes out.
-    pub fn open_floating_editor(&self) -> std::result::Result<(), EditorError> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn open_floating_editor(&self, main: &MainThread) -> std::result::Result<(), EditorError> {
         if self.audio.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
@@ -336,53 +409,55 @@ impl PluginBridge {
             tracing::warn!("[bridge] could not mirror plugin state into the editor: {e}");
         });
 
-        gui.open_floating_editor()
+        gui.open_floating_editor(main)
             .map_err(|e| EditorError::PluginError(e.to_string()))?;
 
         if let Ok(state) = state_to_sync {
-            let _ = gui.set_state(&state);
+            let _ = gui.set_state(main, &state);
         }
+        self.mirror.opened();
 
         Ok(())
     }
 
-    pub fn close_editor(&self) -> bool {
-        tutti_plugin_types::assert_main_thread();
-        self.close_editor_inner()
-    }
-
-    /// Editor-close without the main-thread assert. Used by `Drop`, which can
-    /// run on a worker thread: the graph's editor drops a retired plugin node
-    /// on whichever control thread collects the commit, which need not be the
-    /// main one.
-    /// Asserting there would false-fire on a teardown that is benign — the
-    /// public [`close_editor`](Self::close_editor) keeps the guard for the
-    /// real UI-thread call path.
-    fn close_editor_inner(&self) -> bool {
+    pub fn close_editor(&self, main: &MainThread) -> bool {
+        self.mirror.closed();
         let Ok(mut guard) = self.gui.lock() else {
             return false;
         };
         if let Some(gui) = guard.as_mut() {
             // Flush pending GUI param changes before closing.
-            for (param_id, value) in gui.poll_gui_param_changes() {
+            for (param_id, value) in gui.poll_gui_param_changes(main) {
                 self.audio
                     .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }
-            gui.close_editor();
+            gui.close_editor(main);
             true
         } else {
             false
         }
     }
 
-    pub fn editor_idle(&self) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn editor_idle(&self, main: &MainThread) {
         if let Ok(mut guard) = self.gui.lock()
             && let Some(gui) = guard.as_mut()
         {
-            gui.editor_idle();
+            gui.editor_idle(main);
+            // Apply what the realtime setters queued for the editor's display.
+            if let Ok(mut drain) = self.mirror.drain.lock() {
+                drain.drain(|edit| {
+                    if let Edit::Param { id, value } = edit {
+                        gui.set_parameter(main, id, value);
+                    }
+                });
+            }
+            if let Ok(mut latest) = self.mirror.automation.lock()
+                && let Some(mode) = latest.take()
+            {
+                gui.set_automation_state(main, mode);
+            }
             // Forward GUI-originated parameter changes to the audio bridge.
-            for (param_id, value) in gui.poll_gui_param_changes() {
+            for (param_id, value) in gui.poll_gui_param_changes(main) {
                 self.audio
                     .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }
@@ -400,13 +475,17 @@ impl PluginBridge {
     /// editor stale but the audio correct, which is not what a caller asking
     /// "did my preset load" is asking about. Mirroring stays best-effort, and
     /// the audio result is the return value.
-    pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
+    pub fn load_state(
+        &self,
+        main: &MainThread,
+        data: &[u8],
+    ) -> std::result::Result<(), StateError> {
         let audio = self.audio.load_state(data);
         // Also load into GUI instance so its display stays in sync.
         if let Ok(mut guard) = self.gui.lock()
             && let Some(gui) = guard.as_mut()
         {
-            let _ = gui.set_state(data);
+            let _ = gui.set_state(main, data);
         }
         audio
     }
@@ -455,32 +534,32 @@ impl PluginBridge {
         self.audio.settle()
     }
 
-    pub fn editor_capabilities(&self) -> EditorCapabilities {
+    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
         let Ok(mut guard) = self.gui.lock() else {
             return EditorCapabilities::default();
         };
         match guard.as_mut() {
-            Some(gui) => gui.editor_capabilities(),
+            Some(gui) => gui.editor_capabilities(main),
             None => EditorCapabilities::default(),
         }
     }
 
     pub fn set_editor_size(
         &self,
+        main: &MainThread,
         requested: EditorSize,
     ) -> std::result::Result<EditorSize, EditorError> {
-        tutti_plugin_types::assert_main_thread();
         let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
         let gui = guard
             .as_mut()
             .ok_or_else(|| EditorError::PluginError("editor not open".into()))?;
-        gui.set_editor_size(requested)
+        gui.set_editor_size(main, requested)
             .map_err(|e| EditorError::PluginError(e.to_string()))
     }
 
-    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
+    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
         let mut guard = self.gui.lock().ok()?;
-        guard.as_mut()?.poll_editor_resize_request()
+        guard.as_mut()?.poll_editor_resize_request(main)
     }
 }
 
@@ -576,45 +655,47 @@ impl crate::host::handles::capabilities::HostState for SubprocessBackend {
         self.bridge.save_state()
     }
 
-    fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
-        self.bridge.load_state(data)
+    fn load_state(&self, main: &MainThread, data: &[u8]) -> std::result::Result<(), StateError> {
+        self.bridge.load_state(main, data)
     }
 }
 
 impl crate::host::handles::capabilities::HostEditor for SubprocessBackend {
     fn open_editor(
         &self,
+        main: &MainThread,
         parent_ptr: *mut c_void,
         scale: ContentScale,
     ) -> std::result::Result<EditorSize, EditorError> {
-        self.bridge.open_editor(parent_ptr, scale)
+        self.bridge.open_editor(main, parent_ptr, scale)
     }
 
-    fn open_floating_editor(&self) -> std::result::Result<(), EditorError> {
-        self.bridge.open_floating_editor()
+    fn open_floating_editor(&self, main: &MainThread) -> std::result::Result<(), EditorError> {
+        self.bridge.open_floating_editor(main)
     }
 
-    fn close_editor(&self) {
-        self.bridge.close_editor();
+    fn close_editor(&self, main: &MainThread) {
+        self.bridge.close_editor(main);
     }
 
-    fn editor_idle(&self) {
-        self.bridge.editor_idle();
+    fn editor_idle(&self, main: &MainThread) {
+        self.bridge.editor_idle(main);
     }
 
-    fn editor_capabilities(&self) -> EditorCapabilities {
-        self.bridge.editor_capabilities()
+    fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+        self.bridge.editor_capabilities(main)
     }
 
     fn set_editor_size(
         &self,
+        main: &MainThread,
         requested: EditorSize,
     ) -> std::result::Result<EditorSize, EditorError> {
-        self.bridge.set_editor_size(requested)
+        self.bridge.set_editor_size(main, requested)
     }
 
-    fn poll_editor_resize_request(&self) -> Option<EditorSize> {
-        self.bridge.poll_editor_resize_request()
+    fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
+        self.bridge.poll_editor_resize_request(main)
     }
 }
 
@@ -693,11 +774,15 @@ impl Drop for PluginBridge {
         // Leaking the GUI instance avoids the crash. The OS reclaims all memory
         // on process exit anyway.
         //
-        // Use the *_inner variant: Drop can run on a worker thread (the graph's
-        // editor drops a retired node on the thread that collects the commit,
-        // which can be off-main), so the main-thread assert in the public
-        // close_editor would false-fire.
-        self.close_editor_inner();
+        // A drop can run on a worker thread (the graph's editor drops a retired
+        // node on the thread that collects the commit, which can be off-main),
+        // where there is no token. The editor is closed when the drop happens to
+        // be on the main thread; off it, the instance is leaked below with its
+        // editor still open, which is what an app that closes the editor first
+        // (the `NonSend` editor system) never meets.
+        if let Some(main) = MainThread::current() {
+            self.close_editor(&main);
+        }
         if let Ok(mut guard) = self.gui.lock()
             && let Some(gui) = guard.take()
         {
@@ -744,5 +829,64 @@ mod automation_outcome_tests {
     #[test]
     fn a_delivered_push_is_not_an_error() {
         assert!(automation_push_outcome(Delivered::Yes).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod gui_mirror_tests {
+    use super::*;
+
+    fn applied(mirror: &GuiMirror) -> Vec<ParamId> {
+        let mut out = Vec::new();
+        mirror.drain.lock().unwrap().drain(|edit| {
+            if let Edit::Param { id, .. } = edit {
+                out.push(id);
+            }
+        });
+        out
+    }
+
+    /// **An edit made with no editor open is not replayed by the first idle.**
+    /// Automation runs with the editor closed; the editor opens; the first idle
+    /// applies nothing stale. A write made while it is open is applied; what is
+    /// still queued when it closes, or when it opens again, is dropped.
+    ///
+    /// Mutations (run): `push_param` not checking `open` -> the first assert
+    /// fails (a write is queued with no editor); `closed` not discarding -> the
+    /// third fails; `opened` not discarding -> the fourth fails.
+    #[test]
+    fn automation_with_the_editor_closed_is_not_replayed_when_it_opens() {
+        let mirror = GuiMirror::new();
+        let id = ParamId::new(3);
+        mirror.push_param(id, Normalized::of(0.9));
+        mirror.push_automation(crate::protocol::AutomationMode::Writing);
+        assert!(
+            applied(&mirror).is_empty(),
+            "nothing is queued with no editor"
+        );
+        mirror.opened();
+        assert!(
+            applied(&mirror).is_empty(),
+            "the first idle applies nothing stale"
+        );
+
+        mirror.push_param(id, Normalized::of(0.2));
+        assert_eq!(
+            applied(&mirror),
+            vec![id],
+            "an open editor is shown the write"
+        );
+
+        mirror.push_param(id, Normalized::of(0.4));
+        mirror.closed();
+        assert!(applied(&mirror).is_empty(), "closing drops what waited");
+
+        mirror.opened();
+        mirror.push_param(id, Normalized::of(0.6));
+        mirror.opened();
+        assert!(
+            applied(&mirror).is_empty(),
+            "opening again drops what waited"
+        );
     }
 }

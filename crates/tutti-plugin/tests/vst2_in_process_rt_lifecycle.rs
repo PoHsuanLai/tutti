@@ -114,7 +114,7 @@ struct Loaded {
 fn load() -> Loaded {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
-    let (unit, handle) = in_process_vst2_client(&path, SAMPLE_RATE)
+    let (unit, handle) = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded { unit, handle, path }
 }
@@ -287,7 +287,7 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     // The drain point: `editor_idle` is the per-frame main-thread call, and it
     // is reached through the handle rather than the node — the two ends of the
     // deferral are deliberately on opposite sides of the audio/control split.
-    loaded.handle.editor_idle();
+    loaded.handle.editor_idle(&main_thread());
 
     let after = read_capture(&loaded.path);
     assert_eq!(
@@ -320,9 +320,9 @@ fn a_drain_with_nothing_parked_dispatches_nothing() {
     let _guard = lock_probe();
     let loaded = load();
 
-    loaded.handle.editor_idle();
+    loaded.handle.editor_idle(&main_thread());
     let before = read_capture(&loaded.path);
-    loaded.handle.editor_idle();
+    loaded.handle.editor_idle(&main_thread());
     let after = read_capture(&loaded.path);
 
     assert_eq!(
@@ -456,7 +456,7 @@ fn outputs_past_the_tables_are_silent() {
         std::env::set_var("TUTTI_VST2_PROBE_INPUTS", WIDE.to_string());
         std::env::set_var("TUTTI_VST2_PROBE_OUTPUTS", WIDE.to_string());
     }
-    let loaded = in_process_vst2_client(&path, SAMPLE_RATE);
+    let loaded = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE);
     unsafe {
         std::env::remove_var("TUTTI_VST2_PROBE_INPUTS");
         std::env::remove_var("TUTTI_VST2_PROBE_OUTPUTS");
@@ -607,7 +607,7 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     assert_eq!(answered, 1);
     assert!(seen.lock().unwrap().is_empty(), "nothing before the pump");
 
-    loaded.handle.editor_idle();
+    loaded.handle.editor_idle(&main_thread());
 
     let seen = seen.lock().unwrap();
     assert!(
@@ -618,4 +618,10 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     );
     assert!(seen.contains(&PluginInvalidation::Io), "{seen:?}");
     assert_eq!(loaded.unit.shape().latency.samples().get(), 300);
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

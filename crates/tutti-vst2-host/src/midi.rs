@@ -216,6 +216,7 @@ enum Staged {
 // `sysex`'s buffer; none is shared between threads. Same justification
 // as `RenderScratch` — callers serialize externally.
 unsafe impl Send for MidiSendBuffer {}
+// SAFETY: as for `Send` above; shared references never dereference the pointers.
 unsafe impl Sync for MidiSendBuffer {}
 
 impl MidiSendBuffer {
@@ -408,11 +409,13 @@ impl MidiSendBuffer {
 
         let events_offset = std::mem::offset_of!(api::Events, events);
 
+        // SAFETY: `header` is `Vec<u64>`, so its base is 8-aligned, which
+        // is `api::Events`' alignment (its largest field is a pointer);
+        // the cast starts from `*mut u64`, not `*mut u8`, so the compiler
+        // sees that. The header holds at least `words` u64s (asserted above),
+        // enough for the struct and `event_ptrs.len()` table entries, and
+        // `&mut self` makes the writes exclusive.
         unsafe {
-            // SAFETY: `header` is `Vec<u64>`, so its base is 8-aligned, which
-            // is `api::Events`' alignment (its largest field is a pointer);
-            // the cast starts from `*mut u64`, not `*mut u8`, so the compiler
-            // sees that.
             let words_ptr = self.header.as_mut_ptr();
             let events = &mut *(words_ptr as *mut api::Events);
             events.num_events = num_events as i32;
@@ -880,6 +883,9 @@ mod tests {
     fn read_staged(events: *mut vst::api::Events) -> Vec<(i32, Vec<u8>)> {
         use vst::api;
         let mut out = Vec::new();
+        // SAFETY: test helper; `events` comes from `stage_piece`, which points
+        // at the buffer's live header and event pointers (valid until the next
+        // stage), and the buffer outlives this read.
         unsafe {
             let events = &*events;
             let table = events.events.as_ptr();
@@ -1041,6 +1047,8 @@ mod tests {
             let events = buf
                 .stage_piece(&midi, 0, 4096, 4096)
                 .expect("events staged");
+            // SAFETY: `events` was just returned by `stage_piece` on `buf`,
+            // which is live and untouched since.
             staged = unsafe { (*events).num_events } as usize;
         });
         assert_eq!(staged, MIDI_STACK_CAPACITY);
@@ -1107,7 +1115,10 @@ mod tests {
                 0,
                 "n = {n}"
             );
-            assert_eq!(unsafe { (*events).num_events } as usize, n);
+            // SAFETY: `events` is the pointer `stage_piece` returned for `buf`,
+            // which is live and not restaged since.
+            let staged = unsafe { (*events).num_events };
+            assert_eq!(staged as usize, n);
         }
     }
 

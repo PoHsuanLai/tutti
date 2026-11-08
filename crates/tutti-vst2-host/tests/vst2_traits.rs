@@ -64,7 +64,8 @@ impl Probe {
     }
 
     fn load(&self) -> Vst2Loaded {
-        let loaded = Vst2Loaded::load(probe_path::probe_path()).expect("the plugin loads");
+        let loaded =
+            Vst2Loaded::load(&main_thread(), probe_path::probe_path()).expect("the plugin loads");
         // The plugin is built; clearing keeps the variable from outliving it.
         // SAFETY: as in `acquire`.
         unsafe { std::env::remove_var("TUTTI_VST2_PROBE_F64") };
@@ -72,7 +73,7 @@ impl Probe {
     }
 
     fn activate(&self) -> (Vst2Processor, Vst2Controller) {
-        match self.load().activate(prepare()) {
+        match self.load().activate(&main_thread(), prepare()) {
             Ok(pair) => pair,
             Err(refused) => panic!("the plugin refused: {}", refused.reason),
         }
@@ -97,6 +98,7 @@ fn with_symbol<R>(symbol: &str, f: impl FnOnce(*mut std::ffi::c_void) -> R) -> R
 
 fn call(symbol: &str) {
     with_symbol(symbol, |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(p) };
         f();
     });
@@ -104,6 +106,7 @@ fn call(symbol: &str) {
 
 fn set_flag(symbol: &str, on: bool) {
     with_symbol(symbol, |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(bool) = unsafe { std::mem::transmute(p) };
         f(on);
     });
@@ -111,6 +114,7 @@ fn set_flag(symbol: &str, on: bool) {
 
 fn set_late_latency(samples: i32) {
     with_symbol("tutti_vst2_probe_set_late_latency", |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(i32) = unsafe { std::mem::transmute(p) };
         f(samples);
     });
@@ -118,6 +122,7 @@ fn set_late_latency(samples: i32) {
 
 fn fire_io_changed(latency: i32, inputs: i32) -> isize {
     with_symbol("tutti_vst2_probe_fire_io_changed", |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn(i32, i32) -> isize = unsafe { std::mem::transmute(p) };
         f(latency, inputs)
     })
@@ -126,8 +131,11 @@ fn fire_io_changed(latency: i32, inputs: i32) -> isize {
 fn capture() -> ProcessCapture {
     let mut cap = ProcessCapture::empty();
     with_symbol("tutti_vst2_probe_capture", |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: unsafe extern "C" fn(*mut ProcessCapture) -> bool =
             unsafe { std::mem::transmute(p) };
+        // SAFETY: `f` is the probe's capture export; it writes one
+        // `ProcessCapture` through the pointer, and `cap` is a live local.
         unsafe { f(&mut cap) };
     });
     cap
@@ -135,6 +143,7 @@ fn capture() -> ProcessCapture {
 
 fn close_count() -> u32 {
     with_symbol("tutti_vst2_probe_close_count", |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() -> u32 = unsafe { std::mem::transmute(p) };
         f()
     })
@@ -143,12 +152,14 @@ fn close_count() -> u32 {
 /// The lifecycle trace as `(opcode, value)`, oldest first.
 fn trace() -> Vec<(i32, i32)> {
     let len = with_symbol("tutti_vst2_probe_trace_len", |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() -> u32 = unsafe { std::mem::transmute(p) };
         f()
     });
     (0..len)
         .map(|i| {
             let packed = with_symbol("tutti_vst2_probe_trace_at", |p| {
+                // SAFETY: the probe exports this symbol with exactly this signature.
                 let f: extern "C" fn(u32) -> i64 = unsafe { std::mem::transmute(p) };
                 f(i)
             });
@@ -185,7 +196,7 @@ fn render_f32(processor: &mut Vst2Processor, ctx: &ProcessContext<'_>) -> Vec<Ve
 }
 
 fn rejoin(processor: Vst2Processor, controller: Vst2Controller) -> Vst2Loaded {
-    match Vst2Loaded::deactivate(processor, controller) {
+    match Vst2Loaded::deactivate(&main_thread(), processor, controller) {
         Ok(loaded) => loaded,
         Err(stuck) => panic!("the halves would not rejoin: {}", stuck.reason),
     }
@@ -221,7 +232,10 @@ fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
     let probe = Probe::acquire();
     probe.declaring_f64();
     let wanted = prepare().with_format(SampleFormat::Float64);
-    let (mut processor, controller) = probe.load().activate(wanted).expect("activates");
+    let (mut processor, controller) = probe
+        .load()
+        .activate(&main_thread(), wanted)
+        .expect("activates");
     assert_eq!(capture().set_precision_value, 1, "told 64-bit");
 
     let input = [0.0f64; BLOCK];
@@ -277,7 +291,9 @@ fn no_prepare_holds_a_rate_or_block_that_is_none() {
         assert!(prepare().with_rate(SampleRate(rate)).is_none(), "{rate} Hz");
     }
     assert!(MaxBlock::new(Samples(0)).is_none());
-    let (processor, controller) = loaded.activate(prepare()).expect("a valid rate");
+    let (processor, controller) = loaded
+        .activate(&main_thread(), prepare())
+        .expect("a valid rate");
     assert_eq!(capture().resume_count, 1, "the first resume");
     drop(rejoin(processor, controller));
 }
@@ -292,7 +308,7 @@ fn halves_of_two_activations_are_stuck_and_returned() {
     let probe = Probe::acquire();
     let (p1, c1) = probe.activate();
     let (p2, c2) = probe.activate();
-    let stuck = match Vst2Loaded::deactivate(p1, c2) {
+    let stuck = match Vst2Loaded::deactivate(&main_thread(), p1, c2) {
         Ok(_) => panic!("halves of two activations must not rejoin"),
         Err(stuck) => stuck,
     };
@@ -315,9 +331,9 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
     let probe = Probe::acquire();
     let (mut processor, mut controller) = probe.activate();
     let id = ParamId::new(1);
-    controller.set_parameter(id, Normalized::of(0.5));
+    controller.set_parameter(&main_thread(), id, Normalized::of(0.5));
     assert_eq!(
-        Control::parameter(&controller, id),
+        Control::parameter(&controller, &main_thread(), id),
         Some(Normalized::of(0.5))
     );
 
@@ -327,7 +343,7 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
     changes.add_change(ParamId::new(u32::MAX), 0, 0.5);
     render_f32(&mut processor, &ProcessContext::new().params(&changes));
     assert_eq!(
-        Control::parameter(&controller, id),
+        Control::parameter(&controller, &main_thread(), id),
         Some(Normalized::of(0.75))
     );
     drop(rejoin(processor, controller));
@@ -459,18 +475,22 @@ fn the_controller_serves_the_surface_while_the_processor_renders() {
             std::thread::yield_now();
         }
         for round in 0..40 {
-            let saved = controller.save_state().expect("saves");
-            controller.load_state(&saved).expect("loads");
+            let saved = controller.save_state(&main_thread()).expect("saves");
+            controller
+                .load_state(&main_thread(), &saved)
+                .expect("loads");
             controller.set_parameter(
+                &main_thread(),
                 ParamId::new(0),
                 Normalized::clamped(f64::from(round) / 40.0),
             );
-            let _ = controller.parameter(ParamId::new(0));
-            let _ = controller.wiring();
-            let _ = controller.presets();
-            let _ = controller.load_preset(&tutti_plugin_types::PresetId::Number(0));
-            let _ = Controller::latency(&controller);
-            let _ = Controller::tail(&controller);
+            let _ = controller.parameter(&main_thread(), ParamId::new(0));
+            let _ = controller.wiring(&main_thread());
+            let _ = controller.presets(&main_thread());
+            let _ =
+                controller.load_preset(&main_thread(), &tutti_plugin_types::PresetId::Number(0));
+            let _ = Controller::latency(&controller, &main_thread());
+            let _ = Controller::tail(&controller, &main_thread());
         }
         // And leave it rendering after the last call.
         let seen = rendered.load(Ordering::Acquire);
@@ -558,7 +578,10 @@ fn stopping_twice_and_rejoining_sends_one_stop_and_one_suspend() {
 fn the_render_mode_changes_live_without_a_restart() {
     let probe = Probe::acquire();
     let wanted = prepare().with_mode(RenderMode::Offline);
-    let (mut processor, controller) = probe.load().activate(wanted).expect("activates");
+    let (mut processor, controller) = probe
+        .load()
+        .activate(&main_thread(), wanted)
+        .expect("activates");
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 4, "offline");
     assert!(controller.is_offline_render());
@@ -599,7 +622,9 @@ fn a_rejoin_keeps_the_transport_the_plugin_reads() {
     );
 
     let loaded = rejoin(processor, controller);
-    let (mut processor, controller) = loaded.activate(prepare()).expect("activates again");
+    let (mut processor, controller) = loaded
+        .activate(&main_thread(), prepare())
+        .expect("activates again");
     render_f32(&mut processor, &ctx(&playing));
     let cap = capture();
     assert!(cap.time_info_present, "the plugin still reads the writer");
@@ -639,7 +664,9 @@ impl Driven {
         let notices = &mut self.notices;
         self.state = self
             .lifecycle
-            .drive(state, event, &mut self.hand, |n| notices.push(n));
+            .drive(state, event, &mut self.hand, &main_thread(), |n| {
+                notices.push(n)
+            });
     }
 
     /// What the shell's idle pass does: take the plugin's requests, feed them,
@@ -647,7 +674,7 @@ impl Driven {
     fn pass(&mut self) {
         let mut asked = Vec::new();
         if let Lifecycle::Active { controller, .. } = &self.lifecycle {
-            controller.take_requests(&mut asked);
+            controller.take_requests(&main_thread(), &mut asked);
         }
         for request in asked {
             self.drive(Event::Request(request));
@@ -689,7 +716,11 @@ fn an_io_changed_callback_is_read_again_without_a_restart() {
     );
     assert_eq!(count_of(MAINS_CHANGED), 0, "no restart");
     assert_eq!(driven.state.stage(), Stage::Active);
-    let wiring = driven.lifecycle.control().expect("a plugin").wiring();
+    let wiring = driven
+        .lifecycle
+        .control()
+        .expect("a plugin")
+        .wiring(&main_thread());
     assert_eq!(wiring.inputs[0].count(), 4, "the layout was read again");
 }
 
@@ -759,4 +790,10 @@ fn the_types_are_send() {
     send::<Vst2Loaded>();
     send::<Vst2Processor>();
     send::<Vst2Controller>();
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

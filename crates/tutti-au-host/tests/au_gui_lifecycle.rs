@@ -13,9 +13,8 @@
 //! These are Cocoa/AppKit calls, and macOS requires AppKit on the **process
 //! main thread**. Cargo's harness runs every `#[test]` on a worker thread with
 //! no way to ask for the main one, so running them here would be undefined
-//! behaviour rather than a test — and `AuEditor` calls
-//! `tutti_plugin_types::assert_main_thread()`, which fires once a main thread
-//! has been marked.
+//! behaviour rather than a test — and `AuEditor` refuses to open or close off
+//! the OS main thread (`pthread_main_np`).
 //!
 //! So the real run happens in `au_gui_lifecycle_main`, a `harness = false`
 //! binary that owns `main()` and therefore *is* the main thread. The bodies
@@ -26,7 +25,7 @@
 //! ## Running
 //!
 //! ```bash
-//! # The real run — on the main thread, with the affinity assert armed:
+//! # The real run — on the main thread:
 //! cargo test -p tutti-au-host \
 //!   --test au_gui_lifecycle_main
 //! ```
@@ -73,9 +72,9 @@ macro_rules! gui_test {
 
 /// Whether the caller owns the process main thread.
 ///
-/// `pthread_main_np` is the only way to ask: `assert_main_thread` cannot answer,
-/// because it compares against a thread *marked* by `mark_main_thread`, which no
-/// harness target calls — so it is a no-op here by construction.
+/// `pthread_main_np` is the only way to ask: a claimed `MainThread` is the
+/// first thread that claimed, which under the test harness is a worker thread,
+/// not the OS main thread.
 fn is_main_thread() -> bool {
     // SAFETY: `pthread_main_np` takes no arguments, reads no memory, and is
     // available on every macOS this crate compiles for.

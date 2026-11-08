@@ -13,7 +13,7 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper};
 
-use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};
+use tutti_plugin_types::{ContentScale, EditorSize, MainThread, WindowHandle};
 
 use crate::com::HostPlugFrame;
 use crate::error::{Vst3Error, check};
@@ -149,13 +149,14 @@ pub fn detach_view(view: &ComPtr<IPlugView>) {
 /// while the editor holds focus.
 ///
 /// Returns `false` if no editor is open. Main/UI thread.
-///
-/// # Panics
-///
-/// In debug builds, panics if called off the thread registered with
-/// [`tutti_plugin_types::mark_main_thread`].
 #[must_use]
-pub fn send_key_down(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+pub fn send_key_down(
+    _main: &MainThread,
+    view: &ComPtr<IPlugView>,
+    key: u16,
+    virtual_key: i16,
+    modifiers: i16,
+) -> bool {
     // SAFETY: a plain call on a live view.
     unsafe { view.onKeyDown(key, virtual_key, modifiers) == kResultTrue }
 }
@@ -163,13 +164,14 @@ pub fn send_key_down(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modif
 /// Offer a key release to the open editor. See
 /// [`send_key_down`] — identical contract, and a host
 /// that forwards one without the other leaves plugins holding keys down.
-///
-/// # Panics
-///
-/// In debug builds, panics if called off the thread registered with
-/// [`tutti_plugin_types::mark_main_thread`].
 #[must_use]
-pub fn send_key_up(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+pub fn send_key_up(
+    _main: &MainThread,
+    view: &ComPtr<IPlugView>,
+    key: u16,
+    virtual_key: i16,
+    modifiers: i16,
+) -> bool {
     // SAFETY: a plain call on a live view.
     unsafe { view.onKeyUp(key, virtual_key, modifiers) == kResultTrue }
 }
@@ -180,13 +182,8 @@ pub fn send_key_up(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifie
 /// `IPlugView::onWheel` takes a single scalar, so horizontal scroll and
 /// modifier-qualified scroll have nowhere to go — a caller with either must
 /// handle it host-side. Main/UI thread.
-///
-/// # Panics
-///
-/// In debug builds, panics if called off the thread registered with
-/// [`tutti_plugin_types::mark_main_thread`].
 #[must_use]
-pub fn send_wheel(view: &ComPtr<IPlugView>, distance: f32) -> bool {
+pub fn send_wheel(_main: &MainThread, view: &ComPtr<IPlugView>, distance: f32) -> bool {
     // SAFETY: a plain call on a live view.
     unsafe { view.onWheel(distance) == kResultTrue }
 }

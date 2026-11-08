@@ -61,7 +61,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_client, handle) = in_process_vst2_client(&path, SAMPLE_RATE)
+    let (_client, handle) = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.
     clear_probe_env();
@@ -184,4 +184,10 @@ fn a_plugin_with_programs_answers_both_preset_bits() {
     let report = FeatureReport::new(loaded.probed, loaded.features);
     assert_eq!(report.get(Features::PRESET_LIST), Some(true));
     assert_eq!(report.get(Features::PRESET_LOAD), Some(true));
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

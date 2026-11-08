@@ -239,6 +239,11 @@ pub enum PluginForkError {
     /// The fresh instance refused the live instance's state.
     #[error("the fresh instance refused the live instance's state: {0}")]
     LoadState(#[source] StateError),
+
+    /// The fork was asked for off the main thread, where an in-process plugin
+    /// (VST2) cannot be loaded a second time. Nothing was loaded.
+    #[error("an in-process plugin forks on the main thread only")]
+    OffMainThread,
 }
 
 /// How a forked plugin instance failed while rendering.

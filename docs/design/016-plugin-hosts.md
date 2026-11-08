@@ -1446,8 +1446,9 @@ and goes in `tutti-rt` with a loom model beside `pos_ring_loom.rs` that runs
 the shipped code (two threads raising while a third takes: no bit lost, each bit
 taken exactly once) and a mutation record in it.
 
-**Thread affinity is the shell's job.** `assert_main_thread` stays at every
-control entry. The core never sees a thread. `Lifecycle::drive` and every
+**Thread affinity is the token's job** (§2.9, "Thread affinity: the
+`MainThread` token"). Every control entry takes a `&MainThread`. The core never
+sees a thread. `Lifecycle::drive` and every
 `Control` method run on the main thread; `Processor::process` runs on whatever
 thread holds the Processor, and it holds nothing else of the plugin.
 
@@ -1658,6 +1659,44 @@ F6).
   `types` and `topology` are private, its types are re-exported from the root,
   and `as_raw` / `as_raw_mut` are `pub(crate)`. `raw_unit` is `pub(crate)` in
   `tutti-au-host`.
+
+### 2.9a Thread affinity: the `MainThread` token
+
+The main-thread rule was `assert_main_thread`, a `debug_assert!` that did
+nothing in release and nothing while no thread was marked. It is now a type.
+
+- `tutti_plugin_types::MainThread` is `!Send` and `!Sync` and `Copy`. Its only
+  makers are `MainThread::claim()`, where the first thread to claim becomes the
+  process's main thread, a later claim on that thread succeeds again and a claim
+  on any other is refused (`NotMainThread`); and `MainThread::current()`, which
+  never claims and answers `Some` only on the claiming thread (for a `Drop`,
+  which cannot be handed a token).
+- The claim is once per process. Under `cargo nextest` a test is a process, so it
+  claims freely; under plain `cargo test` the tests of a binary share one.
+- An entry that must run on the main thread takes `&MainThread`; holding one is
+  the proof and nothing is checked. Converted: all of `Control` but `info`,
+  `Controller::{latency, tail}`, `Loaded::{activate, deactivate, rebuild}`,
+  `Lifecycle::{apply, drive}` and `Hosted`; `PluginParams`, `PluginState`,
+  `PluginPresets`, `PluginEditorHost` and `PluginAudio::{set_sample_rate,
+  set_render_mode}`; each host crate's editor, timer, run-loop, state and preset
+  methods; `tutti-plugin`'s `HostEditor`, `HostState::load_state` and the
+  in-process `PluginEditor`; `Session::{add_plugin, land_reload}`.
+- Hosts claim once on their UI thread: `bevy-tutti`'s `TuttiHostingPlugin`
+  inserts it as the `NonSend` resource `PluginEditorMainThread`, so Bevy runs a
+  system that takes it on the main thread; the plugin server claims in
+  `PluginServer::new`.
+- AU keeps its OS check (`pthread_main_np`) in `tutti-au-ffi` as well: the
+  claimed thread need not be AppKit's.
+- A `Drop` has no token. The editor of a dropped `PluginBridge` closes only when
+  `MainThread::current()` says so; `ClapLoaded` and `Vst2Handle` check with a
+  `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
+  claims); the VST3 `Plugin` tears down on the dropping thread. The per-format
+  lanes' main-thread handles make that the main thread by construction.
+- `Session` paths that free a retired unit (collect, commit, update, drop) take
+  no token and check with the same `debug_assert!`; the entries that open an
+  in-process plugin (`add_plugin`, `land_reload`) take the token.
+- `claim` is first-come and does not ask the OS: the host claims from its UI
+  thread at startup, and an AU editor still re-checks `pthread_main_np`.
 
 ### 2.10 The VST2 quirk: serialized exclusive calls
 

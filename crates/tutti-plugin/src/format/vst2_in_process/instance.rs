@@ -8,6 +8,7 @@
 
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
+use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{Loaded, MaxBlock, Prepare, RenderMode, Request, SampleRate, Samples};
 use tutti_vst2_host::{
@@ -75,12 +76,13 @@ impl Instance {
     /// state's. Its outcome is returned beside the instance; a refusal does not
     /// fail the load (a plugin at its defaults beats none).
     pub(super) fn load(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         restore: Option<Restore<'_>>,
     ) -> Result<(Self, Option<Result<(), String>>), (LoadStage, String)> {
-        let mut loaded = Vst2Loaded::load(path)
+        let mut loaded = Vst2Loaded::load(main, path)
             .map_err(|e| (LoadStage::Opening, format!("vst2-host load failed: {e}")))?;
         let restored = restore.map(|restore| restore(&mut loaded));
         let prepare = MaxBlock::new(Samples(block_size))
@@ -93,7 +95,7 @@ impl Instance {
                     ),
                 )
             })?;
-        match loaded.activate(prepare) {
+        match loaded.activate(main, prepare) {
             Ok(halves) => {
                 let declared = Declared {
                     latency: halves.1.latency_samples(),
@@ -197,7 +199,7 @@ impl Instance {
     /// A refusal is rolled back: the plugin is activated again at the rate it
     /// already accepted. The figures the plugin recomputes for the new rate are
     /// read by the next [`poll_changes`](Self::poll_changes).
-    pub(super) fn set_sample_rate(&mut self, rate: f64) {
+    pub(super) fn set_sample_rate(&mut self, main: &MainThread, rate: f64) {
         // Before the plugin is taken apart: a refusal after the rejoin would
         // leave a plugin to put back.
         let Some(wanted) = self.prepare.with_rate(SampleRate(rate)) else {
@@ -206,20 +208,20 @@ impl Instance {
         let Some((processor, controller)) = self.halves.take() else {
             return;
         };
-        let loaded = match Vst2Loaded::deactivate(processor, controller) {
+        let loaded = match Vst2Loaded::deactivate(main, processor, controller) {
             Ok(loaded) => loaded,
             Err(stuck) => {
                 self.halves = Some((stuck.processor, stuck.controller));
                 return;
             }
         };
-        let halves = match loaded.activate(wanted) {
+        let halves = match loaded.activate(main, wanted) {
             Ok(halves) => {
                 self.prepare = wanted;
                 Some(halves)
             }
             Err(refused) => match refused.plugin {
-                Some(plugin) => match plugin.activate(self.prepare) {
+                Some(plugin) => match plugin.activate(main, self.prepare) {
                     Ok(halves) => Some(halves),
                     Err(refused) => {
                         self.lost = refused.plugin;
@@ -237,7 +239,11 @@ impl Instance {
     #[cfg(test)]
     pub(super) fn lose(&mut self) {
         let (processor, controller) = self.halves.take().expect("the plugin is not lost");
-        let Ok(loaded) = Vst2Loaded::deactivate(processor, controller) else {
+        let Ok(loaded) = Vst2Loaded::deactivate(
+            &MainThread::claim().expect("one test, one process"),
+            processor,
+            controller,
+        ) else {
             panic!("the halves are a pair");
         };
         self.lost = Some(loaded);
@@ -251,9 +257,9 @@ impl Instance {
     /// re-reads found after a rate change. Main thread: the re-read dispatches
     /// `effGetTailSize`. An empty result is the common case and costs one atomic
     /// swap.
-    pub(super) fn poll_changes(&mut self) -> Changes {
+    pub(super) fn poll_changes(&mut self, main: &MainThread) -> Changes {
         let mut asked = Vec::new();
-        self.controller().take_requests(&mut asked);
+        self.controller().take_requests(main, &mut asked);
         let io = asked.contains(&Request::IoChanged);
         let mut changes = Changes {
             io,
@@ -310,6 +316,13 @@ mod probe_path;
 
 #[cfg(test)]
 mod tests {
+
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     use super::probe_path;
     use super::*;
 
@@ -329,7 +342,7 @@ mod tests {
             (f64::NEG_INFINITY, 64),
             (48_000.0, 0),
         ] {
-            match Instance::load(probe_path::probe_path(), rate, block, None) {
+            match Instance::load(&main_thread(), probe_path::probe_path(), rate, block, None) {
                 Err((LoadStage::Activation, reason)) => {
                     assert!(reason.contains("cannot run at"), "{reason}");
                 }
@@ -348,17 +361,18 @@ mod tests {
     /// `prepare` changes -> fails.
     #[test]
     fn a_rate_that_is_no_rate_leaves_the_instance_alone() {
-        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64, None)
-            .expect("loads")
-            .0;
+        let mut instance =
+            Instance::load(&main_thread(), probe_path::probe_path(), 48_000.0, 64, None)
+                .expect("loads")
+                .0;
         let before = instance.prepare;
         for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            instance.set_sample_rate(rate);
+            instance.set_sample_rate(&main_thread(), rate);
             assert_eq!(instance.prepare, before, "{rate}");
             assert!(instance.halves.is_some(), "{rate}");
             assert!(!instance.is_lost(), "{rate}");
         }
-        instance.set_sample_rate(96_000.0);
+        instance.set_sample_rate(&main_thread(), 96_000.0);
         assert_eq!(instance.prepare.rate().0, 96_000.0);
     }
 
@@ -371,9 +385,10 @@ mod tests {
     /// returning without zeroing -> the outputs keep 1.0 -> fails.
     #[test]
     fn a_lost_plugin_renders_silence_without_panicking() {
-        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64, None)
-            .expect("loads")
-            .0;
+        let mut instance =
+            Instance::load(&main_thread(), probe_path::probe_path(), 48_000.0, 64, None)
+                .expect("loads")
+                .0;
         assert!(!instance.is_lost());
         instance.lose();
         assert!(instance.is_lost());

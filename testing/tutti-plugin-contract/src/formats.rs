@@ -1,5 +1,6 @@
 //! One [`Format`] per host: the whole of a format's side of the contract.
 
+use crate::active::main_thread;
 use crate::{Format, Gap, ParamTiming, plugin};
 
 /// CLAP.
@@ -29,7 +30,8 @@ impl Format for Vst2 {
     const GAPS: &'static [(&'static str, Gap)] = &[];
 
     fn load() -> Self::L {
-        tutti_vst2_host::Vst2Loaded::load(plugin::library()).expect("the plugin loads")
+        tutti_vst2_host::Vst2Loaded::load(&main_thread(), plugin::library())
+            .expect("the plugin loads")
     }
 }
 

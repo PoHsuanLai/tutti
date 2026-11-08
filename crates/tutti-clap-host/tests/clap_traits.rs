@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
@@ -163,14 +164,20 @@ fn render(processor: &mut ClapProcessor, format: SampleFormat) -> Result<(), Plu
 #[test]
 fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     let probe = Probe::acquire();
-    let (mut processor, controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     assert!(!processor.is_f64());
     assert_eq!(
-        controller.latency(),
+        controller.latency(&main_thread()),
         Samples(controller.latency_samples() as usize),
         "the trait's figure is the plugin's"
     );
-    assert!(matches!(controller.tail(), PluginTail::Finite(_)));
+    assert!(matches!(
+        controller.tail(&main_thread()),
+        PluginTail::Finite(_)
+    ));
     render(&mut processor, SampleFormat::Float32).expect("an f32 block renders");
     assert!(
         processor.is_processing(),
@@ -184,14 +191,16 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     );
 
     // Deactivation stops processing and gives the plugin back loaded.
-    let loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
+    let loaded = ClapLoaded::deactivate(&main_thread(), processor, controller).expect("a pair");
     assert!(!loaded.is_active());
 
     // The same plugin, its ports flagged for 64-bit audio, activates at 64-bit
     // when the `Prepare` says so.
     set_ports_64bit(PORTS_64BIT_INPUTS | PORTS_64BIT_OUTPUTS);
     let wide = prepare().with_format(SampleFormat::Float64);
-    let (mut processor, controller) = loaded.activate(wide).expect("activates at 64-bit");
+    let (mut processor, controller) = loaded
+        .activate(&main_thread(), wide)
+        .expect("activates at 64-bit");
     assert!(processor.is_f64());
     render(&mut processor, SampleFormat::Float64).expect("an f64 block renders");
     let mismatch = render(&mut processor, SampleFormat::Float32).expect_err("wrong width");
@@ -199,7 +208,7 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
         matches!(mismatch, PluginError::Block(why) if why.contains("sample format")),
         "{mismatch:?}"
     );
-    ClapLoaded::deactivate(processor, controller).expect("a pair");
+    ClapLoaded::deactivate(&main_thread(), processor, controller).expect("a pair");
     set_ports_64bit(0);
 }
 
@@ -219,33 +228,35 @@ fn a_64bit_request_negotiates_to_32bit_without_64bit_ports() {
     let mut loaded = probe.load();
     assert!(!loaded.supports_f64());
     let negotiated = loaded
-        .negotiate_format(SampleFormat::Float64)
+        .negotiate_format(&main_thread(), SampleFormat::Float64)
         .expect("inactive");
     assert_eq!(negotiated, SampleFormat::Float32, "no 64-bit ports");
 
     let asked = prepare().with_format(SampleFormat::Float64);
     let refused = loaded
-        .activate(asked)
+        .activate(&main_thread(), asked)
         .expect_err("the raw request is refused");
     let loaded = refused.plugin.expect("the plugin comes back");
 
     let settled = prepare().with_format(negotiated);
-    let (mut processor, controller) = loaded.activate(settled).expect("the fallback activates");
+    let (mut processor, controller) = loaded
+        .activate(&main_thread(), settled)
+        .expect("the fallback activates");
     assert_eq!(processor.format(), SampleFormat::Float32);
     render(&mut processor, SampleFormat::Float32).expect("and renders");
-    ClapLoaded::deactivate(processor, controller).expect("a pair");
+    ClapLoaded::deactivate(&main_thread(), processor, controller).expect("a pair");
 
     set_ports_64bit(PORTS_64BIT_INPUTS | PORTS_64BIT_OUTPUTS);
     let mut capable = probe.load();
     assert_eq!(
         capable
-            .negotiate_format(SampleFormat::Float64)
+            .negotiate_format(&main_thread(), SampleFormat::Float64)
             .expect("inactive"),
         SampleFormat::Float64
     );
     assert_eq!(
         capable
-            .negotiate_format(SampleFormat::Float32)
+            .negotiate_format(&main_thread(), SampleFormat::Float32)
             .expect("inactive"),
         SampleFormat::Float32,
         "capability never raises a 32-bit request"
@@ -270,7 +281,7 @@ fn partly_64bit_ports_negotiate_to_32bit_and_the_ports_are_read_again() {
     let mut inputs_only = probe.load();
     assert_eq!(
         inputs_only
-            .negotiate_format(SampleFormat::Float64)
+            .negotiate_format(&main_thread(), SampleFormat::Float64)
             .expect("inactive"),
         SampleFormat::Float32,
         "inputs only"
@@ -278,7 +289,7 @@ fn partly_64bit_ports_negotiate_to_32bit_and_the_ports_are_read_again() {
     set_ports_64bit(PORTS_64BIT_OUTPUTS);
     assert_eq!(
         inputs_only
-            .negotiate_format(SampleFormat::Float64)
+            .negotiate_format(&main_thread(), SampleFormat::Float64)
             .expect("inactive"),
         SampleFormat::Float32,
         "outputs only"
@@ -290,7 +301,7 @@ fn partly_64bit_ports_negotiate_to_32bit_and_the_ports_are_read_again() {
     set_ports_64bit(0);
     assert_eq!(
         loaded
-            .negotiate_format(SampleFormat::Float64)
+            .negotiate_format(&main_thread(), SampleFormat::Float64)
             .expect("inactive"),
         SampleFormat::Float32,
         "the flags dropped after load"
@@ -311,7 +322,7 @@ fn a_refused_activation_hands_the_plugin_back() {
         .expect("a real rate");
     let refused = probe
         .load()
-        .activate(wanted)
+        .activate(&main_thread(), wanted)
         .expect_err("the plugin refuses 96 kHz");
     let loaded = refused.plugin.expect("CLAP hands the plugin back");
     assert!(!loaded.is_active());
@@ -319,7 +330,7 @@ fn a_refused_activation_hands_the_plugin_back() {
 
     set_activate_refusal(0.0);
     let (_, _) = loaded
-        .activate(prepare())
+        .activate(&main_thread(), prepare())
         .expect("activates at a rate it takes");
 }
 
@@ -330,17 +341,23 @@ fn a_refused_activation_hands_the_plugin_back() {
 #[test]
 fn halves_of_two_activations_are_stuck_and_returned() {
     let probe = Probe::acquire();
-    let (p1, c1) = probe.load().activate(prepare()).expect("first");
-    let (p2, c2) = probe.load().activate(prepare()).expect("second");
+    let (p1, c1) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("first");
+    let (p2, c2) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("second");
 
-    let stuck = match ClapLoaded::deactivate(p1, c2) {
+    let stuck = match ClapLoaded::deactivate(&main_thread(), p1, c2) {
         Ok(_) => panic!("a mixed pair must not rejoin"),
         Err(stuck) => stuck,
     };
     assert!(matches!(stuck.reason, PluginError::Other(_)));
     // Both halves are intact: the right pairs rejoin.
     let (p1, c2) = (stuck.processor, stuck.controller);
-    ClapLoaded::deactivate(p2, c1).expect_err("still mixed");
+    ClapLoaded::deactivate(&main_thread(), p2, c1).expect_err("still mixed");
     let _ = (p1, c2);
 }
 
@@ -354,12 +371,15 @@ fn halves_of_two_activations_are_stuck_and_returned() {
 #[test]
 fn a_controller_write_is_a_param_value_event_at_the_head_of_the_next_block() {
     let probe = Probe::acquire();
-    let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, mut controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     let cutoff = &probe_params()[0];
     let id = ParamId::new(cutoff.id);
 
     render(&mut processor, SampleFormat::Float32).expect("block");
-    controller.set_parameter(id, Normalized::of(0.25));
+    controller.set_parameter(&main_thread(), id, Normalized::of(0.25));
     let before = process_capture();
     assert!(
         !before.events[..before.event_count as usize]
@@ -388,15 +408,20 @@ fn a_controller_write_is_a_param_value_event_at_the_head_of_the_next_block() {
 #[test]
 fn a_state_load_makes_queued_writes_stale() {
     let probe = Probe::acquire();
-    let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, mut controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     let cutoff = &probe_params()[0];
     let id = ParamId::new(cutoff.id);
 
     render(&mut processor, SampleFormat::Float32).expect("block");
-    controller.set_parameter(id, Normalized::of(0.25));
-    let saved = controller.save_state().expect("saves");
-    controller.load_state(&saved).expect("restores");
-    controller.set_parameter(id, Normalized::of(0.75));
+    controller.set_parameter(&main_thread(), id, Normalized::of(0.25));
+    let saved = controller.save_state(&main_thread()).expect("saves");
+    controller
+        .load_state(&main_thread(), &saved)
+        .expect("restores");
+    controller.set_parameter(&main_thread(), id, Normalized::of(0.75));
 
     render(&mut processor, SampleFormat::Float32).expect("block");
     let cap = process_capture();
@@ -422,17 +447,24 @@ fn a_state_load_makes_queued_writes_stale() {
 #[test]
 fn a_full_ring_keeps_the_latest_value_and_retries_on_flush() {
     let probe = Probe::acquire();
-    let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, mut controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     let cutoff = &probe_params()[0];
     let id = ParamId::new(cutoff.id);
 
     for step in 0..1000 {
-        controller.set_parameter(id, Normalized::clamped(f64::from(step) / 1000.0));
+        controller.set_parameter(
+            &main_thread(),
+            id,
+            Normalized::clamped(f64::from(step) / 1000.0),
+        );
     }
     assert!(controller.refused_edits() > 0, "the ring filled");
 
     render(&mut processor, SampleFormat::Float32).expect("block");
-    controller.flush_edits();
+    controller.flush_edits(&main_thread());
     render(&mut processor, SampleFormat::Float32).expect("block");
     let cap = process_capture();
     let last = cap.events[..cap.event_count as usize]
@@ -454,11 +486,18 @@ fn a_full_ring_keeps_the_latest_value_and_retries_on_flush() {
 #[test]
 fn draining_edits_does_not_allocate() {
     let probe = Probe::acquire();
-    let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, mut controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     let id = ParamId::new(probe_params()[0].id);
     render(&mut processor, SampleFormat::Float32).expect("warm up");
     for step in 0..200 {
-        controller.set_parameter(id, Normalized::clamped(f64::from(step) / 200.0));
+        controller.set_parameter(
+            &main_thread(),
+            id,
+            Normalized::clamped(f64::from(step) / 200.0),
+        );
     }
     assert_no_alloc(|| {
         render(&mut processor, SampleFormat::Float32).expect("block");
@@ -474,7 +513,10 @@ fn draining_edits_does_not_allocate() {
 #[test]
 fn a_processor_that_outlives_its_controller_renders_nothing() {
     let probe = Probe::acquire();
-    let (mut processor, controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     render(&mut processor, SampleFormat::Float32).expect("block");
     let visits = thread_capture().sites[Site::Process as usize].visits;
     assert_eq!(visits, 1);
@@ -506,7 +548,10 @@ fn a_processor_that_outlives_its_controller_renders_nothing() {
 #[test]
 fn the_controller_serves_reads_while_the_processor_renders() {
     let probe = Probe::acquire();
-    let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, mut controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     let id = ParamId::new(probe_params()[0].id);
     render(&mut processor, SampleFormat::Float32).expect("warm up");
 
@@ -519,11 +564,17 @@ fn the_controller_serves_reads_while_the_processor_renders() {
         processor
     });
     for step in 0..200 {
-        let _ = controller.parameter(id).expect("a value");
-        let _ = controller.parameters();
-        controller.save_state().expect("state saves beside process");
-        controller.set_parameter(id, Normalized::clamped(f64::from(step % 10) / 10.0));
-        controller.flush_edits();
+        let _ = controller.parameter(&main_thread(), id).expect("a value");
+        let _ = controller.parameters(&main_thread());
+        controller
+            .save_state(&main_thread())
+            .expect("state saves beside process");
+        controller.set_parameter(
+            &main_thread(),
+            id,
+            Normalized::clamped(f64::from(step % 10) / 10.0),
+        );
+        controller.flush_edits(&main_thread());
         std::thread::yield_now();
     }
     let mut processor = render_thread
@@ -559,18 +610,27 @@ fn queued_edits_survive_a_rejoin() {
     let cutoff = &probe_params()[0];
     let id = ParamId::new(cutoff.id);
 
-    let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id, Normalized::of(0.25));
+    let (processor, mut controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
+    controller.set_parameter(&main_thread(), id, Normalized::of(0.25));
     assert_eq!(peek_param(cutoff.id), Some(cutoff.default), "queued only");
-    let loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
+    let loaded = ClapLoaded::deactivate(&main_thread(), processor, controller).expect("a pair");
     assert_eq!(peek_param(cutoff.id), Some(350.0), "100 + 0.25 * 1000");
 
     // More writes than the ring holds: the last is in `unsent`.
-    let (processor, mut controller) = loaded.activate(prepare()).expect("activates");
+    let (processor, mut controller) = loaded
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     for step in 0..1000 {
-        controller.set_parameter(id, Normalized::clamped(f64::from(step) / 1000.0));
+        controller.set_parameter(
+            &main_thread(),
+            id,
+            Normalized::clamped(f64::from(step) / 1000.0),
+        );
     }
-    let _loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
+    let _loaded = ClapLoaded::deactivate(&main_thread(), processor, controller).expect("a pair");
     let wanted = cutoff.min + 0.999 * (cutoff.max - cutoff.min);
     let got = peek_param(cutoff.id).expect("a value");
     assert!((got - wanted).abs() < 1e-9, "{got} vs {wanted}");
@@ -584,7 +644,10 @@ fn queued_edits_survive_a_rejoin() {
 #[test]
 fn an_errored_block_does_not_allocate() {
     let probe = Probe::acquire();
-    let (mut processor, controller) = probe.load().activate(prepare()).expect("activates");
+    let (mut processor, controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
     render(&mut processor, SampleFormat::Float32).expect("warm up");
 
     // Longer than the activation's 256 frames.

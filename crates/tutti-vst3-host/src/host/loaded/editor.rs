@@ -1,6 +1,7 @@
 //! The plugin's editor surface.
 
 use super::*;
+use tutti_plugin_types::MainThread;
 
 impl Vst3Loaded {
     /// Returns `true` if the plugin actually publishes an editor view.
@@ -39,16 +40,15 @@ impl Vst3Loaded {
     /// rejects this platform's window type, and
     /// [`Vst3Error::PluginError`] if
     /// `IPlugView::attached` fails.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> Result<EditorSize> {
         let size = self
             .plugin
-            .open_editor(parent, scale)
+            .open_editor(main, parent, scale)
             .map_err(|error| match error {
                 EditorError::NoController => {
                     Vst3Error::EditorError("Plugin has no editor controller".to_string())
@@ -74,14 +74,8 @@ impl Vst3Loaded {
 
     /// Closes the editor if open, calling `IPlugView::removed`. No-op otherwise.
     /// Called automatically on `Drop`.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn close_editor(&mut self) {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.close_editor();
+    pub fn close_editor(&mut self, main: &MainThread) {
+        self.plugin.close_editor(main);
     }
 
     /// What the currently open editor supports, queried live from the view.
@@ -134,14 +128,8 @@ impl Vst3Loaded {
     ///
     /// No-op on non-Linux targets, where the OS provides the run loop, so
     /// calling it unconditionally is portable.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn run_editor_loop_iteration(&mut self) {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.run_editor_loop_iteration();
+    pub fn run_editor_loop_iteration(&mut self, main: &MainThread) {
+        self.plugin.run_editor_loop_iteration(main);
     }
 
     /// What the plugin has registered with this host's run loop, and how much
@@ -172,8 +160,12 @@ impl Vst3Loaded {
     /// Exposed for the conformance suite, which uses it to check that a size
     /// the host granted is genuinely one the plugin accepts.
     #[cfg(feature = "conformance")]
-    pub fn check_editor_size_constraint(&self, requested: EditorSize) -> Option<EditorSize> {
-        self.plugin.editor_size_constraint(requested)
+    pub fn check_editor_size_constraint(
+        &self,
+        main: &MainThread,
+        requested: EditorSize,
+    ) -> Option<EditorSize> {
+        self.plugin.editor_size_constraint(main, requested)
     }
 
     /// Offer a key press to the open editor. [`KeyOutcome::Consumed`] means the
@@ -199,35 +191,27 @@ impl Vst3Loaded {
     /// while the editor holds focus.
     ///
     /// Returns [`KeyOutcome::Ignored`] if no editor is open. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
-    pub fn send_key_down(&self, key: KeyEvent) -> KeyOutcome {
-        tutti_plugin_types::assert_main_thread();
-        outcome(
-            self.plugin
-                .editor_key_down(key.character, key.virtual_key, key.modifiers.bits()),
-        )
+    pub fn send_key_down(&self, main: &MainThread, key: KeyEvent) -> KeyOutcome {
+        outcome(self.plugin.editor_key_down(
+            main,
+            key.character,
+            key.virtual_key,
+            key.modifiers.bits(),
+        ))
     }
 
     /// Offer a key release to the open editor. See
     /// [`send_key_down`](Self::send_key_down) — identical contract, and a host
     /// that forwards one without the other leaves plugins holding keys down.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
-    pub fn send_key_up(&self, key: KeyEvent) -> KeyOutcome {
-        tutti_plugin_types::assert_main_thread();
-        outcome(
-            self.plugin
-                .editor_key_up(key.character, key.virtual_key, key.modifiers.bits()),
-        )
+    pub fn send_key_up(&self, main: &MainThread, key: KeyEvent) -> KeyOutcome {
+        outcome(self.plugin.editor_key_up(
+            main,
+            key.character,
+            key.virtual_key,
+            key.modifiers.bits(),
+        ))
     }
 
     /// Offer a mouse-wheel movement to the open editor, `distance` in wheel
@@ -236,15 +220,9 @@ impl Vst3Loaded {
     /// `IPlugView::onWheel` takes a single scalar, so horizontal scroll and
     /// modifier-qualified scroll have nowhere to go — a caller with either must
     /// handle it host-side. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
-    pub fn send_wheel(&self, distance: f32) -> bool {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.editor_wheel(distance)
+    pub fn send_wheel(&self, main: &MainThread, distance: f32) -> bool {
+        self.plugin.editor_wheel(main, distance)
     }
 
     /// Tells the open editor whether it now has keyboard focus.
@@ -253,14 +231,8 @@ impl Vst3Loaded {
     /// handling; one that never hears it may ignore keys the host forwards.
     /// A notification, not a request — there is no consumed/refused answer.
     /// No-op if no editor is open. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn set_editor_focus(&self, focused: bool) {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.set_editor_focus(focused);
+    pub fn set_editor_focus(&self, main: &MainThread, focused: bool) {
+        self.plugin.set_editor_focus(main, focused);
     }
 
     /// Resizes the open editor and returns the size the plugin applied.
@@ -273,12 +245,16 @@ impl Vst3Loaded {
     ///
     /// Returns [`Vst3Error::EditorError`] if no editor is open, or
     /// [`Vst3Error::PluginError`] if the view rejects `onSize`.
-    pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
+    pub fn resize_editor(
+        &mut self,
+        main: &MainThread,
+        requested: EditorSize,
+    ) -> Result<EditorSize> {
         if !self.plugin.editor_open() {
             return Err(Vst3Error::EditorError("editor not open".to_string()));
         }
         self.plugin
-            .resize_editor(requested)
+            .resize_editor(main, requested)
             .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: e.code(),

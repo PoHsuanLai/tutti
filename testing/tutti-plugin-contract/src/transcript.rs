@@ -5,6 +5,7 @@
 //! every format and every process boundary has: nothing here depends on an
 //! environment variable or a symbol of the plugin image.
 
+use crate::active::main_thread;
 use tutti_plugin_types::Control;
 
 use crate::Format;
@@ -19,7 +20,7 @@ pub use tutti_shared_plugin::transcript::{
 ///
 /// When the plugin's log overflowed.
 pub fn transcript<F: Format, C: Control + ?Sized>(c: &mut C) -> Transcript {
-    let state = c.save_state().expect("the plugin saves");
+    let state = c.save_state(&main_thread()).expect("the plugin saves");
     Transcript::parse(&F::extract_blob(&state)).complete()
 }
 
@@ -28,18 +29,18 @@ pub fn transcript<F: Format, C: Control + ?Sized>(c: &mut C) -> Transcript {
 /// a VST3 separate controller reaches the component only inside a block, after
 /// setup has read the mode.
 pub fn set_mode<F: Format, C: Control + ?Sized>(c: &mut C, mode: Mode) {
-    let state = c.save_state().expect("the plugin saves");
+    let state = c.save_state(&main_thread()).expect("the plugin saves");
     let patched = F::embed_blob(&state, &patch_mode(F::extract_blob(&state), mode));
-    c.load_state(&patched)
+    c.load_state(&main_thread(), &patched)
         .expect("the plugin takes its configuration");
 }
 
 /// Selects the plugin's `level` the same way: through the state, so it reaches
 /// the component itself and not a controller that a host delivers separately.
 pub fn set_level<F: Format, C: Control + ?Sized>(c: &mut C, level: f64) {
-    let state = c.save_state().expect("the plugin saves");
+    let state = c.save_state(&main_thread()).expect("the plugin saves");
     let patched = F::embed_blob(&state, &patch_level(F::extract_blob(&state), level));
-    c.load_state(&patched)
+    c.load_state(&main_thread(), &patched)
         .expect("the plugin takes its configuration");
 }
 

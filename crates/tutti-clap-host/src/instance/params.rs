@@ -16,6 +16,7 @@ use clap_sys::ext::param_indication::{
     CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
 };
 use tutti_clap_ffi::chars_to_string;
+use tutti_plugin_types::MainThread;
 
 /// How a host surface control (e.g. a hardware knob) is bound to a plugin
 /// parameter, per `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
@@ -251,18 +252,14 @@ impl ClapLoaded {
     /// `ClapProcessContext::params`) — that is in-order delivery rather than an
     /// out-of-band poke — but doing it here is safe.
     ///
-    /// # Panics
-    ///
-    /// On an inactive instance, main thread only: in debug builds, panics if
-    /// called from a thread other than the one that loaded the plugin.
-    pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
-        // An active plugin takes the `[audio-thread]` claim inside the FFI
-        // call (`flush` is an audio-thread entry then); an inactive one is a
-        // main-thread call.
-        if !self.flags.active {
-            self.assert_main_thread();
-        }
-
+    /// An inactive instance is a main-thread call, which `_main` proves; an
+    /// active plugin takes the `[audio-thread]` claim inside the FFI call
+    /// (`flush` is an audio-thread entry then).
+    pub fn flush_params(
+        &mut self,
+        _main: &MainThread,
+        input_events: Vec<ClapEvent>,
+    ) -> Vec<ClapEvent> {
         let mut input_list = InputEventList::from_events(input_events);
         input_list.sort_by_time();
         let mut output_list = OutputEventList::new();
@@ -285,8 +282,8 @@ impl ClapLoaded {
     /// # Panics
     ///
     /// As for [`flush_params`](Self::flush_params).
-    pub fn set_plain_value(&mut self, id: u32, value: f64) {
-        self.flush_params(vec![ClapEvent::param_value(0, id, value)]);
+    pub fn set_plain_value(&mut self, main: &MainThread, id: u32, value: f64) {
+        self.flush_params(main, vec![ClapEvent::param_value(0, id, value)]);
     }
 
     /// Informs the plugin about a host-surface → parameter mapping. No-op if

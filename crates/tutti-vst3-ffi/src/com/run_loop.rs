@@ -38,6 +38,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_plugin_types::MainThread;
 
 use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, ITimerHandler, TimerInterval};
 use vst3::Steinberg::kResultOk;
@@ -124,16 +125,10 @@ impl RunLoop {
     /// unregister handlers (itself included) from inside its callback. A handler
     /// unregistered by an earlier callback of the same iteration is not called.
     ///
-    /// # Panics
-    ///
-    /// In debug builds, if the main thread was marked
-    /// ([`tutti_plugin_types::mark_main_thread`]) and this is another thread:
-    /// the handlers are the plugin's UI-thread objects. Checked here, rather
-    /// than by making this `unsafe`, so the host crate (which forbids `unsafe`)
-    /// calls it as it calls every other main-thread entry, behind the same
-    /// assertion.
-    pub(crate) fn run_iteration(&self) {
-        tutti_plugin_types::assert_main_thread();
+    /// The handlers are the plugin's UI-thread objects, which the `&MainThread`
+    /// proves this thread to be the owner of; the host crate (which forbids
+    /// `unsafe`) calls it as it calls every other main-thread entry.
+    pub(crate) fn run_iteration(&self, _main: &MainThread) {
         let mut due: Vec<Due> = Vec::new();
         let mut fds: Vec<libc::pollfd> = Vec::new();
         {
@@ -333,9 +328,9 @@ mod tests {
         unsafe { run_loop.register_timer(ptr, 1) };
 
         std::thread::sleep(Duration::from_millis(5));
-        run_loop.run_iteration();
+        run_loop.run_iteration(&MainThread::claim().unwrap());
         std::thread::sleep(Duration::from_millis(5));
-        run_loop.run_iteration();
+        run_loop.run_iteration(&MainThread::claim().unwrap());
 
         assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     }

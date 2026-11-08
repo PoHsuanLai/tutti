@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use tutti_plugin_types::MainThread;
 
 use parking_lot::Mutex;
 use tutti_plugin_types::Control;
@@ -42,10 +43,11 @@ const MAX_BLOCK_SIZE: usize = 4096;
 /// Returns [`BridgeError::LoadFailed`] when the library cannot be opened or
 /// the plugin fails to initialize.
 pub fn load_client(
+    main: &MainThread,
     path: &Path,
     sample_rate: impl Into<tutti_types::SampleRate>,
 ) -> Result<(InProcessVst2Client, PluginHandle)> {
-    load_client_restoring(path, sample_rate, None).map(|(client, handle, _)| (client, handle))
+    load_client_restoring(main, path, sample_rate, None).map(|(client, handle, _)| (client, handle))
 }
 
 /// [`load_client`], with `restore` run on the plugin before it is activated
@@ -55,6 +57,7 @@ pub fn load_client(
 ///
 /// As [`load_client`].
 pub fn load_client_restoring(
+    main: &MainThread,
     path: &Path,
     sample_rate: impl Into<tutti_types::SampleRate>,
     restore: Option<
@@ -68,13 +71,11 @@ pub fn load_client_restoring(
     // `.get()` here and not at the caller: this is the last hop before
     // `Instance::load`, which crosses the VST2 ABI and takes a bare rate.
     let sample_rate = sample_rate.into().get();
-    let (inner, restored) =
-        Instance::load(path, sample_rate, MAX_BLOCK_SIZE, restore).map_err(|(stage, reason)| {
-            BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage,
-                reason,
-            }
+    let (inner, restored) = Instance::load(main, path, sample_rate, MAX_BLOCK_SIZE, restore)
+        .map_err(|(stage, reason)| BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage,
+            reason,
         })?;
 
     let host_meta = inner.metadata().clone();
@@ -89,7 +90,7 @@ pub fn load_client_restoring(
     // honours the claim by draining its transport slot into each
     // `Vst2ProcessContext`, which is what fills the `TimeInfo` that callback
     // serves.
-    let mut loaded: LoadedPlugin = Control::wiring(&**inner);
+    let mut loaded: LoadedPlugin = Control::wiring(&**inner, main);
     // Both preset bits come from one number: VST2 has no separate "can you
     // load" query, and a plugin declaring programs can always be sent
     // `effProgramChange`. A plugin with none answers `false` to both — a

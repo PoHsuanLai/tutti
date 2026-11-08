@@ -215,8 +215,9 @@ impl HostState {
         if sysex.system_data.is_null() || len == 0 {
             return;
         }
-        // Safety: the plugin guarantees `data_size` bytes at `system_data`
-        // for the duration of the callback.
+        // SAFETY: non-null checked above; the VST2 contract has the plugin
+        // keep `data_size` readable bytes at `system_data` for the duration
+        // of the callback, and the bytes are copied out before it returns.
         let bytes = unsafe { std::slice::from_raw_parts(sysex.system_data, len) };
         let payload = unframed(bytes);
         let packets = MidiEvent::sysex7_packet_count(payload.len());
@@ -294,14 +295,23 @@ impl Host for HostState {
         let num = events.num_events as usize;
         let base = events.events.as_ptr();
         for i in 0..num {
-            // Safety: events is valid for num_events pointers in the flexible array.
+            // SAFETY: the VST2 contract has the plugin supply `num_events`
+            // valid event pointers in the flexible array for the duration of
+            // the callback; not checked here (the declared `[_; 2]` type is
+            // only the header's view of that array).
             let event_ptr = unsafe { *base.add(i) };
+            // SAFETY: `event_ptr` is one of those plugin-supplied pointers,
+            // pointing to an event header valid for this callback.
             let event = unsafe { &*event_ptr };
             // Read a whole struct only if the plugin says it is that big.
             let declared = usize::try_from(event.byte_size).unwrap_or(0);
             if matches!(event.event_type, vst::api::EventType::Midi)
                 && declared >= std::mem::size_of::<vst::api::MidiEvent>()
             {
+                // SAFETY: the event type is Midi and `byte_size` declares at
+                // least `size_of::<MidiEvent>()` bytes, so the pointee is a
+                // `MidiEvent` valid for this callback; header alignment is
+                // assumed to match the plugin's allocation (not checked).
                 let midi_event = unsafe { &*(event_ptr as *const vst::api::MidiEvent) };
                 if let Some(converted) = to_midi(midi_event)
                     && self.midi_out_tx.push(converted).is_err()
@@ -314,6 +324,9 @@ impl Host for HostState {
                 // `read_unaligned`: the header's alignment (4) does not prove the
                 // plugin's `SysExEvent` (8). The struct holds no owned data, so
                 // the copy needs no drop.
+                // SAFETY: the event type is SysEx and `byte_size` declares at
+                // least `size_of::<SysExEvent>()` readable bytes at
+                // `event_ptr`; the unaligned read needs no alignment.
                 let sysex =
                     unsafe { std::ptr::read_unaligned(event_ptr.cast::<vst::api::SysExEvent>()) };
                 self.push_sysex_out(&sysex);

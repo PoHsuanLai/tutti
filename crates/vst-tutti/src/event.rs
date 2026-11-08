@@ -87,9 +87,14 @@ impl<'a> Event<'a> {
     /// [`SysExEvent`]. In case of a [`SysExEvent`], `system_data` and `data_size` must be correct.
     pub unsafe fn from_raw_event(event: *const api::Event) -> Event<'a> {
         use api::EventType::*;
+        // SAFETY: the caller upholds this fn's `# Safety` contract: `event` points at a
+        // valid, aligned `api::Event`.
         let event = unsafe { &*event };
         match event.event_type {
             Midi => {
+                // SAFETY: both are 32-byte `#[repr(C)]` structs (size checked by
+                // `transmute`); the caller guarantees the event is a MIDI event, and every
+                // bit pattern of its integer fields is valid.
                 let event: api::MidiEvent = unsafe { mem::transmute(*event) };
 
                 let length = if event.note_length > 0 {
@@ -127,8 +132,12 @@ impl<'a> Event<'a> {
                     // We can safely cast the event pointer to a `SysExEvent` pointer as
                     // event_type refers to a `SysEx` type.
                     #[allow(clippy::cast_ptr_alignment)]
+                    // SAFETY: the caller guarantees an event of type `SysEx` is a full
+                    // `SysExEvent`, so the larger type is readable at this pointer.
                     let event: &api::SysExEvent =
                         unsafe { &*(event as *const api::Event as *const api::SysExEvent) };
+                    // SAFETY: the caller guarantees `system_data` addresses `data_size`
+                    // valid bytes; `data_size` is not checked for being negative.
                     unsafe { slice::from_raw_parts(event.system_data, event.data_size as usize) }
                 },
 
@@ -173,6 +182,8 @@ mod tests {
             _reserved2: 0,
         };
 
+        // SAFETY: `raw` is a live, fully initialised `MidiEvent` of type `Midi`, the
+        // same 32-byte layout as `api::Event`.
         let event =
             unsafe { Event::from_raw_event(&raw as *const api::MidiEvent as *const api::Event) };
 

@@ -13,6 +13,7 @@
 //! negotiated arrangements, the input and output staging, and the sample width
 //! `T`.
 
+use tutti_plugin_types::MainThread;
 use vst3::Steinberg::Vst::{SpeakerArr, SpeakerArrangement};
 
 use tutti_plugin_types::{PointPool, RtMidiEvents};
@@ -124,6 +125,7 @@ impl<T: Vst3Sample> Staged<T> {
     // boxing it would add an allocation to a path that must return the plugin.
     #[allow(clippy::result_large_err)]
     pub(super) fn stage(
+        main: &MainThread,
         loaded: Vst3Loaded,
         sample_rate: f64,
         block_size: usize,
@@ -258,7 +260,7 @@ impl<T: Vst3Sample> Staged<T> {
         // The figure is not stored here: the core reads it from the Controller
         // after every activation. What matters at this layer is that the call
         // happens, in the right place, every activation.
-        let _ = instance.loaded.latency_samples();
+        let _ = instance.loaded.latency_samples(main);
         Ok(instance)
     }
 

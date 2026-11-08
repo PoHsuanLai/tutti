@@ -324,6 +324,12 @@ jobs:
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
+      #   tutti-au-host/installed-units — linted by the macOS clippy job (the
+      #                         crate is empty on Linux) and run only locally
+      #                         (`just test-au-installed`, part of `test-all`):
+      #                         it asserts a claim about third-party Audio
+      #                         Units installed on the machine, and fails,
+      #                         never skips, where there are none
       #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
       #                         only locally (`just test-features`): the suite
       #                         needs the kernel's `snd-seq` module, which the

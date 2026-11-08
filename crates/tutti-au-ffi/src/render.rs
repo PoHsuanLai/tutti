@@ -294,6 +294,7 @@ pub struct Renderer {
     scratch: std::ptr::NonNull<RenderScratch>,
     callback_installs: std::sync::atomic::AtomicU32,
     callback_installed: bool,
+    block_size: u32,
 }
 
 impl std::fmt::Debug for Renderer {
@@ -319,6 +320,7 @@ impl Renderer {
             scratch: std::ptr::NonNull::from(Box::leak(scratch)),
             callback_installs: std::sync::atomic::AtomicU32::new(0),
             callback_installed: false,
+            block_size,
         }
     }
 
@@ -388,13 +390,17 @@ impl Renderer {
     /// Renders `frames` frames (`AudioUnitRender`) into the output buffers.
     /// Returns whether the unit declared the block silent.
     ///
-    /// The caller has checked `frames` against the block size the unit was
-    /// configured with; the buffers hold that many frames.
-    ///
     /// # Errors
-    /// [`Error::RenderFailed`] with the status of `AudioUnitRender` and the
+    /// [`Error::Invalid`] when `frames` exceeds the block size the buffers were
+    /// sized for (nothing is rendered), else [`Error::RenderFailed`] with the status of `AudioUnitRender` and the
     /// unit's last-render-error property.
     pub fn render(&mut self, frames: u32) -> Result<bool> {
+        if frames > self.block_size {
+            return Err(Error::Invalid(format!(
+                "frames ({frames}) > block_size ({})",
+                self.block_size
+            )));
+        }
         let (abl, sample_time) = {
             let scratch = self.scratch();
             let abl = scratch.bind_output(frames);
@@ -440,15 +446,21 @@ impl Drop for Renderer {
                 inputProc: Some(au_input_render_callback),
                 inputProcRefCon: std::ptr::null_mut(),
             };
-            let _ = self.unit.set(
+            let withdrawn = self.unit.set(
                 coreaudio_sys::kAudioUnitProperty_SetRenderCallback,
                 coreaudio_sys::kAudioUnitScope_Input,
                 0,
                 &withdrawn,
             );
+            if withdrawn.is_err() {
+                // The unit may still hold the pointer, and other `Unit` clones
+                // can keep it alive and rendering: leak the scratch rather than
+                // free memory the callback could read.
+                return;
+            }
         }
         // SAFETY: `scratch` is the leaked box from `new`, freed exactly once
-        // here, after the callback that read it was withdrawn.
+        // here, after the callback that read it was withdrawn (or never set).
         drop(unsafe { Box::from_raw(self.scratch.as_ptr()) });
     }
 }
@@ -1602,5 +1614,36 @@ mod tests {
             },
             -1
         );
+    }
+
+    /// A render longer than the block the buffers were sized for is refused
+    /// before any buffer is bound: `bind` would otherwise advertise `frames`
+    /// samples on a `block_size` buffer and the unit would write past it.
+    ///
+    /// Mutation (run): delete the `frames > block_size` check in
+    /// `Renderer::render` -> the call reaches the unit and returns
+    /// `RenderFailed`, not `Invalid`, so this fails.
+    #[test]
+    fn a_render_past_the_block_size_is_refused() {
+        let desc = coreaudio_sys::AudioComponentDescription {
+            componentType: coreaudio_sys::kAudioUnitType_Effect,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let comp = crate::ComponentRef::first_matching(&desc).expect("AUDelay ships with macOS");
+        let unit = Unit::new(comp).expect("instantiate");
+        let mut renderer = Renderer::new(
+            &unit,
+            BusLayout {
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
+                has_input: true,
+            },
+            64,
+        );
+        assert!(matches!(renderer.render(65), Err(Error::Invalid(_))));
+        assert!(matches!(renderer.render(u32::MAX), Err(Error::Invalid(_))));
     }
 }

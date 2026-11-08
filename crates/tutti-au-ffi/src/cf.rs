@@ -222,59 +222,20 @@ impl CfPlist {
     }
 }
 
-/// Copies a `CFStringRef` into an owned `String`, but only after confirming it
-/// really is a `CFString`.
+/// Copies a `CFStringRef` an Audio Unit supplied into a `String`, after checking
+/// it really is a `CFString`; `None` for null, for a pointer that cannot be a CF
+/// object, and for a CF object of another type.
 ///
-/// Returns `None` for null, for a misaligned pointer, and for a live CF object
-/// of some other type.
-///
-/// ## Why this exists
-///
-/// [`cfstring_to_string`] guards only against null, which is sufficient for the
-/// strings *this crate* creates but not for a pointer an **AU** supplies. A unit
-/// whose preset table is corrupt or stale — or simply not made of `AUPreset`
-/// structs — hands back a non-null value that is not a CFString, and passing that
-/// to CoreFoundation aborts the process with SIGBUS. That was measured, not
-/// hypothesised: a probe AU returning a `CFArray` of `CFData` made
-/// `factory_presets` read CF header internals as `presetName` and killed the test
-/// binary. See `tests/au_misbehaving.rs`.
-///
-/// `CFGetTypeID` is the documented way to ask "what is this really", but it is
-/// **not safe to call on an arbitrary word** — it dereferences, and it aborts the
-/// process on a value that is not a CF reference. So the plausibility gate below
-/// runs first, and `CFGetTypeID` decides only among values that could be one.
-///
-/// ## The plausibility gate, and why plain alignment is the wrong test
-///
-/// Both halves were measured on macOS 15.6 / arm64:
-///
-/// | value | bit 63 | 8-aligned |
-/// |---|---|---|
-/// | `CFString::new("Clean")` (tagged) | 1 | no (`0x99339a0c57ed9bbe`) |
-/// | long `CFString` (real object)     | 0 | yes (`0x10559e480`) |
-/// | `CFData` (real object)            | 0 | yes (`0x10559e4d0`) |
-/// | garbage from a `CFData` header    | 0 | no (`0x2bc139001484`) |
-///
-/// CoreFoundation returns short strings as **tagged pointers** carrying the
-/// payload in the pointer word, so they are routinely misaligned — a bare
-/// alignment reject would discard exactly the names real AUs ship ("Clean",
-/// "Bright"), which is a bug this guard already had once. But `CFGetTypeID`
-/// *faults* on the garbage row, so the gate cannot simply be dropped either.
-///
-/// Bit 63 separates the two: it is set on every tagged reference and clear on
-/// both real objects and garbage. So a value is plausible when it is tagged
-/// (bit 63 set) **or** properly aligned, and only garbage — misaligned and
-/// untagged — is turned away before the dereference.
-///
-/// This is a heuristic, not a proof: a hostile value with bit 63 set would still
-/// reach `CFGetTypeID`. Nothing can fully validate a pointer a plugin asserts is
-/// valid; this narrows a guaranteed crash to an unlikely one while keeping every
-/// legitimate name.
+/// An AU with a corrupt table can hand back any word, and `CFGetTypeID` faults on
+/// a word that is not a CF reference. A short string is an arm64 tagged pointer
+/// (bit 63 set, legitimately misaligned), so the gate admits a value that is
+/// tagged or aligned and rejects the rest before the dereference. This narrows
+/// a certain crash to an unlikely one; nothing can fully validate a pointer a
+/// plugin asserts is valid.
 ///
 /// # Safety
-/// `cf_str` must be null, or a pointer to a live CoreFoundation object (a real
-/// address or a tagged-pointer reference). It need not be a `CFString`: that is
-/// what this function checks.
+/// `cf_str` is null, or a tagged reference or aligned address of a live
+/// CoreFoundation object (not necessarily a `CFString`).
 pub unsafe fn cfstring_to_string_checked(cf_str: coreaudio_sys::CFStringRef) -> Option<String> {
     if cf_str.is_null() {
         return None;

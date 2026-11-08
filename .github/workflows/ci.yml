@@ -220,6 +220,20 @@ jobs:
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
 
+  # The AU host on macOS. Every AU crate is `#![cfg(target_os = "macos")]`, so
+  # the Linux and Windows clippy jobs compile it to nothing and a lint in it
+  # (missing docs, a new clippy rule) went unseen until someone built on a Mac.
+  # Lints only; the AU suites need installed audio units and run locally.
+  clippy-macos:
+    name: clippy (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain `rust-toolchain.toml` pins, with its components.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked -p tutti-au-host --all-targets -- -D warnings
+
   # The plugin contract on Windows. Not a required check: nothing else runs a
   # test there, and whether the shared plugin loads on a Windows runner is what
   # this finds out. Linux and macOS run the same suite in `test`.

@@ -349,7 +349,9 @@ pub(crate) unsafe fn supported_layout_tags(
     // that is not a whole multiple of the element would otherwise have its
     // trailing partial tag read out of bounds of what was written.
     bytes
-        .chunks_exact(size_of::<u32>())
+        .as_chunks::<{ size_of::<u32>() }>()
+        .0
+        .iter()
         .map(|c| AuLayoutTag::from_raw(u32::from_ne_bytes([c[0], c[1], c[2], c[3]])))
         .collect()
 }

@@ -245,18 +245,25 @@ pub enum AuEvent {
     /// not need to read it back (and must not: by the time it read, the value
     /// may have moved again).
     ParameterChanged {
+        /// The parameter that changed.
         id: AudioUnitParameterID,
+        /// The scope and element the parameter lives at.
         address: EventAddress,
+        /// The new value.
         value: f32,
     },
     /// The user began a gesture (e.g. mouse-down) on a parameter.
     BeginGesture {
+        /// The parameter being grabbed.
         id: AudioUnitParameterID,
+        /// The scope and element the parameter lives at.
         address: EventAddress,
     },
     /// The user ended a gesture (e.g. mouse-up).
     EndGesture {
+        /// The parameter being released.
         id: AudioUnitParameterID,
+        /// The scope and element the parameter lives at.
         address: EventAddress,
     },
     /// An AU *property* changed — latency, stream format, preset selection.
@@ -266,7 +273,9 @@ pub enum AuEvent {
     /// and a host that wants `kAudioUnitProperty_Latency` compares against the
     /// constant it already uses to read it.
     PropertyChanged {
+        /// The raw `kAudioUnitProperty_*` id that changed.
         id: AudioUnitPropertyID,
+        /// The scope and element the property lives at.
         address: EventAddress,
     },
 }

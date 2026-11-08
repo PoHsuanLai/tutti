@@ -323,6 +323,12 @@ impl StreamConfig {
     }
 }
 
+/// The layout of a bus whose stream format the AU accepted with `channels`
+/// channels per frame, or [`AuError::BusTooWide`] when no layout holds that.
+fn accepted_layout(scope: &'static str, channels: u32) -> Result<ChannelLayout> {
+    ChannelLayout::try_from(channels).map_err(|_| AuError::BusTooWide { scope, channels })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,10 +405,4 @@ mod tests {
         // One hertz off is already 20x the tolerance window: rejected.
         assert!(config.check_sample_rate("output", 48_001.0).is_err());
     }
-}
-
-/// The layout of a bus whose stream format the AU accepted with `channels`
-/// channels per frame, or [`AuError::BusTooWide`] when no layout holds that.
-fn accepted_layout(scope: &'static str, channels: u32) -> Result<ChannelLayout> {
-    ChannelLayout::try_from(channels).map_err(|_| AuError::BusTooWide { scope, channels })
 }

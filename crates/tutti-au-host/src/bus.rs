@@ -327,7 +327,9 @@ pub(crate) unsafe fn supported_channel_configs(unit: AudioUnit) -> Vec<AuChannel
     // struct would otherwise have its trailing partial entry read as a full
     // one, out of bounds of what was actually written.
     bytes
-        .chunks_exact(std::mem::size_of::<AuChannelInfo>())
+        .as_chunks::<{ std::mem::size_of::<AuChannelInfo>() }>()
+        .0
+        .iter()
         .map(|c| {
             AuChannelConfig::from_raw(AuChannelInfo {
                 in_channels: i16::from_ne_bytes([c[0], c[1]]),

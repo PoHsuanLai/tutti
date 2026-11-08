@@ -498,7 +498,9 @@ pub fn list_at(unit: AudioUnit, addr: ParamAddress) -> Vec<AuParameter> {
     // trailing partial id read past what the AU actually wrote. `from_ne_bytes`
     // because these are host-order `AudioUnitParameterID`s, not wire data.
     ids_bytes
-        .chunks_exact(std::mem::size_of::<u32>())
+        .as_chunks::<{ std::mem::size_of::<u32>() }>()
+        .0
+        .iter()
         .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
         .filter_map(|id| info_at(unit, addr, id).ok())
         .collect()
@@ -944,7 +946,9 @@ pub fn dependents_of_at(
     // itself, not a short read.
     Some(
         bytes
-            .chunks_exact(ENTRY)
+            .as_chunks::<ENTRY>()
+            .0
+            .iter()
             .map(|c| {
                 // `read_unaligned` because the `Vec<u8>` carries no alignment
                 // guarantee, even though 8-byte entries in practice land aligned.

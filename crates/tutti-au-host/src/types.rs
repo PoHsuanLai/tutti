@@ -100,70 +100,115 @@ pub const K_AUDIO_COMPONENT_FLAG_REQUIRES_ASYNC_INSTANTIATION: u32 =
 /// async flag reports how it must be built.
 pub const K_AUDIO_COMPONENT_FLAG_IS_V3_AUDIO_UNIT: u32 = sys::kAudioComponentFlag_IsV3AudioUnit;
 
+/// `kAudioUnitErr_InvalidProperty`: the unit does not implement the property asked for.
 pub const K_AUDIO_UNIT_ERR_INVALID_PROPERTY: OSStatus = sys::kAudioUnitErr_InvalidProperty;
+/// `kAudioUnitErr_InvalidParameter`: the unit has no such parameter.
 pub const K_AUDIO_UNIT_ERR_INVALID_PARAMETER: OSStatus = sys::kAudioUnitErr_InvalidParameter;
+/// `kAudioUnitErr_InvalidElement`: the element (bus) index is out of range for the scope.
 pub const K_AUDIO_UNIT_ERR_INVALID_ELEMENT: OSStatus = sys::kAudioUnitErr_InvalidElement;
+/// `kAudioUnitErr_NoConnection`: the input bus has neither a connection nor a render callback.
 pub const K_AUDIO_UNIT_ERR_NO_CONNECTION: OSStatus = sys::kAudioUnitErr_NoConnection;
+/// `kAudioUnitErr_FailedInitialization`: the unit could not initialize with its current configuration.
 pub const K_AUDIO_UNIT_ERR_FAILED_INITIALIZATION: OSStatus =
     sys::kAudioUnitErr_FailedInitialization;
+/// `kAudioUnitErr_TooManyFramesToProcess`: a render asked for more frames than the maximum frames per slice.
 pub const K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS: OSStatus =
     sys::kAudioUnitErr_TooManyFramesToProcess;
+/// `kAudioUnitErr_InvalidFile`: the file is not a valid one for the unit.
 pub const K_AUDIO_UNIT_ERR_INVALID_FILE: OSStatus = sys::kAudioUnitErr_InvalidFile;
+/// `kAudioUnitErr_UnknownFileType`: the unit does not recognize the file type.
 pub const K_AUDIO_UNIT_ERR_UNKNOWN_FILE_TYPE: OSStatus = sys::kAudioUnitErr_UnknownFileType;
+/// `kAudioUnitErr_FileNotSpecified`: the unit needs a file and none was set.
 pub const K_AUDIO_UNIT_ERR_FILE_NOT_SPECIFIED: OSStatus = sys::kAudioUnitErr_FileNotSpecified;
+/// `kAudioUnitErr_FormatNotSupported`: the stream format is not one the unit supports.
 pub const K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED: OSStatus = sys::kAudioUnitErr_FormatNotSupported;
+/// `kAudioUnitErr_Uninitialized`: the call needs an initialized unit and this one is not.
 pub const K_AUDIO_UNIT_ERR_UNINITIALIZED: OSStatus = sys::kAudioUnitErr_Uninitialized;
+/// `kAudioUnitErr_InvalidScope`: the scope is not valid for the property or parameter.
 pub const K_AUDIO_UNIT_ERR_INVALID_SCOPE: OSStatus = sys::kAudioUnitErr_InvalidScope;
+/// `kAudioUnitErr_PropertyNotWritable`: the property is read-only.
 pub const K_AUDIO_UNIT_ERR_PROPERTY_NOT_WRITABLE: OSStatus = sys::kAudioUnitErr_PropertyNotWritable;
+/// `kAudioUnitErr_CannotDoInCurrentContext`: the call cannot be made from this thread or in this state, and may succeed later.
 pub const K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT: OSStatus =
     sys::kAudioUnitErr_CannotDoInCurrentContext;
+/// `kAudioUnitErr_InvalidPropertyValue`: the value written is not valid for the property.
 pub const K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE: OSStatus =
     sys::kAudioUnitErr_InvalidPropertyValue;
+/// `kAudioUnitErr_PropertyNotInUse`: the property exists but is not in use in the unit's current configuration.
 pub const K_AUDIO_UNIT_ERR_PROPERTY_NOT_IN_USE: OSStatus = sys::kAudioUnitErr_PropertyNotInUse;
+/// `kAudioUnitErr_Initialized`: the call needs an uninitialized unit and this one is initialized.
 pub const K_AUDIO_UNIT_ERR_INITIALIZED: OSStatus = sys::kAudioUnitErr_Initialized;
+/// `kAudioUnitErr_InvalidOfflineRender`: an offline render was requested in a state the unit cannot do it.
 pub const K_AUDIO_UNIT_ERR_INVALID_OFFLINE_RENDER: OSStatus =
     sys::kAudioUnitErr_InvalidOfflineRender;
+/// `kAudioUnitErr_Unauthorized`: the process is not authorized to use the unit.
 pub const K_AUDIO_UNIT_ERR_UNAUTHORIZED: OSStatus = sys::kAudioUnitErr_Unauthorized;
 
 // AU component types (four-char codes: "auou", "aufx", …).
+/// `kAudioUnitType_Output`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_OUTPUT: u32 = sys::kAudioUnitType_Output;
+/// `kAudioUnitType_MusicDevice`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_MUSIC_DEVICE: u32 = sys::kAudioUnitType_MusicDevice;
+/// `kAudioUnitType_MusicEffect`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_MUSIC_EFFECT: u32 = sys::kAudioUnitType_MusicEffect;
+/// `kAudioUnitType_FormatConverter`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_FORMAT_CONVERTER: u32 = sys::kAudioUnitType_FormatConverter;
+/// `kAudioUnitType_Effect`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_EFFECT: u32 = sys::kAudioUnitType_Effect;
+/// `kAudioUnitType_Mixer`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_MIXER: u32 = sys::kAudioUnitType_Mixer;
+/// `kAudioUnitType_Panner`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_PANNER: u32 = sys::kAudioUnitType_Panner;
+/// `kAudioUnitType_Generator`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_GENERATOR: u32 = sys::kAudioUnitType_Generator;
+/// `kAudioUnitType_OfflineEffect`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_OFFLINE_EFFECT: u32 = sys::kAudioUnitType_OfflineEffect;
+/// `kAudioUnitType_MIDIProcessor`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_MIDI_PROCESSOR: u32 = sys::kAudioUnitType_MIDIProcessor;
 
 // Linear PCM format id + format flags.
+/// `kAudioFormatLinearPCM`: format id.
 pub const K_AUDIO_FORMAT_LINEAR_PCM: u32 = sys::kAudioFormatLinearPCM;
+/// `kAudioFormatFlagIsFloat`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_FLOAT: u32 = sys::kAudioFormatFlagIsFloat;
+/// `kAudioFormatFlagIsBigEndian`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_BIG_ENDIAN: u32 = sys::kAudioFormatFlagIsBigEndian;
+/// `kAudioFormatFlagIsSignedInteger`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_SIGNED_INTEGER: u32 = sys::kAudioFormatFlagIsSignedInteger;
+/// `kAudioFormatFlagIsPacked`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_PACKED: u32 = sys::kAudioFormatFlagIsPacked;
+/// `kAudioFormatFlagIsAlignedHigh`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_ALIGNED_HIGH: u32 = sys::kAudioFormatFlagIsAlignedHigh;
+/// `kAudioFormatFlagIsNonInterleaved`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED: u32 = sys::kAudioFormatFlagIsNonInterleaved;
 
 // Render action flags.
+/// `kAudioUnitRenderAction_PreRender`: render action flag, set or read by a render notification.
 pub const K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER: AudioUnitRenderActionFlags =
     sys::kAudioUnitRenderAction_PreRender;
+/// `kAudioUnitRenderAction_PostRender`: render action flag, set or read by a render notification.
 pub const K_AUDIO_UNIT_RENDER_ACTION_POST_RENDER: AudioUnitRenderActionFlags =
     sys::kAudioUnitRenderAction_PostRender;
+/// `kAudioUnitRenderAction_OutputIsSilence`: render action flag, set or read by a render notification.
 pub const K_AUDIO_UNIT_RENDER_ACTION_OUTPUT_IS_SILENCE: AudioUnitRenderActionFlags =
     sys::kAudioUnitRenderAction_OutputIsSilence;
 
 // AudioTimeStamp validity flags.
+/// `kAudioTimeStampSampleTimeValid`: `AudioTimeStamp::mFlags` validity bit.
 pub const K_AUDIO_TIME_STAMP_SAMPLE_TIME_VALID: u32 = sys::kAudioTimeStampSampleTimeValid;
+/// `kAudioTimeStampHostTimeValid`: `AudioTimeStamp::mFlags` validity bit.
 pub const K_AUDIO_TIME_STAMP_HOST_TIME_VALID: u32 = sys::kAudioTimeStampHostTimeValid;
 
 // AU property scopes.
+/// `kAudioUnitScope_Global`: property and parameter scope.
 pub const K_AUDIO_UNIT_SCOPE_GLOBAL: u32 = sys::kAudioUnitScope_Global;
+/// `kAudioUnitScope_Input`: property and parameter scope.
 pub const K_AUDIO_UNIT_SCOPE_INPUT: u32 = sys::kAudioUnitScope_Input;
+/// `kAudioUnitScope_Output`: property and parameter scope.
 pub const K_AUDIO_UNIT_SCOPE_OUTPUT: u32 = sys::kAudioUnitScope_Output;
 
 // AU property IDs.
+/// `kAudioUnitProperty_ClassInfo`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_CLASS_INFO: u32 = sys::kAudioUnitProperty_ClassInfo;
 /// The document-restore twin of `ClassInfo` (property 50).
 ///
@@ -184,12 +229,19 @@ pub const K_AUDIO_UNIT_PROPERTY_CLASS_INFO: u32 = sys::kAudioUnitProperty_ClassI
 /// [`AuInstance::load_document_state`](crate::instance::AuInstance::load_document_state)
 /// treats the refusal as routine and falls back rather than surfacing it.
 pub const K_AUDIO_UNIT_PROPERTY_CLASS_INFO_FROM_DOCUMENT: u32 = 50;
+/// `kAudioUnitProperty_MakeConnection`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_MAKE_CONNECTION: u32 = sys::kAudioUnitProperty_MakeConnection;
+/// `kAudioUnitProperty_SampleRate`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_SAMPLE_RATE: u32 = sys::kAudioUnitProperty_SampleRate;
+/// `kAudioUnitProperty_ParameterList`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST: u32 = sys::kAudioUnitProperty_ParameterList;
+/// `kAudioUnitProperty_ParameterInfo`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_INFO: u32 = sys::kAudioUnitProperty_ParameterInfo;
+/// `kAudioUnitProperty_StreamFormat`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT: u32 = sys::kAudioUnitProperty_StreamFormat;
+/// `kAudioUnitProperty_ElementCount`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT: u32 = sys::kAudioUnitProperty_ElementCount;
+/// `kAudioUnitProperty_Latency`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_LATENCY: u32 = sys::kAudioUnitProperty_Latency;
 /// Seconds of audio an AU keeps producing after its input goes silent — a
 /// reverb's decay, a delay's repeats. Distinct from `Latency`: latency shifts
@@ -228,17 +280,25 @@ pub const K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY: u32 =
 /// has no other way to learn what went stale.
 pub const K_AUDIO_UNIT_PROPERTY_DEPENDENT_PARAMETERS: u32 =
     sys::kAudioUnitProperty_DependentParameters;
+/// `kAudioUnitProperty_SupportedNumChannels`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS: u32 =
     sys::kAudioUnitProperty_SupportedNumChannels;
+/// `kAudioUnitProperty_MaximumFramesPerSlice`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE: u32 =
     sys::kAudioUnitProperty_MaximumFramesPerSlice;
+/// `kAudioUnitProperty_SetRenderCallback`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_SET_RENDER_CALLBACK: u32 =
     sys::kAudioUnitProperty_SetRenderCallback;
+/// `kAudioUnitProperty_FactoryPresets`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_FACTORY_PRESETS: u32 = sys::kAudioUnitProperty_FactoryPresets;
+/// `kAudioUnitProperty_RenderQuality`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_RENDER_QUALITY: u32 = sys::kAudioUnitProperty_RenderQuality;
+/// `kAudioUnitProperty_HostCallbacks`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS: u32 = sys::kAudioUnitProperty_HostCallbacks;
+/// `kAudioUnitProperty_InPlaceProcessing`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_IN_PLACE_PROCESSING: u32 =
     sys::kAudioUnitProperty_InPlaceProcessing;
+/// `kAudioUnitProperty_ElementName`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME: u32 = sys::kAudioUnitProperty_ElementName;
 /// Where in the *host's* project this instance sits — "track 3", "Drum Bus".
 /// Read/write: all 57 instantiable units measured return the exact string
@@ -321,29 +381,44 @@ pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR_ON: u32 = 1 << 5;
 /// now would be untestable against reality.
 pub const K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING: u32 = 17;
 
+/// `kAudioUnitProperty_BypassEffect`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT: u32 = sys::kAudioUnitProperty_BypassEffect;
+/// `kAudioUnitProperty_LastRenderError`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR: u32 = sys::kAudioUnitProperty_LastRenderError;
+/// `kAudioUnitProperty_PresentPreset`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET: u32 = sys::kAudioUnitProperty_PresentPreset;
+/// `kAudioUnitProperty_CocoaUI`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_COCOA_UI: u32 = sys::kAudioUnitProperty_CocoaUI;
+/// `kAudioUnitProperty_ParameterValueStrings`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_STRINGS: u32 =
     sys::kAudioUnitProperty_ParameterValueStrings;
+/// `kAudioUnitProperty_ParameterStringFromValue`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_STRING_FROM_VALUE: u32 =
     sys::kAudioUnitProperty_ParameterStringFromValue;
+/// `kAudioUnitProperty_ParameterValueFromString`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_FROM_STRING: u32 =
     sys::kAudioUnitProperty_ParameterValueFromString;
+/// `kAudioUnitProperty_ParameterClumpName`: property id.
 pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_CLUMP_NAME: u32 =
     sys::kAudioUnitProperty_ParameterClumpName;
 
 // Parameter unit kinds.
+/// `kAudioUnitParameterUnit_Generic`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_GENERIC: u32 = sys::kAudioUnitParameterUnit_Generic;
 /// A discrete choice list: the value is an index into named options, and
 /// `[min, max]` are the first and last index rather than a continuous span.
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_INDEXED: u32 = sys::kAudioUnitParameterUnit_Indexed;
+/// `kAudioUnitParameterUnit_Boolean`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_BOOLEAN: u32 = sys::kAudioUnitParameterUnit_Boolean;
+/// `kAudioUnitParameterUnit_Percent`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_PERCENT: u32 = sys::kAudioUnitParameterUnit_Percent;
+/// `kAudioUnitParameterUnit_Seconds`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_SECONDS: u32 = sys::kAudioUnitParameterUnit_Seconds;
+/// `kAudioUnitParameterUnit_Hertz`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_HERTZ: u32 = sys::kAudioUnitParameterUnit_Hertz;
+/// `kAudioUnitParameterUnit_Decibels`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_DECIBELS: u32 = sys::kAudioUnitParameterUnit_Decibels;
+/// `kAudioUnitParameterUnit_LinearGain`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_LINEAR_GAIN: u32 = sys::kAudioUnitParameterUnit_LinearGain;
 /// A parameter whose value **is** a MIDI controller number, `0..=127` — not a
 /// quantity in a physical unit. Aliased so a mapping-aware host can format it as
@@ -352,20 +427,31 @@ pub const K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER: u32 =
     sys::kAudioUnitParameterUnit_MIDIController;
 
 // Parameter flag bits.
+/// `kAudioUnitParameterFlag_IsReadable`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_READABLE: u32 = sys::kAudioUnitParameterFlag_IsReadable;
+/// `kAudioUnitParameterFlag_IsWritable`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_WRITABLE: u32 = sys::kAudioUnitParameterFlag_IsWritable;
+/// `kAudioUnitParameterFlag_HasName`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_NAME: u32 = sys::kAudioUnitParameterFlag_HasName;
+/// `kAudioUnitParameterFlag_HasCFNameString`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CF_NAME_STRING: u32 =
     sys::kAudioUnitParameterFlag_HasCFNameString;
+/// `kAudioUnitParameterFlag_HasClump`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CLUMP: u32 = sys::kAudioUnitParameterFlag_HasClump;
+/// `kAudioUnitParameterFlag_ValuesHaveStrings`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_VALUES_HAVE_STRINGS: u32 =
     sys::kAudioUnitParameterFlag_ValuesHaveStrings;
+/// `kAudioUnitParameterFlag_MeterReadOnly`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_METER_READ_ONLY: u32 =
     sys::kAudioUnitParameterFlag_MeterReadOnly;
+/// `kAudioUnitParameterFlag_IsHighResolution`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_HIGH_RESOLUTION: u32 =
     sys::kAudioUnitParameterFlag_IsHighResolution;
+/// `kAudioUnitParameterFlag_NonRealTime`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_NON_REAL_TIME: u32 = sys::kAudioUnitParameterFlag_NonRealTime;
+/// `kAudioUnitParameterFlag_CanRamp`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_CAN_RAMP: u32 = sys::kAudioUnitParameterFlag_CanRamp;
+/// `kAudioUnitParameterFlag_OmitFromPresets`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_OMIT_FROM_PRESETS: u32 =
     sys::kAudioUnitParameterFlag_OmitFromPresets;
 /// "Changing this parameter may change any number of others in the AudioUnit."
@@ -385,17 +471,24 @@ pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_ELEMENT_META: u32 =
 // logarithmic parameter — 24 of the 39 curve-carrying parameters measured on
 // macOS 15.6 — so the mask must come from Apple's own constant, not a
 // hand-written one.
+/// `kAudioUnitParameterFlag_DisplayMask`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_MASK: u32 = sys::kAudioUnitParameterFlag_DisplayMask;
+/// `kAudioUnitParameterFlag_DisplaySquareRoot`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_SQUARE_ROOT: u32 =
     sys::kAudioUnitParameterFlag_DisplaySquareRoot;
+/// `kAudioUnitParameterFlag_DisplaySquared`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_SQUARED: u32 =
     sys::kAudioUnitParameterFlag_DisplaySquared;
+/// `kAudioUnitParameterFlag_DisplayCubed`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_CUBED: u32 =
     sys::kAudioUnitParameterFlag_DisplayCubed;
+/// `kAudioUnitParameterFlag_DisplayCubeRoot`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_CUBE_ROOT: u32 =
     sys::kAudioUnitParameterFlag_DisplayCubeRoot;
+/// `kAudioUnitParameterFlag_DisplayExponential`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_EXPONENTIAL: u32 =
     sys::kAudioUnitParameterFlag_DisplayExponential;
+/// `kAudioUnitParameterFlag_DisplayLogarithmic`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_LOGARITHMIC: u32 =
     sys::kAudioUnitParameterFlag_DisplayLogarithmic;
 
@@ -409,41 +502,67 @@ pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_LOGARITHMIC: u32 =
 // so a future SDK that splits a pair fails a test, and that assertion needs both
 // names in scope. A `match` may still list only one of each pair — see
 // `AuLayoutTag::from_raw`.
+/// `kAudioChannelLayoutTag_UseChannelDescriptions`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_USE_CHANNEL_DESCRIPTIONS: u32 =
     sys::kAudioChannelLayoutTag_UseChannelDescriptions;
+/// `kAudioChannelLayoutTag_UseChannelBitmap`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_USE_CHANNEL_BITMAP: u32 =
     sys::kAudioChannelLayoutTag_UseChannelBitmap;
+/// `kAudioChannelLayoutTag_Mono`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MONO: u32 = sys::kAudioChannelLayoutTag_Mono;
+/// `kAudioChannelLayoutTag_Stereo`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_STEREO: u32 = sys::kAudioChannelLayoutTag_Stereo;
+/// `kAudioChannelLayoutTag_StereoHeadphones`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_STEREO_HEADPHONES: u32 =
     sys::kAudioChannelLayoutTag_StereoHeadphones;
+/// `kAudioChannelLayoutTag_MatrixStereo`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MATRIX_STEREO: u32 = sys::kAudioChannelLayoutTag_MatrixStereo;
+/// `kAudioChannelLayoutTag_MidSide`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MID_SIDE: u32 = sys::kAudioChannelLayoutTag_MidSide;
+/// `kAudioChannelLayoutTag_XY`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_XY: u32 = sys::kAudioChannelLayoutTag_XY;
+/// `kAudioChannelLayoutTag_Binaural`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_BINAURAL: u32 = sys::kAudioChannelLayoutTag_Binaural;
+/// `kAudioChannelLayoutTag_Ambisonic_B_Format`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AMBISONIC_B_FORMAT: u32 =
     sys::kAudioChannelLayoutTag_Ambisonic_B_Format;
+/// `kAudioChannelLayoutTag_Quadraphonic`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_QUADRAPHONIC: u32 = sys::kAudioChannelLayoutTag_Quadraphonic;
+/// `kAudioChannelLayoutTag_Pentagonal`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_PENTAGONAL: u32 = sys::kAudioChannelLayoutTag_Pentagonal;
+/// `kAudioChannelLayoutTag_Hexagonal`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_HEXAGONAL: u32 = sys::kAudioChannelLayoutTag_Hexagonal;
+/// `kAudioChannelLayoutTag_Octagonal`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_OCTAGONAL: u32 = sys::kAudioChannelLayoutTag_Octagonal;
+/// `kAudioChannelLayoutTag_Cube`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_CUBE: u32 = sys::kAudioChannelLayoutTag_Cube;
+/// `kAudioChannelLayoutTag_AudioUnit_5_0`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_5_0: u32 =
     sys::kAudioChannelLayoutTag_AudioUnit_5_0;
+/// `kAudioChannelLayoutTag_AudioUnit_5_1`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_5_1: u32 =
     sys::kAudioChannelLayoutTag_AudioUnit_5_1;
+/// `kAudioChannelLayoutTag_AudioUnit_6_0`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_6_0: u32 =
     sys::kAudioChannelLayoutTag_AudioUnit_6_0;
+/// `kAudioChannelLayoutTag_AudioUnit_7_0`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_7_0: u32 =
     sys::kAudioChannelLayoutTag_AudioUnit_7_0;
+/// `kAudioChannelLayoutTag_AudioUnit_7_1`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_7_1: u32 =
     sys::kAudioChannelLayoutTag_AudioUnit_7_1;
 // The alias spellings, present only so the aliasing itself is testable.
+/// `kAudioChannelLayoutTag_AudioUnit_4`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_4: u32 = sys::kAudioChannelLayoutTag_AudioUnit_4;
+/// `kAudioChannelLayoutTag_AudioUnit_6`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_6: u32 = sys::kAudioChannelLayoutTag_AudioUnit_6;
+/// `kAudioChannelLayoutTag_AudioUnit_8`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_8: u32 = sys::kAudioChannelLayoutTag_AudioUnit_8;
+/// `kAudioChannelLayoutTag_MPEG_5_0_B`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MPEG_5_0_B: u32 = sys::kAudioChannelLayoutTag_MPEG_5_0_B;
+/// `kAudioChannelLayoutTag_MPEG_5_1_A`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MPEG_5_1_A: u32 = sys::kAudioChannelLayoutTag_MPEG_5_1_A;
+/// `kAudioChannelLayoutTag_MPEG_7_1_C`: channel layout tag (`AudioChannelLayout::mChannelLayoutTag`).
 pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MPEG_7_1_C: u32 = sys::kAudioChannelLayoutTag_MPEG_7_1_C;
 
 /// ASBD flag set for canonical non-interleaved packed float32 linear PCM.

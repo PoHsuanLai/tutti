@@ -12,6 +12,7 @@ use crate::cf::{CfArray, CfPlist, CfString, CfUrl, cfstring_to_string_checked};
 use crate::component::ComponentRef;
 use crate::error::{Error, OsError, Result, check};
 use crate::plain::Plain;
+use crate::property::{Element, FactoryPresets, PresentPreset, Property, Scope};
 
 /// The size and writability of a property, from `AudioUnitGetPropertyInfo`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,10 +136,10 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the call.
-    pub fn reset(&self, scope: u32, element: u32) -> std::result::Result<(), OsError> {
+    pub fn reset(&self, scope: Scope, element: Element) -> std::result::Result<(), OsError> {
         // SAFETY: `raw()` is a live instance.
         check("AudioUnitReset", unsafe {
-            sys::AudioUnitReset(self.raw(), scope, element)
+            sys::AudioUnitReset(self.raw(), scope.raw(), element.0)
         })
     }
 
@@ -148,10 +149,10 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitGetProperty`.
-    pub fn get<T: Plain>(&self, id: u32, scope: u32, element: u32) -> Result<T> {
+    fn get_raw<T: Plain>(&self, id: u32, scope: u32, element: u32) -> Result<T> {
         // SAFETY: all-zero is valid for a `Plain` type (its contract).
         let zeroed = unsafe { MaybeUninit::<T>::zeroed().assume_init() };
-        self.get_in_out(id, scope, element, zeroed)
+        self.get_in_out_raw(id, scope, element, zeroed)
     }
 
     /// Reads a property whose request is itself a value (a string-from-value
@@ -159,7 +160,7 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitGetProperty`.
-    pub fn get_in_out<T: Plain>(
+    fn get_in_out_raw<T: Plain>(
         &self,
         id: u32,
         scope: u32,
@@ -187,8 +188,8 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitSetProperty`.
-    pub fn set<T: Plain>(&self, id: u32, scope: u32, element: u32, value: &T) -> Result<()> {
-        self.set_bytes(id, scope, element, bytes_of(value))
+    fn set_raw<T: Plain>(&self, id: u32, scope: u32, element: u32, value: &T) -> Result<()> {
+        self.set_bytes_raw(id, scope, element, bytes_of(value))
     }
 
     /// Writes only the first `len` bytes of `value` (a variable-size record
@@ -197,7 +198,7 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitSetProperty`.
-    pub fn set_prefix<T: Plain>(
+    fn set_prefix_raw<T: Plain>(
         &self,
         id: u32,
         scope: u32,
@@ -206,14 +207,14 @@ impl Unit {
         len: usize,
     ) -> Result<()> {
         let bytes = bytes_of(value);
-        self.set_bytes(id, scope, element, &bytes[..len.min(bytes.len())])
+        self.set_bytes_raw(id, scope, element, &bytes[..len.min(bytes.len())])
     }
 
     /// Writes a property from raw bytes (a variable-size record).
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitSetProperty`.
-    pub fn set_bytes(&self, id: u32, scope: u32, element: u32, bytes: &[u8]) -> Result<()> {
+    fn set_bytes_raw(&self, id: u32, scope: u32, element: u32, bytes: &[u8]) -> Result<()> {
         // SAFETY: `bytes` is a live slice of the length passed.
         let status = unsafe {
             sys::AudioUnitSetProperty(
@@ -233,7 +234,7 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitGetPropertyInfo`.
-    pub fn property_info(&self, id: u32, scope: u32, element: u32) -> Result<PropertyInfo> {
+    fn property_info_raw(&self, id: u32, scope: u32, element: u32) -> Result<PropertyInfo> {
         let mut size: u32 = 0;
         // `outWritable` is a C `Boolean`, an unsigned char.
         let mut writable: u8 = 0;
@@ -252,8 +253,8 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of either call.
-    pub fn get_bytes(&self, id: u32, scope: u32, element: u32) -> Result<Vec<u8>> {
-        let mut size = self.property_info(id, scope, element)?.size;
+    fn get_bytes_raw(&self, id: u32, scope: u32, element: u32) -> Result<Vec<u8>> {
+        let mut size = self.property_info_raw(id, scope, element)?.size;
         if size == 0 {
             return Ok(Vec::new());
         }
@@ -279,8 +280,8 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of either call.
-    pub fn get_array<T: Plain>(&self, id: u32, scope: u32, element: u32) -> Result<Vec<T>> {
-        let bytes = self.get_bytes(id, scope, element)?;
+    fn get_array_raw<T: Plain>(&self, id: u32, scope: u32, element: u32) -> Result<Vec<T>> {
+        let bytes = self.get_bytes_raw(id, scope, element)?;
         Ok(bytes
             .chunks_exact(size_of::<T>())
             .map(|record| {
@@ -297,7 +298,7 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the read.
-    pub fn copy_string(&self, id: u32, scope: u32, element: u32) -> Result<Option<String>> {
+    fn copy_string_raw(&self, id: u32, scope: u32, element: u32) -> Result<Option<String>> {
         let raw: sys::CFStringRef = self.get_cf(id, scope, element)?;
         // SAFETY: a CFString-valued property is returned under the Copy rule:
         // `raw` is null or an object we own one retain of, which `CfString`
@@ -313,7 +314,7 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the read.
-    pub fn copy_url_path(&self, id: u32, scope: u32, element: u32) -> Result<Option<String>> {
+    fn copy_url_path_raw(&self, id: u32, scope: u32, element: u32) -> Result<Option<String>> {
         let raw: sys::CFURLRef = self.get_cf(id, scope, element)?;
         // SAFETY: a CFURL-valued property is returned under the Copy rule.
         Ok(unsafe { CfUrl::from_copied(raw) }.and_then(|u| u.to_path_string()))
@@ -324,7 +325,7 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the read.
-    pub fn copy_string_array(
+    fn copy_string_array_raw(
         &self,
         id: u32,
         scope: u32,
@@ -354,11 +355,7 @@ impl Unit {
     /// # Errors
     /// The `OSStatus` of the read.
     pub fn factory_presets(&self) -> Result<Vec<(i32, String)>> {
-        let array = match self.copy_array(
-            sys::kAudioUnitProperty_FactoryPresets,
-            sys::kAudioUnitScope_Global,
-            0,
-        ) {
+        let array = match self.copy_array(FactoryPresets::ID, Scope::GLOBAL.raw(), 0) {
             Ok(a) => a,
             Err(Error::Invalid(_)) => return Ok(Vec::new()),
             Err(e) => return Err(e),
@@ -388,11 +385,7 @@ impl Unit {
     /// # Errors
     /// The `OSStatus` of the read.
     pub fn present_preset(&self) -> Result<(i32, String)> {
-        let preset: sys::AUPreset = self.get(
-            sys::kAudioUnitProperty_PresentPreset,
-            sys::kAudioUnitScope_Global,
-            0,
-        )?;
+        let preset = self.get::<PresentPreset>(Scope::GLOBAL, Element::ZERO)?;
         // SAFETY: `presetName` is null or a CFString we own one retain of
         // (the Copy rule of the property).
         let name = unsafe { CfString::from_copied(preset.presetName) }
@@ -410,12 +403,7 @@ impl Unit {
             presetNumber: number,
             presetName: std::ptr::null(),
         };
-        self.set(
-            sys::kAudioUnitProperty_PresentPreset,
-            sys::kAudioUnitScope_Global,
-            0,
-            &preset,
-        )
+        self.set::<PresentPreset>(Scope::GLOBAL, Element::ZERO, &preset)
     }
 
     /// Reads a property that is a copied property list (the unit's
@@ -423,7 +411,7 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the read, or a plist that does not serialize.
-    pub fn copy_plist(&self, id: u32, scope: u32, element: u32) -> Result<Vec<u8>> {
+    fn copy_plist_raw(&self, id: u32, scope: u32, element: u32) -> Result<Vec<u8>> {
         let raw: core_foundation_sys::propertylist::CFPropertyListRef =
             self.get_cf(id, scope, element)?;
         // SAFETY: a plist-valued property is returned under the Copy rule.
@@ -437,29 +425,29 @@ impl Unit {
     ///
     /// # Errors
     /// A plist that does not decode, or the `OSStatus` of the write.
-    pub fn set_plist(&self, id: u32, scope: u32, element: u32, bytes: &[u8]) -> Result<()> {
+    fn set_plist_raw(&self, id: u32, scope: u32, element: u32, bytes: &[u8]) -> Result<()> {
         let plist = CfPlist::from_binary(bytes)?;
         let raw = plist.as_raw();
         // The property takes the plist by reference and retains what it keeps;
         // `plist` outlives the call.
-        self.set(id, scope, element, &(raw as *const c_void))
+        self.set_raw(id, scope, element, &(raw as *const c_void))
     }
 
     /// Writes a `CFString` to a string-valued property.
     ///
     /// # Errors
     /// The `OSStatus` of the write.
-    pub fn set_string(&self, id: u32, scope: u32, element: u32, text: &str) -> Result<()> {
+    fn set_string_raw(&self, id: u32, scope: u32, element: u32, text: &str) -> Result<()> {
         let string = CfString::new(text);
         // The property copies the string before the call returns; `string`
         // outlives the call.
-        self.set(id, scope, element, &(string.as_raw() as *const c_void))
+        self.set_raw(id, scope, element, &(string.as_raw() as *const c_void))
     }
 
     /// Reads a pointer-sized, copy-rule property value.
     fn get_cf<T: Copy>(&self, id: u32, scope: u32, element: u32) -> Result<T> {
         debug_assert_eq!(size_of::<T>(), size_of::<*const c_void>());
-        let raw: *const c_void = self.get(id, scope, element)?;
+        let raw: *const c_void = self.get_raw(id, scope, element)?;
         // SAFETY: `T` is one of the `CF*Ref` pointer typedefs, the same size as
         // `*const c_void` (asserted above), so the bits are the same pointer.
         Ok(unsafe { std::mem::transmute_copy::<*const c_void, T>(&raw) })
@@ -471,11 +459,11 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the call.
-    pub fn parameter(&self, id: u32, scope: u32, element: u32) -> Result<f32> {
+    pub fn parameter(&self, id: u32, scope: Scope, element: Element) -> Result<f32> {
         let mut value: f32 = 0.0;
         // SAFETY: `value` is writable.
         let status =
-            unsafe { sys::AudioUnitGetParameter(self.raw(), id, scope, element, &mut value) };
+            unsafe { sys::AudioUnitGetParameter(self.raw(), id, scope.raw(), element.0, &mut value) };
         check("AudioUnitGetParameter", status)?;
         Ok(value)
     }
@@ -484,10 +472,10 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the call.
-    pub fn set_parameter(&self, id: u32, scope: u32, element: u32, value: f32) -> Result<()> {
+    pub fn set_parameter(&self, id: u32, scope: Scope, element: Element, value: f32) -> Result<()> {
         // SAFETY: `raw()` is a live instance.
         let status =
-            unsafe { sys::AudioUnitSetParameter(self.raw(), id, scope, element, value, 0) };
+            unsafe { sys::AudioUnitSetParameter(self.raw(), id, scope.raw(), element.0, value, 0) };
         check("AudioUnitSetParameter", status)?;
         Ok(())
     }
@@ -530,6 +518,157 @@ impl Unit {
     }
 }
 
+impl Unit {
+    /// Reads the plain value of property `P`.
+    ///
+    /// # Errors
+    /// The `OSStatus` of `AudioUnitGetProperty`.
+    pub fn get<P: Property>(&self, scope: Scope, element: Element) -> Result<P::Value>
+    where
+        P::Value: Plain,
+    {
+        self.get_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Reads a property whose request is itself a value (a string-from-value
+    /// query): `request` goes in and the unit's answer comes back.
+    ///
+    /// # Errors
+    /// The `OSStatus` of `AudioUnitGetProperty`.
+    pub fn get_in_out<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+        request: P::Value,
+    ) -> Result<P::Value>
+    where
+        P::Value: Plain,
+    {
+        self.get_in_out_raw(P::ID, scope.raw(), element.0, request)
+    }
+
+    /// Writes the plain value of property `P`.
+    ///
+    /// # Errors
+    /// The `OSStatus` of `AudioUnitSetProperty`.
+    pub fn set<P: Property>(&self, scope: Scope, element: Element, value: &P::Value) -> Result<()>
+    where
+        P::Value: Plain,
+    {
+        self.set_raw(P::ID, scope.raw(), element.0, value)
+    }
+
+    /// Writes only the first `len` bytes of `value`, for a variable-size record
+    /// whose tail the property does not take; `len` is clamped to the size of the
+    /// value.
+    ///
+    /// # Errors
+    /// The `OSStatus` of `AudioUnitSetProperty`.
+    pub fn set_prefix<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+        value: &P::Value,
+        len: usize,
+    ) -> Result<()>
+    where
+        P::Value: Plain,
+    {
+        self.set_prefix_raw(P::ID, scope.raw(), element.0, value, len)
+    }
+
+    /// Writes a property from raw bytes (a variable-size record).
+    ///
+    /// # Errors
+    /// The `OSStatus` of `AudioUnitSetProperty`.
+    pub fn set_bytes<P: Property>(&self, scope: Scope, element: Element, bytes: &[u8]) -> Result<()> {
+        self.set_bytes_raw(P::ID, scope.raw(), element.0, bytes)
+    }
+
+    /// The size and writability of a property, without reading it.
+    ///
+    /// # Errors
+    /// The `OSStatus` of `AudioUnitGetPropertyInfo`.
+    pub fn property_info<P: Property>(&self, scope: Scope, element: Element) -> Result<PropertyInfo> {
+        self.property_info_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Reads a variable-size property into an owned byte buffer.
+    ///
+    /// # Errors
+    /// The `OSStatus` of either call.
+    pub fn get_bytes<P: Property>(&self, scope: Scope, element: Element) -> Result<Vec<u8>> {
+        self.get_bytes_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Reads a variable-size property that is an array of `P::Value` records;
+    /// trailing bytes short of a whole record are dropped.
+    ///
+    /// # Errors
+    /// The `OSStatus` of either call.
+    pub fn get_array<P: Property>(&self, scope: Scope, element: Element) -> Result<Vec<P::Value>>
+    where
+        P::Value: Plain,
+    {
+        self.get_array_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Reads a property that is a copied `CFString`; `None` when the unit answers
+    /// null or something that is not a string.
+    ///
+    /// # Errors
+    /// The `OSStatus` of the read.
+    pub fn copy_string<P: Property>(&self, scope: Scope, element: Element) -> Result<Option<String>> {
+        self.copy_string_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Reads a property that is a copied `CFURL`, as a filesystem path.
+    ///
+    /// # Errors
+    /// The `OSStatus` of the read.
+    pub fn copy_url_path<P: Property>(&self, scope: Scope, element: Element) -> Result<Option<String>> {
+        self.copy_url_path_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Reads a property that is a copied `CFArray` of `CFString`s; an entry is
+    /// `None` when it is not a string.
+    ///
+    /// # Errors
+    /// The `OSStatus` of the read.
+    pub fn copy_string_array<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+    ) -> Result<Vec<Option<String>>> {
+        self.copy_string_array_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Reads a property that is a copied property list, as binary plist bytes;
+    /// empty when the unit answers null.
+    ///
+    /// # Errors
+    /// The `OSStatus` of the read, or a plist that does not serialize.
+    pub fn copy_plist<P: Property>(&self, scope: Scope, element: Element) -> Result<Vec<u8>> {
+        self.copy_plist_raw(P::ID, scope.raw(), element.0)
+    }
+
+    /// Writes a property list (decoded from `bytes`) to the property.
+    ///
+    /// # Errors
+    /// A plist that does not decode, or the `OSStatus` of the write.
+    pub fn set_plist<P: Property>(&self, scope: Scope, element: Element, bytes: &[u8]) -> Result<()> {
+        self.set_plist_raw(P::ID, scope.raw(), element.0, bytes)
+    }
+
+    /// Writes a `CFString` to a string-valued property.
+    ///
+    /// # Errors
+    /// The `OSStatus` of the write.
+    pub fn set_string<P: Property>(&self, scope: Scope, element: Element, text: &str) -> Result<()> {
+        self.set_string_raw(P::ID, scope.raw(), element.0, text)
+    }
+}
+
 /// The bytes of a `Plain` value.
 fn bytes_of<T: Plain>(value: &T) -> &[u8] {
     // SAFETY: `value` is a live `T`; viewing its `size_of::<T>()` bytes as `u8`
@@ -558,7 +697,7 @@ impl RenderUnit {
     /// The raw `AudioUnit`, valid while a `RenderUnit` or `Unit` lives, for a
     /// call this crate does not wrap (`AudioUnitRender` from a notify
     /// callback, `schedule`). Using it is the caller's `unsafe`.
-    pub fn get(&self) -> sys::AudioUnit {
+    fn get_raw(&self) -> sys::AudioUnit {
         self.0.instance
     }
 }

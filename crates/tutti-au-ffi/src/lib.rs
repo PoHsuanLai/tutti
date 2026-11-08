@@ -15,6 +15,7 @@ mod listener;
 mod midi_out;
 mod parameters;
 mod plain;
+pub mod property;
 mod render;
 mod render_notify;
 mod status;
@@ -46,4 +47,5 @@ pub use render_notify::{
 };
 pub use status::Status;
 pub use transport::{HostCallbacks, TransportState};
+pub use property::{Element, Property, Scope};
 pub use unit::{PropertyInfo, RenderUnit, Unit};

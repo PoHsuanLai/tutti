@@ -136,8 +136,7 @@ use tutti_au_host::midi_out::MidiOutputInfo;
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_au_host::types::{
     self, AudioComponentDescription, K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT,
-    K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET, K_AUDIO_UNIT_SCOPE_GLOBAL,
-    K_AUDIO_UNIT_TYPE_EFFECT,
+    K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET, K_AUDIO_UNIT_TYPE_EFFECT,
 };
 use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_au_host::{BusDirection, TransportInfo, TransportState};

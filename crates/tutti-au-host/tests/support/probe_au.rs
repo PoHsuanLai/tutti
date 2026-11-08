@@ -303,28 +303,34 @@ unsafe fn pull_host_transport(p: &mut Probe) {
     let Some(cb) = p.host_callbacks else { return };
     let mut pull = HostPull::never();
     pull.pulls = p.host_pull.pulls.saturating_add(1);
+    // SAFETY: the callbacks and `user_data` are the host's, live from its
+    // property write until it clears the property (this fn's contract).
     if let Some(f) = cb.beat_and_tempo {
-        pull.beat_status = f(cb.user_data, &mut pull.beat, &mut pull.tempo);
+        pull.beat_status = unsafe { f(cb.user_data, &mut pull.beat, &mut pull.tempo) };
     }
     if let Some(f) = cb.musical_time {
-        pull.musical_status = f(
-            cb.user_data,
-            &mut pull.delta_to_next_beat,
-            &mut pull.numerator,
-            &mut pull.denominator,
-            &mut pull.measure_downbeat,
-        );
+        pull.musical_status = unsafe {
+            f(
+                cb.user_data,
+                &mut pull.delta_to_next_beat,
+                &mut pull.numerator,
+                &mut pull.denominator,
+                &mut pull.measure_downbeat,
+            )
+        };
     }
     if let Some(f) = cb.transport_state {
-        pull.transport_status = f(
-            cb.user_data,
-            &mut pull.playing,
-            &mut pull.changed,
-            &mut pull.sample_time,
-            &mut pull.cycling,
-            &mut pull.cycle_start,
-            &mut pull.cycle_end,
-        );
+        pull.transport_status = unsafe {
+            f(
+                cb.user_data,
+                &mut pull.playing,
+                &mut pull.changed,
+                &mut pull.sample_time,
+                &mut pull.cycling,
+                &mut pull.cycle_start,
+                &mut pull.cycle_end,
+            )
+        };
     }
     p.host_pull = pull;
 }
@@ -1098,7 +1104,8 @@ unsafe extern "C" fn probe_get_property(
                     // stored reference without retaining would let the host's
                     // release free an array the probe still owns.
                     let raw = array.as_concrete_TypeRef();
-                    core_foundation::base::CFRetain(raw as *const c_void);
+                    // SAFETY: `raw` is the live array `p` owns.
+                    unsafe { core_foundation::base::CFRetain(raw as *const c_void) };
                     unsafe { write_property(data, io_size, raw as sys::CFArrayRef) }
                 }
                 _ => ERR_INVALID_PROPERTY,
@@ -1113,7 +1120,8 @@ unsafe extern "C" fn probe_get_property(
                     core_foundation::string::CFString,
                 >::from_CFType_pairs(&[]);
                 let raw = dict.as_concrete_TypeRef();
-                core_foundation::base::CFRetain(raw as *const c_void);
+                // SAFETY: `raw` is the live dictionary `dict` owns.
+                unsafe { core_foundation::base::CFRetain(raw as *const c_void) };
                 unsafe { write_property(data, io_size, raw as sys::CFPropertyListRef) }
             }
             // The two observation properties. Answered by every probe on every
@@ -1475,7 +1483,9 @@ unsafe fn notify_property_listeners(p: *mut Probe, id: u32) {
     let instance = unsafe { (*p).instance };
     for (lid, proc_, ud) in listeners {
         if lid == id {
-            proc_(ud, instance, id, sys::kAudioUnitScope_Global, 0);
+            // SAFETY: the listener was registered with its own `ud` (this
+            // fn's contract).
+            unsafe { proc_(ud, instance, id, sys::kAudioUnitScope_Global, 0) };
         }
     }
 }

@@ -133,8 +133,10 @@ run *while* rendering), take `Loudness::gain_to`, apply it with
 Each turns on the `tutti-codec` feature of the same name (`ogg` is its
 `vorbis`), and a `Format` variant exists only with its feature.
 
-Resampling (an FFT resampler on `tutti_dsp::RealFft`) is unconditional:
-it is not a codec, so it is not gated.
+Resampling (`tutti_dsp::StreamingResampler`, an FFT resampler on
+`tutti_dsp::RealFft`) and dither (`tutti_dsp::DitherNoise`) are algorithms
+in `tutti-dsp`; this crate calls them. Resampling is unconditional: it is not
+a codec, so it is not gated.
 
 ## License
 

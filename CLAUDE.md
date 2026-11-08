@@ -489,7 +489,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   analyzers, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
-  block ramps, the export resampler, the
+  block ramps, the export resampler and its streaming
+  bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
+  (`DitherNoise`), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,

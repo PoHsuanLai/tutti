@@ -78,9 +78,7 @@ impl ComponentRef {
         let mut name: sys::CFStringRef = std::ptr::null();
         // SAFETY: `self.0` is a registry component and `name` is writable.
         let status = unsafe { sys::AudioComponentCopyName(self.0, &mut name) };
-        if status != 0 {
-            return None;
-        }
+        check("AudioComponentCopyName", status).ok()?;
         // SAFETY: `AudioComponentCopyName` follows the Copy rule: on success
         // `name` is null or a CFString we own one retain of.
         unsafe { CfString::from_copied(name) }.map(|s| s.to_string())
@@ -91,7 +89,7 @@ impl ComponentRef {
         let mut raw: u32 = 0;
         // SAFETY: `self.0` is a registry component and `raw` is writable.
         let status = unsafe { sys::AudioComponentGetVersion(self.0, &mut raw) };
-        (status == 0).then_some(raw)
+        check("AudioComponentGetVersion", status).ok().map(|()| raw)
     }
 
     /// The raw `AudioComponent`, for a call this crate does not wrap. Using the

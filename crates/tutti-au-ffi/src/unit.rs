@@ -462,8 +462,9 @@ impl Unit {
     pub fn parameter(&self, id: u32, scope: Scope, element: Element) -> Result<f32> {
         let mut value: f32 = 0.0;
         // SAFETY: `value` is writable.
-        let status =
-            unsafe { sys::AudioUnitGetParameter(self.raw(), id, scope.raw(), element.0, &mut value) };
+        let status = unsafe {
+            sys::AudioUnitGetParameter(self.raw(), id, scope.raw(), element.0, &mut value)
+        };
         check("AudioUnitGetParameter", status)?;
         Ok(value)
     }
@@ -581,7 +582,12 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitSetProperty`.
-    pub fn set_bytes<P: Property>(&self, scope: Scope, element: Element, bytes: &[u8]) -> Result<()> {
+    pub fn set_bytes<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+        bytes: &[u8],
+    ) -> Result<()> {
         self.set_bytes_raw(P::ID, scope.raw(), element.0, bytes)
     }
 
@@ -589,7 +595,11 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of `AudioUnitGetPropertyInfo`.
-    pub fn property_info<P: Property>(&self, scope: Scope, element: Element) -> Result<PropertyInfo> {
+    pub fn property_info<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+    ) -> Result<PropertyInfo> {
         self.property_info_raw(P::ID, scope.raw(), element.0)
     }
 
@@ -618,7 +628,11 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the read.
-    pub fn copy_string<P: Property>(&self, scope: Scope, element: Element) -> Result<Option<String>> {
+    pub fn copy_string<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+    ) -> Result<Option<String>> {
         self.copy_string_raw(P::ID, scope.raw(), element.0)
     }
 
@@ -626,7 +640,11 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the read.
-    pub fn copy_url_path<P: Property>(&self, scope: Scope, element: Element) -> Result<Option<String>> {
+    pub fn copy_url_path<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+    ) -> Result<Option<String>> {
         self.copy_url_path_raw(P::ID, scope.raw(), element.0)
     }
 
@@ -656,7 +674,12 @@ impl Unit {
     ///
     /// # Errors
     /// A plist that does not decode, or the `OSStatus` of the write.
-    pub fn set_plist<P: Property>(&self, scope: Scope, element: Element, bytes: &[u8]) -> Result<()> {
+    pub fn set_plist<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+        bytes: &[u8],
+    ) -> Result<()> {
         self.set_plist_raw(P::ID, scope.raw(), element.0, bytes)
     }
 
@@ -664,7 +687,12 @@ impl Unit {
     ///
     /// # Errors
     /// The `OSStatus` of the write.
-    pub fn set_string<P: Property>(&self, scope: Scope, element: Element, text: &str) -> Result<()> {
+    pub fn set_string<P: Property>(
+        &self,
+        scope: Scope,
+        element: Element,
+        text: &str,
+    ) -> Result<()> {
         self.set_string_raw(P::ID, scope.raw(), element.0, text)
     }
 }

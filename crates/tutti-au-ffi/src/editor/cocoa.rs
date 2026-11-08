@@ -11,11 +11,11 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2_foundation::{NSBundle, NSSize};
 use std::os::raw::c_void;
 
-use coreaudio_sys::AudioUnitCocoaViewInfo;
 use tutti_plugin_types::EditorSize;
 
 use crate::cf::{CfString, CfUrl};
 use crate::error::{Error, OsError, Result};
+use crate::property::{CocoaUi, Element, Scope};
 use crate::unit::Unit;
 
 const K_AUDIO_UNIT_ERR_INVALID_PROPERTY: i32 = coreaudio_sys::kAudioUnitErr_InvalidProperty;
@@ -54,11 +54,7 @@ pub(super) fn create_view(unit: &Unit, preferred: EditorSize) -> Result<*mut Any
 /// struct's fixed head — an emptiness check guards the zero-length case, but a
 /// unit reporting a short non-zero size is trusted.
 fn load_cocoa_view_info(unit: &Unit) -> Result<(CfUrl, CfString)> {
-    let infos: Vec<AudioUnitCocoaViewInfo> = unit.get_array(
-        coreaudio_sys::kAudioUnitProperty_CocoaUI,
-        coreaudio_sys::kAudioUnitScope_Global,
-        0,
-    )?;
+    let infos = unit.get_array::<CocoaUi>(Scope::GLOBAL, Element::ZERO)?;
     let Some(info) = infos.first() else {
         return Err(Error::Os(OsError {
             function: "GetProperty(CocoaUI)",

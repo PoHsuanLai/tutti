@@ -17,6 +17,7 @@ use std::os::raw::c_void;
 use tutti_plugin_types::{EditorSize, WindowHandle};
 
 use crate::error::Result;
+use crate::property::{CocoaUi, Element, Scope};
 use crate::unit::Unit;
 
 /// Owned handle to an AU's Cocoa editor view.
@@ -92,11 +93,7 @@ impl AuEditor {
     /// Calls `AudioUnitGetPropertyInfo(kAudioUnitProperty_CocoaUI)` and
     /// reports `true` if the property exists with a non-zero size.
     pub fn has_editor(unit: &Unit) -> bool {
-        let info = unit.property_info(
-            coreaudio_sys::kAudioUnitProperty_CocoaUI,
-            coreaudio_sys::kAudioUnitScope_Global,
-            0,
-        );
+        let info = unit.property_info::<CocoaUi>(Scope::GLOBAL, Element::ZERO);
         matches!(info, Ok(i) if i.size > 0)
     }
 

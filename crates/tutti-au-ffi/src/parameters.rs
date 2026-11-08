@@ -5,6 +5,10 @@ use coreaudio_sys as sys;
 
 use crate::cf::CfString;
 use crate::error::Result;
+use crate::property::{
+    Element, ParameterClumpName, ParameterInfo, ParameterStringFromValue, ParameterValueFromString,
+    Scope,
+};
 use crate::unit::Unit;
 
 /// `AudioUnitParameterNameInfo`'s two-field form that `ParameterClumpName`
@@ -13,7 +17,7 @@ use crate::unit::Unit;
 /// `clump_name_request_matches_the_c_abi`.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ClumpNameRequest {
+pub(crate) struct ClumpNameRequest {
     in_id: u32,
     out_name: sys::CFStringRef,
 }
@@ -40,11 +44,10 @@ impl Unit {
     /// The `OSStatus` of the read.
     pub fn parameter_info(
         &self,
-        scope: u32,
+        scope: Scope,
         id: u32,
     ) -> Result<(sys::AudioUnitParameterInfo, String)> {
-        let raw: sys::AudioUnitParameterInfo =
-            self.get(sys::kAudioUnitProperty_ParameterInfo, scope, id)?;
+        let raw = self.get::<ParameterInfo>(scope, Element(id))?;
         let name = if raw.flags & sys::kAudioUnitParameterFlag_HasCFNameString != 0
             && !raw.cfNameString.is_null()
         {
@@ -67,8 +70,8 @@ impl Unit {
     /// does not format one.
     pub fn parameter_string_from_value(
         &self,
-        scope: u32,
-        element: u32,
+        scope: Scope,
+        element: Element,
         id: u32,
         value: f32,
     ) -> Option<String> {
@@ -83,12 +86,7 @@ impl Unit {
         // The property carries the request in and the answer back out in the
         // same struct.
         let answer = self
-            .get_in_out(
-                sys::kAudioUnitProperty_ParameterStringFromValue,
-                scope,
-                element,
-                request,
-            )
+            .get_in_out::<ParameterStringFromValue>(scope, element, request)
             .ok()?;
         // SAFETY: documented Copy rule: "the outString ... must be released by
         // the caller", so a non-null answer is one retain we own.
@@ -99,8 +97,8 @@ impl Unit {
     /// it declines or answers a non-finite figure.
     pub fn parameter_value_from_string(
         &self,
-        scope: u32,
-        element: u32,
+        scope: Scope,
+        element: Element,
         id: u32,
         text: &str,
     ) -> Option<f32> {
@@ -116,29 +114,24 @@ impl Unit {
             outValue: f32::NAN,
         };
         let answer = self
-            .get_in_out(
-                sys::kAudioUnitProperty_ParameterValueFromString,
-                scope,
-                element,
-                request,
-            )
+            .get_in_out::<ParameterValueFromString>(scope, element, request)
             .ok()?;
         answer.outValue.is_finite().then_some(answer.outValue)
     }
 
     /// The unit's name for parameter group `clump`, or `None`.
-    pub fn parameter_clump_name(&self, scope: u32, element: u32, clump: u32) -> Option<String> {
+    pub fn parameter_clump_name(
+        &self,
+        scope: Scope,
+        element: Element,
+        clump: u32,
+    ) -> Option<String> {
         let request = ClumpNameRequest {
             in_id: clump,
             out_name: std::ptr::null(),
         };
         let answer = self
-            .get_in_out(
-                sys::kAudioUnitProperty_ParameterClumpName,
-                scope,
-                element,
-                request,
-            )
+            .get_in_out::<ParameterClumpName>(scope, element, request)
             .ok()?;
         // SAFETY: Copy rule, as for every CF object retrieved from an AU
         // property.

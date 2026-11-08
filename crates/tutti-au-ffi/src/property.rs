@@ -387,17 +387,17 @@ impl Property for OfflineRender {
 }
 
 /// The crate-private property `HostCallbacks`.
-pub(crate) struct HostCallbacks;
+pub(crate) struct HostCallbacksProperty;
 
-impl Property for HostCallbacks {
+impl Property for HostCallbacksProperty {
     const ID: u32 = sys::kAudioUnitProperty_HostCallbacks;
     type Value = crate::transport::HostCallbackInfo;
 }
 
 /// The crate-private property `MidiOutputCallback`.
-pub(crate) struct MidiOutputCallback;
+pub(crate) struct MidiOutputCallbackProperty;
 
-impl Property for MidiOutputCallback {
+impl Property for MidiOutputCallbackProperty {
     const ID: u32 = sys::kAudioUnitProperty_MIDIOutputCallback;
     type Value = crate::midi_out::AuMidiOutputCallbackStruct;
 }

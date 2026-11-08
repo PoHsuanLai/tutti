@@ -78,6 +78,7 @@ use tutti_types::value::units::{Beat, Bpm};
 use coreaudio_sys::OSStatus;
 
 use crate::guard::guard;
+use crate::property::{Element, HostCallbacksProperty, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 
 /// C `Boolean` — an `unsigned char`, not a Rust `bool`.
@@ -695,7 +696,7 @@ unsafe impl crate::plain::Plain for HostCallbackInfo {}
 /// owns both: dropping it withdraws the callbacks (writes the property with
 /// null procs) before the state is freed, so no pull can reach a freed state.
 pub struct HostCallbacks {
-    unit: std::sync::Arc<crate::unit::Inner>,
+    unit: crate::Unit,
     state: Box<TransportState>,
     installed: std::sync::atomic::AtomicBool,
 }
@@ -713,7 +714,7 @@ impl HostCallbacks {
     /// [`install`](Self::install).
     pub fn new(unit: &crate::Unit) -> Self {
         Self {
-            unit: unit.share(),
+            unit: unit.clone(),
             state: Box::new(TransportState::new()),
             installed: std::sync::atomic::AtomicBool::new(false),
         }
@@ -730,11 +731,10 @@ impl HostCallbacks {
     /// # Errors
     /// The `OSStatus` of the write; a unit that refuses leaves nothing installed.
     pub fn install(&self, unit: &crate::Unit) -> crate::error::Result<()> {
-        debug_assert!(std::sync::Arc::ptr_eq(&self.unit, &unit.share()));
-        unit.set(
-            coreaudio_sys::kAudioUnitProperty_HostCallbacks,
-            coreaudio_sys::kAudioUnitScope_Global,
-            0,
+        debug_assert!(self.unit.same_unit(unit));
+        unit.set::<HostCallbacksProperty>(
+            Scope::GLOBAL,
+            Element::ZERO,
             &self.state.callback_info(),
         )?;
         self.installed.store(true, Ordering::Release);
@@ -757,27 +757,8 @@ impl Drop for HostCallbacks {
             transport_state: None,
             transport_state2: None,
         };
-        let bytes = {
-            // SAFETY: a `HostCallbackInfo` is plain data (pointers and
-            // `Option<fn>`), so its bytes are a valid property payload.
-            unsafe {
-                std::slice::from_raw_parts(
-                    (&withdrawn as *const HostCallbackInfo).cast::<u8>(),
-                    std::mem::size_of::<HostCallbackInfo>(),
-                )
-            }
-        };
-        // SAFETY: `unit.instance` is a live instance (we hold a share) and
-        // `bytes` is a live slice of the length passed.
-        let _ = unsafe {
-            coreaudio_sys::AudioUnitSetProperty(
-                self.unit.instance,
-                coreaudio_sys::kAudioUnitProperty_HostCallbacks,
-                coreaudio_sys::kAudioUnitScope_Global,
-                0,
-                bytes.as_ptr().cast(),
-                bytes.len() as u32,
-            )
-        };
+        let _ = self
+            .unit
+            .set::<HostCallbacksProperty>(Scope::GLOBAL, Element::ZERO, &withdrawn);
     }
 }

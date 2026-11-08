@@ -39,6 +39,7 @@ pub use midi_out::{
 #[doc(hidden)]
 pub use midi_out::{decode_packet_list_for_test, split_packet_list_for_test};
 pub use plain::Plain;
+pub use property::{Element, Property, Scope};
 pub use render::{
     BusLayout, PushScratch, Renderer, output_byte_sizes, process_push, process_push_multiple,
 };
@@ -47,5 +48,4 @@ pub use render_notify::{
 };
 pub use status::Status;
 pub use transport::{HostCallbacks, TransportState};
-pub use property::{Element, Property, Scope};
 pub use unit::{PropertyInfo, RenderUnit, Unit};

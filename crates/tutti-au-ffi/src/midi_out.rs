@@ -61,8 +61,9 @@ use tutti_plugin_types::{Midi1Message, Midi1Splitter};
 
 use crate::error::{Result, check};
 use crate::guard::guard;
+use crate::property::{Element, MidiOutputCallbackInfo, MidiOutputCallbackProperty, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
-use crate::unit::{Inner, Unit};
+use crate::unit::Unit;
 
 /// The `AUMIDIOutputCallbackStruct` from `AudioUnitProperties.h`.
 ///
@@ -147,7 +148,7 @@ struct MidiOutState {
 /// point of the type existing rather than `install` returning `()`.
 #[must_use = "dropping it uninstalls the output"]
 pub struct AuMidiOutput {
-    unit: Arc<Inner>,
+    unit: Unit,
     /// Heap-pinned so its address is stable: the AU retains a `userData` derived
     /// from `&*state`, and this struct may be moved by its owner. Moving the
     /// `Box` moves only its 8-byte pointer, so the address the AU holds stays
@@ -239,11 +240,7 @@ pub fn midi_output_info(unit: &Unit) -> Option<MidiOutputInfo> {
     // converter's tag-bit allowance, not a plain alignment test, is what admits
     // them.
     let names = unit
-        .copy_string_array(
-            coreaudio_sys::kAudioUnitProperty_MIDIOutputCallbackInfo,
-            coreaudio_sys::kAudioUnitScope_Global,
-            0,
-        )
+        .copy_string_array::<MidiOutputCallbackInfo>(Scope::GLOBAL, Element::ZERO)
         .ok()?;
     Some(MidiOutputInfo { names })
 }
@@ -287,16 +284,11 @@ pub fn install(unit: &Unit, sink: MidiOutSink) -> Result<AuMidiOutput> {
     // so adding something later cannot leave the AU holding a pointer no handle
     // owns.
     let handle = AuMidiOutput {
-        unit: unit.share(),
+        unit: unit.clone(),
         state: Some(state),
         sysex_dropped,
     };
-    unit.set(
-        coreaudio_sys::kAudioUnitProperty_MIDIOutputCallback,
-        coreaudio_sys::kAudioUnitScope_Global,
-        0,
-        &callback,
-    )?;
+    unit.set::<MidiOutputCallbackProperty>(Scope::GLOBAL, Element::ZERO, &callback)?;
     Ok(handle)
 }
 
@@ -388,24 +380,6 @@ impl AuMidiOutput {
     ///
     /// # Safety
     /// `self.unit` must still be a live `AudioUnit`.
-    /// Writes the callback property on the shared instance.
-    fn unit_set(&self, callback: &AuMidiOutputCallbackStruct) -> Result<()> {
-        // SAFETY: `callback` is a live `#[repr(C)]` struct of the length passed,
-        // and `self.unit.instance` is a live instance (we hold a share).
-        let status = unsafe {
-            coreaudio_sys::AudioUnitSetProperty(
-                self.unit.instance,
-                coreaudio_sys::kAudioUnitProperty_MIDIOutputCallback,
-                coreaudio_sys::kAudioUnitScope_Global,
-                0,
-                (callback as *const AuMidiOutputCallbackStruct).cast(),
-                size_of::<AuMidiOutputCallbackStruct>() as u32,
-            )
-        };
-        check("AudioUnitSetProperty", status)?;
-        Ok(())
-    }
-
     fn clear(&mut self) -> Result<()> {
         // Nothing installed (already removed): nothing to withdraw.
         if self.state.is_none() {
@@ -417,7 +391,9 @@ impl AuMidiOutput {
             midi_output_callback: Some(au_midi_output_callback),
             user_data: std::ptr::null_mut(),
         };
-        let result = self.unit_set(&withdrawn);
+        let result =
+            self.unit
+                .set::<MidiOutputCallbackProperty>(Scope::GLOBAL, Element::ZERO, &withdrawn);
         // Freed only after the write above returned — in both the success and the
         // failure arm, per the reasoning in this method's docs.
         drop(self.state.take());

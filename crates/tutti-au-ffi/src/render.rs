@@ -11,8 +11,9 @@ use tutti_plugin_types::ChannelLayout;
 
 use coreaudio_sys::{AudioBuffer, AudioBufferList, AudioTimeStamp, AudioUnitRenderActionFlags};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, check};
 use crate::guard::guard;
+use crate::property::{Element, LastRenderError, Scope, SetRenderCallback};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::Unit;
 
@@ -343,12 +344,8 @@ impl Renderer {
             inputProc: Some(au_input_render_callback),
             inputProcRefCon: self.scratch.as_ptr().cast::<c_void>(),
         };
-        self.unit.set(
-            coreaudio_sys::kAudioUnitProperty_SetRenderCallback,
-            coreaudio_sys::kAudioUnitScope_Input,
-            0,
-            &callback,
-        )?;
+        self.unit
+            .set::<SetRenderCallback>(Scope::INPUT, Element::ZERO, &callback)?;
         self.callback_installed = true;
         Ok(())
     }
@@ -409,22 +406,7 @@ impl Renderer {
         let status = unsafe {
             coreaudio_sys::AudioUnitRender(self.unit.raw(), &mut flags, &timestamp, 0, frames, abl)
         };
-        if status != 0 {
-            let last = self
-                .unit
-                .get::<i32>(
-                    coreaudio_sys::kAudioUnitProperty_LastRenderError,
-                    coreaudio_sys::kAudioUnitScope_Global,
-                    0,
-                )
-                .ok()
-                .filter(|&e| e != 0);
-            return Err(Error::RenderFailed {
-                function: "AudioUnitRender",
-                status,
-                last,
-            });
-        }
+        check_render("AudioUnitRender", status, &self.unit)?;
         Ok(flags & coreaudio_sys::kAudioUnitRenderAction_OutputIsSilence != 0)
     }
 }
@@ -440,12 +422,9 @@ impl Drop for Renderer {
                 inputProc: Some(au_input_render_callback),
                 inputProcRefCon: std::ptr::null_mut(),
             };
-            let _ = self.unit.set(
-                coreaudio_sys::kAudioUnitProperty_SetRenderCallback,
-                coreaudio_sys::kAudioUnitScope_Input,
-                0,
-                &withdrawn,
-            );
+            let _ = self
+                .unit
+                .set::<SetRenderCallback>(Scope::INPUT, Element::ZERO, &withdrawn);
         }
         // SAFETY: `scratch` is the leaked box from `new`, freed exactly once
         // here, after the callback that read it was withdrawn.
@@ -871,13 +850,7 @@ pub fn process_push(
     let status = unsafe {
         coreaudio_sys::AudioUnitProcess(unit.raw(), &mut flags, &timestamp, frames, list)
     };
-    if status != NO_ERR {
-        return Err(Error::RenderFailed {
-            function: "AudioUnitProcess",
-            status,
-            last: last_render_error(unit),
-        });
-    }
+    check_render("AudioUnitProcess", status, unit)?;
 
     // `OutputIsSilence` is honoured for the reason `AuActive::process` documents:
     // when the AU sets it, the buffer contents are explicitly *not* guaranteed
@@ -1002,13 +975,7 @@ pub fn process_push_multiple(
             scratch.output_ptrs.as_mut_ptr(),
         )
     };
-    if status != NO_ERR {
-        return Err(Error::RenderFailed {
-            function: "AudioUnitProcessMultiple",
-            status,
-            last: last_render_error(unit),
-        });
-    }
+    check_render("AudioUnitProcessMultiple", status, unit)?;
 
     // As in `process_push`: an AU that flags the block silent has not promised
     // its output buffers are zeroed, so zero them rather than emit stale audio.
@@ -1034,13 +1001,18 @@ pub fn process_push_multiple(
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 fn last_render_error(unit: &Unit) -> Option<i32> {
-    unit.get::<i32>(
-        coreaudio_sys::kAudioUnitProperty_LastRenderError,
-        coreaudio_sys::kAudioUnitScope_Global,
-        0,
-    )
-    .ok()
-    .filter(|&e| e != 0)
+    unit.get::<LastRenderError>(Scope::GLOBAL, Element::ZERO)
+        .ok()
+        .filter(|&e| e != NO_ERR)
+}
+
+/// `check` for a render call: a failure carries the unit's last render error.
+fn check_render(function: &'static str, status: i32, unit: &Unit) -> Result<()> {
+    check(function, status).map_err(|e| Error::RenderFailed {
+        function: e.function,
+        status: e.status,
+        last: last_render_error(unit),
+    })
 }
 
 /// Every `mDataByteSize` the AU left on the output buses of the last push

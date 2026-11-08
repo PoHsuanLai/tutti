@@ -1335,7 +1335,7 @@ fn a_placed_fork_reads_the_renders_transport() {
 /// fails them.
 #[test]
 fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     for (width, centre) in [
         (1usize, Some(0)),
         (2, None),

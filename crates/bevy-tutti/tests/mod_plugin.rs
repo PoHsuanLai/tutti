@@ -552,6 +552,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
 
 /// This process's main thread. Each test is its own process under nextest, so
 /// the claim cannot be refused.
+#[cfg(feature = "vst2")]
 fn main_thread() -> tutti_plugin::MainThread {
     tutti_plugin::MainThread::claim().expect("one test, one process")
 }

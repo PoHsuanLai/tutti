@@ -604,6 +604,7 @@ mod tests {
 
     /// This process's main thread. Each test is its own process under nextest, so
     /// the claim cannot be refused.
+    #[cfg(feature = "vst3")]
     fn main_thread() -> tutti_plugin_types::MainThread {
         tutti_plugin_types::MainThread::claim().expect("one test, one process")
     }

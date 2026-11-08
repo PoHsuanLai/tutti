@@ -45,7 +45,9 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
         id: PluginId::from_path(plugin),
         state: None,
     });
-    let synth = s.add_plugin(&main_thread(), job.run())?;
+    // The thread that opens an in-process plugin is the main thread: claim it once.
+    let main = tutti::plugin::MainThread::claim()?;
+    let synth = s.add_plugin(&main, job.run())?;
     s.graph().set_outputs_from(synth);
 
     let file = MidiFile::read(midi)?; // an SMF or a Clip File
@@ -175,10 +177,4 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti::plugin::MainThread {
-    tutti::plugin::MainThread::claim().expect("one test, one process")
 }

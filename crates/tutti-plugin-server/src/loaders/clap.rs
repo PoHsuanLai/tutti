@@ -160,7 +160,7 @@ impl ClapInstance {
             .map(|(instance, _)| instance)
     }
 
-    /// [`load`](Self::load), restoring `state` **before the plugin is
+    /// `load`, restoring `state` **before the plugin is
     /// activated**: CLAP's `state.load` is allowed on an inactive plugin, and a
     /// plugin may take its mode from the state when it is activated. The second
     /// value is the plugin's refusal of the state, if it refused: the plugin is

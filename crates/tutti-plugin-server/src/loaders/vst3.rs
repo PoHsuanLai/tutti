@@ -96,7 +96,7 @@ impl Vst3Instance {
             .map(|(instance, _)| instance)
     }
 
-    /// [`load`](Self::load), restoring `state` **before the plugin is
+    /// `load`, restoring `state` **before the plugin is
     /// activated**: the format allows a state on a plugin that is open and not
     /// yet active, and a plugin may take its mode from the state when it is
     /// activated. The second value is the plugin's refusal of the state, if it

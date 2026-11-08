@@ -103,7 +103,7 @@ pub(super) fn launch_with(
     launch_with_state(locator, config, plugin_path, sample_rate, None)
 }
 
-/// [`launch_with`], restoring `state` into the plugin before it is activated:
+/// `launch_with`, restoring `state` into the plugin before it is activated:
 /// staged ahead of the load (`HostMessage::StageStateChunk`), applied by the
 /// server between opening the plugin and activating it, so the activation, and
 /// the reply's buses and latency, are the state's.
@@ -414,7 +414,7 @@ mod tests {
     /// # Keeping it deterministic under parallel load
     ///
     /// **The stand-in is chosen with a [`ServerLocator`]** passed to
-    /// [`launch_with`], not through `TUTTI_PLUGIN_SERVER`: an env var is
+    /// `launch_with`, not through `TUTTI_PLUGIN_SERVER`: an env var is
     /// process-global, so every other thread in this binary would see it.
     ///
     /// **Liveness is not checked with a process-table scan** (`pgrep`): the

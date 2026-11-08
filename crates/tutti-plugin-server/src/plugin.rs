@@ -170,7 +170,7 @@ impl Plugin {
             .map(|(plugin, descriptor, loaded, format, _)| (plugin, descriptor, loaded, format))
     }
 
-    /// [`load`](Self::load), restoring `state` into the plugin **before it is
+    /// `load`, restoring `state` into the plugin **before it is
     /// activated**, so the activation, and the `LoadedPlugin` this returns (its
     /// buses and latency), are the state's. The last value is the plugin's
     /// refusal of the state, if it refused: the plugin is then activated at its

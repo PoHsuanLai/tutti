@@ -31,7 +31,7 @@ other branches; `docs/design` on `main` ends at 018.
 - **Decisions of 2026-11-08** (owner): the graph re-reads the tail (§10, step 0b);
   fork is `fresh()` with preroll; `ReverbKind` ships in step 1 beside a second
   algorithm, the FDN; freeze comes with the FDN (§11).
-- **Modulation holds up** with one convention and no code change (§9): a tail
+- **Modulation holds up** with one graph addition, the tail report of step 0b (§9, §10): a tail
   declared at the worst case of the node's own range, controls read once per block
   with coefficient interpolation, and `UnitParam` kinds appended.
 - **Build order** (§8): kinds, the graph's dynamic tail, then the trait, suite,

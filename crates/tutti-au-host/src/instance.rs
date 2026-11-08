@@ -81,7 +81,8 @@ pub struct AuActive {
     // before the renderer (whose input callback the unit may still call while
     // initialized) and the loaded state are dropped.
     guard: UninitializeOnDrop,
-    renderer: Renderer,
+    // Boxed so `uninitialize`'s `(AuActive, AuError)` stays a small `Err`.
+    renderer: Box<Renderer>,
     loaded: AuLoaded,
 }
 
@@ -147,6 +148,11 @@ enum State {
 
 impl AuInstance {
     /// Instantiates an AU in the `Loaded` (pre-init) state.
+    ///
+    /// # Errors
+    /// [`AuError::LoadFailed`] or [`AuError::RequiresAsyncInstantiation`] if the
+    /// component cannot be instantiated, or the stream-configuration errors of
+    /// [`StreamConfig`]'s `apply`.
     pub fn new(component: AuComponentRef, sample_rate: f64, block_size: u32) -> Result<Self> {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
@@ -157,6 +163,9 @@ impl AuInstance {
 
     /// Instantiates at an explicit [`StreamConfig`] — the way to open an AU in
     /// mono, or at any width other than the stereo default [`Self::new`] picks.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
     pub fn new_with_config(component: AuComponentRef, config: StreamConfig) -> Result<Self> {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new_with_config(component, config)?),
@@ -184,6 +193,10 @@ impl AuInstance {
     ///
     /// Re-opening closes the previous view first, so the AU is never asked to
     /// hold two.
+    ///
+    /// # Errors
+    /// An error if the unit has no Cocoa view, or its view factory cannot be
+    /// loaded or returns no view.
     pub fn open_editor(
         &mut self,
         parent: WindowHandle,
@@ -1917,6 +1930,9 @@ impl AuInstance {
 
 impl AuLoaded {
     /// Instantiates and applies the initial stream configuration.
+    ///
+    /// # Errors
+    /// As [`AuInstance::new`].
     pub fn new(component: AuComponentRef, sample_rate: f64, block_size: u32) -> Result<Self> {
         let handle = AuHandle::new(component)?;
 
@@ -1942,6 +1958,9 @@ impl AuLoaded {
     /// It is the only route to a sub-stereo width from outside the crate:
     /// `apply` is `pub(crate)`, and without this a mono track pays for a doubled
     /// channel through every AU in its chain.
+    ///
+    /// # Errors
+    /// As [`AuInstance::new`].
     pub fn new_with_config(component: AuComponentRef, config: StreamConfig) -> Result<Self> {
         Self::with_layout(AuHandle::new(component)?, config)
     }
@@ -2015,11 +2034,11 @@ impl AuLoaded {
 
         // The renderer owns the heap-pinned scratch the input callback reads,
         // and withdraws that callback before freeing it.
-        let renderer = Renderer::new(
+        let renderer = Box::new(Renderer::new(
             self.handle.unit(),
-            self.config.channels.into(),
+            self.config.channels,
             self.config.block_size,
-        );
+        ));
         let mut ready = AuActive {
             guard: UninitializeOnDrop {
                 unit: self.handle.unit().clone(),

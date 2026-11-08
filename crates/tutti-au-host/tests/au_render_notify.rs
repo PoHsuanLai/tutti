@@ -116,7 +116,7 @@ impl Observed {
         self.bus.store(n.bus, Ordering::SeqCst);
         let _ = self
             .order
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
                 Some(v.saturating_mul(10).saturating_add(digit))
             });
     }

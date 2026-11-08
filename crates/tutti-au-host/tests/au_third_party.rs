@@ -1312,15 +1312,13 @@ fn engage_processing(au: &mut AuInstance, label: &str) {
         }
     }
 
-    if touched == 0 {
-        if let Some(p) = params
+    if touched == 0
+        && let Some(p) = params
             .iter()
             .find(|p| p.writable && !p.meter_read_only && p.range.max > p.range.min)
-        {
-            if au.set_parameter(p.id, p.range.max).is_ok() {
-                touched += 1;
-            }
-        }
+        && au.set_parameter(p.id, p.range.max).is_ok()
+    {
+        touched += 1;
     }
 
     assert!(

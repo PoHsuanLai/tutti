@@ -467,8 +467,8 @@ unsafe fn render_input(
                 if io_data.is_null() {
                     return -1;
                 }
-                // SAFETY: the caller's contract on `io_data`.
-                unsafe { fill_input(scratch, in_number_frames, io_data) }
+                // `io_data` is covered by the caller's contract.
+                fill_input(scratch, in_number_frames, io_data)
             },
         )
     }

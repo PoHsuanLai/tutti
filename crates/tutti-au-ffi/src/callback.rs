@@ -80,7 +80,12 @@ mod tests {
         let seen = unsafe { with_state::<u32, i32>("test", refcon, -1, 7, |s| *s as i32) };
         assert_eq!(seen, 41);
         // SAFETY: exclusive for the call.
-        unsafe { with_state_mut::<u32, i32>("test", refcon, -1, 7, |s| *s += 1) };
+        unsafe {
+            with_state_mut::<u32, i32>("test", refcon, -1, 7, |s| {
+                *s += 1;
+                0
+            })
+        };
         assert_eq!(state, 42);
         // SAFETY: null is allowed.
         let null = unsafe {

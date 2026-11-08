@@ -614,8 +614,8 @@ unsafe extern "C" fn au_render_notify(
                 if io_action_flags.is_null() {
                     return NO_ERR;
                 }
-                // SAFETY: AudioToolbox passes a valid flags word for the call.
-                let flags = unsafe { *io_action_flags };
+                // AudioToolbox passes a valid flags word for the call.
+                let flags = *io_action_flags;
                 // The AU sets exactly one phase per call; a word with neither is
                 // not a notification this module models.
                 let phase = if flags & K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER != 0 {

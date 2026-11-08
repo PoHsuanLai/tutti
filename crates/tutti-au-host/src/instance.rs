@@ -77,13 +77,19 @@ enum Silence {
 /// allocated. This is the only state in which [`AuInstance::process`] will
 /// succeed.
 pub struct AuActive {
-    // Field order is drop order. The guard goes first: it uninitializes the unit
-    // before the renderer (whose input callback the unit may still call while
-    // initialized) and the loaded state are dropped.
-    guard: UninitializeOnDrop,
     // Boxed so `uninitialize`'s `(AuActive, AuError)` stays a small `Err`.
-    renderer: Box<Renderer>,
+    rendering: Box<Rendering>,
     loaded: AuLoaded,
+}
+
+/// What an initialized unit holds beside its loaded state.
+///
+/// Field order is drop order. The guard goes first: it uninitializes the unit
+/// before the renderer (whose input callback the unit may still call while
+/// initialized) is dropped.
+struct Rendering {
+    guard: UninitializeOnDrop,
+    renderer: Renderer,
 }
 
 /// Uninitializes the unit when an [`AuActive`] is dropped without
@@ -366,7 +372,7 @@ impl AuInstance {
     #[cfg(test)]
     fn callback_install_count(&self) -> u32 {
         match &self.state {
-            State::Active(r) => r.renderer.input_callback_installs(),
+            State::Active(r) => r.rendering.renderer.input_callback_installs(),
             _ => 0,
         }
     }
@@ -469,7 +475,7 @@ impl AuInstance {
         // Pre-`initialize` there is no scratch: the cursor is created at zero by
         // `initialize` and has nothing to carry over, so there is nothing to do.
         if let State::Active(r) = &mut self.state {
-            r.renderer.reset_position();
+            r.rendering.renderer.reset_position();
         }
         Ok(())
     }
@@ -2034,17 +2040,19 @@ impl AuLoaded {
 
         // The renderer owns the heap-pinned scratch the input callback reads,
         // and withdraws that callback before freeing it.
-        let renderer = Box::new(Renderer::new(
+        let renderer = Renderer::new(
             self.handle.unit(),
             self.config.channels,
             self.config.block_size,
-        ));
+        );
         let mut ready = AuActive {
-            guard: UninitializeOnDrop {
-                unit: self.handle.unit().clone(),
-                armed: true,
-            },
-            renderer,
+            rendering: Box::new(Rendering {
+                guard: UninitializeOnDrop {
+                    unit: self.handle.unit().clone(),
+                    armed: true,
+                },
+                renderer,
+            }),
             loaded: self,
         };
 
@@ -2062,7 +2070,7 @@ impl AuLoaded {
         // that has no input element is a property error, and the `?` aborted
         // init entirely.
         if ready.loaded.config.channels.has_input
-            && let Err(e) = ready.renderer.install_input_callback()
+            && let Err(e) = ready.rendering.renderer.install_input_callback()
         {
             // The AU *is* initialized at this point, so backing out has to
             // undo that too — not merely drop the half-built `AuActive`.
@@ -2115,12 +2123,11 @@ impl AuActive {
             return Err((self, e.into()));
         }
         let AuActive {
-            mut guard,
-            renderer,
+            mut rendering,
             loaded,
         } = self;
-        guard.armed = false;
-        drop(renderer);
+        rendering.guard.armed = false;
+        drop(rendering);
         Ok(loaded)
     }
 
@@ -2138,7 +2145,7 @@ impl AuActive {
         output: &mut [&mut [f32]],
         num_frames: u32,
     ) -> Result<()> {
-        self.renderer.stage_input(input, num_frames);
+        self.rendering.renderer.stage_input(input, num_frames);
         if self.render(num_frames)? == Silence::Declared {
             let n = num_frames as usize;
             for dst in output.iter_mut() {
@@ -2146,7 +2153,7 @@ impl AuActive {
                 dst[..len].fill(0.0);
             }
         } else {
-            self.renderer.emit_output(output, num_frames);
+            self.rendering.renderer.emit_output(output, num_frames);
         }
         Ok(())
     }
@@ -2167,7 +2174,7 @@ impl AuActive {
         output: &mut [&mut [f64]],
         num_frames: u32,
     ) -> Result<()> {
-        self.renderer.stage_input_f64(input, num_frames);
+        self.rendering.renderer.stage_input_f64(input, num_frames);
         if self.render(num_frames)? == Silence::Declared {
             let n = num_frames as usize;
             for dst in output.iter_mut() {
@@ -2175,7 +2182,7 @@ impl AuActive {
                 dst[..len].fill(0.0);
             }
         } else {
-            self.renderer.emit_output_f64(output, num_frames);
+            self.rendering.renderer.emit_output_f64(output, num_frames);
         }
         Ok(())
     }
@@ -2206,7 +2213,7 @@ impl AuActive {
         // advisory global-scope read, made only when the render itself failed,
         // never on a steady-state block, so it does not affect the no-alloc
         // guarantee).
-        let silent = self.renderer.render(num_frames)?;
+        let silent = self.rendering.renderer.render(num_frames)?;
 
         // Honor the AU's OutputIsSilence signal. When the AU declares the
         // block silent, its output buffers are not guaranteed to be zeroed

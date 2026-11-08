@@ -54,20 +54,38 @@ pub(super) fn unpack_id(id: EndpointId) -> (c_int, c_int) {
 /// Names are `"Client: Port"`, matching how `aconnect -l` presents them, unless
 /// the port name already starts with the client's.
 pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointInfo> {
-    walk(seq, [direction]).into_iter().flatten().collect()
+    walk(seq, [direction]).lists.into_iter().flatten().collect()
 }
 
 /// The inputs and the outputs from **one** walk, so a port is read once. Two
 /// walks can see a port being created (the kernel lists it before it sets its
 /// capabilities) in different states and report a duplex as an output.
-pub(super) fn both(seq: &SeqClient) -> (Vec<EndpointInfo>, Vec<EndpointInfo>) {
-    let [inputs, outputs] = walk(seq, [Direction::Input, Direction::Output]);
-    (inputs, outputs)
+///
+/// `None` when the walk stopped on a query error, so the lists may be short:
+/// a short list reported as a look would remove devices that are still there.
+pub(super) fn both(seq: &SeqClient) -> Option<(Vec<EndpointInfo>, Vec<EndpointInfo>)> {
+    let Walk {
+        lists: [inputs, outputs],
+        complete,
+    } = walk(seq, [Direction::Input, Direction::Output]);
+    complete.then_some((inputs, outputs))
 }
 
+/// What a walk found.
+struct Walk<const N: usize> {
+    /// One list per direction asked for, in order.
+    lists: [Vec<EndpointInfo>; N],
+    /// Whether every query ended with `-ENOENT`, the end of the list.
+    complete: bool,
+}
+
+/// `-ENOENT`: no client or port after this one.
+const ENOENT: c_int = -2;
+
 /// One list per entry of `directions`, in order.
-fn walk<const N: usize>(seq: &SeqClient, directions: [Direction; N]) -> [Vec<EndpointInfo>; N] {
+fn walk<const N: usize>(seq: &SeqClient, directions: [Direction; N]) -> Walk<N> {
     let mut out: [Vec<EndpointInfo>; N] = std::array::from_fn(|_| Vec::new());
+    let mut complete = true;
     let own_id = seq.id().unwrap_or(-1);
 
     let mut cinfo: *mut sys::snd_seq_client_info_t = std::ptr::null_mut();
@@ -77,16 +95,27 @@ fn walk<const N: usize>(seq: &SeqClient, directions: [Direction; N]) -> [Vec<End
     // every path.
     unsafe {
         if sys::snd_seq_client_info_malloc(&mut cinfo) < 0 {
-            return out;
+            return Walk {
+                lists: out,
+                complete: false,
+            };
         }
         if sys::snd_seq_port_info_malloc(&mut pinfo) < 0 {
             sys::snd_seq_client_info_free(cinfo);
-            return out;
+            return Walk {
+                lists: out,
+                complete: false,
+            };
         }
 
         // `query_next_client` walks from the id set here; -1 starts at the first.
         sys::snd_seq_client_info_set_client(cinfo, -1);
-        while sys::snd_seq_query_next_client(seq.raw(), cinfo) >= 0 {
+        loop {
+            let rc = sys::snd_seq_query_next_client(seq.raw(), cinfo);
+            if rc < 0 {
+                complete &= rc == ENOENT;
+                break;
+            }
             let client = sys::snd_seq_client_info_get_client(cinfo);
             // The kernel's own client (Timer, Announce) is not a device.
             if client == own_id || client == sys::SND_SEQ_CLIENT_SYSTEM {
@@ -97,7 +126,15 @@ fn walk<const N: usize>(seq: &SeqClient, directions: [Direction; N]) -> [Vec<End
 
             sys::snd_seq_port_info_set_client(pinfo, client);
             sys::snd_seq_port_info_set_port(pinfo, -1);
-            while sys::snd_seq_query_next_port(seq.raw(), pinfo) >= 0 {
+            loop {
+                let rc = sys::snd_seq_query_next_port(seq.raw(), pinfo);
+                if rc < 0 {
+                    // `-ENOENT` is the last port. A client that exits mid-walk
+                    // answers `-ENXIO` (`snd_seq_ioctl_query_next_port`): not the end
+                    // of its ports, so the walk is short and is taken again.
+                    complete &= rc == ENOENT;
+                    break;
+                }
                 let caps = sys::snd_seq_port_info_get_capability(pinfo);
                 let listed = |d: Direction| caps & d.required_caps() == d.required_caps();
                 if !directions.iter().any(|&d| listed(d)) {
@@ -131,7 +168,10 @@ fn walk<const N: usize>(seq: &SeqClient, directions: [Direction; N]) -> [Vec<End
         sys::snd_seq_client_info_free(cinfo);
     }
 
-    out
+    Walk {
+        lists: out,
+        complete,
+    }
 }
 
 /// What a client can carry.

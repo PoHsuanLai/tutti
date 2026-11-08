@@ -87,10 +87,11 @@ impl AlsaEndpoints {
     }
 }
 
-/// Every device now, enumerated on `seq`.
-fn devices(seq: &SeqClient) -> Vec<OsDevice> {
-    let (inputs, outputs) = enumerate::both(seq);
-    os_devices(&inputs, &outputs)
+/// Every device now, enumerated on `seq`; `None` when the enumeration was cut
+/// short by an error.
+fn devices(seq: &SeqClient) -> Option<Vec<OsDevice>> {
+    let (inputs, outputs) = enumerate::both(seq)?;
+    Some(os_devices(&inputs, &outputs))
 }
 
 impl MidiEndpoints for AlsaEndpoints {

@@ -17,3 +17,15 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = 'package(bevy-tutti)'
 slow-timeout = { period = "30s", terminate-after = 3 }
+
+# The sequencer has 64 dynamic client slots, and each `tutti-midi-hardware`
+# test against it holds two to four of them (the watch's, its devices'), one of
+# them (the reused-number repro) for six seconds. Parallel copies of the suite,
+# as CI runners and a developer's other builds make, ran out (`snd_seq_open`
+# ENOMEM). At most four of these tests run at once in a copy.
+[test-groups]
+sequencer = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = 'package(tutti-midi-hardware) and test(/backend::alsa::tests::/)'
+test-group = 'sequencer'

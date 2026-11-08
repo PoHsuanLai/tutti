@@ -150,8 +150,9 @@ impl AudioEngine {
     /// Pairs with [`ManualStreamDriver`](crate::ManualStreamDriver) to run the
     /// whole lifecycle — start, render, fault, stop, restart — with no sound
     /// card. Such an engine can only be started with
-    /// [`start_with`](Self::start_with); [`start`](Self::start) and
-    /// [`device_name`](Self::device_name) return [`Error::InvalidDevice`].
+    /// [`start_with`](Self::start_with); [`start`](Self::start) returns
+    /// [`Error::InvalidDevice`], and [`opened_name`](Self::opened_name) is
+    /// `Ok(None)`.
     #[must_use]
     pub fn from_spec(spec: OutputSpec) -> Self {
         Self {

@@ -463,7 +463,7 @@ fn list_outputs(graph: &mut AudioGraphRes, lister: &OutputsLister) {
 /// rather than failing the startup schedule over a status display, and says
 /// so in a warning if the host could not name a real device; the listing
 /// then starts at the first restart that names one ([`device_fault_poll`]).
-/// The session lists once ([`Session::list_outputs_once`]).
+/// The session lists once (`Session::list_outputs_once`).
 pub(crate) fn device_state_init_system(
     driver: Option<NonSend<Device>>,
     watched: Option<Res<DevicesWatched>>,

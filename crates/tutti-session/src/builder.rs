@@ -355,6 +355,7 @@ impl SessionBuilder {
             device_events: Vec::new(),
             #[cfg(feature = "device")]
             output_listing: None,
+            #[cfg(feature = "device")]
             outputs_listed: false,
             #[cfg(feature = "plugin")]
             snapshot_interval: self.snapshot_interval,

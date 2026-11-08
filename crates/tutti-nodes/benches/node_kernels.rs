@@ -26,7 +26,7 @@ use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
     BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DistortionNode,
-    DownmixNode, GateNode, LimiterNode, ShapeKind,
+    DownmixNode, GateNode, LimiterNode, ReverbNode, ShapeKind,
 };
 use tutti_types::{ChannelLayout, SampleRate};
 
@@ -287,6 +287,11 @@ fn dynamics(c: &mut Criterion) {
     );
 }
 
+/// The reverb: one input, two outputs, so the throughput counts two channels.
+fn reverb(c: &mut Criterion) {
+    run(c, "reverb", "freeverb", ReverbNode::new, None);
+}
+
 #[cfg(feature = "convolution")]
 fn convolver(c: &mut Criterion) {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
@@ -303,7 +308,8 @@ criterion_group!(
     downmix,
     delay,
     limiter,
-    dynamics
+    dynamics,
+    reverb
 );
 #[cfg(feature = "convolution")]
 criterion_group!(
@@ -315,6 +321,7 @@ criterion_group!(
     delay,
     limiter,
     dynamics,
+    reverb,
     convolver
 );
 criterion_main!(benches);

@@ -55,9 +55,9 @@ pub struct Rig {
 }
 
 impl Rig {
-    /// A unit with no effect lines, so a stopped voice leaves true silence.
+    /// A unit at the default settings. Its dry pair is true silence once a voice stops: the effects are not in it.
     pub fn dry(font: &Arc<SoundFont>) -> Self {
-        let settings = Settings::new(RATE).with_reverb_and_chorus(false);
+        let settings = Settings::new(RATE);
         Self::with(font, &settings)
     }
 
@@ -127,6 +127,24 @@ impl Rig {
             right.extend_from_slice(r);
         }
         (left, right)
+    }
+
+    /// Renders `frames` frames of all five outputs: dry left and right, chorus
+    /// send left and right, reverb send. Each block's outputs are what the
+    /// executor would hand on (zeros for a block that returned `Silent` or
+    /// `Idle`). The status of the last block is `self.hand.status()`.
+    pub fn render_all(&mut self, frames: usize) -> [Vec<f32>; 5] {
+        let mut planes: [Vec<f32>; 5] = std::array::from_fn(|_| Vec::with_capacity(frames));
+        let mut done = 0;
+        while done < frames {
+            let n = (frames - done).min(BLOCK);
+            self.hand.run(n);
+            for (c, plane) in planes.iter_mut().enumerate() {
+                plane.extend_from_slice(self.hand.plane(c));
+            }
+            done += n;
+        }
+        planes
     }
 
     /// The summed magnitude of the next `frames` frames.

@@ -46,7 +46,7 @@ impl SoundFontUnit {
     /// The copy has the same SoundFont (shared, not reloaded), settings, rate
     /// and preset, with every key released. Voices already sounding are
     /// released into their envelopes rather than cut. It allocates a copy of
-    /// the synthesizer's voice and effect state, so call it off the audio
+    /// the synthesizer's voice state, so call it off the audio
     /// thread. When the fork is prepared at another rate, its node re-rates
     /// itself as a live unit does.
     ///
@@ -60,7 +60,7 @@ impl SoundFontUnit {
     }
 
     /// The fork source of a unit inserted as a graph node: a template
-    /// clone, costing a second copy of the synthesizer's voice and effect
+    /// clone, costing a second copy of the synthesizer's voice
     /// state — not of the SoundFont — for as long as the node is in the
     /// graph.
     pub(crate) fn fork_template(&self) -> SoundFontFork {
@@ -102,7 +102,7 @@ mod tests {
 
     /// A unit at `rate`, on preset `preset`.
     fn unit(soundfont: &Arc<SoundFont>, rate: SampleRate, preset: U7) -> SoundFontUnit {
-        let settings = Settings::new(rate).with_reverb_and_chorus(false);
+        let settings = Settings::new(rate);
         let mut unit =
             SoundFontUnit::new(Arc::clone(soundfont), &settings).expect("the unit builds");
         unit.program_change(MidiChannel::FIRST, preset);

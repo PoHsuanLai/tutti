@@ -1123,7 +1123,7 @@ mod synths {
 
     /// A SoundFont unit at `rate`, on [`PRESET`].
     fn sf2(font: &Arc<SoundFont>, rate: f64) -> SoundFontUnit {
-        let settings = Settings::new(SampleRate(rate)).with_reverb_and_chorus(false);
+        let settings = Settings::new(SampleRate(rate));
         let mut unit = SoundFontUnit::new(Arc::clone(font), &settings).expect("the unit builds");
         unit.program_change(MidiChannel::FIRST, PRESET);
         unit

@@ -181,7 +181,14 @@ mod tests {
             .export(ExportRequest::new(
                 ExportSource::Mix,
                 ExportTarget::Buffers,
-                tutti_export::ExportConfig::default(),
+                // A render of no frames is refused, and this one is to run.
+                tutti_export::ExportConfig {
+                    render: tutti_export::RenderConfig {
+                        duration_seconds: 0.01,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
                 ExportClock::frozen(),
             ))
             .expect("the export starts");

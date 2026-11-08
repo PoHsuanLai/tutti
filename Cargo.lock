@@ -411,6 +411,7 @@ dependencies = [
  "tutti-rt",
  "tutti-sampler",
  "tutti-session",
+ "tutti-sf2",
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-transport",
@@ -4214,6 +4215,7 @@ dependencies = [
  "tutti-rt",
  "tutti-sampler",
  "tutti-session",
+ "tutti-sf2",
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-transport",
@@ -4771,6 +4773,7 @@ dependencies = [
  "tutti-polysynth",
  "tutti-rt",
  "tutti-sampler",
+ "tutti-sf2",
  "tutti-shared-plugin",
  "tutti-soundfont",
  "tutti-spatial",
@@ -4783,8 +4786,12 @@ dependencies = [
 name = "tutti-sf2"
 version = "0.0.1"
 dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tutti-fixtures",
+ "tutti-sf2",
+ "tutti-types",
  "tutti-ump",
 ]
 

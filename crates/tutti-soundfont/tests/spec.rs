@@ -10,8 +10,9 @@
 
 mod support;
 
-use support::font::{Inst, Preset, font, generator, one_preset, range};
+use support::font::{Inst, Preset, font, one_preset};
 use support::rig::{Rig, timgm6mb};
+use tutti_fixtures::sf2::{generator, range};
 use tutti_graph::Node;
 use tutti_types::Tail;
 

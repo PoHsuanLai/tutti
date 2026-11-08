@@ -19,7 +19,8 @@ use std::sync::Arc;
 use tutti_graph::EventKind;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_midi_types::MidiEvent;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::Samples;
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -51,8 +52,7 @@ fn soundfont_row() -> Row {
     Row::new(
         "SoundFontUnit",
         move || {
-            let mut settings = Settings::new(SAMPLE_RATE);
-            settings.reverb_and_chorus = false;
+            let settings = Settings::new(SAMPLE_RATE).with_reverb_and_chorus(false);
             Box::new(SoundFontUnit::new(Arc::clone(&font), &settings).expect("the unit builds"))
         },
         Excite::Event {

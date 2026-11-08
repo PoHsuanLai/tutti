@@ -8,6 +8,7 @@
 
 mod support;
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use support::rig::{RATE, Rig, timgm6mb};
 
@@ -39,26 +40,51 @@ fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
     }
 }
 
-// The polyphony is 1 to `Settings::MAX_POLYPHONY`: none is refused with its
-// value, one is enough, and a count that would overflow the pool's allocation
-// is refused instead of panicking in it.
+// The polyphony is a count of voices that cannot be zero (`NonZeroUsize`), and
+// one voice is enough: a second note takes the first's place, so two notes
+// sound at the power of one, where a pool of two sounds both (two sines an
+// octave apart add in power, twice the one).
 //
-// Mutation (run): letting a polyphony of 0 through fails the first assertion;
-// removing the upper bound panics with a capacity overflow on `usize::MAX` and
-// fails the last two.
+// Mutation (run): `Player::new` reading the polyphony as 64 whatever the
+// settings say lets both sound at once and fails the last assertion.
 #[test]
-fn the_polyphony_is_one_to_the_maximum_and_nothing_else_is_tried() {
-    let mut settings = Settings::new(RATE);
-    settings.max_polyphony = 0;
-    assert!(matches!(refused(settings), Error::PolyphonyOutOfRange(0)));
-    settings.max_polyphony = 1;
-    assert!(SoundFontUnit::new(timgm6mb(), &settings).is_ok());
-    settings.max_polyphony = Settings::MAX_POLYPHONY;
-    assert!(SoundFontUnit::new(timgm6mb(), &settings).is_ok());
+fn a_pool_of_one_voice_gives_way_to_the_next_note() {
+    let font = support::font::one_preset(vec![vec![]]);
+    let level = |voices: usize| {
+        let settings = Settings::new(RATE)
+            .with_reverb_and_chorus(false)
+            .with_polyphony(NonZeroUsize::new(voices).unwrap());
+        let mut rig = Rig::with(&font, &settings);
+        rig.note_on(0, 60, 100);
+        rig.energy(4096);
+        rig.note_on(0, 72, 100);
+        rig.energy(8192);
+        let (left, _) = rig.render(4096);
+        left.iter().map(|s| s * s).sum::<f32>()
+    };
+    let one = level(1);
+    let two = level(2);
+    assert!(one > 1.0);
+    assert!(
+        two > one * 1.8,
+        "two voices sound both: {two} against {one}"
+    );
+}
+
+// A count of voices past `Settings::MAX_POLYPHONY` is refused with its value
+// instead of panicking in the pool's allocation (`usize::MAX` overflows it);
+// the maximum itself and one voice build.
+//
+// Mutation (run): removing the upper bound in `Player::new` panics with a
+// capacity overflow on `usize::MAX` and fails the test.
+#[test]
+fn a_polyphony_past_the_maximum_is_refused_and_the_maximum_builds() {
+    let at = |voices: usize| Settings::new(RATE).with_polyphony(NonZeroUsize::new(voices).unwrap());
+    assert!(SoundFontUnit::new(timgm6mb(), &at(1)).is_ok());
+    assert!(SoundFontUnit::new(timgm6mb(), &at(Settings::MAX_POLYPHONY)).is_ok());
     for too_many in [Settings::MAX_POLYPHONY + 1, usize::MAX] {
-        settings.max_polyphony = too_many;
         assert!(
-            matches!(refused(settings), Error::PolyphonyOutOfRange(n) if n == too_many),
+            matches!(refused(at(too_many)), Error::PolyphonyOutOfRange(n) if n == too_many),
             "{too_many}"
         );
     }
@@ -362,7 +388,8 @@ fn cc_99_and_98_make_data_entry_ignore_the_rpn() {
 /// 0 of bank 1 plays the same sample 144 dB down. The loud one answers
 /// velocities 0 to 63 only.
 fn two_bank_soundfont() -> Arc<SoundFont> {
-    use support::font::{Inst, Preset, font, generator, range};
+    use support::font::{Inst, Preset, font};
+    use tutti_fixtures::sf2::{generator, range};
     font(
         &[
             Preset {
@@ -487,4 +514,114 @@ fn an_unfollowed_controller_leaves_the_note_sounding() {
     cc(&mut synthesizer, 20, 127);
     cc(&mut synthesizer, 119, 127);
     assert!(energy(&mut synthesizer, 2048) > 1.0);
+}
+
+// SF2 2.04 section 7.2: a preset whose bank or program is not a MIDI value
+// "cannot be played but should be maintained". It is never the one a channel
+// plays, not even as the default a channel falls back on when its own bank and
+// program name nothing: the first *playable* preset is.
+//
+// The font: preset 0 has bank 300 (unplayable) and a loud zone; preset 1 is
+// bank 0, program 3 and silent (144 dB down). A channel on bank 0, program 0
+// names nothing, so it falls back, and must land on the silent preset 1.
+//
+// Mutation (run): the default left at preset 0 in `Player::new` plays the loud
+// unplayable one and fails the first assertion.
+#[test]
+fn an_unplayable_preset_is_never_chosen() {
+    use support::font::{Inst, Preset, font};
+    use tutti_fixtures::sf2::generator;
+    let preset = |name, bank, program, instrument| Preset {
+        name,
+        bank,
+        program,
+        zones: vec![(vec![], instrument)],
+    };
+    let font = font(
+        &[preset("unplayable", 300, 0, 0), preset("playable", 0, 3, 1)],
+        &[
+            Inst {
+                name: "loud",
+                zones: vec![vec![]],
+            },
+            Inst {
+                name: "silent",
+                zones: vec![vec![(generator::INITIAL_ATTENUATION, 1440)]],
+            },
+        ],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    assert!(
+        rig.energy(4096) < 0.01,
+        "the unplayable preset must not sound"
+    );
+}
+
+// A font none of whose presets is playable is refused, not built into a unit
+// that is silent or plays what the file says cannot be played.
+//
+// Mutation (run): the `NoPlayablePreset` return removed builds the unit and
+// fails the assertion.
+#[test]
+fn a_font_with_nothing_playable_is_refused() {
+    use support::font::{Inst, Preset, font};
+    let font = font(
+        &[
+            Preset {
+                name: "bank",
+                bank: 300,
+                program: 0,
+                zones: vec![(vec![], 0)],
+            },
+            Preset {
+                name: "program",
+                bank: 0,
+                program: 200,
+                zones: vec![(vec![], 0)],
+            },
+        ],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![]],
+        }],
+    );
+    let error = SoundFontUnit::new(font, &Settings::new(RATE)).unwrap_err();
+    assert!(matches!(error, Error::NoPlayablePreset), "{error:?}");
+}
+
+// SF2 2.04 section 7.2: of two presets with one bank and program, "the first
+// occurring preset in the PHDR chunk is the active preset".
+//
+// Mutation (run): `entry().or_insert` back to `insert` in `Player::new` lets
+// the last win, the loud one, and fails the assertion.
+#[test]
+fn the_first_of_two_presets_with_one_bank_and_program_is_active() {
+    use support::font::{Inst, Preset, font};
+    use tutti_fixtures::sf2::generator;
+    let preset = |name, instrument| Preset {
+        name,
+        bank: 0,
+        program: 0,
+        zones: vec![(vec![], instrument)],
+    };
+    let font = font(
+        &[preset("first, silent", 0), preset("second, loud", 1)],
+        &[
+            Inst {
+                name: "silent",
+                zones: vec![vec![(generator::INITIAL_ATTENUATION, 1440)]],
+            },
+            Inst {
+                name: "loud",
+                zones: vec![vec![]],
+            },
+        ],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    assert!(
+        rig.energy(4096) < 0.01,
+        "the first preset is the active one"
+    );
 }

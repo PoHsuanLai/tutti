@@ -928,6 +928,14 @@ mod tests {
     use crate::{Phase, PhaseCx};
     use tutti_types::SampleRate;
 
+    /// A render of a few blocks: the default config has no duration, and a
+    /// render of no frames is refused.
+    fn short() -> ExportConfig {
+        let mut config = ExportConfig::default();
+        config.render.duration_seconds = 0.01;
+        config
+    }
+
     /// A detached session whose outputs hear a dc node: something to export.
     fn session() -> Session {
         let mut session = Session::builder()
@@ -980,7 +988,7 @@ mod tests {
             ExportRequest::new(
                 ExportSource::Mix,
                 ExportTarget::Buffers,
-                ExportConfig::default(),
+                short(),
                 ExportClock::frozen(),
             )
         };
@@ -1105,7 +1113,7 @@ mod tests {
                 ExportRequest::new(
                     ExportSource::Mix,
                     ExportTarget::Buffers,
-                    ExportConfig::default(),
+                    short(),
                     ExportClock::frozen(),
                 )
                 .with_edit(Box::new(move |prepared: PreparedGraph<'_>| {
@@ -1147,7 +1155,7 @@ mod tests {
             .export(ExportRequest::new(
                 ExportSource::Mix,
                 ExportTarget::Buffers,
-                ExportConfig::default(),
+                short(),
                 ExportClock::frozen(),
             ))
             .expect("the export starts");
@@ -1175,7 +1183,7 @@ mod tests {
             .export(ExportRequest::new(
                 ExportSource::Mix,
                 ExportTarget::Buffers,
-                ExportConfig::default(),
+                short(),
                 ExportClock::frozen(),
             ))
             .expect("the next export starts");
@@ -1195,7 +1203,7 @@ mod tests {
                 .export(ExportRequest::new(
                     ExportSource::Mix,
                     ExportTarget::Buffers,
-                    ExportConfig::default(),
+                    short(),
                     ExportClock::frozen(),
                 ))
                 .expect("an export starts")

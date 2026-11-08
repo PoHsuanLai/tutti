@@ -351,9 +351,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
 0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-sf2`
+1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
-   `tutti-codec`, `tutti-tempo`, `tutti-voicing`
+   `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-host`,
@@ -522,9 +522,14 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-midi-file` is OS-free.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
   sample headers, sample data, raw generators) and holds nothing that plays.
-  It depends on `tutti-ump` alone, keeps every module private
+  Its workspace dependencies are `tutti-ump` and `tutti-types` (the units its
+  accessors return: `Samples`, `SampleRate`, `Cents`) and no others; `serde` is
+  an optional feature, on `Bank` only. It keeps every module private
   (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
-  `#![forbid(unsafe_code)]`. `tutti-soundfont` is the player over it: the
+  `#![forbid(unsafe_code)]`. It has one error type, `tutti_sf2::Error`, with a
+  `Result` alias, and no public four-character-code type. `tutti-soundfont`
+  does not re-export `SoundFont`: its one path is `tutti_sf2::SoundFont` (the
+  umbrella `tutti` offers it as `tutti::sf2`). `tutti-soundfont` is the player over it: the
   note logic is `tutti-voicing`'s (`Voicing::step` and its `Rules`, with a
   `Patch` that starts one voice for each matching preset zone and instrument
   zone), and the crate keeps what renders a voice (the oscillator, filter,

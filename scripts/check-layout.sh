@@ -159,9 +159,9 @@ def rel(p):
 LAYERS = [
     # no workspace dependency at all
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-ump"],
-    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-sf2"],
+    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
-     "tutti-codec", "tutti-tempo", "tutti-voicing"],
+     "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
     ["tutti-transport", "tutti-plugin-types"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-host",

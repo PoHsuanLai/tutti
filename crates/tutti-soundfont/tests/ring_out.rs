@@ -10,8 +10,9 @@
 
 mod support;
 
-use support::font::{Inst, Preset, font, generator};
+use support::font::{Inst, Preset, font};
 use support::rig::{RATE, Rig, timgm6mb};
+use tutti_fixtures::sf2::generator;
 use tutti_graph::Node;
 use tutti_soundfont::Settings;
 use tutti_types::Tail;
@@ -76,12 +77,13 @@ fn longest_of(font: &tutti_sf2::SoundFont, preset: usize) -> Option<Longest> {
 fn rang(font: &std::sync::Arc<tutti_sf2::SoundFont>, longest: &Longest) -> (usize, usize) {
     let mut rig = Rig::with(font, &Settings::new(RATE));
     let p = &font.presets()[longest.preset];
-    let (bank, patch) = (p.bank_number(), p.patch_number());
+    let bank = p.bank().map_or(0, |b| b.get());
+    let patch = p.patch().map_or(0, |p| p.get());
     let channel = if bank == 128 { 9 } else { 0 };
     if bank != 128 && bank != 0 {
         rig.cc(channel, 0, bank as u8);
     }
-    rig.program(channel, patch as u8);
+    rig.program(channel, patch);
     rig.note_on(channel, longest.key, longest.velocity);
     rig.energy(44_100);
     rig.note_off(channel, longest.key);
@@ -135,7 +137,9 @@ fn a_note_rings_out_within_the_declared_tail() {
         let preset = font
             .presets()
             .iter()
-            .position(|p| p.bank_number() == bank && p.patch_number() == patch)
+            .position(|p| {
+                p.bank().map(|b| b.get()) == Some(bank) && p.patch().map(|p| p.get()) == Some(patch)
+            })
             .expect("the program is in the font");
         cases.push(longest_of(&font, preset).expect("it starts a note"));
     }

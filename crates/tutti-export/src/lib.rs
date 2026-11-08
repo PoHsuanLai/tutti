@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
-pub use error::{ConfigError, Error, Result};
+pub use error::{ConfigError, Error, Result, Unmeasured};
 
 mod options;
 pub use options::Dither;
@@ -21,7 +21,9 @@ mod config;
 pub use config::{EncodeConfig, EventLossPolicy, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
-pub use normalize::{Normalize, render_normalized_to_file, render_normalized_to_file_with};
+pub use normalize::{
+    Normalize, Normalized, render_normalized_to_file, render_normalized_to_file_with,
+};
 
 mod graph;
 pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
@@ -45,7 +47,7 @@ use tutti_types::Samples;
 
 /// A file an export wrote, returned by [`render_to_file`], [`write_buffers`]
 /// and [`render_normalized_to_file`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Written {
     /// Where it landed — the `path` the entry point was given.
     pub path: PathBuf,
@@ -56,6 +58,18 @@ pub struct Written {
     /// nonzero only under [`EventLossPolicy::Allow`] (under `Fail` the render
     /// is an error instead).
     pub dropped_events: u64,
+    /// Samples the quantizer clipped: those past full scale (after any gain,
+    /// resample and dither) written to an integer format, which the encoder
+    /// clamps to it, **and non-finite ones** (a NaN is written as 0, an
+    /// infinity as full scale). `0` for a format that does not quantize (`Pcm::Float32`,
+    /// and Ogg Vorbis, whose encoder takes the float stream). A normalizing
+    /// export keeps its target and ceiling one LSB plus the dither amplitude
+    /// below full scale for an integer format, so this stays `0` unless the
+    /// programme itself was past full scale.
+    pub clipped_samples: u64,
+    /// The gain and effective target of a normalizing export
+    /// ([`render_normalized_to_file`]); `None` for the others.
+    pub normalized: Option<Normalized>,
 }
 
 /// Rendered audio held in memory, one `Vec` per channel.
@@ -150,12 +164,6 @@ impl Rendered {
     }
 }
 
-/// The frame width an export config asks for, as the interleave stride.
-///
-/// The one place a [`ChannelLayout`] becomes the `usize` stride the render and
-/// the encoders use, and zero is the only rejected width. That the check is
-/// a bound rather than a list of enumerated widths is what lets a 3- or 5-wide
-/// master export at all: nothing here is generic over the count.
 /// The file's channels, for the fold from the graph's.
 fn file_channels(config: &ExportConfig) -> render::FileChannels<'_> {
     render::FileChannels {
@@ -164,9 +172,15 @@ fn file_channels(config: &ExportConfig) -> render::FileChannels<'_> {
     }
 }
 
+/// The frame width an export config asks for, as the interleave stride.
+///
+/// The one place a [`ChannelLayout`] becomes the `usize` stride the render and
+/// the encoders use, and zero is the only rejected width. That the check is
+/// a bound rather than a list of enumerated widths is what lets a 3- or 5-wide
+/// master export at all: nothing here is generic over the count.
 fn frame_width(layout: ChannelLayout) -> Result<usize> {
     match layout.count() {
-        0 => Err(Error::UnsupportedChannels(0)),
+        0 => Err(Error::UnsupportedChannels),
         n => Ok(n as usize),
     }
 }
@@ -177,7 +191,12 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// measure-then-apply possible: render to buffers, measure, apply a gain,
 /// write.
 ///
-/// `config.encode` is honoured as-is. `config.render` is not consulted — the
+/// `config.encode` is honoured as-is, `channels` and `topology` included:
+/// planes of another width than `config.encode.channels` are folded onto it
+/// the way a graph's outputs are (the engine's order for the plane width, the
+/// file's `topology` for the file; a 5.1 render written as stereo carries its
+/// centre and surrounds at -3 dB), and planes of the file's own width are
+/// written as they are. `config.render` is not consulted — the
 /// frames already exist and carry their own rate in [`Rendered::sample_rate`] —
 /// but `config.resample` still applies, so a caller can convert on the way out.
 /// Dither is applied here, at the real depth and after any resample, which is
@@ -186,8 +205,10 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// # Errors
 ///
 /// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
-/// [`Error::InvalidConfig`], [`Error::Resample`] or [`Error::Encode`] from the
-/// resample and encode stages.
+/// [`Error::InvalidConfig`] ([`ConfigError::Placement`]) for a plane width the
+/// fold cannot place onto the file's — a channel is never dropped to make it
+/// fit; [`Error::Resample`] or [`Error::Encode`] from the resample and encode
+/// stages.
 pub fn write_buffers(
     rendered: &Rendered,
     config: &ExportConfig,
@@ -230,9 +251,12 @@ fn finished<T>(outcome: Outcome<T>) -> T {
 /// # Errors
 ///
 /// As [`write_buffers`], plus [`Error::InvalidConfig`] if the graph was
-/// prepared at another rate or its editor does not feed its executor, and
+/// prepared at another rate or its editor does not feed its executor, or the
+/// render has no length ([`ConfigError::EmptyRender`],
+/// [`ConfigError::InvalidDuration`]), and
 /// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
-/// render — the file may exist but is not a valid render — and
+/// render — checked before the file is put in place, so `path` keeps what it
+/// held — and
 /// [`Error::EventsDropped`] if the graph lost an event and
 /// `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the default):
 /// checked before the file is put in place, so `path` keeps what it held.
@@ -265,7 +289,7 @@ pub fn render_to_file_with(
 ) -> Result<Outcome<Written>> {
     frame_width(config.encode.channels)?;
     let path = path.as_ref();
-    let plan = render::RenderPlan::new(&config.render);
+    let plan = render::RenderPlan::new(&config.render)?;
     let mut control = Control::new(Pass::ONLY, tick);
     // The loss check is inside `encode_to_file`, before the rename.
     render::with_source(
@@ -341,6 +365,14 @@ pub fn render_to_buffers_with(
     render_pass(graph, config, clock, &mut Control::new(Pass::ONLY, tick))
 }
 
+/// The error for planes that cannot be held.
+fn too_large(plan: &render::RenderPlan, config: &ExportConfig) -> Error {
+    Error::RenderTooLarge {
+        frames: plan.output_length,
+        channels: config.encode.channels,
+    }
+}
+
 /// One render into memory, reporting through `control`.
 fn render_pass(
     mut graph: impl BorrowMut<RenderGraph>,
@@ -349,23 +381,48 @@ fn render_pass(
     control: &mut Control<'_>,
 ) -> Result<Outcome<Rendered>> {
     let ch = frame_width(config.encode.channels)?;
-    let plan = render::RenderPlan::new(&config.render);
+    let plan = render::RenderPlan::new(&config.render)?;
 
     // `vec![Vec::with_capacity(n); ch]` would clone ONE empty Vec `ch` times,
     // and a clone does not carry capacity — every plane would reallocate.
-    let mut planes: Vec<Vec<f32>> = (0..ch)
-        .map(|_| Vec::with_capacity(plan.output_length.get()))
-        .collect();
+    //
+    // Reserved fallibly: the duration is the caller's, and an hour of 7.1.4
+    // (or a typo) is a plain `Err` here where `with_capacity` would abort the
+    // process.
+    let mut planes: Vec<Vec<f32>> = Vec::new();
+    planes
+        .try_reserve_exact(ch)
+        .map_err(|_| too_large(&plan, config))?;
+    for _ in 0..ch {
+        let mut plane = Vec::new();
+        plane
+            .try_reserve_exact(plan.output_length.get())
+            .map_err(|_| too_large(&plan, config))?;
+        planes.push(plane);
+    }
     let (driven, lost) = render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
         &file_channels(config),
         |src| {
-            render::drive(src, config.encode.channels, &plan, control, |block| {
-                block.append_to_planes(&mut planes);
-                Ok(())
-            })
+            let driven = render::drive(
+                src,
+                config.encode.channels,
+                &plan,
+                control,
+                config.render.on_event_loss,
+                |block| {
+                    block.append_to_planes(&mut planes);
+                    Ok(())
+                },
+            )?;
+            // Before the planes are handed back: a unit that failed rendered
+            // silence into them.
+            if driven == Outcome::Finished(()) {
+                src.check_health()?;
+            }
+            Ok(driven)
         },
     )?;
     // A cancelled render is no render: it is not judged.

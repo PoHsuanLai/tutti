@@ -1,8 +1,11 @@
 use std::ops::RangeInclusive;
 
+use std::num::NonZeroU8;
+
+use tutti_types::{Cents, SampleRate, Samples};
 use tutti_ump::{NoteNumber, U7};
 
-use crate::error::SoundFontError;
+use crate::error::Error;
 use crate::generator::Generator;
 use crate::generator_range;
 use crate::generator_type::GeneratorType;
@@ -24,11 +27,11 @@ fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
 #[non_exhaustive]
 pub struct InstrumentRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],
-    pub(crate) sample_start: i32,
-    pub(crate) sample_end: i32,
-    pub(crate) sample_start_loop: i32,
-    pub(crate) sample_end_loop: i32,
-    pub(crate) sample_sample_rate: i32,
+    pub(crate) sample_start: u32,
+    pub(crate) sample_end: u32,
+    pub(crate) sample_start_loop: u32,
+    pub(crate) sample_end_loop: u32,
+    pub(crate) sample_sample_rate: u32,
     pub(crate) sample_original_pitch: i32,
     pub(crate) sample_pitch_correction: i32,
 }
@@ -39,7 +42,7 @@ impl InstrumentRegion {
         global: &Zone,
         local: &Zone,
         samples: &[SampleHeader],
-    ) -> Result<Self, SoundFontError> {
+    ) -> Result<Self, Error> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
         gs[GeneratorType::InitialFilterCutoffFrequency as usize] = 13500;
         gs[GeneratorType::DelayModulationLfo as usize] = -12000;
@@ -69,9 +72,11 @@ impl InstrumentRegion {
             set_parameter(&mut gs, generator);
         }
 
-        let sample_id = gs[GeneratorType::SampleId as usize] as usize;
+        // The generator is a 16-bit word holding an index; read as unsigned, so an
+        // index of 32768 or more is not sign-extended into a huge one.
+        let sample_id = usize::from(gs[GeneratorType::SampleId as usize] as u16);
         if sample_id >= samples.len() {
-            return Err(SoundFontError::InvalidSampleId {
+            return Err(Error::InvalidSampleId {
                 instrument_id,
                 sample_id,
             });
@@ -94,7 +99,7 @@ impl InstrumentRegion {
         instrument_id: usize,
         zones: &[Zone],
         samples: &[SampleHeader],
-    ) -> Result<Vec<InstrumentRegion>, SoundFontError> {
+    ) -> Result<Vec<InstrumentRegion>, Error> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
             || zones[0].generators.last().unwrap().generator_type != GeneratorType::SampleId as u16
@@ -156,35 +161,56 @@ impl InstrumentRegion {
         generator_range(self.generator(GeneratorType::VelocityRange))
     }
 
-    /// The first sample frame, with the start address offsets applied.
+    /// The first sample frame, with the start address offsets applied. The
+    /// loader has checked that it is not before the sample data.
     #[must_use]
-    pub fn sample_start(&self) -> i32 {
-        self.sample_start + self.start_address_offset()
+    pub fn sample_start(&self) -> Samples {
+        Samples(self.raw_sample_start().max(0) as usize)
     }
 
     /// The last sample frame, with the end address offsets applied.
     #[must_use]
-    pub fn sample_end(&self) -> i32 {
-        self.sample_end + self.end_address_offset()
+    pub fn sample_end(&self) -> Samples {
+        Samples(self.raw_sample_end().max(0) as usize)
     }
 
     /// The loop start frame, with the loop address offsets applied.
     #[must_use]
-    pub fn sample_start_loop(&self) -> i32 {
-        self.sample_start_loop + self.start_loop_address_offset()
+    pub fn sample_start_loop(&self) -> Samples {
+        Samples(self.raw_sample_start_loop().max(0) as usize)
     }
 
     /// The loop end frame, with the loop address offsets applied.
     #[must_use]
-    pub fn sample_end_loop(&self) -> i32 {
-        self.sample_end_loop + self.end_loop_address_offset()
+    pub fn sample_end_loop(&self) -> Samples {
+        Samples(self.raw_sample_end_loop().max(0) as usize)
+    }
+
+    // The addresses as signed frame counts: an offset can take one before the
+    // sample data in a defective file, which `SoundFont::new` refuses and a
+    // `Samples` cannot say.
+    pub(crate) fn raw_sample_start(&self) -> i64 {
+        i64::from(self.sample_start) + i64::from(self.start_address_offset())
+    }
+
+    pub(crate) fn raw_sample_end(&self) -> i64 {
+        i64::from(self.sample_end) + i64::from(self.end_address_offset())
+    }
+
+    pub(crate) fn raw_sample_start_loop(&self) -> i64 {
+        i64::from(self.sample_start_loop) + i64::from(self.start_loop_address_offset())
+    }
+
+    pub(crate) fn raw_sample_end_loop(&self) -> i64 {
+        i64::from(self.sample_end_loop) + i64::from(self.end_loop_address_offset())
     }
 
     fn address_offset(&self, coarse: GeneratorType, fine: GeneratorType) -> i32 {
         32768 * i32::from(self.generator(coarse)) + i32::from(self.generator(fine))
     }
 
-    /// The start address offset, in frames.
+    /// The start address offset, in frames. Signed, a relative count (SF2 2.04
+    /// section 9.3): no unit type covers a count that can be negative.
     #[must_use]
     pub fn start_address_offset(&self) -> i32 {
         self.address_offset(
@@ -220,16 +246,16 @@ impl InstrumentRegion {
         )
     }
 
-    /// The rate the sample was recorded at, in hertz.
+    /// The rate the sample was recorded at.
     #[must_use]
-    pub fn sample_rate(&self) -> i32 {
-        self.sample_sample_rate
+    pub fn sample_rate(&self) -> SampleRate {
+        SampleRate(f64::from(self.sample_sample_rate))
     }
 
-    /// The sample header's pitch correction, in cents.
+    /// The sample header's pitch correction.
     #[must_use]
-    pub fn sample_pitch_correction(&self) -> i32 {
-        self.sample_pitch_correction
+    pub fn sample_pitch_correction(&self) -> Cents {
+        Cents(self.sample_pitch_correction as f32)
     }
 
     /// How the sample loops.
@@ -238,14 +264,20 @@ impl InstrumentRegion {
         LoopMode::from_i16(self.generator(GeneratorType::SampleModes))
     }
 
-    /// The exclusive class, 0 for none.
+    /// The exclusive class (generator 57), or `None` for class 0, "no exclusive
+    /// class". A value outside the generator's 0 to 127 reads as none as well.
     #[must_use]
-    pub fn exclusive_class(&self) -> i32 {
-        i32::from(self.generator(GeneratorType::ExclusiveClass))
+    pub fn exclusive_class(&self) -> Option<NonZeroU8> {
+        let class = self.generator(GeneratorType::ExclusiveClass);
+        u8::try_from(class)
+            .ok()
+            .filter(|c| *c <= 127)
+            .and_then(NonZeroU8::new)
     }
 
     /// The key the sample sounds at its recorded pitch: the overriding root
-    /// key if the region has one, else the sample header's.
+    /// key if the region has one, else the sample header's. An `i32`, not a
+    /// `NoteNumber`: the header's 255 means unpitched, which is not a key.
     #[must_use]
     pub fn root_key(&self) -> i32 {
         match self.generator(GeneratorType::OverridingRootKey) {

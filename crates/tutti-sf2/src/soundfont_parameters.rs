@@ -1,8 +1,7 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
-use crate::error::SoundFontError;
-use crate::four_cc::FourCC;
+use crate::error::Error;
 use crate::generator::Generator;
 use crate::instrument::Instrument;
 use crate::instrument_info::InstrumentInfo;
@@ -21,10 +20,10 @@ pub(crate) struct SoundFontParameters {
 }
 
 impl SoundFontParameters {
-    pub(crate) fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
+    pub(crate) fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let chunk_id = reader.read_four_cc()?;
         if chunk_id != b"LIST" {
-            return Err(SoundFontError::ListChunkNotFound);
+            return Err(Error::ListChunkNotFound);
         }
 
         let end = reader.read_u32()? as usize;
@@ -32,9 +31,9 @@ impl SoundFontParameters {
 
         let list_type = reader.read_four_cc()?;
         if list_type != b"pdta" {
-            return Err(SoundFontError::InvalidListChunkType {
-                expected: FourCC::from_bytes(*b"pdta"),
-                actual: list_type,
+            return Err(Error::InvalidListChunkType {
+                expected: *b"pdta",
+                actual: *list_type.as_bytes(),
             });
         }
 
@@ -60,37 +59,24 @@ impl SoundFontParameters {
                 b"imod" => reader.discard_data(size)?,
                 b"igen" => instrument_generators = Some(Generator::read_from_chunk(reader, size)?),
                 b"shdr" => sample_headers = Some(SampleHeader::read_from_chunk(reader, size)?),
-                _ => return Err(SoundFontError::ListContainsUnknownId(id)),
+                _ => return Err(Error::ListContainsUnknownId(*id.as_bytes())),
             }
         }
 
-        let preset_infos = preset_infos.ok_or(SoundFontError::SubChunkNotFound(
-            FourCC::from_bytes(*b"PHDR"),
-        ))?;
+        let preset_infos = preset_infos.ok_or(Error::SubChunkNotFound(*b"PHDR"))?;
 
-        let preset_bag = preset_bag.ok_or(SoundFontError::SubChunkNotFound(FourCC::from_bytes(
-            *b"PBAG",
-        )))?;
+        let preset_bag = preset_bag.ok_or(Error::SubChunkNotFound(*b"PBAG"))?;
 
-        let preset_generators = preset_generators.ok_or(SoundFontError::SubChunkNotFound(
-            FourCC::from_bytes(*b"PGEN"),
-        ))?;
+        let preset_generators = preset_generators.ok_or(Error::SubChunkNotFound(*b"PGEN"))?;
 
-        let instrument_infos = instrument_infos.ok_or(SoundFontError::SubChunkNotFound(
-            FourCC::from_bytes(*b"INST"),
-        ))?;
+        let instrument_infos = instrument_infos.ok_or(Error::SubChunkNotFound(*b"INST"))?;
 
-        let instrument_bag = instrument_bag.ok_or(SoundFontError::SubChunkNotFound(
-            FourCC::from_bytes(*b"IBAG"),
-        ))?;
+        let instrument_bag = instrument_bag.ok_or(Error::SubChunkNotFound(*b"IBAG"))?;
 
-        let instrument_generators = instrument_generators.ok_or(
-            SoundFontError::SubChunkNotFound(FourCC::from_bytes(*b"IGEN")),
-        )?;
+        let instrument_generators =
+            instrument_generators.ok_or(Error::SubChunkNotFound(*b"IGEN"))?;
 
-        let sample_headers = sample_headers.ok_or(SoundFontError::SubChunkNotFound(
-            FourCC::from_bytes(*b"SHDR"),
-        ))?;
+        let sample_headers = sample_headers.ok_or(Error::SubChunkNotFound(*b"SHDR"))?;
 
         let instrument_zones = Zone::create(&instrument_bag, &instrument_generators)?;
         let instruments =

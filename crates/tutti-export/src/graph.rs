@@ -120,6 +120,11 @@ pub struct RenderGraph {
     /// ([`set_root_topology`](Self::set_root_topology)); `None` is the engine's
     /// order for the width.
     root: Option<ChannelTopology>,
+    /// The executor's `(dropped, recovered)` event counts where the last
+    /// render ended, or where the pair was wrapped: the next render counts its
+    /// losses from here, so a drop between the two (installing a commit) is
+    /// the next render's, and a drop in an earlier render is not.
+    settled: (u64, u64),
 }
 
 impl RenderGraph {
@@ -131,13 +136,33 @@ impl RenderGraph {
     /// (`Editor::is_paired_with`): pass the pair built or forked together.
     /// The rate is checked at render, against the render's config.
     pub fn new(editor: Editor, executor: Executor) -> Result<Self> {
-        let graph = Self {
+        let graph = Self::wrap(editor, executor);
+        graph.check_paired()?;
+        Ok(graph)
+    }
+
+    /// The pair as it stands, counting event losses from now.
+    fn wrap(editor: Editor, executor: Executor) -> Self {
+        let settled = (
+            executor.dropped_event_count(),
+            executor.recovered_event_count(),
+        );
+        Self {
             editor,
             executor,
             root: None,
-        };
-        graph.check_paired()?;
-        Ok(graph)
+            settled,
+        }
+    }
+
+    /// Where the next render counts its event losses from.
+    pub(crate) fn settled(&self) -> (u64, u64) {
+        self.settled
+    }
+
+    /// The executor's counts at the end of a render: the next one starts here.
+    pub(crate) fn settle(&mut self, counts: (u64, u64)) {
+        self.settled = counts;
     }
 
     /// Refuse a pair whose editor does not feed its executor. [`new`](Self::new)
@@ -299,11 +324,7 @@ impl RenderGraph {
         let (editor, executor) = pending.build().map_err(|(e, r)| (fork_error(e), r))?;
         // `PendingFork::build` returns the pair it built and installed
         // together; the render checks the pairing again.
-        Ok(Self {
-            editor,
-            executor,
-            root: None,
-        })
+        Ok(Self::wrap(editor, executor))
     }
 
     /// The look-ahead latency the graph reports, as a frame count — the

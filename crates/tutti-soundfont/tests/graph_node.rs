@@ -13,7 +13,8 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::MidiEvent;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 

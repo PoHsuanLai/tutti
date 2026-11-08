@@ -22,6 +22,7 @@
 //! and construction (which does allocate, heavily) is deliberately outside
 //! every gate.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
@@ -29,7 +30,8 @@ mod support;
 
 use support::Hand;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Data128, Flex, Message, MidiChannel, MidiGroup, NoteNumber,
@@ -355,17 +357,17 @@ fn two_drums_of_a_class(font: &SoundFont) -> (u8, u8) {
     let kit = font
         .presets()
         .iter()
-        .find(|p| p.bank_number() == 128 && p.patch_number() == 0)
+        .find(|p| p.bank() == Some(tutti_sf2::Bank::Percussion) && p.patch() == U7::new(0))
         .expect("a standard drum kit");
     let velocity = U7::new(100).unwrap();
-    let class_of = |k: u8| -> i32 {
+    let class_of = |k: u8| -> u8 {
         let key = NoteNumber::new(k).unwrap();
         let mut class = 0;
         for pr in kit.regions() {
             if pr.contains(key, velocity) {
                 for ir in font.instruments()[pr.instrument_id()].regions() {
                     if ir.contains(key, velocity) {
-                        class = class.max(ir.exclusive_class());
+                        class = class.max(ir.exclusive_class().map_or(0, |c| c.get()));
                     }
                 }
             }
@@ -416,8 +418,7 @@ fn drum(key: u8, offset: u32) -> MidiEvent {
 fn soundfont_note_logic_is_allocation_free() {
     let font = load_test_soundfont();
     let (open, closed) = two_drums_of_a_class(&font);
-    let mut settings = Settings::new(SampleRate::SR_44K1);
-    settings.max_polyphony = 8;
+    let settings = Settings::new(SampleRate::SR_44K1).with_polyphony(NonZeroUsize::new(8).unwrap());
     let mut unit = Hand::new(SoundFontUnit::new(font, &settings).expect("create SoundFontUnit"));
 
     let ons: Vec<MidiEvent> = (0..24u32).map(|f| note_on(36 + f as u8, f * 2)).collect();

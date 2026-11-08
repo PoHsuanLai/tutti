@@ -129,6 +129,11 @@ fn whole_hz(hz: f64) -> Result<usize> {
 
 pub(crate) use streaming::Resampler;
 
+/// The most input frames one block of the converter can span, which bounds how
+/// much silence a flush may need past the filter's delay (`tutti_dsp`'s
+/// `MAX_BLOCK`, 2^20, is the largest block either side of an FFT may have).
+const MAX_FLUSH_BLOCK: usize = 1 << 20;
+
 mod streaming {
     use super::*;
 
@@ -222,15 +227,33 @@ mod streaming {
         ///
         /// Both halves are needed. Capping without flushing is what the previous
         /// version did, and it cut exactly where the real tail would have been.
+        ///
+        /// How much silence that takes is not one figure to compute. The delay
+        /// is in OUTPUT frames and the silence is INPUT frames (they differ by
+        /// the ratio, which is why a fixed pad of `output_delay()` frames fell
+        /// short downsampling), and the converter only emits whole blocks of
+        /// its own, which can be longer than a chunk. So the silence goes in a
+        /// chunk at a time until the budget is met, bounded by the most a
+        /// converter can owe: the delay in input frames plus one block
+        /// (`MAX_FLUSH_BLOCK`-sized at the very most).
         pub(crate) fn finish(&mut self, out: &mut [Vec<f32>]) -> Result<()> {
-            // Enough silence to clear the filter's delay plus one whole chunk,
-            // so the final partial chunk is emitted too.
-            let pad = self.inner.output_delay() + self.inner.input_frames_next();
-            let silence: Vec<Vec<f32>> = vec![vec![0.0; pad]; self.channels];
-            for (c, p) in silence.iter().enumerate().take(self.channels) {
-                self.carry[c].extend_from_slice(p);
+            // The real input's last partial chunk, padded by `drain`.
+            self.drain(out, true)?;
+            let need = self.inner.input_frames_next();
+            let delay_in = (self.inner.output_delay() as f64 / self.ratio).ceil() as usize;
+            let bound = (delay_in + MAX_FLUSH_BLOCK).div_ceil(need.max(1)) + 2;
+            let mut chunks = 0usize;
+            while self.budget() > 0 {
+                chunks += 1;
+                if chunks > bound {
+                    return Err(Error::ResampleStalled { chunks: bound });
+                }
+                for c in self.carry.iter_mut() {
+                    c.resize(c.len() + need, 0.0);
+                }
+                self.drain(out, true)?;
             }
-            self.drain(out, true)
+            Ok(())
         }
 
         /// Frames of real output still owed, given everything fed so far.

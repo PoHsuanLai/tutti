@@ -49,6 +49,9 @@ pub struct LaunchedServer {
     pub loaded: LoadedPlugin,
     pub format: SampleFormat,
     pub audio_buffer: Arc<AudioSlab>,
+    /// What became of the state the launch was given: `None` when it had none,
+    /// else the plugin's refusal as text (`Ok` when it took it).
+    pub state_restore: Option<std::result::Result<(), String>>,
 }
 
 /// Spawn a plugin-server and bring it to the point where the RT bridge thread
@@ -70,8 +73,15 @@ pub fn launch(
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: SampleRate,
+    state: Option<&[u8]>,
 ) -> Result<LaunchedServer> {
-    launch_with(&ServerLocator::from_env(), config, plugin_path, sample_rate)
+    launch_with_state(
+        &ServerLocator::from_env(),
+        config,
+        plugin_path,
+        sample_rate,
+        state,
+    )
 }
 
 /// [`launch`], with the server binary named explicitly rather than searched
@@ -83,11 +93,26 @@ pub fn launch(
 /// binary, so under a parallel runner one test's stand-in is another's
 /// production lookup. A save/restore guard does not close that window; it *is*
 /// the window.
+#[cfg(test)]
 pub(super) fn launch_with(
     locator: &ServerLocator,
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: SampleRate,
+) -> Result<LaunchedServer> {
+    launch_with_state(locator, config, plugin_path, sample_rate, None)
+}
+
+/// [`launch_with`], restoring `state` into the plugin before it is activated:
+/// staged ahead of the load (`HostMessage::StageStateChunk`), applied by the
+/// server between opening the plugin and activating it, so the activation, and
+/// the reply's buses and latency, are the state's.
+pub(super) fn launch_with_state(
+    locator: &ServerLocator,
+    config: &BridgeConfig,
+    plugin_path: &Path,
+    sample_rate: SampleRate,
+    state: Option<&[u8]>,
 ) -> Result<LaunchedServer> {
     let mut process = spawn_process(locator, config)?;
 
@@ -97,19 +122,28 @@ pub(super) fn launch_with(
     let result = (|process: &mut Child| {
         let mut stream = handshake(config, process)?;
         let shm_name = next_shm_name();
-        let (descriptor, loaded, format) =
+        // A state the server would not even stage (over the limit) is a refusal
+        // like any other: the plugin loads at its defaults.
+        let staged = state.map(|state| stage_state(&mut stream, config, state));
+        let (descriptor, loaded, format, loaded_error) =
             load_plugin(&mut stream, config, plugin_path, sample_rate, &shm_name)?;
+        let state_restore = match staged {
+            Some(Err(e)) => Some(Err(e)),
+            Some(Ok(())) => Some(loaded_error.map_or(Ok(()), Err)),
+            None => None,
+        };
         let audio_buffer = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
-        Ok((descriptor, loaded, format, audio_buffer))
+        Ok((descriptor, loaded, format, audio_buffer, state_restore))
     })(&mut process);
 
     match result {
-        Ok((descriptor, loaded, format, audio_buffer)) => Ok(LaunchedServer {
+        Ok((descriptor, loaded, format, audio_buffer, state_restore)) => Ok(LaunchedServer {
             process,
             descriptor: *descriptor,
             loaded,
             format,
             audio_buffer,
+            state_restore,
         }),
         Err(e) => {
             // Best-effort and deliberately un-propagated: the launch error is
@@ -199,7 +233,12 @@ fn load_plugin(
     plugin_path: &Path,
     sample_rate: SampleRate,
     shm_name: &str,
-) -> Result<(Box<PluginDescriptor>, LoadedPlugin, SampleFormat)> {
+) -> Result<(
+    Box<PluginDescriptor>,
+    LoadedPlugin,
+    SampleFormat,
+    Option<String>,
+)> {
     ipc::send(
         stream,
         &HostMessage::LoadPlugin {
@@ -217,11 +256,46 @@ fn load_plugin(
             descriptor,
             loaded,
             negotiated_format,
-        } => Ok((descriptor, loaded, negotiated_format)),
+            state_error,
+        } => Ok((descriptor, loaded, negotiated_format, state_error)),
         BridgeMessage::Error { message } => {
             Err(BridgeError::load_from_server(plugin_path, message))
         }
         ref other => Err(BridgeError::unexpected_message("PluginLoaded", other)),
+    }
+}
+
+/// Hands the server `state` for the plugin its next load opens. `Err` is the
+/// reason it was not staged (too large, a stream that broke the sequence): the
+/// plugin then loads without it.
+fn stage_state(
+    stream: &mut ControlStream,
+    config: &BridgeConfig,
+    state: &[u8],
+) -> std::result::Result<(), String> {
+    if state.len() > crate::protocol::MAX_STATE_BYTES {
+        return Err(format!(
+            "state is {} bytes, over the {}-byte limit",
+            state.len(),
+            crate::protocol::MAX_STATE_BYTES
+        ));
+    }
+    for (seq, last, bytes) in crate::util::transport::state_chunk::split(state) {
+        ipc::send(
+            stream,
+            &HostMessage::StageStateChunk {
+                seq,
+                last,
+                bytes: bytes.to_vec(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let timeout = Duration::from_millis(config.timeout_ms);
+    match ipc::recv_within(stream, timeout).map_err(|e| e.to_string())? {
+        BridgeMessage::StateLoaded { error: None } => Ok(()),
+        BridgeMessage::StateLoaded { error: Some(e) } => Err(e),
+        other => Err(format!("unexpected reply to a staged state: {other:?}")),
     }
 }
 

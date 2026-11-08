@@ -14,7 +14,10 @@
 //! **at the current rate** and is moved to the same wall-clock time when the
 //! graph is re-prepared at another rate. It is not the number of frames
 //! rendered: a sender that counts those lands early or late after a rate change
-//! by the difference. Measure a frame from [`InstrumentHandle::clock`].
+//! by the difference. Read the clock with [`InstrumentHandle::clock`], a
+//! [`Moment`]: a frame and the rate it was counted at. A message sent for a
+//! moment ([`InstrumentHandle::send_at`]) lands on that wall-clock instant
+//! whatever the rate has become since, including between the read and the send.
 //!
 //! Everything a handle does is a port or a cell: a message is pushed into the
 //! queue node's ring (lock-free, allocation-free, never blocks) stamped with
@@ -23,6 +26,7 @@
 //!
 
 use tutti_graph::{Instrument, ParamSet};
+pub use tutti_midi_runtime::Moment;
 use tutti_midi_runtime::{TimedQueueNode, TimedSendError, TimedSender};
 use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, At, NodeKey, UnitParam};
@@ -37,6 +41,10 @@ pub enum NotInstrument {
     /// The node is not in the graph.
     #[error("not in the graph")]
     Missing,
+    /// It already has a handle: a node is played through one queue and one
+    /// strip. [`Session::remove_instrument`] takes them away.
+    #[error("already an instrument, with a handle")]
+    AlreadyInstrument,
     /// No event input to play it by.
     #[error("no event input")]
     NoEventInput,
@@ -71,7 +79,7 @@ impl From<TimedSendError> for SendError {
     fn from(e: TimedSendError) -> Self {
         match e {
             TimedSendError::Beat => Self::Beat,
-            _ => Self::Full,
+            TimedSendError::Full => Self::Full,
         }
     }
 }
@@ -105,20 +113,34 @@ impl InstrumentHandle {
         self.queue
     }
 
-    /// The engine's frame clock at the first frame of the next block, as the
-    /// instrument's queue last saw it: the origin a frame sent with
-    /// [`At::Frame`] is measured from. `Frame(0)` before a block has run.
+    /// The engine's frame clock where the instrument's queue last ended a
+    /// block, which is the first frame of the next: a [`Moment`], the frame and
+    /// the rate it was counted at. `None` before the queue is prepared.
     ///
-    /// It stands still while the graph is suspended for a re-prepare, so read
-    /// it again once the re-prepare has landed
-    /// ([`Graph::is_repreparing`](crate::Graph::is_repreparing)).
+    /// It stands still while the graph is suspended for a re-prepare, and a
+    /// message sent for it ([`send_at`](Self::send_at)) still lands on the right
+    /// instant: the queue rescales it to the rate it runs at.
     #[must_use]
-    pub fn clock(&self) -> tutti_types::Frame {
+    pub fn clock(&self) -> Option<Moment> {
         self.sender.clock()
     }
 
+    /// Plays `ump` at the instant `moment` names (a reading of
+    /// [`clock`](Self::clock), plus [`Moment::after`] a distance), whatever the
+    /// rate is when the queue takes it. Messages due together play in the order
+    /// they were sent. Never blocks, allocates or locks.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::Full`] when the queue is full.
+    pub fn send_at(&self, moment: Moment, ump: Ump) -> Result<(), SendError> {
+        self.sender.send_at(moment, ump).map_err(SendError::from)
+    }
+
     /// Plays `ump` at `at`: [`At::Frame`] on that frame of the engine's clock
-    /// (one already past lands on the next block's first frame),
+    /// at the rate the queue last published (one already past lands on the next
+    /// block's first frame; a caller that read the clock sends for that
+    /// reading with [`send_at`](Self::send_at)),
     /// [`At::NextBlock`] on the next block's first frame. Messages due together
     /// play in the order they were sent. Never blocks, allocates or locks.
     ///
@@ -232,11 +254,15 @@ impl Session {
         })
     }
 
-    /// Takes an instrument and the nodes its handle added out of the graph.
+    /// Takes away what the handle added: its queue and its strip. The
+    /// instrument's own node stays, whether [`add_instrument`](Self::add_instrument)
+    /// added it or the caller had it, and can be made an instrument again
+    /// ([`instrument`](Self::instrument)); remove it with
+    /// [`Session::remove`](crate::Session::remove).
     pub fn remove_instrument(&mut self, handle: &InstrumentHandle) {
+        // The feed into the instrument goes with the queue (`Graph::remove`).
         self.remove(handle.queue);
         self.remove(handle.strip);
-        self.remove(handle.node);
     }
 
     fn instrument_at(
@@ -247,6 +273,9 @@ impl Session {
         let why = |why| crate::Error::NotInstrument { node, why };
         if !self.graph_ref().contains(node) {
             return Err(why(NotInstrument::Missing));
+        }
+        if !self.graph_ref().feed(node, Feeder::Instrument).is_empty() {
+            return Err(why(NotInstrument::AlreadyInstrument));
         }
         if self.graph_ref().node_event_inputs(node) == 0 {
             return Err(why(NotInstrument::NoEventInput));

@@ -408,6 +408,22 @@ impl AuInstance {
     /// AU plugins are registered system-wide; the path is used for identification
     /// but the actual loading goes through AudioComponentFindNext.
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
+        Self::load_with_state(path, sample_rate, block_size, None).map(|(instance, _)| instance)
+    }
+
+    /// [`load`](Self::load), restoring `state` **before the unit is
+    /// initialized** (`AudioUnitInitialize`), when the class info may be set. The
+    /// second value is the unit's refusal of the state, if it refused: the unit
+    /// is then initialized at its defaults.
+    ///
+    /// Not built or run here: AU compiles only on macOS, and no machine for it was
+    /// at hand. The change mirrors the other formats' and is minimal.
+    pub fn load_with_state(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        state: Option<&[u8]>,
+    ) -> Result<(Self, Option<String>)> {
         #[cfg(all(target_os = "macos", feature = "au"))]
         {
             // Strategy: enumerate all components, find one whose name matches
@@ -477,6 +493,15 @@ impl AuInstance {
                     false
                 }
             };
+
+            // Before the unit is initialized, so the initialization is the
+            // state's.
+            let state_error = state.and_then(|data| {
+                inner
+                    .set_state(data)
+                    .err()
+                    .map(|e| BridgeError::StateRestoreError(e.to_string()).to_string())
+            });
 
             inner.initialize().map_err(|e| BridgeError::LoadFailed {
                 path: path.to_path_buf(),
@@ -585,18 +610,21 @@ impl AuInstance {
             // registration.
             let watch = unsafe { PropertyWatch::install(inner.raw_unit()) };
 
-            Ok(Self {
-                watch,
-                inner,
-                param_ranges,
-                playhead: tutti_plugin_types::PlayheadWatch::new(),
-                meta: Meta { descriptor, loaded },
-            })
+            Ok((
+                Self {
+                    watch,
+                    inner,
+                    param_ranges,
+                    playhead: tutti_plugin_types::PlayheadWatch::new(),
+                    meta: Meta { descriptor, loaded },
+                },
+                state_error,
+            ))
         }
 
         #[cfg(not(all(target_os = "macos", feature = "au")))]
         {
-            let _ = (path, sample_rate, block_size);
+            let _ = (path, sample_rate, block_size, state);
             Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,

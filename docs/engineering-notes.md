@@ -754,25 +754,35 @@ send has none. Events leave in due order, and those due together (a late one, a
 frames rendered.** The executor counts frames at the current rate, and a
 re-prepare at another rate moves the clock, and every frame-timed command, to
 the same wall-clock time at the new rate (`Executor`, the rate branch of the
-commit). That is intended: a command scheduled before the change lands at the
-same moment after it. A sender that counted the frames it had rendered landed
-about 21 frames late on `PolySynth` and the plugin after a 48 to 44.1 kHz
-change (the rescale of the frames before the commit, 256 x (1 - 0.91875)), and
-a plugin re-prepared twice 11 frames early. The skew was in the sender, and the
-missing piece was a way to read the clock: `InstrumentHandle::clock` is where
-the instrument's queue last ended its block, on the clock it ran on. It stands
-still while the graph is suspended for a re-prepare, so read it after the
-re-prepare has landed. `a_rate_change_keeps_the_note_on_its_frame` pins it.
+commit; `Frame::scaled`). That is intended: a command scheduled before the
+change lands at the same moment after it. A sender that counted the frames it
+had rendered landed about 21 frames late on `PolySynth` and the plugin after a
+48 to 44.1 kHz change (256 x (1 - 0.91875)), and a plugin re-prepared twice 11
+frames early. The skew was in the sender, and the missing piece was a way to
+read the clock. `InstrumentHandle::clock` is a `Moment`, a frame and the rate it
+was counted at; a message sent for a moment (`send_at`) names that wall-clock
+instant whatever the rate becomes, including between the read and the send: the
+queue rescales what it takes on arrival, and what waits when it is prepared at
+another rate, with the executor's own arithmetic. An event whose frame passed
+while the node did not run (the re-prepare suspends it) lands on the next
+block's first frame. When more events wait than the list holds the latest are
+dropped and counted, and a due event is never held up by later ones.
+`a_rate_change_keeps_the_note_on_its_frame` and the two cases after it pin it.
 
 ## A plugin's state is restored before it is activated
 
-A load activates the plugin at once and the host's saved state arrives after,
-on an instance already active. A plugin that takes its mode (or its sample set,
-its routing) from the state when it is activated keeps what it was activated
-with. The shared test plugin's `Notes` mode is one: a graph fork loaded the
-live state into a fresh server and the fork came up in the default mode, four
-runs in six. The server now activates a plugin again against a state restored
-before its first block (`PluginAudio::reactivate`, CLAP, VST2 and VST3; AU keeps
-the old order, and no macOS machine was at hand to build the change), which is
-the order a host that restored first would have. Once a block has run a state
-load is an ordinary state load.
+Every format allows a state on a plugin that is open and not yet active (CLAP
+`state.load`, VST3 `setState` before `setActive`, VST2 `setChunk` before resume,
+AU before initialize), and a plugin may take its mode, its sample set or its
+routing from the state when it is activated. The shared test plugin's `Notes`
+mode is one. The server's `LoadPlugin` activated at once and the state came
+after `PluginLoaded`, so such a plugin kept the default: every first load with
+a state, a crash-recovery reload, and a graph fork (four runs in six came up in
+the default mode). The state is now staged before the load
+(`HostMessage::StageStateChunk`), the loader restores it between opening the
+plugin and activating it, and the `PluginLoaded` reply (buses, latency) is the
+state's; a plugin that refuses the state loads at its defaults and the reply
+says so. `PluginClient::new_with_state`, `Plugin::open_with_state` and
+`PluginLoad::run` carry it; the in-process VST2 fork restores the program and
+the state before it activates. The AU change mirrors the others and is not
+built here (macOS only).

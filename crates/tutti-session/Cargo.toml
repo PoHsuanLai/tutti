@@ -105,6 +105,8 @@ tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # The shared test plugin the instrument contract hosts in `Notes` mode, and
 # the font its SoundFont subject plays.
 tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
+# Reads the shared plugin's transcript (what the host sent it, and where).
+tutti-plugin-contract = { path = "../../testing/tutti-plugin-contract" }
 assert_no_alloc = { version = "1", default-features = false }
 # The directory a cancelled export's file is looked for in (`tests/export_cancel.rs`).
 tempfile = "3.10"

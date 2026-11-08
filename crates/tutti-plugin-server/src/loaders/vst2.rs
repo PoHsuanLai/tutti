@@ -76,12 +76,29 @@ impl Vst2Instance {
     /// `effFlagsCanDoubleReplacing` (the same condition that negotiates
     /// `SampleFormat::Float64` with the host), so the width announced is the
     /// width `process` is entered at.
+    #[cfg(test)]
     pub fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
+        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None)
+            .map(|(instance, _)| instance)
+    }
+
+    /// [`load`](Self::load), restoring `state` **before the plugin is
+    /// activated**: the format allows a state on a plugin that is open and not
+    /// yet active, and a plugin may take its mode from the state when it is
+    /// activated. The second value is the plugin's refusal of the state, if it
+    /// refused: the plugin is then activated at its defaults.
+    pub fn load_with_state(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        prefer_f64: bool,
+        state: Option<&[u8]>,
+    ) -> Result<(Self, Option<String>)> {
         let loaded = Vst2Loaded::load(path).map_err(|e| translate_error(e, path))?;
         let format = if prefer_f64 && loaded.metadata().supports_f64 {
             SampleFormat::Float64
@@ -108,6 +125,10 @@ impl Vst2Instance {
             events: Vec::new(),
             refused: false,
         };
+        let state_error = state.and_then(|data| match instance.lifecycle.control() {
+            Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+            None => Some("the plugin is lost".to_string()),
+        });
         let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
             let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
@@ -120,7 +141,7 @@ impl Vst2Instance {
         instance.refresh_meta();
         // Whatever the activation told the host is what the load reply carries.
         instance.events.clear();
-        Ok(instance)
+        Ok((instance, state_error))
     }
 
     /// Steps one event through the core, applying its effects. Returns the
@@ -303,35 +324,6 @@ impl PluginMeta for Vst2Instance {
     }
 }
 
-impl Vst2Instance {
-    /// Runs the plugin at `rate`: a no-op for the rate it already runs at
-    /// unless `restart`.
-    fn retarget(&mut self, rate: f64, restart: bool) -> PluginResult<()> {
-        let Some(previous) = self.state.prepare() else {
-            return Err(PluginError::Other(
-                "VST2 plugin has no configuration to change".to_string(),
-            ));
-        };
-        if !restart && self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
-            return Ok(());
-        }
-        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
-            return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate} ({}): not a positive finite rate",
-                standing(self.is_active(), previous.rate())
-            )));
-        };
-        let refusal = self.drive(Event::Op(HostOp::Reconfigure(wanted)));
-        self.finish_refusals();
-        refusal.map_or(Ok(()), |reason| {
-            Err(PluginError::Other(format!(
-                "VST2 plugin refused sample rate {rate} ({}): {reason}",
-                standing(self.is_active(), previous.rate())
-            )))
-        })
-    }
-}
-
 impl PluginAudio for Vst2Instance {
     fn process(
         &mut self,
@@ -366,17 +358,28 @@ impl PluginAudio for Vst2Instance {
     /// The plugin may also change its pins and its latency across the
     /// re-activation; the metadata follows them and the host is told.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
-        self.retarget(rate, false)
-    }
-
-    fn reactivate(&mut self) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
-            return Ok(());
+            return Err(PluginError::Other(
+                "VST2 plugin has no configuration to change".to_string(),
+            ));
         };
-        if !self.is_active() {
+        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
-        self.retarget(previous.rate().0, true)
+        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+            return Err(PluginError::Other(format!(
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
+            )));
+        };
+        let refusal = self.drive(Event::Op(HostOp::Reconfigure(wanted)));
+        self.finish_refusals();
+        refusal.map_or(Ok(()), |reason| {
+            Err(PluginError::Other(format!(
+                "VST2 plugin refused sample rate {rate} ({}): {reason}",
+                standing(self.is_active(), previous.rate())
+            )))
+        })
     }
 
     /// Store the level the host reports through

@@ -59,6 +59,9 @@ pub(super) struct Instance {
     reread: bool,
 }
 
+/// What is done to a plugin that is open and not yet activated.
+pub(super) type Restore<'a> = &'a mut dyn FnMut(&mut Vst2Loaded) -> Result<(), String>;
+
 impl Instance {
     /// Loads and activates the plugin at `sample_rate` and blocks of up to
     /// `block_size`, 32-bit, in realtime mode. Main thread.
@@ -66,13 +69,20 @@ impl Instance {
     /// # Errors
     ///
     /// The stage that failed and the reason.
+    ///
+    /// `restore` runs on the plugin **before it is activated**: a plugin may take
+    /// its mode from the state at activation, and the activation then is the
+    /// state's. Its outcome is returned beside the instance; a refusal does not
+    /// fail the load (a plugin at its defaults beats none).
     pub(super) fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
-    ) -> Result<Self, (LoadStage, String)> {
-        let loaded = Vst2Loaded::load(path)
+        restore: Option<Restore<'_>>,
+    ) -> Result<(Self, Option<Result<(), String>>), (LoadStage, String)> {
+        let mut loaded = Vst2Loaded::load(path)
             .map_err(|e| (LoadStage::Opening, format!("vst2-host load failed: {e}")))?;
+        let restored = restore.map(|restore| restore(&mut loaded));
         let prepare = MaxBlock::new(Samples(block_size))
             .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
             .ok_or_else(|| {
@@ -89,14 +99,17 @@ impl Instance {
                     latency: halves.1.latency_samples(),
                     tail: halves.1.tail(),
                 };
-                Ok(Self {
-                    halves: Some(halves),
-                    lost: None,
-                    no_events: MidiEventVec::new(),
-                    prepare,
-                    declared,
-                    reread: false,
-                })
+                Ok((
+                    Self {
+                        halves: Some(halves),
+                        lost: None,
+                        no_events: MidiEventVec::new(),
+                        prepare,
+                        declared,
+                        reread: false,
+                    },
+                    restored,
+                ))
             }
             Err(refused) => Err((
                 LoadStage::Activation,

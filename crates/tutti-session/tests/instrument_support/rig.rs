@@ -1,7 +1,7 @@
 //! A session with one instrument in it, played and rendered a block at a time.
 
-use tutti_session::{InstrumentHandle, Session};
-use tutti_types::{At, ChannelLayout, Frame, InterleavedMut, NodeKey, SampleRate, Samples};
+use tutti_session::{InstrumentHandle, Moment, Session};
+use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples};
 use tutti_ump::Ump;
 
 pub const RATE: SampleRate = SampleRate(48_000.0);
@@ -101,20 +101,25 @@ impl Rig {
     }
 
     /// The engine's clock at this rig's frame `frame` (ahead of what is
-    /// rendered). The clock counts frames at the current rate and a re-prepare
-    /// at another rate moves it to the same wall-clock time, so it is not this
-    /// rig's count: the two differ by what the rescale dropped. The queue's
-    /// clock is the origin a frame is measured from.
-    pub fn clock_of(&self, frame: usize) -> Frame {
+    /// rendered), as a [`Moment`]. The clock counts frames at the current rate
+    /// and a re-prepare at another rate moves it to the same wall-clock time, so
+    /// it is not this rig's count: the two differ by what the rescale dropped.
+    /// The queue's clock is the origin a frame is measured from.
+    pub fn clock_of(&self, frame: usize) -> Moment {
         assert!(frame >= self.frame(), "frame {frame} is already rendered");
-        Frame(self.handle.clock().get() + (frame - self.frame()) as u64)
+        self.handle
+            .clock()
+            .expect("the queue is prepared")
+            .after(Samples(frame - self.frame()))
     }
 
-    /// Plays `ump` on this rig's frame `frame`, an absolute `At::Frame` on the
+    /// Plays `ump` on this rig's frame `frame`, an absolute position on the
     /// engine's clock.
     pub fn at(&mut self, frame: usize, ump: Ump) {
-        let at = At::Frame(self.clock_of(frame));
-        self.handle.send(at, ump).expect("the queue has room");
+        let moment = self.clock_of(frame);
+        self.handle
+            .send_at(moment, ump)
+            .expect("the queue has room");
     }
 
     /// First frame at or after `from` whose left or right sample is above

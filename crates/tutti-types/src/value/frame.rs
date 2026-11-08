@@ -97,6 +97,29 @@ impl Frame {
         self.0
     }
 
+    /// The frame at the same wall-clock time at a rate `ratio` times this
+    /// one's (`new / old`), to the nearest frame, half away from zero. What the
+    /// executor does to its clock when a re-prepare changes the rate; `f64`
+    /// holds a frame exactly up to 2^53, about 5 900 years at 48 kHz.
+    ///
+    /// ```
+    /// use tutti_types::Frame;
+    /// assert_eq!(Frame(256).scaled(44_100.0 / 48_000.0), Frame(235));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn scaled(self, ratio: f64) -> Frame {
+        Frame((self.0 as f64 * ratio).round() as u64)
+    }
+
+    /// The frame at the same wall-clock time at rate `to`, this one being a
+    /// position at rate `from`: [`scaled`](Self::scaled) by `to / from`.
+    #[inline]
+    #[must_use]
+    pub fn rescaled(self, from: super::SampleRate, to: super::SampleRate) -> Frame {
+        self.scaled(to.get() / from.get())
+    }
+
     /// Returns how many frames `earlier` is before `self`, or `None` when it is not
     /// before (it is later) or the distance does not fit a `Samples` on this
     /// target.

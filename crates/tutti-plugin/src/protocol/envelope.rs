@@ -41,7 +41,9 @@ pub enum HostMessage {
         /// Filesystem path to the plugin bundle or shared library.
         path: PathBuf,
     },
-    /// Instantiate and activate the plugin, ready to process audio.
+    /// Instantiate and activate the plugin, ready to process audio. A state
+    /// staged before ([`StageStateChunk`](Self::StageStateChunk)) is restored
+    /// between the two.
     LoadPlugin {
         /// Filesystem path to the plugin bundle or shared library.
         path: PathBuf,
@@ -194,6 +196,24 @@ pub enum HostMessage {
         /// Display text to parse, in whatever form the plugin renders.
         text: String,
     },
+    /// One slice of a plugin state to restore into the plugin the **next**
+    /// [`LoadPlugin`](Self::LoadPlugin) opens, in order, as
+    /// [`LoadStateChunk`](Self::LoadStateChunk) is for the plugin that is open.
+    ///
+    /// A load activates the plugin, and a plugin may take its mode from the
+    /// state when it is activated; a state restored after is restored too late.
+    /// So the state is staged first and the server applies it between opening the
+    /// plugin and activating it. Answered once, on `last` (or on a failure), by
+    /// [`BridgeMessage::StateLoaded`]: `error: None` means staged, not
+    /// applied.
+    StageStateChunk {
+        /// Position in the sequence, starting at 0 and incrementing by one.
+        seq: u32,
+        /// Whether this is the final chunk.
+        last: bool,
+        /// Opaque, format-defined bytes. Never interpret them host-side.
+        bytes: Vec<u8>,
+    },
 }
 
 /// A reply or notification travelling subprocess → host.
@@ -218,6 +238,11 @@ pub enum BridgeMessage {
         /// The sample format actually agreed on, which may differ from the
         /// host's preference.
         negotiated_format: SampleFormat,
+        /// The plugin refused the staged state
+        /// ([`HostMessage::StageStateChunk`]): it loaded at its defaults. `None`
+        /// when it took the state, and when none was staged.
+        #[serde(default)]
+        state_error: Option<String>,
     },
     /// The plugin instance was destroyed; the subprocess remains alive.
     PluginUnloaded,

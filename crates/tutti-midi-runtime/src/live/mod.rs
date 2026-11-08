@@ -30,4 +30,4 @@ pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
 pub use out_node::{MIDI_OUT_CAPACITY, MidiOutControls, MidiOutNode};
 pub use queue_node::{MIDI_QUEUE_CAPACITY, MidiQueueNode};
 pub use route::{RouteRule, compile_routes};
-pub use timed_queue::{TIMED_QUEUE_CAPACITY, TimedQueueNode, TimedSendError, TimedSender};
+pub use timed_queue::{Moment, TIMED_QUEUE_CAPACITY, TimedQueueNode, TimedSendError, TimedSender};

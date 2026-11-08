@@ -50,6 +50,7 @@ macro_rules! contract {
             note_on_sounds_at_its_stamp,
             a_frame_already_past_plays_at_the_next_block,
             a_beat_is_refused,
+            an_instrument_is_one_handle_at_a_time,
             note_off_releases,
             velocity_zero_is_a_note_off,
             tail_covers_the_ring_out,
@@ -57,7 +58,9 @@ macro_rules! contract {
             another_channel_is_heard_and_holds_nothing,
             gain_reaches_the_output,
             a_rate_change_keeps_the_note_on_its_frame,
-            a_fork_starts_silent,
+            a_note_queued_before_a_rate_change_keeps_its_instant,
+            a_reading_taken_before_a_rate_change_keeps_its_instant,
+            a_fork_starts_silent_and_plays,
             sending_allocates_nothing);
         #[test]
         fn gaps_are_the_ratchet() {

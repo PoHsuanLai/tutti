@@ -21,6 +21,9 @@ pub enum Kind {
     NoteOn,
     /// A note off.
     NoteOff,
+    /// A control change: its controller number is the `id`, its value the
+    /// `value`. Recorded, never acted on.
+    Control,
 }
 
 /// An event as the plugin received it.
@@ -142,6 +145,7 @@ impl Transcript {
                     1 => Kind::Param,
                     2 => Kind::NoteOn,
                     3 => Kind::NoteOff,
+                    4 => Kind::Control,
                     other => panic!("the transcript holds event kind {other}"),
                 };
                 let id = c.u64() as u32;

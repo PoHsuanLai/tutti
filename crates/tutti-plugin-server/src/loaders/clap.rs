@@ -149,13 +149,37 @@ impl ClapInstance {
     /// Activation re-reads the plugin's audio ports, so the buses and the
     /// 64-bit answer in the metadata are the ones the plugin has when it is
     /// activated, not the ones it had when it was opened.
+    #[cfg(test)]
     pub fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
-        Self::activate(Self::open(path, sample_rate, block_size)?, path, prefer_f64)
+        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None)
+            .map(|(instance, _)| instance)
+    }
+
+    /// [`load`](Self::load), restoring `state` **before the plugin is
+    /// activated**: CLAP's `state.load` is allowed on an inactive plugin, and a
+    /// plugin may take its mode from the state when it is activated. The second
+    /// value is the plugin's refusal of the state, if it refused: the plugin is
+    /// then activated at its defaults (a plugin at its defaults beats none), and
+    /// the activation's buses and latency, which the load reply carries, are
+    /// those of the state when it took it.
+    pub fn load_with_state(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        prefer_f64: bool,
+        state: Option<&[u8]>,
+    ) -> Result<(Self, Option<String>)> {
+        Self::activate(
+            Self::open(path, sample_rate, block_size)?,
+            path,
+            prefer_f64,
+            state,
+        )
     }
 
     /// Opens the plugin, without activating it.
@@ -184,7 +208,12 @@ impl ClapInstance {
     }
 
     /// Activates an opened plugin in the format the session will process.
-    fn activate(opened: Opened, path: &Path, prefer_f64: bool) -> Result<Self> {
+    fn activate(
+        opened: Opened,
+        path: &Path,
+        prefer_f64: bool,
+        state: Option<&[u8]>,
+    ) -> Result<(Self, Option<String>)> {
         let Opened {
             mut loaded,
             sample_rate,
@@ -225,6 +254,11 @@ impl ClapInstance {
             events: Vec::new(),
             refused: false,
         };
+        // Before the activation: see `load_with_state`.
+        let state_error = state.and_then(|data| match instance.lifecycle.control() {
+            Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+            None => Some("the plugin is lost".to_string()),
+        });
         let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
             let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
@@ -233,7 +267,7 @@ impl ClapInstance {
         instance.refresh_meta();
         // Whatever the activation told the host is what the load reply carries.
         instance.events.clear();
-        Ok(instance)
+        Ok((instance, state_error))
     }
 
     /// Steps one event through the core, applying its effects. Returns the
@@ -515,30 +549,12 @@ impl PluginAudio for ClapInstance {
     /// The plugin may also change its bus layout across the re-activation; the
     /// metadata follows it and the host is told the same way.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
-        self.retarget(rate, false)
-    }
-
-    fn reactivate(&mut self) -> PluginResult<()> {
-        let Some(previous) = self.state.prepare() else {
-            return Ok(());
-        };
-        if !self.is_active() {
-            return Ok(());
-        }
-        self.retarget(previous.rate().0, true)
-    }
-}
-
-impl ClapInstance {
-    /// Runs the plugin at `rate`: a no-op for the rate it already runs at
-    /// unless `restart`.
-    fn retarget(&mut self, rate: f64, restart: bool) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
             return Err(PluginError::Other(
                 "CLAP plugin has no configuration to change".to_string(),
             ));
         };
-        if !restart && self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
@@ -823,7 +839,9 @@ mod tests {
         let _layout = crate::test_utils::clap_probe_port_layout(
             tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
         );
-        let instance = ClapInstance::activate(opened, path, false).expect("activate");
+        let instance = ClapInstance::activate(opened, path, false, None)
+            .expect("activate")
+            .0;
 
         let loaded = instance.loaded();
         assert_eq!(loaded.inputs.len(), 2, "stereo main + mono aux");
@@ -850,8 +868,9 @@ mod tests {
         assert!(opened.loaded.supports_f64(), "fixture: flagged at open");
 
         let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
-        let instance =
-            ClapInstance::activate(opened, path, true).expect("falls back to 32-bit audio");
+        let instance = ClapInstance::activate(opened, path, true, None)
+            .expect("falls back to 32-bit audio")
+            .0;
         assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
     }
 

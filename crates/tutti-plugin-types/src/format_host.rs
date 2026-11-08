@@ -147,30 +147,6 @@ pub trait PluginAudio: Send {
     /// keeps the old one.
     fn set_sample_rate(&mut self, rate: f64) -> Result<()>;
 
-    /// Activates the plugin again at the configuration it runs in, so a
-    /// plugin that reads its state when it is activated reads the state
-    /// restored since.
-    ///
-    /// A load activates the plugin before the host can hand it a saved state,
-    /// and the state arrives on an instance that is already active. A plugin
-    /// that takes its mode, its sample set or its routing from the state at
-    /// activation (the shared test plugin does) would keep what it was
-    /// activated with. The host calls this after such a restore and before the
-    /// first block, so the plugin is activated against the state as a host that
-    /// restored first would have it.
-    ///
-    /// The default does nothing: a format that has not implemented it keeps the
-    /// order it has (activate, then restore). Unlike
-    /// [`set_sample_rate`](Self::set_sample_rate) it restarts a plugin that is
-    /// already running at the rate, because restarting is the point.
-    ///
-    /// # Errors
-    ///
-    /// As [`set_sample_rate`](Self::set_sample_rate): the plugin is not running.
-    fn reactivate(&mut self) -> Result<()> {
-        Ok(())
-    }
-
     /// Tells the plugin whether it is rendering under realtime pressure.
     ///
     /// Configure-time, beside [`set_sample_rate`](Self::set_sample_rate), and

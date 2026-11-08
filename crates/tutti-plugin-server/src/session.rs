@@ -113,12 +113,11 @@ pub(crate) struct Session {
     /// on completion *and* on any failure, so a malformed sequence cannot leave
     /// bytes behind that would corrupt the next load.
     pub(crate) state_in: Option<Reassembler>,
-    /// Whether the plugin has been loaded and has seen no block since. A state
-    /// restored now reaches a plugin already activated, so the plugin is
-    /// activated again against it (`PluginAudio::reactivate`): the order a host
-    /// that restored the state first would have had. Once a block has run, a
-    /// state load is an ordinary state load.
-    pub(crate) fresh: bool,
+    /// A state staged for the next load (`StageStateChunk`), being received.
+    pub(crate) stage_in: Option<Reassembler>,
+    /// A state received and waiting for the next load, which restores it into
+    /// the plugin before activating it.
+    pub(crate) staged: Option<Vec<u8>>,
 }
 
 impl Session {
@@ -134,7 +133,8 @@ impl Session {
             clock,
             rate_refused: None,
             state_in: None,
-            fresh: false,
+            stage_in: None,
+            staged: None,
         }
     }
 
@@ -329,6 +329,9 @@ impl Session {
             M::LoadStateChunk { seq, last, bytes } => {
                 Ok(self.handle_load_state_chunk(seq, last, &bytes))
             }
+            M::StageStateChunk { seq, last, bytes } => {
+                Ok(self.handle_stage_state_chunk(seq, last, &bytes))
+            }
 
             M::SetupSharedMemory { shm_name, layout } => {
                 self.shm = Some(AudioSlab::open(shm_name, layout)?);
@@ -398,6 +401,7 @@ impl Session {
                 // A probe never activates the plugin, so there is no load data.
                 loaded: Default::default(),
                 negotiated_format: self.clock.format,
+                state_error: None,
             },
             Err(e) => BridgeMessage::Error {
                 message: format!("Probe failed: {e}"),
@@ -412,11 +416,18 @@ impl Session {
         block_size: usize,
         preferred_format: SampleFormat,
     ) -> Result<Reaction> {
-        let (plugin, descriptor, loaded, negotiated) =
-            match Plugin::load(&path, sample_rate, block_size, preferred_format) {
-                Ok(loaded) => loaded,
-                Err(e) => return Ok(load_failure(&e).into()),
-            };
+        // What a host staged for this load, restored before the activation.
+        let staged = self.staged.take();
+        let (plugin, descriptor, loaded, negotiated, state_error) = match Plugin::load_with_state(
+            &path,
+            sample_rate,
+            block_size,
+            preferred_format,
+            staged.as_deref(),
+        ) {
+            Ok(loaded) => loaded,
+            Err(e) => return Ok(load_failure(&e).into()),
+        };
         self.clock = Clock {
             sample_rate,
             format: negotiated,
@@ -431,11 +442,11 @@ impl Session {
         );
         self.plugin = Some(plugin);
         self.rate_refused = None;
-        self.fresh = true;
         Ok(BridgeMessage::PluginLoaded {
             descriptor: Box::new(descriptor),
             loaded,
             negotiated_format: negotiated,
+            state_error,
         }
         .into())
     }
@@ -490,7 +501,6 @@ impl Session {
             .into());
         };
 
-        self.fresh = false;
         let output = self
             .pipeline
             .process(plugin.instance_mut(), shm, &self.clock, block)?;
@@ -577,6 +587,35 @@ impl Session {
     ///
     /// Every path produces a `StateLoaded`, including "no plugin loaded",
     /// which is a refusal rather than a silence.
+    /// Accumulate one `StageStateChunk`, keeping the state for the next load.
+    ///
+    /// Answers, as `LoadStateChunk` does, only on the final chunk or a failure;
+    /// `error: None` means staged. Nothing is applied until `LoadPlugin`.
+    fn handle_stage_state_chunk(&mut self, seq: u32, last: bool, bytes: &[u8]) -> Reaction {
+        let acc = self.stage_in.get_or_insert_with(Reassembler::default);
+        match acc.push(seq, last, bytes) {
+            Ok(false) => Reaction::None,
+            Ok(true) => {
+                let data = self.stage_in.take().expect("just inserted").into_inner();
+                self.staged = Some(data);
+                BridgeMessage::StateLoaded { error: None }.into()
+            }
+            Err(e) => {
+                self.stage_in = None;
+                self.staged = None;
+                let error = match e {
+                    ChunkError::TooLarge { bytes, limit } => {
+                        format!("state is {bytes} bytes, over the {limit}-byte limit")
+                    }
+                    ChunkError::OutOfOrder { got, expected } => {
+                        format!("state chunk {got} arrived where {expected} was expected")
+                    }
+                };
+                BridgeMessage::StateLoaded { error: Some(error) }.into()
+            }
+        }
+    }
+
     /// Accumulate one `LoadStateChunk`, applying the state once `last` lands.
     ///
     /// Answers **only** on the final chunk (or on a failure): a `StateLoaded`
@@ -616,20 +655,10 @@ impl Session {
             }
             .into();
         };
-        let mut error = match plugin.instance_mut().set_state(&data) {
+        let error = match plugin.instance_mut().set_state(&data) {
             Ok(()) => None,
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
-        if error.is_none() && self.fresh {
-            // Activated before this state reached it: activate it against the
-            // state, as a host that restored first would have. A plugin that
-            // cannot be brought back is silent, like one that refused a rate.
-            if let Err(e) = plugin.instance_mut().reactivate() {
-                tracing::warn!("plugin not re-activated after its state: {e}");
-                self.rate_refused = Some(e.to_string());
-                error = Some(format!("Failed to activate against the state: {e}"));
-            }
-        }
         BridgeMessage::StateLoaded { error }.into()
     }
 }
@@ -1413,6 +1442,98 @@ mod tests {
                 .unwrap();
         }
         last_reaction
+    }
+
+    /// Stages `data` as a host does before a load: the whole sequence, and the
+    /// final reaction.
+    #[cfg(feature = "clap")]
+    fn stage_state_bytes(s: &mut Session, data: &[u8]) -> Reaction {
+        let mut last_reaction = Reaction::None;
+        for (seq, last, bytes) in state_chunk::split(data) {
+            last_reaction = s
+                .handle(HostMessage::StageStateChunk {
+                    seq,
+                    last,
+                    bytes: bytes.to_vec(),
+                })
+                .unwrap();
+        }
+        last_reaction
+    }
+
+    #[cfg(feature = "clap")]
+    fn load_reply(s: &mut Session) -> Option<String> {
+        let reply = s
+            .handle(HostMessage::LoadPlugin {
+                path: std::path::PathBuf::from(clap_plugin()),
+                sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                block_size: 512,
+                preferred_format: SampleFormat::Float32,
+                shm_name: "staged".into(),
+            })
+            .unwrap()
+            .into_reply();
+        match reply {
+            BridgeMessage::PluginLoaded { state_error, .. } => state_error,
+            other => panic!("expected PluginLoaded, got {other:?}"),
+        }
+    }
+
+    /// **A state staged before a load is restored by the load**, before the
+    /// plugin is activated, and consumed: a plugin's own state goes in and the
+    /// reply carries no refusal; bytes it cannot parse are refused in the reply
+    /// and the plugin loads at its defaults; and the next load has nothing
+    /// staged.
+    ///
+    /// Mutation (run): `handle_load` passing `None` for the staged state leaves
+    /// `state_error` empty for the garbage and fails the second assertion.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_staged_state_is_restored_by_the_next_load() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut source, _shm) = load_clap("stage_source", SampleFormat::Float32);
+        let own = save_state_bytes(&mut source);
+
+        let mut s = Session::new();
+        assert_state_loaded(stage_state_bytes(&mut s, &own));
+        assert!(s.staged.is_some(), "the state waits for the load");
+        assert_eq!(load_reply(&mut s), None, "the plugin took its own state");
+        assert!(s.staged.is_none(), "and the load consumed it");
+
+        let mut s = Session::new();
+        assert_state_loaded(stage_state_bytes(&mut s, &[1, 2, 3]));
+        assert!(
+            load_reply(&mut s).is_some(),
+            "bytes the plugin cannot parse are refused in the reply"
+        );
+        assert!(s.plugin.is_some(), "and the plugin is loaded all the same");
+
+        let mut s = Session::new();
+        assert_eq!(load_reply(&mut s), None, "nothing staged, nothing refused");
+    }
+
+    /// A staged sequence out of order is refused, and nothing is staged.
+    ///
+    /// Mutation (run): not clearing `staged` on the error leaves the earlier
+    /// state waiting.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_broken_staging_sequence_stages_nothing() {
+        let mut s = Session::new();
+        assert_state_loaded(stage_state_bytes(&mut s, &[9, 9]));
+        let reply = s
+            .handle(HostMessage::StageStateChunk {
+                seq: 5,
+                last: true,
+                bytes: vec![1],
+            })
+            .unwrap()
+            .into_reply();
+        assert!(
+            matches!(reply, BridgeMessage::StateLoaded { error: Some(_) }),
+            "{reply:?}"
+        );
+        assert!(s.staged.is_none());
     }
 
     #[test]

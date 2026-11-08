@@ -130,17 +130,26 @@ impl Plugin {
 
 impl Subject for Plugin {
     const NAME: &'static str = "SharedPluginNotes";
-    const GAPS: &'static [Gap] = &[Gap {
-        case: "all_sound_off_cuts_at_its_stamp",
-        why: "a hosted plugin is a black box: the host sends CC 120 as a \
-              Control Change and the plugin decides what it means. The \
-              shared plugin's note gate follows note events only",
-        fails_with: "after All Sound Off",
-    }];
+    const GAPS: &'static [Gap] = &[];
     const PITCHED: bool = false;
     const SETTLE: usize = 1_024;
     const LEAD: (usize, usize) = (0, 0);
     const CUT: usize = 1;
+
+    /// The plugin's own record of what the host sent it, read from its state.
+    fn transcript(rig: &Rig) -> Option<tutti_plugin_contract::Transcript> {
+        use tutti_plugin_contract::{Transcript, find_blob};
+        let state = rig
+            .session
+            .plugin(rig.node)?
+            .handle()
+            .state()
+            .save_state()
+            .expect("the plugin saves its state");
+        // Not `complete()`: its overflow flag is also set by more blocks than the
+        // log keeps, and a case this long renders more. The events are few.
+        Some(Transcript::parse(&find_blob(&state)))
+    }
 
     fn rig() -> Rig {
         let (mut session, loaded) = Self::notes();

@@ -164,13 +164,28 @@ impl Vst2Fork {
         };
         drop(live);
 
-        let (mut fork, handle) =
-            super::load_client(&self.origin, tutti_types::SampleRate(self.sample_rate)).map_err(
-                |source| PluginForkError::Load {
-                    path: self.origin.to_path_buf(),
-                    source,
-                },
-            )?;
+        // The program, then the state, on the fresh instance **before it is
+        // activated**: a plugin may take its mode from the state at activation.
+        let mut restore = |loaded: &mut tutti_vst2_host::Vst2Loaded| -> Result<(), String> {
+            if let Some(program) = program
+                && !Control::load_preset(loaded, &tutti_plugin_types::PresetId::Number(program))
+            {
+                return Err(format!(
+                    "the live instance's program {program} is out of the fresh \
+                     instance's range"
+                ));
+            }
+            Control::load_state(loaded, &state).map_err(|e| e.to_string())
+        };
+        let (mut fork, handle, restored) = super::load_client_restoring(
+            &self.origin,
+            tutti_types::SampleRate(self.sample_rate),
+            Some(&mut restore),
+        )
+        .map_err(|source| PluginForkError::Load {
+            path: self.origin.to_path_buf(),
+            source,
+        })?;
         // The fork is driven through its node alone: no editor, no parameter
         // surface. Its instance stays alive in the node.
         drop(handle);
@@ -181,27 +196,14 @@ impl Vst2Fork {
                 found: fork.metadata.id.clone(),
             });
         }
+        if let Some(Err(reason)) = restored {
+            return Err(PluginForkError::LoadState(StateError::Rejected(reason)));
+        }
         let offline = match mode {
             ForkMode::Offline => true,
             ForkMode::Live => live_offline,
         };
-        {
-            let mut instance = fork.inner.lock();
-            if let Some(program) = program
-                && !Control::load_preset(
-                    &mut **instance,
-                    &tutti_plugin_types::PresetId::Number(program),
-                )
-            {
-                return Err(PluginForkError::LoadState(StateError::Rejected(format!(
-                    "the live instance's program {program} is out of the fresh \
-                         instance's range"
-                ))));
-            }
-            Control::load_state(&mut **instance, &state)
-                .map_err(|e| PluginForkError::LoadState(StateError::Rejected(e.to_string())))?;
-            instance.set_offline_render(offline);
-        }
+        fork.inner.lock().set_offline_render(offline);
 
         fork.params.seed(&delivered);
         fork.transport = self.transport.forked(offline);

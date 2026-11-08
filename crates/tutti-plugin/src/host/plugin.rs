@@ -135,23 +135,54 @@ impl Plugin {
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
     ) -> Result<Self> {
+        Self::open_with_state(audio, path, sample_rate, None).map(|(plugin, _)| plugin)
+    }
+
+    /// [`open_with`](Self::open_with), restoring `state` into the plugin
+    /// **before it is activated**: every format takes a state on a plugin that is
+    /// open and not yet active, and a plugin may take its mode from the state at
+    /// activation. The second value is what became of it: `None` when none was
+    /// given, else the plugin's refusal as text (the plugin is then loaded at its
+    /// defaults, which beats no plugin).
+    ///
+    /// # Errors
+    ///
+    /// The same as [`open`](Self::open).
+    pub fn open_with_state(
+        audio: &AudioConfig,
+        path: impl AsRef<Path>,
+        sample_rate: impl Into<SampleRate>,
+        state: Option<&[u8]>,
+    ) -> Result<(Self, Option<std::result::Result<(), String>>)> {
         let path = path.as_ref();
         let sample_rate = sample_rate.into();
 
         #[cfg(feature = "vst2")]
         if Self::opens_in_process(path) {
-            let (client, handle) = crate::format::vst2_in_process::load_client(path, sample_rate)?;
-            return Ok(Self::from_in_process_vst2(client, handle));
+            let mut restore = state.map(|data| {
+                move |loaded: &mut tutti_vst2_host::Vst2Loaded| {
+                    tutti_plugin_types::Control::load_state(loaded, data).map_err(|e| e.to_string())
+                }
+            });
+            let (client, handle, restored) = crate::format::vst2_in_process::load_client_restoring(
+                path,
+                sample_rate,
+                restore.as_mut().map(|r| r as _),
+            )?;
+            return Ok((Self::from_in_process_vst2(client, handle), restored));
         }
 
-        let (client, handle) =
-            PluginClient::new(audio.to_bridge_config(), path.to_path_buf(), sample_rate).map(
-                |client| {
-                    let handle = PluginHandle::from_client(&client);
-                    (client, handle)
-                },
-            )?;
-        Ok(Self::from_subprocess(client, handle))
+        let ((client, restored), handle) = PluginClient::new_with_state(
+            audio.to_bridge_config(),
+            path.to_path_buf(),
+            sample_rate,
+            state,
+        )
+        .map(|(client, restored)| {
+            let handle = PluginHandle::from_client(&client);
+            ((client, restored), handle)
+        })?;
+        Ok((Self::from_subprocess(client, handle), restored))
     }
 
     /// Whether [`open_with`](Self::open_with) loads `path` in the host

@@ -287,6 +287,11 @@ unsafe fn decode(h: *const clap_event_header) -> Option<Ev> {
                     offset: hdr.time,
                     key,
                 }),
+                0xB0 => Some(Ev::Control {
+                    offset: hdr.time,
+                    controller: key,
+                    value: vel,
+                }),
                 _ => None,
             }
         }

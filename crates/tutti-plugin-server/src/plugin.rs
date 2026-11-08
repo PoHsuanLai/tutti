@@ -159,12 +159,36 @@ impl Plugin {
     /// does not exist, `LoadStage::Opening` for an unsupported extension, or the
     /// format loader's own error if instantiation fails.
     #[allow(unreachable_code, unused_variables)] // With no format features, every match arm is cfg'd out.
+    #[cfg(test)]
     pub(crate) fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         preferred_format: SampleFormat,
     ) -> Result<(Self, PluginDescriptor, LoadedPlugin, SampleFormat)> {
+        Self::load_with_state(path, sample_rate, block_size, preferred_format, None)
+            .map(|(plugin, descriptor, loaded, format, _)| (plugin, descriptor, loaded, format))
+    }
+
+    /// [`load`](Self::load), restoring `state` into the plugin **before it is
+    /// activated**, so the activation, and the `LoadedPlugin` this returns (its
+    /// buses and latency), are the state's. The last value is the plugin's
+    /// refusal of the state, if it refused: the plugin is then activated at its
+    /// defaults.
+    #[allow(unreachable_code, unused_variables, clippy::type_complexity)]
+    pub(crate) fn load_with_state(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        preferred_format: SampleFormat,
+        state: Option<&[u8]>,
+    ) -> Result<(
+        Self,
+        PluginDescriptor,
+        LoadedPlugin,
+        SampleFormat,
+        Option<String>,
+    )> {
         if !path.exists() {
             return Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
@@ -174,48 +198,62 @@ impl Plugin {
         }
 
         let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let plugin: Plugin = match extension.to_lowercase().as_str() {
-            #[cfg(feature = "vst3")]
-            "vst3" => {
-                let prefer_f64 = preferred_format == SampleFormat::Float64;
-                Plugin::Vst3(Vst3Instance::load(
-                    path,
-                    sample_rate,
-                    block_size,
-                    prefer_f64,
-                )?)
-            }
+        let (plugin, state_error): (Plugin, Option<String>) =
+            match extension.to_lowercase().as_str() {
+                #[cfg(feature = "vst3")]
+                "vst3" => {
+                    let prefer_f64 = preferred_format == SampleFormat::Float64;
+                    let (i, e) = Vst3Instance::load_with_state(
+                        path,
+                        sample_rate,
+                        block_size,
+                        prefer_f64,
+                        state,
+                    )?;
+                    (Plugin::Vst3(i), e)
+                }
 
-            #[cfg(feature = "vst2")]
-            "vst" | "dll" | "so" => Plugin::Vst2(Vst2Instance::load(
-                path,
-                sample_rate,
-                block_size,
-                preferred_format == SampleFormat::Float64,
-            )?),
+                #[cfg(feature = "vst2")]
+                "vst" | "dll" | "so" => {
+                    let (i, e) = Vst2Instance::load_with_state(
+                        path,
+                        sample_rate,
+                        block_size,
+                        preferred_format == SampleFormat::Float64,
+                        state,
+                    )?;
+                    (Plugin::Vst2(i), e)
+                }
 
-            #[cfg(feature = "clap")]
-            "clap" => Plugin::Clap(ClapInstance::load(
-                path,
-                sample_rate,
-                block_size,
-                preferred_format == SampleFormat::Float64,
-            )?),
+                #[cfg(feature = "clap")]
+                "clap" => {
+                    let (i, e) = ClapInstance::load_with_state(
+                        path,
+                        sample_rate,
+                        block_size,
+                        preferred_format == SampleFormat::Float64,
+                        state,
+                    )?;
+                    (Plugin::Clap(i), e)
+                }
 
-            #[cfg(all(feature = "au", target_os = "macos"))]
-            "component" => Plugin::Au(AuInstance::load(path, sample_rate, block_size)?),
+                #[cfg(all(feature = "au", target_os = "macos"))]
+                "component" => {
+                    let (i, e) = AuInstance::load_with_state(path, sample_rate, block_size, state)?;
+                    (Plugin::Au(i), e)
+                }
 
-            _ => {
-                return Err(BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason: format!(
-                        "Unsupported plugin format: {extension}. \
+                _ => {
+                    return Err(BridgeError::LoadFailed {
+                        path: path.to_path_buf(),
+                        stage: LoadStage::Opening,
+                        reason: format!(
+                            "Unsupported plugin format: {extension}. \
                          Supported: .vst3, .vst/.dll/.so (VST2), .clap, .component (AU)."
-                    ),
-                });
-            }
-        };
+                        ),
+                    });
+                }
+            };
 
         let descriptor = plugin.instance().descriptor().clone();
         let loaded = plugin.instance().loaded().clone();
@@ -227,7 +265,7 @@ impl Plugin {
         } else {
             SampleFormat::Float32
         };
-        Ok((plugin, descriptor, loaded, negotiated))
+        Ok((plugin, descriptor, loaded, negotiated, state_error))
     }
 
     /// The loaded plugin as the format-agnostic trait object.

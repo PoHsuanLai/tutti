@@ -4485,6 +4485,7 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "atomic_float",
+ "bytemuck",
  "criterion",
  "crossbeam-queue",
  "tutti-graph",
@@ -4770,6 +4771,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-plugin",
+ "tutti-plugin-contract",
  "tutti-plugin-types",
  "tutti-polysynth",
  "tutti-rt",

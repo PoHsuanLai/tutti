@@ -133,7 +133,7 @@ use tutti_types::{Latency, SampleRate};
 
 use super::controls::ForkedSources;
 use super::{Bound, PluginClient, PluginControls, ProcessGuard};
-use crate::error::{PluginForkError, PluginRenderFault};
+use crate::error::{PluginForkError, PluginRenderFault, StateError};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::RenderMode;
 use crate::util::config::{BridgeConfig, unique_socket_path};
@@ -372,12 +372,15 @@ impl Capture {
             ..self.origin.config.clone()
         };
         let timeout = Duration::from_millis(config.timeout_ms);
-        let fork = PluginClient::new(config, path.clone(), self.sample_rate).map_err(|source| {
-            PluginForkError::Load {
-                path: path.clone(),
-                source,
-            }
-        })?;
+        // The live instance's state goes in **before the fork's plugin is
+        // activated** (`PluginClient::new_with_state`): a plugin may take its
+        // mode from the state at activation.
+        let (fork, restored) =
+            PluginClient::new_with_state(config, path.clone(), self.sample_rate, Some(&self.state))
+                .map_err(|source| PluginForkError::Load {
+                    path: path.clone(),
+                    source,
+                })?;
         if fork.descriptor.id != self.id {
             return Err(PluginForkError::Mismatch {
                 path,
@@ -385,9 +388,9 @@ impl Capture {
                 found: fork.descriptor.id.clone(),
             });
         }
-        fork.bridge
-            .load_state(&self.state)
-            .map_err(PluginForkError::LoadState)?;
+        if let Some(Err(reason)) = restored {
+            return Err(PluginForkError::LoadState(StateError::Rejected(reason)));
+        }
 
         self.sources.install(&fork.controls);
         let watch = Arc::new(ForkWatch {

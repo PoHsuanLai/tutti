@@ -34,6 +34,13 @@ pub trait Subject {
     const CUT: usize;
     /// A rig with the subject's instrument in it, made an instrument.
     fn rig() -> Rig;
+    /// What a black-box subject recorded of what the host sent it, when it
+    /// records anything: a case about a message the subject may not act on
+    /// asserts the host delivered it, and where.
+    fn transcript(rig: &Rig) -> Option<tutti_plugin_contract::Transcript> {
+        let _ = rig;
+        None
+    }
     /// Frames its audio lags its events: what the node declares to the
     /// compiler. A subject whose declaration is not what it does says what it
     /// does.
@@ -214,7 +221,10 @@ pub fn tail_covers_the_ring_out<S: Subject>() {
 }
 
 /// **All Sound Off silences the channel** within the subject's resolution of
-/// its stamp, not at the next block.
+/// its stamp, not at the next block. A subject that is a black box (a hosted
+/// plugin decides for itself what CC 120 means) is held to what the host does:
+/// it delivers the message once, as a control change of controller 120 and value
+/// 0, on the frame of its stamp (its offset in its block).
 pub fn all_sound_off_cuts_at_its_stamp<S: Subject>() {
     const CC: usize = 20_005;
     let mut rig = S::rig();
@@ -222,6 +232,21 @@ pub fn all_sound_off_cuts_at_its_stamp<S: Subject>() {
     rig.at(rig.t(CC), cc(0, 120, 0));
     let from = rig.t(CC) + S::lag(&rig) + S::CUT;
     rig.render_to(from + 2_000);
+    if let Some(t) = S::transcript(&rig) {
+        use tutti_plugin_contract::Kind;
+        let seen: Vec<_> = t
+            .of(Kind::Control)
+            .map(|e| (e.offset, e.id, e.value))
+            .collect();
+        assert_eq!(
+            seen,
+            [((rig.t(CC) % BLOCK) as u32, 120, 0.0)],
+            "the plugin was sent All Sound Off once, on its stamp"
+        );
+        let on: Vec<_> = t.of(Kind::NoteOn).map(|e| e.offset).collect();
+        assert_eq!(on, [(rig.t(STAMP) % BLOCK) as u32], "the note-on's stamp");
+        return;
+    }
     assert!(
         rig.peak(rig.t(CC) - 2_000..rig.t(CC)) > 1e-4,
         "it sounded before"
@@ -304,13 +329,135 @@ pub fn a_rate_change_keeps_the_note_on_its_frame<S: Subject>() {
     }
 }
 
-/// **A fork starts silent**: the graph forked while a note sounds renders
-/// silence from its first block (no voice is carried over).
-pub fn a_fork_starts_silent<S: Subject>() {
+/// **A note queued before a rate change keeps its instant**: a note-on for
+/// 12 000 frames ahead at 48 kHz, waiting in the queue when the session is
+/// re-prepared at 44.1 kHz, sounds at the same wall-clock time, which is frame
+/// 11 025 at the new rate, and not at frame 12 000 of it.
+pub fn a_note_queued_before_a_rate_change_keeps_its_instant<S: Subject>() {
+    rate_change_instant::<S>(false);
+}
+
+/// **A reading taken before a rate change keeps its instant**: the clock is
+/// read at 48 kHz, the session is re-prepared at 44.1 kHz, and only then is the
+/// note sent for the reading. It lands on the instant the reading named, not
+/// where the same frame number is at the new rate.
+pub fn a_reading_taken_before_a_rate_change_keeps_its_instant<S: Subject>() {
+    rate_change_instant::<S>(true);
+}
+
+fn rate_change_instant<S: Subject>(send_after_the_change: bool) {
+    const AHEAD: usize = 12_000;
+    let mut rig = S::rig();
+    rig.render_to(2 * BLOCK);
+    let read = rig.handle.clock().expect("the queue is prepared");
+    assert_eq!(read.rate(), super::rig::RATE);
+    let send = |rig: &mut Rig| {
+        rig.handle
+            .send_at(read.after(tutti_types::Samples(AHEAD)), note_on(0, 60, 100))
+            .expect("the queue has room");
+    };
+    if !send_after_the_change {
+        send(&mut rig);
+        // One block, so the queue holds it in its waiting list and not in its
+        // ring when the rate changes.
+        rig.block();
+    }
+    rig.session
+        .graph()
+        .set_sample_rate(tutti_types::SampleRate(44_100.0));
+    rig.settle();
+    if send_after_the_change {
+        send(&mut rig);
+    }
+    // The instant, at the new rate: the executor's own arithmetic.
+    let target = Frame(read.frame().get() + AHEAD as u64)
+        .rescaled(super::rig::RATE, tutti_types::SampleRate(44_100.0));
+    let now = rig.handle.clock().expect("the queue is prepared");
+    assert_eq!(now.rate(), tutti_types::SampleRate(44_100.0));
+    let ahead = target
+        .since(now.frame())
+        .expect("the instant is still ahead")
+        .get();
+    let at = rig.frame() + ahead;
+    let from = rig.frame();
+    rig.render_to(at + 4_000);
+    let first = rig.onset(from).expect("the note sounds");
+    let w = window::<S>(&rig, at);
+    let slack = S::LEAD.1 / 8 + 4;
+    assert!(
+        (*w.start() - slack..=*w.end() + slack).contains(&first),
+        "first sound at {first}, wanted about {w:?}"
+    );
+}
+
+/// **An instrument has one handle at a time**: making a node an instrument
+/// twice is refused, naming why, and the first handle keeps playing; once the
+/// handle is removed (its queue and strip, not the instrument) the node can be
+/// made one again.
+pub fn an_instrument_is_one_handle_at_a_time<S: Subject>() {
+    let mut rig = S::rig();
+    let err = rig
+        .session
+        .instrument(rig.node)
+        .expect_err("a second handle");
+    assert!(
+        matches!(
+            err,
+            tutti_session::Error::NotInstrument {
+                why: tutti_session::NotInstrument::AlreadyInstrument,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    rig.at(rig.t(STAMP), note_on(0, 60, 100));
+    rig.render_to(rig.t(STAMP) + 2_000);
+    assert!(
+        rig.peak(rig.t(STAMP)..rig.t(STAMP) + 2_000) > 1e-4,
+        "the first handle plays"
+    );
+    let handle = rig.handle.clone();
+    rig.session.remove_instrument(&handle);
+    assert!(
+        rig.session.graph_ref().contains(rig.node),
+        "the instrument stays"
+    );
+    assert!(!rig.session.graph_ref().contains(handle.queue()));
+    assert!(!rig.session.graph_ref().contains(handle.out()));
+    rig.session
+        .instrument(rig.node)
+        .expect("a node can be made an instrument again");
+}
+
+/// **A fork starts silent, and plays what it is given**: the graph forked
+/// while a note sounds renders silence while its transport is stopped (no voice
+/// is carried over), and then, rolling, the clip that feeds the instrument plays
+/// a note in it. The second half is what tells a fork that came up in the
+/// state's mode from one stuck in another: a plugin activated before its state
+/// arrived is silent, or sounds the wrong thing, in the first half or the
+/// second.
+pub fn a_fork_starts_silent_and_plays<S: Subject>() {
+    use tutti_midi_runtime::TimedMidiEvent;
+    use tutti_midi_types::ump::MidiEvent;
+    use tutti_ump::{MidiChannel, MidiGroup};
+
     let mut rig = S::rig();
     rig.at(rig.t(STAMP), note_on(0, 60, 100));
     rig.render_to(rig.t(STAMP) + 4_000);
     assert!(rig.peak(rig.t(STAMP) + 3_000..rig.t(STAMP) + 4_000) > 1e-4);
+    // A note at a hundredth of a beat (240 frames at 120 BPM, 48 kHz), in the
+    // clip that feeds the instrument: it forks with the graph.
+    rig.session
+        .midi()
+        .play_clip(
+            rig.node,
+            [TimedMidiEvent::new(
+                tutti_types::Beat(0.01),
+                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+            )],
+        )
+        .expect("an instrument takes a clip");
+    rig.session.update();
     let mut fork = rig
         .session
         .graph_ref()
@@ -320,6 +467,23 @@ pub fn a_fork_starts_silent<S: Subject>() {
     fork.render(2_048, BLOCK, &mut out);
     let p = out.iter().flatten().fold(0.0f32, |a, v| a.max(v.abs()));
     assert_eq!(p, 0.0, "the fork sounds {p}");
+
+    // Rolling from beat 0 a block at a time, paced: a hosted plugin in a live
+    // fork answers a chunk in real time.
+    let mut peak = 0.0f32;
+    for i in 0..80u32 {
+        let beat = f64::from(i) * BLOCK as f64 / 24_000.0;
+        fork.set_transport(tutti_graph::Transport::new(
+            true,
+            tutti_types::Bpm::of(120.0),
+            tutti_types::Beat(beat),
+            None,
+        ));
+        fork.render(BLOCK, BLOCK, &mut out);
+        peak = out.iter().flatten().fold(peak, |a, v| a.max(v.abs()));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(peak > 1e-4, "the fork plays nothing: {peak}");
 }
 
 /// **Sending allocates nothing**, and neither does a block that plays it. The

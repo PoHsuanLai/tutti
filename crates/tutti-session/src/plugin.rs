@@ -184,20 +184,25 @@ impl PluginLoad {
 
     /// [`run`](Self::run)'s open, on this thread.
     fn open(self) -> Open {
-        let plugin = Plugin::open_with(&self.config, &self.path, self.rate);
-        let mut restore = None;
-        if let (Ok(plugin), Some(state)) = (&plugin, &self.state) {
-            // A refusal does not abort the load: a plugin at its defaults
-            // beats no plugin. But it is not silent.
-            let outcome = plugin.handle().state().load_state(state);
-            if let Err(e) = &outcome {
-                tracing::warn!(
-                    "{}: saved state was not restored ({e}); the plugin is loaded at its \
-                     defaults",
-                    plugin.handle().name()
-                );
-            }
-            restore = Some(outcome.map_err(|e| e.to_string()));
+        // The state goes in **before the plugin is activated** (`open_with_state`):
+        // a plugin may take its mode from the state at activation. A refusal
+        // does not abort the load: a plugin at its defaults beats no plugin. But
+        // it is not silent.
+        let (plugin, restore) = match Plugin::open_with_state(
+            &self.config,
+            &self.path,
+            self.rate,
+            self.state.as_deref(),
+        ) {
+            Ok((plugin, restore)) => (Ok(plugin), restore),
+            Err(e) => (Err(e), None),
+        };
+        if let (Ok(plugin), Some(Err(e))) = (&plugin, &restore) {
+            tracing::warn!(
+                "{}: saved state was not restored ({e}); the plugin is loaded at its \
+                 defaults",
+                plugin.handle().name()
+            );
         }
         #[cfg(feature = "modulation")]
         let mirror = plugin.as_ref().ok().map(|plugin| {

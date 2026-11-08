@@ -1397,3 +1397,51 @@ fn silence_planes_carry_no_dither() {
     assert!(out.frames().get() > 0);
     assert!(out.planes.iter().flatten().all(|s| s.to_bits() == 0));
 }
+
+/// Rings 4000 frames at most (its ceiling), and reports 100 each block.
+#[derive(Clone)]
+struct Narrowing;
+
+impl Node for Narrowing {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_tail(tutti_types::Tail::Finite(tutti_types::Samples(4_000)))
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.report_tail(tutti_types::Tail::Finite(tutti_types::Samples(100)));
+        let (ins, mut outs) = io.split();
+        outs.get(0).copy_from_slice(ins.get(0));
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **Export spends a node's ceiling, not what it reports each block** (doc
+/// 022 section 12.4's fallback). `RenderConfig::tail` is a frame count fixed
+/// before the render (`RenderPlan::new` sizes `output_length` and `total`
+/// from it, and the sink, the progress total, the resampler and the
+/// normalized two-pass render all read it), so a tail the graph reports
+/// only at the programme's end has nowhere to go without a second phase in
+/// all of them. Until that lands the figure is the spec's: a node that
+/// narrows its tail renders the longer, safe ceiling.
+///
+/// Mutation (run): declare the node's ceiling as `Finite(100)` (what it
+/// reports) → the figure and the render length fail against 4000.
+#[test]
+fn export_spends_the_ceiling_of_a_node_that_narrows_its_tail() {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let src = g.add(Const::mono(0.5));
+    let node = g.add(ForkByClone(Narrowing));
+    g.connect(src, 0, node, 0).pipe_output(node);
+    let graph = built(g, RATE);
+
+    let reported = graph.reported_tail();
+    assert_eq!(reported.samples(), Some(tutti_types::Samples(4_000)));
+
+    let mut cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::MONO);
+    cfg.render.tail = reported.samples().expect("finite");
+    let out = render_to_buffers(graph, &cfg, &FrozenClock).unwrap();
+    let duration = 8_820; // 0.2 s at 44.1 kHz
+    assert_eq!(out.frames().get(), duration + 4_000);
+}

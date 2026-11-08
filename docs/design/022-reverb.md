@@ -773,9 +773,15 @@ frame is what the render must keep.
 - Unbounded freeze at the end of the programme resolves to `cap`, as an
   unbounded graph does today.
 
-Unresolved by reading: how `RenderPlan`'s pull loop is structured around
-`total`; if the second phase is awkward the fallback is the ceiling against
-`cap`, today's behaviour. Step 0b settles it with a test.
+**Settled by step 0b: the fallback is built, the second phase is not.**
+`RenderConfig::tail` is a frame count fixed before the render, and
+`RenderPlan::new`, the sink, the progress total, the resampler and the
+normalized two-pass render all read it, so a tail known only at the
+programme's end needs a new config mode across `tutti-export`,
+`tutti-session` and `bevy-tutti`, not a change to the pull loop. Export spends
+the ceiling against `cap`, as today; `tutti-export`'s
+`export_spends_the_ceiling_of_a_node_that_narrows_its_tail` pins it. The
+executor-side view and `reported_tail_now()` wait for the reverb to need them.
 
 ### 12.5 Doc 013 change note
 

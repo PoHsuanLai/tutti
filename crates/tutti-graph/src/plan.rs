@@ -583,6 +583,10 @@ pub(crate) struct NodeRec {
     /// Declared latency then declared tail (`Shape::park_after`):
     /// the quiet input frames the silence skip waits for.
     pub(crate) park_after: Tail,
+    /// Its declared latency and tail (the two halves of `park_after`), for
+    /// the skip that follows a node's own [`report_tail`](crate::Io::report_tail).
+    pub(crate) latency: Samples,
+    pub(crate) tail: Tail,
     /// Declared events per event output port per block
     /// ([`Shape::event_capacity`]), which its writers enforce; `None` for
     /// the executor's default.
@@ -730,6 +734,8 @@ impl NodeTables {
                 generation: pu.generation,
                 arrival: pu.arrival,
                 park_after: pu.shape.park_after(),
+                latency: pu.shape.latency.samples(),
+                tail: pu.shape.tail,
                 event_capacity: pu.shape.event_capacity,
                 in_place,
                 ports,
@@ -757,6 +763,8 @@ impl NodeTables {
                     generation: units[u].generation,
                     arrival: units[u].arrival,
                     park_after: units[u].shape.park_after(),
+                    latency: units[u].shape.latency.samples(),
+                    tail: units[u].shape.tail,
                     event_capacity: units[u].shape.event_capacity,
                     in_place: InPlaceMask::NONE,
                     ports: 0,

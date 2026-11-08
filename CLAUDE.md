@@ -32,6 +32,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   pin an analytic figure, an invariant of the render, or (for samples that
   call libm) a golden digest asserted only on the target it was recorded on.
 - Musical delay is not latency. Report only processing latency to PDC.
+- `Shape::tail` is a node's **ceiling**. A node whose ring-out follows its
+  params narrows it each block with `Io::report_tail` (silence skip only; the
+  plan, PDC and export read the ceiling); the report must cover the ring-out
+  and err long, measured from the last non-quiet input (not from the call);
+  only a node without event inputs is parked on it (doc 013, "A tail excludes
+  latency"; `contract::assert_honest_tail` checks it).
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
   graph node that needs the transport at a frame reads `Env::transport_at`

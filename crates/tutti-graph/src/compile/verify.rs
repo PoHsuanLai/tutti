@@ -433,6 +433,8 @@ fn verify_lowered(plan: &Plan) -> Result<(), VerifyError> {
             || rec.generation != pu.generation
             || rec.arrival != pu.arrival
             || rec.park_after != pu.shape.park_after()
+            || rec.latency != pu.shape.latency.samples()
+            || rec.tail != pu.shape.tail
             || rec.event_capacity != pu.shape.event_capacity
             || rec.in_place != in_place
             || rec.params != params
@@ -1187,6 +1189,31 @@ mod tests {
         let rows = bad.op_succ.rows();
         bad.op_succ = crate::plan::Csr::from_rows(&vec![Vec::new(); rows]);
         assert!(verify(&bad).is_err());
+    }
+
+    /// A node record's declared latency and tail (the halves of `park_after`
+    /// the silence skip rebuilds a narrowed figure from) must agree with its
+    /// unit's shape: a record that lied would park a node on the wrong ring.
+    ///
+    /// Mutations (each applied, each failed this test): delete
+    /// `rec.latency != pu.shape.latency.samples()` from the verifier's
+    /// record comparison → the latency case passes; delete
+    /// `rec.tail != pu.shape.tail` → the tail case passes.
+    #[test]
+    fn the_verifier_rejects_a_record_whose_latency_or_tail_lies() {
+        let good = independent_pair();
+        verify(&good).expect("sound");
+
+        let mut bad = good.clone();
+        bad.nodes.recs[0].latency = tutti_types::Samples(bad.nodes.recs[0].latency.get() + 1);
+        assert!(verify(&bad).unwrap_err().0.contains("disagrees"));
+
+        let mut bad = good.clone();
+        bad.nodes.recs[0].tail = match bad.nodes.recs[0].tail {
+            tutti_types::Tail::Unbounded => tutti_types::Tail::None,
+            _ => tutti_types::Tail::Unbounded,
+        };
+        assert!(verify(&bad).unwrap_err().0.contains("disagrees"));
     }
 
     /// Every other structural rule rejects its own corruption.

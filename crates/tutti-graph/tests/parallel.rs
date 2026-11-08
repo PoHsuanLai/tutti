@@ -12,11 +12,13 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::{Kind, TestNode, WORKERS, bits, test_pool};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamIn, ParamRamp, ParamRange,
-    ParamSegment, Prepare, Schedule, SegmentShape, Shape, Status, Transport,
+    ParamSegment, Prepare, Schedule, SegmentShape, Shape, Status, Transport, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{
@@ -778,5 +780,105 @@ fn the_executor_waits_by_its_pools_budget() {
             "the helper left {:?} before the slow task finished",
             slow_done - left
         );
+    }
+}
+
+/// Three pulses, each into a [`common::Ringer`] that reports less than its
+/// ceiling (and one that reports nothing): the units' skip decisions are
+/// their own, so the pooled render stays bit-identical to the serial one,
+/// and no ring is lost (analytic: a pulse of `len` frames into a ring of
+/// `ring` sounds through frame `len + ring - 2`).
+///
+/// The ringers are `(pulse, ring, ceiling, report)`; the last never reports.
+/// One-frame blocks make the call counts exact; the schedules of `schedules`
+/// cover the rest.
+///
+/// Mutation (run): in `node_op_with`, drop the report (`u.reported = None`)
+/// → the serial run is called for the ceiling's 1000 quiet frames, not 300,
+/// and the calls assert fails. (The analytic last-frame check does not bite
+/// on a too-short report: a ringing node's output is not silent, and the skip
+/// also needs the previous output silent, so only a node whose output reads
+/// silent while its state still sounds could be cut. It pins that the pooled
+/// and serial skips lose nothing.)
+#[test]
+fn reporting_nodes_render_bit_identically_on_a_pool() {
+    use common::{NO_REPORT, Pulse, Ringer};
+    use tutti_types::Tail;
+    const RINGERS: [(usize, usize, Tail, u64); 3] = [
+        (50, 300, Tail::Finite(Samples(1000)), 300),
+        (9, 120, Tail::Finite(Samples(120)), 120),
+        (200, 500, Tail::Finite(Samples(1000)), NO_REPORT),
+    ];
+    let build = |workers: usize| {
+        let (mut ed, mut exec) = Editor::new(prepare(MAX_BLOCK));
+        if workers > 1 {
+            exec.set_pool(Some(test_pool(workers)));
+        }
+        let mut calls = Vec::new();
+        let mut outputs = Vec::new();
+        for (i, (pulse, ring, ceiling, report)) in RINGERS.into_iter().enumerate() {
+            let (src, fx) = (NodeKey(10 + i as u64), NodeKey(20 + i as u64));
+            let ringer = Ringer::new(ceiling, ring, report);
+            calls.push(Arc::clone(&ringer.calls));
+            ed.insert(src, "pulse", Unforkable(Pulse::new(pulse)));
+            ed.insert(fx, "ringer", Unforkable(ringer));
+            ed.spec_mut()
+                .topology
+                .edges
+                .insert(at(fx.0, 0), from(src.0, 0));
+            outputs.push(Source::Node(out(fx.0, 0)));
+        }
+        ed.spec_mut().topology.outputs = outputs;
+        ed.commit().expect("commits");
+        exec.apply_pending();
+        ed.collect();
+        assert_eq!(exec.is_parallel(), workers > 1);
+        (ed, exec, calls)
+    };
+    let render = |exec: &mut Executor, ed: &mut Editor, blocks: &[usize]| {
+        let mut all = vec![Vec::new(); RINGERS.len()];
+        for &n in blocks {
+            let mut chans = vec![vec![0.0f32; n]; RINGERS.len()];
+            let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
+            exec.process(n, &Transport::default(), &[], &mut outs);
+            for (a, c) in all.iter_mut().zip(chans) {
+                a.extend(c);
+            }
+            ed.collect();
+        }
+        all
+    };
+    for blocks in schedules(MAX_BLOCK) {
+        let (mut ed, mut exec, serial_calls) = build(1);
+        let serial = render(&mut exec, &mut ed, &blocks);
+        for (c, (pulse, ring, _, _)) in RINGERS.into_iter().enumerate() {
+            let last = serial[c].iter().rposition(|&x| x != 0.0).expect("rings");
+            assert_eq!(last, pulse + ring - 2, "ringer {c} rang its whole tail");
+        }
+        if blocks.iter().all(|&n| n == 1) {
+            // Skipped once the reported tail is spent: pulse + ring + a
+            // frame, not the 3000 frames rendered (the ceiling alone: 1000
+            // more for the first).
+            let first = serial_calls[0].load(std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                first <= 50 + 300 + 1,
+                "ringer 0 parked on its report: {first}"
+            );
+            let silent = serial_calls[2].load(std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                silent > 200 + 500,
+                "the unreporting ringer waited its ceiling"
+            );
+        }
+        for workers in WORKERS {
+            let (mut ed, mut exec, _) = build(workers);
+            let parallel = render(&mut exec, &mut ed, &blocks);
+            assert_eq!(
+                bits(&serial),
+                bits(&parallel),
+                "{workers} workers, blocks {:?}…",
+                &blocks[..blocks.len().min(4)]
+            );
+        }
     }
 }

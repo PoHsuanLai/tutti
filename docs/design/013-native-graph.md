@@ -300,15 +300,42 @@ the interpreter.
   `hrtf_render.rs` `the_tail_is_the_ring_out_after_the_latency`, and
   `tutti-export`'s `a_limiter_adds_no_tail_to_the_render` and
   `the_tail_extends_the_render_by_the_ring_out`.
-  *Planned (doc 022, step 0b):* `Shape::tail` becomes the node's **ceiling**,
-  and a node whose tail follows its params (a reverb's RT60) narrows it per
-  block with `Io::report_tail`. The report lives in the unit's executor record,
-  not the plan, so the plan stays immutable and a pooled render still equals the
-  serial one; the silence skip reads the narrowed figure, `Tail::Unbounded`
-  reported is never skipped, and export reads the graph's reported tail at the
-  programme's end. A node must report a tail that covers its ring-out from the
-  last non-quiet input. Not built yet; this note is replaced by the contract
-  text when step 0b lands.
+  **`Shape::tail` is a ceiling, and a node may narrow it per block** (doc 022
+  step 0b). A node whose ring-out follows its params (a reverb's RT60) calls
+  `Io::report_tail(Tail)`: one store into its unit's executor record
+  (`Unit::reported`, beside `quiet` and `last_quiet`), a `Cell` on the call's
+  stack written back after `process`, with no allocation, no atomic and no
+  unsafe. The plan and the spec still carry the ceiling (compile, `verify`,
+  PDC, `graph_tail`); `NodeRec` gained the two halves of `park_after`
+  (`latency`, `tail`, both checked by `verify`) so the skip can rebuild it.
+  The skip waits `latency`, then `narrow_tail(ceiling, reported)`: a report
+  above the ceiling is clamped to it (silently: a debug assertion would fire
+  in the test that pins the clamp), `Unknown` reported says nothing,
+  `Unbounded` reported under an `Unbounded` ceiling is never skipped. A report
+  holds until the unit's next call, and a call that makes none restores the
+  ceiling; a new unit (insert, replace, crossfade, re-prepare, fork) starts at
+  the ceiling. The executor never calls `Node::reset`, so there is nothing
+  there to restore. Only the task that runs a unit reads or writes its record,
+  so a pooled render parks the blocks a serial one does. The node's duty is
+  in the `Node` docs: cover the ring-out from the last non-quiet input under
+  the settings in force since, erring long. The figure is measured from the last non-quiet input
+  frame, not from the call, and it matters only for a node **without event
+  inputs** (one with event inputs parks on its own `Status::Idle`).
+  `contract::assert_honest_tail` checks the duty for an impulse in. Pinned by `tests/executor.rs`
+  (`a_reported_tail_shorter_than_the_ceiling_is_what_the_skip_waits`,
+  `a_reported_tail_above_the_ceiling_is_clamped`,
+  `a_call_that_reports_nothing_restores_the_ceiling`,
+  `a_new_unit_starts_at_its_ceiling`), `tests/parallel.rs`
+  (`reporting_nodes_render_bit_identically_on_a_pool`) and
+  `tests/rt_no_alloc.rs` (`reporting_nodes_are_allocation_free`, serial and
+  pooled). **Export still spends the ceiling**: `RenderConfig::tail` is a
+  frame count fixed before the render, which the plan, the sink, progress,
+  the resampler and the normalized two-pass render all read, so the tail a
+  graph reports at the programme's end (doc 022 section 12.4's second
+  phase) needs a config mode across `tutti-export`, `tutti-session` and
+  `bevy-tutti`. That is not built; `tutti-export`'s
+  `export_spends_the_ceiling_of_a_node_that_narrows_its_tail` pins the
+  fallback.
 - **Feedback edges delay by exactly `MaxBlock` frames**, through an audio ring
   and an event FIFO, independent of the current block length. Ragged blocks
   therefore lose nothing.

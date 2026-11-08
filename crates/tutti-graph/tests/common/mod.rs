@@ -824,3 +824,157 @@ pub const WORKERS: [usize; 4] = [2, 3, 4, 8];
 pub fn workers_for(seed: u64) -> usize {
     WORKERS[(seed.rotate_left(17) % WORKERS.len() as u64) as usize]
 }
+
+/// A source that is `1.0` for its first `len` frames, then silent for good
+/// (and says so, `Status::Silent`).
+pub struct Pulse {
+    pub len: usize,
+    pub at: usize,
+}
+
+impl Pulse {
+    pub fn new(len: usize) -> Self {
+        Self { len, at: 0 }
+    }
+}
+
+impl Node for Pulse {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let out = io.output(0);
+        let mut loud = false;
+        for o in out.iter_mut() {
+            *o = if self.at < self.len { 1.0 } else { 0.0 };
+            loud |= *o != 0.0;
+            self.at += 1;
+        }
+        if loud {
+            Status::Modified
+        } else {
+            Status::Silent
+        }
+    }
+    fn reset(&mut self) {
+        self.at = 0;
+    }
+}
+
+/// What a [`Ringer`] reports each block.
+pub const NO_REPORT: u64 = u64::MAX;
+/// A [`Ringer`] report of `Tail::Unbounded`.
+pub const REPORT_UNBOUNDED: u64 = u64::MAX - 1;
+/// A [`Ringer`] report of `Tail::Unknown`.
+pub const REPORT_UNKNOWN: u64 = u64::MAX - 2;
+
+/// Passes its input and adds `0.25` for `ring - 1` frames after the last
+/// non-silent input frame (that frame itself is the first of the `ring`), so
+/// its last non-zero output frame is `ring - 1` past the input's last. It
+/// rings `ring` frames, which is the honest report. Declares `ceiling` and
+/// reports what `report` holds: a frame count, or one of the `REPORT_*`
+/// words.
+pub struct Ringer {
+    pub ceiling: Tail,
+    pub ring: usize,
+    pub report: Arc<std::sync::atomic::AtomicU64>,
+    pub calls: Arc<AtomicUsize>,
+    pub latency: Samples,
+    /// Audio channels in and out; every channel rings together.
+    pub width: usize,
+    /// Declares an (unused) event output port: the general form.
+    pub event_out: bool,
+    left: usize,
+}
+
+impl Ringer {
+    pub fn new(ceiling: Tail, ring: usize, report: u64) -> Self {
+        Self {
+            ceiling,
+            ring,
+            report: Arc::new(std::sync::atomic::AtomicU64::new(report)),
+            calls: Arc::new(AtomicUsize::new(0)),
+            latency: Samples::ZERO,
+            width: 1,
+            event_out: false,
+            left: 0,
+        }
+    }
+
+    /// This node, declaring `latency`.
+    pub fn with_latency(mut self, latency: Samples) -> Self {
+        self.latency = latency;
+        self
+    }
+
+    /// This node, `width` channels wide (2: the `Direct` form).
+    pub fn wide(mut self, width: usize) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// This node, with an event output port (the general form).
+    pub fn with_event_out(mut self) -> Self {
+        self.event_out = true;
+        self
+    }
+
+    /// An honest reporter: the whole ring-out, under `ceiling`.
+    pub fn honest(ceiling: Tail, ring: usize) -> Self {
+        Self::new(ceiling, ring, ring as u64)
+    }
+}
+
+impl Node for Ringer {
+    fn shape(&self) -> Shape {
+        let ch = ChannelLayout::try_from(self.width).expect("a width");
+        let shape = Shape::audio(ch, ch)
+            .with_latency(Latency::new(self.latency))
+            .with_tail(self.ceiling);
+        if self.event_out {
+            shape.with_events(0, 1)
+        } else {
+            shape
+        }
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let mut loud = false;
+        {
+            let (ins, mut outs) = io.split();
+            for i in 0..ins.get(0).len() {
+                if (0..self.width).any(|c| ins.get(c)[i] != 0.0) {
+                    self.left = self.ring;
+                }
+                let ringing = if self.left > 0 {
+                    self.left -= 1;
+                    0.25
+                } else {
+                    0.0
+                };
+                for c in 0..self.width {
+                    let o = ins.get(c)[i] + ringing;
+                    outs.get(c)[i] = o;
+                    loud |= o != 0.0;
+                }
+            }
+        }
+        match self.report.load(Ordering::Relaxed) {
+            NO_REPORT => {}
+            REPORT_UNBOUNDED => io.report_tail(Tail::Unbounded),
+            REPORT_UNKNOWN => io.report_tail(Tail::Unknown),
+            0 => io.report_tail(Tail::None),
+            n => io.report_tail(Tail::Finite(Samples(n as usize))),
+        }
+        if loud {
+            Status::Modified
+        } else {
+            Status::Silent
+        }
+    }
+    fn reset(&mut self) {
+        self.left = 0;
+    }
+}

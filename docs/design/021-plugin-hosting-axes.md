@@ -129,6 +129,13 @@ So the Cargo.toml comment is true of `Plugin::open` with the feature on and
 false of the crate: there is an undocumented, editorless subprocess VST2 path.
 This design makes the comment true by construction.
 
+**History.** `26d748df7` (2026-06-12, "make VST2 always in-process, drop
+vst2-in-process feature") records the reason: `AEffect` fuses editor and audio,
+so the editor cannot live in another process, and the subprocess path was never
+a real implementation behind `vst2`. The server's VST2 audio passes the contract
+case, but without an editor it is not usable for a real VST2. The server's VST2
+*hosting* is therefore a leftover, not a feature.
+
 ## 2. The target
 
 ### 2.1 Traits (in `tutti-plugin-types`, beside `Loaded`)
@@ -411,7 +418,7 @@ separates it from the IPC code).
 | **`tutti-plugin-host`** (new) | `host/node/` less the batcher (about 7,500 + tests), `host/handles/` (1,416) reworked over `Control`, the reusable parts of `vst2_in_process` (node, client, fork, about 1,450 merged into the above), `host/param_values.rs`, `liveness.rs`, `render_mode.rs`, `util/node`, `util/window`; `PluginNode<H>`, `InProc<F>` (~300) | `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-midi-runtime`, `tutti-midi-types`, `tutti-types`, `tutti-rt`, `tutti-ump` | 5 | yes, once `os_monotonic_ns` (`transport_source.rs:430-465`, a `clock_gettime` / `QueryPerformanceCounter` call, 35 lines) moves to `tutti-rt` |
 | **`tutti-plugin`** (shrinks) | the facade: `plugin.rs` (472, becomes the `hosts!` table), `plugins.rs` (1,026), `db_probe.rs` (279), `lib.rs`; `AnyHost`, `Hosting`, `open` | `-host`, `-ipc`, `tutti-plugin-db`, and the four format hosts behind features | 6 | yes |
 | `tutti-plugin-server` (shrinks) | `session.rs` (2,111), `audio_pipeline.rs` (1,406), `transport.rs` (649), `server.rs`, `lib.rs`; `served!` and `probe!` tables; `loaders/` (7,689) gone | `-ipc`, `tutti-plugin-types`, format hosts behind features (not `-host`, not `tutti-plugin`) | 7 (could be 6; leave) | yes, once the loaders' `unsafe impl Send` and `WindowHandle::from_u64` go and the `libloading` tests move to the contract |
-| `tutti-{clap,vst3,vst2,au}-host` | gain `impl InProcess`, `impl OutOfProcess` (not VST2), and `OutOfProcess::Editor` | `tutti-plugin-types` only (unchanged) | 5, 5, 4, 4 | yes (unchanged); the `-ffi` crates keep the `unsafe` |
+| `tutti-{clap,vst3,vst2,au}-host` | gain `impl InProcess`, `impl OutOfProcess` (not VST2), and `OutOfProcess::Editor` | `tutti-plugin-types` only (unchanged) | 5, 5, 4, 5 (`tutti-au-host` moves from 4 to 5 over the new `tutti-au-ffi`, layer 4; PRs #350 and #353) | yes (unchanged); the `-ffi` crates keep the `unsafe` |
 
 The ordering is lower-to-higher with no new upward edge: `-ipc` (4) is above
 `tutti-plugin-types` (3); `-host` (5) is above `tutti-midi-runtime` (4);
@@ -514,15 +521,17 @@ changes:
 ## 10. Staged plan
 
 Each step is one reviewable PR and leaves `just ci` green (with `cargo build -p
-tutti-plugin-server` first). It runs after the AU FFI lane (`feat/au-ffi`, which
-makes `tutti-au-host` `forbid(unsafe_code)` over `tutti-au-ffi`) lands, wherever
-a step touches AU files, and after 016 step 4 gives AU a `Loaded`.
+tutti-plugin-server` first). It runs after the AU FFI lane lands, wherever a
+step touches AU files: PRs #350 and #353 extract `tutti-au-ffi` (layer 4), make
+`tutti-au-host` `forbid(unsafe_code)` and move it from layer 4 to 5, and edit
+`tutti-plugin`'s features and `gui/au.rs`. It also runs after 016 step 4 gives AU
+a `Loaded`.
 
 | # | Step | Needs AU? | Deletes / adds |
 |---|---|---|---|
 | 1 | `InProcess`, `OutOfProcess`, `Editor`, `Load`, `Reopen` in `tutti-plugin-types`; `impl InProcess` for `ClapLoaded`, `Vst3Loaded`, `Vst2Loaded`; `impl OutOfProcess` for CLAP and VST3 with `load_editor` wrapping today's `format/gui`; the compile-fail doctests with mutation record; `check-hosting.sh` | No | no behaviour change |
 | 2 | Move `format/gui/{clap,vst3}` into the host crates as `OutOfProcess::Editor`; the state-back direction on close (Q8) | No (AU's `gui/au.rs` waits for step 7) | -250 lines in `tutti-plugin` |
-| 3 | Extract `tutti-plugin-ipc`: protocol, transport, client, subprocess, batcher, `BridgeError`. Mechanical: no logic change; `check-layout.sh` rows, `check-plugin-ffi.sh` paths, CLAUDE.md | After the AU lane merges (it edits `tutti-plugin`'s features and `gui/au.rs`); otherwise not | moves about 13k lines |
+| 3 | Extract `tutti-plugin-ipc`: protocol, transport, client, subprocess, batcher, `BridgeError`. Mechanical: no logic change; `check-layout.sh` rows, `check-plugin-ffi.sh` paths, CLAUDE.md | After #350 and #353 merge (they edit `tutti-plugin`'s features and `gui/au.rs`, and `check-layout.sh`'s layer rows move `tutti-au-host`); no AU dependency otherwise | moves about 13k lines |
 | 4a | Extract `tutti-plugin-host`; `PluginNode<H>` and `InProc<F>`; `Vst2` in-process runs through them; **delete** `vst2_in_process` (2,274) and its `Arc<Mutex>` / `try_lock` | No | -2.3k, +~0.9k |
 | 4b | `Ipc<F>: Loaded` over the existing bridge; `PluginNode<Ipc<F>>` replaces `PluginClient`'s node; **delete** `graph_node.rs`, the IPC `fork.rs` and `composite.rs` duplicates and the `Host*` capability traits where `Control` replaces them | No (CLAP and VST3 rows) | -1.5k |
 | 5 | Generic server: `Served<F: OutOfProcess>`, `served!` and `probe!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` hosting arm (the probe stays), `plugin.rs`, `format_host.rs`'s capability traits. Supersedes 016 step 4's `AnyPlugin` | AU row waits; the macro takes it later | -5.5k |
@@ -538,14 +547,14 @@ step blocked on AU's `Loaded`.
 
 | # | Question | Recommendation |
 |---|---|---|
-| Q1 | Marker and host names | Both layers: markers `InProcess`/`OutOfProcess`, hosts `InProc<F>`/`Ipc<F>`; the rejected alternatives are in §3.1 |
-| Q2 | Remove VST2-over-IPC, or keep it behind an explicit opt-in? | **Remove.** It has no editor today, so nothing real is lost; an opt-in would need the server-window machinery (§4.1) that is unused and unsound on macOS and Wayland. Restore as a separate `ServerEditor` marker only on demand |
-| Q3 | Default hosting per format | CLAP, VST3, AU `OutOfProcess`; VST2 `InProcess`; per-plugin override by `Hosting` (§9) |
-| Q4 | Does the server-window option count as a remote editor? | **No.** The editor is the audio instance, so it does not satisfy "a separate instance"; it is a different capability (§4.1) |
-| Q5 | `unsafe trait` like `Send`/`Sync`? | **Safe, unsealed**, guarded by `on_unimplemented`, the compile-fail doctests and `check-hosting.sh` (§3.3) |
-| Q6 | How many crates? | Two new, `tutti-plugin-ipc` and `tutti-plugin-host`; no in-process, protocol or server crate (§6.3) |
-| Q7 | Does `InProc` keep the `Mutex` and silent `try_lock`? | **No.** The `Processor`/`Controller` split and 016 §2.2's per-format argument replace it; where VST2 needs serialisation it is the quirk (§2.10) |
-| Q8 | Must `OutOfProcess` promise that GUI-only state reaches the audio instance? | **Yes**, implemented in step 2 (pull the state blob from the editor on close or on a dirty signal) before the marker is claimed for CLAP and AU; otherwise the promise is parameters only and §4's table overstates it |
-| Q9 | Keep VST2 in the server for the scanner probe? | **Yes.** Probing is not hosting; `probe!` includes VST2, `served!` does not |
-| Q10 | Should AU's `OutOfProcess` be the OS's own out-of-process instantiation instead of `plugin-server`? | **No for now.** One protocol, one recovery path; revisit once AUv3 `LoadInProcess` is confirmed |
-| Q11 | Should `Hosting::Auto` flip to `InProcess` for a plugin the session has blacklisted for crashing the server? | **No.** A crashing plugin should never be moved into the host's process; `Auto` stays `OutOfProcess`, and the blacklist refuses |
+| Q1 | Marker and host names | **Decided.** Both layers: markers `InProcess`/`OutOfProcess`, hosts `InProc<F>`/`Ipc<F>`; the rejected alternatives are in §3.1 |
+| Q2 | Remove VST2-over-IPC, or keep it behind an explicit opt-in? | **Decided: remove VST2 hosting from the server.** The owner recalled that it "doesn't work, that's why it's like that; if it doesn't work, remove it", and `26d748df7` (§1.5) confirms: `AEffect` fuses editor and audio, and the subprocess path was never a real implementation. An opt-in would need the server-window machinery (§4.1), unused and impossible on macOS and Wayland |
+| Q3 | Default hosting per format | **Decided.** CLAP, VST3, AU `OutOfProcess`; VST2 `InProcess` only; per-plugin override by `Hosting` (§9); `Auto` never moves a blacklisted plugin in-process (see Q11) |
+| Q4 | Does the server-window option count as a remote editor? | No: the editor is the audio instance, so it is not "a separate instance"; it is a different capability (§4.1). Recommended, owner did not object |
+| Q5 | `unsafe trait` like `Send`/`Sync`? | Safe, unsealed, guarded by `on_unimplemented`, the compile-fail doctests and `check-hosting.sh` (§3.3). Recommended, owner did not object |
+| Q6 | How many crates? | **Decided.** Two new, `tutti-plugin-ipc` and `tutti-plugin-host`; no in-process, protocol or server crate (§6.3) |
+| Q7 | Does `InProc` keep the `Mutex` and silent `try_lock`? | No. The `Processor`/`Controller` split and 016 §2.2's per-format argument replace it; where VST2 needs serialisation it is the quirk (§2.10). Recommended, owner did not object |
+| Q8 | Must `OutOfProcess` promise that GUI-only state reaches the audio instance? | **Decided: yes.** `OutOfProcess` promises that the full GUI state reaches the audio instance. The state sync (pull the blob from the editor on close or on a dirty signal) is built in step 2, before CLAP, VST3 and AU claim the marker |
+| Q9 | Keep VST2 *probing* in the server for the scanner? | Yes, as probe isolation, not hosting: `probe!` includes VST2 (a load and drop, so a crashing library cannot take the scanner down), `served!` does not. **Owner to confirm**; if overridden, the server drops its `tutti-vst2-host` dependency and VST2 is probed in the scanner's process |
+| Q10 | Should AU's `OutOfProcess` be the OS's own out-of-process instantiation instead of `plugin-server`? | No for now: one protocol, one recovery path; revisit once AUv3 `LoadInProcess` is confirmed. Recommended, owner did not object |
+| Q11 | Should `Hosting::Auto` flip to `InProcess` for a plugin the session has blacklisted for crashing the server? | No. A crashing plugin is never moved into the host's process; `Auto` stays `OutOfProcess` and the blacklist refuses (also recorded under Q3). Recommended, owner did not object |

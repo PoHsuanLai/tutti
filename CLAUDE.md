@@ -521,8 +521,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-midi-file` is OS-free.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
   sample headers, sample data, raw generators) and holds nothing that plays.
-  It depends on `tutti-ump` and `tutti-types` (the units its accessors return:
-  `Samples`, `SampleRate`, `Cents`) alone, keeps every module private
+  Its workspace dependencies are `tutti-ump` and `tutti-types` (the units its
+  accessors return: `Samples`, `SampleRate`, `Cents`) and no others; `serde` is
+  an optional feature, on `Bank` only. It keeps every module private
   (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
   `#![forbid(unsafe_code)]`. It has one error type, `tutti_sf2::Error`, with a
   `Result` alias, and no public four-character-code type. `tutti-soundfont`

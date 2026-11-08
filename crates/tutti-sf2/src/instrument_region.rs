@@ -27,11 +27,11 @@ fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
 #[non_exhaustive]
 pub struct InstrumentRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],
-    pub(crate) sample_start: i32,
-    pub(crate) sample_end: i32,
-    pub(crate) sample_start_loop: i32,
-    pub(crate) sample_end_loop: i32,
-    pub(crate) sample_sample_rate: i32,
+    pub(crate) sample_start: u32,
+    pub(crate) sample_end: u32,
+    pub(crate) sample_start_loop: u32,
+    pub(crate) sample_end_loop: u32,
+    pub(crate) sample_sample_rate: u32,
     pub(crate) sample_original_pitch: i32,
     pub(crate) sample_pitch_correction: i32,
 }
@@ -189,20 +189,20 @@ impl InstrumentRegion {
     // The addresses as signed frame counts: an offset can take one before the
     // sample data in a defective file, which `SoundFont::new` refuses and a
     // `Samples` cannot say.
-    pub(crate) fn raw_sample_start(&self) -> i32 {
-        self.sample_start + self.start_address_offset()
+    pub(crate) fn raw_sample_start(&self) -> i64 {
+        i64::from(self.sample_start) + i64::from(self.start_address_offset())
     }
 
-    pub(crate) fn raw_sample_end(&self) -> i32 {
-        self.sample_end + self.end_address_offset()
+    pub(crate) fn raw_sample_end(&self) -> i64 {
+        i64::from(self.sample_end) + i64::from(self.end_address_offset())
     }
 
-    pub(crate) fn raw_sample_start_loop(&self) -> i32 {
-        self.sample_start_loop + self.start_loop_address_offset()
+    pub(crate) fn raw_sample_start_loop(&self) -> i64 {
+        i64::from(self.sample_start_loop) + i64::from(self.start_loop_address_offset())
     }
 
-    pub(crate) fn raw_sample_end_loop(&self) -> i32 {
-        self.sample_end_loop + self.end_loop_address_offset()
+    pub(crate) fn raw_sample_end_loop(&self) -> i64 {
+        i64::from(self.sample_end_loop) + i64::from(self.end_loop_address_offset())
     }
 
     fn address_offset(&self, coarse: GeneratorType, fine: GeneratorType) -> i32 {

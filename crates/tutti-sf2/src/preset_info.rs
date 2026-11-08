@@ -10,9 +10,9 @@ pub(crate) struct PresetInfo {
     pub(crate) bank_number: u16,
     pub(crate) zone_start_index: i32,
     pub(crate) zone_end_index: i32,
-    pub(crate) library: i32,
-    pub(crate) genre: i32,
-    pub(crate) morphology: i32,
+    pub(crate) library: u32,
+    pub(crate) genre: u32,
+    pub(crate) morphology: u32,
 }
 
 impl PresetInfo {
@@ -21,9 +21,9 @@ impl PresetInfo {
         let patch_number = reader.read_u16()?;
         let bank_number = reader.read_u16()?;
         let zone_start_index = reader.read_u16()? as i32;
-        let library = reader.read_i32()?;
-        let genre = reader.read_i32()?;
-        let morphology = reader.read_i32()?;
+        let library = reader.read_u32()?;
+        let genre = reader.read_u32()?;
+        let morphology = reader.read_u32()?;
 
         Ok(Self {
             name,
@@ -50,6 +50,14 @@ impl PresetInfo {
         let mut presets: Vec<PresetInfo> = Vec::new();
         for _i in 0..count {
             presets.push(PresetInfo::new(reader)?);
+        }
+
+        // The zone indices only grow (SF2 2.04 section 7.2).
+        if presets
+            .windows(2)
+            .any(|pair| pair[1].zone_start_index < pair[0].zone_start_index)
+        {
+            return Err(Error::InvalidPresetList);
         }
 
         for i in 0..(count - 1) {

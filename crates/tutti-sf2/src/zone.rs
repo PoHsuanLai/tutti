@@ -31,8 +31,14 @@ impl Zone {
             return Err(Error::ZoneNotFound);
         }
 
-        // The last one is the terminator.
+        // The last one is the terminator, and its generator index is the number
+        // of generators there are, the terminal one not counted (section 7.3): a file
+        // where it is not is structurally defective, and refused here rather
+        // than read past its generators.
         let count = infos.len() - 1;
+        if infos[count].generator_index as usize != generators.len() {
+            return Err(Error::InvalidGeneratorList);
+        }
 
         let mut zones: Vec<Zone> = Vec::new();
         for info in infos.iter().take(count) {

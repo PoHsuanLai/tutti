@@ -515,3 +515,113 @@ fn an_unfollowed_controller_leaves_the_note_sounding() {
     cc(&mut synthesizer, 119, 127);
     assert!(energy(&mut synthesizer, 2048) > 1.0);
 }
+
+// SF2 2.04 section 7.2: a preset whose bank or program is not a MIDI value
+// "cannot be played but should be maintained". It is never the one a channel
+// plays, not even as the default a channel falls back on when its own bank and
+// program name nothing: the first *playable* preset is.
+//
+// The font: preset 0 has bank 300 (unplayable) and a loud zone; preset 1 is
+// bank 0, program 3 and silent (144 dB down). A channel on bank 0, program 0
+// names nothing, so it falls back, and must land on the silent preset 1.
+//
+// Mutation (run): the default left at preset 0 in `Player::new` plays the loud
+// unplayable one and fails the first assertion.
+#[test]
+fn an_unplayable_preset_is_never_chosen() {
+    use support::font::{Inst, Preset, font};
+    use tutti_fixtures::sf2::generator;
+    let preset = |name, bank, program, instrument| Preset {
+        name,
+        bank,
+        program,
+        zones: vec![(vec![], instrument)],
+    };
+    let font = font(
+        &[preset("unplayable", 300, 0, 0), preset("playable", 0, 3, 1)],
+        &[
+            Inst {
+                name: "loud",
+                zones: vec![vec![]],
+            },
+            Inst {
+                name: "silent",
+                zones: vec![vec![(generator::INITIAL_ATTENUATION, 1440)]],
+            },
+        ],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    assert!(
+        rig.energy(4096) < 0.01,
+        "the unplayable preset must not sound"
+    );
+}
+
+// A font none of whose presets is playable is refused, not built into a unit
+// that is silent or plays what the file says cannot be played.
+//
+// Mutation (run): the `NoPlayablePreset` return removed builds the unit and
+// fails the assertion.
+#[test]
+fn a_font_with_nothing_playable_is_refused() {
+    use support::font::{Inst, Preset, font};
+    let font = font(
+        &[
+            Preset {
+                name: "bank",
+                bank: 300,
+                program: 0,
+                zones: vec![(vec![], 0)],
+            },
+            Preset {
+                name: "program",
+                bank: 0,
+                program: 200,
+                zones: vec![(vec![], 0)],
+            },
+        ],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![]],
+        }],
+    );
+    let error = SoundFontUnit::new(font, &Settings::new(RATE)).unwrap_err();
+    assert!(matches!(error, Error::NoPlayablePreset), "{error:?}");
+}
+
+// SF2 2.04 section 7.2: of two presets with one bank and program, "the first
+// occurring preset in the PHDR chunk is the active preset".
+//
+// Mutation (run): `entry().or_insert` back to `insert` in `Player::new` lets
+// the last win, the loud one, and fails the assertion.
+#[test]
+fn the_first_of_two_presets_with_one_bank_and_program_is_active() {
+    use support::font::{Inst, Preset, font};
+    use tutti_fixtures::sf2::generator;
+    let preset = |name, instrument| Preset {
+        name,
+        bank: 0,
+        program: 0,
+        zones: vec![(vec![], instrument)],
+    };
+    let font = font(
+        &[preset("first, silent", 0), preset("second, loud", 1)],
+        &[
+            Inst {
+                name: "silent",
+                zones: vec![vec![(generator::INITIAL_ATTENUATION, 1440)]],
+            },
+            Inst {
+                name: "loud",
+                zones: vec![vec![]],
+            },
+        ],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    assert!(
+        rig.energy(4096) < 0.01,
+        "the first preset is the active one"
+    );
+}

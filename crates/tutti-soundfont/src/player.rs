@@ -103,6 +103,8 @@ impl Player {
     ///
     /// # Errors
     ///
+    /// [`Error::NoPlayablePreset`] when no preset of the font has a MIDI bank
+    /// and program (SF2 2.04 section 7.2),
     /// [`Error::SampleRateOutOfRange`] outside 16 to 192 kHz and
     /// [`Error::PolyphonyOutOfRange`] for more than [`Settings::MAX_POLYPHONY`]
     /// voices (none is not representable: the polyphony is a `NonZeroUsize`).
@@ -118,7 +120,7 @@ impl Player {
 
         let mut presets: HashMap<i32, usize> = HashMap::new();
         let mut min_preset_id = i32::MAX;
-        let mut default_preset: usize = 0;
+        let mut default_preset: Option<usize> = None;
         for (i, preset) in font.presets().iter().enumerate() {
             // A preset whose bank or program is not MIDI's cannot be played
             // (SF2 2.04 section 7.2): it is kept in the font and not looked up.
@@ -130,15 +132,23 @@ impl Player {
             // This ID is used to search for presets by the combination of bank number
             // and patch number.
             let preset_id = (i32::from(bank.get()) << 16) | i32::from(patch.get());
-            presets.insert(preset_id, i);
+            // Two presets with the same bank and program: the first in the file
+            // is the active one (section 7.2).
+            presets.entry(preset_id).or_insert(i);
 
             // The preset with the minimum ID number will be default.
             // If the SoundFont is GM compatible, the piano will be chosen.
             if preset_id < min_preset_id {
-                default_preset = i;
+                default_preset = Some(i);
                 min_preset_id = preset_id;
             }
         }
+
+        // A font with nothing playable would sound a preset the file says cannot
+        // be played, or nothing at all: it is refused.
+        let Some(default_preset) = default_preset else {
+            return Err(Error::NoPlayablePreset);
+        };
 
         let channels = (0..MidiChannel::COUNT)
             .map(|i| Channel::new(i == Self::PERCUSSION_CHANNEL.get()))

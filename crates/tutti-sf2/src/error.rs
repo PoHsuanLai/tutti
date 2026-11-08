@@ -58,7 +58,8 @@ pub enum Error {
     /// A required sub-chunk is missing.
     #[error("the '{}' sub-chunk was not found", Code(.0))]
     SubChunkNotFound([u8; 4]),
-    /// The `phdr` chunk is empty or its size is not a whole record count.
+    /// The `phdr` chunk is empty, its size is not a whole record count, or its
+    /// zone indices decrease or do not end at the number of zones.
     #[error("the preset list is invalid")]
     InvalidPresetList,
     /// A preset zone names an instrument that does not exist.
@@ -71,13 +72,11 @@ pub enum Error {
         /// The instrument index the zone names.
         instrument_id: usize,
     },
-    /// A preset has no zone.
-    #[error("the preset with the ID '{0}' has no zone")]
-    InvalidPreset(usize),
     /// The file has no preset.
     #[error("no valid preset was found")]
     PresetNotFound,
-    /// The `inst` chunk is empty or its size is not a whole record count.
+    /// The `inst` chunk is empty, its size is not a whole record count, or its
+    /// zone indices decrease or do not end at the number of zones.
     #[error("the instrument list is invalid")]
     InvalidInstrumentList,
     /// An instrument zone names a sample that does not exist.
@@ -90,22 +89,21 @@ pub enum Error {
         /// The sample index the zone names.
         sample_id: usize,
     },
-    /// An instrument has no zone.
-    #[error("the instrument with the ID '{0}' has no zone")]
-    InvalidInstrument(usize),
     /// The file has no instrument.
     #[error("no valid instrument was found")]
     InstrumentNotFound,
     /// The `shdr` chunk is empty or its size is not a whole record count.
     #[error("the sample header list is invalid")]
     InvalidSampleHeaderList,
-    /// A bag chunk is empty or its size is not a whole record count.
+    /// A bag chunk is empty, its size is not a whole record count, or its
+    /// generator or modulator indices decrease.
     #[error("the zone list is invalid")]
     InvalidZoneList,
     /// A zone list has no zone.
     #[error("no valid zone was found")]
     ZoneNotFound,
-    /// A generator chunk is empty or its size is not a whole record count.
+    /// A generator chunk is empty, its size is not a whole record count, or the
+    /// bags' generator indices do not end at the number of generators.
     #[error("the generator list is invalid")]
     InvalidGeneratorList,
     /// A region's sample range or loop lies outside the sample data.

@@ -8,7 +8,15 @@ use tutti_ump::U7;
 /// `new` refuses what the field cannot mean; a preset whose bank is not one of
 /// these cannot be played but is kept (section 7.2), and says so by having no
 /// [`Preset::bank`](crate::Preset::bank).
+///
+/// With the `serde` feature it serialises as the bare `wBank` and refuses what
+/// `new` refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "u16", into = "u16")
+)]
 pub enum Bank {
     /// A MIDI bank, 0 to 127.
     Melodic(U7),
@@ -26,7 +34,9 @@ impl Bank {
         if raw == Self::PERCUSSION_NUMBER {
             return Some(Self::Percussion);
         }
-        if raw > u8::MAX as u16 {
+        // `U7::new` refuses above 127, so 129 and up end here; the narrowing
+        // cannot wrap one into range.
+        if raw > 127 {
             return None;
         }
         match U7::new(raw as u8) {

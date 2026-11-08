@@ -26,7 +26,12 @@ pub enum Error {
     #[error("the sample rate must be between 16000 and 192000 Hz, but was {0}")]
     SampleRateOutOfRange(SampleRate),
 
-    /// The unit was asked for no voices.
+    /// The font has no preset that can be played: every one has a bank or a
+    /// program that is not MIDI's (SF2 2.04 section 7.2).
+    #[error("the SoundFont has no playable preset")]
+    NoPlayablePreset,
+
+    /// The polyphony is past [`Settings::MAX_POLYPHONY`](crate::Settings::MAX_POLYPHONY).
     #[error("the polyphony must be between 1 and 4096 voices, but was {0}")]
     PolyphonyOutOfRange(usize),
 }

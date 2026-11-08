@@ -37,6 +37,14 @@ impl InstrumentInfo {
             instruments.push(InstrumentInfo::new(reader)?);
         }
 
+        // The zone indices only grow (SF2 2.04 section 7.6).
+        if instruments
+            .windows(2)
+            .any(|pair| pair[1].zone_start_index < pair[0].zone_start_index)
+        {
+            return Err(Error::InvalidInstrumentList);
+        }
+
         for i in 0..(count - 1) {
             instruments[i].zone_end_index = instruments[i + 1].zone_start_index - 1;
         }

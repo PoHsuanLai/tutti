@@ -185,7 +185,9 @@ impl SoundFontUnit {
     ///
     /// Returns [`Error::SampleRateOutOfRange`] or
     /// [`Error::PolyphonyOutOfRange`] if `settings` is out of range (the rate
-    /// 16 to 192 kHz, the polyphony 1 to [`Settings::MAX_POLYPHONY`]).
+    /// 16 to 192 kHz, the polyphony up to [`Settings::MAX_POLYPHONY`]), and
+    /// [`Error::NoPlayablePreset`] for a font none of whose presets has a MIDI
+    /// bank and program.
     pub fn new(soundfont: Arc<SoundFont>, settings: &Settings) -> Result<Self> {
         let player = Player::new(&soundfont, settings)?;
         Ok(Self::from_player(player, 0))

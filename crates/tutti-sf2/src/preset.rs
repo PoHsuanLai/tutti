@@ -14,9 +14,9 @@ pub struct Preset {
     pub(crate) name: String,
     pub(crate) patch_number: u16,
     pub(crate) bank_number: u16,
-    pub(crate) library: i32,
-    pub(crate) genre: i32,
-    pub(crate) morphology: i32,
+    pub(crate) library: u32,
+    pub(crate) genre: u32,
+    pub(crate) morphology: u32,
     pub(crate) regions: Vec<PresetRegion>,
 }
 
@@ -26,12 +26,13 @@ impl Preset {
         preset_id: usize,
         zones: &[Zone],
         instruments: &[Instrument],
-    ) -> Result<Self, Error> {
+    ) -> Result<Option<Self>, Error> {
         let name = info.name.clone();
 
+        // A preset with no zones is ignored (SF2 2.04 section 7.2).
         let zone_count = info.zone_end_index - info.zone_start_index + 1;
         if zone_count <= 0 {
-            return Err(Error::InvalidPreset(preset_id));
+            return Ok(None);
         }
 
         let span_start = info.zone_start_index as usize;
@@ -39,7 +40,7 @@ impl Preset {
         let zone_span = &zones[span_start..span_end];
         let regions = PresetRegion::create(preset_id, zone_span, instruments)?;
 
-        Ok(Self {
+        Ok(Some(Self {
             name,
             patch_number: info.patch_number,
             bank_number: info.bank_number,
@@ -47,7 +48,7 @@ impl Preset {
             genre: info.genre,
             morphology: info.morphology,
             regions,
-        })
+        }))
     }
 
     pub(crate) fn create(
@@ -59,12 +60,16 @@ impl Preset {
             return Err(Error::PresetNotFound);
         }
 
-        // The last one is the terminator.
+        // The last one is the terminator, and its zone index is the number of
+        // zones (section 7.2); a file where it is not is structurally defective.
         let count = infos.len() - 1;
+        if infos[count].zone_start_index as usize != zones.len() {
+            return Err(Error::InvalidPresetList);
+        }
 
         let mut presets: Vec<Preset> = Vec::new();
         for (preset_id, info) in infos.iter().take(count).enumerate() {
-            presets.push(Preset::new(info, preset_id, zones, instruments)?);
+            presets.extend(Preset::new(info, preset_id, zones, instruments)?);
         }
 
         Ok(presets)
@@ -91,17 +96,17 @@ impl Preset {
     }
 
     /// The library info.
-    pub fn library(&self) -> i32 {
+    pub fn library(&self) -> u32 {
         self.library
     }
 
     /// The genre info.
-    pub fn genre(&self) -> i32 {
+    pub fn genre(&self) -> u32 {
         self.genre
     }
 
     /// The morphology info.
-    pub fn morphology(&self) -> i32 {
+    pub fn morphology(&self) -> u32 {
         self.morphology
     }
 

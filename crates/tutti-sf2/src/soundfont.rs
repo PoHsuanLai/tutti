@@ -76,10 +76,13 @@ impl SoundFont {
                 let end_loop = region.raw_sample_end_loop();
                 let loop_mode = region.sample_modes();
 
+                // Signed, 64 bits: a header's DWORD and an offset can take an
+                // address below 0 or past 2^31, and either is refused.
+                let len = self.wave_data.len() as i64;
                 if start < 0
                     || start_loop < 0
-                    || end as usize >= self.wave_data.len()
-                    || end_loop as usize >= self.wave_data.len()
+                    || end >= len
+                    || end_loop >= len
                     || end <= start
                     || end_loop < start_loop
                     || (loop_mode != LoopMode::NoLoop && start_loop >= end_loop)

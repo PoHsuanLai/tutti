@@ -39,6 +39,16 @@ impl ZoneInfo {
             zones.push(ZoneInfo::new(reader)?);
         }
 
+        // The generator and modulator indices only grow (SF2 2.04 section 7.3);
+        // a file whose do not is structurally defective.
+        for pair in zones.windows(2) {
+            if pair[1].generator_index < pair[0].generator_index
+                || pair[1].modulator_index < pair[0].modulator_index
+            {
+                return Err(Error::InvalidZoneList);
+            }
+        }
+
         for i in 0..(count - 1) {
             zones[i].generator_count = zones[i + 1].generator_index - zones[i].generator_index;
             zones[i].modulator_count = zones[i + 1].modulator_index - zones[i].modulator_index;

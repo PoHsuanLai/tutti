@@ -10,11 +10,11 @@ use crate::error::Error;
 #[non_exhaustive]
 pub struct SampleHeader {
     pub(crate) name: String,
-    pub(crate) start: i32,
-    pub(crate) end: i32,
-    pub(crate) start_loop: i32,
-    pub(crate) end_loop: i32,
-    pub(crate) sample_rate: i32,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) start_loop: u32,
+    pub(crate) end_loop: u32,
+    pub(crate) sample_rate: u32,
     pub(crate) original_pitch: u8,
     pub(crate) pitch_correction: i8,
     pub(crate) link: u16,
@@ -24,11 +24,11 @@ pub struct SampleHeader {
 impl SampleHeader {
     fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let name = reader.read_fixed_length_string(20)?;
-        let start = reader.read_i32()?;
-        let end = reader.read_i32()?;
-        let start_loop = reader.read_i32()?;
-        let end_loop = reader.read_i32()?;
-        let sample_rate = reader.read_i32()?;
+        let start = reader.read_u32()?;
+        let end = reader.read_u32()?;
+        let start_loop = reader.read_u32()?;
+        let end_loop = reader.read_u32()?;
+        let sample_rate = reader.read_u32()?;
         let original_pitch = reader.read_u8()?;
         let pitch_correction = reader.read_i8()?;
         let link = reader.read_u16()?;
@@ -78,31 +78,31 @@ impl SampleHeader {
     /// 16-bit sample points (SF2 2.04 section 9.3), counted from the first.
     #[must_use]
     pub fn start(&self) -> Samples {
-        Samples(self.start as u32 as usize)
+        Samples(self.start as usize)
     }
 
     /// The end point of the sample in the sample data.
     #[must_use]
     pub fn end(&self) -> Samples {
-        Samples(self.end as u32 as usize)
+        Samples(self.end as usize)
     }
 
     /// The loop start point of the sample in the sample data.
     #[must_use]
     pub fn start_loop(&self) -> Samples {
-        Samples(self.start_loop as u32 as usize)
+        Samples(self.start_loop as usize)
     }
 
     /// The loop end point of the sample in the sample data.
     #[must_use]
     pub fn end_loop(&self) -> Samples {
-        Samples(self.end_loop as u32 as usize)
+        Samples(self.end_loop as usize)
     }
 
     /// The rate the sample was recorded at.
     #[must_use]
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(f64::from(self.sample_rate as u32))
+        SampleRate(f64::from(self.sample_rate))
     }
 
     /// The key number of the recorded pitch of the sample: 0 to 127, or 255

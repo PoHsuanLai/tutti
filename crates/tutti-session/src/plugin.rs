@@ -184,20 +184,33 @@ impl PluginLoad {
 
     /// [`run`](Self::run)'s open, on this thread.
     fn open(self) -> Open {
-        let plugin = Plugin::open_with(&self.config, &self.path, self.rate);
-        let mut restore = None;
-        if let (Ok(plugin), Some(state)) = (&plugin, &self.state) {
-            // A refusal does not abort the load: a plugin at its defaults
-            // beats no plugin. But it is not silent.
-            let outcome = plugin.handle().state().load_state(state);
-            if let Err(e) = &outcome {
-                tracing::warn!(
-                    "{}: saved state was not restored ({e}); the plugin is loaded at its \
-                     defaults",
-                    plugin.handle().name()
-                );
+        // The state goes in **before the plugin is activated** (`open_with_state`):
+        // a plugin may take its mode from the state at activation. A refusal
+        // does not abort the load: a plugin at its defaults beats no plugin. But
+        // it is not silent.
+        let (plugin, restore) = match Plugin::open_with_state(
+            &self.config,
+            &self.path,
+            self.rate,
+            self.state.as_deref(),
+        ) {
+            Ok((plugin, restore)) => (Ok(plugin), restore),
+            // The server died, or stopped answering, inside the step that
+            // restores the state it was staged (`StateRestoreError`; a failure
+            // before that step is a load failure and blames nothing): the state
+            // is what the load is held against (`land_reload` withholds it).
+            Err(e @ tutti_plugin::BridgeError::StateRestoreError(_)) if self.state.is_some() => {
+                let reason = e.to_string();
+                (Err(e), Some(Err(reason)))
             }
-            restore = Some(outcome.map_err(|e| e.to_string()));
+            Err(e) => (Err(e), None),
+        };
+        if let (Ok(plugin), Some(Err(e))) = (&plugin, &restore) {
+            tracing::warn!(
+                "{}: saved state was not restored ({e}); the plugin is loaded at its \
+                 defaults",
+                plugin.handle().name()
+            );
         }
         #[cfg(feature = "modulation")]
         let mirror = plugin.as_ref().ok().map(|plugin| {
@@ -1039,6 +1052,14 @@ impl Session {
                 return out;
             }
             Err(e) => {
+                // A load that died restoring the snapshot is held against the
+                // snapshot, as a replacement that dies once installed is
+                // (`install_reload`): the next attempt goes without it.
+                if matches!(restore, Some(Err(_)))
+                    && let Some(hosted) = self.graph.plugins.get_mut(&node)
+                {
+                    hosted.withhold_snapshot(now);
+                }
                 self.fail_reload(node, e.to_string(), now, &mut out, &mut gave_up);
                 self.finish_gave_up(gave_up, &mut out);
                 return out;

@@ -85,12 +85,30 @@ impl Vst3Instance {
     /// width would refuse every block.
     ///
     /// [`Features::F64_AUDIO`]: tutti_plugin::server::Features::F64_AUDIO
+    #[cfg(test)]
     pub fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
+        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None, &mut || {})
+            .map(|(instance, _)| instance)
+    }
+
+    /// `load`, restoring `state` **before the plugin is
+    /// activated**: the format allows a state on a plugin that is open and not
+    /// yet active, and a plugin may take its mode from the state when it is
+    /// activated. The second value is the plugin's refusal of the state, if it
+    /// refused: the plugin is then activated at its defaults.
+    pub fn load_with_state(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        prefer_f64: bool,
+        state: Option<&[u8]>,
+        before_restore: &mut dyn FnMut(),
+    ) -> Result<(Self, Option<String>)> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
         let loaded =
             Vst3Loaded::load(&resolved, LoadOptions::new()).map_err(|e| map_vst3_error(e, path))?;
@@ -119,6 +137,13 @@ impl Vst3Instance {
             events: Vec::new(),
             refused: false,
         };
+        let state_error = state.and_then(|data| {
+            before_restore();
+            match instance.lifecycle.control() {
+                Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+                None => Some("the plugin is lost".to_string()),
+            }
+        });
         let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
             let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
@@ -131,7 +156,7 @@ impl Vst3Instance {
         instance.refresh_meta();
         // Whatever the activation told the host is what the load reply carries.
         instance.events.clear();
-        Ok(instance)
+        Ok((instance, state_error))
     }
 
     /// Steps one event through the core, applying its effects. Returns the

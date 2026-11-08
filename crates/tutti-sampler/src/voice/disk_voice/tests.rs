@@ -738,6 +738,185 @@ fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
     }
 }
 
+/// [`wide_clip`] over a ring that states `topology` (its width is the
+/// topology's), so the voice places the ring's channels by it.
+fn placed_clip(topology: tutti_types::ChannelTopology) -> DiskVoice {
+    const AT: u64 = 22_000;
+    let width = topology.positions().len();
+    let (mut writer, reader) =
+        RegionBuffer::for_file(RegionId(1), PathBuf::new(), 4096, topology, usize::MAX);
+    writer.reset(AT);
+    writer.set_play(AT);
+    let flat: Vec<f32> = (AT..AT + 2_000)
+        .flat_map(|k| (0..width).map(move |c| wide_value(k, c)))
+        .collect();
+    writer.push_interleaved(&flat);
+    let state = Arc::new(RtState::new());
+    let inner = DiskSource::new(reader, Arc::clone(&state));
+    DiskVoice::new(
+        inner,
+        state,
+        DiskVoiceConfig {
+            window: VoiceWindow::default(),
+            file_sample_rate: SampleRate(SR),
+        },
+    )
+}
+
+/// A 7.1 file in WAV order: the rears before the sides.
+fn wav_seven_one() -> tutti_types::ChannelTopology {
+    use tutti_types::Speaker::*;
+    tutti_types::ChannelTopology::new([
+        FrontLeft,
+        FrontRight,
+        FrontCenter,
+        LowFrequency,
+        BackLeft,
+        BackRight,
+        SideLeft,
+        SideRight,
+    ])
+}
+
+/// A 10-channel file with no mask, as the decoder names it: WAVE's first
+/// ten speakers.
+fn named_ten() -> tutti_types::ChannelTopology {
+    use tutti_types::Speaker::*;
+    tutti_types::ChannelTopology::new([
+        FrontLeft,
+        FrontRight,
+        FrontCenter,
+        LowFrequency,
+        BackLeft,
+        BackRight,
+        FrontLeftOfCenter,
+        FrontRightOfCenter,
+        BackCenter,
+        SideLeft,
+    ])
+}
+
+/// The eight channels a placed 10-channel file ([`named_ten`]) plays in the
+/// engine's 7.1 order (FL FR FC LFE SL SR BL BR), from file channel values
+/// `v`, by `Fold`'s documented rules and not by `Place`: a speaker the
+/// destination has goes straight across; the left and right of centre fold
+/// into the centre at -3 dB; the back centre into both backs at -3 dB; the
+/// right side has no source, so it is silent.
+fn ten_into_seven_one(v: impl Fn(usize) -> f32) -> [f32; 8] {
+    let m = tutti_types::M3DB;
+    [
+        v(0),
+        v(1),
+        v(2) + m * v(6) + m * v(7),
+        v(3),
+        v(9),
+        0.0,
+        v(4) + m * v(8),
+        v(5) + m * v(8),
+    ]
+}
+
+/// Render 8 blocks of `voice` (n lanes) through `render_lanes` as the pool
+/// does, the last 7 under `assert_no_alloc`; the last block's lanes and the
+/// number of steady (read along time) runs.
+fn render_lanes_blocks(voice: &mut DiskVoice, n: usize) -> (Vec<Vec<f32>>, usize) {
+    const BLOCK: usize = 64;
+    let mut scratch = crate::lanes::BlockScratch::new(BLOCK, n);
+    let mut clock = crate::voice::clock::Clock::new();
+    let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
+    let mut block = |voice: &mut DiskVoice| {
+        let env = t.env(BLOCK, SR);
+        let clock = clock.observe(&env);
+        let crate::lanes::BlockScratch {
+            out,
+            positions,
+            gather,
+            ..
+        } = &mut scratch;
+        voice.render_lanes(&clock, 0..BLOCK, out, n, positions, gather);
+        t.advance(BLOCK as i64, SR);
+    };
+    block(voice);
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 1..8 {
+            block(voice);
+        }
+    });
+    let lanes = scratch.out.lanes()[..n]
+        .iter()
+        .map(|l| l[..BLOCK].to_vec())
+        .collect();
+    (lanes, voice.inner.read.steady_runs())
+}
+
+/// A placed ring is read through its placement in a block read by lanes (the
+/// pool's), not along time: a WAV-order 7.1 comes out in the engine's order and
+/// a 10-channel file folded into 8, with no allocation, and neither run is
+/// steady (`steady_lanes` reads whole channels, which only a ring read as it
+/// stands may be).
+///
+/// Mutation (run): `&& place.is_direct()` removed from `steady_lanes`' gate
+/// -> the 7.1 (as wide as the reader) is read along time in the file's order:
+/// its steady runs are 8, not 0, and its rears and sides are exchanged -> fails.
+/// Mutation (run): `read_ring` passing `Place::FAN` -> the 7.1 is in the file's
+/// order and the fold's 10 channels are cut -> fails.
+#[test]
+fn a_placed_ring_is_read_through_its_placement_by_lanes() {
+    const BLOCK: usize = 64;
+    // The last block: straight positions 22 050 + 7 x 64 + i.
+    let first = 22_050 + 7 * BLOCK as u64;
+
+    let mut voice = placed_clip(wav_seven_one());
+    let (lanes, steady) = render_lanes_blocks(&mut voice, 8);
+    assert_eq!(steady, 0, "a permuted ring was read along time");
+    // Engine channel -> file channel: FL FR FC LFE SL SR BL BR.
+    for (lane, file) in lanes.iter().zip([0usize, 1, 2, 3, 6, 7, 4, 5]) {
+        for (i, &got) in lane.iter().enumerate() {
+            let want = wide_value(first + i as u64, file);
+            assert_eq!(got.to_bits(), want.to_bits(), "7.1: file channel {file}");
+        }
+    }
+
+    let mut voice = placed_clip(named_ten());
+    let (lanes, steady) = render_lanes_blocks(&mut voice, 8);
+    assert_eq!(steady, 0, "a folded ring was read along time");
+    for i in 0..BLOCK {
+        let want = ten_into_seven_one(|c| wide_value(first + i as u64, c));
+        for (c, lane) in lanes.iter().enumerate() {
+            assert!(
+                (lane[i] - want[c]).abs() < 1e-4,
+                "10 into 8: lane {c}, frame {i}: {} against {}",
+                lane[i],
+                want[c]
+            );
+        }
+    }
+}
+
+/// A jump inside a placed ring (the old continuation read from the ring, and a
+/// crossfade started) allocates nothing, for a permuted and a folded ring.
+///
+/// Mutation (run): `Place::frame` collecting the fold's source into a `Vec`
+/// -> the 10-channel row allocates in the guarded region and aborts.
+#[test]
+fn a_placed_ring_jump_edge_is_allocation_free() {
+    for topology in [wav_seven_one(), named_ten()] {
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
+        let mut direct = Direct::new(placed_clip(topology), SampleRate::new(SR), 64);
+        for _ in 0..16 {
+            direct.block_in(&transport.env(64, SR));
+        }
+        assert_no_alloc::assert_no_alloc(|| {
+            for i in 0..2_000 {
+                // Within the 2 000 frames the ring holds from 22 000.
+                let beat = if i % 2 == 0 { 1.0 } else { 1.04 };
+                transport.set_beat(Beat::new(beat));
+                direct.block_in(&transport.env(64, SR));
+            }
+        });
+    }
+}
+
 /// A streamed clip wider than its pool renders through the pool, the
 /// pool's channels taking the clip's first ones: a stereo clip in a mono
 /// pool, a 6-channel clip in a stereo pool, over 8 rolling blocks.

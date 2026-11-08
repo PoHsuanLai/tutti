@@ -102,7 +102,7 @@ check-features:
     cargo clippy --locked -p bevy-tutti --features sampler --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features full,plugin --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings
-    cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
     cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
@@ -139,7 +139,7 @@ test-features:
     cargo nextest run --locked -p bevy-tutti --features soundfont
     cargo nextest run --locked -p bevy-tutti --features sampler
     cargo nextest run --locked -p bevy-tutti --features full,plugin
-    cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
+    cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti --features audio-io
     # A `Format` variant exists only with its feature: each is tested alone (a
@@ -217,6 +217,7 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test split_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test job_gate_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test task_graph_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test doorbell_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test request_word_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test edit_ring_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture

@@ -623,7 +623,7 @@ pub(crate) fn overlay_capacity(plan: &Plan, cap: usize, flushed: usize) -> usize
 /// nearest frame (half away from zero). `f64` holds a frame exactly up to
 /// 2^53, about 5 900 years at 48 kHz.
 pub(crate) fn rescale(f: tutti_types::Frame, ratio: f64) -> tutti_types::Frame {
-    tutti_types::Frame((f.get() as f64 * ratio).round() as u64)
+    f.scaled(ratio)
 }
 
 #[cfg(test)]

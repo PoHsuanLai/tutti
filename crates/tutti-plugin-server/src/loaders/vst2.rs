@@ -76,12 +76,30 @@ impl Vst2Instance {
     /// `effFlagsCanDoubleReplacing` (the same condition that negotiates
     /// `SampleFormat::Float64` with the host), so the width announced is the
     /// width `process` is entered at.
+    #[cfg(test)]
     pub fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
+        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None, &mut || {})
+            .map(|(instance, _)| instance)
+    }
+
+    /// `load`, restoring `state` **before the plugin is
+    /// activated**: the format allows a state on a plugin that is open and not
+    /// yet active, and a plugin may take its mode from the state when it is
+    /// activated. The second value is the plugin's refusal of the state, if it
+    /// refused: the plugin is then activated at its defaults.
+    pub fn load_with_state(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        prefer_f64: bool,
+        state: Option<&[u8]>,
+        before_restore: &mut dyn FnMut(),
+    ) -> Result<(Self, Option<String>)> {
         let loaded = Vst2Loaded::load(path).map_err(|e| translate_error(e, path))?;
         let format = if prefer_f64 && loaded.metadata().supports_f64 {
             SampleFormat::Float64
@@ -108,6 +126,13 @@ impl Vst2Instance {
             events: Vec::new(),
             refused: false,
         };
+        let state_error = state.and_then(|data| {
+            before_restore();
+            match instance.lifecycle.control() {
+                Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+                None => Some("the plugin is lost".to_string()),
+            }
+        });
         let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
             let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
@@ -120,7 +145,7 @@ impl Vst2Instance {
         instance.refresh_meta();
         // Whatever the activation told the host is what the load reply carries.
         instance.events.clear();
-        Ok(instance)
+        Ok((instance, state_error))
     }
 
     /// Steps one event through the core, applying its effects. Returns the

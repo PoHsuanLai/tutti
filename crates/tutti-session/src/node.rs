@@ -161,6 +161,10 @@ impl SessionNode for tutti_midi_runtime::MidiInputNode {
     }
 }
 
+/// The timed live queue an instrument handle sends through.
+#[cfg(feature = "midi")]
+impl SessionNode for tutti_midi_runtime::TimedQueueNode {}
+
 /// The SoundFont player as a graph node.
 #[cfg(feature = "soundfont")]
 impl SessionNode for tutti_soundfont::SoundFontUnit {}

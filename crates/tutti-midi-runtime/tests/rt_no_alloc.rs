@@ -10,11 +10,11 @@ use assert_no_alloc::AllocDisabler;
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Harmony, LoopRange, Prepare, Transport};
 use tutti_midi_runtime::{
     ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiMailbox, MidiOutNode, MidiQueueNode,
-    TimedHarmony, TimedMidiEvent,
+    TimedHarmony, TimedMidiEvent, TimedQueueNode,
 };
 use tutti_midi_types::MidiIn;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_types::{Beat, Bpm, FrameClock, NodeKey, SampleRate, Samples};
+use tutti_types::{At, Beat, Bpm, Frame, FrameClock, NodeKey, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 #[global_allocator]
@@ -455,4 +455,97 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     // The table filled, offs were refused, and some were paid late.
     assert!(exec.dropped_event_count() > 52 + 1_400);
     assert!(exec.lost_event_count() < exec.dropped_event_count());
+}
+
+/// The timed queue's audio side takes events from its ring, orders them, and
+/// sends them out of its port without allocating, a send from the control
+/// side included (both inside the gate: the send is lock-free too).
+///
+/// Mutation (run): a `Vec::new()` + push per block in `TimedQueueNode::process`
+/// aborts the gate.
+#[test]
+fn the_timed_queue_processes_without_allocating() {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let (queue, tx) = TimedQueueNode::new();
+    ed.insert(NodeKey(1), "timed", queue);
+    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(2),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 0,
+        }),
+    );
+    ed.commit().unwrap();
+    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let mut drain = [MidiEvent::noop(); 256];
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    let msg = tutti_ump::Ump([0x2090_3C64, 0, 0, 0]);
+    let mut heard = 0;
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 1..200u64 {
+            // One for this block's middle, one already late, one for the
+            // next block.
+            tx.send(At::Frame(Frame(b * 512 + 200)), msg).unwrap();
+            tx.send(At::Frame(Frame(3)), msg).unwrap();
+            tx.send(At::NextBlock, msg).unwrap();
+            exec.process(512, &t, &[], &mut []);
+            heard += out.poll_into(&mut drain);
+        }
+    });
+    assert_eq!(out.dropped(), 0);
+    // Every send but the last block's own frame-stamped one was heard.
+    assert!(heard >= 199 * 2, "heard only {heard}");
+}
+
+/// The full-list path allocates nothing either: with the waiting list full of
+/// far-future events, each block takes a due event (it displaces the latest that
+/// may be lost), a far note-off (it displaces a note-on) and a later note-on (it
+/// is the one dropped), all inside the gate.
+///
+/// Mutation (run): a `Vec::new()` + push in `keep`'s full-list branch aborts the
+/// gate.
+#[test]
+fn the_timed_queue_with_a_full_list_processes_without_allocating() {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let (queue, tx) = TimedQueueNode::new();
+    ed.insert(NodeKey(1), "timed", queue);
+    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(2),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 0,
+        }),
+    );
+    ed.commit().unwrap();
+    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let mut drain = [MidiEvent::noop(); 256];
+    let on = tutti_ump::Ump([0x2090_3C64, 0, 0, 0]);
+    let off = tutti_ump::Ump([0x2080_3C00, 0, 0, 0]);
+    // Outside the gate: fill the list with events for frames far ahead.
+    for k in 0..256u64 {
+        tx.send(At::Frame(Frame(10_000_000 + k)), on).unwrap();
+    }
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 1..100u64 {
+            tx.send(At::NextBlock, on).unwrap();
+            tx.send(At::Frame(Frame(20_000_000 + b)), off).unwrap();
+            tx.send(At::Frame(Frame(30_000_000 + b)), on).unwrap();
+            exec.process(512, &t, &[], &mut []);
+            let _ = out.poll_into(&mut drain);
+        }
+    });
+    assert!(tx.dropped() >= 99 * 2, "dropped only {}", tx.dropped());
 }

@@ -151,6 +151,14 @@ impl Plugin for Shared {
             match s & 0xF0 {
                 0x90 if vel > 0 => self.core.push(&mut dsp, Ev::NoteOn { offset, key }),
                 0x90 | 0x80 => self.core.push(&mut dsp, Ev::NoteOff { offset, key }),
+                0xB0 => self.core.push(
+                    &mut dsp,
+                    Ev::Control {
+                        offset,
+                        controller: key,
+                        value: vel,
+                    },
+                ),
                 _ => {}
             }
         }

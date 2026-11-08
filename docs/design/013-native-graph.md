@@ -8036,8 +8036,23 @@ by width alone.
     engine's (a WAV 7.1 lists the rears before the sides) is permuted, and a
     permuting wave reads a frame at a time (`read_placed_into`), not along time.
     Waves of 9 to 12 channels into a frame of 8 (the most a reader writes) are
-    folded rather than cut to their first 8; the constructors return `Result`. The streaming tier still reads a file
-    at its own width and order; it does not consume `FileIn::topology()` yet.
+    folded rather than cut to their first 8; the constructors return `Result`.
+  - **Streaming tier.** The ring stays at the file's own width and order and
+    carries the file's `ChannelTopology` (`FileIn::topology()`, or the
+    resident wave's when the format cannot seek). The voice places it: the
+    same `Place`, built by `Place::for_topology` on the control side when the
+    voice is taken (`Status::take_disk_voice`, at the file's width;
+    `take_disk_voice_into` for another), applied in `LiveRead`'s read and in an
+    offline fork's own read of the file (`OfflineRead`, handed the voice's
+    `Place`). A refusal (an `Unknown` channel, an unordered narrowing) is
+    `TakeVoiceError::Place`, raised before the stream's one reader is taken, so
+    the stream can be taken again at another width. It is the voice, not the
+    butler, because the ring is also read at file width by the loop crossfade's
+    lead-in, the preroll and the fork, and a permutation in the butler would be
+    a second copy of the placement; the voice's is one `Place::frame` per
+    output frame, and the common identity case keeps its block read along
+    time. A file of 9 to 12 channels now folds into 8 on this tier too (it was
+    cut to its first 8).
   - **`WaveMetadata`** carries the file's `ChannelTopology` in place of a bare
     count (`channels()` derives it); it is `Clone`, not `Copy`, and so is the
     sampler's `SampleFacts`. A host can refuse a file before it loads it.
@@ -8045,7 +8060,7 @@ by width alone.
     12}, 4 to {6, 8, 12}, 6 to 4, 8 to {4, 6}, 12 to {4, 6, 8}, for the engine
     output and export; and the sampler's waves of those widths into nodes of
     those widths. Beyond the pairs: a WAV 7.1 (or any file whose order is not the
-    engine's) is permuted in the sampler, a wave of 9 or more channels into a
+    engine's) is permuted in the sampler (both tiers), a wave of 9 or more channels into a
     frame of 8 folds instead of being cut, and an export of a graph wider than 12
     channels is placed by index instead of through a 12-channel gather.
   - **No silent drop** (own commit, revertable alone). `Fold::by_index` only

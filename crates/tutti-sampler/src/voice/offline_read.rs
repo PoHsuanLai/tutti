@@ -49,16 +49,16 @@ use tutti_types::SamplePosition;
 use tutti_types::Samples;
 
 use super::LoopSetting;
-use super::interp::{Place, interpolate_taps, read_frame, read_looped_frame, tap_indices};
+use super::interp::{
+    MAX_WAVE_CHANNELS, Place, interpolate_taps, read_frame, read_looped_frame, tap_indices,
+};
 use super::loop_span::{LoopSpan, blend};
 use super::types::Direction;
-use crate::MAX_SAMPLER_CHANNELS;
 use crate::butler::control::StreamFile;
 
-// A disk voice is as wide as its file (`DiskSource::with_reader` takes its
-// width from the ring), so a mono file is read into a one-wide frame and
-// nothing here places a mono source in a wider one: every read below passes
-// `Place::FAN`, which is then the identity.
+// A read is placed by the `Place` the voice built from its file's topology
+// (`DiskSource::with_reader`), the same one its live read uses: the caller
+// passes it, so a fork plays the channels where the live voice does.
 
 /// Frames per page. Two pages are resident; see [`Pages`].
 const PAGE_FRAMES: usize = 1 << 15;
@@ -181,7 +181,13 @@ impl OfflineRead {
     /// Blocks on file I/O when the position leaves the resident pages. That
     /// is the point of this type, and why it is only ever built for an
     /// offline render.
-    pub(crate) fn read_into(&mut self, pos: SamplePosition, direction: Direction, out: &mut [f32]) {
+    pub(crate) fn read_into(
+        &mut self,
+        pos: SamplePosition,
+        direction: Direction,
+        place: &Place,
+        out: &mut [f32],
+    ) {
         // Past what this direction can play, known without opening the file.
         let played_out = match direction {
             Direction::Reverse => true,
@@ -208,13 +214,13 @@ impl OfflineRead {
                     out.fill(0.0);
                     return;
                 }
-                open.read_into((len - 1.0 - pos.get()).max(0.0), out);
+                open.read_into((len - 1.0 - pos.get()).max(0.0), place, out);
             }
             (Direction::Forward, Some(span)) => {
                 let (p, looped) = span.place(pos.get());
-                open.read_looped_into(&span, p, looped, out);
+                open.read_looped_into(&span, p, looped, place, out);
             }
-            (Direction::Forward, None) => open.read_into(pos.get(), out),
+            (Direction::Forward, None) => open.read_into(pos.get(), place, out),
         }
     }
 
@@ -326,30 +332,37 @@ impl Open {
 
     /// Interpolate position `p` into `out` as `read_frame` would from the
     /// whole file resident: silence at and past the end.
-    fn read_into(&mut self, p: f64, out: &mut [f32]) {
+    fn read_into(&mut self, p: f64, place: &Place, out: &mut [f32]) {
         if p >= self.len() as f64 {
             out.fill(0.0);
             return;
         }
         match self {
             // The memory tier's own read, on the same kind of wave.
-            Self::Resident(wave) => read_frame(wave, &Place::FAN, p, out),
-            Self::Paged(pages) => pages.read_into(p, out),
+            Self::Resident(wave) => read_frame(wave, place, p, out),
+            Self::Paged(pages) => pages.read_into(p, place, out),
         }
     }
 
     /// Interpolate position `p`, placed on `span` (`looped` once round it),
     /// into `out` as `read_looped_frame` would from the whole file resident:
     /// silence at and past the end.
-    fn read_looped_into(&mut self, span: &LoopSpan, p: f64, looped: bool, out: &mut [f32]) {
+    fn read_looped_into(
+        &mut self,
+        span: &LoopSpan,
+        p: f64,
+        looped: bool,
+        place: &Place,
+        out: &mut [f32],
+    ) {
         if p >= self.len() as f64 {
             out.fill(0.0);
             return;
         }
         match self {
             // The memory tier's own looped read, on the same kind of wave.
-            Self::Resident(wave) => read_looped_frame(wave, &Place::FAN, span, p, looped, out),
-            Self::Paged(pages) => pages.read_looped_into(span, p, looped, out),
+            Self::Resident(wave) => read_looped_frame(wave, place, span, p, looped, out),
+            Self::Paged(pages) => pages.read_looped_into(span, p, looped, place, out),
         }
     }
 }
@@ -398,25 +411,32 @@ impl Page {
 
 impl Pages {
     /// Interpolate position `p` (`< len`) into `out`.
-    fn read_into(&mut self, p: f64, out: &mut [f32]) {
-        // The file's width, narrowed to what a stack frame holds — the same
-        // ceiling `DiskSource` narrows its ring to.
-        let ch = self.channels.min(MAX_SAMPLER_CHANNELS);
+    fn read_into(&mut self, p: f64, place: &Place, out: &mut [f32]) {
+        // The file's width: the placement reads all of it (a file wider than
+        // a frame is folded, or refused when the voice is built).
+        let ch = self.channels.min(MAX_WAVE_CHANNELS);
         let (taps, frac) = tap_indices(self.len, p);
-        let mut frames = [[0.0f32; MAX_SAMPLER_CHANNELS]; 4];
+        let mut frames = [[0.0f32; MAX_WAVE_CHANNELS]; 4];
         for (frame, &at) in frames.iter_mut().zip(taps.iter()) {
             frame[..ch].copy_from_slice(&self.frame(at)[..ch]);
         }
-        interpolate_taps(ch, &Place::FAN, frac, out, |c, t| frames[t][c]);
+        interpolate_taps(ch, place, frac, out, |c, t| frames[t][c]);
     }
 
     /// Interpolate position `p` (`< len`), placed on `span`, into `out`: the
     /// loop's four taps, each blended toward its lead-in inside the fade, as
     /// `read_looped_frame` blends them.
-    fn read_looped_into(&mut self, span: &LoopSpan, p: f64, looped: bool, out: &mut [f32]) {
-        let ch = self.channels.min(MAX_SAMPLER_CHANNELS);
+    fn read_looped_into(
+        &mut self,
+        span: &LoopSpan,
+        p: f64,
+        looped: bool,
+        place: &Place,
+        out: &mut [f32],
+    ) {
+        let ch = self.channels.min(MAX_WAVE_CHANNELS);
         let (taps, frac) = span.taps(self.len, p, looped);
-        let mut frames = [[0.0f32; MAX_SAMPLER_CHANNELS]; 4];
+        let mut frames = [[0.0f32; MAX_WAVE_CHANNELS]; 4];
         for (frame, tap) in frames.iter_mut().zip(taps.iter()) {
             frame[..ch].copy_from_slice(&self.frame(tap.frame)[..ch]);
             if let Some((lead, t)) = tap.fade {
@@ -426,7 +446,7 @@ impl Pages {
                 }
             }
         }
-        interpolate_taps(ch, &Place::FAN, frac, out, |c, t| frames[t][c]);
+        interpolate_taps(ch, place, frac, out, |c, t| frames[t][c]);
     }
 
     /// Frame `at` (`< len`), interleaved at the file's width, paging it in if
@@ -553,7 +573,7 @@ mod tests {
             let mut read = reader(path.clone());
             let mut out = [0.0f32; 1];
             for k in 0..LEN {
-                read.read_into(SamplePosition(k as f64), direction, &mut out);
+                read.read_into(SamplePosition(k as f64), direction, &Place::FAN, &mut out);
                 let want = match direction {
                     Direction::Forward => value(k),
                     Direction::Reverse => value(LEN - 1 - k),
@@ -596,7 +616,12 @@ mod tests {
         );
         let mut out = [0.0f32; 1];
         let mut at = |pos: f64| {
-            read.read_into(SamplePosition(pos), Direction::Forward, &mut out);
+            read.read_into(
+                SamplePosition(pos),
+                Direction::Forward,
+                &Place::FAN,
+                &mut out,
+            );
             out[0]
         };
         let v = value;
@@ -617,11 +642,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let mut read = reader(ramp_file(dir.path()));
         let mut out = [0.0f32; 1];
-        read.read_into(SamplePosition(10.0), Direction::Forward, &mut out);
+        read.read_into(
+            SamplePosition(10.0),
+            Direction::Forward,
+            &Place::FAN,
+            &mut out,
+        );
         assert!(read.is_open());
         read.read_into(
             SamplePosition((LEN + 10) as f64),
             Direction::Forward,
+            &Place::FAN,
             &mut out,
         );
         assert_eq!(out[0], 0.0);
@@ -629,6 +660,7 @@ mod tests {
         read.read_into(
             SamplePosition((LEN + 20) as f64),
             Direction::Forward,
+            &Place::FAN,
             &mut out,
         );
         assert!(!read.is_open(), "a read past the end opened it again");
@@ -660,7 +692,12 @@ mod tests {
             Arc::clone(&fault),
         );
         let mut out = [0.0f32; 2];
-        read.read_into(SamplePosition(100.0), Direction::Forward, &mut out);
+        read.read_into(
+            SamplePosition(100.0),
+            Direction::Forward,
+            &Place::FAN,
+            &mut out,
+        );
         assert!(
             out.iter().any(|&s| s != 0.0),
             "frames before the cut are kept"

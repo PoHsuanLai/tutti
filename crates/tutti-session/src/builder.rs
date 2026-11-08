@@ -379,7 +379,7 @@ impl SessionBuilder {
     /// # Errors
     ///
     /// When the engine refuses the graph, `layout` has no channels or cannot take
-    /// the root ([`Error::Output`]),
+    /// the root ([`Error::Output`](crate::Error::Output)),
     /// (`midi-hardware`) the MIDI device watch cannot start, or (`sampler`) the disk streamer cannot start.
     pub fn build_offline(
         mut self,

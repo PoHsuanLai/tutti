@@ -343,6 +343,8 @@ impl SessionBuilder {
             transport: parts.transport,
             load: engine.as_ref().map(|e| e.load_meter().clone()),
             heard: None,
+            root_request: self.root.clone(),
+            root_refusal: None,
             engine,
             click: parts.click,
             click_settings: parts.click_settings,
@@ -547,6 +549,10 @@ impl SessionBuilder {
     /// a 5-channel interface).
     fn check_placement(&self, root: usize, device: ChannelLayout) -> Result<()> {
         match &self.root {
+            // The same check `Graph::declare_root` makes a step later; made
+            // here so a refused root builds nothing (no engine, no device
+            // thread). Removing this arm alone changes no outcome, only
+            // how much is built before the refusal.
             Some(declared) => Graph::check_root(declared, device)?,
             None => {
                 tutti_types::Fold::widths(ChannelLayout::from(root), device)?;

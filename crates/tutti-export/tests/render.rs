@@ -1293,7 +1293,7 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
     assert!(matches!(
         first_frame(&mut graph, 6),
         Err(tutti_export::Error::InvalidConfig(ConfigError::Placement(
-            FoldError::Discrete { .. }
+            FoldError::RootWidth { .. }
         )))
     ));
     // Declared as a 5.1 (six wide), a six-channel graph folds to stereo by it.

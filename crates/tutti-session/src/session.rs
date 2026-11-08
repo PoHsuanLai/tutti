@@ -555,6 +555,16 @@ pub struct MidiNodes {
     pub out_controls: tutti_midi_runtime::MidiOutControls,
 }
 
+/// Whether the root is as it was asked to be
+/// ([`Session::root_topology_status`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootTopologyStatus {
+    /// In force: the root is what was declared (or nothing was).
+    Applied,
+    /// Not in force, and why. The previous state stands.
+    Refused(tutti_types::FoldError),
+}
+
 /// The tutti engine, Bevy-free: a [`Graph`], its transport, and the engine
 /// side it renders on, in the order [`update`](Self::update) runs them.
 ///
@@ -607,6 +617,11 @@ pub struct Session {
     /// The engine's tap after the fader and the device width it was built
     /// for; `None` detached.
     pub(crate) heard: Option<(tutti_engine::HeardTaps, ChannelLayout)>,
+    /// The root topology last asked for
+    /// ([`declare_root_topology`](Self::declare_root_topology)), applied or not.
+    pub(crate) root_request: Option<ChannelTopology>,
+    /// Why `root_request` is not in force, if it is not.
+    pub(crate) root_refusal: Option<tutti_types::FoldError>,
     pub(crate) click: Option<NodeKey>,
     pub(crate) click_settings: Arc<ClickSettings>,
     /// The per-channel pre-roll of the plan sent last, for sources outside
@@ -709,9 +724,55 @@ impl Session {
     /// device cannot place it (a discrete root wider than the device, a channel
     /// no speaker names). Nothing is changed.
     pub fn declare_root_topology(&mut self, root: Option<ChannelTopology>) -> crate::Result<()> {
+        // The same request again, in force, is nothing to do.
+        if root == self.root_request && self.root_refusal.is_none() {
+            return Ok(());
+        }
         let device = self.heard.as_ref().map(|(_, layout)| *layout);
-        self.graph.declare_root(root, device)?;
-        Ok(())
+        self.root_request = root.clone();
+        match self.graph.declare_root(root, device) {
+            Ok(()) => {
+                self.root_refusal = None;
+                Ok(())
+            }
+            Err(e) => {
+                self.root_refusal = Some(e);
+                Err(e.into())
+            }
+        }
+    }
+
+    /// The topology last asked for with
+    /// [`declare_root_topology`](Self::declare_root_topology) (or
+    /// [`SessionBuilder::root_topology`](crate::SessionBuilder::root_topology)),
+    /// whether or not it is in force: see
+    /// [`root_topology_status`](Self::root_topology_status).
+    pub fn requested_root_topology(&self) -> Option<&ChannelTopology> {
+        self.root_request.as_ref()
+    }
+
+    /// Whether the root is as it was asked to be. A refusal is a value here,
+    /// never only a log line.
+    ///
+    /// - [`RootTopologyStatus::Refused`] with the declaration's own
+    ///   [`FoldError`](tutti_types::FoldError) when the last request could not
+    ///   be placed on the device. The previous declaration (the one
+    ///   [`root_topology`](Self::root_topology) reads) stays in force, and a
+    ///   **device restart re-attempts the request**: it is
+    ///   [`Applied`](RootTopologyStatus::Applied) as soon as the new device
+    ///   places it.
+    /// - Otherwise `Refused` with [`Graph::widen_outputs`]'s last refusal: a
+    ///   widening the declared root could not take
+    ///   ([`FoldError::RootWidth`](tutti_types::FoldError::RootWidth)), or
+    ///   channels past `MAX_ROOT_CHANNELS`
+    ///   ([`FoldError::Unplaced`](tutti_types::FoldError::Unplaced)); that
+    ///   is what a host's `MasterSources` longer than the root comes to.
+    /// - Otherwise `Applied`.
+    pub fn root_topology_status(&self) -> RootTopologyStatus {
+        match self.root_refusal.or(self.graph.widen_refusal()) {
+            Some(e) => RootTopologyStatus::Refused(e),
+            None => RootTopologyStatus::Applied,
+        }
     }
 
     /// The topology the root was declared with
@@ -875,11 +936,8 @@ impl Session {
     pub(crate) fn reclaim(&self) -> usize {
         let mut pinned = self.graph.reclaim();
         pinned += self.click_settings.project_meter().reclaim();
-        // An offline session's engine; a device's is in its callback state,
-        // and `support_output` reclaims what it replaces itself.
-        if let Some(engine) = &self.engine {
-            pinned += engine.reclaim();
-        }
+        // The engine's output folds are swept by the graph (`Graph::reclaim`),
+        // offline or on a device, through the `OutputControl` it kept.
         #[cfg(feature = "modulation")]
         {
             pinned += self.mods.state.reclaim();

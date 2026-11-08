@@ -96,7 +96,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
 use crate::graph::AudioNode;
-use tutti_graph::MAX_ROOT_CHANNELS;
+use tutti_session::RootTopologyStatus;
 use tutti_types::{ChannelLayout, ChannelTopology};
 
 use super::topology::{self, LiveGraph};
@@ -248,9 +248,11 @@ pub struct MasterSources(pub Vec<PortSource>);
 ///
 /// **A declaration sets the root's width.** Writing one makes the graph's
 /// outputs exactly as many as the topology has, with no floor of the device's,
-/// so a [`MasterSources`] longer than it is not widened under it
-/// ([`rebuild`] logs the refusal and drops the excess). A declaration the
-/// device cannot place is logged and not applied; the previous one stands.
+/// so a [`MasterSources`] longer than it is not widened under it. A
+/// refusal (a declaration the device cannot place, whose previous one stays in
+/// force; or that excess) is a value, not a log: [`MasterTopologyStatus`].
+/// The resource starts from the session's own declaration
+/// (`SessionBuilder::root_topology`), which a host that never writes it keeps.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct MasterTopology(pub Option<ChannelTopology>);
 
@@ -365,7 +367,8 @@ pub fn rebuild(
     nodes: Query<(Entity, &AudioNode)>,
     sinks: Query<(Entity, &PortSources)>,
     master: Res<MasterSources>,
-    declared: Res<MasterTopology>,
+    mut declared: ResMut<MasterTopology>,
+    mut seeded: Local<bool>,
     changed: Query<(), Changed<PortSources>>,
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<PortSources>,
@@ -393,9 +396,22 @@ pub fn rebuild(
 
     // The declared root first: it sets the root's width, which everything
     // below is sized against.
+    //
+    // The resource starts from what the session was built with
+    // (`SessionBuilder::root_topology`), so a host that never writes it keeps
+    // that declaration; an equal request is a no-op in the session. A refusal
+    // is the session's status (`MasterTopologyStatus` mirrors it), not a log.
+    if !*seeded {
+        *seeded = true;
+        if declared.0.is_none()
+            && let Some(built) = graph.session().requested_root_topology().cloned()
+        {
+            declared.0 = Some(built);
+        }
+    }
     let declared_now = declared.is_changed();
-    if declared_now && let Err(e) = graph.session().declare_root_topology(declared.0.clone()) {
-        bevy_log::error!("MasterTopology refused, the previous declaration stands: {e}");
+    if declared_now {
+        let _ = graph.session().declare_root_topology(declared.0.clone());
     }
 
     // What the ECS says the graph should be, built before anything is written.
@@ -465,22 +481,12 @@ pub fn rebuild(
     // widening that has not happened yet. The arity is a property of the
     // runtime the value is compiled into, not of the graph.
     if master.is_changed() {
-        let declared = master.0.len().clamp(1, MAX_ROOT_CHANNELS);
-        if master.0.len() > MAX_ROOT_CHANNELS {
-            bevy_log::warn!(
-                declared = master.0.len(),
-                max = MAX_ROOT_CHANNELS,
-                "MasterSources declares more channels than the render scratch \
-                 holds; the excess will not be rendered"
-            );
-        }
-        if declared > graph.graph_ref().outputs()
-            && let Err(e) = graph.graph().widen_outputs(declared)
-        {
-            bevy_log::error!(
-                "MasterSources declares {declared} channels, past the root's declared \
-                 topology; the excess will not be rendered: {e}"
-            );
+        // The whole length is asked for: what the root cannot take (a declared
+        // topology's width, the engine's `MAX_ROOT_CHANNELS`) is the session's
+        // refusal, kept in its status, not clamped or logged here.
+        let declared = master.0.len().max(1);
+        if declared > graph.graph_ref().outputs() {
+            let _ = graph.graph().widen_outputs(declared);
         }
     }
 
@@ -554,6 +560,36 @@ pub fn unwire_removed_sources(
     }
 }
 
+/// Whether the session has the root as [`MasterTopology`] and [`MasterSources`]
+/// asked: the session's own [`RootTopologyStatus`], mirrored every frame after
+/// [`rebuild`] (it holds no policy and never retries; the session does, on a
+/// device restart).
+///
+/// `Refused` carries the `FoldError`: the declaration the device cannot place
+/// (the previous one stays in force), a `MasterSources` wider than a declared
+/// root ([`FoldError::RootWidth`](tutti_types::FoldError::RootWidth)), or one
+/// wider than the engine renders ([`FoldError::Unplaced`](tutti_types::FoldError::Unplaced)).
+#[derive(Resource, Debug, Clone, PartialEq)]
+pub struct MasterTopologyStatus(pub RootTopologyStatus);
+
+impl Default for MasterTopologyStatus {
+    fn default() -> Self {
+        Self(RootTopologyStatus::Applied)
+    }
+}
+
+/// Copies the session's root-topology status into [`MasterTopologyStatus`].
+pub fn mirror_master_topology_status(
+    graph: Option<Res<AudioGraphRes>>,
+    mut status: ResMut<MasterTopologyStatus>,
+) {
+    let Some(graph) = graph else { return };
+    let now = graph.read().root_topology_status();
+    if status.0 != now {
+        status.0 = now;
+    }
+}
+
 /// Adds declared audio wiring: [`MasterSources`], [`MasterTopology`], [`LiveGraph`], the
 /// [`rebuild`] system and the [`unwire_removed_sources`] observer.
 ///
@@ -569,6 +605,7 @@ impl Plugin for GraphWirePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MasterSources>();
         app.init_resource::<MasterTopology>();
+        app.init_resource::<MasterTopologyStatus>();
         app.init_resource::<LiveGraph>();
         app.add_observer(unwire_removed_sources);
         app.add_systems(
@@ -576,6 +613,12 @@ impl Plugin for GraphWirePlugin {
             rebuild
                 .after(GraphReconcileSystems::Spawn)
                 .before(GraphReconcileSystems::Compensate)
+                .run_if(engine_ready),
+        );
+        app.add_systems(
+            Update,
+            mirror_master_topology_status
+                .after(rebuild)
                 .run_if(engine_ready),
         );
     }

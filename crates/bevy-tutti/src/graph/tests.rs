@@ -396,3 +396,33 @@ fn seed(app: &App, entity: bevy_ecs::entity::Entity, value: f32) {
         .expect("a knob's controls are bound");
     assert!(controls.0.set(UnitParam::Drive, value), "a knob has Drive");
 }
+
+/// A declaration the session was built with is in force after the first
+/// frames of a host that never writes `MasterTopology`: the resource starts
+/// from the session's.
+///
+/// Mutation (run): the seeding in `rebuild` removed → the default `None`
+/// resource clears the builder's declaration on the first frame.
+#[test]
+fn a_builders_declaration_survives_the_first_frame() {
+    use crate::graph::MasterTopologyStatus;
+    let buses = tutti_types::ChannelTopology::discrete(ChannelLayout::QUAD);
+    let session = tutti_session::Session::builder()
+        .root_topology(buses.clone())
+        .build_detached(tutti_types::SampleRate(48_000.0))
+        .unwrap();
+    let mut app = App::new();
+    app.insert_resource(AudioGraphRes::from_session(session));
+    app.insert_resource(AudioEngineState::Running);
+    app.add_plugins(GraphReconcilePlugin);
+    for _ in 0..3 {
+        app.update();
+    }
+    let graph = app.world().resource::<AudioGraphRes>();
+    assert_eq!(graph.graph_ref().root_topology(), Some(&buses));
+    assert_eq!(graph.graph_ref().outputs(), 4);
+    assert_eq!(
+        app.world().resource::<MasterTopologyStatus>().0,
+        tutti_session::RootTopologyStatus::Applied
+    );
+}

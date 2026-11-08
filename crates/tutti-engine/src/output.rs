@@ -40,6 +40,14 @@ pub(crate) struct OutputFolds {
     /// ([`OutputControl::declare_root`]). It applies to the root width it is as
     /// wide as; every other width is a bare count.
     root: Option<ChannelTopology>,
+    /// The declaration `root` replaced, kept for **its** width until the next
+    /// declaration. When a declaration changes the root's width, the plan
+    /// still rendering is the old width, and the new declaration's fold must
+    /// not be applied to it. The engine cannot see when the commit lands (the
+    /// audio thread installs it), so the old fold stays for the old width; no
+    /// plan of that width follows without another declaration, which replaces
+    /// this.
+    previous: Option<ChannelTopology>,
     /// Index `d - 1` holds the folds into a device of `d` channels, `None` for
     /// a width not supported; inside, index `w - 1` folds a root of `w`.
     by_device: Vec<Option<Box<[Option<Fold>]>>>,
@@ -55,6 +63,7 @@ impl OutputFolds {
     pub(crate) fn up_to(widest: usize) -> Self {
         let mut folds = Self {
             root: None,
+            previous: None,
             by_device: Vec::new(),
         };
         for device in 1..=widest {
@@ -101,11 +110,13 @@ impl OutputFolds {
     /// topology when the root is as wide as the declaration, otherwise from the
     /// engine's order for the bare width.
     fn root_fold(&self, width: usize, device: ChannelLayout) -> Result<Fold, FoldError> {
-        match &self.root {
-            Some(root) if usize::from(root.layout().count()) == width => {
-                Fold::declared(root, device)
-            }
-            _ => Fold::widths(ChannelLayout::from(width), device),
+        let declared = [&self.root, &self.previous]
+            .into_iter()
+            .flatten()
+            .find(|root| usize::from(root.layout().count()) == width);
+        match declared {
+            Some(root) => Fold::declared(root, device),
+            None => Fold::widths(ChannelLayout::from(width), device),
         }
     }
 
@@ -213,6 +224,12 @@ impl OutputControl {
             if folds.root == root {
                 return Ok(false);
             }
+            // Kept only where the width moves: at the same width the plan is
+            // the one the new declaration describes.
+            folds.previous = folds.root.take().filter(|old| {
+                root.as_ref()
+                    .is_some_and(|new| new.layout() != old.layout())
+            });
             folds.root = root;
             // Every held device is rebuilt against the new declaration.
             let held: Vec<usize> = (1..=folds.by_device.len())

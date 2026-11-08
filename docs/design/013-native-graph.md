@@ -8015,13 +8015,32 @@ by width alone.
       applies only undeclared), and an output tap keeps its lanes (a lane whose
       channel is gone reads silence). After that the width and the declaration
       cannot disagree: `Graph::widen_outputs` **refuses** to widen a declared
-      root (`FoldError::Discrete`, the declared and requested widths), so a
-      `MasterSources` longer than the declaration is logged and its excess
-      not rendered, where undeclared it widens the root. The declared width is
-      at most `MAX_ROOT_CHANNELS` and at least 1; otherwise `FoldError`. Refusing
+      root (`FoldError::RootWidth { declared, requested }`), so a
+      `MasterSources` longer than the declaration has its excess not rendered,
+      where undeclared it widens the root; past `MAX_ROOT_CHANNELS` it widens
+      as far as the engine renders and refuses the rest (`FoldError::Unplaced`).
+      The declared width is at most `MAX_ROOT_CHANNELS` and at least 1;
+      otherwise `FoldError`. Refusing
       was chosen over re-deriving because a re-derived topology would have to
       invent the new channels' meaning (discrete? a speaker?) and a wrong guess
       is a silent misplacement.
+    - **Refusals are values.** The session keeps the requested declaration
+      (`requested_root_topology`) and `root_topology_status()`:
+      `RootTopologyStatus::Applied`, or `Refused(FoldError)` for a declaration
+      the device cannot place (the previous one stays in force) or the last
+      widening `widen_outputs` refused. A device restart re-attempts a refused
+      declaration. `bevy-tutti` mirrors the status into `MasterTopologyStatus`
+      every frame after `rebuild` and retries nothing; its `MasterTopology`
+      starts from the session's declaration, so a `SessionBuilder::root_topology`
+      survives the first frame, and an equal request is a no-op.
+    - **A width change and the plan in flight.** The audio thread installs the
+      commit, so the control side cannot change the plan and the fold in one
+      step. `OutputFolds` keeps the declaration it replaced for **its** width
+      (`previous`) until the next declaration, so the plan still rendering at the
+      old width keeps its fold and never meets the new declaration's. At the
+      same width the plan is the one the declaration describes and it applies
+      at once. An output tap keeps its lanes when the root narrows; lanes past
+      the new width read silence and `take_lost` does not count it.
     - **Devices.** The declaration is checked against the device the session
       renders to at declare and build time (`Error::Output`), and a device
       restart onto one that cannot place it is refused before the stream moves.

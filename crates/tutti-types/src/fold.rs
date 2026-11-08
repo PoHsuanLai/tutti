@@ -58,6 +58,14 @@ pub enum FoldError {
     },
     /// [`Fold::select`] was given more channels than a width can count.
     TooWide(usize),
+    /// A graph root's channels were declared at one width and the root is, or
+    /// was asked to be, another: the declaration owns the root's width.
+    RootWidth {
+        /// The width the root was declared with.
+        declared: ChannelLayout,
+        /// The width the root has, or was asked to widen to.
+        requested: ChannelLayout,
+    },
 }
 
 impl core::fmt::Display for FoldError {
@@ -83,6 +91,13 @@ impl core::fmt::Display for FoldError {
                 write!(f, "channel {channel} is not in a {width:?} source")
             }
             Self::TooWide(n) => write!(f, "{n} channels is more than a width can count"),
+            Self::RootWidth {
+                declared,
+                requested,
+            } => write!(
+                f,
+                "the root is declared {declared:?} wide and cannot be {requested:?}"
+            ),
         }
     }
 }

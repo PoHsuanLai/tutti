@@ -536,6 +536,20 @@ impl Session {
         // A unit that panicked in `prepare`, or shapes that no longer
         // compile, poison the editor here: refuse, the stream still stopped.
         self.graph.check_reprepare(None)?;
+        // A declaration a device refused is asked again of this one: if it
+        // places, it is in force, committed and settled below with the rest.
+        if self.root_refusal.is_some() {
+            match self
+                .graph
+                .declare_root(self.root_request.clone(), Some(spec.channels))
+            {
+                Ok(()) => {
+                    self.root_refusal = None;
+                    self.commit();
+                }
+                Err(e) => self.root_refusal = Some(e),
+            }
+        }
         // A wider device widens the root, by the build's rule; a narrower one
         // keeps it, and the engine folds. Committed and settled here too, so
         // the first block has the width. A commit refused for now leaves the

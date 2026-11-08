@@ -46,9 +46,9 @@ impl FileChannels<'_> {
         if let Some(root) = root
             && root.layout() != graph
         {
-            return Err(ConfigError::Placement(tutti_types::FoldError::Discrete {
-                src: root.layout(),
-                dst: graph,
+            return Err(ConfigError::Placement(tutti_types::FoldError::RootWidth {
+                declared: root.layout(),
+                requested: graph,
             })
             .into());
         }

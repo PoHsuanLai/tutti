@@ -6,7 +6,7 @@
 //! rules (`M3DB`), not read from another render.
 
 use tutti_nodes::testing::Const;
-use tutti_session::{Error, GraphSource, Session, SessionBuilder};
+use tutti_session::{Error, GraphSource, RootTopologyStatus, Session, SessionBuilder};
 use tutti_types::{
     ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB, SampleRate, Samples, Speaker,
 };
@@ -182,19 +182,75 @@ fn a_declaration_sets_the_roots_width_and_the_width_cannot_leave_it() {
     let err = s.graph().widen_outputs(5).unwrap_err();
     assert_eq!(
         err,
-        FoldError::Discrete {
-            src: ChannelLayout::QUAD,
-            dst: ChannelLayout::from(5u16)
+        FoldError::RootWidth {
+            declared: ChannelLayout::QUAD,
+            requested: ChannelLayout::from(5u16)
         }
     );
+    assert_eq!(s.root_topology_status(), RootTopologyStatus::Refused(err));
     assert_eq!(s.graph_ref().outputs(), 4);
 
     s.declare_root_topology(None).unwrap();
     assert_eq!(s.root_topology(), None);
     assert_eq!(s.graph_ref().outputs(), 4);
     assert_eq!(heard(&mut s, 6), [0.1, 0.2, 0.0, 0.0, 0.3, 0.4]);
+    assert_eq!(s.root_topology_status(), RootTopologyStatus::Applied);
     s.graph().widen_outputs(5).unwrap();
     assert_eq!(s.graph_ref().outputs(), 5);
+}
+
+/// A refusal is a value: the declaration's, kept with the request; a widening
+/// the declared root cannot take; channels past the engine's width. The
+/// request is the same again once it is in force.
+///
+/// Mutation (run): `declare_root_topology` not recording the refusal → the
+/// status stays `Applied`; `widen_outputs` not recording → the second status
+/// stays `Applied`; the over-wide request not clamped → `outputs()` is 40.
+#[test]
+fn a_refusal_is_a_status_not_a_log_line() {
+    let mut s = offline(Session::builder(), 2).unwrap();
+    assert_eq!(s.root_topology_status(), RootTopologyStatus::Applied);
+    let e = s.declare_root_topology(Some(buses(4))).unwrap_err();
+    let Error::Output(refusal) = e else { panic!() };
+    assert_eq!(
+        s.root_topology_status(),
+        RootTopologyStatus::Refused(refusal)
+    );
+    assert_eq!(s.requested_root_topology(), Some(&buses(4)), "kept");
+    assert_eq!(s.root_topology(), None, "the previous stands");
+    // Asking for what is in force is Applied again.
+    s.declare_root_topology(None).unwrap();
+    assert_eq!(s.root_topology_status(), RootTopologyStatus::Applied);
+
+    // A root wider than the engine renders is widened as far as it goes, and the
+    // excess is a refusal.
+    let max = tutti_graph::MAX_ROOT_CHANNELS;
+    let err = s.graph().widen_outputs(max + 8).unwrap_err();
+    assert_eq!(s.graph_ref().outputs(), max);
+    assert!(matches!(err, FoldError::Unplaced { channel, .. } if channel == max));
+    assert_eq!(s.root_topology_status(), RootTopologyStatus::Refused(err));
+    s.graph().widen_outputs(max).unwrap();
+    assert_eq!(s.root_topology_status(), RootTopologyStatus::Applied);
+}
+
+/// A builder's declaration is in force after updates, and declaring the same
+/// topology again changes nothing (no edit, so no commit).
+///
+/// No mutation: the equal-request early return in `declare_root_topology` is
+/// not observable here (the graph and engine ignore an equal declaration
+/// themselves); the host-level first-frame case it protects is pinned in
+/// `bevy-tutti`'s `a_builders_declaration_survives_the_first_frame`.
+#[test]
+fn declaring_the_same_topology_again_changes_nothing() {
+    let mut s = offline(Session::builder().root_topology(buses(4)), 6).unwrap();
+    s.update();
+    let sent = s.graph_ref().commits_sent();
+    s.declare_root_topology(Some(buses(4))).unwrap();
+    s.update();
+    s.update();
+    assert_eq!(s.root_topology(), Some(&buses(4)));
+    assert_eq!(s.graph_ref().commits_sent(), sent);
+    assert_eq!(s.root_topology_status(), RootTopologyStatus::Applied);
 }
 
 /// An export of the master places the file from the declaration, as the device

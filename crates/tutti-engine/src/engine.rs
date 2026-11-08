@@ -1709,6 +1709,60 @@ mod tests {
         );
     }
 
+    /// A declaration that changes the root's width is not applied to the plan
+    /// still rendering at the old width: that plan keeps the previous
+    /// declaration's fold until the commit lands. Here the plan stays four wide
+    /// (it is never re-committed) while the root is re-declared six wide; the
+    /// four channels are still placed by the first declaration (by index).
+    ///
+    /// Mutation (run): `declare_root` not keeping `previous` → the four-wide
+    /// plan reads as quad and the rears land at 4 and 5.
+    #[test]
+    fn a_declaration_that_changes_the_width_leaves_the_old_plan_its_fold() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        rewire(&mut ed, 4);
+        let six = ChannelLayout::from(6u16);
+        let _ = first_frame(&engine, 6);
+        let control = engine.output_control();
+        control
+            .declare_root(Some(ChannelTopology::discrete(ChannelLayout::QUAD)), six)
+            .unwrap();
+        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 43.0, 44.0, 0.0, 0.0]);
+        let five_one = ChannelTopology::smpte(six).unwrap();
+        control.declare_root(Some(five_one), six).unwrap();
+        // The plan is still four wide: no block meets the six-wide fold yet.
+        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 43.0, 44.0, 0.0, 0.0]);
+        // Same width: a re-declaration applies at once, `previous` dropped.
+        control.declare_root(None, six).unwrap();
+        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 0.0, 0.0, 43.0, 44.0]);
+    }
+
+    /// A fold set a block holds when it is replaced stays pinned until the
+    /// block ends, and `OutputControl::reclaim` frees it afterwards.
+    ///
+    /// Mutation (run): `reclaim` returning 0 → the pinned count is not 1.
+    #[test]
+    fn a_replaced_fold_set_is_reclaimed_after_the_block() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        let control = engine.output_control();
+        let loan_holder = &engine.folds;
+        let mut reader = loan_holder.borrow_mut();
+        let loan = reader.lend();
+        control
+            .declare_root(
+                Some(ChannelTopology::discrete(ChannelLayout::QUAD)),
+                ChannelLayout::from(6u16),
+            )
+            .unwrap();
+        assert_eq!(control.reclaim(), 1, "the set the block holds is pinned");
+        drop(loan);
+        assert_eq!(control.reclaim(), 0);
+    }
+
     /// A declaration the device cannot take is refused and publishes nothing:
     /// four buses into a stereo device would drop two, and a channel no
     /// speaker names has no place anywhere.

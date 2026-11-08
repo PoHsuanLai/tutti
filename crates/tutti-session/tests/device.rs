@@ -827,3 +827,37 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
         "{refused:?}"
     );
 }
+
+/// A declaration the device refused is asked again of the next device: it is a
+/// `Refused` status on stereo and `Applied` after a restart onto six channels.
+///
+/// Mutation (run): the retry in `rerate` removed → the status stays `Refused`
+/// and the root keeps its two channels.
+#[test]
+fn a_refused_declaration_is_retried_on_a_restart() {
+    use tutti_session::RootTopologyStatus;
+    let buses = tutti_types::ChannelTopology::discrete(ChannelLayout::QUAD);
+    let (driver, _stream) = ManualStreamDriver::new();
+    let (mut session, mut device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .unwrap();
+    assert!(session.declare_root_topology(Some(buses.clone())).is_err());
+    assert!(matches!(
+        session.root_topology_status(),
+        RootTopologyStatus::Refused(_)
+    ));
+    assert_eq!(session.graph_ref().outputs(), 2);
+
+    let wide = OutputSpec::new(
+        SampleRate(48_000.0),
+        ChannelLayout::from(6u16),
+        tutti_cpal::cpal::SampleFormat::F32,
+    );
+    let (driver, _new) = ManualStreamDriver::new();
+    session
+        .restart_on(&mut device, wide, driver, None, |_| {})
+        .unwrap();
+    assert_eq!(session.root_topology_status(), RootTopologyStatus::Applied);
+    assert_eq!(session.root_topology(), Some(&buses));
+    assert_eq!(session.graph_ref().outputs(), 4);
+}

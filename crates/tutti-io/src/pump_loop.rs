@@ -340,7 +340,7 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// let rec = Recorder::start_with(src, wav, driver)?;
 ///
 /// let (mut left, mut right) = ([0.0f32; 2], [0.0f32; 2]);
-/// let transport = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+/// let transport = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
 /// executor.process(2, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(2))));
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Starved));

@@ -65,7 +65,7 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapIn {
     ed.commit().expect("compiles");
     exec.apply_pending();
     ed.collect();
-    let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut left = [0.0f32; BLOCK];
     let mut right = [0.0f32; BLOCK];
     for block in frames.chunks(BLOCK) {

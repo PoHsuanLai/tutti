@@ -112,7 +112,7 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
 /// let lane = AutomationLaneNode::new(envelope);
 /// let mut solo = Solo::new(lane, Prepare::new(SampleRate(48_000.0), Samples(64)));
 /// solo.renderer_mut()
-///     .set_transport(Transport::new(false, Bpm(120.0), Beat(2.0), None));
+///     .set_transport(Transport::new(false, Bpm::of(120.0), Beat(2.0), None));
 /// let out = solo.render(1);
 /// assert!((out[0][0] - 0.5).abs() < 1e-3, "midpoint of a 0..1 ramp, got {}", out[0][0]);
 /// ```
@@ -286,7 +286,7 @@ mod tests {
     }
 
     fn stopped_at(beat: f64) -> Transport {
-        Transport::new(false, Bpm(120.0), Beat(beat), None)
+        Transport::new(false, Bpm::of(120.0), Beat(beat), None)
     }
 
     /// Every [`CurveType`], one control-point pair standing in for
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn test_process_per_sample_varies() {
         // 120 BPM at 48 kHz, rolling from beat 0.
-        let rolling = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+        let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         let out = render(AutomationLaneNode::new(ramp_envelope()), rolling, 32);
 
         assert!((out[0] - 0.0).abs() < 0.001);

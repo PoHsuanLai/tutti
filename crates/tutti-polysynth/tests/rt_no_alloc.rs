@@ -561,7 +561,7 @@ fn a_clip_into_a_synth_is_allocation_free() {
         .collect();
     ed.commit().expect("commits");
     let at = |frame: usize, playing: bool| {
-        Transport::new(playing, Bpm(120.0), Beat(frame as f64 / 24_000.0), None)
+        Transport::new(playing, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None)
     };
     // Installs the plan (and its first-block setup) outside the gate.
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
@@ -590,4 +590,53 @@ fn a_clip_into_a_synth_is_allocation_free() {
             );
         }
     });
+}
+
+/// The note logic's other paths run inside the gate too: a mono and a legato
+/// synth taking a note over, and returning to a held key from a note-off (which
+/// starts a voice, `Gate::Start`, from the event path), with the pedals.
+#[test]
+fn mono_and_legato_event_paths_are_allocation_free() {
+    for mode in [
+        tutti_polysynth::VoiceMode::Mono,
+        tutti_polysynth::VoiceMode::Legato,
+    ] {
+        let mut synth = Hand::new(
+            PolySynth::new(SynthConfig {
+                sample_rate: tutti_types::SampleRate::from(48_000.0),
+                max_voices: 4,
+                voice_mode: mode,
+                oscillator: OscillatorType::Saw,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        for _ in 0..8 {
+            synth.block(64);
+        }
+        assert_no_alloc::assert_no_alloc(|| {
+            for round in 0..200u8 {
+                let cc = |n: u8, v: u32| {
+                    MidiEvent::cc(
+                        MidiGroup::FIRST,
+                        MidiChannel::of(0),
+                        CCNumber::of(n),
+                        v << 25,
+                    )
+                };
+                // 60 held, 64 over it, 64 let go: the return to 60.
+                synth.queue_midi(&[
+                    note_on(0, 60, 100),
+                    note_on(0, 64, 90),
+                    note_on(1, 67, 80),
+                    note_off(0, 64),
+                    cc(64, u32::from(round % 2) * 127),
+                    cc(66, u32::from(round % 3 == 0) * 127),
+                ]);
+                synth.block(64);
+                synth.queue_midi(&[note_off(0, 60), note_off(1, 67), cc(123, 0), cc(124, 0)]);
+                synth.block(64);
+            }
+        });
+    }
 }

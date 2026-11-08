@@ -322,7 +322,7 @@ impl tutti_transport::Timeline for Stopped {
         tutti_types::Beat(0.0)
     }
     fn tempo(&self) -> tutti_types::Bpm {
-        tutti_types::Bpm(120.0)
+        tutti_types::Bpm::of(120.0)
     }
     fn is_rolling(&self) -> bool {
         false

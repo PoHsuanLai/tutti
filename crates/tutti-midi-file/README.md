@@ -48,7 +48,7 @@ let track = vec![
 
 let bytes = smf::to_bytes(
     &[track],
-    &MidiWriteConfig { ticks_per_beat: 480, tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
+    &MidiWriteConfig { ticks_per_beat: 480, tempo_bpm: Some(Bpm::of(174.0)), ..Default::default() },
 )?;
 
 // Recognised by magic bytes rather than by extension.
@@ -80,12 +80,12 @@ lost after the wire).
 # }];
 let bytes = smf::to_bytes(
     &[track],
-    &MidiWriteConfig { tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
+    &MidiWriteConfig { tempo_bpm: Some(Bpm::of(174.0)), ..Default::default() },
 )?;
-// A file with no tempo event reads back as the SMF default, `Bpm(120.0)`.
+// A file with no tempo event reads back as the SMF default, `Bpm::of(120.0)`.
 let parsed = ParsedMidiFile::from_bytes(&bytes)?;
-assert_ne!(parsed.tempo_bpm, Bpm(174.0));
-assert!(!parsed.tempo_bpm.differs_from(Bpm(174.0), 0.001));
+assert_ne!(parsed.tempo_bpm, Bpm::of(174.0));
+assert!(!parsed.tempo_bpm.differs_from(Bpm::of(174.0), 0.001));
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 

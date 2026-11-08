@@ -91,7 +91,7 @@ fn rig_with<N: IntoNode>(clip: N, max: usize) -> (Editor, Executor, N::Controls,
 
 /// Rolling at 120 BPM from beat `frame / 24 000`.
 fn rolling(frame: u64) -> Transport {
-    Transport::new(true, Bpm(120.0), beat_of(frame), None)
+    Transport::new(true, Bpm::of(120.0), beat_of(frame), None)
 }
 
 /// Render `frames` in blocks of `block`, rolling from frame 0.
@@ -178,7 +178,7 @@ fn a_loop_that_wraps_inside_a_block_plays_its_start() {
         start: Beat(0.0),
         end: Beat(1.0),
     });
-    let looping = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), lp);
+    let looping = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), lp);
     exec.process(100, &looping(23_800), &[], &mut []);
     exec.process(512, &looping(23_900), &[], &mut []);
     assert_eq!(
@@ -203,7 +203,7 @@ fn stopping_ends_the_held_notes_once() {
     let clip = MidiClipNode::new([at(10, on(60))]);
     let (_ed, mut exec, _c, seen) = rig(clip, 64);
     exec.process(64, &rolling(0), &[], &mut []);
-    let stopped = Transport::new(false, Bpm(120.0), beat_of(64), None);
+    let stopped = Transport::new(false, Bpm::of(120.0), beat_of(64), None);
     exec.process(64, &stopped, &[], &mut []);
     exec.process(64, &stopped, &[], &mut []);
     assert_eq!(
@@ -267,7 +267,7 @@ fn a_loop_that_wraps_at_a_block_edge_ends_its_held_notes() {
         start: Beat(0.0),
         end: Beat(1.0),
     });
-    let looping = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), lp);
+    let looping = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), lp);
     exec.process(100, &looping(23_800), &[], &mut []);
     exec.process(100, &looping(23_900), &[], &mut []);
     exec.process(100, &looping(0), &[], &mut []);
@@ -365,7 +365,7 @@ fn a_note_lands_on_its_frame_at_ninety_bpm() {
     let (_ed, mut exec, _c, seen) = rig(clip, 64);
     let mut f = 0u64;
     while f < 100_000 {
-        let t = Transport::new(true, Bpm(90.0), Beat(f as f64 / 32_000.0), None);
+        let t = Transport::new(true, Bpm::of(90.0), Beat(f as f64 / 32_000.0), None);
         exec.process(64, &t, &[], &mut []);
         f += 64;
     }
@@ -394,7 +394,7 @@ fn a_loop_shorter_than_a_block_plays_every_pass() {
         start: Beat(0.0),
         end: beat_of(100),
     });
-    let looping = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), lp);
+    let looping = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), lp);
     exec.process(512, &looping(0), &[], &mut []);
     exec.process(512, &looping(12), &[], &mut []);
     let mut want: Vec<(u64, u32)> = (0..11)
@@ -585,7 +585,7 @@ fn a_keys_owner_starts_over_at_a_loop_wrap() {
 
 /// A loop of `[start, end)` beats under `tempo`, rolling from `beat`.
 fn looping_at(tempo: f64, beat: Beat, start: Beat, end: Beat) -> Transport {
-    Transport::new(true, Bpm(tempo), beat, Some(LoopRange { start, end }))
+    Transport::new(true, Bpm::of(tempo), beat, Some(LoopRange { start, end }))
 }
 
 /// **A pass that ends exactly on a block's edge ends what it held at the
@@ -694,7 +694,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     );
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     let region = Region::new(start, end).unwrap();
-    let mut clock = FrameClock::new(Beat(2.999), tutti_types::Bpm(TEMPO), SampleRate(RATE));
+    let mut clock = FrameClock::new(Beat(2.999), tutti_types::Bpm::of(TEMPO), SampleRate(RATE));
     for _ in 0..4 {
         exec.process(
             512,
@@ -708,7 +708,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     // The reference walk.
     let tol = FRAME_TOLERANCE / fpb;
     let mut want = Vec::new();
-    let mut walk = FrameClock::new(Beat(2.999), tutti_types::Bpm(TEMPO), SampleRate(RATE));
+    let mut walk = FrameClock::new(Beat(2.999), tutti_types::Bpm::of(TEMPO), SampleRate(RATE));
     let mut prev: Option<f64> = None;
     for f in 0..4 * 512u64 {
         let b = walk.beat().get();
@@ -756,7 +756,7 @@ fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, u32)>> {
         let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60))]);
         let (_ed, mut exec, _c, seen) = rig(clip, 64);
         let mut clock =
-            tutti_types::FrameClock::new(start, tutti_types::Bpm(120.0), SampleRate(RATE));
+            tutti_types::FrameClock::new(start, tutti_types::Bpm::of(120.0), SampleRate(RATE));
         let region = tutti_types::LoopRange::new(start, end).unwrap();
         for _ in 0..4 {
             exec.process(

@@ -57,14 +57,12 @@ fn test_voice_stealing_oldest() {
         MidiChannel::of(0),
         0.8,
     );
-    alloc.advance_time(100);
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), 64),
         note_number(64),
         MidiChannel::of(0),
         0.7,
     );
-    alloc.advance_time(100);
 
     // Third note should steal the oldest (note 60)
     let result = alloc.allocate(
@@ -120,12 +118,12 @@ fn test_sustain_pedal() {
     );
 
     // Should be sustained, not releasing
-    assert!(alloc.slots()[0].is_sustained());
+    assert!(alloc.holds_of(0).is_some_and(|h| h.sustained()));
     assert!(alloc.slots()[0].is_active());
 
     // Pedal off should release
     alloc.sustain_pedal(MidiChannel::of(0), false);
-    assert!(!alloc.slots()[0].is_sustained());
+    assert!(!alloc.holds_of(0).is_some_and(|h| h.sustained()));
     assert!(alloc.slots()[0].is_releasing());
 }
 
@@ -387,14 +385,12 @@ fn test_voice_stealing_newest() {
         MidiChannel::of(0),
         0.8,
     ); // slot 0 - older
-    alloc.advance_time(100);
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), 64),
         note_number(64),
         MidiChannel::of(0),
         0.7,
     ); // slot 1 - newer
-    alloc.advance_time(100);
 
     // Third note should steal the newest (note 64 in slot 1)
     let result = alloc.allocate(
@@ -431,7 +427,7 @@ fn test_sostenuto_pedal() {
         MidiChannel::of(0),
     );
     assert!(alloc.slots()[0].is_active());
-    assert!(alloc.slots()[0].is_sostenuto_held());
+    assert!(alloc.holds_of(0).is_some_and(|h| h.sostenuto()));
 
     // New note played AFTER sostenuto down should NOT be held
     alloc.allocate(
@@ -441,7 +437,7 @@ fn test_sostenuto_pedal() {
         0.7,
     );
     assert!(
-        !alloc.slots()[1].is_sostenuto_held(),
+        !alloc.holds_of(1).is_some_and(|h| h.sostenuto()),
         "New notes should not be sostenuto-held"
     );
     alloc.release(
@@ -458,7 +454,7 @@ fn test_sostenuto_pedal() {
 
     // Sostenuto off should release the held note (key was released)
     alloc.sostenuto_pedal(MidiChannel::of(0), false);
-    assert!(!alloc.slots()[0].is_sostenuto_held());
+    assert!(!alloc.holds_of(0).is_some_and(|h| h.sostenuto()));
     assert!(alloc.slots()[0].is_releasing());
 }
 
@@ -479,8 +475,8 @@ fn test_sostenuto_key_still_held() {
     // DON'T release key — sostenuto off should NOT release
     alloc.sostenuto_pedal(MidiChannel::of(0), false);
     assert!(alloc.slots()[0].is_active());
-    assert!(!alloc.slots()[0].is_sostenuto_held());
-    assert!(alloc.slots()[0].is_key_held());
+    assert!(!alloc.holds_of(0).is_some_and(|h| h.sostenuto()));
+    assert!(alloc.holds_of(0).is_some_and(|h| h.key()));
 }
 
 #[test]
@@ -636,14 +632,12 @@ fn test_prefer_stealing_releasing_voices() {
         MidiChannel::of(0),
         0.8,
     );
-    alloc.advance_time(100);
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), 64),
         note_number(64),
         MidiChannel::of(0),
         0.7,
     );
-    alloc.advance_time(100);
     alloc.release(
         NoteId::from_channel_note(MidiChannel::of(0), 60),
         MidiChannel::of(0),
@@ -661,5 +655,322 @@ fn test_prefer_stealing_releasing_voices() {
             assert_eq!(slot_index, 0, "Should prefer stealing releasing voice");
         }
         _ => panic!("Expected stealing"),
+    }
+}
+
+// ---- random streams -------------------------------------------------------
+
+struct Rng(u64);
+impl Rng {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+}
+
+/// What the allocator holds for each live slot: `(voice, key, gated)`.
+fn table(alloc: &VoiceAllocator) -> Vec<(VoiceId, u8, bool)> {
+    (0..alloc.slots().len())
+        .filter(|&i| !alloc.slots()[i].is_idle())
+        .map(|i| {
+            let s = &alloc.slots()[i];
+            let gated = alloc
+                .core_phase(i)
+                .is_some_and(|p| p != tutti_voicing::Phase::Releasing);
+            (s.voice_id(), s.note().get(), gated)
+        })
+        .collect()
+}
+
+/// Random streams of notes, pedals, panics, resets, bends and envelope levels,
+/// in every mode and strategy, checking after every message that:
+/// - (a) no more voices sound than the polyphony;
+/// - (c) every live slot is a voice the core knows, and the reverse: a slot
+///   the core released is not gated;
+/// - (d) the id map holds no stale entry: every mapped id names a live slot of
+///   that id, and every unreleased live slot is mapped;
+/// - (e) on a full poly allocator the voice taken is the one the strategy
+///   names under the slots' real envelope levels (a releasing voice first,
+///   the quietest of those; otherwise by strategy, the oldest among equals);
+/// - (f) in mono and legato at most one voice a channel is gated, and it plays
+///   the most recent held key;
+/// - (g) `NoSteal` at a full allocator drops the note and changes nothing;
+/// - (b) after every key and pedal is let go, nothing is gated.
+///
+/// Mutations (run), each seen to fail: `<` to `<=` in the core's `start_poly`
+/// (a); `Steal::Never` read as `By(Oldest)` (g); `total_cmp(..).is_lt()` to
+/// `is_gt()` for the quietest (e); the core's mono return skipped (f); the
+/// pedal-up not releasing (b); `unmap` removed from the `Release` arm (d).
+#[test]
+fn random_streams_keep_their_invariants() {
+    use AllocationStrategy as S;
+    let strategies = [
+        S::Oldest,
+        S::Newest,
+        S::Quietest,
+        S::HighestNote,
+        S::LowestNote,
+        S::NoSteal,
+    ];
+    let modes = [
+        VoiceMode::Poly,
+        VoiceMode::Poly,
+        VoiceMode::Mono,
+        VoiceMode::Legato,
+    ];
+    for stream in 0..600u64 {
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D ^ (stream + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let strategy = strategies[(stream % 6) as usize];
+        let mode = modes[((stream / 6) % 4) as usize];
+        let max = 4;
+        let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {
+            max_voices: max,
+            strategy,
+            mode,
+            ..Default::default()
+        });
+        if stream % 5 == 0 {
+            alloc.set_zones(Zones::new(3, 2).unwrap());
+        }
+        // The test's own model of the held keys of each channel.
+        let mut held: [Vec<u8>; 2] = [vec![], vec![]];
+        let mut pedal = [false; 2];
+        let mut sostenuto = [false; 2];
+        for _ in 0..80 {
+            let c = rng.below(2) as u8;
+            let ch = MidiChannel::of(c);
+            let k = 60 + rng.below(8) as u8;
+            // Real envelope levels, set before the message as the render would.
+            for i in 0..max {
+                if !alloc.slots()[i].is_idle() {
+                    let level = rng.below(100) as f32 / 100.0;
+                    alloc.update_envelope_level(i, level);
+                }
+            }
+            let op = rng.below(14);
+            match op {
+                0..=4 => {
+                    let id = NoteId::from_channel_note(ch, k);
+                    let full = alloc.active_count() == max;
+                    let before = table(&alloc);
+                    let expect = (mode == VoiceMode::Poly && full)
+                        .then(|| expected_victim(&alloc, strategy, id, k, c));
+                    let r = alloc.allocate(id, note_number(k), ch, 0.5);
+                    held[usize::from(c)].retain(|&x| x != k);
+                    if !matches!(r, AllocationResult::Unavailable) || mode != VoiceMode::Poly {
+                        held[usize::from(c)].push(k);
+                    }
+                    // (g) a same-key Replace frees a slot first, so only a note
+                    // on another key at a full table must be dropped.
+                    if strategy == S::NoSteal
+                        && mode == VoiceMode::Poly
+                        && full
+                        && !before.iter().any(|b| b.1 == k)
+                    {
+                        assert!(
+                            matches!(r, AllocationResult::Unavailable),
+                            "stream {stream}: {r:?}"
+                        );
+                        assert_eq!(
+                            table(&alloc),
+                            before,
+                            "stream {stream}: NoSteal disturbed a voice"
+                        );
+                    }
+                    // (e)
+                    if let (Some(want), Some(got), true) = (
+                        expect.flatten(),
+                        r.slot_index(),
+                        matches!(r, AllocationResult::Stolen { .. }),
+                    ) {
+                        assert_eq!(
+                            got, want,
+                            "stream {stream}: {strategy:?} took slot {got}, wanted {want}"
+                        );
+                    }
+                }
+                5..=8 => {
+                    held[usize::from(c)].retain(|&x| x != k);
+                    alloc.release(NoteId::from_channel_note(ch, k), ch);
+                }
+                9 => {
+                    pedal[usize::from(c)] = !pedal[usize::from(c)];
+                    alloc.sustain_pedal(ch, pedal[usize::from(c)]);
+                }
+                10 => {
+                    sostenuto[usize::from(c)] = !sostenuto[usize::from(c)];
+                    alloc.sostenuto_pedal(ch, sostenuto[usize::from(c)]);
+                }
+                11 => {
+                    held[usize::from(c)].clear();
+                    if rng.below(2) == 0 {
+                        alloc.all_notes_off(ch);
+                    } else {
+                        alloc.all_sound_off(ch);
+                    }
+                }
+                12 => {
+                    held[usize::from(c)].clear();
+                    pedal[usize::from(c)] = false;
+                    sostenuto[usize::from(c)] = false;
+                    alloc.reset_controllers(ch);
+                }
+                _ => {
+                    // The render finishes a releasing voice.
+                    if let Some((v, _, false)) = table(&alloc).into_iter().find(|t| !t.2) {
+                        alloc.voice_finished(v);
+                    }
+                    alloc.message(ch, &Voice2::PitchBend(rng.below(1 << 32) as u32));
+                }
+            }
+            // (a)
+            assert!(alloc.active_count() <= max, "stream {stream}");
+            // (c) and (d)
+            for i in 0..max {
+                let s = &alloc.slots()[i];
+                if s.is_idle() {
+                    assert!(alloc.core_phase(i).is_none());
+                    continue;
+                }
+                assert!(
+                    alloc.core_knows(s.voice_id()),
+                    "stream {stream}: slot {i} is a voice the core lost"
+                );
+                let mapped = alloc.id_to_slot.get(s.id()).copied() == Some(i);
+                assert_eq!(
+                    mapped,
+                    alloc.core_phase(i) != Some(tutti_voicing::Phase::Releasing),
+                    "stream {stream}: slot {i} id map out of step with the core"
+                );
+            }
+            // (f)
+            if mode != VoiceMode::Poly {
+                for chan in 0..2u8 {
+                    let gated: Vec<_> = (0..max)
+                        .filter(|&i| {
+                            !alloc.slots()[i].is_idle()
+                                && alloc.slots()[i].channel().get() == chan
+                                && alloc.core_phase(i) != Some(tutti_voicing::Phase::Releasing)
+                        })
+                        .collect();
+                    assert!(
+                        gated.len() <= 1,
+                        "stream {stream}: {gated:?} gated on channel {chan}"
+                    );
+                    if let (Some(&top), Some(&i)) = (held[usize::from(chan)].last(), gated.first())
+                    {
+                        assert_eq!(
+                            alloc.slots()[i].note().get(),
+                            top,
+                            "stream {stream}: not the latest key"
+                        );
+                    }
+                }
+            }
+        }
+        // (b)
+        for c in 0..2u8 {
+            let ch = MidiChannel::of(c);
+            alloc.sustain_pedal(ch, false);
+            alloc.sostenuto_pedal(ch, false);
+            for _ in 0..2 {
+                for k in 60..68u8 {
+                    alloc.release(NoteId::from_channel_note(ch, k), ch);
+                }
+            }
+        }
+        assert!(
+            table(&alloc).iter().all(|t| !t.2),
+            "stream {stream}: gated after every key and pedal went: {:?}",
+            table(&alloc)
+        );
+    }
+}
+
+/// The slot the strategy names on a full poly allocator (the new note's own
+/// key replaces a same-key voice first, so the table is read as it stands
+/// after that release).
+fn expected_victim(
+    alloc: &VoiceAllocator,
+    strategy: AllocationStrategy,
+    _id: NoteId,
+    k: u8,
+    c: u8,
+) -> Option<usize> {
+    use AllocationStrategy as S;
+    let live: Vec<usize> = (0..alloc.slots().len())
+        .filter(|&i| !alloc.slots()[i].is_idle())
+        .collect();
+    let released: Vec<usize> = live
+        .iter()
+        .copied()
+        .filter(|&i| {
+            // The same key on the same channel is released first (Replace).
+            alloc.core_phase(i) == Some(tutti_voicing::Phase::Releasing)
+                || (alloc.slots()[i].note().get() == k && alloc.slots()[i].channel().get() == c)
+        })
+        .collect();
+    let by = |set: &[usize], f: &dyn Fn(usize) -> f64| -> Option<usize> {
+        // The oldest among equals: the lowest voice id first.
+        let mut sorted = set.to_vec();
+        sorted.sort_by_key(|&i| alloc.slots()[i].voice_id());
+        sorted
+            .into_iter()
+            .fold(None, |best: Option<usize>, i| match best {
+                Some(b) if f(i) >= f(b) => Some(b),
+                _ => Some(i),
+            })
+    };
+    let level = |i: usize| f64::from(alloc.slots()[i].envelope_level());
+    if !released.is_empty() {
+        return by(&released, &level);
+    }
+    let id = |i: usize| alloc.slots()[i].voice_id().0 as f64;
+    let key = |i: usize| f64::from(alloc.slots()[i].note().get());
+    match strategy {
+        S::Oldest => by(&live, &id),
+        S::Newest => by(&live, &|i| -id(i)),
+        S::Quietest => by(&live, &level),
+        S::HighestNote => by(&live, &|i| -key(i)),
+        S::LowestNote => by(&live, &key),
+        S::NoSteal => None,
+    }
+}
+
+/// A voice that ended on its own (its envelope or sample ran out) is not
+/// returned to: the key left held starts a fresh voice (a `Gate::Start`).
+///
+/// Mutation (run): the core not reading the voices on a note-off leaves the
+/// slot idle, the gate retargeting a voice that is gone.
+#[test]
+fn a_return_after_the_voice_ended_starts_a_fresh_one() {
+    for mode in [VoiceMode::Mono, VoiceMode::Legato] {
+        let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {
+            max_voices: 4,
+            mode,
+            ..Default::default()
+        });
+        let ch = MidiChannel::of(0);
+        for k in [60, 64] {
+            alloc.allocate(NoteId::from_channel_note(ch, k), note_number(k), ch, 0.5);
+        }
+        let _ = alloc.take_gates();
+        let live = alloc
+            .slots()
+            .iter()
+            .find(|s| !s.is_idle())
+            .map(|s| s.voice_id())
+            .unwrap();
+        alloc.voice_finished(live);
+        alloc.release(NoteId::from_channel_note(ch, 64), ch);
+        let gates = alloc.take_gates();
+        assert!(
+            gates.iter().any(
+                |g| matches!(g, Gate::Start { key, legato: false, .. } if *key == note_number(60))
+            ),
+            "{mode:?}: {gates:?}"
+        );
     }
 }

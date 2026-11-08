@@ -134,7 +134,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
                 .expect("room");
             m.schedule(
                 At::Frame(Frame(base + 1500)),
-                TransportCommand::Tempo(Bpm(90.0 + round as f64)),
+                TransportCommand::Tempo(Bpm::of(90.0 + round as f64)),
             )
             .expect("room");
             m.schedule(
@@ -371,7 +371,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
             let base = 1024 * (1 + 8 * round);
             m.schedule(
                 At::Frame(Frame(base + 300)),
-                TransportCommand::Tempo(Bpm(110.0 + round as f64)),
+                TransportCommand::Tempo(Bpm::of(110.0 + round as f64)),
             )
             .expect("room");
             m.schedule(

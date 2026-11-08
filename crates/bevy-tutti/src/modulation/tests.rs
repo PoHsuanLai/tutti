@@ -61,7 +61,7 @@ fn render(side: &mut AudioSide, frames: usize) -> Vec<f32> {
     let mut out = vec![Vec::new()];
     side.set_transport(tutti_graph::Transport::new(
         false,
-        Bpm(120.0),
+        Bpm::of(120.0),
         Beat(0.0),
         None,
     ));

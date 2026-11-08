@@ -61,7 +61,7 @@ fn test_transport_advances_with_graph() {
     let sample_rate = 44100.0;
     let (transport, state) = build_callback_state(sample_rate);
 
-    transport.settings.set_tempo(120.0);
+    transport.settings.set_tempo(tutti_types::Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
 
     let frames = 256;
@@ -84,7 +84,7 @@ fn test_transport_loop_wrapping() {
     let sample_rate = 44100.0;
     let (transport, state) = build_callback_state(sample_rate);
 
-    transport.settings.set_tempo(120.0);
+    transport.settings.set_tempo(tutti_types::Bpm::of(120.0));
     transport
         .motion
         .schedule(
@@ -113,5 +113,72 @@ fn test_transport_loop_wrapping() {
     assert!(
         (beat - expected).abs() < BeatDuration(1e-6),
         "expected {expected:?} after one wrap, got {beat:?}"
+    );
+}
+
+fn manual_spec() -> OutputSpec {
+    OutputSpec::new(
+        SampleRate(48_000.0),
+        tutti_types::ChannelLayout::STEREO,
+        cpal::SampleFormat::F32,
+    )
+}
+
+fn driver_over(engine: AudioEngine) -> crate::TuttiDriver {
+    let transport = Transport::new(48_000.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let graph = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
+    crate::TuttiDriver::new(engine, Arc::new(AudioCallbackState::new(graph)))
+}
+
+/// **Naming the opened device asks the host nothing, and tells a supplied
+/// driver from a device that would not be named.** The engine here has no
+/// host at all, so any look at it would be an error: `Ok(Some)` is the name
+/// the open recorded, `Ok(None)` a driver the caller supplied (no device, by
+/// design), `Err` a device the host could not name. A start on a supplied
+/// driver ends in `Ok(None)`.
+///
+/// Mutations (run): `opened_name` mapping `Unnamed` to `Ok(None)` fails the
+/// `Err` assertion; mapping `Supplied` to `Err` fails the first assertion;
+/// `set_opened(Supplied)` left out of `TuttiDriver::restart_on` fails the
+/// last.
+#[test]
+fn the_opened_name_tells_a_supplied_driver_from_an_unnamed_device() {
+    let mut engine = AudioEngine::from_spec(manual_spec());
+    assert_eq!(engine.opened_name().unwrap(), None, "a supplied driver");
+    engine.opened = Opened::Named("Card".into());
+    assert_eq!(engine.opened_name().unwrap().as_deref(), Some("Card"));
+    engine.opened = Opened::Unnamed("no name".into());
+    assert!(engine.opened_name().is_err(), "a device that would not say");
+    engine.opened = Opened::Named("Card".into());
+
+    let mut driver = driver_over(engine);
+    let (manual, _stream) = crate::ManualStreamDriver::new();
+    driver
+        .restart_on(manual_spec(), manual, |_, _| Ok::<(), crate::Error>(()))
+        .unwrap();
+    assert_eq!(driver.engine().opened_name().unwrap(), None);
+}
+
+/// **A restart that fails leaves the name of the device still open.** The
+/// hook refuses after the new spec is in, before any stream starts; the name
+/// is recorded only once the stream runs.
+///
+/// Mutation (run): `set_opened` moved ahead of `rerate_or_restore` in
+/// `TuttiDriver::restart_on` makes the name `None` and fails this.
+#[test]
+fn a_failed_restart_keeps_the_opened_name() {
+    let mut engine = AudioEngine::from_spec(manual_spec());
+    engine.opened = Opened::Named("Card".into());
+    let mut driver = driver_over(engine);
+    let (manual, _stream) = crate::ManualStreamDriver::new();
+    driver
+        .restart_on(manual_spec(), manual, |_, _| {
+            Err(crate::Error::InvalidConfig("refused".into()))
+        })
+        .expect_err("the hook refuses");
+    assert_eq!(
+        driver.engine().opened_name().unwrap().as_deref(),
+        Some("Card")
     );
 }

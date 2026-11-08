@@ -59,7 +59,7 @@ fn sample_clip() -> Vec<u8> {
     write_clip_file_with_header(
         TPQ,
         ClipHeader {
-            tempo_bpm: Bpm(128.0),
+            tempo_bpm: Bpm::of(128.0),
             time_signature: (5, 4),
         },
         &[
@@ -312,14 +312,17 @@ fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
     let original = write_clip_file_with_header(
         TPQ,
         ClipHeader {
-            tempo_bpm: Bpm(100.0),
+            tempo_bpm: Bpm::of(100.0),
             time_signature: (4, 4),
         },
         &[
             ClipEvent::new(0, note_on(60, 0x4000)),
             ClipEvent::new(u32::from(TPQ) * 4, note_off(60)),
             // Simultaneous with the note-off: zero-delta, but NOT leading.
-            ClipEvent::new(0, MidiEvent::flex_set_tempo(MidiGroup::FIRST, 140.0)),
+            ClipEvent::new(
+                0,
+                MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(140.0)),
+            ),
         ],
     );
 
@@ -424,7 +427,7 @@ fn the_declared_tempo_and_meter_survive_the_round_trip() {
         let bytes = write_clip_file_with_header(
             TPQ,
             ClipHeader {
-                tempo_bpm: Bpm(bpm),
+                tempo_bpm: Bpm::of(bpm),
                 time_signature: sig,
             },
             &[ClipEvent::new(0, note_on(60, 0x4000))],

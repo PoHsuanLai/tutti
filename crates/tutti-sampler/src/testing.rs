@@ -79,7 +79,7 @@ impl MockTransport {
 
     /// Its tempo.
     pub fn tempo(&self) -> Bpm {
-        Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
+        Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed))).unwrap_or_default()
     }
 
     /// Moves by `samples` at `sample_rate`, the way a block-driven transport does
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn advance_moves_forward_and_rewinds() {
-        let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         // 120 BPM = 2 beats/s, so one second of samples is two beats.
         t.advance(44_100, 44_100.0);
         assert!((t.beat().get() - 2.0).abs() < 1e-9);
@@ -171,17 +171,17 @@ mod tests {
 
     #[test]
     fn set_beat_jumps_without_regard_to_tempo() {
-        let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         t.set_beat(Beat::new(64.0));
         assert_eq!(t.beat(), Beat::new(64.0));
     }
 
     #[test]
     fn stopped_is_not_rolling_but_still_reports_its_position() {
-        let t = MockTransport::stopped(Beat::new(8.0), Bpm::new(90.0));
+        let t = MockTransport::stopped(Beat::new(8.0), Bpm::of(90.0));
         assert!(!t.is_rolling());
         assert_eq!(t.beat(), Beat::new(8.0));
-        assert_eq!(t.tempo(), Bpm::new(90.0));
+        assert_eq!(t.tempo(), Bpm::of(90.0));
         let env = t.env(4, 48_000.0);
         assert!(!env.transport.playing);
         assert_eq!(env.transport.beat(), Beat::new(8.0));

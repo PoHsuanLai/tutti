@@ -49,12 +49,15 @@ fn broadcast(app: &mut App, request: BroadcastFlexMetadata) -> Vec<MidiEvent> {
 #[test]
 fn a_tempo_broadcast_carries_the_bpm_it_was_given() {
     let mut app = app();
-    let packets = broadcast(&mut app, BroadcastFlexMetadata::Tempo(140.0));
+    let packets = broadcast(
+        &mut app,
+        BroadcastFlexMetadata::Tempo(tutti_types::Bpm::of(140.0)),
+    );
 
     assert_eq!(packets.len(), 1, "one tempo message, one packet");
     let bpm = flex_tempo_bpm(&packets[0]).expect("the packet decodes as Set Tempo");
     assert!(
-        (bpm - 140.0).abs() < 0.05,
+        (bpm.get() - 140.0).abs() < 0.05,
         "140 BPM went out as {bpm} — the wire field is a reciprocal, so an \
          encoding slip inverts rather than offsets"
     );
@@ -65,11 +68,17 @@ fn a_tempo_broadcast_carries_the_bpm_it_was_given() {
 #[test]
 fn distinct_tempos_stay_distinct_on_the_wire() {
     let mut app = app();
-    let slow = broadcast(&mut app, BroadcastFlexMetadata::Tempo(60.0));
-    let fast = broadcast(&mut app, BroadcastFlexMetadata::Tempo(174.0));
+    let slow = broadcast(
+        &mut app,
+        BroadcastFlexMetadata::Tempo(tutti_types::Bpm::of(60.0)),
+    );
+    let fast = broadcast(
+        &mut app,
+        BroadcastFlexMetadata::Tempo(tutti_types::Bpm::of(174.0)),
+    );
 
-    assert!((flex_tempo_bpm(&slow[0]).unwrap() - 60.0).abs() < 0.05);
-    assert!((flex_tempo_bpm(&fast[0]).unwrap() - 174.0).abs() < 0.05);
+    assert!((flex_tempo_bpm(&slow[0]).unwrap().get() - 60.0).abs() < 0.05);
+    assert!((flex_tempo_bpm(&fast[0]).unwrap().get() - 174.0).abs() < 0.05);
     assert_ne!(
         slow[0].data_words(),
         fast[0].data_words(),
@@ -241,7 +250,7 @@ fn a_broadcast_with_no_mailbox_is_dropped_not_queued() {
     app.add_plugins(MidiMetadataPlugin);
 
     app.world_mut()
-        .write_message(BroadcastFlexMetadata::Tempo(120.0));
+        .write_message(BroadcastFlexMetadata::Tempo(tutti_types::Bpm::of(120.0)));
     app.update();
 
     // Reaching here is the claim: no panic on the missing resource. Now give it

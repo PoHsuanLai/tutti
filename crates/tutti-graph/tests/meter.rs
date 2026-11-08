@@ -104,7 +104,7 @@ fn block(r: &mut Rig, n: usize) -> Vec<Vec<f32>> {
     let width = r.ed.spec().topology.outputs.len();
     let mut chans = vec![vec![0.0f32; n]; width];
     let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-    let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let ins: [&[f32]; 0] = [];
     // Only the render is inside the gate: this helper's own buffers allocate.
     if r.gated {
@@ -504,7 +504,7 @@ fn output_bits(workers: usize, master: bool, track: bool) -> Vec<u32> {
         // Stopped for blocks 2, 3 and 9; a seek at block 5.
         let playing = !matches!(i, 2 | 3 | 9);
         let beat = if i >= 5 { 64.0 } else { 0.0 };
-        let t = Transport::new(playing, Bpm(120.0), Beat(beat), None);
+        let t = Transport::new(playing, Bpm::of(120.0), Beat(beat), None);
         let ins = [&input[..]];
         if r.gated {
             assert_no_alloc::assert_no_alloc(|| r.exec.process(n, &t, &ins, &mut outs));

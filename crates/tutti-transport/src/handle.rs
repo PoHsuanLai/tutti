@@ -18,7 +18,7 @@ use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 /// # use tutti_transport::{LoopEdit, MotionEvent, Transport};
 /// # let transport = Transport::new(48_000.0);
 /// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
-/// transport.settings.set_tempo(Bpm(140.0));      // a value; cannot fail
+/// transport.settings.set_tempo(Bpm::of(140.0));      // a value; cannot fail
 /// // Loop beats 0 to 4 from the next block; the engine owns the region.
 /// let range = tutti_types::LoopRange::new(0.0, 4.0).expect("ordered");
 /// transport.motion.schedule(At::NextBlock, LoopEdit::over(range))?;
@@ -124,10 +124,10 @@ impl Transport {
     /// from a second `/ 60.0`: the grouping of that division is load-bearing,
     /// and a second spelling of it would round differently.
     ///
-    /// A non-positive tempo gives [`Samples::ZERO`] rather than an infinity.
-    /// `set_tempo` does not clamp, so `Bpm(0.0)` is reachable from the control
-    /// thread, and an infinite frame count is an unbounded allocation waiting
-    /// for its first caller.
+    /// A tempo so small that no beat spans a whole frame step (its per-sample
+    /// beat increment underflows to zero) gives [`Samples::ZERO`] rather than
+    /// an infinity, which is an unbounded allocation waiting for its first
+    /// caller.
     pub fn samples_per_beat(&self) -> Samples {
         let bps = tutti_types::beats_per_sample(self.settings.tempo(), self.sample_rate());
         if bps <= BeatDuration(0.0) {
@@ -167,7 +167,7 @@ mod tests {
         let a = Transport::new(48000.0);
         let b = a.clone();
 
-        a.settings.set_tempo(140.0);
+        a.settings.set_tempo(Bpm::of(140.0));
         assert_eq!(b.settings.tempo().get(), 140.0);
 
         let _ = a.motion.try_send(MotionEvent::Play);
@@ -195,7 +195,7 @@ mod tests {
     fn read_view_spans_both_halves() {
         let t = Transport::new(48000.0);
         t.settings.set_beat(8.0);
-        t.settings.set_tempo(90.0);
+        t.settings.set_tempo(Bpm::of(90.0));
         let _ = t.motion.try_send(MotionEvent::Play);
         Audio::of(&t.motion).drain();
 
@@ -211,10 +211,10 @@ mod tests {
         let t = Transport::new(48000.0);
         let inputs = t.links();
 
-        t.settings.set_tempo(160.0);
+        t.settings.set_tempo(Bpm::of(160.0));
         assert_eq!(
             inputs.tempo.load(std::sync::atomic::Ordering::Acquire),
-            160.0,
+            Bpm::of(160.0),
             "the clock must see later tempo changes"
         );
 
@@ -228,14 +228,39 @@ mod tests {
         let t = Transport::new(44100.0);
         assert_eq!(t.samples_per_beat(), Samples(22050), "120 BPM");
 
-        t.settings.set_tempo(60.0);
+        t.settings.set_tempo(Bpm::of(60.0));
         assert_eq!(t.samples_per_beat(), Samples(44100), "60 BPM");
 
-        // `set_tempo` does not clamp, so this is reachable from the control
-        // thread. An `inf` frame count here is an unbounded allocation.
-        t.settings.set_tempo(0.0);
-        assert_eq!(t.samples_per_beat(), Samples::ZERO, "zero tempo");
-        t.settings.set_tempo(-120.0);
-        assert_eq!(t.samples_per_beat(), Samples::ZERO, "negative tempo");
+        // A zero or negative tempo is not a `Bpm`, so `set_tempo` cannot be
+        // handed one (see `a_refused_tempo_never_reaches_the_clock`). The
+        // smallest positive tempo is: its per-sample beat increment underflows
+        // to zero, and an `inf` frame count here is an unbounded allocation.
+        t.settings.set_tempo(Bpm::of(f64::from_bits(1)));
+        assert_eq!(t.samples_per_beat(), Samples::ZERO, "smallest tempo");
+    }
+
+    /// **A tempo a caller got wrong stops at the type**: a zero, negative or
+    /// non-finite number is refused before `set_tempo`, so the tempo the clock
+    /// reads, and the frames a beat spans, stay where they were.
+    ///
+    /// Mutation (run): `Bpm::new` tests `raw >= 0.0` instead of `raw > 0.0`;
+    /// the zero is let through to `set_tempo` and the tempo assertion fails.
+    #[test]
+    fn a_refused_tempo_never_reaches_the_clock() {
+        let t = Transport::new(44100.0);
+        t.settings.set_tempo(Bpm::of(90.0));
+        for raw in [0.0, -120.0, f64::NAN, f64::INFINITY] {
+            let asked = Bpm::try_from(raw);
+            assert!(asked.is_err(), "{raw} is not a tempo");
+            if let Ok(bpm) = asked {
+                t.settings.set_tempo(bpm);
+            }
+            assert_eq!(t.settings.tempo(), Bpm::of(90.0), "after {raw}");
+            assert_eq!(
+                t.links().tempo.load(std::sync::atomic::Ordering::Acquire),
+                Bpm::of(90.0)
+            );
+        }
+        assert_eq!(t.samples_per_beat(), Samples(29400));
     }
 }

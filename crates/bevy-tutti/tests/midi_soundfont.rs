@@ -344,7 +344,7 @@ mod midi_soundfont_audio {
         for i in 0..frames {
             let t = tutti_graph::Transport::new(
                 true,
-                tutti_types::Bpm(120.0),
+                tutti_types::Bpm::of(120.0),
                 Beat(from + i as f64 / 24_000.0),
                 None,
             );

@@ -67,7 +67,7 @@ fn node_at(start: f64) -> VoiceNode {
 /// Peak over a 64-frame block of `node` under a transport rolling at `beat`
 /// (not moved) — what renders is the only vantage point.
 fn peak(node: &mut dyn tutti_graph::Node, beat: f64) -> f32 {
-    let t = MockTransport::rolling(Beat(beat), Bpm(120.0));
+    let t = MockTransport::rolling(Beat(beat), Bpm::of(120.0));
     block(node, &t, RATE, 64)[0]
         .iter()
         .fold(0.0f32, |a, s| a.max(s.abs()))
@@ -91,7 +91,7 @@ fn graph_with(node: VoiceNode) -> (Editor, Executor, tutti_sampler::VoiceNodeHan
 /// at `beat`.
 fn render_peak(exec: &mut Executor, beat: f64) -> f32 {
     let mut out = vec![0.0f32; 256];
-    let t = Transport::new(true, Bpm(120.0), Beat(beat), None);
+    let t = Transport::new(true, Bpm::of(120.0), Beat(beat), None);
     exec.process(256, &t, &[], &mut [&mut out[..]]);
     out.iter().fold(0.0f32, |a, s| a.max(s.abs()))
 }

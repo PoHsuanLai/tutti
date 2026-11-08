@@ -104,7 +104,7 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
     // consumes source at 1/2 rate, so 8192 warm-up ticks eat 4096 samples
     // and the 2048-sample window needs 4096 ticks before anything is emitted.
     let wave = make_wave(48_000);
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
     let node = VoiceNode::with_channels(
         Voice {
@@ -177,7 +177,7 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
 fn a_standalone_voices_fork_shares_no_stretch_state() {
     const SR: f64 = 44_100.0;
     let wave = make_wave(48_000);
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let node = || {
         let sampler = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
         VoiceNode::with_channels(
@@ -242,7 +242,7 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
 /// and all) → the fork sounds → fails.
 #[test]
 fn a_pools_fork_shares_nothing_with_the_live_pool() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),
@@ -345,7 +345,7 @@ fn a_transport_seek_flushes_stretch_state() {
         .collect();
     let wave = Arc::new(Wave::from_samples(SR, &data));
 
-    let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::of(120.0));
     let (mut unit, handle) = VoicePool::with_channels(None, 1usize)
         .expect("a width the sampler reads")
         .with_handle();
@@ -445,7 +445,7 @@ fn a_transport_seek_flushes_a_standalone_voice_node() {
         .collect();
     let wave = Arc::new(Wave::from_samples(SR, &data));
 
-    let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::of(120.0));
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
     let mut node = VoiceNode::with_channels(
         Voice {
@@ -510,7 +510,7 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
         .collect();
     let wave = Arc::new(Wave::from_samples(SR, &data));
 
-    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
     let mut node = VoiceNode::with_channels(
         Voice {
@@ -578,7 +578,7 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
 
     for factor in [0.5f32, 1.5, 2.0] {
         let (mut pool, handle) = VoicePool::new().with_handle();
-        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
 
         // 440 Hz, long enough that even the fastest consumption stays inside
         // the material for the whole render.
@@ -638,7 +638,7 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
     let wave = Arc::new(Wave::from_samples(24_000.0, &data));
     for direction in [Direction::Forward, Direction::Reverse] {
         for via_tick in [false, true] {
-            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
             let sampler = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
             let mut node = VoiceNode::with_channels(
                 Voice {
@@ -704,7 +704,7 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
     // should have.
     let consumed = |factor: f32| -> u64 {
         let (mut pool, handle) = VoicePool::new().with_handle();
-        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
 
         // Enough ring that the unstretched (fastest) case cannot underrun,
         // so a short read means the rate applied rather than that the ring
@@ -829,7 +829,7 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
         .collect();
     let wave = Arc::new(Wave::from_samples(SR, &data));
 
-    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let (mut unit, handle) = VoicePool::with_channels(None, 1usize)
         .expect("a width the sampler reads")
         .with_handle();
@@ -883,7 +883,7 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
 #[test]
 fn add_and_remove_clips() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
@@ -904,7 +904,7 @@ fn add_and_remove_clips() {
 #[test]
 fn silence_when_transport_stopped() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
@@ -919,7 +919,7 @@ fn silence_when_transport_stopped() {
 #[test]
 fn clips_sum_together() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     for i in 0..3 {
@@ -944,7 +944,7 @@ fn clips_sum_together() {
 #[test]
 fn clone_snapshots_clips() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
@@ -963,7 +963,7 @@ fn clone_snapshots_clips() {
 #[test]
 fn insert_voice_is_audible_without_channel() {
     let (mut unit, _handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
@@ -1003,7 +1003,7 @@ fn insert_voice_is_audible_without_channel() {
 /// deliver it a command.)
 #[test]
 fn a_pool_with_no_handle_has_no_channel_and_is_empty() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     // A pool nothing has taken the handle of (what a fork builds) is born
@@ -1046,7 +1046,7 @@ fn a_pool_with_no_handle_has_no_channel_and_is_empty() {
 #[test]
 fn update_gain() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
@@ -1071,7 +1071,7 @@ fn update_gain() {
 #[test]
 fn update_stretch_enables_processor() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(4096);
 
     let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
@@ -1130,7 +1130,7 @@ fn update_stretch_enables_processor() {
 #[test]
 fn enabling_stretch_mid_flight_changes_the_output() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let sampler = MemorySource::placed(make_wave(48_000), Beat::new(0.0), None);
     add_ram_clip(&handle, SlotId(1), sampler);
 
@@ -1191,7 +1191,7 @@ fn enabling_stretch_mid_flight_changes_the_output() {
 #[test]
 fn a_redundant_stretch_filter_is_retired_not_freed_on_the_audio_thread() {
     let (mut unit, handle) = VoicePool::new().with_handle();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let sampler = MemorySource::placed(make_wave(4096), Beat::new(0.0), None);
     add_ram_clip(&handle, SlotId(1), sampler);
 
@@ -1241,7 +1241,7 @@ fn a_redundant_stretch_filter_is_retired_not_freed_on_the_audio_thread() {
 /// standalone `VoiceNode` produces the same audio one mixer slot does.
 #[test]
 fn voice_node_is_a_standalone_graph_node() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
     // Same voice the mixer would hold for one voice.
@@ -1327,7 +1327,7 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
     }
     let mut node = VoiceNode::with_channels(fork, 1usize);
     node.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
-    let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::new(120.0));
+    let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::of(120.0));
     assert!(
         run(&mut node, &at(1.0), SR, 8)[0].iter().all(|&s| s == 0.0),
         "before the window"
@@ -1336,7 +1336,7 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
         run(&mut node, &at(3.0), SR, 8)[0].iter().all(|&s| s != 0.0),
         "inside the window"
     );
-    let stopped = MockTransport::stopped(Beat::new(3.0), Bpm::new(120.0));
+    let stopped = MockTransport::stopped(Beat::new(3.0), Bpm::of(120.0));
     assert!(
         run(&mut node, &stopped, SR, 8)[0].iter().all(|&s| s == 0.0),
         "a stopped render"
@@ -1357,7 +1357,7 @@ fn loop_on_a_butlerless_streaming_voice_is_not_recorded() {
     use crate::voice::disk_voice::DiskSource;
     use crate::voice::disk_voice::{DiskVoice, DiskVoiceConfig};
 
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let (mut unit, handle) = VoicePool::new().with_handle();
 
     // Build a Disk voice with no butler channel.
@@ -1460,7 +1460,7 @@ fn loop_on(id: SlotId) -> VoiceCommand {
 
 /// One block of `pool`, at [`SR`] on a rolling clock.
 fn one_block(pool: &mut VoicePool) {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut out = [0.0f32; 2];
     tick(pool, &transport, SR, &mut out);
 }
@@ -1659,7 +1659,7 @@ fn a_handle_knows_the_voices_inserted_before_it() {
 /// `wave_swaps_ignored` bump → fails.
 #[test]
 fn the_drains_silent_drops_are_counted() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(5);
     handle
@@ -1813,7 +1813,7 @@ fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
             channel_index: None,
         }
     };
-    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     for silent_gain in [3.0f32, f32::INFINITY, f32::NAN] {
         let mut pool = VoicePool::with_channels(None, 2usize).expect("stereo");
         pool.insert_voice(SlotId(0), voice(0.0, None, 0.5));
@@ -2152,7 +2152,7 @@ fn a_pool_wider_than_the_sampler_reads_is_refused() {
 /// read writes → channels 8 and 9 keep the stale 7.0 → fails.
 #[test]
 fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let sampler = MemorySource::placed(make_wave(4096), Beat::new(0.0), None);
     let wide = crate::MAX_SAMPLER_CHANNELS + 2;
     let node = VoiceNode::with_channels(
@@ -2223,7 +2223,7 @@ fn both_nodes_declare_their_width() {
 /// one-frame block and a longer one.
 #[test]
 fn six_channel_clip_reaches_all_six_reader_outputs() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
         .expect("a width the sampler reads")
         .with_handle();
@@ -2268,7 +2268,7 @@ fn six_channel_clip_reaches_all_six_reader_outputs() {
 /// suite exercises that combination at width 6.
 #[test]
 fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
         .expect("a width the sampler reads")
         .with_handle();
@@ -2336,7 +2336,7 @@ fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
 /// only because the send path put it there.
 #[test]
 fn send_builds_the_stretch_filter_not_the_drain() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let (mut unit, handle) = VoicePool::with_channels(None, 6usize)
         .expect("a width the sampler reads")
         .with_handle();
@@ -2448,7 +2448,7 @@ fn send_builds_the_stretch_filter_not_the_drain() {
 /// than a gap — and, critically, never an allocation in the callback.
 #[test]
 fn a_missing_stretch_filter_reads_dry_not_silent() {
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
         .expect("a width the sampler reads")
         .with_handle();

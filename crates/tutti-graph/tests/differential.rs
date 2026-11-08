@@ -414,7 +414,7 @@ impl Script {
         }
         let t = tutti_graph::Transport::new(
             self.playing,
-            tutti_types::Bpm(self.tempo),
+            tutti_types::Bpm::of(self.tempo),
             tutti_types::Beat(self.beat),
             self.looping.map(|(start, end)| tutti_graph::LoopRange {
                 start: tutti_types::Beat(start),
@@ -1762,7 +1762,7 @@ impl EditorPair {
     fn run(&mut self, blocks: &[usize], frame: &mut u64) {
         let transport = tutti_graph::Transport::new(
             true,
-            tutti_types::Bpm(120.0),
+            tutti_types::Bpm::of(120.0),
             tutti_types::Beat(0.0),
             None,
         );

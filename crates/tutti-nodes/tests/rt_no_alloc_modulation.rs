@@ -346,7 +346,7 @@ fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
-            tutti_types::Bpm(113.0),
+            tutti_types::Bpm::of(113.0),
             SampleRate(48_000.0),
         );
         let mut bufs: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; 128]);
@@ -391,7 +391,7 @@ fn event_lanes_render_the_same_serial_and_parallel() {
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
-            tutti_types::Bpm(113.0),
+            tutti_types::Bpm::of(113.0),
             SampleRate(48_000.0),
         );
         let mut bufs: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; 128]);
@@ -671,7 +671,7 @@ fn two_hundred_lanes_render_the_same_serial_and_parallel() {
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
-            tutti_types::Bpm(120.0),
+            tutti_types::Bpm::of(120.0),
             SampleRate(48_000.0),
         );
         let mut bufs = vec![vec![0.0f32; 128]; 200];
@@ -728,7 +728,7 @@ fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
-            tutti_types::Bpm(120.0),
+            tutti_types::Bpm::of(120.0),
             SampleRate(48_000.0),
         );
         let mut bufs = vec![vec![0.0f32; 128]; 200];
@@ -1008,7 +1008,7 @@ fn signal_sources_render_the_same_serial_and_parallel() {
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
-            tutti_types::Bpm(120.0),
+            tutti_types::Bpm::of(120.0),
             SampleRate(48_000.0),
         );
         let mut bufs = vec![vec![0.0f32; 128]; 2 * CHAINS];
@@ -1063,7 +1063,7 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
-            tutti_types::Bpm(120.0),
+            tutti_types::Bpm::of(120.0),
             SampleRate(48_000.0),
         );
         let mut bufs = vec![vec![0.0f32; 128]; 2 * CHAINS];
@@ -1188,7 +1188,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
         port: 0,
     })];
     ed.commit().expect("commits");
-    let transport = Transport::new(false, Bpm(120.0), Beat(0.0), None);
+    let transport = Transport::new(false, Bpm::of(120.0), Beat(0.0), None);
     let mut out = vec![0.0f32; 128];
     exec.process(128, &transport, &[], &mut [&mut out[..]]);
     ed.collect();

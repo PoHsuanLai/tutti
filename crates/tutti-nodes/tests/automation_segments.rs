@@ -47,7 +47,7 @@ fn automation(curve: impl Curve + 'static) -> ControlLaneNode {
 }
 /// A tempo whose beat is not a whole number of frames, so breakpoints fall
 /// between frames.
-const TEMPO: Bpm = Bpm(113.0);
+const TEMPO: Bpm = Bpm::of(113.0);
 const TOL: f32 = 2e-5;
 const MAX: usize = 128;
 
@@ -231,7 +231,12 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
         ),
         (
             Transport::new(true, TEMPO, Beat(0.12), None),
-            Transport::new(true, Bpm(71.0), Beat(0.12 + 50.0 / frames_per_beat()), None),
+            Transport::new(
+                true,
+                Bpm::of(71.0),
+                Beat(0.12 + 50.0 / frames_per_beat()),
+                None,
+            ),
         ),
         (
             Transport::new(true, TEMPO, Beat(0.45), None),

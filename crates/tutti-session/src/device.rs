@@ -96,17 +96,27 @@ impl Device {
     pub fn opened_id(&self, selector: &DeviceSelector) -> Option<tutti_cpal::DeviceId> {
         match selector {
             DeviceSelector::Id(id) => Some(id.clone()),
-            DeviceSelector::Default => self.device_name().ok().map(tutti_cpal::DeviceId::new),
+            DeviceSelector::Default => self
+                .device_name()
+                .ok()
+                .flatten()
+                .map(tutti_cpal::DeviceId::new),
         }
     }
 
-    /// The name of the selected output device.
+    /// The name of the output device the engine last opened, as it was then.
+    /// It asks the host nothing, so it never enumerates the devices (which
+    /// can block for good) and is safe on the thread that builds a frame.
+    ///
+    /// `Ok(None)` means the engine runs on a driver the host supplied
+    /// ([`SessionBuilder::build_device_on`](crate::SessionBuilder::build_device_on)): it names no
+    /// device, by design.
     ///
     /// # Errors
     ///
-    /// When the host cannot name it.
-    pub fn device_name(&self) -> Result<String> {
-        Ok(self.driver.engine().device_name()?)
+    /// When the device opened but the host could not name it.
+    pub fn device_name(&self) -> Result<Option<String>> {
+        Ok(self.driver.engine().opened_name()?)
     }
 
     /// The backend fault record, which survives stop and restart.
@@ -428,6 +438,26 @@ impl Session {
     /// waiting, whose thread is left to end on its own.
     pub fn list_outputs(&mut self, listing: tutti_cpal::DeviceListing) {
         self.output_listing = Some(crate::watch::OutputListing::new(listing));
+    }
+
+    /// [`list_outputs`](Self::list_outputs), once: `make` builds the listing
+    /// the first time this is called and is not called again. A `make` that
+    /// fails starts nothing and is asked again by the next call; its error
+    /// is returned.
+    ///
+    /// # Errors
+    ///
+    /// What `make` reports.
+    pub fn list_outputs_once(
+        &mut self,
+        make: impl FnOnce() -> tutti_cpal::Result<tutti_cpal::DeviceListing>,
+    ) -> Result<()> {
+        if self.outputs_listed {
+            return Ok(());
+        }
+        self.list_outputs(make()?);
+        self.outputs_listed = true;
+        Ok(())
     }
 
     /// The [`Phase::Poll`](crate::Phase::Poll) body: what restarts reported, the stream's own

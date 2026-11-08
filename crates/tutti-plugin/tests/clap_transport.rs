@@ -66,19 +66,22 @@ fn assert_echo(got: [f64; ECHO], want: [f64; ECHO], what: &str) {
 fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
     let base = 4.0 + b as f64;
     let mut changes = TransportChanges::NONE;
-    let rolling = Transport::new(true, Bpm(120.0), Beat(base), None);
+    let rolling = Transport::new(true, Bpm::of(120.0), Beat(base), None);
     let t = match b % 6 {
         // A plain roll.
         0 => rolling,
         // A seek, far from where the last block left off.
-        1 => Transport::new(true, Bpm(120.0), Beat(64.0 + base), None),
+        1 => Transport::new(true, Bpm::of(120.0), Beat(64.0 + base), None),
         // A tempo change inside the block, before the second chunk when the
         // block has one; at the last frame otherwise.
         2 => {
             let at = if block > CHUNK { 40 } else { block - 1 };
             let at = Offset::new(at, Samples(block)).expect("inside");
             changes
-                .push(at, Transport::new(true, Bpm(90.0), Beat(base + 0.5), None))
+                .push(
+                    at,
+                    Transport::new(true, Bpm::of(90.0), Beat(base + 0.5), None),
+                )
                 .expect("a change inside the block");
             rolling
         }
@@ -86,7 +89,7 @@ fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
         // second chunk starts.
         3 => Transport::new(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             Beat(base),
             Some(LoopRange {
                 start: Beat(base),
@@ -96,7 +99,7 @@ fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
         // Recording.
         4 => rolling.with_recording(true),
         // Stopped.
-        _ => Transport::new(false, Bpm(100.0), Beat(base), None),
+        _ => Transport::new(false, Bpm::of(100.0), Beat(base), None),
     };
     (t, changes)
 }

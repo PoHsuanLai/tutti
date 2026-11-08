@@ -81,11 +81,11 @@ fn peak(exec: &mut Executor, width: usize, transport: Transport) -> f32 {
 }
 
 fn rolling() -> Transport {
-    Transport::new(true, Bpm(120.0), Beat(0.0), None)
+    Transport::new(true, Bpm::of(120.0), Beat(0.0), None)
 }
 
 fn stopped() -> Transport {
-    Transport::new(false, Bpm(120.0), Beat(0.0), None)
+    Transport::new(false, Bpm::of(120.0), Beat(0.0), None)
 }
 
 /// The offline fork of `ed`'s graph (what the export takes), applied.

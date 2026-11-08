@@ -67,7 +67,12 @@ fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
 fn render(ed: Editor, exec: Executor, rate: f64, frames: usize) -> Vec<f32> {
     let mut r = Renderer::new(ed, exec);
     r.set_transport_fn(move |f| {
-        Transport::new(true, Bpm(120.0), Beat(f.get() as f64 / (rate / 2.0)), None)
+        Transport::new(
+            true,
+            Bpm::of(120.0),
+            Beat(f.get() as f64 / (rate / 2.0)),
+            None,
+        )
     });
     r.render(frames).swap_remove(0)
 }

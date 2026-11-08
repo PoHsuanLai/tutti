@@ -16,7 +16,7 @@ fn monitor() -> (MicMonitorNode, tutti_graph::TapWriter) {
 }
 
 fn render(exec: &mut tutti_graph::Executor, blocks: usize) {
-    let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     for _ in 0..blocks {
         let mut chans = vec![vec![0.0f32; 64]; 2];
         let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();

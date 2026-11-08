@@ -7,7 +7,7 @@ use tutti_types::{BeatDuration, Bpm};
 fn beats_and_seconds_agree_at_the_same_length() {
     let rate = SampleRate(48_000.0);
     // 8 beats at 120 bpm is 4 seconds.
-    let beats = beats_to_seconds(BeatDuration(8.0), Bpm(120.0), rate);
+    let beats = beats_to_seconds(BeatDuration(8.0), Bpm::of(120.0), rate);
     assert_eq!(
         duration_to_frames(beats, rate),
         duration_to_frames(4.0, rate)

@@ -194,7 +194,7 @@ fn the_env_walk_is_the_env_beat() {
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
     let at = |f: u64| At::Frame(Frame(f));
-    m.schedule(at(700), TransportCommand::Tempo(Bpm(97.0)))
+    m.schedule(at(700), TransportCommand::Tempo(Bpm::of(97.0)))
         .expect("room");
     // Armed with the playhead inside it (~0.03): wraps from ~1 600.
     m.schedule(
@@ -217,7 +217,7 @@ fn the_env_walk_is_the_env_beat() {
         .expect("room");
     m.schedule(at(9_500), MotionEvent::Play).expect("room");
     // A beat-timed tempo step, mid-block.
-    m.schedule(At::Beat(Beat(1.5)), TransportCommand::Tempo(Bpm(140.0)))
+    m.schedule(At::Beat(Beat(1.5)), TransportCommand::Tempo(Bpm::of(140.0)))
         .expect("room");
     m.schedule(at(30_000), TransportCommand::Loop(LoopEdit::armed(false)))
         .expect("room");
@@ -227,7 +227,7 @@ fn the_env_walk_is_the_env_beat() {
     for (i, &n) in blocks.iter().enumerate() {
         if i == 20 {
             // An untimed edit between blocks, as a UI makes one.
-            transport.settings.set_tempo(Bpm(133.0));
+            transport.settings.set_tempo(Bpm::of(133.0));
         }
         render(&graph, ChannelLayout::MONO, n);
         starts.push(f);
@@ -338,7 +338,7 @@ fn click_clicks_on_the_model_beats() {
     m.try_send(MotionEvent::Play).expect("room");
     m.schedule(
         At::Frame(Frame(20_111)),
-        TransportCommand::Tempo(Bpm(151.0)),
+        TransportCommand::Tempo(Bpm::of(151.0)),
     )
     .expect("room");
     m.schedule(
@@ -442,7 +442,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     let live_log = Arc::new(Mutex::new(Vec::new()));
     let (mut ed, exec) = env_graph(512, &live_log);
     let live = Engine::new(&live_t, &mut ed, exec).expect("within the limits");
-    live_t.settings.set_tempo(Bpm(100.0));
+    live_t.settings.set_tempo(Bpm::of(100.0));
     live_t
         .motion
         .schedule(
@@ -462,7 +462,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     // past its maximum is two).
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(BAR_2),
-        tempo: Bpm(100.0),
+        tempo: Bpm::of(100.0),
         sample_rate: SampleRate(SR),
         loop_range: LoopRange::new(6.0, 7.0),
     }));
@@ -517,7 +517,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
 fn the_offline_env_walk_starts_each_block_on_the_timeline() {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(4.0),
-        tempo: Bpm(128.0),
+        tempo: Bpm::of(128.0),
         sample_rate: SampleRate(SR),
         loop_range: None,
     });

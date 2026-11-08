@@ -92,7 +92,7 @@ struct Graph {
 impl Graph {
     /// Renders `n` frames, in blocks.
     fn render(&mut self, n: usize) {
-        let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         let (mut left, mut right) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
         let mut left_over = n;
         while left_over > 0 {

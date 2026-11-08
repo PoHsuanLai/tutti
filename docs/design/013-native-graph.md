@@ -968,7 +968,11 @@ that the running plan holds the edit.
   to 8, one declaring `Frames(8)` but 9 frames late, a mispinned latency,
   an audio row asked for an event path. A fan-in tie at equal offsets goes
   by source order.
-- **Instruments and the sampler.** The polysynth and the SoundFont player
+- **Instruments and the sampler.** The polysynth's note logic (which voice a
+  note starts or takes over, what a pedal holds, a channel's bend) is
+  `tutti_voicing::Voicing::step`, a pure function of a message and the voices
+  that exist; the polysynth keeps its voices and its render and carries out the
+  commands it returns. The polysynth and the SoundFont player
   take MIDI on an event input and have rows of their own (`tests/contract.rs`
   in `tutti-polysynth` and `tutti-soundfont`); a plugin instrument takes it
   on its event input too. Any other node adds its row with the same

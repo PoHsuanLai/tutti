@@ -175,7 +175,7 @@ impl Live {
                 "the ring primes"
             );
         }
-        let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::new(120.0));
+        let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::of(120.0));
         let mut voice = streamer
             .status()
             .take_disk_voice(0, Beat(0.0), None)
@@ -262,7 +262,7 @@ struct Memory {
 
 impl Memory {
     fn new(wave: Arc<tutti_codec::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
-        let clock = MockTransport::rolling(Beat::new(from), Bpm::new(120.0));
+        let clock = MockTransport::rolling(Beat::new(from), Bpm::of(120.0));
         let mut source = MemorySource::placed(wave, Beat(0.0), None);
         source.set_speed(PlaybackRate::new(speed));
         source.set_loop_setting(loop_);
@@ -784,7 +784,7 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
     live.loop_(b);
     got.extend(live.render(150));
 
-    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut fork = live.voice.fork_copy();
     fork.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let mut forked = Vec::new();
@@ -1086,7 +1086,7 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
         .expect("the link is installed");
     source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let ring_frames = source.read.ring().frames() as u64;
-    let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+    let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
     for _ in 0..4 {
         block(&mut source, &stopped, SR, BLOCK);
         let _ = streamer.step_once();
@@ -1216,7 +1216,7 @@ fn a_loop_set_through_a_pool_reaches_the_butler_and_the_voice_loops() {
         .expect("the command queue has room in a test");
     assert!(streamer.step_until_settled(1_000) < 1_000, "the loop lands");
 
-    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut left = Vec::new();
     for _ in 0..200 {
         left.extend(block(&mut pool, &clock, SR, BLOCK).swap_remove(0));

@@ -37,7 +37,7 @@ pub struct MidiClockDecoder {
     interval_buf: [u64; TEMPO_WINDOW],
     interval_idx: usize,
     interval_count: usize,
-    derived_tempo: Option<f64>,
+    derived_tempo: Option<Bpm>,
 }
 
 impl MidiClockDecoder {
@@ -131,7 +131,7 @@ impl MidiClockDecoder {
 
     /// Derived tempo from inter-tick timing, or None if insufficient data.
     pub fn tempo_bpm(&self) -> Option<Bpm> {
-        self.derived_tempo.map(Bpm)
+        self.derived_tempo
     }
 
     /// Current position in beats (based on tick count at 24 PPQN).
@@ -171,7 +171,7 @@ impl MidiClockDecoder {
             // BPM = beats_per_second * 60
             let bpm = 60_000_000.0 / (avg_us * f64::from(PPQN));
             if (20.0..=300.0).contains(&bpm) {
-                self.derived_tempo = Some(bpm);
+                self.derived_tempo = Bpm::new(bpm);
             }
         }
     }

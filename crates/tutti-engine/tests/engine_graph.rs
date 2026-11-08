@@ -693,8 +693,11 @@ fn tempo_and_loop_change_on_their_frames() {
     );
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
-    m.schedule(At::Frame(Frame(1_200)), TransportCommand::Tempo(Bpm(240.0)))
-        .expect("room");
+    m.schedule(
+        At::Frame(Frame(1_200)),
+        TransportCommand::Tempo(Bpm::of(240.0)),
+    )
+    .expect("room");
     m.schedule(
         At::Frame(Frame(2_000)),
         TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.0, 0.2).expect("ordered"))),
@@ -775,8 +778,11 @@ fn env_beats_are_the_closed_form_of_each_segment() {
     let blocks = [512usize, 300, 512, 77, 512, 512, 400, 512, 512];
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
-    m.schedule(At::Frame(Frame(1_000)), TransportCommand::Tempo(Bpm(97.0)))
-        .expect("room");
+    m.schedule(
+        At::Frame(Frame(1_000)),
+        TransportCommand::Tempo(Bpm::of(97.0)),
+    )
+    .expect("room");
     // Armed with the playhead inside it (beat ~0.065): one wrap at ~2 140,
     // disarmed before the next.
     m.schedule(
@@ -804,7 +810,7 @@ fn env_beats_are_the_closed_form_of_each_segment() {
     let mut published = Vec::new();
     for (i, &n) in blocks.iter().enumerate() {
         if i == 6 {
-            transport.settings.set_tempo(Bpm(133.0));
+            transport.settings.set_tempo(Bpm::of(133.0));
         }
         render(&engine, ChannelLayout::MONO, &[n]);
         published.push(transport.settings.beat().get());
@@ -1125,7 +1131,7 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
         }),
         1,
     );
-    transport.settings.set_tempo(Bpm(120.0005));
+    transport.settings.set_tempo(Bpm::of(120.0005));
     transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
         .motion
@@ -1147,7 +1153,7 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
     assert_eq!(stop, 240_000, "stops on beat 10's frame");
     assert_eq!(log[stop].1, 10.0, "and holds beat 10");
     let in_force = transport.settings.tempo_in_force();
-    assert_eq!(in_force, Bpm(120.0), "the tempo in force");
+    assert_eq!(in_force, Bpm::of(120.0), "the tempo in force");
 }
 
 /// Ten minutes of 64-frame blocks, with a tempo change and a loop partway:
@@ -1188,13 +1194,13 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     let transport = Transport::new(SR);
     let first = Arc::new(Mutex::new(0.0));
     let (engine, _ed) = graph_engine(&transport, 64, Unforkable(FirstBeat(Arc::clone(&first))), 1);
-    transport.settings.set_tempo(Bpm(123.0));
+    transport.settings.set_tempo(Bpm::of(123.0));
     transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
         .motion
         .schedule(
             At::Frame(Frame(TEMPO_AT)),
-            TransportCommand::Tempo(Bpm(91.5)),
+            TransportCommand::Tempo(Bpm::of(91.5)),
         )
         .expect("room");
     transport

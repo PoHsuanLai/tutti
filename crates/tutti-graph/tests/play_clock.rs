@@ -67,7 +67,7 @@ impl Node for Probe {
 }
 
 fn transport(playing: bool, beat: f64) -> Transport {
-    Transport::new(playing, Bpm(120.0), Beat(beat), None)
+    Transport::new(playing, Bpm::of(120.0), Beat(beat), None)
 }
 
 fn changes(list: &[(usize, Transport)]) -> TransportChanges {

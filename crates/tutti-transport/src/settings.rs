@@ -9,6 +9,7 @@
 //! lock-free cell shared between the UI thread and the audio thread, and a
 //! forwarding method would only rename it.
 
+use super::state::AtomicBpm;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -22,7 +23,7 @@ use tutti_types::{Beat, Bpm};
 #[derive(Clone, Debug)]
 pub struct TransportSettings {
     /// Beats per minute. Read by the clock every buffer.
-    pub(crate) tempo: Arc<AtomicF64>,
+    pub(crate) tempo: Arc<AtomicBpm>,
     /// The playhead, in beats. Written by `TransportClock` via its position
     /// writeback (and by a locate, which moves the readout at once); read by
     /// the UI and by pull-based sources through [`beat`](Self::beat).
@@ -82,7 +83,7 @@ pub struct TransportSettings {
     /// as the clock last took it, which ignores wiggles smaller than its
     /// hysteresis. Written by the clock; what a beat must be resolved with
     /// to agree with it.
-    pub(crate) tempo_in_force: Arc<AtomicF64>,
+    pub(crate) tempo_in_force: Arc<AtomicBpm>,
 }
 
 impl TransportSettings {
@@ -90,21 +91,21 @@ impl TransportSettings {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tempo: Arc::new(AtomicF64::new(120.0)),
+            tempo: Arc::new(AtomicBpm::new(Bpm::default())),
             beat: Arc::new(AtomicF64::new(0.0)),
             segment_generation: Arc::new(AtomicU64::new(0)),
             recording: Arc::new(AtomicBool::new(false)),
             in_preroll: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(true)),
             steady_time: Arc::new(AtomicI64::new(0)),
-            tempo_in_force: Arc::new(AtomicF64::new(120.0)),
+            tempo_in_force: Arc::new(AtomicBpm::new(Bpm::default())),
         }
     }
 
     /// The tempo the clock is actually running at (see the field).
     #[must_use]
     pub fn tempo_in_force(&self) -> Bpm {
-        Bpm(self.tempo_in_force.load(Ordering::Acquire))
+        self.tempo_in_force.load(Ordering::Acquire)
     }
 
     /// Samples elapsed since the stream started. Free-running: never reset by a
@@ -115,13 +116,14 @@ impl TransportSettings {
 
     /// The tempo in force.
     pub fn tempo(&self) -> Bpm {
-        Bpm(self.tempo.load(Ordering::Acquire))
+        self.tempo.load(Ordering::Acquire)
     }
 
-    /// Stores a new tempo. **Unclamped** — zero and negative values reach the
-    /// clock, which is why the derived conversions guard against them.
-    pub fn set_tempo(&self, bpm: impl Into<Bpm>) {
-        self.tempo.store(bpm.into().get(), Ordering::Release);
+    /// Stores a new tempo, the live override: constant tempo from the next
+    /// block. A [`Bpm`] is finite and above zero, so a caller holding a raw
+    /// number checks it with [`Bpm::new`] first.
+    pub fn set_tempo(&self, bpm: Bpm) {
+        self.tempo.store(bpm, Ordering::Release);
     }
 
     /// The playhead as last published by the clock.
@@ -189,7 +191,7 @@ mod tests {
         let a = TransportSettings::new();
         let b = a.clone();
 
-        a.set_tempo(140.0);
+        a.set_tempo(Bpm::of(140.0));
         assert_eq!(b.tempo().get(), 140.0, "clones must share, not copy");
     }
 }

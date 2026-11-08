@@ -55,7 +55,7 @@ impl<N: Node> Rig<N> {
     fn new(node: N, frames: usize) -> Self {
         Self {
             direct: Direct::new(node, RATE, frames),
-            t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
+            t: MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
             frames,
         }
     }
@@ -379,7 +379,7 @@ const RAGGED: [usize; 10] = [1, 37, 100, 511, 512, 64, 200, 129, 3, 65];
 fn ragged_at_512<N: Node>(node: N) {
     let node = tutti_graph::contract::prepared(node, RATE, 64);
     let mut direct = Direct::new(node, RATE, 512);
-    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let step = |i: usize, direct: &mut Direct<N>| {
         let len = RAGGED[i % RAGGED.len()];
         direct.block_in(&t.env(len, RATE));
@@ -484,12 +484,12 @@ fn wraps_without_allocating<N: Node>(node: N) {
     };
     let node = tutti_graph::contract::prepared(node, RATE, 64);
     let mut direct = Direct::new(node, RATE, 512);
-    let mut clock = tutti_types::FrameClock::new(Beat::new(0.0), Bpm::new(120.0), RATE);
+    let mut clock = tutti_types::FrameClock::new(Beat::new(0.0), Bpm::of(120.0), RATE);
     let mut heard = Vec::with_capacity(70_000);
     let mut step = |i: usize, direct: &mut Direct<N>, heard: &mut Vec<f32>| -> bool {
         let len = RAGGED[i % RAGGED.len()];
         let before = clock.beat();
-        direct.set_transport(Transport::new(true, Bpm::new(120.0), before, Some(looping)));
+        direct.set_transport(Transport::new(true, Bpm::of(120.0), before, Some(looping)));
         direct.set_block_len(len);
         direct.block();
         heard.extend_from_slice(direct.output(0));

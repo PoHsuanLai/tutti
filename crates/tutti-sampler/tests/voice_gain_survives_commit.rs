@@ -53,7 +53,7 @@ fn flat_wave(len: usize) -> Arc<Wave> {
 
 /// Rolling at 120 BPM from beat 0, as a host counting frames reports it.
 fn rolling(frame: Frame) -> Transport {
-    Transport::new(true, Bpm(120.0), Beat(frame.0 as f64 / 24_000.0), None)
+    Transport::new(true, Bpm::of(120.0), Beat(frame.0 as f64 / 24_000.0), None)
 }
 
 /// One voice over a flat 1.0 wave, placed from beat 0, alone in a graph on a

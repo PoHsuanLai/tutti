@@ -49,7 +49,7 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
     s.graph().set_outputs_from(synth);
 
     let file = MidiFile::read(midi)?; // an SMF or a Clip File
-    let tempo = file.tempo().unwrap_or(Bpm(120.0)); // the tempo at beat 0
+    let tempo = file.tempo().unwrap_or(Bpm::of(120.0)); // the tempo at beat 0
     s.midi()
         .play_clip(synth, file.iter().map(TimedMidiEvent::from))?;
     s.transport().settings.set_tempo(tempo);

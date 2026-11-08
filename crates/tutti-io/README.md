@@ -103,7 +103,7 @@ let mut src = TapIn::new(reader);
 // The audio callback renders three frames.
 let mut left = [0.0f32; 3];
 let mut right = [0.0f32; 3];
-let transport = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+let transport = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
 executor.process(3, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 
 let dir = tempfile::tempdir().expect("temp dir");

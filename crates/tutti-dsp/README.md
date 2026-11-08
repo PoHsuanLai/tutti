@@ -190,7 +190,7 @@ editor.collect();
 
 // The audio-callback side: a block of 2 frames.
 let (mut l, mut r) = ([0.0f32; 2], [0.0f32; 2]);
-let transport = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+let transport = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
 executor.process(2, &transport, &[], &mut [&mut l[..], &mut r[..]]);
 
 // The analysis side: two interleaved frames, deinterleaved.

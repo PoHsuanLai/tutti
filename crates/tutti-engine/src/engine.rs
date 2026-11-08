@@ -997,7 +997,7 @@ mod tests {
     impl Pieces for Racing<'_> {
         fn ran(&mut self) {
             self.inner.ran();
-            self.settings.set_tempo(Bpm(200.0));
+            self.settings.set_tempo(Bpm::of(200.0));
         }
         fn room(&self) -> bool {
             self.inner.room()
@@ -1048,9 +1048,9 @@ mod tests {
         let change = changes.as_slice()[0];
         assert_eq!(change.at.index(), 100);
         assert!(change.to.playing, "the command's effect");
-        assert_eq!(change.to.tempo, Bpm(120.0), "not the racing store");
+        assert_eq!(change.to.tempo, Bpm::of(120.0), "not the racing store");
         // The next block reads it.
-        assert_eq!(render.transport.begin_block().tempo, Bpm(200.0));
+        assert_eq!(render.transport.begin_block().tempo, Bpm::of(200.0));
     }
 
     /// The audio thread is never the side that panics: a block that meets

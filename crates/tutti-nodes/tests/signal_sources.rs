@@ -27,7 +27,7 @@ use tutti_types::{
 };
 
 const RATE: f64 = 48_000.0;
-const TEMPO: Bpm = Bpm(120.0);
+const TEMPO: Bpm = Bpm::of(120.0);
 /// 24 000 frames a beat.
 const FPB: f64 = 24_000.0;
 const STEP: usize = CONTROL_STEP as usize;

@@ -24,7 +24,8 @@ impl TempoMap {
     ///
     /// # Errors
     ///
-    /// [`TempoError::BadTempo`] when `tempo` is not finite and positive.
+    /// [`TempoError::Unrepresentable`] when `tempo` is so small that a beat's
+    /// rate underflows.
     pub fn constant(tempo: Bpm) -> Result<Self, TempoError> {
         Self::new([TempoPoint {
             beat: Beat(0.0),
@@ -38,8 +39,7 @@ impl TempoMap {
     /// # Errors
     ///
     /// A [`TempoError`] naming what is wrong: no points, a first point off
-    /// beat 0, a tempo that is not finite and positive, beats that are not
-    /// finite and strictly increasing, a last point that ramps, or a segment
+    /// beat 0, beats that are not finite and strictly increasing, a last point that ramps, or a segment
     /// whose duration an `f64` cannot hold.
     pub fn new(points: impl IntoIterator<Item = TempoPoint>) -> Result<Self, TempoError> {
         let pts: Vec<TempoPoint> = points.into_iter().collect();
@@ -48,10 +48,6 @@ impl TempoMap {
             return Err(TempoError::FirstNotAtZero);
         }
         for (i, p) in pts.iter().enumerate() {
-            let t = p.tempo.get();
-            if !(t.is_finite() && t > 0.0) {
-                return Err(TempoError::BadTempo(i));
-            }
             if i > 0 && !(p.beat.get().is_finite() && p.beat > pts[i - 1].beat) {
                 return Err(TempoError::BadOrder(i));
             }
@@ -68,7 +64,7 @@ impl TempoMap {
                 Some(n) => (n.tempo.get() / 60.0, n.beat.get() - p.beat.get()),
                 None => (p.tempo.get() / 60.0, f64::INFINITY),
             };
-            let s = Seg::new(p.beat.get(), sum + comp, p.tempo.get(), r1, p.shape, db);
+            let s = Seg::new(p.beat.get(), sum + comp, p.tempo, r1, p.shape, db);
             if i + 1 < pts.len() {
                 if !s.is_sound(db) {
                     return Err(TempoError::Unrepresentable(i));
@@ -206,7 +202,7 @@ impl TempoMap {
     #[inline]
     pub fn tempo_at_with(&self, beat: Beat, hint: &mut Cursor) -> Bpm {
         let s = self.by_beat(beat.get(), hint);
-        Bpm(s.bpm_at_beat(beat.get() - s.beat0))
+        s.bpm_at_beat(beat.get() - s.beat0)
     }
 
     /// The tempo `seconds` from beat 0.
@@ -220,7 +216,7 @@ impl TempoMap {
     #[inline]
     pub fn tempo_at_seconds_with(&self, seconds: f64, hint: &mut Cursor) -> Bpm {
         let s = self.by_sec(seconds, hint);
-        Bpm(s.bpm_at_sec(seconds - s.sec0))
+        s.bpm_at_sec(seconds - s.sec0)
     }
 
     /// The beat on `frame`, counted from beat 0 at `rate`.

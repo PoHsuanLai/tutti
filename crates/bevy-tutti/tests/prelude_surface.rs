@@ -64,7 +64,7 @@ fn _surface_compiles() {
     fn _timed(t: &TransportRes) -> Result<(), tutti_transport::ScheduleFull> {
         t.motion.schedule(At::Frame(Frame(0)), MotionEvent::Play)?;
         t.motion
-            .schedule(At::NextBlock, TransportCommand::Tempo(Bpm(90.0)))
+            .schedule(At::NextBlock, TransportCommand::Tempo(Bpm::of(90.0)))
     }
     fn _bar(m: &dyn Meter, bar: BarNumber) -> Beat {
         m.bar_start(bar)
@@ -242,7 +242,7 @@ fn the_timeline_handle_tracks_the_live_transport() {
         "the handle shares state — a snapshot would still read 4.0"
     );
 
-    res.settings.set_tempo(140.0);
+    res.settings.set_tempo(Bpm::of(140.0));
     assert_eq!(timeline.tempo().get(), 140.0);
 }
 
@@ -279,7 +279,7 @@ fn the_loop_region_round_trips_through_the_prelude() {
 fn the_engine_measurement_vocabulary_converts_as_documented() {
     // Musical position and span — the pair a placement is spelled in.
     assert_eq!(Beat(1.0) + BeatDuration(3.0), Beat(4.0));
-    assert_eq!(Bpm(120.0).get(), 120.0);
+    assert_eq!(Bpm::of(120.0).get(), 120.0);
 
     // Frequency, time, and the conversion between them. `SampleRate` is the
     // argument that conversion takes, so it has to come across with them.

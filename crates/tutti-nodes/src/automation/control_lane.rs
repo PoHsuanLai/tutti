@@ -470,16 +470,10 @@ impl ControlLaneNode {
     }
 }
 
-/// Frames per beat at `tempo` and `rate`, when both are usable.
-fn frames_per_beat(rate: f64, tempo: f64) -> Option<f64> {
-    let usable = tempo.is_finite() && tempo > 0.0 && rate.is_finite() && rate > 0.0;
-    usable.then(|| rate * 60.0 / tempo)
-}
-
 /// The transport one frame on from `t`, as the executor's own history rolls
 /// it (`FrameClock` advanced, loop wrapped).
 fn roll_one(t: Transport, rate: tutti_types::SampleRate) -> Transport {
-    if !t.playing || frames_per_beat(rate.get(), t.tempo.get()).is_none() {
+    if !t.playing || tutti_types::frames_per_beat(t.tempo, rate).is_none() {
         return t;
     }
     let mut clock = t.clock(rate);
@@ -626,7 +620,7 @@ impl Block<'_> {
         let t = self.cx.transport_at(off);
         let play = self.cx.play_at(off);
         let rate = env.sample_rate;
-        let fpb = frames_per_beat(rate.get(), t.tempo.get()).filter(|_| t.playing);
+        let fpb = tutti_types::frames_per_beat(t.tempo, rate).filter(|_| t.playing);
         let abs = self.base() + Samples(p);
         let beat = t.beat().get();
         let time = ProgramTime {

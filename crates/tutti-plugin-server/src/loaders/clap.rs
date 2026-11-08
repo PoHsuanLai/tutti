@@ -2845,14 +2845,20 @@ mod tests {
     #[ignore] // Requires main-thread Cocoa environment; run with: cargo test -- --ignored test_clap_gui
     fn test_clap_gui_open_close() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
-            .expect("Failed to load");
+        let mut instance = ClapInstance::load(
+            &main_thread(),
+            Path::new(clap_plugin()),
+            44100.0,
+            512,
+            false,
+        )
+        .expect("Failed to load");
 
         let parent = create_nsview();
         assert!(!parent.is_null(), "Failed to create NSView");
 
         let handle = unsafe { tutti_plugin::server::WindowHandle::from_u64(parent as u64) };
-        let result = instance.open_editor(handle, ContentScale::IDENTITY);
+        let result = instance.open_editor(&main_thread(), handle, ContentScale::IDENTITY);
         assert!(
             result.is_ok(),
             "open_editor should succeed: {:?}",
@@ -2867,7 +2873,7 @@ mod tests {
             size.height
         );
 
-        instance.close_editor();
+        instance.close_editor(&main_thread());
         release_nsview(parent);
     }
 
@@ -2876,8 +2882,14 @@ mod tests {
     #[ignore] // Requires main-thread Cocoa environment; run with: cargo test -- --ignored test_surge_gui
     fn test_surge_gui_open_close() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
-            .expect("Failed to load Surge XT");
+        let mut instance = ClapInstance::load(
+            &main_thread(),
+            Path::new(clap_plugin()),
+            44100.0,
+            512,
+            false,
+        )
+        .expect("Failed to load Surge XT");
 
         assert!(
             instance.descriptor().editor.is_present(),
@@ -2888,7 +2900,7 @@ mod tests {
         assert!(!parent.is_null());
 
         let handle = unsafe { tutti_plugin::server::WindowHandle::from_u64(parent as u64) };
-        let result = instance.open_editor(handle, ContentScale::IDENTITY);
+        let result = instance.open_editor(&main_thread(), handle, ContentScale::IDENTITY);
         assert!(
             result.is_ok(),
             "Surge XT open_editor should succeed: {:?}",
@@ -2903,7 +2915,7 @@ mod tests {
             size.height
         );
 
-        instance.close_editor();
+        instance.close_editor(&main_thread());
         release_nsview(parent);
     }
 

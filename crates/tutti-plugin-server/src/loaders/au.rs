@@ -1163,7 +1163,7 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = component::find_component(&desc)?;
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }.ok()?;
+        let mut inner = tutti_au_host::AuInstance::new(comp, 44_100.0, 512).ok()?;
         inner.initialize().ok()?;
         Some(inner)
     }
@@ -1335,8 +1335,8 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = component::find_component(&effect).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44_100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let tail = match inner.get_tail_time() {
             Err(_) => PluginTail::Unknown,
@@ -1358,7 +1358,7 @@ mod tests {
             componentFlagsMask: 0,
         };
         if let Some(comp) = component::find_component(&instrument) {
-            let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
+            let mut inner = tutti_au_host::AuInstance::new(comp, 44_100.0, 512)
                 .expect("Should create instance");
             inner.initialize().expect("Should initialize");
             let mapped = match inner.get_tail_time() {
@@ -1392,7 +1392,7 @@ mod tests {
                 eprintln!("SKIP: TAL Reverb 4 not installed; the Unbounded arm is unexercised here")
             }
             Some(comp) => {
-                let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
+                let mut inner = tutti_au_host::AuInstance::new(comp, 44_100.0, 512)
                     .expect("Should create instance");
                 inner.initialize().expect("Should initialize");
                 let seconds = inner
@@ -1446,8 +1446,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1482,8 +1482,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1731,8 +1731,8 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1784,8 +1784,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 
@@ -1925,8 +1925,8 @@ mod tests {
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
-            .expect("Should create instance");
+        let mut inner =
+            tutti_au_host::AuInstance::new(comp, 44100.0, 512).expect("Should create instance");
         inner.initialize().expect("Should initialize");
         let param_ranges = read_param_ranges(inner.unit());
 

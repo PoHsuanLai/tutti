@@ -4,9 +4,9 @@
 //! Audio Units and fetch their names, manufacturers, and types.
 
 #[cfg(target_os = "macos")]
-use crate::cf::CfString;
-#[cfg(target_os = "macos")]
 use crate::types::*;
+#[cfg(target_os = "macos")]
+pub use tutti_au_ffi::ComponentRef as AuComponentRef;
 
 /// High-level classification of an Audio Unit.
 ///
@@ -128,7 +128,7 @@ pub struct AuComponentInfo {
     pub flags: u32,
     /// Opaque factory handle used to instantiate the AU.
     #[cfg(target_os = "macos")]
-    pub component: AudioComponent,
+    pub component: AuComponentRef,
 }
 
 impl AuComponentInfo {
@@ -160,18 +160,10 @@ impl AuComponentInfo {
 
 #[cfg(target_os = "macos")]
 fn enumerate_with_desc(desc: AudioComponentDescription) -> Vec<AuComponentInfo> {
-    let mut results = Vec::new();
-    let mut component: AudioComponent = std::ptr::null_mut();
-    loop {
-        component = unsafe { AudioComponentFindNext(component, &desc) };
-        if component.is_null() {
-            break;
-        }
-        if let Some(info) = component_info(component) {
-            results.push(info);
-        }
-    }
-    results
+    AuComponentRef::all_matching(&desc)
+        .into_iter()
+        .filter_map(component_info)
+        .collect()
 }
 
 /// Enumerates every Audio Unit registered with AudioToolbox.
@@ -193,30 +185,16 @@ pub fn enumerate_components_of_type(au_type: AuType) -> Vec<AuComponentInfo> {
 ///
 /// Returns `None` if no matching AU is installed.
 #[cfg(target_os = "macos")]
-pub fn find_component(desc: &AudioComponentDescription) -> Option<AudioComponent> {
-    let component = unsafe { AudioComponentFindNext(std::ptr::null_mut(), desc) };
-    (!component.is_null()).then_some(component)
+pub fn find_component(desc: &AudioComponentDescription) -> Option<AuComponentRef> {
+    AuComponentRef::first_matching(desc)
 }
 
 #[cfg(target_os = "macos")]
-fn component_info(component: AudioComponent) -> Option<AuComponentInfo> {
-    let name = unsafe {
-        let mut name_ref: coreaudio_sys::CFStringRef = std::ptr::null();
-        let status = AudioComponentCopyName(component, &mut name_ref);
-        if status == NO_ERR {
-            CfString::from_copied(name_ref)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| String::from("<unknown>"))
-        } else {
-            String::from("<unknown>")
-        }
-    };
-
-    let mut comp_desc = AudioComponentDescription::default();
-    let status = unsafe { AudioComponentGetDescription(component, &mut comp_desc) };
-    if status != NO_ERR {
-        return None;
-    }
+fn component_info(component: AuComponentRef) -> Option<AuComponentInfo> {
+    let name = component
+        .name()
+        .unwrap_or_else(|| String::from("<unknown>"));
+    let comp_desc = component.description().ok()?;
 
     Some(AuComponentInfo {
         name,
@@ -250,14 +228,10 @@ fn component_info(component: AudioComponent) -> Option<AuComponentInfo> {
 /// components use and no observation contradicts it; changing it needs a real
 /// unit, not a re-reading of this comment.
 #[cfg(target_os = "macos")]
-fn component_version(component: AudioComponent) -> String {
-    let mut raw: u32 = 0;
-    // SAFETY: `component` came from `AudioComponentFindNext` and is non-null;
-    // `raw` is a valid out-pointer for the `UInt32` the API writes.
-    let status = unsafe { coreaudio_sys::AudioComponentGetVersion(component, &mut raw) };
-    if status != NO_ERR {
+fn component_version(component: AuComponentRef) -> String {
+    let Some(raw) = component.version() else {
         return String::new();
-    }
+    };
     format!(
         "{}.{}.{}",
         (raw >> 16) & 0xff,

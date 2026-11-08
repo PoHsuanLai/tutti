@@ -73,9 +73,9 @@
 
 #![cfg(target_os = "macos")]
 
-use crate::cf::{CfString, CfUrl};
+use tutti_au_ffi::Unit;
+
 use crate::error::Result;
-use crate::ffi::{get_property, get_property_bytes, set_property};
 use crate::types::*;
 
 /// One entry of the AU's overview shortlist: a parameter, and where it lives.
@@ -111,22 +111,14 @@ pub struct OverviewParameter {
 ///
 /// # Errors
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it,
-/// though all 52 units measured do. Returns [`AuError::CfStringAlloc`] if
-/// CoreFoundation declines to allocate the string.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn set_context_name(unit: AudioUnit, name: &str) -> Result<()> {
-    let cf = CfString::new(name).ok_or(crate::error::AuError::CfStringAlloc)?;
-    unsafe {
-        set_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-            &cf.as_raw(),
-        )
-    }
+/// though all 52 units measured do.
+pub fn set_context_name(unit: &Unit, name: &str) -> Result<()> {
+    Ok(unit.set_string(
+        K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME,
+        K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+        name,
+    )?)
 }
 
 /// Reads back the context name set by [`set_context_name`].
@@ -141,20 +133,13 @@ pub unsafe fn set_context_name(unit: AudioUnit, name: &str) -> Result<()> {
 ///
 /// # Errors
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn context_name(unit: AudioUnit) -> Result<Option<String>> {
-    // Copy rule, as in `nick_name`: the returned CFString is +1 and owned here.
-    let raw: CFStringRef = unsafe {
-        get_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )?
-    };
-    Ok(unsafe { CfString::from_copied(raw) }.map(|s| s.to_string()))
+pub fn context_name(unit: &Unit) -> Result<Option<String>> {
+    // Copy rule, as in `nick_name`: the returned CFString is +1 and owned there.
+    Ok(unit.copy_string(
+        K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME,
+        K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+    )?)
 }
 
 /// Give this instance its own name, distinguishing it from another load of the
@@ -165,20 +150,13 @@ pub unsafe fn context_name(unit: AudioUnit) -> Result<Option<String>> {
 ///
 /// # Errors
 /// As [`set_context_name`].
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn set_nick_name(unit: AudioUnit, name: &str) -> Result<()> {
-    let cf = CfString::new(name).ok_or(crate::error::AuError::CfStringAlloc)?;
-    unsafe {
-        set_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_NICK_NAME,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-            &cf.as_raw(),
-        )
-    }
+pub fn set_nick_name(unit: &Unit, name: &str) -> Result<()> {
+    Ok(unit.set_string(
+        K_AUDIO_UNIT_PROPERTY_NICK_NAME,
+        K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+        name,
+    )?)
 }
 
 /// Reads back the instance name set by [`set_nick_name`].
@@ -189,22 +167,14 @@ pub unsafe fn set_nick_name(unit: AudioUnit, name: &str) -> Result<()> {
 ///
 /// # Errors
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn nick_name(unit: AudioUnit) -> Result<Option<String>> {
+pub fn nick_name(unit: &Unit) -> Result<Option<String>> {
     // Copy rule: `AudioUnitGetProperty` on a CFString property returns a +1
-    // reference the host owns, so this must be balanced. `CfString::from_copied`
-    // takes that ownership and releases on drop.
-    let raw: CFStringRef = unsafe {
-        get_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_NICK_NAME,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )?
-    };
-    Ok(unsafe { CfString::from_copied(raw) }.map(|s| s.to_string()))
+    // reference the host owns; `Unit::copy_string` takes and releases it.
+    Ok(unit.copy_string(
+        K_AUDIO_UNIT_PROPERTY_NICK_NAME,
+        K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+    )?)
 }
 
 /// The AU's own shortlist of its most important parameters, in the AU's
@@ -230,44 +200,23 @@ pub unsafe fn nick_name(unit: AudioUnit) -> Result<Option<String>> {
 /// `kAudioUnitErr_InvalidProperty` from the 26 of 52 units that do not
 /// implement it, which is the common case and not an error condition for a host
 /// — fall back to [`crate::parameters`].
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn parameters_for_overview(unit: AudioUnit) -> Result<Vec<OverviewParameter>> {
-    let bytes = unsafe {
-        get_property_bytes(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_PARAMETERS_FOR_OVERVIEW,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )?
-    };
-    let stride = std::mem::size_of::<AudioUnitParameter>();
+pub fn parameters_for_overview(unit: &Unit) -> Result<Vec<OverviewParameter>> {
     // Trailing bytes short of a whole struct are dropped rather than trusted:
     // decoding a partial struct would read uninitialised padding as a
-    // parameter id. `stride` is 24 on arm64 (an 8-byte handle plus three u32s
-    // plus padding), never zero, so the division is safe.
-    let count = bytes.len() / stride;
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        // SAFETY: `bytes` holds at least `(i + 1) * stride` bytes, and
-        // `AudioUnitParameter` is a `#[repr(C)]` struct of a pointer and three
-        // `u32`s — valid for any bit pattern the AU writes. Read unaligned
-        // because `Vec<u8>` guarantees only 1-byte alignment.
-        let p: AudioUnitParameter = unsafe {
-            bytes
-                .as_ptr()
-                .add(i * stride)
-                .cast::<AudioUnitParameter>()
-                .read_unaligned()
-        };
-        out.push(OverviewParameter {
+    // parameter id.
+    let params: Vec<AudioUnitParameter> = unit.get_array(
+        K_AUDIO_UNIT_PROPERTY_PARAMETERS_FOR_OVERVIEW,
+        K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+    )?;
+    Ok(params
+        .into_iter()
+        .map(|p| OverviewParameter {
             id: p.mParameterID,
             scope: p.mScope,
             element: p.mElement,
-        });
-    }
-    Ok(out)
+        })
+        .collect())
 }
 
 /// A file URL for the AU's icon, for a plugin browser row.
@@ -277,18 +226,11 @@ pub unsafe fn parameters_for_overview(unit: AudioUnit) -> Result<Vec<OverviewPar
 ///
 /// # Errors
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn icon_location(unit: AudioUnit) -> Result<Option<String>> {
-    // Copy rule, as in `nick_name`: the returned CFURL is +1 and owned here.
-    let raw: coreaudio_sys::CFURLRef = unsafe {
-        get_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_ICON_LOCATION,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )?
-    };
-    Ok(unsafe { CfUrl::from_copied(raw) }.and_then(|u| u.to_path_string()))
+pub fn icon_location(unit: &Unit) -> Result<Option<String>> {
+    // Copy rule, as in `nick_name`: the returned CFURL is +1 and owned there.
+    Ok(unit.copy_url_path(
+        K_AUDIO_UNIT_PROPERTY_ICON_LOCATION,
+        K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+    )?)
 }

@@ -53,13 +53,10 @@
 // AudioUnit is an opaque C pointer (`ComponentInstanceRecord*`) that every
 // AudioToolbox call dereferences. Callers must supply a valid unit, same as
 // every other entry point in this crate.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-
-use std::marker::PhantomData;
 
 use crate::error::Result;
-use crate::ffi::{check, get_property, get_property_bytes};
 use crate::types::*;
+use tutti_au_ffi::Unit;
 
 /// Where a parameter lives: the `(scope, element)` pair AudioToolbox addresses
 /// it by.
@@ -399,8 +396,7 @@ impl std::fmt::Display for ParameterUnit {
 /// tied to the instance's lifetime so the raw `AudioUnit` pointer can't
 /// outlive its owner.
 pub struct ParamView<'a> {
-    unit: AudioUnit,
-    _lt: PhantomData<&'a ()>,
+    unit: &'a Unit,
 }
 
 impl std::fmt::Debug for ParamView<'_> {
@@ -410,16 +406,9 @@ impl std::fmt::Debug for ParamView<'_> {
 }
 
 impl<'a> ParamView<'a> {
-    /// Builds a view wrapping a raw `AudioUnit`.
-    ///
-    /// # Safety
-    /// The caller must guarantee that `unit` remains valid for the lifetime
-    /// `'a`. Crate-internal constructors derive `'a` from an owning handle.
-    pub(crate) unsafe fn new(unit: AudioUnit) -> Self {
-        Self {
-            unit,
-            _lt: PhantomData,
-        }
+    /// Builds a view borrowing the unit.
+    pub(crate) fn new(unit: &'a Unit) -> Self {
+        Self { unit }
     }
 
     /// Enumerates all parameters exposed by this AU.
@@ -470,7 +459,7 @@ impl<'a> ParamView<'a> {
 /// scope / element 0.
 ///
 /// Returns an empty vec if the AU doesn't advertise a parameter list.
-pub fn list(unit: AudioUnit) -> Vec<AuParameter> {
+pub fn list(unit: &Unit) -> Vec<AuParameter> {
     list_at(unit, ParamAddress::GLOBAL)
 }
 
@@ -480,15 +469,12 @@ pub fn list(unit: AudioUnit) -> Vec<AuParameter> {
 /// the common answer for a scope/element an AU does not use, and it is not an
 /// error — asking a plain effect for its input-element parameters legitimately
 /// yields nothing.
-pub fn list_at(unit: AudioUnit, addr: ParamAddress) -> Vec<AuParameter> {
-    let ids_bytes = match unsafe {
-        get_property_bytes(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-            addr.scope,
-            addr.element,
-        )
-    } {
+pub fn list_at(unit: &Unit, addr: ParamAddress) -> Vec<AuParameter> {
+    let ids_bytes = match unit.get_bytes(
+        K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
+        addr.scope,
+        addr.element,
+    ) {
         Ok(b) => b,
         Err(_) => return Vec::new(),
     };
@@ -511,7 +497,7 @@ pub fn list_at(unit: AudioUnit, addr: ParamAddress) -> Vec<AuParameter> {
 /// # Errors
 ///
 /// As [`get_at`].
-pub fn get(unit: AudioUnit, id: u32) -> Result<f32> {
+pub fn get(unit: &Unit, id: u32) -> Result<f32> {
     get_at(unit, ParamAddress::GLOBAL, id)
 }
 
@@ -522,12 +508,8 @@ pub fn get(unit: AudioUnit, id: u32) -> Result<f32> {
 /// element it does not have, `kAudioUnitErr_InvalidParameter` for an id it never
 /// declared. Neither is converted into a default value: a fabricated `0.0` here
 /// is what a host would then write into the user's preset.
-pub fn get_at(unit: AudioUnit, addr: ParamAddress, id: u32) -> Result<f32> {
-    let mut value: f32 = 0.0;
-    check("AudioUnitGetParameter", unsafe {
-        AudioUnitGetParameter(unit, id, addr.scope, addr.element, &mut value)
-    })?;
-    Ok(value)
+pub fn get_at(unit: &Unit, addr: ParamAddress, id: u32) -> Result<f32> {
+    Ok(unit.parameter(id, addr.scope, addr.element)?)
 }
 
 /// Writes a parameter value to the global scope / element 0.
@@ -535,7 +517,7 @@ pub fn get_at(unit: AudioUnit, addr: ParamAddress, id: u32) -> Result<f32> {
 /// # Errors
 ///
 /// As [`set_at`].
-pub fn set(unit: AudioUnit, id: u32, value: f32) -> Result<()> {
+pub fn set(unit: &Unit, id: u32, value: f32) -> Result<()> {
     set_at(unit, ParamAddress::GLOBAL, id, value)
 }
 
@@ -545,10 +527,8 @@ pub fn set(unit: AudioUnit, id: u32, value: f32) -> Result<()> {
 /// As [`get_at`]. A write to an element the AU does not have fails rather than
 /// landing on element 0 — which is precisely the aliasing this address type
 /// exists to prevent.
-pub fn set_at(unit: AudioUnit, addr: ParamAddress, id: u32, value: f32) -> Result<()> {
-    check("AudioUnitSetParameter", unsafe {
-        AudioUnitSetParameter(unit, id, addr.scope, addr.element, value, 0)
-    })
+pub fn set_at(unit: &Unit, addr: ParamAddress, id: u32, value: f32) -> Result<()> {
+    Ok(unit.set_parameter(id, addr.scope, addr.element, value)?)
 }
 
 /// Reads one parameter's metadata, from the global scope / element 0.
@@ -559,7 +539,7 @@ pub fn set_at(unit: AudioUnit, addr: ParamAddress, id: u32, value: f32) -> Resul
 /// # Errors
 ///
 /// As [`info_at`].
-pub fn info(unit: AudioUnit, param_id: u32) -> Result<AuParameter> {
+pub fn info(unit: &Unit, param_id: u32) -> Result<AuParameter> {
     info_at(unit, ParamAddress::GLOBAL, param_id)
 }
 
@@ -578,17 +558,8 @@ pub fn info(unit: AudioUnit, param_id: u32) -> Result<AuParameter> {
 /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU refuses
 /// `kAudioUnitProperty_ParameterInfo` for `param_id`, typically because it
 /// never declared that id.
-pub fn info_at(unit: AudioUnit, addr: ParamAddress, param_id: u32) -> Result<AuParameter> {
-    let raw: AudioUnitParameterInfo = unsafe {
-        get_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_INFO,
-            addr.scope,
-            param_id,
-        )?
-    };
-
-    let name = extract_name(&raw);
+pub fn info_at(unit: &Unit, addr: ParamAddress, param_id: u32) -> Result<AuParameter> {
+    let (raw, name) = unit.parameter_info(addr.scope, param_id)?;
 
     Ok(AuParameter {
         id: param_id,
@@ -634,43 +605,22 @@ pub fn info_at(unit: AudioUnit, addr: ParamAddress, param_id: u32) -> Result<AuP
 ///
 /// # Errors
 /// None — see above. Every failure path yields an empty vec.
-pub fn value_strings(unit: AudioUnit, id: u32) -> Vec<String> {
+pub fn value_strings(unit: &Unit, id: u32) -> Vec<String> {
     value_strings_at(unit, ParamAddress::GLOBAL, id)
 }
 
 /// [`value_strings`] at an explicit address.
-pub fn value_strings_at(unit: AudioUnit, addr: ParamAddress, id: u32) -> Vec<String> {
-    // As with ParameterInfo, this property takes the PARAMETER ID in the element
-    // position, not the element index — see `info_at`.
-    let raw: CFArrayRef = match unsafe {
-        get_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_STRINGS,
-            addr.scope,
-            id,
-        )
-    } {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-    // The AU *copies* the array (Create rule), so the host owns this
-    // reference and must release it. `CfArray::from_copied` takes that +1 and
-    // releases on drop, on every path out of this function — a leak here would
-    // be per-call, and a UI rebuilding a menu polls it.
-    let Some(array) = (unsafe { crate::cf::CfArray::from_copied(raw) }) else {
-        return Vec::new();
-    };
-
-    (0..array.len())
-        .filter_map(|i| {
-            let ptr = array.value_at(i)?;
-            // GET rule, not Create: the elements belong to the array already
-            // own. Wrapping them with `from_copied` would over-release strings
-            // the host never retained and corrupt the AU's own table.
-            let s = unsafe { cfstring_to_string(ptr as CFStringRef) };
-            Some(s)
-        })
-        .collect()
+pub fn value_strings_at(unit: &Unit, addr: ParamAddress, id: u32) -> Vec<String> {
+    // A refusal to answer is the "no value strings" answer; so is a null array.
+    unit.copy_string_array(
+        K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_STRINGS,
+        addr.scope,
+        id,
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(Option::unwrap_or_default)
+    .collect()
 }
 
 /// The AU's own display string for `value` on parameter `id`, if it publishes
@@ -698,48 +648,18 @@ pub fn value_strings_at(unit: AudioUnit, addr: ParamAddress, id: u32) -> Vec<Str
 /// None — an unimplemented property, an unknown id, and "no string for this
 /// value" all yield `None`. The distinction is not actionable: in every case the
 /// host formats the number itself.
-pub fn string_from_value(unit: AudioUnit, id: u32, value: f32) -> Option<String> {
+pub fn string_from_value(unit: &Unit, id: u32, value: f32) -> Option<String> {
     string_from_value_at(unit, ParamAddress::GLOBAL, id, value)
 }
 
 /// [`string_from_value`] at an explicit address.
 pub fn string_from_value_at(
-    unit: AudioUnit,
+    unit: &Unit,
     addr: ParamAddress,
     id: u32,
     value: f32,
 ) -> Option<String> {
-    // `inValue` is a *pointer* to the value, not the value. Borrowing the `value`
-    // parameter directly is what keeps it alive across the call below: the
-    // pointer must stay valid for the whole `AudioUnitGetProperty`, and the
-    // parameter outlives this function body. (A null `inValue` would ask the AU
-    // to format its own current value; this always names one explicitly.)
-    let mut request = AudioUnitParameterStringFromValue {
-        inParamID: id,
-        inValue: &value,
-        outString: std::ptr::null(),
-    };
-    let mut size = std::mem::size_of::<AudioUnitParameterStringFromValue>() as u32;
-    // Not `get_property`: this property is read/write-through — the struct
-    // carries the request in and the answer back out in the same buffer — so the
-    // call has to pass the populated struct rather than an uninitialized one.
-    let status = unsafe {
-        AudioUnitGetProperty(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_STRING_FROM_VALUE,
-            addr.scope,
-            addr.element,
-            &mut request as *mut _ as *mut std::os::raw::c_void,
-            &mut size,
-        )
-    };
-    if status != NO_ERR || request.outString.is_null() {
-        return None;
-    }
-    // Documented Copy rule: "the outName may point to a CFStringRef (which if so
-    // must be released by the caller)". `CfString::from_copied` takes that +1, so
-    // a host polling this per frame does not leak a CFString per call.
-    unsafe { crate::cf::CfString::from_copied(request.outString) }.map(|s| s.to_string())
+    unit.parameter_string_from_value(addr.scope, addr.element, id, value)
 }
 
 /// Parses `text` into a parameter value using the AU's own interpretation.
@@ -765,44 +685,13 @@ pub fn string_from_value_at(
 ///
 /// # Errors
 /// None, by the same reasoning as [`string_from_value`].
-pub fn value_from_string(unit: AudioUnit, id: u32, text: &str) -> Option<f32> {
+pub fn value_from_string(unit: &Unit, id: u32, text: &str) -> Option<f32> {
     value_from_string_at(unit, ParamAddress::GLOBAL, id, text)
 }
 
 /// [`value_from_string`] at an explicit address.
-pub fn value_from_string_at(
-    unit: AudioUnit,
-    addr: ParamAddress,
-    id: u32,
-    text: &str,
-) -> Option<f32> {
-    // The CFString is borrowed by the AU for the duration of the call only, so a
-    // host-owned temporary is correct; `CfString::new` releases it on drop.
-    let cf = crate::cf::CfString::new(text)?;
-    let mut request = AudioUnitParameterValueFromString {
-        inParamID: id,
-        inString: cf.as_raw() as CFStringRef,
-        // NaN rather than 0.0 as the sentinel: if an AU returned `noErr` without
-        // writing the field, a 0.0 would be indistinguishable from a genuine
-        // parse of "0" and would be written into the user's preset. NaN is
-        // filtered below.
-        outValue: f32::NAN,
-    };
-    let mut size = std::mem::size_of::<AudioUnitParameterValueFromString>() as u32;
-    let status = unsafe {
-        AudioUnitGetProperty(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_FROM_STRING,
-            addr.scope,
-            addr.element,
-            &mut request as *mut _ as *mut std::os::raw::c_void,
-            &mut size,
-        )
-    };
-    if status != NO_ERR || !request.outValue.is_finite() {
-        return None;
-    }
-    Some(request.outValue)
+pub fn value_from_string_at(unit: &Unit, addr: ParamAddress, id: u32, text: &str) -> Option<f32> {
+    unit.parameter_value_from_string(addr.scope, addr.element, id, text)
 }
 
 /// The AU's label for parameter clump `clump`, e.g. `"Ring Modulation"`.
@@ -819,56 +708,26 @@ pub fn value_from_string_at(
 ///
 /// # Errors
 /// None — an unimplemented property or an unknown clump id both yield `None`.
-pub fn clump_name(unit: AudioUnit, clump: u32) -> Option<String> {
+pub fn clump_name(unit: &Unit, clump: u32) -> Option<String> {
     clump_name_at(unit, ParamAddress::GLOBAL, clump)
 }
 
 /// [`clump_name`] at an explicit address.
-pub fn clump_name_at(unit: AudioUnit, addr: ParamAddress, clump: u32) -> Option<String> {
+pub fn clump_name_at(unit: &Unit, addr: ParamAddress, clump: u32) -> Option<String> {
     // Clump 0 is Apple's "ungrouped" sentinel, so there is nothing to name. Ask
     // anyway and an AU may hand back a stray label for a group no parameter
     // claims.
     if clump == 0 {
         return None;
     }
-    // `AudioUnitParameterNameInfo` in Apple's header — `{ UInt32 inID; SInt32
-    // inDesiredLength; CFStringRef outName; }` for the *parameter* name variant,
-    // but the ClumpName property uses the 2-field
-    // `{ UInt32 inID; CFStringRef outName; }` shape. Hand-declared because
-    // `coreaudio-sys` does not export it; the layout is pinned by
-    // `tests::clump_name_request_matches_the_c_abi`.
-    #[repr(C)]
-    struct ClumpNameRequest {
-        in_id: u32,
-        out_name: CFStringRef,
-    }
-    let mut request = ClumpNameRequest {
-        in_id: clump,
-        out_name: std::ptr::null(),
-    };
-    let mut size = std::mem::size_of::<ClumpNameRequest>() as u32;
-    let status = unsafe {
-        AudioUnitGetProperty(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_CLUMP_NAME,
-            addr.scope,
-            addr.element,
-            &mut request as *mut _ as *mut std::os::raw::c_void,
-            &mut size,
-        )
-    };
-    if status != NO_ERR || request.out_name.is_null() {
-        return None;
-    }
-    // Copy rule, as for every CF object retrieved from an AU property.
-    unsafe { crate::cf::CfString::from_copied(request.out_name) }.map(|s| s.to_string())
+    unit.parameter_clump_name(addr.scope, addr.element, clump)
 }
 
 /// Which parameters the meta-parameter `id` may move when it is written.
 ///
 /// [`dependents_of_at`] against [`ParamAddress::GLOBAL`], which is where every
 /// meta-flagged parameter measured on this machine lives.
-pub fn dependents_of(unit: AudioUnit, id: u32) -> Option<Vec<DependentParam>> {
+pub fn dependents_of(unit: &Unit, id: u32) -> Option<Vec<DependentParam>> {
     dependents_of_at(unit, ParamAddress::GLOBAL, id)
 }
 
@@ -920,44 +779,22 @@ pub fn dependents_of(unit: AudioUnit, id: u32) -> Option<Vec<DependentParam>> {
 /// case for an optional property, and this call is made speculatively for any
 /// meta-flagged parameter, so surfacing it as `Err` would make routine absence
 /// indistinguishable from a real fault at every call site.
-pub fn dependents_of_at(
-    unit: AudioUnit,
-    addr: ParamAddress,
-    id: u32,
-) -> Option<Vec<DependentParam>> {
+pub fn dependents_of_at(unit: &Unit, addr: ParamAddress, id: u32) -> Option<Vec<DependentParam>> {
     // `AUDependentParameter` is `{ AudioUnitScope mScope; AudioUnitParameterID
     // mParameterID; }` — two `u32`s, 8 bytes. Layout pinned by
     // `tests::dependent_parameter_matches_the_c_abi`.
-    let bytes = unsafe {
-        get_property_bytes(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_DEPENDENT_PARAMETERS,
-            addr.scope,
-            id,
-        )
-    }
-    .ok()?;
-
-    const ENTRY: usize = std::mem::size_of::<AUDependentParameter>();
     // A trailing partial entry means the AU disagrees with the header about the
-    // struct width. Decode the whole entries and drop the remainder rather than
-    // reading past what it wrote: `get_property_bytes` sized the buffer from the
-    // AU's own `GetPropertyInfo`, so a non-multiple is the AU contradicting
-    // itself, not a short read.
+    // struct width; `get_array` decodes the whole entries and drops the
+    // remainder rather than reading past what it wrote.
+    let entries: Vec<AUDependentParameter> = unit
+        .get_array(K_AUDIO_UNIT_PROPERTY_DEPENDENT_PARAMETERS, addr.scope, id)
+        .ok()?;
     Some(
-        bytes
-            .as_chunks::<ENTRY>()
-            .0
-            .iter()
-            .map(|c| {
-                // `read_unaligned` because the `Vec<u8>` carries no alignment
-                // guarantee, even though 8-byte entries in practice land aligned.
-                let raw: AUDependentParameter =
-                    unsafe { std::ptr::read_unaligned(c.as_ptr() as *const AUDependentParameter) };
-                DependentParam {
-                    scope: raw.mScope,
-                    id: raw.mParameterID,
-                }
+        entries
+            .into_iter()
+            .map(|raw| DependentParam {
+                scope: raw.mScope,
+                id: raw.mParameterID,
             })
             .collect(),
     )
@@ -965,27 +802,6 @@ pub fn dependents_of_at(
 
 /// Prefer the modern CFString name if advertised; otherwise fall back to the
 /// 52-byte fixed buffer (null-terminated or full-width).
-fn extract_name(info: &AudioUnitParameterInfo) -> String {
-    if info.flags & K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CF_NAME_STRING != 0
-        && !info.cfNameString.is_null()
-    {
-        unsafe {
-            crate::cf::CfString::from_copied(info.cfNameString)
-                .map(|s| s.to_string())
-                .unwrap_or_default()
-        }
-    } else {
-        // `name` is `[c_char; 52]` (i8 on macOS); reinterpret as bytes for
-        // the null-terminated fallback decode.
-        let name_bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(info.name.as_ptr() as *const u8, info.name.len()) };
-        let end = name_bytes
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(name_bytes.len());
-        String::from_utf8_lossy(&name_bytes[..end]).to_string()
-    }
-}
 
 #[cfg(test)]
 #[cfg(target_os = "macos")]
@@ -993,16 +809,16 @@ mod tests {
     use super::*;
     use crate::component::*;
 
-    fn apple_delay_unit() -> AudioUnit {
+    fn apple_delay_unit() -> Unit {
         apple_effect(*b"dely", "AUDelay")
     }
 
     /// AUFilter — carries two `Indexed` filter-type selectors.
-    fn apple_filter_unit() -> AudioUnit {
+    fn apple_filter_unit() -> Unit {
         apple_effect(*b"filt", "AUFilter")
     }
 
-    fn apple_effect(sub_type: [u8; 4], name: &str) -> AudioUnit {
+    fn apple_effect(sub_type: [u8; 4], name: &str) -> Unit {
         let desc = AudioComponentDescription {
             componentType: K_AUDIO_UNIT_TYPE_EFFECT,
             componentSubType: u32::from_be_bytes(sub_type),
@@ -1011,11 +827,9 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = find_component(&desc).unwrap_or_else(|| panic!("{name} should be present"));
-        let mut instance: AudioComponentInstance = std::ptr::null_mut();
-        let status = unsafe { AudioComponentInstanceNew(comp, &mut instance) };
-        assert_eq!(status, NO_ERR);
-        unsafe { AudioUnitInitialize(instance) };
-        instance
+        let unit = Unit::new(comp).expect("instantiate");
+        unit.initialize().expect("initialize");
+        unit
     }
 
     /// `kAudioUnitParameterUnit_Indexed` (1) decodes to its own variant, not
@@ -1046,7 +860,7 @@ mod tests {
     #[test]
     fn a_real_au_reports_an_indexed_parameter() {
         let unit = apple_filter_unit();
-        let params = list(unit);
+        let params = list(&unit);
         let indexed: Vec<_> = params
             .iter()
             .filter(|p| p.unit == ParameterUnit::Indexed)
@@ -1064,10 +878,6 @@ mod tests {
                 p.range.min,
                 p.range.max
             );
-        }
-        unsafe {
-            AudioUnitUninitialize(unit);
-            AudioComponentInstanceDispose(unit);
         }
     }
 
@@ -1228,7 +1038,7 @@ mod tests {
     fn a_clump_id_is_only_read_when_the_au_advertises_one() {
         let unit = apple_delay_unit();
         // AUDelay's parameters are measured to carry no clump flag.
-        for p in list(unit) {
+        for p in list(&unit) {
             assert!(
                 p.clump.is_none(),
                 "AUDelay param {} ({:?}) reported clump {:?} without HasClump",
@@ -1236,10 +1046,6 @@ mod tests {
                 p.name,
                 p.clump
             );
-        }
-        unsafe {
-            AudioUnitUninitialize(unit);
-            AudioComponentInstanceDispose(unit);
         }
     }
 
@@ -1249,39 +1055,26 @@ mod tests {
     #[test]
     fn clump_zero_is_never_named() {
         let unit = apple_delay_unit();
-        assert_eq!(clump_name(unit, 0), None);
-        unsafe {
-            AudioUnitUninitialize(unit);
-            AudioComponentInstanceDispose(unit);
-        }
+        assert_eq!(clump_name(&unit, 0), None);
     }
 
     #[test]
     fn test_list() {
         let unit = apple_delay_unit();
-        let params = list(unit);
+        let params = list(&unit);
         assert!(!params.is_empty());
-        unsafe {
-            AudioUnitUninitialize(unit);
-            AudioComponentInstanceDispose(unit);
-        }
     }
 
     #[test]
     fn test_get_set() {
         let unit = apple_delay_unit();
-        let params = list(unit);
+        let params = list(&unit);
         assert!(!params.is_empty());
 
         let p = &params[0];
         let mid = p.range.mid();
-        set(unit, p.id, mid).unwrap();
-        let val = get(unit, p.id).unwrap();
+        set(&unit, p.id, mid).unwrap();
+        let val = get(&unit, p.id).unwrap();
         assert!((val - mid).abs() < 0.01);
-
-        unsafe {
-            AudioUnitUninitialize(unit);
-            AudioComponentInstanceDispose(unit);
-        }
     }
 }

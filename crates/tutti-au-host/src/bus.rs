@@ -16,8 +16,8 @@
 use tutti_plugin_types::ChannelLayout;
 
 use crate::error::{AuError, Result};
-use crate::ffi::{get_property, get_property_bytes};
 use crate::types::*;
+use tutti_au_ffi::Unit;
 
 /// Which side of an AU a bus sits on.
 ///
@@ -246,21 +246,15 @@ pub(crate) struct AuChannelInfo {
 /// the property entirely also yields `0` rather than an error, because
 /// `kAudioUnitProperty_ElementCount` is optional in practice and a refusal means
 /// "nothing to enumerate" — the same observable state as zero buses.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-pub(crate) unsafe fn bus_count(unit: AudioUnit, direction: BusDirection) -> u32 {
-    unsafe {
-        get_property::<u32>(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT,
-            direction.scope(),
-            // The element index is meaningless for ElementCount itself — the
-            // property describes the whole scope — so it is always 0.
-            0,
-        )
-        .unwrap_or(0)
-    }
+pub(crate) fn bus_count(unit: &Unit, direction: BusDirection) -> u32 {
+    unit.get::<u32>(
+        K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT,
+        direction.scope(),
+        // The element index is meaningless for ElementCount itself — the
+        // property describes the whole scope — so it is always 0.
+        0,
+    )
+    .unwrap_or(0)
 }
 
 /// The channel layout of bus `bus` on `direction`.
@@ -272,22 +266,12 @@ pub(crate) unsafe fn bus_count(unit: AudioUnit, direction: BusDirection) -> u32 
 /// bus 99 would size buffers for a bus that does not exist. Measured on macOS
 /// 15.6: DLSMusicDevice has 2 output buses, and asking for output bus 2 or 99
 /// returns -10877 from AudioToolbox — the error is the AU's, not invented here.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-pub(crate) unsafe fn bus_layout(
-    unit: AudioUnit,
-    direction: BusDirection,
-    bus: u32,
-) -> Result<ChannelLayout> {
-    let asbd = unsafe {
-        get_property::<AudioStreamBasicDescription>(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-            direction.scope(),
-            bus,
-        )
-    }?;
+pub(crate) fn bus_layout(unit: &Unit, direction: BusDirection, bus: u32) -> Result<ChannelLayout> {
+    let asbd = unit.get::<AudioStreamBasicDescription>(
+        K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
+        direction.scope(),
+        bus,
+    )?;
     ChannelLayout::try_from(asbd.mChannelsPerFrame).map_err(|_| AuError::BusTooWide {
         scope: match direction {
             BusDirection::Input => "input",
@@ -306,18 +290,12 @@ pub(crate) unsafe fn bus_layout(
 /// the stream format instead". Callers must treat empty as "unconstrained", and
 /// that reading is why this returns a plain `Vec` rather than a `Result`: a
 /// refusal and an empty list are the same answer to the caller's question.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-pub(crate) unsafe fn supported_channel_configs(unit: AudioUnit) -> Vec<AuChannelConfig> {
-    let bytes = match unsafe {
-        get_property_bytes(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )
-    } {
+pub(crate) fn supported_channel_configs(unit: &Unit) -> Vec<AuChannelConfig> {
+    let bytes = match unit.get_bytes(
+        K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS,
+        K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+    ) {
         Ok(b) => b,
         Err(_) => return Vec::new(),
     };

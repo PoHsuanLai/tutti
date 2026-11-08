@@ -88,6 +88,7 @@ members = [
     "testing/tutti-shm-model",
     "crates/tutti-vst3-host",
     "crates/tutti-clap-ffi",
+    "crates/tutti-au-ffi",
     "crates/tutti-vst3-ffi",
     "crates/tutti-clap-host",
     "crates/tutti-au-host",

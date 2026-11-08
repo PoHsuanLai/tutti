@@ -6,7 +6,6 @@ use tutti_plugin_types::ChannelLayout;
 
 use crate::bus::BusDirection;
 use crate::error::{AuError, Result};
-use crate::ffi::{get_property, set_property};
 use crate::handle::AuHandle;
 use crate::types::*;
 
@@ -73,16 +72,15 @@ impl StreamConfig {
     ///
     /// Falls back to stereo out / no input if the AU refuses the queries.
     pub(crate) fn probe(handle: &AuHandle) -> AuBusLayout {
-        let unit = handle.raw_unit();
-        let outputs = unsafe { crate::bus::bus_layout(unit, BusDirection::Output, 0) }
-            .unwrap_or(ChannelLayout::STEREO);
+        let unit = handle.unit();
+        let outputs =
+            crate::bus::bus_layout(unit, BusDirection::Output, 0).unwrap_or(ChannelLayout::STEREO);
 
         // An AU with zero input elements has no bus 0 to ask about, so skip the
         // format query entirely rather than reading -10877 and inferring from it.
-        let has_input = unsafe { crate::bus::bus_count(unit, BusDirection::Input) } > 0;
+        let has_input = crate::bus::bus_count(unit, BusDirection::Input) > 0;
         let inputs = if has_input {
-            unsafe { crate::bus::bus_layout(unit, BusDirection::Input, 0) }
-                .unwrap_or(ChannelLayout::STEREO)
+            crate::bus::bus_layout(unit, BusDirection::Input, 0).unwrap_or(ChannelLayout::STEREO)
         } else {
             ChannelLayout::EMPTY
         };
@@ -133,11 +131,10 @@ impl StreamConfig {
     /// a phantom rate. So the accepted `mSampleRate` is read back and a
     /// mismatch is a hard error.
     pub(crate) fn apply(&self, handle: &AuHandle) -> Result<AuBusLayout> {
-        let unit = handle.raw_unit();
+        let unit = handle.unit();
 
-        let effective = unsafe {
-            set_property(
-                unit,
+        let effective = {
+            unit.set(
                 K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE,
                 K_AUDIO_UNIT_SCOPE_GLOBAL,
                 0,
@@ -148,16 +145,14 @@ impl StreamConfig {
             // carrying the rate in the ASBD; some AUs only honour one of the
             // two. Both writes are best-effort here — the read-back below is
             // what actually decides whether the rate took.
-            let _ = set_property(
-                unit,
+            let _ = unit.set(
                 K_AUDIO_UNIT_PROPERTY_SAMPLE_RATE,
                 K_AUDIO_UNIT_SCOPE_OUTPUT,
                 0,
                 &self.sample_rate,
             );
             if self.channels.has_input {
-                let _ = set_property(
-                    unit,
+                let _ = unit.set(
                     K_AUDIO_UNIT_PROPERTY_SAMPLE_RATE,
                     K_AUDIO_UNIT_SCOPE_INPUT,
                     0,
@@ -184,8 +179,7 @@ impl StreamConfig {
                 self.sample_rate,
                 self.channels.outputs.count() as u32,
             );
-            let _ = set_property(
-                unit,
+            let _ = unit.set(
                 K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
                 K_AUDIO_UNIT_SCOPE_OUTPUT,
                 0,
@@ -193,8 +187,7 @@ impl StreamConfig {
             );
             // Read back what the AU actually accepted for the output scope.
             // Unlike the channel count, a sample-rate mismatch is fatal.
-            let out_accepted = get_property::<AudioStreamBasicDescription>(
-                unit,
+            let out_accepted = unit.get::<AudioStreamBasicDescription>(
                 K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
                 K_AUDIO_UNIT_SCOPE_OUTPUT,
                 0,
@@ -213,16 +206,14 @@ impl StreamConfig {
                     self.sample_rate,
                     self.channels.inputs.count() as u32,
                 );
-                let _ = set_property(
-                    unit,
+                let _ = unit.set(
                     K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
                     K_AUDIO_UNIT_SCOPE_INPUT,
                     0,
                     &in_asbd,
                 );
                 // Read back what the AU actually accepted for the input scope.
-                let in_accepted = get_property::<AudioStreamBasicDescription>(
-                    unit,
+                let in_accepted = unit.get::<AudioStreamBasicDescription>(
                     K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
                     K_AUDIO_UNIT_SCOPE_INPUT,
                     0,
@@ -273,16 +264,11 @@ impl StreamConfig {
     /// allocated 512 while the host thinks 2048" is the only diagnosable form of
     /// this failure.
     pub(crate) fn verify_block_size(&self, handle: &AuHandle) -> Result<()> {
-        // SAFETY: the property is a `UInt32` per Apple's header, and `handle`
-        // owns a live unit for the duration of this call.
-        let accepted = unsafe {
-            get_property::<u32>(
-                handle.raw_unit(),
-                K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE,
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
-                0,
-            )
-        };
+        let accepted = handle.unit().get::<u32>(
+            K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        );
         // A refusal to report is not a rejection — see above.
         let Ok(accepted) = accepted else {
             return Ok(());

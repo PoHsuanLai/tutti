@@ -406,3 +406,24 @@ fn os_status_message(code: i32) -> &'static str {
 fn os_status_message(_code: i32) -> &'static str {
     "unknown error"
 }
+
+#[cfg(target_os = "macos")]
+impl From<tutti_au_ffi::OsError> for AuError {
+    fn from(e: tutti_au_ffi::OsError) -> Self {
+        AuError::OsStatus {
+            function: e.function,
+            code: e.status,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<tutti_au_ffi::Error> for AuError {
+    fn from(e: tutti_au_ffi::Error) -> Self {
+        match e {
+            tutti_au_ffi::Error::Os(e) => e.into(),
+            tutti_au_ffi::Error::Invalid(why) => AuError::InvalidBuffer(why),
+            other => AuError::InvalidBuffer(other.to_string()),
+        }
+    }
+}

@@ -1,13 +1,13 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Every raw AudioToolbox, CoreAudio and CoreFoundation call is in `tutti-au-ffi`;
+// this crate holds the logic over its safe handles.
+#![forbid(unsafe_code)]
 
 pub mod error;
 
 #[cfg(target_os = "macos")]
 pub mod types;
-
-#[cfg(target_os = "macos")]
-mod cf;
 
 #[cfg(target_os = "macos")]
 mod ffi;
@@ -37,9 +37,6 @@ mod midi_map;
 pub mod midi_out;
 
 #[cfg(target_os = "macos")]
-mod buffer;
-
-#[cfg(target_os = "macos")]
 mod instance;
 
 #[cfg(target_os = "macos")]
@@ -62,9 +59,6 @@ mod listener;
 
 #[cfg(target_os = "macos")]
 pub mod render_notify;
-
-#[cfg(target_os = "macos")]
-mod editor;
 
 pub use component::{AuComponentInfo, AuType};
 pub use error::{AuError, LoadFailedError, LoadStage, PresetFileError, PresetMismatch, Result};
@@ -103,13 +97,13 @@ pub use channel_layout::AuLayoutTag;
 // but is *empty* off macOS, so an ungated re-export names items that do not
 // exist and fails to compile on Linux.
 #[cfg(target_os = "macos")]
-pub use editor::AuEditor;
-#[cfg(target_os = "macos")]
 pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
 pub use instance::{AuActive, AuInstance, AuLoaded};
 #[cfg(target_os = "macos")]
 pub use topology::{tag_for, topology_of};
+#[cfg(target_os = "macos")]
+pub use tutti_au_ffi::AuEditor;
 // Flat-re-exported for the reason `AuLayoutTag` is: `AuMidiMapping` is the
 // argument and return type of the five `*_parameter_midi_mapping*` methods on
 // `AuInstance`, and `MidiTrigger` is the field of it a caller must construct, so

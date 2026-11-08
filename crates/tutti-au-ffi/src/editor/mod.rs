@@ -4,10 +4,8 @@
 //! `kAudioUnitProperty_CocoaUI`, retains it, and optionally attaches it as a
 //! subview of a caller-provided parent `NSView`.
 
-#![cfg(target_os = "macos")]
 // AudioUnit is a raw opaque C pointer; every public helper in this module
 // takes one and delegates to AudioToolbox calls that expect a valid unit.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod cocoa;
 
@@ -19,8 +17,7 @@ use std::os::raw::c_void;
 use tutti_plugin_types::{EditorSize, WindowHandle};
 
 use crate::error::Result;
-use crate::ffi::property_size;
-use crate::types::*;
+use crate::unit::Unit;
 
 /// Owned handle to an AU's Cocoa editor view.
 ///
@@ -29,7 +26,7 @@ use crate::types::*;
 /// AppKit calls must still originate from the main thread.
 pub struct AuEditor {
     view: *mut AnyObject,
-    unit: AudioUnit,
+    unit: Unit,
 }
 
 impl std::fmt::Debug for AuEditor {
@@ -40,6 +37,9 @@ impl std::fmt::Debug for AuEditor {
 
 // SAFETY: the view is released only by this type's `Drop`, and the raw pointer
 // leaves only through `view_ptr()`, so there is no aliasing across threads.
+// SAFETY: the view is only touched from the main thread (every method asserts
+// it), so the value may be moved between threads between calls; the `Unit` it
+// holds is `Send`.
 unsafe impl Send for AuEditor {}
 
 impl AuEditor {
@@ -60,45 +60,44 @@ impl AuEditor {
     /// the caller. Must be called on the macOS main thread.
     ///
     /// # Errors
-    /// Returns [`crate::error::AuError::InvalidBuffer`] if the AU does not
+    /// Returns `InvalidBuffer` if the AU does not
     /// advertise a Cocoa view bundle or the view factory fails to load.
     ///
     /// # Panics
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub unsafe fn open(
-        unit: AudioUnit,
-        parent: Option<WindowHandle>,
-        preferred: EditorSize,
-    ) -> Result<Self> {
+    pub fn open(unit: &Unit, parent: Option<WindowHandle>, preferred: EditorSize) -> Result<Self> {
         tutti_plugin_types::assert_main_thread();
-        let view = unsafe { cocoa::create_view(unit, preferred) }?;
+        let view = cocoa::create_view(unit, preferred)?;
 
         if let Some(handle) = parent {
             let parent_obj = handle.as_ptr() as *mut AnyObject;
             if !parent_obj.is_null() {
+                // SAFETY: `WindowHandle` carries its constructor's claim that
+                // the parent is a live NSView; `view` is the live view just
+                // created, and `addSubview:` retains it.
                 let _: () = unsafe { msg_send![parent_obj, addSubview: view] };
             }
         }
 
-        Ok(Self { view, unit })
+        Ok(Self {
+            view,
+            unit: unit.clone(),
+        })
     }
 
     /// Whether the AU advertises a Cocoa editor view.
     ///
     /// Calls `AudioUnitGetPropertyInfo(kAudioUnitProperty_CocoaUI)` and
     /// reports `true` if the property exists with a non-zero size.
-    pub fn has_editor(unit: AudioUnit) -> bool {
-        let size = unsafe {
-            property_size(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_COCOA_UI,
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
-                0,
-            )
-        };
-        matches!(size, Ok(n) if n > 0)
+    pub fn has_editor(unit: &Unit) -> bool {
+        let info = unit.property_info(
+            coreaudio_sys::kAudioUnitProperty_CocoaUI,
+            coreaudio_sys::kAudioUnitScope_Global,
+            0,
+        );
+        matches!(info, Ok(i) if i.size > 0)
     }
 
     /// Removes the view from its superview (if any) and release it. Safe to
@@ -114,6 +113,9 @@ impl AuEditor {
     pub fn close(&mut self) {
         tutti_plugin_types::assert_main_thread();
         if !self.view.is_null() {
+            // SAFETY: `view` is the live +1 view this editor owns (non-null,
+            // checked); it leaves its superview and the reference is released
+            // once, then the pointer is nulled below.
             unsafe {
                 let _: () = msg_send![self.view, removeFromSuperview];
                 let _: () = msg_send![self.view, release];
@@ -131,6 +133,7 @@ impl AuEditor {
                 height: 0,
             };
         }
+        // SAFETY: `view` is the live view this editor owns (non-null, checked).
         unsafe {
             let frame: NSRect = msg_send![self.view, frame];
             EditorSize {
@@ -147,8 +150,8 @@ impl AuEditor {
     }
 
     /// Raw `AudioUnit` this editor was created for.
-    pub fn unit(&self) -> AudioUnit {
-        self.unit
+    pub fn unit(&self) -> &Unit {
+        &self.unit
     }
 }
 
@@ -165,28 +168,20 @@ impl Drop for AuEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::*;
+    use crate::component::ComponentRef;
 
     #[test]
     fn test_has_editor() {
-        let desc = AudioComponentDescription {
-            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+        let desc = coreaudio_sys::AudioComponentDescription {
+            componentType: coreaudio_sys::kAudioUnitType_Effect,
             componentSubType: u32::from_be_bytes(*b"dely"),
             componentManufacturer: u32::from_be_bytes(*b"appl"),
             componentFlags: 0,
             componentFlagsMask: 0,
         };
-        let comp = find_component(&desc).expect("AUDelay should be present");
-        let mut instance: AudioComponentInstance = std::ptr::null_mut();
-        let status = unsafe { AudioComponentInstanceNew(comp, &mut instance) };
-        assert_eq!(status, NO_ERR);
-        unsafe { AudioUnitInitialize(instance) };
-
-        let _has = AuEditor::has_editor(instance);
-
-        unsafe {
-            AudioUnitUninitialize(instance);
-            AudioComponentInstanceDispose(instance);
-        }
+        let comp = ComponentRef::first_matching(&desc).expect("AUDelay should be present");
+        let unit = Unit::new(comp).expect("instantiate");
+        unit.initialize().expect("initialize");
+        let _has = AuEditor::has_editor(&unit);
     }
 }

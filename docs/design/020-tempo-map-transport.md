@@ -1,4 +1,4 @@
-# 019: One tempo map for live playback and offline render
+# 020: One tempo map for live playback and offline render
 
 The project's tempo is a `TempoMap` (`tutti-tempo`: steps and ramps, `f64`
 seconds, beat to frame and back). Nothing that plays uses it. The live transport
@@ -7,8 +7,8 @@ three functions convert beats to seconds. A project with a tempo change plays
 one way and exports another. This design makes the map the transport's tempo,
 live and offline, through one pure function, so the two agree by construction.
 
-Status: design only. Nothing here is implemented. Lane E4's bounce design
-(branch `docs/bounce-design`, not yet numbered) depends on §6.
+Status: design only; the open questions are decided (§10). Nothing here is implemented. Doc 019 (bounce)
+depends on §6.
 
 ## Summary
 
@@ -204,14 +204,42 @@ first frame:
 
 | Format | Field | Value |
 |---|---|---|
-| VST3 | `ProcessContext::tempo` (`kTempoValid`) | The cell's chord tempo at the chunk's first frame. The structure has no slope; a plugin that wants one reads successive blocks. |
+| VST3 | `ProcessContext::tempo` (`kTempoValid`) | The tempo (`tempo_at_frame`, see below; a step's own tempo) at the chunk's first frame. The structure has no slope; a plugin that wants one reads successive blocks. |
 | CLAP | `clap_event_transport::tempo` | The same. |
-| CLAP | `tempo_inc` (`CLAP_TRANSPORT_HAS_TEMPO`) | Per-sample increment until the next transport event: for a `RampTime` segment, `(next_cell.tempo - cell.tempo) / cell_frames`; `0.0` in a step segment. It needs `TempoMap` to expose the slope at a frame (`tempo_at_seconds` at both ends of the cell). The CLAP host sends a transport event at each cell boundary inside a block. |
-| VST2 | `VstTimeInfo::tempo` | The cell's chord tempo. |
+| CLAP | `tempo_inc` (with `CLAP_TRANSPORT_HAS_TEMPO`) | The tempo's change per sample until the next transport event, so the plugin can reconstruct `tempo + n x tempo_inc`. In a ramp, `tempo` and `tempo_inc` are the *instantaneous* tempo and slope at the chunk's first frame (below), not the chord; `0.0` in a step segment. The CLAP host sends a transport event at each cell boundary inside a block. |
+| VST2 | `VstTimeInfo::tempo` | The same. |
 | AU | host tempo callback | The same. |
 
-`RampBeats` has no CLAP equivalent (the increment is per sample); its cells use
-the chord, with `tempo_inc` computed from the two chord tempos the same way.
+**CLAP `tempo_inc`, checked.** The `clap-sys` 0.5.0 source (`events.rs:129`)
+declares `tempo_inc: f64` and carries no documentation, and the C header is not
+on this machine. The semantics are CLAP's `events.h`, quoted from memory, not
+verified here: "tempo increment for each samples and until the next time info
+event". `tutti-tempo`'s `Shape::RampTime` docs say the same (a constant
+increment per sample). Stage 5 re-checks it against `clap/events.h` before
+the host sends a non-zero value. Today the host always sends `0.0`
+(`tutti-clap-host/src/instance/audio.rs:461`).
+
+**What `TempoMap` offers for the slope.** It has no slope query. It has
+`tempo_at(beat)` and `tempo_at_seconds(seconds)` (instantaneous, via
+`Segment::bpm_at_beat` / `bpm_at_sec`), but no frame form, and the cell's
+tempo is the chord (the average over the cell), not the instantaneous tempo at
+its start. The addition is one query, `TempoMap::tempo_at_frame(frame, rate)`
+(`tempo_at_seconds(frame / rate)`, with a `_with` hint form, allocation-free
+like the rest). Then, per transport event at frame `f` with the event running to
+`g` (the cell end or the block end):
+
+| Quantity | Value |
+|---|---|
+| `tempo` | `tempo_at_frame(f)` |
+| `tempo_inc` | `(tempo_at_frame(g) - tempo_at_frame(f)) / (g - f)` (BPM per sample) |
+
+For `RampTime` tempo is linear in time, so this is the exact constant slope. For
+`RampBeats` tempo is linear in beats, hence not in time; the difference over a
+cell is the best constant increment, and its error is within the plugin's own
+tolerance (a second-order term in the cell length). A step has equal tempos at
+both ends, so `0.0`. The VST3, VST2 and AU fields have no slope and report
+`tempo_at_frame(f)` too, which replaces the "chord tempo" in the rows above for
+a plugin (the graph's nodes keep the chord, which is what they walk with).
 
 ## 6. Export and the duplicates
 
@@ -275,7 +303,7 @@ Nothing is compared against another implementation.
 | Live engine (`Engine`) render of the same | Same expected frames; and the two renders are equal because both are the walker (differential on the invariant "same map, same seat, same audio", not on a reference render). |
 | Block-size independence | The same map at block sizes 1, 64, 100, 512, 1024: identical output, to the bit (this is the split rule of §2.3). |
 | Ramp bound | The playhead's beat at every frame is within the §4 bound of `beat_at_frame`, and equal at every cell start. |
-| Plugin transport | CLAP `tempo_inc` x cell frames equals the chord tempo delta; VST3 tempo equals the cell's. |
+| Plugin transport | CLAP `tempo + n x tempo_inc` equals `tempo_at_frame(f + n)` at the event's end (`RampTime`, exact); VST3 tempo equals `tempo_at_frame`. `tempo_at_frame` itself is pinned against the closed form. |
 
 Mutations (each written on its test): cut cells at the block start instead of
 the absolute multiple of the grid (block-size test fails); seat the clock at
@@ -302,17 +330,18 @@ Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's
 tutti-tempo paragraph gets one sentence when stage 3 lands.
 
-## 10. Open questions
+## 10. Decisions
 
-| Question | Recommended answer |
+The owner decided these on 2026-11-08; the section is closed.
+
+| Question | Decision |
 |---|---|
-| Grid size | 128 frames. It keeps a 512-frame block inside the 8 entries, and the ramp error at 0.04 frames for a hard 60 to 240 BPM ramp is far below audibility. It is one constant in the engine, never per block. |
-| Block split or a larger `MAX_TRANSPORT_CHANGES` | Split. It leaves the `Copy` `Env` alone and costs only on a ramp. |
-| Is a frame-exact timed tempo command lost | Yes, deliberately: a tempo is a point at a beat in the map. A swap applies at the next block start. If a use case appears, a timed *map swap* (`At` plus a generation token, the `Arc` published first) can be added without changing the model. |
-| Keep the hysteresis | Only for external float tempo sources, turned into a constant-map edit in one place. |
-| Map across a rate change | A rate change re-seats at the current beat (as today); `chord_cell` takes the new rate. |
-| Does the project map carry time signature | No; `TempoMap` is tempo only. Bars are `tutti-types`' meter, unchanged. |
-| Seek to a beat that is not on a frame | Seat at the exact beat; `timeline_frame` is `frame_at_or_after` (the first frame at or after). The first cell's remainder runs at the cell's chord. |
-| Sampler tempo-following | Beat-locked voices follow the map; time-locked ones ignore it. Which a voice is stays the voice's own declaration. |
-| Fork and live map edits during an export | The fork reads the map it was made with; later edits do not reach it. |
-| Who owns the map when a MIDI file is imported | The session, by an explicit call; the file never replaces the project's map by itself. |
+| Live tempo | Edits republish the map. `set_tempo` is sugar for a constant map; `TransportCommand::Tempo` (the timed form) is retired. A map swap applies at the next block start. A frame-exact timed map swap can be added later without changing the model. |
+| Ramp grid | Cells of 128 frames, one engine constant, never per block. A block that needs more than 8 `TransportChanges` is split by the engine; `MAX_TRANSPORT_CHANGES` stays 8. |
+| Hysteresis | Only for external float tempo sources, turned into a constant-map edit in one place. |
+| Rate change | Re-seats at the current beat, as today; `chord_cell` takes the new rate. |
+| Time signature | Not in the map; `TempoMap` is tempo only. |
+| Seek | Seats at the exact beat; `timeline_frame` is `frame_at_or_after`. |
+| Sampler | Beat-locked voices follow the map; time-locked ones ignore it. |
+| Export fork | Keeps the map it was made with; later edits do not reach it. |
+| MIDI file import | The map is adopted only through an explicit session call. |

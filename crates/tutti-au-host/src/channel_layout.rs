@@ -306,7 +306,7 @@ impl std::fmt::Display for AuLayoutTag {
 /// populated, which a stricter AU validating `mNumberChannelDescriptions`
 /// against the byte count would rightly refuse.
 const TAG_ONLY_LAYOUT_SIZE: usize =
-    size_of::<AudioChannelLayoutProperty>() - size_of::<AudioChannelDescription>();
+    size_of::<AudioChannelLayout>() - size_of::<AudioChannelDescription>();
 
 /// Every channel order the AU says it can run bus `bus` of `direction` in.
 ///

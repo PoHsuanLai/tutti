@@ -311,9 +311,9 @@ pub struct AuMidiMapping {
     /// measured. Apple's header requires `mScope`, `mElement` and
     /// `mParameterID` to be "correctly specified" in all usages, and the
     /// remove path identifies a mapping by exactly these three.
-    pub scope: u32,
+    pub scope: Scope,
     /// The parameter's element within `scope`.
-    pub element: u32,
+    pub element: Element,
     /// The `AudioUnitParameterID` this mapping drives.
     ///
     /// Not validated by the AU: an id no parameter uses is accepted with
@@ -370,7 +370,7 @@ impl AuMidiMapping {
     pub fn control_change(parameter_id: u32, channel: u8, controller: u8) -> Self {
         Self {
             scope: Scope::GLOBAL,
-            element: 0,
+            element: Element::ZERO,
             parameter_id,
             trigger: MidiTrigger::ControlChange { controller },
             channel,
@@ -406,8 +406,8 @@ impl AuMidiMapping {
         let sub_range = (raw.flags & K_AU_PARAMETER_MIDI_MAPPING_SUB_RANGE != 0)
             .then_some((raw.sub_range_min, raw.sub_range_max));
         Self {
-            scope: raw.scope,
-            element: raw.element,
+            scope: Scope::from_raw(raw.scope),
+            element: Element(raw.element),
             parameter_id: raw.parameter_id,
             trigger: MidiTrigger::from_raw(raw.status, raw.data1),
             channel: raw.status & 0x0F,
@@ -446,8 +446,8 @@ impl AuMidiMapping {
         }
         let (lo, hi) = self.sub_range.unwrap_or((0.0, 0.0));
         AuParameterMidiMappingRaw {
-            scope: self.scope,
-            element: self.element,
+            scope: self.scope.raw(),
+            element: self.element.0,
             parameter_id: self.parameter_id,
             flags,
             sub_range_min: lo,
@@ -523,12 +523,12 @@ fn encode_table(mappings: &[AuMidiMapping]) -> Vec<AuParameterMidiMappingRaw> {
 }
 
 /// Writes `mappings` to a property that takes an array of them.
-fn write_table(unit: &Unit, property: u32, mappings: &[AuMidiMapping]) -> Result<()> {
+fn write_table<P: Property>(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     let bytes: Vec<u8> = encode_table(mappings)
         .into_iter()
         .flat_map(AuParameterMidiMappingRaw::to_bytes)
         .collect();
-    Ok(unit.set_bytes(property, Scope::GLOBAL, 0, &bytes)?)
+    Ok(unit.set_bytes::<P>(Scope::GLOBAL, Element::ZERO, &bytes)?)
 }
 
 /// Adds `mappings` to whatever the AU already has, replacing any mapping that
@@ -547,7 +547,7 @@ pub fn add(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
         return Ok(());
     }
-    write_table(unit, AddParameterMidiMapping::ID, mappings)
+    write_table::<AddParameterMidiMapping>(unit, mappings)
 }
 
 /// Removes the mappings targeting each of `mappings`'
@@ -567,7 +567,7 @@ pub fn remove(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
         return Ok(());
     }
-    write_table(unit, RemoveParameterMidiMapping::ID, mappings)
+    write_table::<RemoveParameterMidiMapping>(unit, mappings)
 }
 
 /// Replaces the AU's entire mapping table with `mappings`.
@@ -594,7 +594,7 @@ pub fn set_all(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
         let existing = all(unit)?;
         return remove(unit, &existing);
     }
-    write_table(unit, AllParameterMidiMappings::ID, mappings)
+    write_table::<AllParameterMidiMappings>(unit, mappings)
 }
 
 /// Arms "learn" mode: the AU maps the **next MIDI message it sees** to the
@@ -1081,7 +1081,10 @@ mod tests {
         let other_param = AuMidiMapping::control_change(901, 0, 1);
         assert!(!a.targets_same_parameter(&other_param));
 
-        let other_element = AuMidiMapping { element: 1, ..a };
+        let other_element = AuMidiMapping {
+            element: Element(1),
+            ..a
+        };
         assert!(
             !a.targets_same_parameter(&other_element),
             "the element is part of the key"

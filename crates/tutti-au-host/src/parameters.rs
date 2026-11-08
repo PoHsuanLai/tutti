@@ -787,7 +787,7 @@ pub fn dependents_of_at(unit: &Unit, addr: ParamAddress, id: u32) -> Option<Vec<
         entries
             .into_iter()
             .map(|raw| DependentParam {
-                scope: raw.mScope,
+                scope: Scope::from_raw(raw.mScope),
                 id: raw.mParameterID,
             })
             .collect(),

@@ -475,7 +475,7 @@ impl AuInstance {
     pub fn reset(&mut self) -> Result<()> {
         // Global scope / element 0 is the documented address for a whole-unit
         // reset; per-bus reset is not a thing AUv2 offers.
-        self.unit().reset(Scope::GLOBAL, 0)?;
+        self.unit().reset(Scope::GLOBAL, Element::ZERO)?;
         // Pre-`initialize` there is no scratch: the cursor is created at zero by
         // `initialize` and has nothing to carry over, so there is nothing to do.
         if let State::Active(r) = &mut self.state {

@@ -2,9 +2,6 @@
 
 use thiserror::Error;
 
-#[cfg(target_os = "macos")]
-use crate::types::*;
-
 /// The loading step an [`AuError::LoadFailed`] belongs to.
 ///
 /// Re-exported from `tutti-plugin-types`, which shares it across all plugin

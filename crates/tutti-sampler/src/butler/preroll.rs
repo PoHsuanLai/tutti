@@ -122,7 +122,7 @@ mod tests {
                 RegionId(i as u64 + 1),
                 PathBuf::from("test.wav"),
                 4096,
-                2usize,
+                2u16,
             );
             let mut state = ChannelPlan::default();
             state.start_streaming(

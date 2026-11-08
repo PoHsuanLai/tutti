@@ -70,7 +70,7 @@ fn commit(ed: &mut Editor, exec: &mut Executor) {
 /// For each of `fans` global inputs, `lanes` gains off it, summed onto its
 /// own output: `tiny/16` of `tutti-nodes`' bench when `fans` is 1.
 fn fans(ed: &mut Editor, fans: usize, lanes: usize, gains: Option<Cost>, sums: Option<Cost>) {
-    ed.spec_mut().topology.inputs = ChannelLayout::from_count(fans as u16);
+    ed.spec_mut().topology.inputs = ChannelLayout::try_from(fans).expect("a test width is small");
     let mut outputs = Vec::new();
     for f in 0..fans {
         let s = 1_000 * (f as u64 + 1);

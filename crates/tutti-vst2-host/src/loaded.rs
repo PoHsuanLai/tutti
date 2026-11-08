@@ -371,10 +371,11 @@ impl Vst2Loaded {
     #[must_use]
     pub fn pins(&self) -> (ChannelLayout, ChannelLayout) {
         let (inputs, outputs) = self.handle.instance.read_pin_counts();
-        (
-            ChannelLayout::from(inputs.max(0) as u16),
-            ChannelLayout::from(outputs.max(0) as u16),
-        )
+        // `pins` is an infallible re-read with no error path to refuse through:
+        // a negative count is no channels and one past `u16::MAX` saturates
+        // there (a plugin that wide fails wherever it is wired), never wraps.
+        let width = |count: i32| ChannelLayout::clamped(usize::try_from(count).unwrap_or(0));
+        (width(inputs), width(outputs))
     }
 
     /// Returns `true` while the plugin is resumed (`effMainsChanged(1)`): from an

@@ -1760,7 +1760,8 @@ impl BlockRig {
             "a rig drives at most {RIG_MAX_CHANNELS} channels a side"
         );
         let topology = &mut editor.spec_mut().topology;
-        topology.inputs = ChannelLayout::from_count(ins as u16);
+        topology.inputs =
+            ChannelLayout::try_from(ins).expect("asserted within RIG_MAX_CHANNELS above");
         for c in 0..ins {
             topology.edges.insert(
                 tutti_types::graph::InPort {

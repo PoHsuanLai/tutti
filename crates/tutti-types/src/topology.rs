@@ -214,7 +214,9 @@ impl ChannelTopology {
     /// The bridge back to the count-only vocabulary, for a signature that
     /// takes a width.
     pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from_count(u16::try_from(self.positions.len()).unwrap_or(u16::MAX))
+        // `new` takes any iterator, so a (absurd) bus past `u16::MAX` saturates here
+        // rather than panicking in an accessor.
+        ChannelLayout::clamped(self.positions.len())
     }
 
     /// Returns which channel feeds `speaker`, or `None` if this bus has none.

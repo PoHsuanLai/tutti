@@ -82,6 +82,18 @@ pub enum AuError {
     /// configured stream (wrong frame count, mismatched channels, etc.).
     #[error("invalid buffer: {0}")]
     InvalidBuffer(String),
+    /// A bus reports more channels than a layout holds (`u16::MAX`). Refused
+    /// rather than wrapped into a narrower bus.
+    #[error(
+        "AU {scope} bus reports {channels} channels; at most {} are supported",
+        u16::MAX
+    )]
+    BusTooWide {
+        /// Which side the bus is on: `"input"` or `"output"`.
+        scope: &'static str,
+        /// The `mChannelsPerFrame` the AU reported.
+        channels: u32,
+    },
     /// The AU declined the requested sample rate: after the stream-format /
     /// `kAudioUnitProperty_SampleRate` writes, its ASBD still reports a
     /// different `mSampleRate`.

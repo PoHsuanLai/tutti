@@ -38,6 +38,13 @@ pub use error::{Error, PlaceError, Result};
 /// it here ([`PoolTooWide`]).
 pub const MAX_SAMPLER_CHANNELS: usize = tutti_graph::MAX_ROOT_CHANNELS;
 
+/// [`MAX_SAMPLER_CHANNELS`] as a layout's count. The cast is checked at compile
+/// time: the build fails if the root ever grows past what a layout holds.
+pub(crate) const MAX_SAMPLER_WIDTH: u16 = {
+    assert!(MAX_SAMPLER_CHANNELS <= u16::MAX as usize);
+    MAX_SAMPLER_CHANNELS as u16
+};
+
 /// Reject the empty layout for anything that is a graph node.
 ///
 /// [`ChannelLayout`](tutti_types::ChannelLayout) can represent an empty bus

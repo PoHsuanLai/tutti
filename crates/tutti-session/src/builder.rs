@@ -100,6 +100,9 @@ struct Parts {
 
 impl SessionBuilder {
     /// Global graph inputs (hardware or host input channels). Default 0.
+    ///
+    /// A count above `u16::MAX` is refused when the session is built
+    /// ([`FoldError::TooWide`](tutti_types::FoldError::TooWide)).
     #[must_use]
     pub fn inputs(mut self, inputs: usize) -> Self {
         self.inputs = inputs;
@@ -258,7 +261,7 @@ impl SessionBuilder {
         #[cfg(feature = "midi-hardware")]
         let (midi_io, device_events) = midi_io.transpose()?.unzip();
 
-        let mut graph = Graph::new(self.inputs, outputs, rate, max_block, quantum);
+        let mut graph = Graph::new(self.input_layout()?, outputs, rate, max_block, quantum);
         graph.set_render_workers(self.render_workers);
         graph.set_render_worker_start(self.render_worker_start.take());
         let transport = Transport::new(rate);
@@ -433,7 +436,7 @@ impl SessionBuilder {
             .root
             .as_ref()
             .map_or(self.outputs_floor, |r| r.positions().len());
-        let mut graph = Graph::new(self.inputs, outputs, rate, LIVE_MAX_BLOCK, None);
+        let mut graph = Graph::new(self.input_layout()?, outputs, rate, LIVE_MAX_BLOCK, None);
         graph.set_render_workers(self.render_workers);
         graph.declare_root(self.root.clone(), None)?;
         self.session(
@@ -530,6 +533,12 @@ impl SessionBuilder {
 impl SessionBuilder {
     /// The root's width for `device`: the declared topology's, or else
     /// [`root_width`] of the floor.
+    /// The global input count as a layout, or the refusal of a count none holds.
+    fn input_layout(&self) -> Result<ChannelLayout> {
+        Ok(ChannelLayout::try_from(self.inputs)
+            .map_err(|_| tutti_types::FoldError::TooWide(self.inputs))?)
+    }
+
     fn root_width(&self, device: ChannelLayout) -> usize {
         self.root.as_ref().map_or_else(
             || root_width(self.outputs_floor, device),
@@ -555,7 +564,9 @@ impl SessionBuilder {
             // how much is built before the refusal.
             Some(declared) => Graph::check_root(declared, device)?,
             None => {
-                tutti_types::Fold::widths(ChannelLayout::from(root), device)?;
+                let width = ChannelLayout::try_from(root)
+                    .map_err(|_| tutti_types::FoldError::TooWide(root))?;
+                tutti_types::Fold::widths(width, device)?;
             }
         }
         Ok(())
@@ -592,6 +603,6 @@ impl SessionBuilder {
 /// fork is prepared on its own, with no such cap.
 pub fn root_width(project: usize, device: ChannelLayout) -> usize {
     project
-        .max(device.count() as usize)
+        .max(usize::from(device.count()))
         .clamp(1, MAX_ROOT_CHANNELS)
 }

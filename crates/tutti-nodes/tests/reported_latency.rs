@@ -320,14 +320,12 @@ mod convolver {
     fn stereo_convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         type Build = fn() -> ConvolverNode;
         let builds: [(&str, Build); 6] = [
-            ("mono", || ConvolverNode::shared_ir(2usize, &[1.0], 128)),
+            ("mono", || ConvolverNode::shared_ir(2u16, &[1.0], 128)),
             ("stereo", || ConvolverNode::stereo(&[1.0], &[1.0], 128)),
             ("mono_to_stereo", || {
                 ConvolverNode::mono_to_stereo(&[1.0], &[1.0], 128)
             }),
-            ("shared x6", || {
-                ConvolverNode::shared_ir(6usize, &[1.0], 128)
-            }),
+            ("shared x6", || ConvolverNode::shared_ir(6u16, &[1.0], 128)),
             ("per_channel x6", || {
                 ConvolverNode::per_channel(&[&[1.0_f32][..]; 6], 128)
             }),

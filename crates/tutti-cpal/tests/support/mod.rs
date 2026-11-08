@@ -96,7 +96,7 @@ pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
 pub fn spec(channels: usize, format: cpal::SampleFormat) -> OutputSpec {
     OutputSpec::new(
         SampleRate(SAMPLE_RATE),
-        ChannelLayout::from(channels),
+        ChannelLayout::try_from(channels).expect("a test width is small"),
         format,
     )
 }

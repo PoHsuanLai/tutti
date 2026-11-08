@@ -945,3 +945,25 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
     s.update();
     assert_eq!(third.cell.retired_len(), 1, "a removed node is not swept");
 }
+
+/// A global input count no layout holds is refused when the session is built,
+/// not wrapped into a narrow one.
+///
+/// Mutation (run): `Graph::new` taking `inputs as u16` again builds a session
+/// with 2 inputs for 65 538, and this fails.
+#[test]
+fn an_input_count_past_a_layout_is_refused() {
+    let Err(err) = Session::builder().inputs(65_538).build_detached(RATE) else {
+        panic!("a session with 65 538 inputs must be refused");
+    };
+    assert!(matches!(
+        err,
+        tutti_session::Error::Output(tutti_types::FoldError::TooWide(65_538))
+    ));
+    assert!(
+        Session::builder()
+            .inputs(usize::from(u16::MAX))
+            .build_detached(RATE)
+            .is_ok()
+    );
+}

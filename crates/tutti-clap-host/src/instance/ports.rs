@@ -39,11 +39,12 @@ impl ClapLoaded {
     }
 
     /// Metadata for the audio port at `index`, or `None` if the index is
-    /// invalid or the plugin does not implement the extension.
+    /// invalid, the plugin does not implement the extension, or the port
+    /// reports more channels than a layout holds.
     pub fn audio_port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo> {
         self.plugin
             .audio_port_info(index, is_input)
-            .map(|info| audio_port_info_from_ffi(&info))
+            .and_then(|info| audio_port_info_from_ffi(&info))
     }
 
     /// Total channel count summed across one side's audio ports.
@@ -169,7 +170,7 @@ impl ClapLoaded {
     ) -> Option<AudioPortInfo> {
         self.plugin
             .audio_ports_config_port_info(config_id, port_index, is_input)
-            .map(|info| audio_port_info_from_ffi(&info))
+            .and_then(|info| audio_port_info_from_ffi(&info))
     }
 
     /// Plugin-reported processing latency in samples. 0 when unsupported.
@@ -402,14 +403,16 @@ fn decode_surround_channel_map(map: &[u8], count: usize) -> Option<Vec<SurroundC
     )
 }
 
-fn audio_port_info_from_ffi(info: &tutti_clap_ffi::AudioPortInfo) -> AudioPortInfo {
-    AudioPortInfo {
+/// `None` for a port that reports more channels than a layout holds, as for a
+/// port the plugin rejects.
+fn audio_port_info_from_ffi(info: &tutti_clap_ffi::AudioPortInfo) -> Option<AudioPortInfo> {
+    Some(AudioPortInfo {
         id: info.id,
         name: info.name.clone(),
-        layout: layout_of_port(info),
+        layout: layout_of_port(info).ok()?,
         flags: AudioPortFlags::from_bits_truncate(info.flags),
         in_place_pair_id: info.in_place_pair,
-    }
+    })
 }
 
 #[cfg(feature = "clap-extras")]

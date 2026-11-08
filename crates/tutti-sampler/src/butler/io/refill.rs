@@ -438,7 +438,7 @@ mod tests {
         use std::path::PathBuf;
 
         let (mut writer, ring) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("t.wav"), 4096, 1usize);
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("t.wav"), 4096, 1u16);
         let mut reader = ring.take_reader(true).expect("the reader");
         let rt_state = RtState::new();
         let mut buffer = Vec::new();

@@ -86,6 +86,23 @@ pub enum ClapError {
     #[error("Processing error: a channel buffer is shorter than the block")]
     BufferTooShort,
 
+    /// An audio port reports more channels than a layout holds (`u16::MAX`).
+    /// Refused at load, with the port named, rather than wrapped into a
+    /// narrower bus.
+    #[error(
+        "The plugin's audio {} port {index} reports {channels} channels; at most {} are supported",
+        if *is_input { "input" } else { "output" },
+        u16::MAX
+    )]
+    PortTooWide {
+        /// Whether the port is on the input side.
+        is_input: bool,
+        /// The port's index on its side.
+        index: u32,
+        /// The channel count the plugin reported.
+        channels: u32,
+    },
+
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]
     StateError(String),

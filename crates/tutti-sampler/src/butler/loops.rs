@@ -704,7 +704,12 @@ mod tests {
     ) -> impl FnMut(usize, &mut [f32]) -> bool + 'w {
         move |at, out| {
             reads.set(reads.get() + 1);
-            read_wave(wave, at, out, ChannelLayout::from(ch));
+            read_wave(
+                wave,
+                at,
+                out,
+                ChannelLayout::try_from(ch).expect("a test width is small"),
+            );
             true
         }
     }
@@ -712,7 +717,7 @@ mod tests {
     fn ring_loop(wave: &Wave, range: (u64, u64), fade: usize) -> RingLoop {
         let reads = std::cell::Cell::new(0);
         let mut read = reader(wave, 1, &reads);
-        let captured = RingLoop::capture(range, fade, wave.len(), 1usize, &mut read);
+        let captured = RingLoop::capture(range, fade, wave.len(), 1u16, &mut read);
         captured.expect("a loop").0
     }
 
@@ -757,7 +762,7 @@ mod tests {
         assert_eq!(lead_in((0, 9), 4), [0.0, 1.0, 2.0, 3.0]);
         assert!(lead_in((0, 9), 0).is_empty());
         let (blind, outcome) =
-            RingLoop::capture((5, 9), 2, 10, 1usize, &mut |_, _| false).expect("a loop");
+            RingLoop::capture((5, 9), 2, 10, 1u16, &mut |_, _| false).expect("a loop");
         assert_eq!(
             (blind.span().fade(), blind.lead_in.len(), outcome),
             (0, 0, LeadIn::Unreadable)
@@ -835,7 +840,13 @@ mod tests {
         }
         let reads = std::cell::Cell::new(0);
         let mut read = reader(&wave, CH, &reads);
-        let captured = RingLoop::capture((0, 100), 0, 100, CH, &mut read);
+        let captured = RingLoop::capture(
+            (0, 100),
+            0,
+            100,
+            ChannelLayout::try_from(CH).expect("a test width is small"),
+            &mut read,
+        );
         let mapping = Mapping {
             reverse: false,
             len: 100,

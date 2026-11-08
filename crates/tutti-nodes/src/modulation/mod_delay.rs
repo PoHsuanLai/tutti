@@ -398,7 +398,8 @@ pub const MOD_DELAY_PARAMS: [UnitParam; 4] = [
 
 impl Node for ModDelayNode {
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::from_count(self.delays.len() as u16);
+        let width =
+            ChannelLayout::try_from(self.delays.len()).expect("the width came from a layout");
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
@@ -576,7 +577,7 @@ mod tests {
     /// interpolation between control points.
     fn trajectory_node(depth: f32) -> ModDelayNode {
         let node = ModDelayNode::new(
-            1usize,
+            1u16,
             ModDelayConfig {
                 base_delay: Seconds(0.02),
                 max_delay: Seconds(0.08),
@@ -985,7 +986,7 @@ mod tests {
         // Longer than the 10 ms base delay, so the wet half is sounding.
         let x = noise(11, 2_048);
         let silent = [0.0f32; 2_048];
-        let mut wide = at_48k(ModDelayNode::chorus(6usize));
+        let mut wide = at_48k(ModDelayNode::chorus(6u16));
         let ins: [&[f32]; 6] = [&x, &x, &x, &silent, &x, &x];
         let wide_out = drive_frames(&mut wide, &ins);
         let mut stereo = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));

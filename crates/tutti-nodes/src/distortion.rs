@@ -64,7 +64,8 @@ impl DistortionNode {
 
     /// An `n`-channel waveshaper. The shaper carries no per-channel state, so
     /// every channel is shaped by the same (linked) drive/kind.
-    /// `with_channels(2, …)` is bit-identical to [`Self::new`].
+    /// `with_channels(2, …)` is bit-identical to [`Self::new`]. The width is
+    /// clamped to `1..=65535`, the widths a `ChannelLayout` holds.
     pub fn with_channels(channels: usize, kind: ShapeKind, drive: impl Into<Drive>) -> Self {
         let drive = drive.into();
         let d = drive.get().max(0.0);
@@ -73,7 +74,7 @@ impl DistortionNode {
             drive: Param::new(drive),
             shaper: Shaper::build(kind, d),
             last_drive: d,
-            channels: channels.max(1),
+            channels: channels.clamp(1, usize::from(u16::MAX)),
         }
     }
 
@@ -137,7 +138,8 @@ impl Node for DistortionNode {
     /// `SoftCrush` (a rounding call) and `Atan` and `Tanh` (a libm call)
     /// are `Moderate`.
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::from_count(self.channels as u16);
+        let width = ChannelLayout::try_from(self.channels)
+            .expect("the constructor bounds the width to a layout");
         let cost = match self.kind {
             ShapeKind::Softsign | ShapeKind::HardClip => tutti_graph::Cost::Light,
             _ => tutti_graph::Cost::Moderate,

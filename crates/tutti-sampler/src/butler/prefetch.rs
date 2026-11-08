@@ -545,7 +545,12 @@ mod tests {
     }
 
     fn ring(capacity: usize, channels: usize) -> (RegionOut, SharedReader) {
-        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), capacity, channels)
+        RegionBuffer::with_capacity(
+            RegionId(1),
+            PathBuf::new(),
+            capacity,
+            ChannelLayout::try_from(channels).expect("a test width is small"),
+        )
     }
 
     /// Frames pushed land by position, every channel in its place at six

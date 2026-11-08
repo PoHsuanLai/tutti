@@ -463,7 +463,7 @@ fn outputs_past_the_tables_are_silent() {
     }
     let (unit, handle) = loaded.unwrap_or_else(|e| panic!("in-process load: {e:?}"));
 
-    let wide = ChannelLayout::from_count(WIDE as u16);
+    let wide = ChannelLayout::try_from(WIDE).expect("a test width is small");
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, wide);
     let stale = g.add(Unforkable(Fill {
         width: wide,

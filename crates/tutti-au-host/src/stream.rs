@@ -203,7 +203,10 @@ impl StreamConfig {
                 self.check_sample_rate("output", asbd.mSampleRate)?;
             }
             let effective_outputs = out_accepted
-                .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
+                .ok()
+                // A count no layout holds is as unreadable as no answer: the
+                // requested layout stays, and the AU fails on its own terms.
+                .and_then(|asbd| ChannelLayout::try_from(asbd.mChannelsPerFrame).ok())
                 .unwrap_or(self.channels.outputs);
 
             let mut effective_inputs = self.channels.inputs;
@@ -230,7 +233,8 @@ impl StreamConfig {
                     self.check_sample_rate("input", asbd.mSampleRate)?;
                 }
                 effective_inputs = in_accepted
-                    .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
+                    .ok()
+                    .and_then(|asbd| ChannelLayout::try_from(asbd.mChannelsPerFrame).ok())
                     .unwrap_or(self.channels.inputs);
             }
 

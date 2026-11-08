@@ -87,7 +87,7 @@ impl OutputSpec {
     pub(crate) fn from_supported(c: &cpal::SupportedStreamConfig) -> Self {
         Self {
             sample_rate: SampleRate::from(c.sample_rate().0),
-            channels: ChannelLayout::from(usize::from(c.channels()).max(1)),
+            channels: ChannelLayout::from(c.channels().max(1)),
             sample_format: c.sample_format(),
             quantum: quantum_for(c.buffer_size()),
         }

@@ -736,7 +736,7 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
 
     let six = OutputSpec::new(
         SampleRate(48_000.0),
-        ChannelLayout::from(6usize),
+        ChannelLayout::from(6u16),
         tutti_cpal::cpal::SampleFormat::F32,
     );
     let (driver, new) = ManualStreamDriver::new();

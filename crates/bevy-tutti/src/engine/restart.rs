@@ -445,7 +445,7 @@ mod tests {
     fn spec_with(rate: f64, channels: usize) -> OutputSpec {
         OutputSpec::new(
             SampleRate(rate),
-            ChannelLayout::from(channels),
+            ChannelLayout::try_from(channels).expect("a test width is small"),
             tutti_cpal::cpal::SampleFormat::F32,
         )
     }
@@ -488,7 +488,7 @@ mod tests {
         );
         assert_eq!(
             app.world().resource::<AudioConfig>().channels,
-            ChannelLayout::from(6usize)
+            ChannelLayout::from(6u16)
         );
         for _ in 0..4 {
             let block = surround.render_block(480).expect("the stream is open");

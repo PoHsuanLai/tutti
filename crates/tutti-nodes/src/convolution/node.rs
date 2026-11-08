@@ -202,6 +202,11 @@ impl ConvolverNode {
     /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
     fn build(convolvers: Vec<Convolver>, config: IrChannelConfig) -> Self {
         debug_assert!(!convolvers.is_empty());
+        assert!(
+            u16::try_from(convolvers.len()).is_ok(),
+            "a ConvolverNode has at most {} channels",
+            u16::MAX
+        );
         let latency_samples = convolvers[0].latency();
         // Every constructor builds all channels with one block size, so one
         // figure is true of the whole node.
@@ -277,7 +282,7 @@ impl ConvolverNode {
     ///
     /// # Panics
     ///
-    /// If `irs` is empty.
+    /// If `irs` is empty or longer than `u16::MAX`.
     pub fn per_channel(irs: &[&[f32]], block_size: usize) -> Self {
         Self::per_ir(irs, block_size, IrChannelConfig::Stereo)
     }
@@ -287,7 +292,7 @@ impl ConvolverNode {
     ///
     /// # Panics
     ///
-    /// If `irs` is empty.
+    /// If `irs` is empty or longer than `u16::MAX`.
     pub fn folded(irs: &[&[f32]], block_size: usize) -> Self {
         Self::per_ir(irs, block_size, IrChannelConfig::MonoToStereo)
     }
@@ -314,7 +319,12 @@ impl ConvolverNode {
 
     /// The channel width this node was built for (inputs == outputs).
     pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from(self.width())
+        self.shape_width()
+    }
+
+    /// The width as a layout; `build` refused a node wider than `u16::MAX`.
+    fn shape_width(&self) -> ChannelLayout {
+        ChannelLayout::try_from(self.width()).expect("build refused a width above u16::MAX")
     }
 
     #[inline]
@@ -473,7 +483,7 @@ impl Node for ConvolverNode {
     /// convolution being linear and finite. The tail excludes the FFT block
     /// latency, which is declared on its own and compensated.
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::from(self.width());
+        let width = self.shape_width();
         Shape::audio(width, width)
             .with_latency(Latency::new(Samples(self.latency_samples)))
             .with_tail(ring_out(
@@ -605,7 +615,7 @@ mod tests {
     #[test]
     fn the_spectra_are_stored_once_and_a_fork_shares_them() {
         let ir = generate_test_ir(4_096, 0.3, 48_000.0);
-        let node = ConvolverNode::shared_ir(6usize, &ir, 256);
+        let node = ConvolverNode::shared_ir(6u16, &ir, 256);
         let first = node.convolvers[0].spectra();
         assert!(
             node.convolvers
@@ -814,7 +824,7 @@ mod golden {
         let ir_b = generate_test_ir(300, 0.5, 48_000.0);
         vec![
             ("width1", ConvolverNode::new(&ir_a, 64)),
-            ("mono", ConvolverNode::shared_ir(2usize, &ir_a, 32)),
+            ("mono", ConvolverNode::shared_ir(2u16, &ir_a, 32)),
             ("stereo", ConvolverNode::stereo(&ir_a, &ir_b, 128)),
             (
                 "mono_to_stereo",
@@ -1022,7 +1032,7 @@ mod golden {
     /// leaks the impulse into the other channels. Both fail this.
     #[test]
     fn a_six_channel_shared_ir_keeps_each_channel_to_itself_and_aligned() {
-        let node = ConvolverNode::shared_ir(6usize, &[1.0], 64);
+        let node = ConvolverNode::shared_ir(6u16, &[1.0], 64);
         node.set_mix(0.5);
         let latency = node.latency_samples().0;
         assert_eq!(node.shape().latency, Latency::new(Samples(latency)));

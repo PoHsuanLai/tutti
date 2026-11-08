@@ -36,9 +36,11 @@ pub enum Error {
     #[error("graph engine: {0}")]
     Graph(#[from] tutti_engine::GraphEngineError),
 
-    /// The output width has no channels to fold the graph onto: wraps
-    /// `tutti_types::FoldError`.
-    #[error("output width: {0}")]
+    /// The graph root cannot be placed on the output: the device has no
+    /// channels, or the root is wider than a device at least one of whose
+    /// widths has no channel order (a 6-wide root on a 5-channel device would
+    /// lose a channel). Wraps `tutti_types::FoldError`.
+    #[error("the graph root cannot be placed on the output: {0}")]
     Output(#[from] tutti_types::FoldError),
 
     /// The graph refused a re-prepare: a device restart asked for a block

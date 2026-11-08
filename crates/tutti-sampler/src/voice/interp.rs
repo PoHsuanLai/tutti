@@ -598,8 +598,8 @@ impl MonoSpread {
     }
 }
 
-/// The widest wave [`Place`] folds: the stack a frame's channels are gathered
-/// into. A wider one is [`PlaceError::TooWide`] when the `Place` is built.
+/// The stack a frame's channels are gathered into: more than the engine has
+/// speakers for (18), and more than any placement reads.
 pub const MAX_WAVE_CHANNELS: usize = 32;
 
 /// Where the channels of a wave go in a frame of some width.
@@ -650,8 +650,9 @@ impl Place {
     ///   channel no speaker names (a second LFE, a wide or high speaker), mono
     ///   or not: there is no telling where it should sound.
     /// - [`PlaceError::Fold`] for any other channel the frame cannot place.
-    /// - [`PlaceError::TooWide`] for a wave past [`MAX_WAVE_CHANNELS`] that is
-    ///   not already as wide as the frame.
+    /// - [`PlaceError::Fold`] with [`FoldError::Unplaced`] for a wave wider
+    ///   than the frame where either has no channel order (10 channels into 8,
+    ///   a 5.1 file into 5): its extra channels would be dropped.
     pub fn for_wave(wave: &Wave, width: ChannelLayout) -> Result<Self, PlaceError> {
         let frame = ChannelLayout::from_count(width.count().min(MAX_SAMPLER_CHANNELS as u16));
         let topology = wave.topology();
@@ -673,12 +674,10 @@ impl Place {
         if fold.is_identity() {
             return Ok(Self::native(frame));
         }
-        if wave.channels() > MAX_WAVE_CHANNELS {
-            return Err(PlaceError::TooWide {
-                channels: wave.channels(),
-                max: MAX_WAVE_CHANNELS,
-            });
-        }
+        // A fold that is not the identity reads at most the widest named
+        // source: a wider source than `MAX_WAVE_CHANNELS` would need more
+        // distinct speakers than there are, and a discrete one only widens.
+        debug_assert!(usize::from(fold.src_layout().count()) <= MAX_WAVE_CHANNELS);
         Ok(Self::Folded(fold))
     }
 
@@ -1288,16 +1287,42 @@ mod tests {
         assert!((out[0] - (1.0 + m * 4.0)).abs() < 1e-5 && (out[1] - (2.0 + m * 8.0)).abs() < 1e-5);
     }
 
-    /// A wave past the gather is refused rather than read short.
+    /// A wave wider than the frame with an unordered end has no place for its
+    /// extra channels, and is refused rather than cut: ten channels into a
+    /// frame of eight, a 5.1 file into five.
+    ///
+    /// Mutation (run): `Fold::by_index` accepting a narrowing → both rows place
+    /// the wave (truncated) and fail.
     #[test]
-    fn a_wave_past_the_gather_is_too_wide() {
-        let w = Wave::new(MAX_WAVE_CHANNELS + 1, 48_000.0);
+    fn a_wave_with_no_place_for_its_extra_channels_is_refused() {
+        let ten = Wave::new(10, 48_000.0);
+        assert!(matches!(
+            Place::for_wave(&ten, ChannelLayout::from(8u16)),
+            Err(PlaceError::Fold(FoldError::Unplaced { channel: 8, .. }))
+        ));
+        let mut six = Wave::new(6, 48_000.0);
+        six.push_frame(&[0.0; 6]);
+        assert!(matches!(
+            Place::for_wave(&six, ChannelLayout::from(5u16)),
+            Err(PlaceError::Fold(FoldError::Unplaced { channel: 5, .. }))
+        ));
+        let w = Arc::new(six);
         assert_eq!(
-            Place::for_wave(&w, ChannelLayout::STEREO),
-            Err(PlaceError::TooWide {
-                channels: MAX_WAVE_CHANNELS + 1,
-                max: MAX_WAVE_CHANNELS
-            })
+            super::super::MemorySource::with_channels(Arc::clone(&w), ChannelLayout::from(5u16))
+                .err(),
+            Some(PlaceError::Fold(FoldError::Unplaced {
+                channel: 5,
+                speaker: tutti_types::Speaker::Discrete
+            }))
+        );
+        assert!(
+            crate::memory_voice(
+                w,
+                ChannelLayout::from(5u16),
+                crate::Playback::default(),
+                Default::default()
+            )
+            .is_err()
         );
     }
 

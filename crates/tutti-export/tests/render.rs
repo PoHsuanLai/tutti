@@ -1198,3 +1198,46 @@ fn a_zero_width_export_is_rejected_not_a_divide_by_zero() {
         "expected UnsupportedChannels(0), got {err:?}"
     );
 }
+
+/// A five-wide graph exported to a file narrower than it, where either width has
+/// no channel order, is refused with `ConfigError::Placement` rather than cut to
+/// its first channels; widened (or into an ordered file it folds into) it
+/// renders.
+///
+/// Mutation (run): `Fold::by_index` accepting a narrowing → the 3-wide export
+/// succeeds and truncates, and the first assertion fails.
+#[test]
+fn a_graph_with_no_place_in_the_file_is_refused() {
+    use tutti_export::{ConfigError, Error};
+    let five = || {
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(5u16));
+        let id = g.add(Const::new(0.25, ChannelLayout::from(5u16)));
+        g.pipe_output(id);
+        built(g, RATE)
+    };
+    for width in [1u16, 2, 3, 4] {
+        let err = render_to_buffers(
+            five(),
+            &config(Format::Wav(Pcm::Float32), ChannelLayout::from(width)),
+            &FrozenClock,
+        );
+        assert!(
+            matches!(
+                err,
+                Err(Error::InvalidConfig(ConfigError::Placement(
+                    tutti_types::FoldError::Unplaced { channel, .. }
+                ))) if channel == usize::from(width)
+            ),
+            "five into {width}: {:?}",
+            err.map(|_| ())
+        );
+    }
+    for width in [5u16, 6, 8] {
+        let ok = render_to_buffers(
+            five(),
+            &config(Format::Wav(Pcm::Float32), ChannelLayout::from(width)),
+            &FrozenClock,
+        );
+        assert!(ok.is_ok(), "five into {width}");
+    }
+}

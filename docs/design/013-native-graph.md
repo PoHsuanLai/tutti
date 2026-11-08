@@ -7965,9 +7965,8 @@ by width alone.
     means at an edge that can say no more (cpal 0.15 gives no channel map): SMPTE
     where the engine has an order, quad at 4, and none at 3, 5, 7, 9 to 11, 13 and
     up. `Fold::widths(src, dst)` / `Fold::to_width(&src, dst)` place by position
-    where both ends have an order, and by index (`Fold::by_index`: the first
-    channels, zero-filled, a mono mix of the front pair) where either has none,
-    as the width folds did. A source with an `Unknown` channel is
+    where both ends have an order, and by index (`Fold::by_index`: copy, then
+    zero-fill, widening only) where either has none. A source with an `Unknown` channel is
     `FoldError::Unnamed` whatever the destination; a `Discrete` source is read in
     the engine's order for its width (a count-built wave of 4 is quad).
     `fold_frame` is deleted; `fold_frame_to_mono` and `fold_frame_to_stereo` stay
@@ -7991,12 +7990,12 @@ by width alone.
     `Wave::topology()` and the node's width: a mono wave by the lone-centre
     rule, a wave already in the frame's order read channel for channel, any
     other by `Fold::to_width`. A wave with an `Unknown` channel (LFE2, wide,
-    high) is a `PlaceError` from `MemorySource::try_with_channels` and
+    high) is a `PlaceError` from `MemorySource::with_channels` and
     `memory_voice`. A file that names its channels in another order than the
     engine's (a WAV 7.1 lists the rears before the sides) is permuted, and a
     permuting wave reads a frame at a time (`read_placed_into`), not along time.
-    Waves of 9 to 32 channels into a frame of 8 (the most a reader writes) are
-    placed rather than cut to their first 8. The streaming tier still reads a file
+    Waves of 9 to 12 channels into a frame of 8 (the most a reader writes) are
+    folded rather than cut to their first 8; the constructors return `Result`. The streaming tier still reads a file
     at its own width and order; it does not consume `FileIn::topology()` yet.
   - **`WaveMetadata`** carries the file's `ChannelTopology` in place of a bare
     count (`channels()` derives it); it is `Clone`, not `Copy`, and so is the
@@ -8008,6 +8007,13 @@ by width alone.
     engine's) is permuted in the sampler, a wave of 9 or more channels into a
     frame of 8 folds instead of being cut, and an export of a graph wider than 12
     channels is placed by index instead of through a 12-channel gather.
+  - **No silent drop** (own commit, revertable alone). `Fold::by_index` only
+    widens (copy, zero-fill). A narrowing with an unordered end (3, 5, 7, 9 to 11,
+    13 and up on either side) is `FoldError::Unplaced`, where the width folds
+    truncated. The engine holds no fold for such a pair and renders a silent
+    counted block; `SessionBuilder::build` and `build_offline` refuse the pair
+    with `Error::Output`; export returns `ConfigError::Placement`; the sampler a
+    `PlaceError`. `Fold::select` is the way to truncate on purpose.
 - **Quad** is spelled `FL FR BL BR` (WAVE's `0x33`). VST3 `k40Music` and AU
   `Quadraphonic` decode to `FL FR SL SR`; `Fold` relabels between the two at
   gain 1.0, so neither is rewritten.

@@ -579,21 +579,21 @@ impl Fold {
         Self::between(&order(src)?, &order(dst)?)
     }
 
-    /// Places the channels of a source by index, for widths that have no order.
+    /// Places the channels of a source by index, for widths that have no order:
+    /// widening only.
     ///
-    /// Destination channel `i` is source channel `i` at gain 1.0, a wider
-    /// destination is zero-filled, and a narrower one takes the first channels
-    /// and leaves the rest unread: this is the one place a fold drops a channel
-    /// on purpose, and it is the caller's choice (see
-    /// [`to_width`](Self::to_width)), never a matrix. Two exceptions keep a
-    /// mono source and a mono destination what they always were: a one-channel
-    /// source feeds both channels of a stereo destination, and a mono
-    /// destination from two or more channels is `(c0 + c1) / 2` for two and
-    /// `(c0 + c1) · `[`M3DB`]` for more.
+    /// Destination channel `i` is source channel `i` at gain 1.0 and the rest of
+    /// a wider destination is zero-filled. A destination narrower than the
+    /// source would have to drop channels, and a channel that cannot be placed
+    /// is an error, never a silent drop: that is [`FoldError::Unplaced`] (the
+    /// first channel with no place, carrying [`Speaker::Discrete`] since a
+    /// width names no speaker). A caller who chooses to truncate says so with
+    /// [`select`](Self::select).
     ///
     /// # Errors
     ///
-    /// [`FoldError::Empty`] for a width of zero.
+    /// [`FoldError::Empty`] for a width of zero, [`FoldError::Unplaced`] for a
+    /// narrowing.
     pub fn by_index(src: ChannelLayout, dst: ChannelLayout) -> Result<Self, FoldError> {
         let (s, d) = (src.count(), dst.count());
         for (end, n) in [(FoldEnd::Source, s), (FoldEnd::Destination, d)] {
@@ -601,17 +601,15 @@ impl Fold {
                 return Err(FoldError::Empty(end));
             }
         }
-        let rows: Box<[Row]> = match (s, d) {
-            (2.., 1) => Box::new([Row::Mix {
-                a: Expr::Copy(0),
-                b: Expr::Copy(1),
-                scale: if s == 2 { 0.5 } else { M3DB },
-            }]),
-            (1, 2) => Box::new([Row::One(Expr::Copy(0)), Row::One(Expr::Copy(0))]),
-            _ => (0..d)
-                .map(|i| Row::One(if i < s { Expr::Copy(i) } else { Expr::Zero }))
-                .collect(),
-        };
+        if s > d {
+            return Err(FoldError::Unplaced {
+                channel: usize::from(d),
+                speaker: Speaker::Discrete,
+            });
+        }
+        let rows = (0..d)
+            .map(|i| Row::One(if i < s { Expr::Copy(i) } else { Expr::Zero }))
+            .collect();
         Ok(Self { src: s, rows })
     }
 
@@ -619,7 +617,8 @@ impl Fold {
     /// is known: a device, a node's outputs, a file.
     ///
     /// The destination is taken to be the engine's own order for its width
-    /// ([`ChannelTopology::assumed`]). The source is placed by speaker:
+    /// ([`ChannelTopology::assumed`]); a mono source lands on the centre of a
+    /// 6, 8 or 12-wide one and the front pair of a 2 or 4-wide one. The source is placed by speaker:
     ///
     /// - a source with an [`Unknown`](Speaker::Unknown) channel (a second LFE,
     ///   a wide or high speaker) is [`FoldError::Unnamed`], whatever the
@@ -629,8 +628,9 @@ impl Fold {
     ///   whose container states nothing; a quad);
     /// - where both ends have an order, [`between`](Self::between);
     /// - where either has none (3, 5, 7, 9 to 11, 13 and up), no speaker can be
-    ///   named, so channels go by index ([`by_index`](Self::by_index)), as the
-    ///   width folds always did.
+    ///   named, so channels go by index ([`by_index`](Self::by_index)): a mono
+    ///   source widens to the first channel, and a narrowing is an error
+    ///   ([`FoldError::Unplaced`]), not a truncation.
     ///
     /// # Errors
     ///

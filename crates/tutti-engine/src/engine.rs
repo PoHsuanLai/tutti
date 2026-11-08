@@ -469,7 +469,7 @@ impl Engine {
         // Refused only while the control side holds the graph
         // (`apply_pending` racing a callback): this block is silent.
         let graph = self.graph.try_borrow_mut();
-        let declared = folds.get(out_ch, 1).is_some();
+        let declared = folds.has_device(out_ch);
         let (true, Some(mut graph)) = (declared, graph) else {
             output.fill(0.0);
             self.hearing.borrow_mut().write(output, out_ch);
@@ -480,6 +480,7 @@ impl Engine {
         };
         let g = &mut *graph;
         let mut done = 0;
+        let mut unplaced = false;
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
@@ -497,7 +498,7 @@ impl Engine {
                 play: tutti_graph::PlayClock::ZERO,
             });
             g.transport.advance(len, &t);
-            g.render(
+            unplaced |= !g.render(
                 output,
                 &folds,
                 out_ch,
@@ -512,6 +513,9 @@ impl Engine {
             done += len;
         }
         let mut load = self.load.borrow_mut();
+        if unplaced {
+            load.record_silenced();
+        }
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
@@ -548,7 +552,7 @@ impl Engine {
         let mut reader = self.folds.borrow_mut();
         let folds = reader.lend();
         let graph = self.graph.try_borrow_mut();
-        let declared = folds.get(out_ch, 1).is_some();
+        let declared = folds.has_device(out_ch);
         let (true, Some(mut graph)) = (declared, graph) else {
             output.fill(0.0);
             self.hearing.borrow_mut().write(output, out_ch);
@@ -559,6 +563,7 @@ impl Engine {
         };
         let g = &mut *graph;
         let mut done = 0;
+        let mut unplaced = false;
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
@@ -581,7 +586,7 @@ impl Engine {
                 &mut pieces,
             );
             let changes = pieces.changes;
-            g.render(output, &folds, out_ch, done, len, &walk.start, &changes);
+            unplaced |= !g.render(output, &folds, out_ch, done, len, &walk.start, &changes);
             let mut fader = self.fader.borrow_mut();
             fader.fade = fade_frames(rate);
             fader.apply(&walk.gain, frame0, output, out_ch, done, len);
@@ -591,6 +596,9 @@ impl Engine {
             done += len;
         }
         let mut load = self.load.borrow_mut();
+        if unplaced {
+            load.record_silenced();
+        }
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
@@ -1030,7 +1038,7 @@ impl GraphRender {
         len: usize,
         transport: &GraphTransport,
         changes: &TransportChanges,
-    ) {
+    ) -> bool {
         // `settle` installed every queued commit, and the executor renders
         // without applying again: a commit sent since waits for the next
         // block, so the width, the block bound and the rate read here are the
@@ -1055,17 +1063,25 @@ impl GraphRender {
         self.transport.publish_position();
         if width == 0 {
             block.fill(0.0);
-            return;
+            return true;
         }
         // The fold of this width into the device, built on the control side.
         // `width` is within `1..=MAX_ROOT_CHANNELS` (the editor's limits), so a
         // fold is there.
         match folds.get(out_ch, width) {
-            Some(fold) => fold.planar_to_interleaved(
-                |c| &outs[c][..len],
-                InterleavedMut::new(block, ChannelLayout::from(out_ch)),
-            ),
-            None => block.fill(0.0),
+            Some(fold) => {
+                fold.planar_to_interleaved(
+                    |c| &outs[c][..len],
+                    InterleavedMut::new(block, ChannelLayout::from(out_ch)),
+                );
+                true
+            }
+            // A root width that cannot be placed on this device: silent, and
+            // the caller counts it.
+            None => {
+                block.fill(0.0);
+                false
+            }
         }
     }
 }
@@ -1496,23 +1512,36 @@ mod tests {
         out
     }
 
-    /// Every root width places into every supported device width, and the
-    /// fold's figures are the analytic ones: a 5.1 root on a stereo device is the
-    /// ITU fold, a mono root on a 5.1 device is its centre, a 5-wide root (no
-    /// order) on a 3-wide device is its first three channels.
+    /// Every root width that can be placed has a fold into every supported
+    /// device width, and the fold's figures are the analytic ones: a 5.1 root
+    /// on a stereo device is the ITU fold, a mono root on a 5.1 device is its
+    /// centre, a 3-wide root (no order) on a 5-wide device is its channels
+    /// zero-filled. A narrowing with an unordered end (5 into 3, 8 into 7, 6
+    /// into 5) has no fold, and renders a silent counted block rather than a
+    /// truncation.
     ///
     /// Mutation (run): `Fold::widths` placing by index only → the 5.1 and mono
     /// rows fail; the root index off by one in `OutputFolds::get` → every row
-    /// fails.
+    /// fails; `by_index` accepting a narrowing → the `None` rows fail.
     #[test]
     fn every_root_width_places_into_any_device() {
         let folds = OutputFolds::up_to(DEFAULT_DEVICE_WIDTHS);
         for root in 1..=MAX_ROOT_CHANNELS {
             for device in 1..=DEFAULT_DEVICE_WIDTHS {
-                let fold = folds.get(device, root).expect("a fold");
+                let ordered = |w: usize| [1, 2, 4, 6, 8, 12].contains(&w);
+                let refused = root > device && !(ordered(root) && ordered(device));
+                let Some(fold) = folds.get(device, root) else {
+                    assert!(refused, "{root} -> {device} has no fold");
+                    continue;
+                };
+                assert!(!refused, "{root} -> {device} must have no fold");
                 assert_eq!(usize::from(fold.src_layout().count()), root);
                 assert_eq!(usize::from(fold.dst_layout().count()), device);
             }
+        }
+        for (root, device) in [(5, 3), (6, 5), (8, 7), (3, 1), (4, 3)] {
+            assert!(folds.get(device, root).is_none(), "{root} -> {device}");
+            assert!(folds.has_device(device));
         }
         assert!(folds.get(DEFAULT_DEVICE_WIDTHS + 1, 2).is_none());
         assert!(folds.get(2, MAX_ROOT_CHANNELS + 1).is_none());
@@ -1529,7 +1558,7 @@ mod tests {
             [1.0 + m * 3.0 + m * 5.0, 2.0 + m * 3.0 + m * 6.0]
         );
         assert_eq!(run(1, 6, &[0.5]), [0.0, 0.0, 0.5, 0.0, 0.0, 0.0]);
-        assert_eq!(run(5, 3, &[1.0, 2.0, 3.0, 4.0, 5.0]), [1.0, 2.0, 3.0]);
+        assert_eq!(run(3, 5, &[1.0, 2.0, 3.0]), [1.0, 2.0, 3.0, 0.0, 0.0]);
     }
 
     /// A device wider than the default is added on the control side, and a
@@ -1567,6 +1596,33 @@ mod tests {
             ChannelLayout::from(40u16),
         ));
         assert!(out.iter().all(|&s| s == 0.0));
+        assert_eq!(engine.load_meter().peek().silenced, 1);
+    }
+
+    /// A root the device has no place for (five channels into three: either
+    /// width has no order, and two channels would be dropped) renders a silent
+    /// block, counted, instead of its first three channels; into a wider device
+    /// the same root plays.
+    ///
+    /// Mutation (run): `Fold::by_index` accepting a narrowing → the root plays
+    /// truncated and the first assertion fails; `unplaced` never recorded → the
+    /// count is 0.
+    #[test]
+    fn a_root_the_device_cannot_take_is_silent_and_counted() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        rewire(&mut ed, 5);
+        let three = ChannelLayout::from(3u16);
+        let mut out = vec![-9.0f32; 3 * 8];
+        engine.process_segment(&mut InterleavedMut::new(&mut out, three));
+        assert!(out.iter().all(|&s| s == 0.0), "{out:?}");
+        assert_eq!(engine.load_meter().peek().silenced, 1);
+        let seven = ChannelLayout::from(7u16);
+        let mut out = vec![-9.0f32; 7 * 8];
+        engine.process_segment(&mut InterleavedMut::new(&mut out, seven));
+        // Ramp(5) writes 51..=55; the rest of the 7-wide device is silent.
+        assert_eq!(&out[..7], &[51.0, 52.0, 53.0, 54.0, 55.0, 0.0, 0.0]);
         assert_eq!(engine.load_meter().peek().silenced, 1);
     }
 

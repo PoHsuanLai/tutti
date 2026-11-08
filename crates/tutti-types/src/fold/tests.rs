@@ -187,25 +187,47 @@ const PLACED_BY_POSITION: [(u16, u16); 13] = [
     (12, 8),
 ];
 
-/// Invariant: for every pair of widths 1 to 14 outside [`PLACED_BY_POSITION`],
+/// Widths the engine has an order for.
+const ORDERED: [u16; 6] = [1, 2, 4, 6, 8, 12];
+
+/// A narrowing with an unordered end has no place for its extra channels, and
+/// is refused rather than truncated.
+fn refused(sw: u16, dw: u16) -> bool {
+    sw > dw && !(ORDERED.contains(&sw) && ORDERED.contains(&dw))
+}
+
+/// Invariant: for every pair of widths 1 to 14 outside [`PLACED_BY_POSITION`]
+/// (and not [`refused`]),
 /// `Fold::widths` writes the bits of the closed-form ITU formulas
 /// ([`width_oracle`]), on frames of every sign and magnitude and in the special
 /// values, per frame and planar. Widths with no order (3, 5, 7, 9 to 11, 13, 14)
-/// are placed by index: the front pair, the first channels, zero-filled.
+/// are placed by index and only widen (copy, zero-fill); a narrowing with one is
+/// refused with `Unplaced` (its channels would be dropped).
 ///
 /// Mutation (run), each failing this test: overhead grouping off (the 12 -> 2
 /// and 12 -> 1 pairs differ in the last bit); the mono mix reordered to
 /// `a + b * scale`; the direct term moved after the folded ones; the lone-mono
 /// branch off (1 -> 2 at -3 dB); the interleaved and planar lone-term `+=`
-/// written `=`; the pair scale and the wide-mix scale changed; `by_index`'s
-/// mono mix scale `M3DB` -> 0.5 (5 -> 1) or its first-channels copy -> the last
-/// (9 -> 3).
+/// written `=`; the pair scale and the wide-mix scale changed; `by_index`
+/// accepting a narrowing (the refusal arm removed) fails the 5 -> 3 row.
 #[test]
 fn widths_write_the_itu_formulas_to_the_bit() {
     let mut pairs = 0;
+    let mut refusals = 0;
     for sw in 1u16..=14 {
         for dw in 1u16..=14 {
             if PLACED_BY_POSITION.contains(&(sw, dw)) {
+                continue;
+            }
+            if refused(sw, dw) {
+                assert!(
+                    matches!(
+                        Fold::widths(ChannelLayout::from(sw), ChannelLayout::from(dw)),
+                        Err(FoldError::Unplaced { .. })
+                    ),
+                    "{sw} -> {dw} must be refused"
+                );
+                refusals += 1;
                 continue;
             }
             let f = Fold::widths(ChannelLayout::from(sw), ChannelLayout::from(dw)).unwrap();
@@ -239,7 +261,11 @@ fn widths_write_the_itu_formulas_to_the_bit() {
             pairs += 1;
         }
     }
-    assert_eq!(pairs, 14 * 14 - PLACED_BY_POSITION.len());
+    assert_eq!(pairs + refusals + PLACED_BY_POSITION.len(), 14 * 14);
+    assert!(
+        refusals > 0 && pairs > 100,
+        "{refusals} refused, {pairs} placed"
+    );
 }
 
 /// Every pair in [`PLACED_BY_POSITION`] really differs from the closed form
@@ -253,6 +279,9 @@ fn the_placed_by_position_pairs_are_the_ones_that_differ() {
     let probe = |s: usize| -> Vec<f32> { (0..s).map(|c| 0.25 + c as f32 * 0.5).collect() };
     for sw in 1u16..=14 {
         for dw in 1u16..=14 {
+            if refused(sw, dw) {
+                continue;
+            }
             let f = Fold::widths(ChannelLayout::from(sw), ChannelLayout::from(dw)).unwrap();
             let src = probe(usize::from(sw));
             let mut got = vec![0.0f32; usize::from(dw)];
@@ -267,33 +296,32 @@ fn the_placed_by_position_pairs_are_the_ones_that_differ() {
     }
 }
 
-/// A width with no order is placed by index, and the exceptions that keep a
-/// mono source or destination what it was.
+/// A width with no order is placed by index, widening only: a narrowing is
+/// refused, not truncated.
 ///
-/// Mutation (run): `by_index` mono mix scale `M3DB` -> 0.5 fails the 5 -> 1
-/// row; the `(1, 2)` arm removed leaves the right channel silent.
+/// Mutation (run): the `s > d` refusal removed → 5 -> 3 and 7 -> 2 truncate and
+/// fail; the zero-fill arm replaced by `Copy(0)` fails the widening rows.
 #[test]
-fn by_index_is_the_first_channels() {
+fn by_index_only_widens() {
     let w = ChannelLayout::from;
     let run = |s: u16, d: u16, src: &[f32]| {
         let mut out = vec![9.0f32; usize::from(d)];
         Fold::by_index(w(s), w(d)).unwrap().frame(src, &mut out);
         out
     };
-    // Widening zero-fills; narrowing keeps the first channels.
     assert_eq!(run(3, 5, &[1.0, 2.0, 3.0]), [1.0, 2.0, 3.0, 0.0, 0.0]);
-    assert_eq!(run(5, 3, &[1.0, 2.0, 3.0, 4.0, 5.0]), [1.0, 2.0, 3.0]);
-    assert_eq!(run(7, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]), [1.0, 2.0]);
-    // A lone channel feeds both of a stereo pair, and nothing further.
-    assert_eq!(run(1, 2, &[0.5]), [0.5, 0.5]);
+    assert_eq!(run(3, 3, &[1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
     assert_eq!(run(1, 3, &[0.5]), [0.5, 0.0, 0.0]);
-    // Mono: one channel copies, two average, more are the front pair at -3 dB.
-    assert_eq!(run(1, 1, &[0.5]), [0.5]);
-    assert_eq!(run(2, 1, &[0.25, 0.5]), [0.375]);
-    assert_eq!(
-        run(5, 1, &[0.25, 0.5, 9.0, 9.0, 9.0]),
-        [(0.25 + 0.5) * M3DB]
-    );
+    for (s, d) in [(5u16, 3u16), (7, 2), (3, 1), (2, 1)] {
+        assert_eq!(
+            Fold::by_index(w(s), w(d)),
+            Err(FoldError::Unplaced {
+                channel: usize::from(d),
+                speaker: Speaker::Discrete
+            }),
+            "{s} -> {d}"
+        );
+    }
     assert_eq!(
         Fold::by_index(ChannelLayout::EMPTY, w(2)),
         Err(FoldError::Empty(FoldEnd::Source))
@@ -332,12 +360,17 @@ fn to_width_refuses_the_unnamed_and_reads_a_count_in_the_engines_order() {
         .unwrap()
         .frame(&[1.0, 2.0, 3.0, 4.0], &mut out);
     assert_eq!(out, [1.0 + M3DB * 3.0, 2.0 + M3DB * 4.0]);
-    // A named source into a width with no order goes by index.
+    // A named source widens into a width with no order by index, and a
+    // narrowing into one is refused: 5.1 into five channels would lose SR.
     let mut five = [0.0f32; 5];
-    Fold::to_width(&smpte(6), ChannelLayout::from(5u16))
+    Fold::to_width(&smpte(2), ChannelLayout::from(5u16))
         .unwrap()
-        .frame(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &mut five);
-    assert_eq!(five, [1.0, 2.0, 3.0, 4.0, 5.0]);
+        .frame(&[1.0, 2.0], &mut five);
+    assert_eq!(five, [1.0, 2.0, 0.0, 0.0, 0.0]);
+    assert!(matches!(
+        Fold::to_width(&smpte(6), ChannelLayout::from(5u16)),
+        Err(FoldError::Unplaced { channel: 5, .. })
+    ));
     // A file that names its channels in another order is permuted: back
     // before side, as WAV writes 7.1.
     let wav71 = ChannelTopology::new([

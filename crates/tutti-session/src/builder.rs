@@ -378,7 +378,8 @@ impl SessionBuilder {
     ///
     /// # Errors
     ///
-    /// When the engine refuses the graph, `layout` has no channels,
+    /// When the engine refuses the graph, `layout` has no channels or cannot take
+    /// the root ([`Error::Output`]),
     /// (`midi-hardware`) the MIDI device watch cannot start, or (`sampler`) the disk streamer cannot start.
     pub fn build_offline(
         mut self,
@@ -386,12 +387,9 @@ impl SessionBuilder {
         layout: ChannelLayout,
         max_block: Samples,
     ) -> Result<Session> {
-        let mut parts = self.parts(
-            rate,
-            max_block,
-            None,
-            root_width(self.outputs_floor, layout),
-        )?;
+        let root = root_width(self.outputs_floor, layout);
+        check_placement(root, layout)?;
+        let mut parts = self.parts(rate, max_block, None, root)?;
         let engine = parts.graph.engine(&parts.transport)?;
         // The width of every block the host pulls.
         engine.support_output(layout)?;
@@ -488,12 +486,9 @@ impl SessionBuilder {
         ) -> tutti_cpal::Result<()>,
     ) -> Result<(Session, crate::Device)> {
         let spec = audio_engine.spec().clone();
-        let mut parts = self.parts(
-            spec.sample_rate,
-            LIVE_MAX_BLOCK,
-            spec.quantum,
-            root_width(self.outputs_floor, spec.channels),
-        )?;
+        let root = root_width(self.outputs_floor, spec.channels);
+        check_placement(root, spec.channels)?;
+        let mut parts = self.parts(spec.sample_rate, LIVE_MAX_BLOCK, spec.quantum, root)?;
         let engine = parts.graph.engine(&parts.transport)?;
         let mut session = self.session(parts, None, true)?;
         session.load = Some(engine.load_meter().clone());
@@ -504,6 +499,17 @@ impl SessionBuilder {
         session.faults = Some((device.faults(), device.faults().count()));
         Ok((session, device))
     }
+}
+
+/// Refuses a `(root, device)` pair whose root has a channel the device has no
+/// place for, before anything is built: the engine would render it silent.
+///
+/// The root is at least as wide as the device up to [`MAX_ROOT_CHANNELS`], so
+/// what this refuses is a project wider than the device where either width has
+/// no channel order (a 6-channel project on a 5-channel interface).
+fn check_placement(root: usize, device: ChannelLayout) -> Result<()> {
+    tutti_types::Fold::widths(ChannelLayout::from(root), device)?;
+    Ok(())
 }
 
 /// How wide the graph root is built, given what the project asks for and

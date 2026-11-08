@@ -650,7 +650,9 @@ Scalars use `Param<U>`.
   knows only a width (a device, an export file, the graph root) builds
   `Fold::widths` / `Fold::to_width`: the engine's order where the width has one
   (`ChannelTopology::assumed`: mono, stereo, quad at 4, 5.1, 7.1, 7.1.4), channels
-  by index (`Fold::by_index`) where it has none. The width-only `fold_frame` is
+  by index (`Fold::by_index`, widening only: a narrowing there is
+  `FoldError::Unplaced`, never a truncation; `Fold::select` truncates on purpose)
+  where it has none. The width-only `fold_frame` is
   gone; do not add another. `Engine::new` builds the folds from every root width to every device
   width up to 16 (`OutputFolds`, published through an `ArcLend` and lent once per
   call) and `Engine::support_output` adds a wider one; a buffer of an unsupported

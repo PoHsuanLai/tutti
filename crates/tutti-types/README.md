@@ -26,7 +26,8 @@ Use it directly when you need only the vocabulary (a crate that implements
   it cannot place; the matrix is not normalised. `Fold::widths` / `Fold::to_width`
   are the entry points for an edge that knows only a width (a device, an export
   file, the graph root): the engine's order where the width has one, channels by
-  index (`Fold::by_index`) where it has none. The width-only `fold_frame` is gone;
+  index (`Fold::by_index`, widening only; a narrowing is `FoldError::Unplaced`,
+  and `Fold::select` truncates on purpose) where it has none. The width-only `fold_frame` is gone;
   `fold_frame_to_mono` / `fold_frame_to_stereo` remain for a bare frame.
 - **`io`** — `AudioIn` / `AudioOut` and `pump`: the two traits every audio source
   and sink in the engine speaks (mic, file, disk, plugin boundary).

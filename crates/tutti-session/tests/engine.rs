@@ -836,3 +836,31 @@ fn a_dropped_heard_reader_frees_the_tap() {
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     assert!(s.open_heard_tap(Samples(64)).is_ok());
 }
+
+/// A project the device has no place for is refused when the session is built,
+/// not rendered silent: a six-channel project on a five-channel interface would
+/// lose a channel, and neither width has an order to fold it by. Widened, or
+/// into a device whose width has one, it builds.
+///
+/// Mutation (run): `check_placement` removed from `build_offline` → the five
+/// channel build succeeds and the first assertion fails.
+#[test]
+fn a_project_the_device_cannot_take_is_refused_at_build() {
+    let build = |floor: usize, device: u16| {
+        Session::builder().outputs_floor(floor).build_offline(
+            SampleRate(RATE),
+            ChannelLayout::from(device),
+            Samples(256),
+        )
+    };
+    assert!(matches!(
+        build(6, 5),
+        Err(tutti_session::Error::Output(
+            tutti_types::FoldError::Unplaced { channel: 5, .. }
+        ))
+    ));
+    assert!(matches!(build(8, 7), Err(tutti_session::Error::Output(_))));
+    for (floor, device) in [(6, 6), (6, 2), (2, 5), (2, 3), (5, 7)] {
+        assert!(build(floor, device).is_ok(), "{floor} on {device}");
+    }
+}

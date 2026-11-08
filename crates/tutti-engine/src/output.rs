@@ -19,8 +19,9 @@
 //! mono, stereo, quad, 5.1, 7.1, 7.1.4), so a 5.1 root plays folded on a stereo
 //! device and a 7.1 root plays on a 5.1 one by position. Where either has none
 //! (3, 5, 7, 9 to 11, 13 and up) no speaker can be named, and channels go by
-//! index, as the width folds always did ([`Fold::by_index`](tutti_types::Fold::by_index)):
-//! the first channels, zero-filled when the device is wider.
+//! index ([`Fold::by_index`](tutti_types::Fold::by_index)): zero-filled when the
+//! device is wider, and a pair that would drop a channel has no fold, so that
+//! root renders a silent, counted block into that device.
 
 use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_types::{ChannelLayout, Fold, FoldError};
@@ -35,7 +36,7 @@ pub(crate) const DEFAULT_DEVICE_WIDTHS: usize = 16;
 pub(crate) struct OutputFolds {
     /// Index `d - 1` holds the folds into a device of `d` channels, `None` for
     /// a width not supported; inside, index `w - 1` folds a root of `w`.
-    by_device: Vec<Option<Box<[Fold]>>>,
+    by_device: Vec<Option<Box<[Option<Fold>]>>>,
 }
 
 impl OutputFolds {
@@ -76,21 +77,36 @@ impl OutputFolds {
             self.by_device.resize(slot + 1, None);
         }
         if self.by_device[slot].is_none() {
+            // A pair that cannot be placed (a narrowing with an unordered end)
+            // has no fold: that root width renders a silent, counted block
+            // into this device. The builders refuse such a pair up front
+            // (`SessionBuilder`), so only a plan that changes the root width
+            // later meets it.
             let by_root = (1..=MAX_ROOT_CHANNELS)
-                .map(|w| Fold::widths(ChannelLayout::from(w), device))
-                .collect::<Result<_, _>>()?;
+                .map(|w| Fold::widths(ChannelLayout::from(w), device).ok())
+                .collect();
             self.by_device[slot] = Some(by_root);
         }
         Ok(())
     }
 
     /// The fold of a root of `root` channels into a device of `device`, or
-    /// `None` for a root of no channels (or more than the engine renders) or a
-    /// device not supported.
+    /// `None` for a root of no channels (or more than the engine renders), a
+    /// device not supported, or a pair that cannot be placed.
     pub(crate) fn get(&self, device: usize, root: usize) -> Option<&Fold> {
         self.by_device
             .get(device.checked_sub(1)?)?
             .as_ref()?
-            .get(root.checked_sub(1)?)
+            .get(root.checked_sub(1)?)?
+            .as_ref()
+    }
+
+    /// Whether a device of `device` channels is held (its pairs may still be
+    /// unplaceable).
+    pub(crate) fn has_device(&self, device: usize) -> bool {
+        device
+            .checked_sub(1)
+            .and_then(|slot| self.by_device.get(slot))
+            .is_some_and(Option::is_some)
     }
 }

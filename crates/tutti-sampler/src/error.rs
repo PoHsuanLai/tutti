@@ -40,12 +40,4 @@ pub enum PlaceError {
     /// [`FoldError::Unnamed`](tutti_types::FoldError::Unnamed).
     #[error("the wave cannot be placed: {0}")]
     Fold(#[from] tutti_types::FoldError),
-    /// The wave has more channels than the sampler gathers into a frame.
-    #[error("a wave of {channels} channels is past the {max} the sampler places")]
-    TooWide {
-        /// The wave's channel count.
-        channels: usize,
-        /// The most it places.
-        max: usize,
-    },
 }

@@ -9,8 +9,10 @@ use crate::transport::{Transport, TransportListener};
 use tutti_plugin::Result;
 use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 
-/// Ask the OS to schedule this thread as realtime, now that it is about to do
-/// nothing but per-block audio work.
+/// Ask the OS for the highest priority it grants this thread, now that it is
+/// about to do nothing but per-block audio work, and log what it got once.
+/// That is not real time: on Linux it is nice -20 at best, and a refusal
+/// (`EPERM`) is common (`tutti_rt::request_priority`).
 ///
 /// The host side needs this less: CoreAudio, WASAPI and JACK create the
 /// audio callback's thread at an elevated priority themselves (cpal's ALSA
@@ -27,13 +29,12 @@ use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 ///
 /// Failure is logged and ignored — elevation needs privileges a sandbox or CI
 /// runner may not grant, and degraded quality beats refusing to run.
-pub(crate) fn raise_to_realtime(what: &str) {
-    match thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max) {
-        Ok(()) => tracing::debug!("plugin-server: {what} running at realtime priority"),
-        Err(e) => tracing::info!(
-            "could not raise {what} to realtime priority ({e:?}); \
-             continuing at normal priority — expect more dropped blocks under load"
-        ),
+pub(crate) fn request_audio_priority(what: &str) {
+    let outcome = tutti_rt::request_priority(tutti_rt::PriorityRequest::Highest);
+    if outcome.is_granted() {
+        tracing::debug!("plugin-server: {what}: {outcome}");
+    } else {
+        tracing::info!("plugin-server: {what}: {outcome}; expect more dropped blocks under load");
     }
 }
 
@@ -82,12 +83,14 @@ impl PluginServer {
     /// # The two-phase connection dance
     ///
     /// The host connects twice, and the split is what lets the second phase run
-    /// at realtime priority without the load-time work behind it:
+    /// at the highest priority the OS grants (not real time) without the
+    /// load-time work behind it:
     ///
     /// 1. **Handshake** — plugin load, format negotiation, shared-memory setup.
     ///    Returns early if the host asks for shutdown before any audio flows.
     /// 2. **Audio** — per-block traffic for the rest of the session. The thread
-    ///    is raised to realtime priority on entry, and async plugin events are
+    ///    asks for the highest priority on entry (`request_audio_priority`), and
+    ///    async plugin events are
     ///    drained to the host after each block.
     ///
     /// Each phase opens with a [`BridgeMessage::Ready`] carrying
@@ -117,7 +120,7 @@ impl PluginServer {
         audio.send(&BridgeMessage::Ready {
             protocol_version: PROTOCOL_VERSION,
         })?;
-        raise_to_realtime("the audio phase");
+        request_audio_priority("the audio phase");
         self.audio_phase(&mut audio)
     }
 

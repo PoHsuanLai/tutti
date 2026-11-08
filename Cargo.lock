@@ -4558,7 +4558,6 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.21",
- "thread-priority",
  "tracing",
  "tutti-au-host",
  "tutti-clap-host",
@@ -4623,7 +4622,6 @@ dependencies = [
  "libloading 0.8.9",
  "memmap2",
  "serde",
- "thread-priority",
  "tracing",
  "tracing-subscriber",
  "tutti-au-host",
@@ -4693,6 +4691,7 @@ dependencies = [
  "bytemuck",
  "libc",
  "loom",
+ "thread-priority",
 ]
 
 [[package]]
@@ -4714,7 +4713,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
- "thread-priority",
  "tracing",
  "tracing-subscriber",
  "tutti-codec",

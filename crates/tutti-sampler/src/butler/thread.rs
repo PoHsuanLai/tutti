@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use dashmap::DashMap;
-use thread_priority::ThreadPriority;
 use tutti_graph::PrerollTable;
+use tutti_rt::{PriorityRequest, request_priority};
 use tutti_types::SampleRate;
 
 use super::ButlerSender;
@@ -196,7 +196,14 @@ impl ButlerThread {
                 // loop ends (a panic included) its drop tells every sender
                 // the butler is gone instead of letting them queue into
                 // nothing.
-                let _ = thread_priority::set_current_thread_priority(ThreadPriority::Max);
+                // Disk streaming should stay ahead of background work, not
+                // compete with the audio threads (Ardour's butler sets no CPU
+                // priority, LinuxSampler's disk thread runs at nice -10): a
+                // raised, never real-time priority, nice -10 on Linux and
+                // ABOVE_NORMAL on Windows. This replaced the highest the OS
+                // grants (nice -20, HIGHEST) on purpose. A refusal is
+                // harmless, so the outcome is only logged.
+                tracing::debug!("butler: {}", request_priority(PriorityRequest::Raised));
                 butler_loop(&queue, shared, cycle, shutdown, pacing);
             })
             // Fatal init: spawning the disk-I/O butler thread is a prerequisite

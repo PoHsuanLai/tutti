@@ -1,6 +1,6 @@
 use super::*;
 
-/// Push `planes` through a [`Resampler`] in blocks of `block` frames
+/// Push `planes` through a [`StreamingResampler`] in blocks of `block` frames
 /// (`None` is the whole signal at once, the two-pass path), then finish.
 fn resample_blocked(
     planes: &[Vec<f32>],
@@ -10,7 +10,7 @@ fn resample_blocked(
     block: Option<usize>,
 ) -> Vec<Vec<f32>> {
     let n = planes[0].len();
-    let mut r = Resampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
+    let mut r = StreamingResampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
     let mut out = vec![Vec::new(); planes.len()];
     match block {
         None => r.push(planes, &mut out).unwrap(),
@@ -72,7 +72,7 @@ fn the_length_is_the_rounded_ratio_however_the_input_is_blocked() {
 /// Mutation (run): read each chunk from the start of the carry instead of
 /// the head (`let chunk = 0..need;`) → the second chunk repeats the first
 /// and the waveform is off at the seam; delaying the head by one frame
-/// (`output_delay() + 1` for `skip` in `Resampler::new`) → the level holds but the waveform
+/// (`output_delay() + 1` for `skip` in `StreamingResampler::new`) → the level holds but the waveform
 /// is off by about 0.07.
 #[test]
 fn the_signal_survives_every_blocking() {
@@ -129,7 +129,7 @@ fn the_signal_survives_every_blocking() {
 #[test]
 fn the_carry_stays_under_one_chunk_between_pushes() {
     for chunk in ChunkSize::PRESETS {
-        let mut r = Resampler::new(2, 44_100.into(), 48_000.into(), chunk).unwrap();
+        let mut r = StreamingResampler::new(2, 44_100.into(), 48_000.into(), chunk).unwrap();
         let mut out = vec![Vec::new(); 2];
         let block = vec![vec![0.25f32; 37]; 2];
         for i in 0..2_000 {
@@ -151,7 +151,7 @@ fn the_carry_stays_under_one_chunk_between_pushes() {
 fn resample(planes: &[Vec<f32>], from: u32, to: u32, chunk: ChunkSize) -> Vec<Vec<f32>> {
     // The `u32`s keep the call sites below reading as plain rates; the
     // conversion is here, once.
-    let mut r = Resampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
+    let mut r = StreamingResampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
     let mut out = vec![Vec::new(); planes.len()];
     r.push(planes, &mut out).unwrap();
     r.finish(&mut out).unwrap();
@@ -472,8 +472,9 @@ fn upsampling_cuts_at_the_input_band_edge() {
 /// (see `FftResampler`) makes the last case allocate gigabytes.
 #[test]
 fn an_unusable_rate_is_an_error() {
-    let new =
-        |from: f64, to: f64| Resampler::new(1, SampleRate(from), SampleRate(to), ChunkSize::N1024);
+    let new = |from: f64, to: f64| {
+        StreamingResampler::new(1, SampleRate(from), SampleRate(to), ChunkSize::N1024)
+    };
     for bad in [
         f64::NAN,
         f64::INFINITY,

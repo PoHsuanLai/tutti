@@ -211,9 +211,9 @@ where
     let mut resampler = match config.resample {
         Some(r) if whole_hz(output_rate(config)) != whole_hz(source_rate) => Some((
             // The rates themselves stay `SampleRate`: only the *comparison*
-            // narrows, and `Resampler::new` derives its ratio from values that
+            // narrows, and `StreamingResampler::new` derives its ratio from values that
             // never did.
-            crate::process::Resampler::new(ch, source_rate, r.target_rate, r.chunk)?,
+            tutti_dsp::StreamingResampler::new(ch, source_rate, r.target_rate, r.chunk)?,
             vec![Vec::<f32>::new(); ch],
             vec![Vec::<f32>::new(); ch],
         )),

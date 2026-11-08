@@ -71,7 +71,11 @@
 //!   line and the sampler's readers share.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Resampling: [`FftResampler`], a fixed-input FFT block resampler on the
-//!   same scalar FFT, failing with a [`ResampleError`].
+//!   same scalar FFT, failing with a [`ResampleError`]; and
+//!   [`StreamingResampler`], which feeds it a block of any size at a time and
+//!   compensates its delay and tail, sized by a [`ChunkSize`].
+//! - Dither: [`DitherNoise`], the seeded rectangular or triangular ([`DitherShape`])
+//!   noise that decorrelates quantization, continuous across blocks.
 //! - [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
@@ -81,6 +85,7 @@ mod buffer;
 mod control;
 mod convolver;
 mod delay;
+mod dither;
 mod dynamics;
 mod fft;
 mod filter;
@@ -98,6 +103,7 @@ pub use buffer::{CircularBuffer, MonotonicMinDeque};
 pub use control::{COEFF_INTERVAL, LANES, Ramp, lane_group, segments};
 pub use convolver::{Convolver, IrSpectra};
 pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
+pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
     GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
@@ -110,7 +116,7 @@ pub use filter::{
     SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
 };
 pub use interp::cubic_hermite;
-pub use resample::{FftResampler, ResampleError};
+pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler};
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

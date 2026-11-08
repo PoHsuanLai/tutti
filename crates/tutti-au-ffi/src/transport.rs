@@ -78,10 +78,8 @@ use tutti_types::value::units::{Beat, Bpm};
 use coreaudio_sys::OSStatus;
 
 use crate::guard::guard;
+use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 
-const K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT: OSStatus =
-    coreaudio_sys::kAudioUnitErr_CannotDoInCurrentContext;
-const NO_ERR: OSStatus = 0;
 
 /// C `Boolean` — an `unsigned char`, not a Rust `bool`.
 ///
@@ -488,19 +486,19 @@ where
     // SAFETY: the caller's contract: `user_data` is null or the
     // `TransportState` this proc was installed with.
     let Some(state) = (unsafe { state_from(user_data) }) else {
-        return K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT;
+        return CANNOT_DO_IN_CURRENT_CONTEXT;
     };
     // Nothing published: no out-param is written and the AU is told the host
     // cannot answer.
     if !state.is_published() {
-        return K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT;
+        return CANNOT_DO_IN_CURRENT_CONTEXT;
     }
     // Only `&TransportState` is reachable, whose fields are atomics: a panic
     // between two stores leaves each holding a value that was legal to store,
     // a stale reading and not a broken invariant.
     guard(
         "a host transport callback",
-        K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+        CANNOT_DO_IN_CURRENT_CONTEXT,
         || body(state),
     )
 }

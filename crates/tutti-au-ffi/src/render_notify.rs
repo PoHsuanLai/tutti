@@ -135,14 +135,12 @@ use coreaudio_sys::{
 
 use crate::error::{Result, check};
 use crate::guard::guard;
+use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::{Inner, RenderUnit, Unit};
-const K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT: OSStatus =
-    coreaudio_sys::kAudioUnitErr_CannotDoInCurrentContext;
 const K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER: AudioUnitRenderActionFlags =
     coreaudio_sys::kAudioUnitRenderAction_PreRender;
 const K_AUDIO_UNIT_RENDER_ACTION_POST_RENDER: AudioUnitRenderActionFlags =
     coreaudio_sys::kAudioUnitRenderAction_PostRender;
-const NO_ERR: OSStatus = 0;
 
 /// Which half of the pre/post pair a notification is.
 ///
@@ -607,7 +605,7 @@ unsafe extern "C" fn au_render_notify(
     // a call, so nothing is left broken.
     guard(
         "a render notify callback",
-        K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+        CANNOT_DO_IN_CURRENT_CONTEXT,
         || {
             // Both are non-null for every real AudioToolbox invocation, but
             // check rather than trust: a null here would be a dereference on

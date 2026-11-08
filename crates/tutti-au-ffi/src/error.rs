@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::status::Status;
+
 /// A failed AudioToolbox call: which one, and the `OSStatus` it answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OsError {
@@ -9,6 +11,13 @@ pub struct OsError {
     pub function: &'static str,
     /// The `OSStatus` it returned.
     pub status: i32,
+}
+
+impl OsError {
+    /// The status, by name when it is a known `kAudioUnitErr_*` code.
+    pub fn code(&self) -> Status {
+        Status::from_raw(self.status)
+    }
 }
 
 impl fmt::Display for OsError {

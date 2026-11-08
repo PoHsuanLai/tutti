@@ -61,11 +61,9 @@ use tutti_plugin_types::{Midi1Message, Midi1Splitter};
 
 use crate::error::{Result, check};
 use crate::guard::guard;
+use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::{Inner, Unit};
 
-const K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT: OSStatus =
-    coreaudio_sys::kAudioUnitErr_CannotDoInCurrentContext;
-const NO_ERR: OSStatus = 0;
 
 /// The `AUMIDIOutputCallbackStruct` from `AudioUnitProperties.h`.
 ///
@@ -476,7 +474,7 @@ unsafe extern "C" fn au_midi_output_callback(
 ) -> OSStatus {
     guard(
         "the MIDI output callback",
-        K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+        CANNOT_DO_IN_CURRENT_CONTEXT,
         || {
             // SAFETY: AudioToolbox calls this with the `userData` registered
             // through the MIDI-output-callback property and a packet list valid

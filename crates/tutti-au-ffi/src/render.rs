@@ -13,6 +13,7 @@ use coreaudio_sys::{AudioBuffer, AudioBufferList, AudioTimeStamp, AudioUnitRende
 
 use crate::error::{Error, Result};
 use crate::guard::guard;
+use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::Unit;
 
 /// Input/output channel layouts for an AU.
@@ -268,7 +269,6 @@ impl RenderScratch {
 
 // ---------------------------------------------------------------- Renderer
 
-const NO_ERR: i32 = 0;
 const K_AUDIO_UNIT_RENDER_ACTION_OUTPUT_IS_SILENCE: AudioUnitRenderActionFlags =
     coreaudio_sys::kAudioUnitRenderAction_OutputIsSilence;
 
@@ -281,8 +281,6 @@ fn timestamp_at(sample_time: f64) -> AudioTimeStamp {
         ..Default::default()
     }
 }
-
-const ERR_CANNOT_DO: i32 = coreaudio_sys::kAudioUnitErr_CannotDoInCurrentContext;
 
 /// Pull-model rendering of an initialized unit: the scratch buffers, the
 /// timestamp cursor, and the input render callback that feeds an effect.
@@ -464,7 +462,7 @@ unsafe extern "C" fn au_input_render_callback(
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> i32 {
-    guard("the input render callback", ERR_CANNOT_DO, || {
+    guard("the input render callback", CANNOT_DO_IN_CURRENT_CONTEXT, || {
         // SAFETY: `in_ref_con` is the scratch pointer `install_input_callback`
         // registered (live until `Renderer::drop` withdraws it), and `io_data`
         // is the unit's own list for this pull; `render_input` checks both for

@@ -17,6 +17,7 @@ mod parameters;
 mod plain;
 mod render;
 mod render_notify;
+mod status;
 mod transport;
 mod unit;
 
@@ -41,6 +42,7 @@ pub use plain::Plain;
 pub use render::{
     BusLayout, PushScratch, Renderer, output_byte_sizes, process_push, process_push_multiple,
 };
+pub use status::Status;
 pub use render_notify::{
     ParamEvent, RenderNotification, RenderNotify, RenderPhase, ScheduleAddress, schedule,
 };

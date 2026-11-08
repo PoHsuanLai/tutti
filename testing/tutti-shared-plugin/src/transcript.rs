@@ -96,7 +96,7 @@ fn blob_at(state: &[u8]) -> usize {
 }
 
 /// The plugin's blob, found in a state the host stores verbatim: what
-/// [`Format::extract_blob`] does by default.
+/// `Format::extract_blob` does by default.
 #[must_use]
 pub fn find_blob(state: &[u8]) -> Vec<u8> {
     state[blob_at(state)..].to_vec()
@@ -104,7 +104,7 @@ pub fn find_blob(state: &[u8]) -> Vec<u8> {
 
 /// `state` with the plugin's blob replaced by `blob` (the same length, found
 /// as [`find_blob`] does): the default of
-/// [`Format::embed_blob`].
+/// `Format::embed_blob`.
 #[must_use]
 pub fn replace_blob(state: &[u8], blob: &[u8]) -> Vec<u8> {
     let at = blob_at(state);

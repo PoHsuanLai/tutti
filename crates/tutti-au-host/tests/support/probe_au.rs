@@ -49,7 +49,6 @@
 
 use std::os::raw::c_void;
 use std::sync::OnceLock;
-use tutti_au_ffi::Property;
 
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;

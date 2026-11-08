@@ -2230,6 +2230,7 @@ impl AuActive {
 mod tests {
     use super::*;
     use crate::component::*;
+    use tutti_au_ffi::property::StreamFormat;
 
     fn find_apple_delay() -> Option<AuComponentRef> {
         let desc = AudioComponentDescription {

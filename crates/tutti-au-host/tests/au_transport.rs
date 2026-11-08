@@ -53,7 +53,7 @@
 
 use std::os::raw::c_void;
 use std::sync::Mutex;
-use tutti_au_ffi::{Property, Scope};
+use tutti_au_ffi::Scope;
 
 mod support;
 use support::corpus::{

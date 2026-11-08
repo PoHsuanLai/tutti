@@ -270,7 +270,7 @@ fn the_dependents_query_carries_the_parameter_id_in_the_element_position() {
         scope: K_AUDIO_UNIT_SCOPE_GLOBAL,
         element: 9,
     };
-    let got = parameters::dependents_of_at(au.raw_unit(), addr, PROBE_META_PARAM_ID)
+    let got = parameters::dependents_of_at(au.unit(), addr, PROBE_META_PARAM_ID)
         .expect("the id selects the answer, not the element");
     assert_eq!(got.len(), PROBE_DEPENDENT_PARAMS.len());
 }

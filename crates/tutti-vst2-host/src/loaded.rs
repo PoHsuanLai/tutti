@@ -422,6 +422,9 @@ impl Vst2Loaded {
     /// the core reads the figures again rather than restarting the plugin
     /// ([`RestartRules::NONE`](tutti_plugin_types::RestartRules::NONE)).
     pub fn take_requests(&self, _main: &MainThread, out: &mut Vec<Request>) {
+        // Control side, so the one warning about a plugin that grew its pins past the
+        // activation (S7: it renders silence until re-activated) is logged here.
+        let _ = self.handle.instance.report_pin_refusals();
         out.extend(tutti_plugin_types::taken(self.host.requests()));
     }
 

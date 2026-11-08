@@ -628,5 +628,9 @@ fn a_preset_units_first_note_on_renders_that_preset() {
 
     let got = digest(&out);
     // RustySynth's voices call `sin`, `exp` and `pow`, so the digest is libm's.
-    assert_golden("the soundfont voice", got, 0xcf94_549c_015d_9f17);
+    // What this pins: the unit's dry pair (outputs 0 and 1) alone. The effects
+    // left the unit (stage 3b), so the pair has no reverb in it; the digest was
+    // 0xcf94_549c_015d_9f17 while the in-unit reverb was mixed in by default,
+    // and the dry pair equals what that code rendered with its effects off.
+    assert_golden("the soundfont voice", got, 0xfbb4_4b59_223f_1840);
 }

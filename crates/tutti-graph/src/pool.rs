@@ -70,51 +70,36 @@
 //! too: a helper would then preempt the callback on its core.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering, fence};
-use std::sync::{Arc, OnceLock};
-use std::thread::{JoinHandle, Thread};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::{BlockWaits, Pool};
-use tutti_rt::JobGate;
+use tutti_rt::{Doorbell, JobGate};
 
 type StartHandler = Arc<dyn Fn(usize) + Send + Sync>;
 type ThreadName = Box<dyn FnMut(usize) -> String>;
 
-/// One helper's sleep flag, on a cache-line pair of its own.
-#[repr(align(128))]
-struct Sleeper {
-    asleep: AtomicBool,
-    thread: OnceLock<Thread>,
-}
-
 struct Shared {
     gate: JobGate,
     stop: AtomicBool,
-    sleepers: Box<[Sleeper]>,
+    /// Helper `i`'s doorbell is `bells[i - 1]`.
+    bells: Box<[Doorbell]>,
     spin: Duration,
     idle: Duration,
 }
 
 impl Shared {
     /// Wake up to `n` sleeping helpers. Runs on the caller right after the
-    /// gate opens.
+    /// gate opens (the write each helper's `pending` check reads).
     fn wake(&self, n: usize) {
-        if n == 0 {
-            return;
-        }
-        // The other half of the helper's store-load pair (`helper`): either
-        // this sees its `asleep`, or it sees the gate open and does not park.
-        fence(Ordering::SeqCst);
         let mut woken = 0;
-        for s in self.sleepers.iter() {
+        for bell in self.bells.iter() {
             if woken == n {
                 break;
             }
-            if s.asleep.load(Ordering::Relaxed) && s.asleep.swap(false, Ordering::Relaxed) {
-                if let Some(t) = s.thread.get() {
-                    t.unpark();
-                }
+            if bell.ring() {
                 woken += 1;
             }
         }
@@ -122,7 +107,7 @@ impl Shared {
 
     /// Helper `i`'s loop.
     fn helper(&self, i: usize) {
-        let me = &self.sleepers[i - 1];
+        let me = &self.bells[i - 1];
         let mut served = 0u64;
         let mut idle_since = Instant::now();
         while !self.stop.load(Ordering::Acquire) {
@@ -136,15 +121,9 @@ impl Shared {
             } else if idle < self.spin + self.idle {
                 std::thread::yield_now();
             } else {
-                me.asleep.store(true, Ordering::Relaxed);
-                // Pairs with the fence in `wake`: a job opened before this
-                // is seen below; one opened after finds `asleep` set and
-                // unparks (an unpark before the park makes it return).
-                fence(Ordering::SeqCst);
-                if !self.gate.pending(served) && !self.stop.load(Ordering::Acquire) {
-                    std::thread::park();
-                }
-                me.asleep.store(false, Ordering::Relaxed);
+                // A job opened (or the pool stopped) before the check is
+                // seen; one after rings this bell.
+                me.wait(|| self.gate.pending(served) || self.stop.load(Ordering::Acquire));
                 idle_since = Instant::now();
             }
         }
@@ -285,12 +264,7 @@ impl WorkerPoolBuilder {
         let shared = Arc::new(Shared {
             gate: JobGate::with_waits(participants, self.waits),
             stop: AtomicBool::new(false),
-            sleepers: (0..helpers)
-                .map(|_| Sleeper {
-                    asleep: AtomicBool::new(false),
-                    thread: OnceLock::new(),
-                })
-                .collect(),
+            bells: (0..helpers).map(|_| Doorbell::new()).collect(),
             spin: self.spin,
             idle: self.idle,
         });
@@ -305,7 +279,6 @@ impl WorkerPoolBuilder {
             let thread = std::thread::Builder::new()
                 .name((self.thread_name)(i))
                 .spawn(move || {
-                    let _ = shared.sleepers[i - 1].thread.set(std::thread::current());
                     if let Some(hook) = hook {
                         hook(i);
                     }
@@ -372,14 +345,11 @@ impl Drop for WorkerPool {
     /// Stops and joins the helpers. Control thread (it joins threads).
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
-        // Pairs with the helper's fence before it parks: either it sees
-        // `stop` and does not park, or its park comes after this and the
-        // unpark below makes it return.
-        fence(Ordering::SeqCst);
-        // Through the join handle, not the sleeper's `OnceLock`: a helper
-        // that has not started yet has not set the latter.
-        for t in self.threads.iter() {
-            t.thread().unpark();
+        // A helper's `wait` re-reads `stop` after announcing it sleeps: it
+        // sees this store or this ring finds it asleep. One that has not
+        // started yet sees `stop` at its loop's top.
+        for bell in self.shared.bells.iter() {
+            bell.ring();
         }
         for t in self.threads.drain(..) {
             let _ = t.join();
@@ -435,12 +405,7 @@ mod tests {
         assert_eq!(seen(&pool), 0b111, "both helpers joined while spinning");
         // Wait for both to park (20 µs of backoff; the deadline is for a
         // loaded CI runner, not the expected time).
-        let parked = |pool: &WorkerPool| {
-            pool.shared
-                .sleepers
-                .iter()
-                .all(|s| s.asleep.load(Ordering::Relaxed))
-        };
+        let parked = |pool: &WorkerPool| pool.shared.bells.iter().all(|b| b.is_asleep());
         let deadline = Instant::now() + Duration::from_secs(10);
         while !parked(&pool) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));

@@ -120,7 +120,7 @@ jobs:
       # And `tutti-voicing`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_voicing controller holds phase voicing
       # And `tutti-rt`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
+      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals doorbell drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -864,6 +864,9 @@ jobs:
       - run: cargo test --locked -p tutti-rt --release --test split_loom
       - run: cargo test --locked -p tutti-rt --release --test job_gate_loom
       - run: cargo test --locked -p tutti-rt --release --test task_graph_loom
+      # `Doorbell` (a ring before, during or between parks is never lost),
+      # against the shipped code.
+      - run: cargo test --locked -p tutti-rt --release --test doorbell_loom
       # `RequestWord` (no bit lost, each taken once, a raise orders what
       # preceded it) and `edit_ring` (each edit applied once, in order, no torn
       # slot), against the shipped code.

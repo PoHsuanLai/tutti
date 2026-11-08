@@ -421,9 +421,15 @@ impl AuMidiOutput {
             user_data: std::ptr::null_mut(),
         };
         let result = self.unit_set(&withdrawn);
-        // Freed only after the write above returned — in both the success and the
-        // failure arm, per the reasoning in this method's docs.
-        drop(self.state.take());
+        let state = self.state.take();
+        if result.is_ok() {
+            drop(state);
+        } else {
+            // The unit may still hold the pointer, and other `Unit` clones can
+            // keep it alive and calling: leak the state rather than free memory
+            // the callback could read.
+            std::mem::forget(state);
+        }
         result
     }
 }

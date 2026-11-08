@@ -35,10 +35,9 @@ impl std::fmt::Debug for AuEditor {
     }
 }
 
-// SAFETY: the view is released only by this type's `Drop`, and the raw pointer
-// leaves only through `view_ptr()`, so there is no aliasing across threads.
-// SAFETY: the view is only touched from the main thread (every method asserts
-// it), so the value may be moved between threads between calls; the `Unit` it
+// SAFETY: the view is touched only on the main thread: `open` refuses off it,
+// and `close` (so `Drop`) leaks the view instead of releasing it off it, so a
+// moved value never makes an AppKit call from another thread. The `Unit` it
 // holds is `Send`.
 unsafe impl Send for AuEditor {}
 
@@ -54,21 +53,21 @@ impl AuEditor {
     /// window size: a fixed figure tells every AU the host wants that size
     /// whatever window the editor is about to live in.
     ///
-    /// # Safety
-    /// `unit` must be a valid, initialized `AudioUnit`. If `parent` is
-    /// `Some`, its underlying pointer must be a valid `NSView*` owned by
-    /// the caller. Must be called on the macOS main thread.
+    /// `parent` is a `WindowHandle`, whose constructor carries the claim that
+    /// its pointer is a live `NSView`.
     ///
     /// # Errors
-    /// Returns `InvalidBuffer` if the AU does not
-    /// advertise a Cocoa view bundle or the view factory fails to load.
+    /// `Error::Invalid` off the main thread (the one [`mark_main_thread`]
+    /// marked; any thread while none is marked), or if the AU advertises no
+    /// Cocoa view or the view factory fails to load.
     ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
+    /// [`mark_main_thread`]: tutti_plugin_types::mark_main_thread
     pub fn open(unit: &Unit, parent: Option<WindowHandle>, preferred: EditorSize) -> Result<Self> {
-        tutti_plugin_types::assert_main_thread();
+        if !tutti_plugin_types::is_main_thread() {
+            return Err(crate::Error::Invalid(
+                "an AU editor opens only on the main thread".into(),
+            ));
+        }
         let view = cocoa::create_view(unit, preferred)?;
 
         if let Some(handle) = parent {
@@ -100,19 +99,16 @@ impl AuEditor {
         matches!(info, Ok(i) if i.size > 0)
     }
 
-    /// Removes the view from its superview (if any) and release it. Safe to
-    /// call multiple times; subsequent calls are no-ops. Must be called on the
-    /// macOS main thread — `removeFromSuperview`/`release` are AppKit calls and
-    /// touching AppKit off the main thread is undefined behavior. This is the
-    /// single teardown path; [`Drop`](Self::drop) routes through it too.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
+    /// Removes the view from its superview (if any) and releases it. Later calls
+    /// are no-ops. AppKit is touched only on the main thread: off it the view is
+    /// leaked instead. This is the single teardown path; `Drop` routes through it.
     pub fn close(&mut self) {
-        tutti_plugin_types::assert_main_thread();
         if !self.view.is_null() {
+            if !tutti_plugin_types::is_main_thread() {
+                // Not safe to touch AppKit from here: leak the view.
+                self.view = std::ptr::null_mut();
+                return;
+            }
             // SAFETY: `view` is the live +1 view this editor owns (non-null,
             // checked); it leaves its superview and the reference is released
             // once, then the pointer is nulled below.
@@ -127,7 +123,7 @@ impl AuEditor {
     /// Editor view frame size in points. Returns
     /// `EditorSize { width: 0, height: 0 }` after [`close`](Self::close).
     pub fn editor_size(&self) -> EditorSize {
-        if self.view.is_null() {
+        if self.view.is_null() || !tutti_plugin_types::is_main_thread() {
             return EditorSize {
                 width: 0,
                 height: 0,

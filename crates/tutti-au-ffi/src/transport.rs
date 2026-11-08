@@ -78,6 +78,7 @@ use tutti_types::value::units::{Beat, Bpm};
 use coreaudio_sys::OSStatus;
 
 use crate::guard::guard;
+use crate::unit::Unit;
 
 const K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT: OSStatus =
     coreaudio_sys::kAudioUnitErr_CannotDoInCurrentContext;
@@ -699,7 +700,7 @@ unsafe impl crate::plain::Plain for HostCallbackInfo {}
 /// null procs) before the state is freed, so no pull can reach a freed state.
 pub struct HostCallbacks {
     unit: std::sync::Arc<crate::unit::Inner>,
-    state: Box<TransportState>,
+    state: std::mem::ManuallyDrop<Box<TransportState>>,
     installed: std::sync::atomic::AtomicBool,
 }
 
@@ -717,7 +718,7 @@ impl HostCallbacks {
     pub fn new(unit: &crate::Unit) -> Self {
         Self {
             unit: unit.share(),
-            state: Box::new(TransportState::new()),
+            state: std::mem::ManuallyDrop::new(Box::new(TransportState::new())),
             installed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -732,9 +733,9 @@ impl HostCallbacks {
     ///
     /// # Errors
     /// The `OSStatus` of the write; a unit that refuses leaves nothing installed.
-    pub fn install(&self, unit: &crate::Unit) -> crate::error::Result<()> {
-        debug_assert!(std::sync::Arc::ptr_eq(&self.unit, &unit.share()));
-        unit.set(
+    pub fn install(&self) -> crate::error::Result<()> {
+        // On the unit this was made for, the one `Drop` withdraws from.
+        Unit::from_inner(self.unit.clone()).set(
             coreaudio_sys::kAudioUnitProperty_HostCallbacks,
             coreaudio_sys::kAudioUnitScope_Global,
             0,
@@ -747,40 +748,29 @@ impl HostCallbacks {
 
 impl Drop for HostCallbacks {
     fn drop(&mut self) {
-        if !self.installed.load(Ordering::Acquire) {
-            return;
-        }
-        // Withdraw before the state is freed (fields drop after this body): an
-        // AU that kept the old procs would pull from freed memory. The status is
-        // ignored; this is teardown.
-        let withdrawn = HostCallbackInfo {
-            host_user_data: std::ptr::null_mut(),
-            beat_and_tempo: None,
-            musical_time_location: None,
-            transport_state: None,
-            transport_state2: None,
-        };
-        let bytes = {
-            // SAFETY: a `HostCallbackInfo` is plain data (pointers and
-            // `Option<fn>`), so its bytes are a valid property payload.
-            unsafe {
-                std::slice::from_raw_parts(
-                    (&withdrawn as *const HostCallbackInfo).cast::<u8>(),
-                    std::mem::size_of::<HostCallbackInfo>(),
+        let withdrawn = !self.installed.load(Ordering::Acquire) || {
+            // A null `hostUserData` and no procs: the documented way to withdraw.
+            let none = HostCallbackInfo {
+                host_user_data: std::ptr::null_mut(),
+                beat_and_tempo: None,
+                musical_time_location: None,
+                transport_state: None,
+                transport_state2: None,
+            };
+            Unit::from_inner(self.unit.clone())
+                .set(
+                    coreaudio_sys::kAudioUnitProperty_HostCallbacks,
+                    coreaudio_sys::kAudioUnitScope_Global,
+                    0,
+                    &none,
                 )
-            }
+                .is_ok()
         };
-        // SAFETY: `unit.instance` is a live instance (we hold a share) and
-        // `bytes` is a live slice of the length passed.
-        let _ = unsafe {
-            coreaudio_sys::AudioUnitSetProperty(
-                self.unit.instance,
-                coreaudio_sys::kAudioUnitProperty_HostCallbacks,
-                coreaudio_sys::kAudioUnitScope_Global,
-                0,
-                bytes.as_ptr().cast(),
-                bytes.len() as u32,
-            )
-        };
+        if withdrawn {
+            // SAFETY: dropped once, here, after the AU was told to stop pulling.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.state) };
+        }
+        // Otherwise the AU may still pull from the state, and other `Unit`
+        // clones can keep it rendering: leak it rather than free memory it reads.
     }
 }

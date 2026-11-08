@@ -50,10 +50,10 @@ const MASTER_VOLUME: f32 = 0.5;
 /// 8.1.2, generators 15 and 16: `chorusEffectsSend` and `reverbEffectsSend`, in
 /// 0.1% units, 250 is a quarter of full level). A voice's send is the preset's
 /// and the instrument's generator summed over both zones (section 9.4), plus
-/// the channel's controller (CC 93 chorus, CC 91 reverb; sections 8.4.9 and
-/// 8.4.8), clamped to 0 to 1. The controller adds its whole figure over 127,
-/// where the spec's default modulator adds at most 200 tenths of a percent: a
-/// known gap, not changed here.
+/// the output of the default modulators of CC 93 (chorus) and CC 91 (reverb;
+/// sections 8.4.9 and 8.4.8: the controller over 128, times 200 tenths of a
+/// percent), and then limited to the generator's range, 0 to 1000 tenths
+/// (section 8.1.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Plane {
     DryLeft = 0,

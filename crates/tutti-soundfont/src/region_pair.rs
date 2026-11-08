@@ -28,7 +28,6 @@ fn limits(generator: GeneratorType) -> Option<(i32, i32)> {
         InitialFilterCutoffFrequency => (1500, 13500),
         InitialFilterQ => (0, 960),
         ModulationLfoToVolume => (-960, 960),
-        ChorusEffectsSend | ReverbEffectsSend => (0, 1000),
         Pan => (-500, 500),
         DelayModulationLfo
         | DelayVibratoLfo
@@ -65,12 +64,18 @@ impl<'a> RegionPair<'a> {
     /// (section 9.4), then replaced by the nearest value of its range when the
     /// sum is out of it (section 10.5; the ranges are section 8.1.3's).
     fn gs(&self, generator: GeneratorType) -> i32 {
-        let sum = i32::from(self.preset.generator(generator))
-            + i32::from(self.instrument.generator(generator));
+        let sum = self.sum(generator);
         match limits(generator) {
             Some((min, max)) => sum.clamp(min, max),
             None => sum,
         }
+    }
+
+    /// The preset's generator added to the instrument's, in the generator's own
+    /// units, before any range.
+    fn sum(&self, generator: GeneratorType) -> i32 {
+        i32::from(self.preset.generator(generator))
+            + i32::from(self.instrument.generator(generator))
     }
 
     pub(crate) fn sample_start(&self) -> i32 {
@@ -121,12 +126,18 @@ impl<'a> RegionPair<'a> {
         0.1_f32 * self.gs(GeneratorType::ModulationLfoToVolume) as f32
     }
 
-    pub(crate) fn chorus_effects_send(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::ChorusEffectsSend) as f32
+    /// The chorus send generator's sum over both zones, in tenths of a percent
+    /// and **not** limited to its range: the default modulator of CC 93 is
+    /// added to this sum before the range is applied (section 8.4.9), which is
+    /// the voice's to do.
+    pub(crate) fn chorus_effects_send(&self) -> i32 {
+        self.sum(GeneratorType::ChorusEffectsSend)
     }
 
-    pub(crate) fn reverb_effects_send(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::ReverbEffectsSend) as f32
+    /// The reverb send generator's sum, as
+    /// [`chorus_effects_send`](Self::chorus_effects_send) (section 8.4.8).
+    pub(crate) fn reverb_effects_send(&self) -> i32 {
+        self.sum(GeneratorType::ReverbEffectsSend)
     }
 
     pub(crate) fn pan(&self) -> f32 {
@@ -352,13 +363,14 @@ mod tests {
     }
 
     /// 9.3, absolute percent: pan and the effect sends are in 0.1% units, so a
-    /// value of 500 is 50% (pan hard right is +50, hard left -50).
+    /// value of 500 is 50% (pan hard right is +50, hard left -50). The send is
+    /// the sum in tenths, unlimited (the voice adds CC 91's modulator first).
     #[test]
     fn pan_and_sends_are_in_tenths_of_a_percent() {
         const PAN: u16 = 17;
         const REVERB_SEND: u16 = 16;
         let font = pair(vec![], vec![(PAN, -500), (REVERB_SEND, 250)]);
         assert!((with(&font, |p| p.pan()) + 50.0).abs() < 1e-4);
-        assert!((with(&font, |p| p.reverb_effects_send()) - 25.0).abs() < 1e-4);
+        assert_eq!(with(&font, |p| p.reverb_effects_send()), 250);
     }
 }

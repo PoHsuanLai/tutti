@@ -52,7 +52,8 @@ pub struct ModDelayConfig {
     /// Initial wet/dry mix.
     pub mix: Mix,
     /// The most feedback the node applies, whatever is set through its param
-    /// or driven on its port: a value above it reads as it. [`Feedback::MAX_STABLE`]
+    /// or driven on its port, and whatever is written to the raw cells: a value
+    /// above it reads as it, and one below zero as zero. [`Feedback::MAX_STABLE`]
     /// is the most the unit allows. [`Feedback::NONE`] makes the line a pure
     /// delay, with no recirculation, and so with a tail of exactly
     /// [`max_delay`](Self::max_delay) (see [`ModDelayNode`]'s "Tail").
@@ -384,7 +385,7 @@ impl ModDelayNode {
         let (depth, fb, mix) = self.controls.load([depth, fb, mix]);
         let target = ModDelayControls {
             depth: self.config.clamp_depth(depth),
-            fb: fb.min(self.config.feedback_max.get()),
+            fb: fb.clamp(0.0, self.config.feedback_max.get()),
             mix: mix.get(),
         };
         let from = self.last.unwrap_or(target);

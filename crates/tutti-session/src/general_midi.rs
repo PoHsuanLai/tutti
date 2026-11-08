@@ -6,15 +6,19 @@
 //! sound of a General MIDI one needs what its sends were for. [`Session::add_general_midi`]
 //! wires them: the chorus is a `ModDelayNode` with
 //! [`ModDelayConfig::GENERAL_MIDI_CHORUS`] (wet only), the reverb a
-//! [`ReverbNode`], and a [`ChannelSumNode`] sums the dry pair and both effects'
-//! pairs into one stereo mix, which is the setup's [`out`](GeneralMidi::out).
+//! [`ReverbNode`], a [`ChannelSumNode`] sums the dry pair and both effects'
+//! pairs into one stereo mix, and a [`BusStripNode`] after the sum is the
+//! setup's fader, whose output is [`out`](GeneralMidi::out). The sends are
+//! post-fader, as a mixer channel's are: the strip's gain and mute act on the
+//! whole mix, effects included.
 //! Nothing else is needed to hear it; nothing here is required either: a host
 //! that wants a different reverb, two units into one chorus or no chorus wires
 //! the unit's outputs itself, through [`Graph::set_source`](crate::Graph::set_source).
 
-use tutti_nodes::{ChannelSumNode, ModDelayConfig, ModDelayNode, ReverbNode};
+use tutti_graph::ParamSet;
+use tutti_nodes::{BusStripNode, ChannelSumNode, ModDelayConfig, ModDelayNode, ReverbNode};
 use tutti_soundfont::SoundFontUnit;
-use tutti_types::{ChannelLayout, NodeKey};
+use tutti_types::{Amplitude, ChannelLayout, NodeKey, UnitParam};
 
 use crate::{GraphSource, InstrumentHandle, Session};
 
@@ -26,15 +30,19 @@ use crate::{GraphSource, InstrumentHandle, Session};
 /// place.
 ///
 /// The [`instrument`](Self::instrument) is the unit's handle as any
-/// instrument has it: MIDI is sent through it, and its gain is a strip on the
-/// dry pair only. A send's level is the font's and the channel's (CC 91 and
-/// CC 93), not a gain's.
+/// instrument has it: MIDI is sent through it, and its gain is the **dry
+/// level** (a strip on the dry pair only, before the sum). The setup's own
+/// fader, [`set_gain`](Self::set_gain) and [`set_muted`](Self::set_muted), is
+/// after the sum and so takes the effects with it. A send's level is the font's
+/// and the channel's (CC 91 and CC 93), not a gain's.
 #[derive(Clone, Debug)]
 pub struct GeneralMidi {
     instrument: InstrumentHandle,
     chorus: NodeKey,
     reverb: NodeKey,
     sum: NodeKey,
+    strip: NodeKey,
+    strip_params: ParamSet,
 }
 
 impl GeneralMidi {
@@ -56,16 +64,52 @@ impl GeneralMidi {
         self.reverb
     }
 
-    /// The mix: dry pair, chorus and reverb summed, on ports 0 (left) and 1
-    /// (right).
+    /// The sum of the dry pair, the chorus and the reverb, before the fader:
+    /// six inputs (three stereo sources) and two outputs.
+    #[must_use]
+    pub fn sum(&self) -> NodeKey {
+        self.sum
+    }
+
+    /// The mix after the fader: dry pair, chorus and reverb summed, on ports 0
+    /// (left) and 1 (right).
     #[must_use]
     pub fn out(&self) -> NodeKey {
-        self.sum
+        self.strip
+    }
+
+    /// Sets the gain of the whole mix, a linear amplitude: the dry pair and
+    /// both effects. A store into the strip's cell, read once per block.
+    pub fn set_gain(&self, gain: Amplitude) {
+        self.strip_params.set(UnitParam::Volume, gain.get());
+    }
+
+    /// Mutes or unmutes the whole mix, effects included (a ramp across the next
+    /// block, so there is no click).
+    pub fn set_muted(&self, muted: bool) {
+        self.strip_params
+            .set(UnitParam::Mute, if muted { 1.0 } else { 0.0 });
+    }
+
+    /// Takes the whole setup out of the graph: the unit with its queue and
+    /// strip, the chorus, the reverb, the sum and the fader.
+    pub fn remove(self, session: &mut Session) {
+        session.remove_instrument(&self.instrument);
+        for node in [
+            self.instrument.node(),
+            self.chorus,
+            self.reverb,
+            self.sum,
+            self.strip,
+        ] {
+            session.remove(node);
+        }
     }
 }
 
 impl Session {
-    /// Adds `unit` with a General MIDI chorus and reverb and the sum of the three.
+    /// Adds `unit` with a General MIDI chorus and reverb, the sum of the three
+    /// and a fader after it.
     ///
     /// The wiring is the unit's dry pair (through the handle's strip) into the
     /// sum's source 0, its chorus send pair through a wet-only
@@ -89,15 +133,16 @@ impl Session {
         ));
         let (reverb, _) = graph.insert(ReverbNode::new());
         let (sum, ()) = graph.insert(ChannelSumNode::new(3, ChannelLayout::STEREO));
+        let (strip, strip_params) = graph.add(BusStripNode::new());
         // The unit's outputs: dry L/R, chorus send L/R, reverb send.
         graph.set_source(chorus, 0, GraphSource::node(unit, 2));
         graph.set_source(chorus, 1, GraphSource::node(unit, 3));
         graph.set_source(reverb, 0, GraphSource::node(unit, 4));
         // The sum's inputs: source 0 (dry), 1 (chorus), 2 (reverb), each L/R.
-        let strip = instrument.out();
+        let dry = instrument.out();
         let sources = [
-            (strip, 0),
-            (strip, 1),
+            (dry, 0),
+            (dry, 1),
             (chorus, 0),
             (chorus, 1),
             (reverb, 0),
@@ -106,11 +151,15 @@ impl Session {
         for (port, (node, out)) in sources.into_iter().enumerate() {
             graph.set_source(sum, port, GraphSource::node(node, out));
         }
+        graph.set_source(strip, 0, GraphSource::node(sum, 0));
+        graph.set_source(strip, 1, GraphSource::node(sum, 1));
         Ok(GeneralMidi {
             instrument,
             chorus,
             reverb,
             sum,
+            strip,
+            strip_params,
         })
     }
 }

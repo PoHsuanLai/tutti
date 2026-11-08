@@ -163,8 +163,10 @@ impl Voice {
         self.dynamic_volume = self.mod_lfo_to_volume > 0.05_f32;
 
         self.instrument_pan = SoundFontMath::clamp(region.pan(), -50_f32, 50_f32);
-        self.instrument_reverb = 0.01_f32 * region.reverb_effects_send();
-        self.instrument_chorus = 0.01_f32 * region.chorus_effects_send();
+        // Tenths of a percent to a fraction of full level (section 8.1.2,
+        // generators 15 and 16).
+        self.instrument_reverb = 0.001_f32 * region.reverb_effects_send() as f32;
+        self.instrument_chorus = 0.001_f32 * region.chorus_effects_send() as f32;
 
         RegionEx::start_volume_envelope(&mut self.vol_env, region, key, velocity);
         RegionEx::start_modulation_envelope(&mut self.mod_env, region, key, velocity);

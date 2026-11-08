@@ -74,7 +74,9 @@ fn mute_returns_the_reverb_to_a_fresh_state() {
 /// The ring-out bound covers the response: the last frame of the wet signal at
 /// or above a thousandth (-60 dB) of its own peak is within it.
 ///
-/// Mutation (run): the loop count halved (times 0.5) fails.
+/// Mutation (run): the loop count halved (times 0.5) fails. (The bound is looser
+/// than the response, so this test cannot see a missing trip; the next one pins
+/// the count.)
 #[test]
 fn the_ring_out_bound_covers_the_response() {
     let mut reverb = Freeverb::new(RATE);
@@ -94,4 +96,20 @@ fn the_ring_out_bound_covers_the_response() {
         rang > bound / 4,
         "the bound is not absurdly loose: {rang} of {bound}"
     );
+}
+
+/// The ring-out bound is the definition's figure: the first echo of a comb comes
+/// after one trip at full strength, the n-th has the room's fraction (0.84) to
+/// the power n - 1, so falling to -60 dB (0.001) takes ceil(ln 0.001 / ln 0.84)
+/// = 40 trips of power, one trip more: 41 round the longest comb (1617 + 23 =
+/// 1640 frames at 44.1 kHz), then the four all-pass lines once
+/// (556 + 441 + 341 + 225 = 1563).
+///
+/// Mutation (run): the `+ 1` in `ring_out` removed gives 40 trips and fails it.
+#[test]
+fn the_ring_out_bound_counts_the_trip_of_the_first_echo() {
+    let reverb = Freeverb::new(RATE);
+    let frames = reverb.ring_out(Db(-60.0)).get() * 44_100.0;
+    let want = (41 * 1640 + 1563) as f32;
+    assert!((frames - want).abs() < 2.0, "{frames} against {want}");
 }

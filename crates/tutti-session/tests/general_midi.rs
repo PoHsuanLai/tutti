@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tutti_session::{GraphSource, Session};
+use tutti_session::{GeneralMidi, GraphSource, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples, Tail};
@@ -54,8 +54,13 @@ fn the_setup_adds_a_chorus_a_reverb_and_a_sum_of_the_right_widths() {
         (1, 2)
     );
     assert_eq!(
-        (graph.node_inputs(gm.out()), graph.node_outputs(gm.out())),
+        (graph.node_inputs(gm.sum()), graph.node_outputs(gm.sum())),
         (6, 2)
+    );
+    assert_eq!(
+        (graph.node_inputs(gm.out()), graph.node_outputs(gm.out())),
+        (2, 2),
+        "the fader"
     );
 }
 
@@ -84,8 +89,17 @@ fn the_sends_feed_the_effects_and_the_effects_feed_the_sum() {
         GraphSource::node(gm.reverb(), 1),
     ];
     for (port, want) in expected.into_iter().enumerate() {
-        assert_eq!(source(&session, gm.out(), port), want, "sum input {port}");
+        assert_eq!(source(&session, gm.sum(), port), want, "sum input {port}");
     }
+    // The fader reads the sum, which is `out()`.
+    assert_eq!(
+        source(&session, gm.out(), 0),
+        GraphSource::node(gm.sum(), 0)
+    );
+    assert_eq!(
+        source(&session, gm.out(), 1),
+        GraphSource::node(gm.sum(), 1)
+    );
     // The strip carries the dry pair: outputs 0 and 1 of the unit.
     assert_eq!(source(&session, strip, 0), GraphSource::node(unit, 0));
     assert_eq!(source(&session, strip, 1), GraphSource::node(unit, 1));
@@ -130,6 +144,7 @@ fn every_stage_declares_its_own_tail() {
     );
     assert_eq!(frames(gm.chorus()), 240);
     assert!((1.0..2.0).contains(&seconds(gm.reverb())));
+    assert_eq!(graph.node_tail(gm.sum()), Tail::None);
     assert_eq!(graph.node_tail(gm.out()), Tail::None);
 }
 
@@ -231,4 +246,139 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
         rang > release,
         "the room rings on past the voice: {rang} vs {release}"
     );
+}
+
+/// A setup on a font of one zone with a 0.25 s release, its mix on the graph's
+/// outputs, and a function that renders a block of it and returns the peak of
+/// both channels.
+fn short_release_setup() -> (Session, GeneralMidi) {
+    use tutti_fixtures::sf2::{Inst, Preset, bytes, generator};
+    let font = Arc::new(
+        SoundFont::new(&mut std::io::Cursor::new(bytes(
+            &[Preset {
+                name: "p",
+                bank: 0,
+                program: 0,
+                zones: vec![(vec![], 0)],
+            }],
+            &[Inst {
+                name: "i",
+                zones: vec![vec![(generator::RELEASE_VOL_ENV, -2400)]],
+            }],
+        )))
+        .expect("the built font parses"),
+    );
+    let unit = SoundFontUnit::new(font, &Settings::new(RATE)).expect("builds");
+    let mut session = offline_session();
+    let gm = session.add_general_midi(unit).expect("a SoundFont unit");
+    for c in 0..2 {
+        session
+            .graph()
+            .set_output_source(c, GraphSource::node(gm.out(), c));
+    }
+    session.update();
+    (session, gm)
+}
+
+fn peak_of_block(session: &mut Session) -> f32 {
+    use tutti_types::InterleavedMut;
+    let mut buf = vec![0.0f32; 128 * 2];
+    session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+    session.update();
+    buf.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+/// The fader after the sum takes the effects with it: after the dry note has
+/// ended and only the reverb rings (heard, before the mute), muting the setup
+/// makes the mix exact silence from the second block on; unmuting brings it
+/// back. The instrument's own gain is the dry level and does not touch the
+/// effects.
+///
+/// Mutations (run): `out()` returning the sum (the fader bypassed) fails the
+/// silence; the mute written to the volume param instead fails it too.
+#[test]
+fn muting_the_setup_silences_the_wet_path_too() {
+    use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1};
+    let (mut session, gm) = short_release_setup();
+    let handle = gm.instrument().clone();
+    let at = tutti_types::At::NextBlock;
+    let cc = |controller: u8| {
+        let message = Message::Midi1(
+            Address {
+                group: MidiGroup::FIRST,
+                channel: MidiChannel::FIRST,
+            },
+            Voice1::ControlChange {
+                controller: CCNumber::new(controller).unwrap(),
+                value: U7::new(127).unwrap(),
+            },
+        );
+        handle.send(at, Ump::from(message)).expect("room");
+    };
+    cc(91);
+    handle
+        .note_on(at, MidiChannel::FIRST, 69, 100)
+        .expect("room");
+    for _ in 0..200 {
+        peak_of_block(&mut session);
+    }
+    handle.note_off(at, MidiChannel::FIRST, 69).expect("room");
+    // 0.25 s release is 12000 frames; the room rings past it.
+    for _ in 0..(12_000 * 3 / 2 / 128) {
+        peak_of_block(&mut session);
+    }
+    let wet = peak_of_block(&mut session);
+    assert!(
+        wet > 1e-4,
+        "only the reverb is left, and it is heard: {wet}"
+    );
+
+    // The instrument's gain is the dry level: zero leaves the reverb heard.
+    handle.set_gain(tutti_types::Amplitude(0.0));
+    for _ in 0..2 {
+        peak_of_block(&mut session);
+    }
+    assert!(
+        peak_of_block(&mut session) > 1e-4,
+        "the dry strip is not the fader"
+    );
+
+    gm.set_muted(true);
+    for _ in 0..2 {
+        peak_of_block(&mut session);
+    }
+    for block in 0..8 {
+        assert_eq!(peak_of_block(&mut session), 0.0, "muted, block {block}");
+    }
+}
+
+/// Removing the setup takes every node it added, and the graph is as an empty
+/// session's: none of the unit, queue, strip, chorus, reverb, sum or fader is
+/// left, and the node count is back to what it was.
+///
+/// Mutations (run): leaving the fader out of `GeneralMidi::remove` fails the
+/// fader row; leaving out `remove_instrument` fails the queue and strip rows.
+#[test]
+fn removing_the_setup_leaves_nothing() {
+    let mut session = offline_session();
+    let before = session.graph_ref().node_count();
+    let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
+    let nodes = [
+        gm.instrument().node(),
+        gm.instrument().queue(),
+        gm.instrument().out(),
+        gm.chorus(),
+        gm.reverb(),
+        gm.sum(),
+        gm.out(),
+    ];
+    assert!(session.graph_ref().node_count() > before);
+    for node in nodes {
+        assert!(session.graph_ref().contains(node), "{node:?} is in");
+    }
+    gm.remove(&mut session);
+    for node in nodes {
+        assert!(!session.graph_ref().contains(node), "{node:?} is left");
+    }
+    assert_eq!(session.graph_ref().node_count(), before);
 }

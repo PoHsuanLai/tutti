@@ -83,6 +83,30 @@ fn the_general_midi_chorus_cannot_recirculate() {
     }
 }
 
+/// The ceiling holds against the raw cell and the param path, which skip
+/// `set_feedback`'s clamp: -0.9 (a negative would recirculate with a flipped
+/// sign) and 5.0 (past any ceiling) both leave the line a pure delay, so the
+/// declared finite tail stays true.
+///
+/// Mutation (run): `fb.clamp(0.0, max)` replaced by `fb.min(max)` fails the
+/// negative write.
+#[test]
+fn a_raw_write_cannot_make_the_general_midi_chorus_recirculate() {
+    use std::sync::atomic::Ordering;
+    for raw in [-0.9f32, 5.0] {
+        let node = chorus();
+        node.feedback().store(raw, Ordering::Relaxed);
+        let out = impulse_response(node, 2_000);
+        for channel in &out {
+            let sounding = channel.iter().filter(|&&s| s != 0.0).count();
+            assert!(
+                (1..=2).contains(&sounding),
+                "raw {raw}: heard over {sounding} frames"
+            );
+        }
+    }
+}
+
 /// The chorus declares its delay as its tail, and the output never outlasts
 /// it. The tail is the config's `max_delay`, 5 ms: 240 frames at 48 kHz.
 ///

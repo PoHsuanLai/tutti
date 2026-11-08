@@ -59,7 +59,11 @@ impl Node for ReverbNode {
     fn shape(&self) -> Shape {
         let tail = self.reverb.ring_out(TAIL_FLOOR).to_samples_ceil(self.rate);
         Shape::audio(ChannelLayout::MONO, ChannelLayout::STEREO)
-            // Twelve filters a channel, each a few operations a sample.
+            // Measured by `benches/node_kernels.rs` (`reverb`), release build,
+            // driven alone: 18 ns per frame and output channel at a 64-frame
+            // block, 19 at 1024. `Moderate` is the class for 2.8 to 45 (doc 013,
+            // "The cost model and coarsening"). Not the reference box of that
+            // table: the figure is this machine's.
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Finite(tail))
     }

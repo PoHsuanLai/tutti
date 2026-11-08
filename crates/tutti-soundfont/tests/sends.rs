@@ -1,8 +1,8 @@
 //! The unit's five outputs: the dry pair, the chorus send pair and the reverb
 //! send. A send is a level, so every figure here is a product the definition
 //! gives: the voice's send (SF2 2.04 section 8.1.2, generators 15 and 16, in
-//! 0.1% units, summed with the channel's CC 93 and CC 91 over 127 and clamped
-//! to 0..1) times the dry gains it follows. Nothing is read from another
+//! 0.1% units, summed with the default modulators of CC 93 and CC 91, sections
+//! 8.4.9 and 8.4.8, and limited to 0..1) times the dry gains it follows. Nothing is read from another
 //! render.
 
 mod support;
@@ -50,7 +50,7 @@ fn steady(rig: &mut Rig, cc91: u8, cc93: u8) -> [Vec<f32>; 5] {
 fn close(a: &[f32], b: &[f32], what: &str) {
     assert_eq!(a.len(), b.len());
     let peak = a.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    assert!(peak > 0.01, "{what}: the plane sounds ({peak})");
+    assert!(peak > 0.005, "{what}: the plane sounds ({peak})");
     for (i, (x, y)) in a.iter().zip(b).enumerate() {
         assert!((x - y).abs() < 1e-5, "{what}[{i}]: {x} against {y}");
     }
@@ -87,61 +87,92 @@ fn the_generators_set_each_voices_sends() {
     close(&reverb, &scaled(&sum(&dry_l, &dry_r), 0.25), "reverb");
 }
 
-/// The channel's CC 93 and CC 91 are the send over 127, added to the generator.
-/// With no generator, CC 91 at 127 sends everything to the reverb and CC 93 at
-/// 64 sends 64/127 to the chorus.
+/// CC 91 and CC 93 are the default modulators of SF2 2.04 sections 8.4.8 and
+/// 8.4.9: a linear positive unipolar source (the controller over 128, so 127
+/// reads 127/128 and 64 reads one half) with an amount of 200 tenths of a
+/// percent, added to the generator sum. With no generator, CC 91 at 127 sends
+/// 0.2 * 127/128 of the voice's level to the reverb, and CC 93 at 64 sends 0.2 *
+/// 64/128 = 0.1 to the chorus.
 ///
-/// Mutation (run): dividing by 128 instead of 127 in `Channel::reverb_send`
-/// fails the reverb.
+/// Mutations (run): the divisor 128 -> 127 in `Channel::reverb_send` fails the
+/// reverb; the amount 0.2 -> 1.0 (the whole controller, as before this lane)
+/// fails both; swapping the two controllers fails both.
 #[test]
-fn the_controllers_set_the_channels_sends() {
+fn the_controllers_are_the_spec_default_modulators() {
     let mut rig = rig(vec![]);
     let [dry_l, dry_r, chorus_l, chorus_r, reverb] = steady(&mut rig, 127, 64);
-    close(&reverb, &sum(&dry_l, &dry_r), "reverb at CC 91 = 127");
-    let share = 64.0 / 127.0;
     close(
-        &chorus_l,
-        &scaled(&dry_l, share),
-        "chorus left at CC 93 = 64",
+        &reverb,
+        &scaled(&sum(&dry_l, &dry_r), 0.2 * 127.0 / 128.0),
+        "reverb at CC 91 = 127",
     );
+    close(&chorus_l, &scaled(&dry_l, 0.1), "chorus left at CC 93 = 64");
     close(
         &chorus_r,
-        &scaled(&dry_r, share),
+        &scaled(&dry_r, 0.1),
         "chorus right at CC 93 = 64",
     );
 }
 
-/// The controller adds to the generator, and the total stops at full level:
-/// 800 tenths of a percent and CC 91 at 127 is 1.8 clamped to 1.
+/// The modulator's output adds to the generator sum, and the total is limited
+/// to the generator's range, 0 to 1000 tenths (section 8.1.3): 250 and CC 91 at
+/// 127 is 0.25 + 0.2 * 127/128; 900 and CC 91 at 127 is 1.098, limited to 1.
 ///
-/// Mutation (run): removing the clamp in `Voice::process` gives 1.8.
+/// Mutation (run): removing the upper limit in `Voice::process` gives 1.098.
 #[test]
-fn a_send_sums_the_generator_and_the_controller_and_stops_at_full_level() {
-    let mut rig = rig(vec![(REVERB_SEND, 800)]);
+fn a_send_sums_the_generator_and_the_modulator_and_stops_at_full_level() {
+    let mut rig = rig(vec![(REVERB_SEND, 250)]);
+    let [dry_l, dry_r, _, _, reverb] = steady(&mut rig, 127, 0);
+    close(
+        &reverb,
+        &scaled(&sum(&dry_l, &dry_r), 0.25 + 0.2 * 127.0 / 128.0),
+        "reverb: generator plus modulator",
+    );
+    let mut rig = self::rig(vec![(REVERB_SEND, 900)]);
     let [dry_l, dry_r, _, _, reverb] = steady(&mut rig, 127, 0);
     close(
         &reverb,
         &sum(&dry_l, &dry_r),
-        "reverb clamped to full level",
+        "reverb limited to full level",
     );
 }
 
-/// Both generators below zero send nothing: "0% or less" (section 8.1.2), the
-/// sum is clamped at 0.
+/// A send is never below zero: "0% or less" sends nothing (section 8.1.2),
+/// and the limit applies to the sum with the modulator (section 8.1.3). With
+/// the generators at -100 (-10%) and CC 91 and 93 dropping from 127 to 0
+/// mid-note, the sum goes from +0.098 to -0.1; the send ramps down and ends at
+/// zero, never past it, so no send sample has the opposite sign to the dry
+/// sample it follows. (At -400 the sum stays negative either side, and the
+/// audible floor hides it.) Steady with the controllers at 0, the sends are
+/// exact zeros.
 ///
-/// Mutation: none observable. Removing the lower clamp in `Voice::process`
-/// (run: -10 for 0) leaves this passing, because a negative gain is under the
-/// audible floor and `write_block` writes nothing for it; the clamp keeps the
-/// figure a send is documented to be, not what is heard.
+/// Mutation (run): the lower limit in `Voice::process` replaced by -10 inverts
+/// the end of the ramp and fails the sign check.
 #[test]
 fn a_negative_send_sends_nothing() {
-    let mut rig = rig(vec![(CHORUS_SEND, -400), (REVERB_SEND, -400)]);
-    let planes = steady(&mut rig, 0, 0);
+    let mut steady_rig = rig(vec![(CHORUS_SEND, -400), (REVERB_SEND, -400)]);
+    let planes = steady(&mut steady_rig, 0, 0);
     for (c, plane) in planes.iter().enumerate().skip(2) {
         assert!(plane.iter().all(|&s| s == 0.0), "plane {c}");
     }
     let dry = planes[0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
     assert!(dry > 0.01, "the dry pair sounds ({dry})");
+
+    // Controllers at full level lift the sum to 0.6; dropping them mid-note
+    // takes it to -0.4.
+    let mut live = rig(vec![(CHORUS_SEND, -100), (REVERB_SEND, -100)]);
+    steady(&mut live, 127, 127);
+    live.cc(0, 91, 0);
+    live.cc(0, 93, 0);
+    let [dry_l, dry_r, chorus_l, chorus_r, reverb] = live.render_all(512);
+    let inverted = |send: &[f32], dry: &[f32]| send.iter().zip(dry).any(|(s, d)| s * d < -1e-9);
+    assert!(!inverted(&chorus_l, &dry_l), "chorus left");
+    assert!(!inverted(&chorus_r, &dry_r), "chorus right");
+    assert!(!inverted(&reverb, &sum(&dry_l, &dry_r)), "reverb");
+    assert!(
+        reverb.iter().any(|&s| s != 0.0),
+        "the ramp down was heard, so the check bites"
+    );
 }
 
 /// A send nobody sends to is reported silent, and is exact zeros: with the

@@ -73,9 +73,9 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::{Element, Scope};
-use tutti_au_ffi::property::{ContextName, IconLocation, NickName, ParametersForOverview};
 use tutti_au_ffi::Unit;
+use tutti_au_ffi::property::{ContextName, IconLocation, NickName, ParametersForOverview};
+use tutti_au_ffi::{Element, Scope};
 
 use crate::error::Result;
 use crate::types::*;
@@ -115,9 +115,7 @@ pub struct OverviewParameter {
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it,
 /// though all 52 units measured do.
 pub fn set_context_name(unit: &Unit, name: &str) -> Result<()> {
-    Ok(unit.set_string::<ContextName>(Scope::GLOBAL, Element::ZERO,
-        name,
-    )?)
+    Ok(unit.set_string::<ContextName>(Scope::GLOBAL, Element::ZERO, name)?)
 }
 
 /// Reads back the context name set by [`set_context_name`].
@@ -134,8 +132,7 @@ pub fn set_context_name(unit: &Unit, name: &str) -> Result<()> {
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it.
 pub fn context_name(unit: &Unit) -> Result<Option<String>> {
     // Copy rule, as in `nick_name`: the returned CFString is +1 and owned there.
-    Ok(unit.copy_string::<ContextName>(Scope::GLOBAL, Element::ZERO,
-    )?)
+    Ok(unit.copy_string::<ContextName>(Scope::GLOBAL, Element::ZERO)?)
 }
 
 /// Give this instance its own name, distinguishing it from another load of the
@@ -147,9 +144,7 @@ pub fn context_name(unit: &Unit) -> Result<Option<String>> {
 /// # Errors
 /// As [`set_context_name`].
 pub fn set_nick_name(unit: &Unit, name: &str) -> Result<()> {
-    Ok(unit.set_string::<NickName>(Scope::GLOBAL, Element::ZERO,
-        name,
-    )?)
+    Ok(unit.set_string::<NickName>(Scope::GLOBAL, Element::ZERO, name)?)
 }
 
 /// Reads back the instance name set by [`set_nick_name`].
@@ -163,8 +158,7 @@ pub fn set_nick_name(unit: &Unit, name: &str) -> Result<()> {
 pub fn nick_name(unit: &Unit) -> Result<Option<String>> {
     // Copy rule: `AudioUnitGetProperty` on a CFString property returns a +1
     // reference the host owns; `Unit::copy_string` takes and releases it.
-    Ok(unit.copy_string::<NickName>(Scope::GLOBAL, Element::ZERO,
-    )?)
+    Ok(unit.copy_string::<NickName>(Scope::GLOBAL, Element::ZERO)?)
 }
 
 /// The AU's own shortlist of its most important parameters, in the AU's
@@ -194,8 +188,8 @@ pub fn parameters_for_overview(unit: &Unit) -> Result<Vec<OverviewParameter>> {
     // Trailing bytes short of a whole struct are dropped rather than trusted:
     // decoding a partial struct would read uninitialised padding as a
     // parameter id.
-    let params: Vec<AudioUnitParameter> = unit.get_array::<ParametersForOverview>(Scope::GLOBAL, Element::ZERO,
-    )?;
+    let params: Vec<AudioUnitParameter> =
+        unit.get_array::<ParametersForOverview>(Scope::GLOBAL, Element::ZERO)?;
     Ok(params
         .into_iter()
         .map(|p| OverviewParameter {
@@ -215,6 +209,5 @@ pub fn parameters_for_overview(unit: &Unit) -> Result<Vec<OverviewParameter>> {
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it.
 pub fn icon_location(unit: &Unit) -> Result<Option<String>> {
     // Copy rule, as in `nick_name`: the returned CFURL is +1 and owned there.
-    Ok(unit.copy_url_path::<IconLocation>(Scope::GLOBAL, Element::ZERO,
-    )?)
+    Ok(unit.copy_url_path::<IconLocation>(Scope::GLOBAL, Element::ZERO)?)
 }

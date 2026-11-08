@@ -13,8 +13,8 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::{Element, Scope};
 use tutti_au_ffi::property::{ElementCount, StreamFormat, SupportedNumChannels};
+use tutti_au_ffi::{Element, Scope};
 use tutti_plugin_types::ChannelLayout;
 
 use crate::error::{AuError, Result};
@@ -252,7 +252,7 @@ pub(crate) fn bus_count(unit: &Unit, direction: BusDirection) -> u32 {
     // The element index is meaningless for ElementCount itself — the property
     // describes the whole scope — so it is always 0.
     unit.get::<ElementCount>(direction.scope(), Element::ZERO)
-    .unwrap_or(0)
+        .unwrap_or(0)
 }
 
 /// The channel layout of bus `bus` on `direction`.
@@ -265,8 +265,7 @@ pub(crate) fn bus_count(unit: &Unit, direction: BusDirection) -> u32 {
 /// 15.6: DLSMusicDevice has 2 output buses, and asking for output bus 2 or 99
 /// returns -10877 from AudioToolbox — the error is the AU's, not invented here.
 pub(crate) fn bus_layout(unit: &Unit, direction: BusDirection, bus: u32) -> Result<ChannelLayout> {
-    let asbd = unit.get::<StreamFormat>(direction.scope(), Element(bus),
-    )?;
+    let asbd = unit.get::<StreamFormat>(direction.scope(), Element(bus))?;
     ChannelLayout::try_from(asbd.mChannelsPerFrame).map_err(|_| AuError::BusTooWide {
         scope: match direction {
             BusDirection::Input => "input",
@@ -286,8 +285,7 @@ pub(crate) fn bus_layout(unit: &Unit, direction: BusDirection, bus: u32) -> Resu
 /// that reading is why this returns a plain `Vec` rather than a `Result`: a
 /// refusal and an empty list are the same answer to the caller's question.
 pub(crate) fn supported_channel_configs(unit: &Unit) -> Vec<AuChannelConfig> {
-    let bytes = match unit.get_bytes::<SupportedNumChannels>(Scope::GLOBAL, Element::ZERO,
-    ) {
+    let bytes = match unit.get_bytes::<SupportedNumChannels>(Scope::GLOBAL, Element::ZERO) {
         Ok(b) => b,
         Err(_) => return Vec::new(),
     };

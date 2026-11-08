@@ -40,20 +40,12 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::{Element, Property};
-use tutti_au_ffi::property::{InPlaceProcessing, OfflineRender, RenderQuality};
 use tutti_au_ffi::Unit;
+use tutti_au_ffi::property::{InPlaceProcessing, OfflineRender, RenderQuality};
+use tutti_au_ffi::{Element, Scope};
 
 use crate::error::{AuError, Result};
 use crate::types::*;
-
-/// `kAudioUnitProperty_OfflineRender` (37).
-///
-/// Aliased here rather than in [`crate::types`] with its siblings: keeping the
-/// id beside its only two call sites means the property number and the code
-/// that interprets the AU's answer cannot drift apart.
-pub(crate) const OfflineRender::ID: u32 =
-    coreaudio_sys::kAudioUnitProperty_OfflineRender;
 
 /// The inclusive maximum this host will write to
 /// `kAudioUnitProperty_RenderQuality`.
@@ -79,8 +71,7 @@ pub const RENDER_QUALITY_MAX: u32 = 127;
 /// may differ from the audition, and nothing can be done) are different facts a
 /// bouncing host must distinguish, and the second is the common case here.
 pub(crate) fn is_offline_render(unit: &Unit) -> Result<bool> {
-    let value: u32 = unit.get::<OfflineRender>(Scope::GLOBAL, Element::ZERO,
-    )?;
+    let value: u32 = unit.get::<OfflineRender>(Scope::GLOBAL, Element::ZERO)?;
     Ok(value != 0)
 }
 
@@ -140,9 +131,7 @@ pub(crate) fn is_offline_render(unit: &Unit) -> Result<bool> {
 /// [`is_offline_render`] for why that is an error rather than a silent no-op.
 pub(crate) fn set_offline_render(unit: &Unit, offline: bool) -> Result<()> {
     let value: u32 = u32::from(offline);
-    Ok(unit.set::<OfflineRender>(Scope::GLOBAL, Element::ZERO,
-        &value,
-    )?)
+    Ok(unit.set::<OfflineRender>(Scope::GLOBAL, Element::ZERO, &value)?)
 }
 
 /// Whether the AU is willing to render with input and output aliasing the same
@@ -179,8 +168,7 @@ pub(crate) fn set_offline_render(unit: &Unit, offline: bool) -> Result<()> {
 /// flattening would make the in-place census read "9 units forbid it" when the
 /// truth is "6 permit it and 6 never said" (no unit measured reports `0`).
 pub(crate) fn supports_in_place(unit: &Unit) -> Result<bool> {
-    let value: u32 = unit.get::<InPlaceProcessing>(Scope::GLOBAL, Element::ZERO,
-    )?;
+    let value: u32 = unit.get::<InPlaceProcessing>(Scope::GLOBAL, Element::ZERO)?;
     Ok(value != 0)
 }
 
@@ -194,8 +182,7 @@ pub(crate) fn supports_in_place(unit: &Unit) -> Result<bool> {
 /// [`AuError::OsStatus`] when the AU has no `kAudioUnitProperty_RenderQuality`,
 /// which is the common case — see [`set_render_quality`].
 pub(crate) fn render_quality(unit: &Unit) -> Result<u32> {
-    Ok(unit.get::<RenderQuality>(Scope::GLOBAL, Element::ZERO,
-    )?)
+    Ok(unit.get::<RenderQuality>(Scope::GLOBAL, Element::ZERO)?)
 }
 
 /// Sets the AU's render quality, `0` (cheapest) to [`RENDER_QUALITY_MAX`] (best).
@@ -236,9 +223,7 @@ pub(crate) fn set_render_quality(unit: &Unit, quality: u32) -> Result<()> {
             "render quality {quality} exceeds the maximum {RENDER_QUALITY_MAX}"
         )));
     }
-    Ok(unit.set::<RenderQuality>(Scope::GLOBAL, Element::ZERO,
-        &quality,
-    )?)
+    Ok(unit.set::<RenderQuality>(Scope::GLOBAL, Element::ZERO, &quality)?)
 }
 
 pub use tutti_au_ffi::{PushScratch, output_byte_sizes};

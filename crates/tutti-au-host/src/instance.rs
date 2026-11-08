@@ -6,8 +6,10 @@
 
 #![cfg(target_os = "macos")]
 
+use tutti_au_ffi::property::{
+    BypassEffect, ClassInfo, ClassInfoFromDocument, Latency, StreamFormat,
+};
 use tutti_au_ffi::{Element, Scope};
-use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency, StreamFormat};
 use tutti_au_ffi::{HostCallbacks, Renderer, TransportState, Unit};
 
 use crate::bus::{self, AuChannelConfig, BusDirection};
@@ -1150,9 +1152,7 @@ impl AuInstance {
     /// `kAudioUnitProperty_Latency`. A refusal is propagated rather than
     /// flattened to zero.
     pub fn get_latency(&self) -> Result<Samples> {
-        let seconds: f64 =
-            self.unit()
-                .get::<Latency>(Scope::GLOBAL, Element::ZERO)?;
+        let seconds: f64 = self.unit().get::<Latency>(Scope::GLOBAL, Element::ZERO)?;
         // Round rather than truncate: a latency the AU reports as an exact
         // sample count can land a hair below it in f64, and truncating there
         // reports one sample less than the plugin actually delays — PDC then
@@ -1373,9 +1373,9 @@ impl AuInstance {
     /// button does nothing".
     pub fn set_bypass(&mut self, bypass: bool) -> Result<()> {
         let value: u32 = u32::from(bypass);
-        Ok(self.unit().set::<BypassEffect>(Scope::GLOBAL, Element::ZERO,
-            &value,
-        )?)
+        Ok(self
+            .unit()
+            .set::<BypassEffect>(Scope::GLOBAL, Element::ZERO, &value)?)
     }
 
     /// Whether the AU is currently bypassed.
@@ -1384,8 +1384,9 @@ impl AuInstance {
     /// As [`set_bypass`](Self::set_bypass): an AU with no bypass property
     /// (every instrument) errors rather than reporting a fabricated `false`.
     pub fn is_bypassed(&self) -> Result<bool> {
-        let value: u32 = self.unit().get::<BypassEffect>(Scope::GLOBAL, Element::ZERO,
-        )?;
+        let value: u32 = self
+            .unit()
+            .get::<BypassEffect>(Scope::GLOBAL, Element::ZERO)?;
         Ok(value != 0)
     }
 
@@ -1573,8 +1574,9 @@ impl AuInstance {
         tutti_plugin_types::assert_main_thread();
         // The `ClassInfo` plist comes back under the Copy rule; empty when the
         // AU answers null.
-        Ok(self.unit().copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO,
-        )?)
+        Ok(self
+            .unit()
+            .copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO)?)
     }
 
     /// Restores state previously produced by [`Self::get_state`]. Empty input is a no-op.
@@ -1601,9 +1603,8 @@ impl AuInstance {
         if data.is_empty() {
             return Ok(());
         }
-        self.unit().set_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO,
-            data,
-        )?;
+        self.unit()
+            .set_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO, data)?;
         // Tell every open editor the values moved; a failure to notify is not a
         // failure to restore.
         let _ = crate::listener::notify_all_parameters(self.unit());
@@ -1648,9 +1649,9 @@ impl AuInstance {
         }
         // A plist that does not decode fails here and again in `set_state`, so
         // the fallback cannot mask it.
-        let from_document = self.unit().set_plist::<ClassInfoFromDocument>(Scope::GLOBAL, Element::ZERO,
-            data,
-        );
+        let from_document =
+            self.unit()
+                .set_plist::<ClassInfoFromDocument>(Scope::GLOBAL, Element::ZERO, data);
         if from_document.is_err() {
             return self.set_state(data);
         }
@@ -2546,8 +2547,7 @@ mod tests {
             // The independent check: ask the AU itself.
             let asbd = inst
                 .unit()
-                .get::<StreamFormat>(Scope::OUTPUT, Element::ZERO,
-                )
+                .get::<StreamFormat>(Scope::OUTPUT, Element::ZERO)
                 .expect("AUDelay reports its output stream format");
             assert!(
                 (asbd.mSampleRate - rate).abs() < 1e-6,
@@ -2586,8 +2586,7 @@ mod tests {
                 // Astonishing, but then the AU must really be at 1 Hz.
                 let asbd = inst
                     .unit()
-                    .get::<StreamFormat>(Scope::OUTPUT, Element::ZERO,
-                    )
+                    .get::<StreamFormat>(Scope::OUTPUT, Element::ZERO)
                     .expect("AUDelay reports its output stream format");
                 assert!(
                     (asbd.mSampleRate - absurd).abs() < 1e-6,

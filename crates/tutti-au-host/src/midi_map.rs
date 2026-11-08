@@ -79,9 +79,12 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::{Element, Property, Scope};
-use tutti_au_ffi::property::{AddParameterMidiMapping, AllParameterMidiMappings, HotMapParameterMidiMapping, RemoveParameterMidiMapping};
 use std::mem::size_of;
+use tutti_au_ffi::property::{
+    AddParameterMidiMapping, AllParameterMidiMappings, HotMapParameterMidiMapping,
+    RemoveParameterMidiMapping,
+};
+use tutti_au_ffi::{Element, Scope};
 
 use crate::error::Result;
 use crate::types::*;
@@ -486,8 +489,7 @@ impl AuMidiMapping {
 /// implement the property. That refusal is the normal answer for an effect and a
 /// caller should treat it as "this AU does not do MIDI mapping", not as a fault.
 pub fn all(unit: &Unit) -> Result<Vec<AuMidiMapping>> {
-    let bytes = unit.get_bytes::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO,
-    )?;
+    let bytes = unit.get_bytes::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO)?;
     Ok(decode_table(&bytes))
 }
 
@@ -545,11 +547,7 @@ pub fn add(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
         return Ok(());
     }
-    write_table(
-        unit,
-        AddParameterMidiMapping::ID,
-        mappings,
-    )
+    write_table(unit, AddParameterMidiMapping::ID, mappings)
 }
 
 /// Removes the mappings targeting each of `mappings`'
@@ -569,11 +567,7 @@ pub fn remove(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
         return Ok(());
     }
-    write_table(
-        unit,
-        RemoveParameterMidiMapping::ID,
-        mappings,
-    )
+    write_table(unit, RemoveParameterMidiMapping::ID, mappings)
 }
 
 /// Replaces the AU's entire mapping table with `mappings`.
@@ -600,11 +594,7 @@ pub fn set_all(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
         let existing = all(unit)?;
         return remove(unit, &existing);
     }
-    write_table(
-        unit,
-        AllParameterMidiMappings::ID,
-        mappings,
-    )
+    write_table(unit, AllParameterMidiMappings::ID, mappings)
 }
 
 /// Arms "learn" mode: the AU maps the **next MIDI message it sees** to the
@@ -625,7 +615,9 @@ pub fn set_all(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
 /// family.
 pub fn arm_hot_map(unit: &Unit, mapping: &AuMidiMapping) -> Result<()> {
     let raw = mapping.to_raw();
-    Ok(unit.set_bytes::<HotMapParameterMidiMapping>(Scope::GLOBAL, Element::ZERO,
+    Ok(unit.set_bytes::<HotMapParameterMidiMapping>(
+        Scope::GLOBAL,
+        Element::ZERO,
         &raw.to_bytes(),
     )?)
 }
@@ -652,8 +644,7 @@ pub fn arm_hot_map(unit: &Unit, mapping: &AuMidiMapping) -> Result<()> {
 /// status byte in it yet.
 pub fn hot_map(unit: &Unit) -> Option<AuMidiMapping> {
     let bytes = unit
-        .get_bytes::<HotMapParameterMidiMapping>(Scope::GLOBAL, Element::ZERO,
-        )
+        .get_bytes::<HotMapParameterMidiMapping>(Scope::GLOBAL, Element::ZERO)
         .ok()?;
     let raw = AuParameterMidiMappingRaw::from_bytes(bytes.as_slice().try_into().ok()?);
     // See the docs above: `mStatus == 0` is the only reliable "nothing here"
@@ -682,9 +673,8 @@ pub fn hot_map_pending(unit: &Unit) -> bool {
 /// (AUSampler, AUMIDISynth), false for the other 57 including every effect and
 /// every third-party unit on this machine.
 pub fn supports_parameter_midi_mapping(unit: &Unit) -> bool {
-    unit.property_info::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO,
-    )
-    .is_ok()
+    unit.property_info::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO)
+        .is_ok()
 }
 
 #[cfg(test)]

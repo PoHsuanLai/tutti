@@ -150,8 +150,6 @@ pub const K_AUDIO_UNIT_RENDER_ACTION_POST_RENDER: AudioUnitRenderActionFlags =
 /// `kAudioTimeStampSampleTimeValid`: `AudioTimeStamp::mFlags` validity bit.
 pub const K_AUDIO_TIME_STAMP_SAMPLE_TIME_VALID: u32 = sys::kAudioTimeStampSampleTimeValid;
 
-
-
 // `AUParameterMIDIMappingFlags`, `1 << 0` .. `1 << 5`.
 /// Match the message on any MIDI channel, ignoring the status byte's low nibble.
 pub const K_AU_PARAMETER_MIDI_MAPPING_ANY_CHANNEL: u32 = 1 << 0;
@@ -166,8 +164,6 @@ pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR: u32 = 1 << 4;
 /// Which end of the controller is the parameter's "on" state. Only meaningful
 /// with [`K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR`] set.
 pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR_ON: u32 = 1 << 5;
-
-
 
 // Parameter unit kinds.
 /// `kAudioUnitParameterUnit_Generic`: parameter unit kind (`AudioUnitParameterInfo::unit`).

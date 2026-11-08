@@ -54,11 +54,11 @@
 // AudioToolbox call dereferences. Callers must supply a valid unit, same as
 // every other entry point in this crate.
 
-use tutti_au_ffi::{Element, Scope};
-use tutti_au_ffi::property::{DependentParameters, ParameterList, ParameterValueStrings};
 use crate::error::Result;
 use crate::types::*;
 use tutti_au_ffi::Unit;
+use tutti_au_ffi::property::{DependentParameters, ParameterList, ParameterValueStrings};
+use tutti_au_ffi::{Element, Scope};
 
 /// Where a parameter lives: the `(scope, element)` pair AudioToolbox addresses
 /// it by.
@@ -472,8 +472,7 @@ pub fn list(unit: &Unit) -> Vec<AuParameter> {
 /// error — asking a plain effect for its input-element parameters legitimately
 /// yields nothing.
 pub fn list_at(unit: &Unit, addr: ParamAddress) -> Vec<AuParameter> {
-    let ids_bytes = match unit.get_bytes::<ParameterList>(addr.scope, addr.element,
-    ) {
+    let ids_bytes = match unit.get_bytes::<ParameterList>(addr.scope, addr.element) {
         Ok(b) => b,
         Err(_) => return Vec::new(),
     };
@@ -611,12 +610,11 @@ pub fn value_strings(unit: &Unit, id: u32) -> Vec<String> {
 /// [`value_strings`] at an explicit address.
 pub fn value_strings_at(unit: &Unit, addr: ParamAddress, id: u32) -> Vec<String> {
     // A refusal to answer is the "no value strings" answer; so is a null array.
-    unit.copy_string_array::<ParameterValueStrings>(addr.scope, Element(id),
-    )
-    .unwrap_or_default()
-    .into_iter()
-    .map(Option::unwrap_or_default)
-    .collect()
+    unit.copy_string_array::<ParameterValueStrings>(addr.scope, Element(id))
+        .unwrap_or_default()
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect()
 }
 
 /// The AU's own display string for `value` on parameter `id`, if it publishes

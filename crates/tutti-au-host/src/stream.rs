@@ -2,8 +2,8 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::{Element};
 use tutti_au_ffi::property::{MaximumFramesPerSlice, SampleRate, StreamFormat};
+use tutti_au_ffi::{Element, Scope};
 use tutti_plugin_types::ChannelLayout;
 
 use crate::bus::BusDirection;
@@ -121,21 +121,15 @@ impl StreamConfig {
         let unit = handle.unit();
 
         let effective = {
-            unit.set::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO,
-                &self.block_size,
-            )?;
+            unit.set::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO, &self.block_size)?;
 
             // JUCE sets `kAudioUnitProperty_SampleRate` per scope in addition to
             // carrying the rate in the ASBD; some AUs only honour one of the
             // two. Both writes are best-effort here — the read-back below is
             // what actually decides whether the rate took.
-            let _ = unit.set::<SampleRate>(Scope::OUTPUT, Element::ZERO,
-                &self.sample_rate,
-            );
+            let _ = unit.set::<SampleRate>(Scope::OUTPUT, Element::ZERO, &self.sample_rate);
             if self.channels.has_input {
-                let _ = unit.set::<SampleRate>(Scope::INPUT, Element::ZERO,
-                    &self.sample_rate,
-                );
+                let _ = unit.set::<SampleRate>(Scope::INPUT, Element::ZERO, &self.sample_rate);
             }
 
             // The requested width is sent verbatim — no stereo floor. This used
@@ -157,13 +151,10 @@ impl StreamConfig {
                 self.sample_rate,
                 self.channels.outputs.count() as u32,
             );
-            let _ = unit.set::<StreamFormat>(Scope::OUTPUT, Element::ZERO,
-                &out_asbd,
-            );
+            let _ = unit.set::<StreamFormat>(Scope::OUTPUT, Element::ZERO, &out_asbd);
             // Read back what the AU actually accepted for the output scope.
             // Unlike the channel count, a sample-rate mismatch is fatal.
-            let out_accepted = unit.get::<StreamFormat>(Scope::OUTPUT, Element::ZERO,
-            );
+            let out_accepted = unit.get::<StreamFormat>(Scope::OUTPUT, Element::ZERO);
             if let Ok(asbd) = out_accepted.as_ref() {
                 self.check_sample_rate("output", asbd.mSampleRate)?;
             }
@@ -178,12 +169,9 @@ impl StreamConfig {
                     self.sample_rate,
                     self.channels.inputs.count() as u32,
                 );
-                let _ = unit.set::<StreamFormat>(Scope::INPUT, Element::ZERO,
-                    &in_asbd,
-                );
+                let _ = unit.set::<StreamFormat>(Scope::INPUT, Element::ZERO, &in_asbd);
                 // Read back what the AU actually accepted for the input scope.
-                let in_accepted = unit.get::<StreamFormat>(Scope::INPUT, Element::ZERO,
-                );
+                let in_accepted = unit.get::<StreamFormat>(Scope::INPUT, Element::ZERO);
                 if let Ok(asbd) = in_accepted.as_ref() {
                     self.check_sample_rate("input", asbd.mSampleRate)?;
                 }
@@ -230,8 +218,9 @@ impl StreamConfig {
     /// allocated 512 while the host thinks 2048" is the only diagnosable form of
     /// this failure.
     pub(crate) fn verify_block_size(&self, handle: &AuHandle) -> Result<()> {
-        let accepted = handle.unit().get::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO,
-        );
+        let accepted = handle
+            .unit()
+            .get::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO);
         // A refusal to report is not a rejection — see above.
         let Ok(accepted) = accepted else {
             return Ok(());

@@ -33,9 +33,9 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::{Element};
-use tutti_au_ffi::property::{AudioChannelLayout, ElementName, SupportedChannelLayoutTags};
 use std::mem::size_of;
+use tutti_au_ffi::Element;
+use tutti_au_ffi::property::{AudioChannelLayoutProperty, ElementName, SupportedChannelLayoutTags};
 
 use crate::bus::BusDirection;
 use crate::error::{AuError, Result};
@@ -306,7 +306,7 @@ impl std::fmt::Display for AuLayoutTag {
 /// populated, which a stricter AU validating `mNumberChannelDescriptions`
 /// against the byte count would rightly refuse.
 const TAG_ONLY_LAYOUT_SIZE: usize =
-    size_of::<AudioChannelLayout>() - size_of::<AudioChannelDescription>();
+    size_of::<AudioChannelLayoutProperty>() - size_of::<AudioChannelDescription>();
 
 /// Every channel order the AU says it can run bus `bus` of `direction` in.
 ///
@@ -333,8 +333,8 @@ pub(crate) fn supported_layout_tags(
     direction: BusDirection,
     bus: u32,
 ) -> Vec<AuLayoutTag> {
-    let Ok(bytes) = unit.get_bytes::<SupportedChannelLayoutTags>(direction.scope(), Element(bus),
-    ) else {
+    let Ok(bytes) = unit.get_bytes::<SupportedChannelLayoutTags>(direction.scope(), Element(bus))
+    else {
         return Vec::new();
     };
     // `chunks_exact` for the reason `bus.rs` uses it: an AU reporting a size
@@ -374,11 +374,10 @@ pub(crate) fn supported_layout_tags(
 /// a `UseChannelDescriptions` unit — none of them sets. If that changes, this
 /// returns the tag `UseChannelDescriptions` and a caller can tell.
 pub(crate) fn layout_tag(unit: &Unit, direction: BusDirection, bus: u32) -> Result<AuLayoutTag> {
-    let bytes = unit.get_bytes::<AudioChannelLayout>(direction.scope(), Element(bus),
-    )?;
+    let bytes = unit.get_bytes::<AudioChannelLayoutProperty>(direction.scope(), Element(bus))?;
     // The AU controls this length, and measured sizes differ per unit for the
     // same logical value (AUMatrixReverb: 32 bytes; AUMultiChannelMixer and
-    // AUSampler: 12), so a fixed-`size_of` `get_property::<AudioChannelLayout>`
+    // AUSampler: 12), so a fixed-`size_of` `get_property::<AudioChannelLayoutProperty>`
     // would read a length neither agreed to. Anything shorter than the 4-byte
     // tag has no tag to report.
     if bytes.len() < size_of::<u32>() {
@@ -451,7 +450,9 @@ pub(crate) fn set_layout_tag(
         mNumberChannelDescriptions: 0,
         mChannelDescriptions: [AudioChannelDescription::default(); 1],
     };
-    Ok(unit.set_prefix::<AudioChannelLayout>(direction.scope(), Element(bus),
+    Ok(unit.set_prefix::<AudioChannelLayoutProperty>(
+        direction.scope(),
+        Element(bus),
         &layout,
         TAG_ONLY_LAYOUT_SIZE,
     )?)
@@ -673,7 +674,7 @@ mod tests {
         );
         // And it must genuinely be smaller than the full struct, or the
         // subtraction is not doing anything.
-        assert!(TAG_ONLY_LAYOUT_SIZE < size_of::<AudioChannelLayout>());
+        assert!(TAG_ONLY_LAYOUT_SIZE < size_of::<AudioChannelLayoutProperty>());
         // The three header fields sit where the arithmetic assumes.
         assert_eq!(
             std::mem::offset_of!(AudioChannelLayout, mChannelLayoutTag),

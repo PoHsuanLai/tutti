@@ -64,9 +64,9 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::{Element};
-use tutti_au_ffi::property::{ClassInfo};
 use std::path::Path;
+use tutti_au_ffi::property::ClassInfo;
+use tutti_au_ffi::{Element, Scope};
 
 use tutti_au_ffi::{NotADictionary, PresetFacts, Unit, preset_facts, preset_with_identity};
 
@@ -178,8 +178,7 @@ pub fn save_preset_file(
     path: &Path,
     name: &str,
 ) -> Result<()> {
-    let class_info = unit.copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO,
-    )?;
+    let class_info = unit.copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO)?;
     if class_info.is_empty() {
         return Err(AuError::invalid_preset(
             "<AU ClassInfo>".to_string(),
@@ -274,9 +273,7 @@ pub fn load_preset_file(
     // `InputProperties`/`OutputProperties`/`GlobalProperties`) must reach the AU
     // byte-identical. A round trip through a rebuilt dictionary risks dropping a
     // key this host does not know about, and those keys carry real state.
-    unit.set_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO,
-        &bytes,
-    )?;
+    unit.set_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO, &bytes)?;
 
     Ok(identity)
 }

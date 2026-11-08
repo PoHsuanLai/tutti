@@ -242,11 +242,11 @@ impl Property for IconLocation {
     type Value = ();
 }
 
-/// `AudioChannelLayout`: The channel order of a bus.
+/// `AudioChannelLayoutProperty`: The channel order of a bus.
 #[derive(Debug, Clone, Copy)]
-pub struct AudioChannelLayout;
+pub struct AudioChannelLayoutProperty;
 
-impl Property for AudioChannelLayout {
+impl Property for AudioChannelLayoutProperty {
     const ID: u32 = sys::kAudioUnitProperty_AudioChannelLayout;
     type Value = sys::AudioChannelLayout;
 }

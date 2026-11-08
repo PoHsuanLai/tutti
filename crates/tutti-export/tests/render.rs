@@ -1241,3 +1241,84 @@ fn a_graph_with_no_place_in_the_file_is_refused() {
         assert!(ok.is_ok(), "five into {width}");
     }
 }
+
+/// A four-wide graph whose channels are 0.1, 0.2, 0.3, 0.4.
+fn four_buses() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
+    let id = g.add(Const::frame(&[0.1, 0.2, 0.3, 0.4]));
+    g.pipe_output(id);
+    built(g, RATE)
+}
+
+/// The first frame of every plane of a render.
+fn first_frame(graph: &mut RenderGraph, width: u16) -> Result<Vec<f32>, tutti_export::Error> {
+    let cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::from(width));
+    let out = render_to_buffers(graph, &cfg, &FrozenClock)?;
+    Ok(out.planes.iter().map(|p| p[0]).collect())
+}
+
+/// A declared root is what the file is placed from: four `Discrete` buses into
+/// a six-channel file keep channels 2 and 3 at 2 and 3 (undeclared, a four is
+/// quad and its rears land on the side pair at 4 and 5), a declared 5.1 folds
+/// into stereo by the 5.1 rules, and a declaration the file cannot take, or
+/// that is not as wide as the graph, is `ConfigError::Placement`.
+///
+/// Mutation (run): `fold_from` ignoring `root` → the declared row is
+/// `[.1, .2, 0, 0, .3, .4]` and fails; dropping the width check → the
+/// 6-wide declaration over a 4-wide graph renders instead of being refused;
+/// `Fold::declared` replaced by `Fold::to_width` → the declared row fails.
+#[test]
+fn a_declared_root_is_what_the_file_is_placed_from() {
+    use tutti_export::ConfigError;
+    use tutti_types::{ChannelTopology, FoldError, Speaker};
+    let mut graph = four_buses();
+    assert_eq!(
+        first_frame(&mut graph, 6).unwrap(),
+        [0.1, 0.2, 0.0, 0.0, 0.3, 0.4]
+    );
+    graph.set_root_topology(Some(ChannelTopology::discrete(ChannelLayout::QUAD)));
+    assert_eq!(
+        first_frame(&mut graph, 6).unwrap(),
+        [0.1, 0.2, 0.3, 0.4, 0.0, 0.0]
+    );
+    // Four buses cannot be placed in a stereo file.
+    assert!(matches!(
+        first_frame(&mut graph, 2),
+        Err(tutti_export::Error::InvalidConfig(ConfigError::Placement(
+            FoldError::Unplaced { channel: 2, .. }
+        )))
+    ));
+    // A declaration of another width than the graph is refused.
+    graph.set_root_topology(Some(ChannelTopology::discrete(ChannelLayout::from(6u16))));
+    assert!(matches!(
+        first_frame(&mut graph, 6),
+        Err(tutti_export::Error::InvalidConfig(ConfigError::Placement(
+            FoldError::Discrete { .. }
+        )))
+    ));
+    // Declared as a 5.1 (six wide), a six-channel graph folds to stereo by it.
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
+    let id = g.add(Const::frame(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+    g.pipe_output(id);
+    let mut six = built(g, RATE);
+    let mut swapped = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
+    assert!(swapped.index_of(Speaker::FrontLeft).is_some());
+    six.set_root_topology(Some(swapped.clone()));
+    let m = tutti_types::M3DB;
+    let stereo = first_frame(&mut six, 2).unwrap();
+    assert_eq!(stereo, [1.0 + m * 3.0 + m * 5.0, 2.0 + m * 3.0 + m * 6.0]);
+    // The same six, the front pair declared the other way round.
+    swapped = ChannelTopology::new([
+        Speaker::FrontRight,
+        Speaker::FrontLeft,
+        Speaker::FrontCenter,
+        Speaker::LowFrequency,
+        Speaker::SideLeft,
+        Speaker::SideRight,
+    ]);
+    six.set_root_topology(Some(swapped));
+    assert_eq!(
+        first_frame(&mut six, 2).unwrap(),
+        [2.0 + m * 3.0 + m * 5.0, 1.0 + m * 3.0 + m * 6.0]
+    );
+}

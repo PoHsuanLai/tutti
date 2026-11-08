@@ -97,7 +97,7 @@ use bevy_ecs::prelude::*;
 
 use crate::graph::AudioNode;
 use tutti_graph::MAX_ROOT_CHANNELS;
-use tutti_types::ChannelLayout;
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 use super::topology::{self, LiveGraph};
 use super::{AudioGraphRes, GraphReconcileSystems, GraphSource, engine_ready};
@@ -236,6 +236,24 @@ impl PortSources {
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct MasterSources(pub Vec<PortSource>);
 
+/// What the root's channels are: the session's output as the engine places it
+/// on the device and an export places it in a file. A pure translation into
+/// [`Session::declare_root_topology`](tutti_session::Session::declare_root_topology);
+/// the session holds the rule.
+///
+/// `None` (the default) declares nothing: the root is the engine's order for
+/// its width (a bare 4 is quad). `Some(`[`ChannelTopology::discrete`]`)` is
+/// independent buses, kept by index on a wider device; a named topology is
+/// speaker feeds, folded by position.
+///
+/// **A declaration sets the root's width.** Writing one makes the graph's
+/// outputs exactly as many as the topology has, with no floor of the device's,
+/// so a [`MasterSources`] longer than it is not widened under it
+/// ([`rebuild`] logs the refusal and drops the excess). A declaration the
+/// device cannot place is logged and not applied; the previous one stands.
+#[derive(Resource, Debug, Clone, Default, PartialEq)]
+pub struct MasterTopology(pub Option<ChannelTopology>);
+
 impl MasterSources {
     /// A **stereo** source on both output channels: port 0 to channel 0, port 1
     /// to channel 1.
@@ -347,6 +365,7 @@ pub fn rebuild(
     nodes: Query<(Entity, &AudioNode)>,
     sinks: Query<(Entity, &PortSources)>,
     master: Res<MasterSources>,
+    declared: Res<MasterTopology>,
     changed: Query<(), Changed<PortSources>>,
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<PortSources>,
@@ -356,7 +375,8 @@ pub fn rebuild(
         || !removed.is_empty()
         || !unbound.is_empty()
         || !rebound.is_empty()
-        || master.is_changed();
+        || master.is_changed()
+        || declared.is_changed();
     // Event readers: draining is what marks this frame's removals as seen, so
     // it happens whether or not a rebuild follows.
     removed.clear();
@@ -370,6 +390,13 @@ pub fn rebuild(
     let Some(mut graph) = graph else {
         return;
     };
+
+    // The declared root first: it sets the root's width, which everything
+    // below is sized against.
+    let declared_now = declared.is_changed();
+    if declared_now && let Err(e) = graph.session().declare_root_topology(declared.0.clone()) {
+        bevy_log::error!("MasterTopology refused, the previous declaration stands: {e}");
+    }
 
     // What the ECS says the graph should be, built before anything is written.
     // From here on this value is the truth for edges and outputs; the engine is
@@ -447,8 +474,13 @@ pub fn rebuild(
                  holds; the excess will not be rendered"
             );
         }
-        if declared > graph.graph_ref().outputs() {
-            graph.graph().widen_outputs(declared);
+        if declared > graph.graph_ref().outputs()
+            && let Err(e) = graph.graph().widen_outputs(declared)
+        {
+            bevy_log::error!(
+                "MasterSources declares {declared} channels, past the root's declared \
+                 topology; the excess will not be rendered: {e}"
+            );
         }
     }
 
@@ -456,7 +488,7 @@ pub fn rebuild(
     // two inputs `build` clamps against. Re-derive so the value that gets
     // applied — and stored as `live` — describes the graph that now exists,
     // rather than the one that did a moment ago.
-    let want = if master.is_changed() {
+    let want = if master.is_changed() || declared_now {
         topology::build(&graph, &nodes, &sinks, &master)
     } else {
         want
@@ -522,7 +554,7 @@ pub fn unwire_removed_sources(
     }
 }
 
-/// Adds declared audio wiring: [`MasterSources`], [`LiveGraph`], the
+/// Adds declared audio wiring: [`MasterSources`], [`MasterTopology`], [`LiveGraph`], the
 /// [`rebuild`] system and the [`unwire_removed_sources`] observer.
 ///
 /// [`rebuild`] runs after `Spawn` (a node must be in the graph before it can be
@@ -536,6 +568,7 @@ pub struct GraphWirePlugin;
 impl Plugin for GraphWirePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MasterSources>();
+        app.init_resource::<MasterTopology>();
         app.init_resource::<LiveGraph>();
         app.add_observer(unwire_removed_sources);
         app.add_systems(

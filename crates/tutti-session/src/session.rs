@@ -9,7 +9,7 @@ use tutti_graph::PrerollTable;
 use tutti_graph::TapReader;
 use tutti_nodes::ClickSettings;
 use tutti_transport::Transport;
-use tutti_types::{ChannelLayout, NodeKey, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, NodeKey, Samples};
 
 use crate::HeardTapError;
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
@@ -678,6 +678,46 @@ impl Session {
     /// The graph, to read.
     pub fn graph_ref(&self) -> &Graph {
         &self.graph
+    }
+
+    /// Declares what the graph root's channels are: the session's output as the
+    /// engine and an export place it on the device and in a file.
+    /// `Some(`[`ChannelTopology::discrete`]`)` is independent buses, kept by
+    /// index (a 4-wide one on a 6-wide device stays at 0..4, where a bare
+    /// 4 is quad and its rears land at 4 and 5); a named topology is speaker
+    /// feeds, folded by position. `None` takes the declaration back, and the
+    /// root is the engine's order for its width again. **Nothing changes
+    /// until one is declared.**
+    ///
+    /// The declaration states the root, so it **sets the root's width**: the
+    /// graph's outputs become exactly as many as `root` has, widened or
+    /// narrowed (channels past it are dropped), with no floor of the device's
+    /// ([`root_width`](crate::root_width)). Afterwards the width and the
+    /// declaration cannot disagree: [`Graph::widen_outputs`] refuses to widen a
+    /// declared root. Declare again to change both. An export of the master
+    /// places the file from the declaration (`RenderGraph::set_root_topology`).
+    ///
+    /// The device a declaration must place on is the one the session renders
+    /// to (`build_offline`'s layout, or the open device's, and the new one on a
+    /// restart); a detached session has none, and the file is checked at the
+    /// export.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Output`](crate::Error::Output) when the declaration is empty, wider than the engine
+    /// renders ([`MAX_ROOT_CHANNELS`](tutti_graph::MAX_ROOT_CHANNELS)), or the
+    /// device cannot place it (a discrete root wider than the device, a channel
+    /// no speaker names). Nothing is changed.
+    pub fn declare_root_topology(&mut self, root: Option<ChannelTopology>) -> crate::Result<()> {
+        let device = self.heard.as_ref().map(|(_, layout)| *layout);
+        self.graph.declare_root(root, device)?;
+        Ok(())
+    }
+
+    /// The topology the root was declared with
+    /// ([`declare_root_topology`](Self::declare_root_topology)), if one was.
+    pub fn root_topology(&self) -> Option<&ChannelTopology> {
+        self.graph.root_topology()
     }
 
     /// Runs every phase in [`PHASES`] order at `Instant::now()` with the

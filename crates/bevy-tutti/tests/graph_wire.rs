@@ -109,6 +109,55 @@ mod graph_wire {
         );
     }
 
+    /// `MasterTopology` is a pure translation into the session's declaration:
+    /// it sets the root's width and is what `Graph::root_topology` reads back; a
+    /// `MasterSources` longer than it is not widened under it; a declaration
+    /// the session refuses leaves the previous one standing; taking it back
+    /// leaves the root at its width, undeclared.
+    ///
+    /// Mutation (run): `rebuild` not calling `declare_root_topology` → the
+    /// root stays two wide and the first assertion fails; `rebuild` ignoring
+    /// the `widen_outputs` refusal's result by widening anyway (the check
+    /// removed in `Graph::widen_outputs`) → the six-entry `MasterSources`
+    /// widens the root to six.
+    #[test]
+    fn a_master_topology_is_the_sessions_declaration() {
+        use bevy_tutti::graph::MasterTopology;
+        use tutti_types::ChannelTopology;
+        let buses = |n: u16| ChannelTopology::discrete(ChannelLayout::from(n));
+        let mut app = app();
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+
+        app.world_mut()
+            .insert_resource(MasterTopology(Some(buses(4))));
+        app.update();
+        let outputs = |app: &App| {
+            let graph = app.world().resource::<AudioGraphRes>();
+            (
+                graph.graph_ref().outputs(),
+                graph.graph_ref().root_topology().cloned(),
+            )
+        };
+        assert_eq!(outputs(&app), (4, Some(buses(4))));
+
+        // Longer than the declaration: not widened under it.
+        app.world_mut()
+            .insert_resource(MasterSources::from_node_at_width(osc, 6u16));
+        app.update();
+        assert_eq!(outputs(&app), (4, Some(buses(4))));
+
+        // A declaration past what the engine renders is refused; the last stands.
+        app.world_mut()
+            .insert_resource(MasterTopology(Some(buses(40))));
+        app.update();
+        assert_eq!(outputs(&app), (4, Some(buses(4))));
+
+        // Taken back: undeclared, the root keeps its width.
+        app.world_mut().insert_resource(MasterTopology(None));
+        app.update();
+        assert_eq!(outputs(&app), (4, None));
+    }
+
     /// Removing the declaration silences the ports it claimed.
     ///
     /// The case that is unsolvable imperatively without every call site remembering

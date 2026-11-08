@@ -30,20 +30,34 @@ pub(crate) struct FileChannels<'a> {
 }
 
 impl FileChannels<'_> {
-    /// The fold from a graph of `outputs` channels. The graph is the engine's
-    /// order for its width where it has one (a bare 4 is quad), and the file the
-    /// topology it states or else the same assumption for its width; where
-    /// either has no order the channels go by index
-    /// ([`Fold::widths`]).
+    /// The fold from a graph of `outputs` channels. The graph is what it
+    /// declared (`root`), or else the engine's order for its width (a bare 4 is
+    /// quad); the file the topology it states or else the same assumption for
+    /// its width; where either has no order the channels go by index
+    /// ([`Fold::widths`], [`Fold::declared`]).
     ///
     /// # Errors
     ///
     /// [`ConfigError::Placement`] when the file's topology is not as wide as
-    /// the file or cannot take the graph's channels.
-    fn fold_from(&self, outputs: usize) -> crate::Result<Fold> {
+    /// the file or cannot take the graph's channels, or the declared root is
+    /// not as wide as the graph.
+    fn fold_from(&self, outputs: usize, root: Option<&ChannelTopology>) -> crate::Result<Fold> {
         let graph = ChannelLayout::from(outputs);
+        if let Some(root) = root
+            && root.layout() != graph
+        {
+            return Err(ConfigError::Placement(tutti_types::FoldError::Discrete {
+                src: root.layout(),
+                dst: graph,
+            })
+            .into());
+        }
         let Some(topology) = self.topology else {
-            return Fold::widths(graph, self.layout).map_err(|e| ConfigError::Placement(e).into());
+            let fold = match root {
+                Some(root) => Fold::declared(root, self.layout),
+                None => Fold::widths(graph, self.layout),
+            };
+            return fold.map_err(|e| ConfigError::Placement(e).into());
         };
         if topology.layout() != self.layout {
             return Err(ConfigError::Placement(tutti_types::FoldError::Discrete {
@@ -52,8 +66,12 @@ impl FileChannels<'_> {
             })
             .into());
         }
-        let from =
-            ChannelTopology::assumed(graph).unwrap_or_else(|| ChannelTopology::discrete(graph));
+        let from = match root {
+            Some(root) => root.clone(),
+            None => {
+                ChannelTopology::assumed(graph).unwrap_or_else(|| ChannelTopology::discrete(graph))
+            }
+        };
         Fold::between(&from, topology).map_err(|e| ConfigError::Placement(e).into())
     }
 }
@@ -128,6 +146,7 @@ impl<'a> GraphSource<'a> {
         sample_rate: tutti_types::SampleRate,
         clock: &'a dyn RenderClock,
         file: &FileChannels<'_>,
+        root: Option<&ChannelTopology>,
     ) -> crate::Result<Self> {
         let prepared = executor.prepare().sample_rate();
         if prepared.get() != sample_rate.get() {
@@ -155,7 +174,7 @@ impl<'a> GraphSource<'a> {
             |p| (p.global_inputs() as usize, p.global_outputs()),
         );
         let planes = vec![vec![0.0f32; max_block]; outputs];
-        let fold = file.fold_from(outputs)?;
+        let fold = file.fold_from(outputs, root)?;
         Ok(Self {
             editor,
             executor,
@@ -259,8 +278,9 @@ pub(crate) fn with_source<R>(
     // Again at render, as a real error: `editor_mut` can swap the editor
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
+    let root = graph.root_topology().cloned();
     let (editor, executor) = graph.parts_mut();
-    let mut src = GraphSource::new(editor, executor, sample_rate, clock, file)?;
+    let mut src = GraphSource::new(editor, executor, sample_rate, clock, file, root.as_ref())?;
     let rendered = f(&mut src)?;
     let lost = src.lost_events();
     // A forked unit that failed mid-render (a plugin's server crashed or

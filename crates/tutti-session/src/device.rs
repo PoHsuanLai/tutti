@@ -43,6 +43,7 @@ use tutti_cpal::{
 };
 use tutti_types::{SampleRate, Samples};
 
+use crate::graph::Graph;
 use crate::{DevicePolicy, DeviceWatch, Error, FollowEvent, Result, Session, SessionEvent};
 
 /// The sound card: owns the `TuttiDriver`. `!Send`, so it stays on the
@@ -514,6 +515,12 @@ impl Session {
         follow: impl FnOnce(&OutputSpec),
     ) -> Result<()> {
         let rate = spec.sample_rate;
+        // A declared root has to be placeable on the new device: refused
+        // before the graph moves, the stream still stopped, like any refusal
+        // here. An undeclared root is a bare width and is never refused.
+        if let Some(root) = self.graph.root_topology() {
+            Graph::check_root(root, spec.channels)?;
+        }
         // The new device's callback size too: a hosted plugin's pipeline
         // follows it, and its declared latency with it.
         self.graph.reprepare(rate, max_block, spec.quantum)?;
@@ -533,9 +540,13 @@ impl Session {
         // keeps it, and the engine folds. Committed and settled here too, so
         // the first block has the width. A commit refused for now leaves the
         // edit flag set, and the next update retries.
+        // A declared root keeps the width it declared: the device is no floor
+        // under it.
         let width = crate::root_width(self.graph.outputs(), spec.channels);
-        if width > self.graph.outputs() {
-            self.graph.widen_outputs(width);
+        if self.graph.root_topology().is_none() && width > self.graph.outputs() {
+            // Undeclared, so it cannot be refused.
+            let widened = self.graph.widen_outputs(width);
+            debug_assert!(widened.is_ok());
             self.commit();
         }
         let running = stopped.apply_pending();

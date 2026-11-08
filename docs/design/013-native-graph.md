@@ -7980,12 +7980,53 @@ by width alone.
     device buffer, so the heard tap still sees exactly the engine's output buffer.
     A buffer of an unsupported width is a silent counted block, in every build.
     Mono lands on the centre of a 6, 8 or 12-wide device and on the front pair of
-    a 4 or 2-wide one; a 4-wide root is treated as quad into 6, 8 and 12
-    (`MasterSources` cannot declare it `Discrete` yet, a follow-up).
+    a 4 or 2-wide one; an undeclared 4-wide root is treated as quad into 6, 8 and
+    12 (declare it `Discrete`, below).
   - **Export.** `GraphSource::new` builds `Fold::widths(graph, file)`, or
     `Fold::between` the graph and `EncodeConfig::topology` when the config states
     one, and the render writes through `planar_to_interleaved`. A graph wider than
     12 is no longer cut at 12 by a gather.
+  - **The declared root** (part 4). The root's channels are stated, not assumed:
+    `Session::declare_root_topology(Option<ChannelTopology>)`,
+    `SessionBuilder::root_topology`, and in `bevy-tutti` the `MasterTopology`
+    resource (a pure translation; `rebuild` calls the session). `None` (the
+    default) is `ChannelTopology::assumed(width)`, so nothing changes until one
+    is declared. `Fold::declared(root, dst_width)` is the placement: an
+    all-`Discrete` root is placed **by index** (`by_index`: channel `i` stays
+    `i`, a wider device is zero-filled, a narrower one is `FoldError::Unplaced`),
+    where `to_width` would read a bare 4 as quad; any other root is `to_width`'s.
+    - **Engine.** `OutputFolds` carries the declaration and builds the fold for
+      the root width it is as wide as with `Fold::declared`; every other width
+      is as before. `Engine::output_control()` returns an `OutputControl`
+      (`declare_root`, `support`, `reclaim`) that outlives the engine's move to
+      the audio thread and publishes the rebuilt set through the same `ArcLend`
+      on the control side (a lock serializes the read-modify-write; the audio
+      thread never sees it). `declare_root` refuses a root the given device
+      cannot place before publishing anything.
+    - **Export.** `RenderGraph::set_root_topology` states the fork's root;
+      `Session` sets it from the live graph for an export of the master (not of
+      one node, whose outputs are its own). The fold is `Fold::declared` to the
+      file's width, or `Fold::between` the declaration and `EncodeConfig::topology`.
+      A declaration not as wide as the graph, or that the file cannot take, is
+      `ConfigError::Placement`.
+    - **Width.** A declaration states the root, so it **sets the root's
+      width**: `declare_root_topology` widens or narrows the outputs to exactly
+      the topology's channels, with no floor of the device's (`root_width`
+      applies only undeclared), and an output tap keeps its lanes (a lane whose
+      channel is gone reads silence). After that the width and the declaration
+      cannot disagree: `Graph::widen_outputs` **refuses** to widen a declared
+      root (`FoldError::Discrete`, the declared and requested widths), so a
+      `MasterSources` longer than the declaration is logged and its excess
+      not rendered, where undeclared it widens the root. The declared width is
+      at most `MAX_ROOT_CHANNELS` and at least 1; otherwise `FoldError`. Refusing
+      was chosen over re-deriving because a re-derived topology would have to
+      invent the new channels' meaning (discrete? a speaker?) and a wrong guess
+      is a silent misplacement.
+    - **Devices.** The declaration is checked against the device the session
+      renders to at declare and build time (`Error::Output`), and a device
+      restart onto one that cannot place it is refused before the stream moves.
+      Clearing the declaration keeps the root's width and returns it to
+      `assumed`.
   - **Sampler.** `Place` (the old `MonoSpread` plus a `Fold`) is built from
     `Wave::topology()` and the node's width: a mono wave by the lone-centre
     rule, a wave already in the frame's order read channel for channel, any

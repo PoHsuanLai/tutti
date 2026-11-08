@@ -78,11 +78,10 @@ use tutti_graph::{
     TransportChanges,
 };
 
-use crate::output::{DEFAULT_DEVICE_WIDTHS, OutputFolds};
-use std::sync::Arc;
+use crate::output::{DEFAULT_DEVICE_WIDTHS, OutputControl, OutputFolds};
 use std::time::Instant;
 use tutti_metering::{LoadMeter, LoadRecorder};
-use tutti_rt::{ArcLend, AudioThreadCell, Reader, RtScope};
+use tutti_rt::{AudioThreadCell, Reader, RtScope};
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
 use tutti_transport::{
@@ -173,7 +172,7 @@ pub struct Engine {
     heard_taps: crate::HeardTaps,
     /// The folds from the root to the device, published by
     /// [`support_output`](Self::support_output).
-    output: Arc<ArcLend<OutputFolds>>,
+    output: OutputControl,
     /// The audio thread's reader of `output`, lent once per call.
     folds: AudioThreadCell<Reader<OutputFolds>>,
 }
@@ -310,8 +309,8 @@ impl Engine {
         let (heard_taps, hearing) = crate::hearing::link();
         // Every bare root width places into every bare device width up to
         // `DEFAULT_DEVICE_WIDTHS` (`every_root_width_places_into_any_device`).
-        let output = Arc::new(ArcLend::new(OutputFolds::up_to(DEFAULT_DEVICE_WIDTHS)));
-        let folds = AudioThreadCell::new(output.reader());
+        let output = OutputControl::new(OutputFolds::up_to(DEFAULT_DEVICE_WIDTHS));
+        let folds = AudioThreadCell::new(output.cell().reader());
         Ok(Self {
             graph: AudioThreadCell::new(GraphRender {
                 exec: executor,
@@ -350,10 +349,10 @@ impl Engine {
     /// every build.
     ///
     /// Where a mono root lands: the centre of a 6, 8 or 12-wide device, the
-    /// front pair of a 4-wide (quad) or a stereo one. A **4-wide root is
-    /// treated as quad** into a 6, 8 or 12-wide device (its rears are the back
-    /// pair, not the centre and LFE), because `MasterSources` cannot declare it
-    /// `Discrete` yet.
+    /// front pair of a 4-wide (quad) or a stereo one. An undeclared 4-wide
+    /// root is **treated as quad** into a 6, 8 or 12-wide device (its rears are
+    /// the back pair, not the centre and LFE); a root of independent buses says
+    /// so with [`OutputControl::declare_root`] and stays by index.
     ///
     /// A callback mid-block keeps the folds it lent, and the next call reads
     /// the new ones. Returns at once, publishing nothing, for a width already
@@ -367,15 +366,15 @@ impl Engine {
     ///
     /// [`FoldError::Empty`] for a device of no channels; nothing is published.
     pub fn support_output(&self, device: ChannelLayout) -> Result<(), FoldError> {
-        let current = self.output.current();
-        if current.supports(device) {
-            return Ok(());
-        }
-        let mut folds = (*current).clone();
-        folds.support(device)?;
-        self.output.publish(folds);
-        self.output.reclaim();
-        Ok(())
+        self.output.support(device)
+    }
+
+    /// The control side of the output folds, to keep when this engine moves to
+    /// the audio thread: it declares what the graph root is
+    /// ([`OutputControl::declare_root`]) and adds devices, publishing into the
+    /// folds this engine lends.
+    pub fn output_control(&self) -> OutputControl {
+        self.output.clone()
     }
 
     /// Frees the folds [`support_output`](Self::support_output) replaced that a block
@@ -1092,6 +1091,7 @@ mod tests {
     use tutti_graph::Prepare;
     use tutti_transport::{MotionEvent, Transport};
     use tutti_types::Bpm;
+    use tutti_types::ChannelTopology;
 
     /// A graph walk's `Pieces` that stores a new tempo from "the control
     /// thread" while each piece runs: the store races the walk, staged
@@ -1624,6 +1624,127 @@ mod tests {
         // Ramp(5) writes 51..=55; the rest of the 7-wide device is silent.
         assert_eq!(&out[..7], &[51.0, 52.0, 53.0, 54.0, 55.0, 0.0, 0.0]);
         assert_eq!(engine.load_meter().peek().silenced, 1);
+    }
+
+    /// Renders one 8-frame segment of the committed graph into a device of `device`
+    /// channels, after settling the first block (the commit installs on the
+    /// block after it), and returns frame 0.
+    fn first_frame(engine: &Engine, device: usize) -> Vec<f32> {
+        let layout = ChannelLayout::from(device);
+        let mut out = vec![-9.0f32; device * 8];
+        engine.process_segment(&mut InterleavedMut::new(&mut out, layout));
+        out[..device].to_vec()
+    }
+
+    /// A root of four independent buses, declared, stays by index on a 6-wide
+    /// device: channels 2 and 3 land at 2 and 3. Undeclared, the same root is
+    /// quad, and its rears land on the side pair at 4 and 5.
+    ///
+    /// Mutation (run): `root_fold` ignoring the declaration (always
+    /// `Fold::widths`) puts 43 and 44 at 4 and 5 and fails the declared row;
+    /// `declare_root` keeping the declaration when given `None` fails the
+    /// last row.
+    #[test]
+    fn a_declared_discrete_root_keeps_its_channels_by_index() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        rewire(&mut ed, 4);
+        let six = ChannelLayout::from(6u16);
+        // The first block installs the plan (silent); the rows read the next.
+        let _ = first_frame(&engine, 6);
+        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 0.0, 0.0, 43.0, 44.0]);
+
+        let control = engine.output_control();
+        control
+            .declare_root(Some(ChannelTopology::discrete(ChannelLayout::QUAD)), six)
+            .expect("buses place by index");
+        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 43.0, 44.0, 0.0, 0.0]);
+
+        control.declare_root(None, six).expect("undeclared");
+        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 0.0, 0.0, 43.0, 44.0]);
+    }
+
+    /// A declared 5.1 root folds into stereo by the 5.1 rules (the ITU matrix:
+    /// centre and each side at -3 dB).
+    ///
+    /// The declared 5.1 is the figure the bare width gives, so the last row
+    /// declares the same channels with the front pair swapped to show the
+    /// declaration is what is folded.
+    ///
+    /// Mutation (run): `root_fold` ignoring the declaration → the swapped row
+    /// keeps the unswapped figure and fails.
+    #[test]
+    fn a_declared_surround_root_folds_by_its_speakers() {
+        use tutti_types::Speaker::*;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        rewire(&mut ed, 6);
+        let _ = first_frame(&engine, 2);
+        let m = tutti_types::M3DB;
+        let folded = [61.0 + m * 63.0 + m * 65.0, 62.0 + m * 63.0 + m * 66.0];
+        assert_eq!(first_frame(&engine, 2), folded);
+        let control = engine.output_control();
+        let five_one = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
+        control
+            .declare_root(Some(five_one), ChannelLayout::STEREO)
+            .expect("5.1 into stereo");
+        assert_eq!(first_frame(&engine, 2), folded);
+        // The same six channels declared with the front pair swapped.
+        let swapped = ChannelTopology::new([
+            FrontRight,
+            FrontLeft,
+            FrontCenter,
+            LowFrequency,
+            SideLeft,
+            SideRight,
+        ]);
+        control
+            .declare_root(Some(swapped), ChannelLayout::STEREO)
+            .expect("places");
+        assert_eq!(
+            first_frame(&engine, 2),
+            [62.0 + m * 63.0 + m * 65.0, 61.0 + m * 63.0 + m * 66.0]
+        );
+    }
+
+    /// A declaration the device cannot take is refused and publishes nothing:
+    /// four buses into a stereo device would drop two, and a channel no
+    /// speaker names has no place anywhere.
+    ///
+    /// Mutation (run): `declare_root` not checking the device → the first
+    /// call is `Ok` and the engine renders silence into stereo.
+    #[test]
+    fn an_unplaceable_declaration_is_refused() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        rewire(&mut ed, 4);
+        let _ = first_frame(&engine, 2);
+        let before = first_frame(&engine, 2);
+        let control = engine.output_control();
+        assert_eq!(
+            control.declare_root(
+                Some(ChannelTopology::discrete(ChannelLayout::QUAD)),
+                ChannelLayout::STEREO
+            ),
+            Err(FoldError::Unplaced {
+                channel: 2,
+                speaker: tutti_types::Speaker::Discrete
+            })
+        );
+        let lfe2 = ChannelTopology::new([
+            tutti_types::Speaker::FrontLeft,
+            tutti_types::Speaker::FrontRight,
+            tutti_types::Speaker::Unknown(9),
+            tutti_types::Speaker::FrontCenter,
+        ]);
+        assert!(matches!(
+            control.declare_root(Some(lfe2), ChannelLayout::STEREO),
+            Err(FoldError::Unnamed { .. })
+        ));
+        assert_eq!(first_frame(&engine, 2), before);
     }
 
     /// A commit that lands between `settle` and `render` waits for the next

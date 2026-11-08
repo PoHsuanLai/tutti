@@ -657,6 +657,30 @@ impl Fold {
         }
     }
 
+    /// As [`to_width`](Self::to_width) for a source that **says what it is**: a
+    /// graph root whose topology was declared, against a device or file of
+    /// which only the width is known.
+    ///
+    /// The difference from `to_width` is the all-[`Discrete`](Speaker::Discrete)
+    /// source. There it is a bare count and is read in the engine's order for
+    /// its width (a quad at 4); here the caller *declared* the channels to be
+    /// independent buses, so they are placed by index
+    /// ([`by_index`](Self::by_index)): channel `i` stays channel `i`, a wider
+    /// destination is zero-filled, and a narrower one is an error, never a
+    /// matrix. Any other source is `to_width`'s.
+    ///
+    /// # Errors
+    ///
+    /// As [`to_width`](Self::to_width), and [`FoldError::Unplaced`] for a
+    /// discrete source wider than `dst`.
+    pub fn declared(src: &ChannelTopology, dst: ChannelLayout) -> Result<Self, FoldError> {
+        if src.is_discrete() {
+            Self::by_index(src.layout(), dst)
+        } else {
+            Self::to_width(src, dst)
+        }
+    }
+
     /// As [`to_width`](Self::to_width) for two bare widths: each is the
     /// engine's order for it where it has one, and channels go by index where
     /// it has none.

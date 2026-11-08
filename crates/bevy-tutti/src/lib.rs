@@ -248,9 +248,9 @@ pub mod prelude {
     pub use crate::graph::{
         AudioConfig, AudioGraphRes, AudioParam, AudioParamAppExt, AudioPump, AudioPumpAppExt,
         EngineNodes, GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode,
-        MasterSources, MeteringRes, MetronomeRes, PortSource, PortSources, PumpFinished,
-        SessionNode, SpawnAudioNode, TransportRes, commit_graph, crossfade_audio_node,
-        engine_ready,
+        MasterSources, MasterTopology, MeteringRes, MetronomeRes, PortSource, PortSources,
+        PumpFinished, SessionNode, SpawnAudioNode, TransportRes, commit_graph,
+        crossfade_audio_node, engine_ready,
     };
     pub use crate::{
         AudioDeviceEvent, AudioDeviceFault, AudioDeviceState, AudioEngineState,

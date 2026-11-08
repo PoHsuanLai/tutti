@@ -785,3 +785,45 @@ fn the_session_lists_the_outputs_once_and_retries_a_failed_start() {
     session.list_outputs_once(|| make(false)).unwrap();
     assert_eq!(calls.get(), 2, "one failure, one start, then nothing");
 }
+
+/// A declared root is placed on the device it is declared for, and a restart to
+/// a device that cannot place it is refused rather than rendering silence: four
+/// buses on a six-wide device restart onto another six-wide one, and not onto
+/// a stereo one.
+///
+/// Mutation (run): `rerate` not checking a declared root against the new
+/// device → the restart onto stereo succeeds.
+#[test]
+fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
+    let wide = |rate| {
+        OutputSpec::new(
+            SampleRate(rate),
+            ChannelLayout::from(6u16),
+            tutti_cpal::cpal::SampleFormat::F32,
+        )
+    };
+    let (driver, _stream) = ManualStreamDriver::new();
+    let (mut session, mut device) = Session::builder()
+        .root_topology(tutti_types::ChannelTopology::discrete(ChannelLayout::QUAD))
+        .build_device_on(wide(48_000.0), driver)
+        .expect("four buses place on six channels");
+    assert_eq!(session.graph_ref().outputs(), 4);
+
+    let (driver, _new) = ManualStreamDriver::new();
+    session
+        .restart_on(&mut device, wide(44_100.0), driver, None, |_| {})
+        .expect("another six-wide device takes it");
+    assert_eq!(session.graph_ref().outputs(), 4, "the device is no floor");
+
+    let (driver, _stereo) = ManualStreamDriver::new();
+    let refused = session.restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {});
+    assert!(
+        matches!(
+            refused,
+            Err(tutti_session::Error::Output(
+                tutti_types::FoldError::Unplaced { channel: 2, .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+}

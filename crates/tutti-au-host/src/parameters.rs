@@ -800,9 +800,6 @@ pub fn dependents_of_at(unit: &Unit, addr: ParamAddress, id: u32) -> Option<Vec<
     )
 }
 
-/// Prefer the modern CFString name if advertised; otherwise fall back to the
-/// 52-byte fixed buffer (null-terminated or full-width).
-
 #[cfg(test)]
 #[cfg(target_os = "macos")]
 mod tests {

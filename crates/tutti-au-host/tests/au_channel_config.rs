@@ -291,7 +291,7 @@ fn has_input_agrees_with_the_input_element_count() {
     ] {
         for info in tutti_au_host::component::enumerate_components_of_type(au_type) {
             // SAFETY: `component` came from `AudioComponentFindNext`.
-            let Ok(au) = (AuInstance::new(info.component, RATE, BLOCK)) else {
+            let Ok(au) = AuInstance::new(info.component, RATE, BLOCK) else {
                 // A unit that refuses to instantiate says nothing about
                 // `has_input`; skipping it does not weaken the invariant, which
                 // is asserted over the tally below.

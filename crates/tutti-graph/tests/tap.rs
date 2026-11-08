@@ -8,11 +8,13 @@ mod common;
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
 use tutti_graph::{
-    Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, Node,
-    NodeParts, Op, TapReader, Transport,
+    Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, MissingSource,
+    Node, NodeParts, Op, TapReader, Transport,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, Samples, TapAlign, TapId};
+use tutti_types::{
+    Beat, Bpm, ChannelLayout, MeterId, MeterSpec, NodeKey, Samples, TapAlign, TapId,
+};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -201,17 +203,22 @@ const BLOCK: usize = 100;
 fn run(r: &mut Rig, blocks: usize) -> Read {
     let cap = Samples(1 << 16);
     let mut aligned =
-        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, cap);
+        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, cap)
+            .expect("the sources exist");
     let mut raw =
-        r.ed.open_tap(TapId(2), vec![r.gains[0], r.gains[5]], TapAlign::Raw, cap);
+        r.ed.open_tap(TapId(2), vec![r.gains[0], r.gains[5]], TapAlign::Raw, cap)
+            .expect("the sources exist");
     let mut single =
-        r.ed.open_tap(TapId(3), vec![r.gains[2]], TapAlign::ToOutput, cap);
-    let mut edges = r.ed.open_tap(
-        TapId(4),
-        vec![Source::Global(0), Source::Zero],
-        TapAlign::ToOutput,
-        cap,
-    );
+        r.ed.open_tap(TapId(3), vec![r.gains[2]], TapAlign::ToOutput, cap)
+            .expect("the sources exist");
+    let mut edges =
+        r.ed.open_tap(
+            TapId(4),
+            vec![Source::Global(0), Source::Zero],
+            TapAlign::ToOutput,
+            cap,
+        )
+        .expect("the sources exist");
     commit(r);
     assert_eq!(r.exec.is_parallel(), r.gated, "a pool was set iff gated");
     let mut read = Read {
@@ -330,12 +337,14 @@ fn a_closed_tap_leaves_no_op() {
     let (never, none) = ops(&r);
     assert_eq!(none, 0);
 
-    let tap = r.ed.open_tap(
-        TapId(1),
-        vec![r.gains[0], r.gains[5]],
-        TapAlign::Raw,
-        Samples(64),
-    );
+    let tap =
+        r.ed.open_tap(
+            TapId(1),
+            vec![r.gains[0], r.gains[5]],
+            TapAlign::Raw,
+            Samples(64),
+        )
+        .expect("the sources exist");
     commit(&mut r);
     assert_eq!(
         ops(&r),
@@ -354,7 +363,8 @@ fn a_closed_tap_leaves_no_op() {
 
     // An aligned tap of a delayed source also carries its delay.
     let _aligned =
-        r.ed.open_tap(TapId(2), vec![r.gains[0]], TapAlign::ToOutput, Samples(64));
+        r.ed.open_tap(TapId(2), vec![r.gains[0]], TapAlign::ToOutput, Samples(64))
+            .expect("the sources exist");
     commit(&mut r);
     assert_eq!(
         ops(&r),
@@ -373,7 +383,8 @@ fn a_closed_tap_leaves_no_op() {
 fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
     let mut r = rig(1, false);
     let tap =
-        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::Raw, Samples(150));
+        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::Raw, Samples(150))
+            .expect("the sources exist");
     commit(&mut r);
     for i in 0..3 {
         block(&mut r, 100, i * 100);
@@ -402,7 +413,8 @@ fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
 fn a_read_is_whole_frames() {
     let mut r = rig(1, false);
     let mut tap =
-        r.ed.open_tap(TapId(1), r.gains[..3].to_vec(), TapAlign::Raw, Samples(256));
+        r.ed.open_tap(TapId(1), r.gains[..3].to_vec(), TapAlign::Raw, Samples(256))
+            .expect("the sources exist");
     commit(&mut r);
     block(&mut r, 100, 0);
     assert_eq!(tap.width(), 3);
@@ -427,7 +439,8 @@ fn a_read_is_whole_frames() {
 fn a_reader_dropped_first_is_reaped_and_freed_on_the_control_side() {
     let mut r = rig(1, true);
     let tap =
-        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, Samples(64));
+        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, Samples(64))
+            .expect("the sources exist");
     commit(&mut r);
     drop(tap);
     // Rendering with nobody reading: no write, no panic, no allocation.
@@ -462,7 +475,8 @@ fn a_reader_dropped_first_is_reaped_and_freed_on_the_control_side() {
 fn a_reader_dropped_on_the_audio_thread_panics() {
     let mut r = rig(1, false);
     let tap =
-        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(8));
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(8))
+            .expect("the sources exist");
     let _inside = tutti_rt::RtScope::enter();
     drop(tap);
 }
@@ -484,7 +498,8 @@ fn a_reader_dropped_on_the_audio_thread_panics() {
 fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
     let mut r = rig(1, false);
     let live =
-        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, Samples(1024));
+        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, Samples(1024))
+            .expect("the sources exist");
     commit(&mut r);
 
     let (mut fed, fexec) =
@@ -494,12 +509,14 @@ fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
         fed.spec().topology.taps.is_empty(),
         "the live tap is not in the fork"
     );
-    let mut mine = fed.open_tap(
-        TapId(1),
-        r.gains.clone(),
-        TapAlign::ToOutput,
-        Samples(MAX_BLOCK),
-    );
+    let mut mine = fed
+        .open_tap(
+            TapId(1),
+            r.gains.clone(),
+            TapAlign::ToOutput,
+            Samples(MAX_BLOCK),
+        )
+        .expect("the sources exist");
     fed.commit().expect("compiles");
     let mut f = Rig {
         ed: fed,
@@ -531,17 +548,24 @@ fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
 /// Removing a node a tap reads leaves the tap on silence in that lane, as an
 /// output wired to it would be, and the graph still commits.
 ///
-/// Mutation (run, recorded here): delete the tap loop in `Editor::remove`
-/// -> the commit is refused (`TapOutOfRange`) and `commit` panics.
+/// Two layers hold this: `Editor::remove` turns the lane to `Zero`, and the
+/// compiler reads a missing node as silence. Mutation (run, recorded here):
+/// breaking either one alone leaves this test green (the other still
+/// silences the lane; the `remove` loop is covered by
+/// `a_reused_key_is_not_read_by_the_old_tap`, the compiler's fallback by the
+/// narrowing tests); breaking both (delete the tap loop in `remove` and index
+/// `audio_out_val[&p]`) fails it.
 #[test]
 fn removing_a_tapped_node_silences_its_lane() {
     let mut r = rig(1, false);
-    let mut tap = r.ed.open_tap(
-        TapId(1),
-        vec![r.gains[0], r.gains[1]],
-        TapAlign::Raw,
-        Samples(1024),
-    );
+    let mut tap =
+        r.ed.open_tap(
+            TapId(1),
+            vec![r.gains[0], r.gains[1]],
+            TapAlign::Raw,
+            Samples(1024),
+        )
+        .expect("the sources exist");
     commit(&mut r);
     r.ed.remove(NodeKey(21));
     commit(&mut r);
@@ -566,7 +590,8 @@ fn removing_a_tapped_node_silences_its_lane() {
 fn closing_a_tap_twice_is_a_no_op() {
     let mut r = rig(1, false);
     let tap =
-        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(8));
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(8))
+            .expect("the sources exist");
     commit(&mut r);
     r.ed.close_tap(tap.id());
     r.ed.close_tap(tap.id());
@@ -611,7 +636,9 @@ fn concurrent_drain(workers: usize, width: usize, align: TapAlign) {
     let chains: Vec<u64> = (0..width as u64)
         .map(|k| k * 5 / (width as u64 - 1))
         .collect();
-    let tap = r.ed.open_tap(TapId(1), sources, align, Samples(256));
+    let tap =
+        r.ed.open_tap(TapId(1), sources, align, Samples(256))
+            .expect("the sources exist");
     commit(&mut r);
     let delay = |k: u64| match align {
         TapAlign::Raw => 5 * k,
@@ -710,11 +737,13 @@ fn lanes_do_not_tear_on_the_pool() {
 fn opening_an_id_again_replaces_the_tap() {
     let mut r = rig(1, false);
     let first =
-        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(1024));
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(1024))
+            .expect("the sources exist");
     commit(&mut r);
     block(&mut r, 100, 0);
     let second =
-        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(1024));
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(1024))
+            .expect("the sources exist");
     commit(&mut r);
     block(&mut r, 100, 100);
     assert_eq!(
@@ -740,7 +769,8 @@ fn opening_an_id_again_replaces_the_tap() {
 fn a_tap_cannot_change_its_width_under_its_writer() {
     let mut r = rig(1, false);
     let _wide =
-        r.ed.open_tap(TapId(1), r.gains[..3].to_vec(), TapAlign::Raw, Samples(64));
+        r.ed.open_tap(TapId(1), r.gains[..3].to_vec(), TapAlign::Raw, Samples(64))
+            .expect("the sources exist");
     commit(&mut r);
     r.ed.spec_mut()
         .topology
@@ -759,7 +789,8 @@ fn a_tap_cannot_change_its_width_under_its_writer() {
     );
     // Reopening at width 1 replaces it, and the lanes are the new tap's.
     let mut narrow =
-        r.ed.open_tap(TapId(1), vec![r.gains[2]], TapAlign::Raw, Samples(256));
+        r.ed.open_tap(TapId(1), vec![r.gains[2]], TapAlign::Raw, Samples(256))
+            .expect("the sources exist");
     commit(&mut r);
     block(&mut r, 100, 0);
     assert_eq!(narrow.width(), 1);
@@ -794,4 +825,252 @@ fn pop_planes_reads_whole_frames_and_keeps_the_lanes_level() {
     let n = reader.pop_planes([&mut a[..], &mut b[..], &mut c[..]], Samples(8));
     assert_eq!(n.get(), 1);
     assert_eq!((a[0], b[0], c[0]), (3.0, 30.0, 300.0));
+}
+
+/// A wide `Const` node (key 1, two outputs of `value`) outside the outputs.
+fn wide(r: &mut Rig, value: f32, width: usize) {
+    r.ed.insert(NodeKey(1), "const", Forkable(Kind::Const { value, width }));
+}
+
+fn port(node: u64, port: u16) -> Source {
+    Source::Node(OutPort {
+        node: NodeKey(node),
+        port,
+    })
+}
+
+/// A node replaced by one with fewer outputs leaves the tap's lanes past the
+/// new width on silence, and the commit succeeds: a recording or a display
+/// must not wedge the graph. The silence is zeros in the stream, not a loss
+/// (`take_lost` stays 0) and not a gap (the stream keeps its length), and the
+/// other lanes play on, on the serial and the pooled executor alike.
+///
+/// Mutation (run, recorded here): index `audio_out_val[&p]` for a tap lane in
+/// `compile` instead of `.get` -> the commit panics (also fails the aligned
+/// test below). `_ => continue` for a missing lane instead of `Zero` -> the
+/// lanes shift and this test and the aligned one fail.
+#[test]
+fn a_narrowed_node_silences_the_tap_lanes_past_its_width_and_commits() {
+    for (workers, gated) in [(1, false), (3, true)] {
+        let mut r = rig(workers, gated);
+        wide(&mut r, 0.5, 2);
+        let mut tap =
+            r.ed.open_tap(
+                TapId(1),
+                vec![port(1, 0), port(1, 1)],
+                TapAlign::Raw,
+                Samples(4096),
+            )
+            .expect("the sources exist");
+        commit(&mut r);
+        block(&mut r, 100, 0);
+        wide(&mut r, 0.25, 1);
+        commit(&mut r);
+        block(&mut r, 100, 100);
+        let mut got = Vec::new();
+        drain(&mut tap, &mut got);
+        assert_eq!(got.len(), 400, "the stream keeps its length");
+        assert!(lane(&got, 2, 0)[..100].iter().all(|&x| x == 0.5));
+        assert!(lane(&got, 2, 1)[..100].iter().all(|&x| x == 0.5));
+        assert!(lane(&got, 2, 0)[100..].iter().all(|&x| x == 0.25));
+        assert!(
+            lane(&got, 2, 1)[100..].iter().all(|&x| x == 0.0),
+            "the vanished port reads silence"
+        );
+        assert_eq!(tap.take_lost().get(), 0, "silence is not a loss");
+    }
+}
+
+/// A global input that goes past the declared width after the open is the same
+/// as a narrowed node: silence, not a refused commit.
+///
+/// Mutation (run, recorded here): index `global_val[&ch]` for a tap lane in
+/// `compile` instead of `.get` -> the commit panics.
+#[test]
+fn a_tap_on_a_global_input_that_goes_missing_reads_silence() {
+    let mut r = rig(1, false);
+    r.ed.spec_mut().topology.inputs = ChannelLayout::STEREO;
+    let mut tap =
+        r.ed.open_tap(
+            TapId(1),
+            vec![Source::Global(0), Source::Global(1)],
+            TapAlign::Raw,
+            Samples(1024),
+        )
+        .expect("both inputs exist when it opens");
+    // The graph goes back to one input before anything is committed.
+    r.ed.spec_mut().topology.inputs = ChannelLayout::MONO;
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    let mut got = Vec::new();
+    drain(&mut tap, &mut got);
+    let want: Vec<f32> = (0..100).map(input_at).collect();
+    assert_eq!(lane(&got, 2, 0), want);
+    assert!(lane(&got, 2, 1).iter().all(|&x| x == 0.0));
+}
+
+/// Opening refuses a source that does not exist at that moment, uncommitted
+/// edits included, and opens nothing: a bad port, a key no node has and a
+/// global input past the graph's width, for a tap and for a meter, each named
+/// in the error. A lane that is fine does not hide a bad one after it, and a
+/// source inserted but not yet committed is accepted.
+///
+/// Mutation (run, recorded here): make `Editor::check_sources` return `Ok(())`
+/// at once -> every refusal assertion fails. Drop its `port >= outputs.count()`
+/// test -> the bad-port assertions fail. Compare against `t.inputs` of zero
+/// instead of `count()` of the declared width -> the global assertions fail.
+#[test]
+fn opening_refuses_a_source_that_does_not_exist_now() {
+    let mut r = rig(1, false);
+    wide(&mut r, 0.5, 2);
+    let cap = Samples(1024);
+    let tap =
+        |r: &mut Rig, sources: Vec<Source>| r.ed.open_tap(TapId(9), sources, TapAlign::Raw, cap);
+    assert_eq!(
+        tap(&mut r, vec![port(1, 0), port(1, 5)]).err(),
+        Some(MissingSource::Port {
+            node: NodeKey(1),
+            port: 5,
+            width: 2
+        }),
+        "a port past the node's width"
+    );
+    assert_eq!(
+        tap(&mut r, vec![port(77, 0)]).err(),
+        Some(MissingSource::Node { node: NodeKey(77) }),
+        "a typo'd key"
+    );
+    assert_eq!(
+        tap(&mut r, vec![Source::Global(3)]).err(),
+        Some(MissingSource::Global {
+            channel: 3,
+            width: 1
+        }),
+        "a global input past the graph's width"
+    );
+    let meter = |r: &mut Rig, sources: Vec<Source>| {
+        r.ed.open_meter(MeterId(9), MeterSpec::raw(sources)).err()
+    };
+    assert_eq!(
+        meter(&mut r, vec![port(1, 2)]),
+        Some(MissingSource::Port {
+            node: NodeKey(1),
+            port: 2,
+            width: 2
+        }),
+    );
+    assert_eq!(
+        meter(&mut r, vec![port(77, 0)]),
+        Some(MissingSource::Node { node: NodeKey(77) }),
+        "a meter on a missing node"
+    );
+    assert_eq!(
+        meter(&mut r, vec![Source::Global(1)]),
+        Some(MissingSource::Global {
+            channel: 1,
+            width: 1
+        }),
+    );
+    assert!(
+        r.ed.spec().topology.taps.is_empty() && r.ed.spec().topology.meters.is_empty(),
+        "a refused open declares nothing"
+    );
+    // Nothing was committed: node 1 and the input exist only in the edited
+    // spec, and that is what is checked.
+    tap(&mut r, vec![port(1, 1), Source::Global(0), Source::Zero]).expect("all exist");
+    assert_eq!(
+        meter(&mut r, vec![port(1, 1)]),
+        None,
+        "it exists, uncommitted"
+    );
+}
+
+/// A key is the author's and can be inserted again after a removal: a tap left
+/// naming the removed node must not start reading the new one.
+///
+/// Mutation (run, recorded here): delete the tap loop in `Editor::remove` ->
+/// the lane reads the new node's 0.125 and the assertion fails.
+#[test]
+fn a_reused_key_is_not_read_by_the_old_tap() {
+    let mut r = rig(1, false);
+    wide(&mut r, 0.25, 1);
+    let mut tap =
+        r.ed.open_tap(TapId(1), vec![port(1, 0)], TapAlign::Raw, Samples(1024))
+            .expect("the sources exist");
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    r.ed.remove(NodeKey(1));
+    wide(&mut r, 0.125, 1);
+    commit(&mut r);
+    block(&mut r, 100, 100);
+    let mut got = Vec::new();
+    drain(&mut tap, &mut got);
+    assert_eq!(got.len(), 200);
+    assert!(got[..100].iter().all(|&x| x == 0.25));
+    assert!(
+        got[100..].iter().all(|&x| x == 0.0),
+        "the tap followed the removal, not the key"
+    );
+}
+
+/// An aligned tap across a narrowing: the lane that lost its port goes silent
+/// at once (it has no delay ring to drain), and the other lanes, aligned by
+/// rings of their own, neither shift nor leak: the surviving constant lane
+/// still carries the old value for the `LATENCY` frames its ring held, and the
+/// latent chain's lane is the analytic aligned signal throughout.
+///
+/// Mutation (run, recorded here): give a found node port no alignment delay
+/// in `compile` (`Latency::ZERO` for `departure(n)`) -> the surviving
+/// constant lane is not `LATENCY` frames late and its assertion fails (so do
+/// the other aligned-tap tests). `_ => continue` for a missing lane -> the
+/// stream's width is wrong and this test fails.
+#[test]
+fn an_aligned_tap_across_a_narrowing_keeps_the_other_lanes_level() {
+    let mut r = rig(1, false);
+    wide(&mut r, 0.5, 2);
+    let mut tap =
+        r.ed.open_tap(
+            TapId(1),
+            vec![port(1, 0), port(1, 1), r.gains[3]],
+            TapAlign::ToOutput,
+            Samples(4096),
+        )
+        .expect("the sources exist");
+    commit(&mut r);
+    for i in 0..3 {
+        block(&mut r, 100, i * 100);
+    }
+    wide(&mut r, 0.25, 1);
+    commit(&mut r);
+    for i in 3..6 {
+        block(&mut r, 100, i * 100);
+    }
+    let mut got = Vec::new();
+    drain(&mut tap, &mut got);
+    assert_eq!(got.len(), 600 * 3, "the stream keeps its length");
+    let at = LATENCY as usize;
+    // The constant is `LATENCY` frames late; the narrowing lands at frame 300.
+    let lane0: Vec<f32> = (0..600usize)
+        .map(|t| match t {
+            t if t < at => 0.0,
+            t if t - at < 300 => 0.5,
+            _ => 0.25,
+        })
+        .collect();
+    let lane1: Vec<f32> = (0..600usize)
+        .map(|t| if t >= at && t < 300 { 0.5 } else { 0.0 })
+        .collect();
+    let lane2: Vec<f32> = (0..600u64).map(|t| aligned_at(3, t)).collect();
+    assert_eq!(
+        lane(&got, 3, 0),
+        lane0,
+        "the surviving constant keeps its ring"
+    );
+    assert_eq!(
+        lane(&got, 3, 1),
+        lane1,
+        "the vanished lane is silent at once"
+    );
+    assert_eq!(lane(&got, 3, 2), lane2, "the latent lane is untouched");
+    assert_eq!(tap.take_lost().get(), 0);
 }

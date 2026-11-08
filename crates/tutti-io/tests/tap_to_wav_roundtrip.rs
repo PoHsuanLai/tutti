@@ -115,12 +115,14 @@ fn graph_tap(capacity: usize) -> (Graph, TapReader) {
         })
     };
     ed.spec_mut().topology.outputs = vec![port(0), port(1)];
-    let reader = ed.open_tap(
-        TapId(0),
-        vec![port(0), port(1)],
-        TapAlign::ToOutput,
-        Samples(capacity),
-    );
+    let reader = ed
+        .open_tap(
+            TapId(0),
+            vec![port(0), port(1)],
+            TapAlign::ToOutput,
+            Samples(capacity),
+        )
+        .expect("the sources exist");
     ed.commit().expect("compiles");
     exec.apply_pending();
     ed.collect();

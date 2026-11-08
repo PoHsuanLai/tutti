@@ -57,7 +57,9 @@ fn engine(
             }
         })
         .collect();
-    let meter = ed.open_meter(MeterId(1), MeterSpec::Outputs);
+    let meter = ed
+        .open_meter(MeterId(1), MeterSpec::Outputs)
+        .expect("the sources exist");
     ed.commit().expect("commits");
     let engine = Engine::with_capacity(&transport, &mut ed, exec, capacity).expect("within limits");
     // The engine's editor half outlives the test; nothing commits again.
@@ -196,7 +198,9 @@ fn the_master_reads_before_the_declick() {
         node: NodeKey(1),
         port: 0,
     })];
-    let mut meter = ed.open_meter(MeterId(1), MeterSpec::Outputs);
+    let mut meter = ed
+        .open_meter(MeterId(1), MeterSpec::Outputs)
+        .expect("the sources exist");
     meter.enable();
     ed.commit().expect("commits");
     let engine = Engine::with_capacity(&transport, &mut ed, exec, Samples(512)).expect("limits");
@@ -275,7 +279,9 @@ fn a_block_longer_than_the_capacity_is_measured_whole() {
             }
         })
         .collect();
-    let mut meter = ed.open_meter(MeterId(1), MeterSpec::Outputs);
+    let mut meter = ed
+        .open_meter(MeterId(1), MeterSpec::Outputs)
+        .expect("the sources exist");
     meter.enable();
     ed.commit().expect("commits");
     let engine =

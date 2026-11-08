@@ -586,7 +586,10 @@ mod graph_tap {
         let mut graph = graph();
         let mut out = [0.0f32];
         graph.render_frame(&mut out);
-        let mut reader = graph.graph().open_output_tap(Samples(64));
+        let mut reader = graph
+            .graph()
+            .open_output_tap(Samples(64))
+            .expect("the sources exist");
         for _ in 0..3 {
             graph.render_frame(&mut out);
         }
@@ -605,7 +608,10 @@ mod graph_tap {
     #[test]
     fn closing_the_tap_stops_the_copy() {
         let mut graph = graph();
-        let mut reader = graph.graph().open_output_tap(Samples(64));
+        let mut reader = graph
+            .graph()
+            .open_output_tap(Samples(64))
+            .expect("the sources exist");
         let mut out = [0.0f32];
         graph.render_frame(&mut out);
         graph.graph().close_tap(reader.id());
@@ -628,7 +634,10 @@ mod graph_tap {
         let mut out = [0.0f32];
         graph.render_frame(&mut out);
         assert_eq!(out[0], 0.25);
-        let reader = graph.graph().open_output_tap(Samples(64));
+        let reader = graph
+            .graph()
+            .open_output_tap(Samples(64))
+            .expect("the sources exist");
         assert_eq!(
             reader.available(),
             Samples(0),

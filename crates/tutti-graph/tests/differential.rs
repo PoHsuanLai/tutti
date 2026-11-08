@@ -539,7 +539,11 @@ proptest! {
             let mut pair = Pair::with_workers(MAX_BLOCK, workers);
             // The harness compiles the spec itself; the reader's lanes ride the
             // same commit.
-            let mut tap = pair.editor.open_tap(TapId(1), outputs, TapAlign::ToOutput, Samples(1 << 16));
+            // `open_tap` refuses a source the editor's spec lacks, and the
+            // harness compiles `spec` itself: give the editor the same nodes.
+            pair.editor.spec_mut().topology.nodes = spec.topology.nodes.clone();
+            pair.editor.spec_mut().topology.inputs = spec.topology.inputs;
+            let mut tap = pair.editor.open_tap(TapId(1), outputs, TapAlign::ToOutput, Samples(1 << 16)).expect("the sources exist");
             pair.switch(&valid, &desc.kinds);
             let width = tap.width();
             let mut frame = 0;

@@ -105,6 +105,7 @@ pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, Session, SessionEvent};
+pub use tutti_graph::MissingSource;
 #[cfg(feature = "midi")]
 pub use tutti_ump::MidiChannel;
 #[cfg(feature = "device")]

@@ -19,6 +19,49 @@ pub struct Gap {
     pub fails_with: &'static str,
 }
 
+/// An event a black-box subject logged, as the shared plugin's state records
+/// it (`tutti-shared-plugin`'s `core`, "State"): the kind, its offset in its
+/// block, and the id and value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Logged {
+    pub kind: u64,
+    pub offset: u32,
+    pub id: u64,
+    pub value: f64,
+}
+
+impl Logged {
+    pub const NOTE_ON: u64 = 2;
+    pub const CONTROL: u64 = 4;
+
+    /// The events of the plugin's blob inside a saved state, in arrival order.
+    /// The blob is found by its magic (a host may wrap it).
+    pub fn parse(state: &[u8]) -> Vec<Logged> {
+        let at = state
+            .windows(4)
+            .position(|w| w == b"TSP1")
+            .expect("the state holds the plugin's blob");
+        let blob = &state[at..];
+        let u32_at = |i: usize| u32::from_le_bytes(blob[i..i + 4].try_into().unwrap());
+        let u64_at = |i: usize| u64::from_le_bytes(blob[i..i + 8].try_into().unwrap());
+        // 60: the count of block sizes, then them; then the count of events.
+        let blocks = u32_at(60) as usize;
+        let events_at = 64 + 4 * blocks;
+        (0..u32_at(events_at) as usize)
+            .map(|k| {
+                let i = events_at + 4 + 24 * k;
+                let head = u64_at(i);
+                Logged {
+                    kind: head >> 32,
+                    offset: head as u32,
+                    id: u64_at(i + 8),
+                    value: f64::from_bits(u64_at(i + 16)),
+                }
+            })
+            .collect()
+    }
+}
+
 pub trait Subject {
     const NAME: &'static str;
     const GAPS: &'static [Gap];
@@ -37,7 +80,7 @@ pub trait Subject {
     /// What a black-box subject recorded of what the host sent it, when it
     /// records anything: a case about a message the subject may not act on
     /// asserts the host delivered it, and where.
-    fn transcript(rig: &Rig) -> Option<tutti_plugin_contract::Transcript> {
+    fn transcript(rig: &Rig) -> Option<Vec<Logged>> {
         let _ = rig;
         None
     }
@@ -233,9 +276,8 @@ pub fn all_sound_off_cuts_at_its_stamp<S: Subject>() {
     let from = rig.t(CC) + S::lag(&rig) + S::CUT;
     rig.render_to(from + 2_000);
     if let Some(t) = S::transcript(&rig) {
-        use tutti_plugin_contract::Kind;
-        let seen: Vec<_> = t
-            .of(Kind::Control)
+        let of = |kind| t.iter().filter(move |e| e.kind == kind);
+        let seen: Vec<_> = of(Logged::CONTROL)
             .map(|e| (e.offset, e.id, e.value))
             .collect();
         assert_eq!(
@@ -243,7 +285,7 @@ pub fn all_sound_off_cuts_at_its_stamp<S: Subject>() {
             [((rig.t(CC) % BLOCK) as u32, 120, 0.0)],
             "the plugin was sent All Sound Off once, on its stamp"
         );
-        let on: Vec<_> = t.of(Kind::NoteOn).map(|e| e.offset).collect();
+        let on: Vec<_> = of(Logged::NOTE_ON).map(|e| e.offset).collect();
         assert_eq!(on, [(rig.t(STAMP) % BLOCK) as u32], "the note-on's stamp");
         return;
     }

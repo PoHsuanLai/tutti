@@ -93,7 +93,7 @@ pub fn launch(
 /// binary, so under a parallel runner one test's stand-in is another's
 /// production lookup. A save/restore guard does not close that window; it *is*
 /// the window.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn launch_with(
     locator: &ServerLocator,
     config: &BridgeConfig,

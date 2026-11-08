@@ -4771,7 +4771,6 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-plugin",
- "tutti-plugin-contract",
  "tutti-plugin-types",
  "tutti-polysynth",
  "tutti-rt",

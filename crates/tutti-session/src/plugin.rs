@@ -195,6 +195,20 @@ impl PluginLoad {
             self.state.as_deref(),
         ) {
             Ok((plugin, restore)) => (Ok(plugin), restore),
+            // The server died, or hung, while restoring the state it was
+            // staged: the state is what the load is held against
+            // (`land_reload` withholds it).
+            Err(e)
+                if self.state.is_some()
+                    && matches!(
+                        e,
+                        tutti_plugin::BridgeError::ProcessCrashed
+                            | tutti_plugin::BridgeError::Timeout { .. }
+                    ) =>
+            {
+                let reason = format!("the plugin died or hung while restoring the state: {e}");
+                (Err(e), Some(Err(reason)))
+            }
             Err(e) => (Err(e), None),
         };
         if let (Ok(plugin), Some(Err(e))) = (&plugin, &restore) {
@@ -1044,6 +1058,14 @@ impl Session {
                 return out;
             }
             Err(e) => {
+                // A load that died restoring the snapshot is held against the
+                // snapshot, as a replacement that dies once installed is
+                // (`install_reload`): the next attempt goes without it.
+                if matches!(restore, Some(Err(_)))
+                    && let Some(hosted) = self.graph.plugins.get_mut(&node)
+                {
+                    hosted.withhold_snapshot(now);
+                }
                 self.fail_reload(node, e.to_string(), now, &mut out, &mut gave_up);
                 self.finish_gave_up(gave_up, &mut out);
                 return out;

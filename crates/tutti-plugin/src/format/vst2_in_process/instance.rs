@@ -329,7 +329,7 @@ mod tests {
             (f64::NEG_INFINITY, 64),
             (48_000.0, 0),
         ] {
-            match Instance::load(probe_path::probe_path(), rate, block) {
+            match Instance::load(probe_path::probe_path(), rate, block, None) {
                 Err((LoadStage::Activation, reason)) => {
                     assert!(reason.contains("cannot run at"), "{reason}");
                 }
@@ -348,7 +348,9 @@ mod tests {
     /// `prepare` changes -> fails.
     #[test]
     fn a_rate_that_is_no_rate_leaves_the_instance_alone() {
-        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64).expect("loads");
+        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64, None)
+            .expect("loads")
+            .0;
         let before = instance.prepare;
         for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             instance.set_sample_rate(rate);
@@ -369,7 +371,9 @@ mod tests {
     /// returning without zeroing -> the outputs keep 1.0 -> fails.
     #[test]
     fn a_lost_plugin_renders_silence_without_panicking() {
-        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64).expect("loads");
+        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64, None)
+            .expect("loads")
+            .0;
         assert!(!instance.is_lost());
         instance.lose();
         assert!(instance.is_lost());

@@ -30,6 +30,7 @@ mod client;
 mod enumerate;
 mod input;
 mod output;
+mod poll;
 mod watch;
 
 use crate::InputProducerHandle;

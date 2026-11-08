@@ -193,9 +193,11 @@ impl MidiSession {
     /// port.
     pub fn connect_input(&self, id: &DeviceId) -> Result<()> {
         let mut open = self.inner.open();
-        if open.inputs.contains_key(id) {
+        // An input whose reader died is replaced, not kept: it is silent.
+        if open.inputs.get(id).is_some_and(OpenInput::is_alive) {
             return Ok(());
         }
+        open.inputs.remove(id);
 
         // One ring per connection, retired with it.
         let input = self.inner.devices.open_input(id, &self.inner.ports)?;
@@ -346,10 +348,16 @@ impl MidiSession {
         self.inner.open().output.as_ref().map(|o| o.id().clone())
     }
 
-    /// Whether `id` is an open input.
+    /// Whether `id` is an open input that is still delivering: one whose
+    /// reader ended on an error is not (see [`OpenInput::is_alive`]), and
+    /// [`connect_input`](Self::connect_input) reopens it.
     #[must_use]
     pub fn is_input_connected(&self, id: &DeviceId) -> bool {
-        self.inner.open().inputs.contains_key(id)
+        self.inner
+            .open()
+            .inputs
+            .get(id)
+            .is_some_and(OpenInput::is_alive)
     }
 
     /// Sends events to the open output.

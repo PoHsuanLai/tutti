@@ -1,13 +1,14 @@
 //! Reading UMP from a sequencer port.
 
-use std::io;
-use std::os::fd::{AsRawFd, RawFd};
-use std::os::raw::{c_short, c_uint};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
+use super::poll::{ErrorRun, PollSet, Wait};
 use crate::InputProducerHandle;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
@@ -19,19 +20,37 @@ use tutti_midi_types::ump::split_ump_stream;
 const EAGAIN: i32 = -11;
 
 /// Times the pump came back from `poll`, for the test that an idle pump sleeps.
+/// The count is per process, so the test relies on nextest running each test in
+/// its own process.
 #[cfg(test)]
 pub(super) static PUMP_WAKES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+/// While set, the pump's reads fail with `-EIO` instead of reaching the
+/// sequencer: the error path has no other way to be reached on a healthy
+/// sequencer. Per process, like [`PUMP_WAKES`].
+#[cfg(test)]
+pub(super) static INJECT_READ_ERROR: AtomicBool = AtomicBool::new(false);
+
+/// `-EIO`, what the injected failure reads as.
+#[cfg(test)]
+const EIO: i32 = -5;
 
 /// An open ALSA input. Dropping it stops the pump and closes the port.
 pub struct AlsaInput {
     /// One end of a socket pair whose other end is in the pump's `poll` set:
     /// closing this one is the shutdown signal, and wakes the pump at once.
     stop: Option<UnixStream>,
+    /// Set by the pump when it ends on an error, never on a stop.
+    died: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl InputConnection for AlsaInput {}
+impl InputConnection for AlsaInput {
+    fn is_alive(&self) -> bool {
+        !self.died.load(Ordering::Acquire)
+    }
+}
 
 impl Drop for AlsaInput {
     fn drop(&mut self) {
@@ -81,106 +100,27 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     let (stop_tx, stop_rx) = UnixStream::pair()
         .map_err(|e| crate::error::Error::MidiDevice(format!("MIDI pump stop pair: {e}")))?;
     let polls = PollSet::new(&seq, stop_rx.as_raw_fd())?;
+    let died = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&died);
     let thread = std::thread::Builder::new()
         .name("tutti-midi-in".to_string())
-        .spawn(move || pump(seq, polls, stop_rx, producer))
+        .spawn(move || pump(seq, polls, stop_rx, flag, producer))
         .map_err(|e| crate::error::Error::MidiDevice(format!("spawn MIDI pump: {e}")))?;
 
     Ok(Box::new(AlsaInput {
         stop: Some(stop_tx),
+        died,
         thread: Some(thread),
     }))
-}
-
-/// The descriptors the pump waits on: the sequencer's, then the stop pair's.
-struct PollSet {
-    polls: Vec<libc::pollfd>,
-}
-
-/// Why [`PollSet::wait`] returned.
-enum Ready {
-    /// The sequencer has input.
-    Input,
-    /// The stop pair closed.
-    Stopped,
-}
-
-impl PollSet {
-    fn new(seq: &SeqClient, stop: RawFd) -> Result<Self> {
-        let events = libc::POLLIN as c_short;
-        // SAFETY: `seq` is open.
-        let count = check(
-            unsafe { sys::snd_seq_poll_descriptors_count(seq.raw(), events) },
-            "snd_seq_poll_descriptors_count",
-        )?;
-        let mut polls = vec![
-            libc::pollfd {
-                fd: -1,
-                events: 0,
-                revents: 0
-            };
-            count as usize
-        ];
-        // SAFETY: `polls` is `count` `pollfd`s, and alsa-lib writes at most
-        // `space` of them.
-        check(
-            unsafe {
-                sys::snd_seq_poll_descriptors(
-                    seq.raw(),
-                    polls.as_mut_ptr().cast(),
-                    count as c_uint,
-                    events,
-                )
-            },
-            "snd_seq_poll_descriptors",
-        )?;
-        polls.push(libc::pollfd {
-            fd: stop,
-            events,
-            revents: 0,
-        });
-        Ok(Self { polls })
-    }
-
-    /// Blocks until the sequencer has input or the stop pair closes.
-    fn wait(&mut self) -> io::Result<Ready> {
-        loop {
-            for p in &mut self.polls {
-                p.revents = 0;
-            }
-            // SAFETY: `polls` is a live array of `polls.len()` `pollfd`s.
-            let ready = unsafe {
-                libc::poll(
-                    self.polls.as_mut_ptr(),
-                    self.polls.len() as libc::nfds_t,
-                    -1,
-                )
-            };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            #[cfg(test)]
-            PUMP_WAKES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let (stop, seq) = self.polls.split_last().expect("the stop descriptor");
-            if stop.revents != 0 {
-                return Ok(Ready::Stopped);
-            }
-            let broken = (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) as c_short;
-            if seq.iter().any(|p| p.revents & broken != 0) {
-                return Err(io::Error::other("the sequencer descriptor failed"));
-            }
-            return Ok(Ready::Input);
-        }
-    }
 }
 
 /// Read UMP events until the stop pair closes. Reads until the queue is empty,
 /// then blocks in `poll`: the descriptors are level-triggered, so an event that
 /// arrives between the last read and the `poll` wakes it at once.
+///
+/// An error ends the pump with `died` set (and a warning): the port goes silent
+/// while the connection is still held, and [`InputConnection::is_alive`] is how
+/// the holder finds out.
 ///
 /// Takes `seq` **by value** so the client is dropped here, on this thread, when
 /// the loop ends — the port unsubscribes exactly when the pump stops.
@@ -189,8 +129,14 @@ fn pump(
     mut polls: PollSet,
     // Held so its descriptor stays open while the pump polls it.
     _stop: UnixStream,
+    died: Arc<AtomicBool>,
     mut producer: InputProducerHandle,
 ) {
+    let die = |why: &str| {
+        tracing::warn!("ALSA MIDI input stopped: {why}");
+        died.store(true, Ordering::Release);
+    };
+    let mut errors = ErrorRun::default();
     loop {
         let mut ev: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
         // SAFETY: `seq` is open for the life of this function; `ev` is a valid
@@ -198,21 +144,36 @@ fn pump(
         // until the next call on this client — which is why the words are copied
         // out immediately below and the pointer never escapes.
         let rc = unsafe { sys::snd_seq_ump_event_input(seq.raw(), &mut ev) };
+        #[cfg(test)]
+        let rc = if INJECT_READ_ERROR.load(Ordering::SeqCst) {
+            EIO
+        } else {
+            rc
+        };
 
         if rc < 0 {
-            // Empty queue is the common case, not a failure.
             if rc != EAGAIN {
+                // An overrun or a failing read: try again at once, a few times
+                // in a row at most (a level-triggered descriptor would spin).
                 tracing::debug!("ALSA MIDI input: {}", super::client::strerror(rc));
-            }
-            match polls.wait() {
-                Ok(Ready::Input) => continue,
-                Ok(Ready::Stopped) => return,
-                Err(e) => {
-                    tracing::debug!("ALSA MIDI input stopped: {e}");
-                    return;
+                if errors.failed() {
+                    return die(&super::client::strerror(rc));
                 }
+                continue;
+            }
+            // Empty queue is the common case, not a failure.
+            let waited = polls.wait(None);
+            #[cfg(test)]
+            PUMP_WAKES.fetch_add(1, Ordering::SeqCst);
+            match waited {
+                Ok(Wait::Ready) => continue,
+                Ok(Wait::Stopped) => return,
+                Ok(Wait::Broken) => return die("the sequencer descriptor failed"),
+                Ok(Wait::Timeout) => unreachable!("wait(None) has no timeout"),
+                Err(e) => return die(&e.to_string()),
             }
         }
+        errors.read();
         if ev.is_null() {
             continue;
         }

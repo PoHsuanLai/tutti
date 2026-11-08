@@ -53,7 +53,6 @@
 
 use std::os::raw::c_void;
 use std::sync::Mutex;
-use tutti_au_ffi::property::HostCallbacksProperty;
 use tutti_au_ffi::{Property, Scope};
 
 mod support;
@@ -808,7 +807,7 @@ fn host_callback_info_matches_apples_layout() {
     let status = unsafe {
         coreaudio_sys::AudioUnitGetPropertyInfo(
             au.raw_unit(),
-            HostCallbacksProperty::ID,
+            coreaudio_sys::kAudioUnitProperty_HostCallbacks,
             Scope::GLOBAL.raw(),
             0,
             &mut size,

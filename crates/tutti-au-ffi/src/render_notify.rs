@@ -73,7 +73,7 @@ pub struct RenderNotification {
     pub flags: AudioUnitRenderActionFlags,
     /// Frames this render call covers.
     ///
-    /// A plain `u32` rather than [`Samples`](tutti_types::value::units::Samples):
+    /// A plain `u32` rather than `Samples`:
     /// this is the value the C callback was handed, at the ABI boundary, and the
     /// units mandate stops there. A host that does arithmetic on it should wrap
     /// it at that point.

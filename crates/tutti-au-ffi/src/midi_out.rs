@@ -31,7 +31,7 @@ use crate::unit::Unit;
 ///
 /// Hand-declared for the same reason `bus.rs::AuChannelInfo` is: `coreaudio-sys`
 /// does not export it. The layout is pinned by
-/// [`tests::the_callback_struct_matches_the_c_abi`] against Apple's declaration —
+/// `tests::the_callback_struct_matches_the_c_abi` against Apple's declaration —
 /// function pointer first, `userData` second, 16 bytes on a 64-bit target — so a
 /// wrong guess fails a test rather than handing the AU a `userData` it reads as a
 /// code pointer.
@@ -221,9 +221,8 @@ impl AuMidiOutput {
     /// know about; `Drop` cannot report one.
     ///
     /// # Errors
-    /// `Error::Os` if the AU refuses the clearing write. The boxed
-    /// state is freed **either way** — see [`Self::clear`] for why that is the
-    /// safe choice and not a leak-versus-crash trade.
+    /// `Error::Os` if the AU refuses the clearing write; the boxed state is then
+    /// leaked, since the unit may still call into it.
     pub fn remove(mut self) -> Result<()> {
         let result = self.clear();
         // `state` is now `None`; `Drop` will find nothing to do.
@@ -452,7 +451,7 @@ unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32,
 /// with `data` starting immediately after.
 ///
 /// Taken from the binding's own field offset rather than written as `10`, and
-/// pinned by [`tests::the_packet_abi_is_what_the_walk_assumes`]: the whole walk is
+/// pinned by `tests::the_packet_abi_is_what_the_walk_assumes`: the whole walk is
 /// arithmetic on this number, so a drift here mis-decodes every packet while
 /// nothing else notices.
 const PACKET_HEADER_SIZE: usize = std::mem::offset_of!(MIDIPacket, data);
@@ -466,7 +465,7 @@ const PACKET_HEADER_SIZE: usize = std::mem::offset_of!(MIDIPacket, data);
 /// 256 = 266, rounded to 268) carries two trailing padding bytes, and a bound
 /// two bytes too generous lets a hostile packet address slack the AU never
 /// wrote — exactly what the clamp exists to stop. Checked against the struct in
-/// [`tests::the_packet_abi_is_what_the_walk_assumes`] instead, which fails if a
+/// `tests::the_packet_abi_is_what_the_walk_assumes` instead, which fails if a
 /// future SDK changes the array.
 const MAX_PACKET_PAYLOAD: u16 = 256;
 

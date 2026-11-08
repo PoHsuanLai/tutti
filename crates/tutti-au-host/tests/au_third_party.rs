@@ -234,7 +234,7 @@ fn open(info: &AuComponentInfo, label: &str) -> AuInstance {
     // SAFETY: `component` came from `AudioComponentFindNext` via
     // `enumerate_components_of_type`, so it is a live factory handle for the
     // lifetime of this process.
-    let mut au = unsafe { AuInstance::new(info.component, RATE, BLOCK) }
+    let mut au = AuInstance::new(info.component, RATE, BLOCK)
         .unwrap_or_else(|e| panic!("{label}: instantiate failed: {e:?}"));
     au.initialize()
         .unwrap_or_else(|e| panic!("{label}: initialize failed: {e:?}"));
@@ -1567,8 +1567,8 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
         width: 800,
         height: 600,
     };
-    let mut editor = unsafe { tutti_au_host::AuEditor::open(au.unit(), None, preferred) }
-        .unwrap_or_else(|e| {
+    let mut editor =
+        tutti_au_host::AuEditor::open(au.unit(), None, preferred).unwrap_or_else(|e| {
             panic!(
                 "{}: opening a JUCE Cocoa view failed: {e:?}. This is what an \
                  objc2 encoding-check rejection looks like — verify the \

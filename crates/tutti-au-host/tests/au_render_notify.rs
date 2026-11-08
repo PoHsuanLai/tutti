@@ -530,17 +530,15 @@ fn a_scheduled_immediate_change_takes_effect() {
                 return;
             }
             // SAFETY: `unit` is the unit currently rendering, so it is live.
-            let r = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    &unit,
-                    p.id,
-                    ScheduleAddress::GLOBAL,
-                    &[ParamEvent::Immediate {
-                        buffer_offset: 0,
-                        value: target,
-                    }],
-                )
-            };
+            let r = tutti_au_host::render_notify::schedule(
+                &unit,
+                p.id,
+                ScheduleAddress::GLOBAL,
+                &[ParamEvent::Immediate {
+                    buffer_offset: 0,
+                    value: target,
+                }],
+            );
             st.store(if r.is_ok() { 0 } else { -1 }, Ordering::SeqCst);
         })
         .unwrap();
@@ -597,14 +595,12 @@ fn a_batch_of_scheduled_events_is_accepted() {
                 return;
             }
             // SAFETY: the unit is currently rendering.
-            let r = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    &unit,
-                    p.id,
-                    ScheduleAddress::GLOBAL,
-                    &events,
-                )
-            };
+            let r = tutti_au_host::render_notify::schedule(
+                &unit,
+                p.id,
+                ScheduleAddress::GLOBAL,
+                &events,
+            );
             st.store(if r.is_ok() { 0 } else { -1 }, Ordering::SeqCst);
         })
         .unwrap();
@@ -848,19 +844,17 @@ fn a_multi_block_ramp_is_rescheduled_each_render() {
             // field carrying the ramp's progress.
             let offset = -(done as i32);
             // SAFETY: the unit is currently rendering.
-            let r = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    &unit,
-                    p.id,
-                    ScheduleAddress::GLOBAL,
-                    &[ParamEvent::Ramped {
-                        start_buffer_offset: offset,
-                        duration_frames: total,
-                        start_value: p.range.min,
-                        end_value: p.range.max,
-                    }],
-                )
-            };
+            let r = tutti_au_host::render_notify::schedule(
+                &unit,
+                p.id,
+                ScheduleAddress::GLOBAL,
+                &[ParamEvent::Ramped {
+                    start_buffer_offset: offset,
+                    duration_frames: total,
+                    start_value: p.range.min,
+                    end_value: p.range.max,
+                }],
+            );
             if r.is_err() {
                 f.fetch_add(1, Ordering::SeqCst);
             }
@@ -1019,14 +1013,12 @@ fn schedule_one_block(
                 return;
             }
             // SAFETY: the unit is currently rendering, so it is live.
-            let _ = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    &unit,
-                    param,
-                    ScheduleAddress::GLOBAL,
-                    &[event],
-                )
-            };
+            let _ = tutti_au_host::render_notify::schedule(
+                &unit,
+                param,
+                ScheduleAddress::GLOBAL,
+                &[event],
+            );
         })
         .expect("the corpus units accept AudioUnitAddRenderNotify");
 

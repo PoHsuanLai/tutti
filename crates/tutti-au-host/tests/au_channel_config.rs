@@ -94,10 +94,9 @@ fn an_au_opened_in_mono_reports_one_output_channel() {
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
         // SAFETY: `component` came from `AudioComponentFindNext` via the corpus,
         // so it is a live factory handle for the lifetime of this process.
-        let mut au = unsafe {
+        let mut au =
             AuInstance::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
-        }
-        .unwrap_or_else(|e| panic!("{}: instantiate in mono failed: {e:?}", unit.label));
+                .unwrap_or_else(|e| panic!("{}: instantiate in mono failed: {e:?}", unit.label));
 
         assert_eq!(
             au.num_outputs(),
@@ -149,10 +148,9 @@ fn a_refused_layout_reports_the_width_the_au_kept() {
     for unit in REFUSES_MONO {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
-        let mut au = unsafe {
+        let mut au =
             AuInstance::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
-        }
-        .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", unit.label));
+                .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", unit.label));
 
         assert_eq!(
             au.num_outputs(),
@@ -197,10 +195,9 @@ fn a_quad_request_is_honoured_where_the_au_takes_it() {
     for unit in ACCEPTS_MONO {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
-        let mut au = unsafe {
+        let mut au =
             AuInstance::new_with_config(info.component, config_at(ChannelLayout::QUAD, has_input))
-        }
-        .unwrap_or_else(|e| panic!("{}: instantiate in quad failed: {e:?}", unit.label));
+                .unwrap_or_else(|e| panic!("{}: instantiate in quad failed: {e:?}", unit.label));
         assert_eq!(
             au.num_outputs(),
             4,
@@ -294,7 +291,7 @@ fn has_input_agrees_with_the_input_element_count() {
     ] {
         for info in tutti_au_host::component::enumerate_components_of_type(au_type) {
             // SAFETY: `component` came from `AudioComponentFindNext`.
-            let Ok(au) = (unsafe { AuInstance::new(info.component, RATE, BLOCK) }) else {
+            let Ok(au) = (AuInstance::new(info.component, RATE, BLOCK)) else {
                 // A unit that refuses to instantiate says nothing about
                 // `has_input`; skipping it does not weaken the invariant, which
                 // is asserted over the tally below.

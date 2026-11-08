@@ -225,8 +225,7 @@ fn no_installed_au_publishes_midi_output_info() {
         }
         // SAFETY: `component` came from `AudioComponentFindNext` via
         // `enumerate_components`, so it is a live factory handle.
-        let Ok(au) = (unsafe { tutti_au_host::AuInstance::new(info.component, RATE, BLOCK) })
-        else {
+        let Ok(au) = (tutti_au_host::AuInstance::new(info.component, RATE, BLOCK)) else {
             // A unit that will not instantiate cannot be asked. Not a skip that
             // hides anything: it also cannot emit MIDI to this host.
             continue;

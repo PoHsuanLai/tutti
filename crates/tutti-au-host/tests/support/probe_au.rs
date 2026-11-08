@@ -660,7 +660,7 @@ impl Misbehaviour {
         // SAFETY: `info.component` came from `AudioComponentFindNext` via
         // `enumerate_components_of_type`, so it is a live factory handle for the
         // lifetime of this process.
-        unsafe { AuInstance::new(info.component, rate, block) }
+        AuInstance::new(info.component, rate, block)
     }
 
     /// Instantiate and initialize, panicking if either step fails.

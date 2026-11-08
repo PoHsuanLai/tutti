@@ -83,15 +83,13 @@ fn an_async_only_component_is_refused_by_name() {
 
     for info in async_only {
         // SAFETY: the handle came from `AudioComponentFindNext` via enumeration.
-        let err = unsafe { AuHandle::new(info.component) }
-            .err()
-            .unwrap_or_else(|| {
-                panic!(
-                    "{}: AudioComponentInstanceNew must not create a component \
+        let err = AuHandle::new(info.component).err().unwrap_or_else(|| {
+            panic!(
+                "{}: AudioComponentInstanceNew must not create a component \
                      the system flagged as async-only",
-                    info.name
-                )
-            });
+                info.name
+            )
+        });
 
         assert!(
             matches!(err, AuError::RequiresAsyncInstantiation),
@@ -124,7 +122,7 @@ fn a_normal_component_is_not_refused_as_async_only() {
     let mut tried = 0;
     for info in normal.iter().take(20) {
         // SAFETY: the handle came from `AudioComponentFindNext` via enumeration.
-        match unsafe { AuHandle::new(info.component) } {
+        match AuHandle::new(info.component) {
             Ok(_) => {
                 tried += 1;
                 break;

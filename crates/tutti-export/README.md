@@ -125,10 +125,10 @@ run *while* rendering), take `Loudness::gain_to`, apply it with
 
 ## Features
 
-- `wav` (default) — WAV, `tutti-codec`'s own writer.
-- `flac` (default) — FLAC, via flacenc.
-- `aiff` (default) — AIFF / AIFF-C, via aifc.
-- `ogg` (default) — Ogg Vorbis, via vorbis_rs.
+- `wav` — WAV, `tutti-codec`'s own writer.
+- `flac` — FLAC, via flacenc.
+- `aiff` — AIFF / AIFF-C, via aifc.
+- `ogg` — Ogg Vorbis, via vorbis_rs.
 
 Each turns on the `tutti-codec` feature of the same name (`ogg` is its
 `vorbis`), and a `Format` variant exists only with its feature.

@@ -300,6 +300,15 @@ the interpreter.
   `hrtf_render.rs` `the_tail_is_the_ring_out_after_the_latency`, and
   `tutti-export`'s `a_limiter_adds_no_tail_to_the_render` and
   `the_tail_extends_the_render_by_the_ring_out`.
+  *Planned (doc 022, step 0b):* `Shape::tail` becomes the node's **ceiling**,
+  and a node whose tail follows its params (a reverb's RT60) narrows it per
+  block with `Io::report_tail`. The report lives in the unit's executor record,
+  not the plan, so the plan stays immutable and a pooled render still equals the
+  serial one; the silence skip reads the narrowed figure, `Tail::Unbounded`
+  reported is never skipped, and export reads the graph's reported tail at the
+  programme's end. A node must report a tail that covers its ring-out from the
+  last non-quiet input. Not built yet; this note is replaced by the contract
+  text when step 0b lands.
 - **Feedback edges delay by exactly `MaxBlock` frames**, through an audio ring
   and an event FIFO, independent of the current block length. Ragged blocks
   therefore lose nothing.

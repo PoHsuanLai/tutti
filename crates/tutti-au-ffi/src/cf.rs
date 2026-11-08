@@ -536,8 +536,10 @@ mod tests {
     #[test]
     fn what_is_not_a_preset_dictionary_is_named() {
         assert_eq!(preset_facts(&[]).unwrap_err(), NotADictionary::Empty);
+        // A truncated binary-plist header is not a plist in any of the three
+        // formats (bare text such as `junk` is a valid OpenStep string plist).
         assert_eq!(
-            preset_facts(b"junk").unwrap_err(),
+            preset_facts(b"bplist00\x01\x02").unwrap_err(),
             NotADictionary::NotAPlist
         );
         let array = propertylist::create_data(

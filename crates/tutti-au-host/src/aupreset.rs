@@ -64,22 +64,13 @@
 
 #![cfg(target_os = "macos")]
 
-use std::os::raw::c_void;
 use std::path::Path;
 
-use core_foundation::base::CFType;
-use core_foundation::base::TCFType;
-use core_foundation::data::CFData;
-use core_foundation::dictionary::CFDictionary;
-use core_foundation::number::CFNumber;
-use core_foundation::propertylist::{self, CFPropertyList};
-use core_foundation::string::CFString;
-use core_foundation_sys::base::{CFRelease, CFTypeRef};
+use tutti_au_ffi::{NotADictionary, PresetFacts, Unit, preset_facts, preset_with_identity};
 
+use crate::component::AuComponentRef;
 use crate::error::{AuError, Result};
-use crate::types::cfstring_to_string_checked;
 
-/// `kAUPresetTypeKey` — the AU's `componentType` four-char code, as a number.
 const KEY_TYPE: &str = "type";
 /// `kAUPresetSubtypeKey` — the AU's `componentSubType`.
 const KEY_SUBTYPE: &str = "subtype";
@@ -148,8 +139,8 @@ impl AuPresetIdentity {
 pub fn read_preset_metadata(path: &Path) -> Result<AuPresetIdentity> {
     let bytes = std::fs::read(path)
         .map_err(|e| AuError::preset_io(path.display().to_string(), e.to_string()))?;
-    let dict = parse_preset_dictionary(&bytes, path)?;
-    identity_from_dictionary(&dict, path)
+    let facts = parse_facts(&bytes, &path.display().to_string())?;
+    identity_from_facts(&facts, path)
 }
 
 /// Serializes the AU's current state to `path` as a `.aupreset` file.
@@ -181,14 +172,32 @@ pub fn read_preset_metadata(path: &Path) -> Result<AuPresetIdentity> {
 /// that answers the property with an array or a data blob cannot be saved as a
 /// preset, and writing it would produce a file nothing can load), or
 /// [`AuError::PresetIo`] if the file cannot be written.
-pub unsafe fn save_preset_file(
-    unit: crate::types::AudioUnit,
-    component: crate::types::AudioComponent,
+pub fn save_preset_file(
+    unit: &Unit,
+    component: AuComponentRef,
     path: &Path,
     name: &str,
 ) -> Result<()> {
-    let class_info = read_class_info_dictionary(unit)?;
-    let desc = component_description(component)?;
+    let class_info = unit.copy_plist(
+        crate::types::K_AUDIO_UNIT_PROPERTY_CLASS_INFO,
+        crate::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+    )?;
+    if class_info.is_empty() {
+        return Err(AuError::invalid_preset(
+            "<AU ClassInfo>".to_string(),
+            "the AU returned a null ClassInfo".to_string(),
+        ));
+    }
+    let facts = preset_facts(&class_info).map_err(|_| {
+        AuError::invalid_preset(
+            "<AU ClassInfo>".to_string(),
+            "the AU's ClassInfo is not a dictionary, so it cannot be written \
+             as a .aupreset"
+                .to_string(),
+        )
+    })?;
+    let desc = component.description()?;
 
     // Rebuild the dictionary with the identity keys forced to the AU's real
     // description and `name` set to the caller's. Any identity keys already in
@@ -202,13 +211,11 @@ pub unsafe fn save_preset_file(
         // `version` is the AU's, not ours, when it supplied one — a host must not
         // invent a state-format version it knows nothing about. Absent, 0 is the
         // value Apple's own preset files carry.
-        (
-            KEY_VERSION,
-            dictionary_i64(&class_info, KEY_VERSION).unwrap_or(0),
-        ),
+        (KEY_VERSION, facts.version.unwrap_or(0)),
     ];
 
-    let bytes = rebuild_with_identity(&class_info, &overrides, name)?;
+    let bytes = preset_with_identity(&class_info, &overrides, name)
+        .map_err(|e| AuError::invalid_preset("<new preset>".to_string(), e.to_string()))?;
     std::fs::write(path, &bytes)
         .map_err(|e| AuError::preset_io(path.display().to_string(), e.to_string()))
 }
@@ -236,16 +243,16 @@ pub unsafe fn save_preset_file(
 ///   garbage parameters. The AU is left untouched and is still renderable.
 /// * [`AuError::OsStatus`] — the AU itself rejected a correctly-identified
 ///   dictionary (a genuinely corrupt `data` blob, or a version it will not read).
-pub unsafe fn load_preset_file(
-    unit: crate::types::AudioUnit,
-    component: crate::types::AudioComponent,
+pub fn load_preset_file(
+    unit: &Unit,
+    component: AuComponentRef,
     path: &Path,
 ) -> Result<AuPresetIdentity> {
     let bytes = std::fs::read(path)
         .map_err(|e| AuError::preset_io(path.display().to_string(), e.to_string()))?;
-    let dict = parse_preset_dictionary(&bytes, path)?;
-    let identity = identity_from_dictionary(&dict, path)?;
-    let desc = component_description(component)?;
+    let facts = parse_facts(&bytes, &path.display().to_string())?;
+    let identity = identity_from_facts(&facts, path)?;
+    let desc = component.description()?;
 
     if !identity.matches(
         desc.componentType,
@@ -265,197 +272,19 @@ pub unsafe fn load_preset_file(
         )));
     }
 
-    // Apply the dictionary as read, not a re-serialization of it: the `data` blob
-    // and any unrecognised keys (`render-quality`, and AUSpatialMixer's
+    // Apply the file's bytes as read, not a re-serialization of them: the `data`
+    // blob and any unrecognised keys (`render-quality`, and AUSpatialMixer's
     // `InputProperties`/`OutputProperties`/`GlobalProperties`) must reach the AU
     // byte-identical. A round trip through a rebuilt dictionary risks dropping a
     // key this host does not know about, and those keys carry real state.
-    let raw = dict.as_concrete_TypeRef();
-    // SAFETY: `raw` borrows the live `dict`, which outlives this call. ClassInfo's
-    // documented value type is a `CFPropertyListRef`, passed by reference, and the
-    // AU only reads it during the call — it does not retain it.
-    unsafe {
-        crate::ffi::set_property(
-            unit,
-            crate::types::K_AUDIO_UNIT_PROPERTY_CLASS_INFO,
-            crate::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-            &(raw as core_foundation_sys::propertylist::CFPropertyListRef),
-        )?;
-    }
+    unit.set_plist(
+        crate::types::K_AUDIO_UNIT_PROPERTY_CLASS_INFO,
+        crate::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
+        0,
+        &bytes,
+    )?;
 
     Ok(identity)
-}
-
-/// The AU's `(type, subtype, manufacturer)` triple, read from AudioToolbox.
-///
-/// # Errors
-/// [`AuError::OsStatus`] if `AudioComponentGetDescription` fails. Propagated
-/// rather than defaulted: a zeroed description would make every identity
-/// comparison compare against `\0\0\0\0` and so refuse every valid preset, or —
-/// on the save path — write a file labelled for a component that does not exist.
-fn component_description(
-    component: crate::types::AudioComponent,
-) -> Result<crate::types::AudioComponentDescription> {
-    let mut desc = crate::types::AudioComponentDescription::default();
-    // SAFETY: `component` is the factory handle an `AuHandle` was built from, so
-    // it is a live `AudioComponent` for the lifetime of the process.
-    crate::ffi::check("AudioComponentGetDescription", unsafe {
-        crate::types::AudioComponentGetDescription(component, &mut desc)
-    })?;
-    Ok(desc)
-}
-
-/// Reads `kAudioUnitProperty_ClassInfo` and confirm it is a dictionary.
-///
-/// # Errors
-/// [`AuError::OsStatus`] if the AU refuses the property, or
-/// [`AuError::InvalidPreset`] if it answers with something other than a
-/// dictionary. The type check is not paranoia about Apple's units — it is what
-/// keeps [`rebuild_with_identity`] from treating a `CFData` as a dictionary and
-/// reading its header bytes as keys, the same shape that produced the SIGBUS
-/// documented on [`cfstring_to_string_checked`].
-fn read_class_info_dictionary(
-    unit: crate::types::AudioUnit,
-) -> Result<CFDictionary<CFString, CFType>> {
-    // SAFETY: ClassInfo's documented value type is a single `CFPropertyListRef`
-    // out-parameter, which is what `get_property` writes here.
-    let raw: core_foundation_sys::propertylist::CFPropertyListRef = unsafe {
-        crate::ffi::get_property(
-            unit,
-            crate::types::K_AUDIO_UNIT_PROPERTY_CLASS_INFO,
-            crate::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )?
-    };
-    if raw.is_null() {
-        return Err(AuError::invalid_preset(
-            "<AU ClassInfo>".to_string(),
-            "the AU returned a null ClassInfo".to_string(),
-        ));
-    }
-    // ClassInfo is a Copy-rule read: the host owns the returned reference.
-    // SAFETY: non-null, and owned with the +1 the Copy rule transfers.
-    let plist = unsafe { CFPropertyList::wrap_under_create_rule(raw) };
-    as_dictionary(plist).ok_or_else(|| {
-        AuError::invalid_preset(
-            "<AU ClassInfo>".to_string(),
-            "the AU's ClassInfo is not a dictionary, so it cannot be written \
-                  as a .aupreset"
-                .to_string(),
-        )
-    })
-}
-
-/// Decodes `bytes` as a property list and confirm its root is a dictionary.
-///
-/// # Errors
-/// [`AuError::InvalidPreset`] for anything that is not a plist (random bytes, a
-/// text file, a **truncated** plist — CoreFoundation's parser rejects all three
-/// the same way) and for a plist whose root is an array, string or data rather
-/// than a dictionary. Both are file-format errors, not AU errors, so neither
-/// reaches the AU at all.
-fn parse_preset_dictionary(bytes: &[u8], path: &Path) -> Result<CFDictionary<CFString, CFType>> {
-    // A zero-length file would otherwise reach CoreFoundation, which reports it
-    // with the same opaque failure as corrupt data; naming it is more useful.
-    if bytes.is_empty() {
-        return Err(AuError::invalid_preset(
-            path.display().to_string(),
-            "the file is empty".to_string(),
-        ));
-    }
-    let data = CFData::from_buffer(bytes);
-    let (raw, _format) =
-        propertylist::create_with_data(data, propertylist::kCFPropertyListImmutable).map_err(
-            |_| {
-                AuError::invalid_preset(
-                    path.display().to_string(),
-                    "not a property list (corrupt, truncated, or not a preset at all)".to_string(),
-                )
-            },
-        )?;
-    if raw.is_null() {
-        return Err(AuError::invalid_preset(
-            path.display().to_string(),
-            "the property list decoded to null".to_string(),
-        ));
-    }
-    // SAFETY: `create_with_data` returns the plist under the Create rule.
-    let plist = unsafe {
-        CFPropertyList::wrap_under_create_rule(
-            raw as core_foundation_sys::propertylist::CFPropertyListRef,
-        )
-    };
-    as_dictionary(plist).ok_or_else(|| {
-        AuError::invalid_preset(
-            path.display().to_string(),
-            "the property list's root is not a dictionary; a .aupreset root \
-                  must be the AU's ClassInfo dictionary"
-                .to_string(),
-        )
-    })
-}
-
-/// Reinterpret a `CFPropertyList` as a dictionary, or `None` if it is not one.
-///
-/// The `CFGetTypeID` comparison is the whole point: a plist root is legally any
-/// of six CF types, and treating a `CFArray` as a `CFDictionary` would have
-/// CoreFoundation read one object's layout through another's accessors.
-fn as_dictionary(plist: CFPropertyList) -> Option<CFDictionary<CFString, CFType>> {
-    if plist.type_of() != CFDictionary::<CFString, CFType>::type_id() {
-        return None;
-    }
-    // SAFETY: the type has just been confirmed to be CFDictionary. `into_CFType`
-    // moves the +1 reference out of `plist`, and `wrap_under_create_rule` takes
-    // ownership of it, so the retain count is conserved — no leak, no
-    // double-release.
-    let raw = plist.into_CFType();
-    let dict = unsafe {
-        CFDictionary::<CFString, CFType>::wrap_under_create_rule(
-            raw.as_CFTypeRef() as core_foundation_sys::dictionary::CFDictionaryRef
-        )
-    };
-    // `into_CFType` returns a value that still owns its reference; forget it so
-    // that reference is not released twice (once here, once by `dict`).
-    std::mem::forget(raw);
-    Some(dict)
-}
-
-/// Reads an integer-valued key out of a preset dictionary.
-///
-/// Returns `None` when the key is absent or its value is not a number. Preset
-/// files in the wild store the four-char codes as plist integers, which
-/// `CFNumber` reports as `i64`; a code stored as a string is not something this
-/// host will guess at, because a wrong guess is the mismatch this module refuses.
-fn dictionary_i64(dict: &CFDictionary<CFString, CFType>, key: &str) -> Option<i64> {
-    let cf_key = CFString::new(key);
-    let value = dict.find(&cf_key)?;
-    if value.type_of() != CFNumber::type_id() {
-        return None;
-    }
-    // SAFETY: the value's type has just been confirmed to be CFNumber, and it is
-    // borrowed from `dict` (Get rule) for the duration of this call.
-    let number = unsafe {
-        CFNumber::wrap_under_get_rule(
-            value.as_CFTypeRef() as core_foundation_sys::number::CFNumberRef
-        )
-    };
-    number.to_i64()
-}
-
-/// Reads a string-valued key out of a preset dictionary.
-///
-/// Uses [`cfstring_to_string_checked`] rather than a bare conversion because this
-/// value came out of a **file**: a plist whose `name` slot holds a `CFData`, or a
-/// crafted file, hands back a live CF object of the wrong type, and that is the
-/// exact shape measured to abort the process with SIGBUS elsewhere in this crate.
-fn dictionary_string(dict: &CFDictionary<CFString, CFType>, key: &str) -> Option<String> {
-    let cf_key = CFString::new(key);
-    let value = dict.find(&cf_key)?;
-    // SAFETY: `value` borrows a live CF object from `dict`. It need not be a
-    // CFString — that is precisely what the checked converter decides, and it
-    // gates on plausibility before dereferencing.
-    unsafe { cfstring_to_string_checked(value.as_CFTypeRef() as crate::types::CFStringRef) }
 }
 
 /// Extracts the identity triple, version and name from a preset dictionary.
@@ -465,12 +294,9 @@ fn dictionary_string(dict: &CFDictionary<CFString, CFType>, key: &str) -> Option
 /// key. All three are required: a dictionary without them is not something a host
 /// can safely apply, because the whole defence described in the module docs rests
 /// on comparing them.
-fn identity_from_dictionary(
-    dict: &CFDictionary<CFString, CFType>,
-    path: &Path,
-) -> Result<AuPresetIdentity> {
-    let required = |key: &str| -> Result<i64> {
-        dictionary_i64(dict, key).ok_or_else(|| {
+fn identity_from_facts(facts: &PresetFacts, path: &Path) -> Result<AuPresetIdentity> {
+    let required = |key: &str, value: Option<i64>| -> Result<i64> {
+        value.ok_or_else(|| {
             AuError::invalid_preset(
                 path.display().to_string(),
                 format!(
@@ -480,9 +306,9 @@ fn identity_from_dictionary(
             )
         })
     };
-    let component_type = required(KEY_TYPE)?;
-    let sub_type = required(KEY_SUBTYPE)?;
-    let manufacturer = required(KEY_MANUFACTURER)?;
+    let component_type = required(KEY_TYPE, facts.component_type)?;
+    let sub_type = required(KEY_SUBTYPE, facts.sub_type)?;
+    let manufacturer = required(KEY_MANUFACTURER, facts.manufacturer)?;
 
     Ok(AuPresetIdentity {
         // Truncating to `u32` is the correct narrowing, not a lossy cast: these
@@ -495,113 +321,28 @@ fn identity_from_dictionary(
         manufacturer: manufacturer as u32,
         // Absent `version` is 0, matching what Apple's own preset files carry. It
         // is reported, never compared — see the module docs.
-        version: dictionary_i64(dict, KEY_VERSION).unwrap_or(0),
-        name: dictionary_string(dict, KEY_NAME),
+        version: facts.version.unwrap_or(0),
+        name: facts.name.clone(),
     })
 }
 
-/// Rebuilds `source` with `overrides` applied and `name` set, as a binary plist.
-///
-/// Every key not named in `overrides` is carried across untouched, which is what
-/// preserves the `data` blob and the per-unit extras (`render-quality`, and
-/// AUSpatialMixer's `InputProperties`/`GlobalProperties`/`OutputProperties`) that
-/// the AU needs back on load and that this host deliberately does not interpret.
-///
-/// # Errors
-/// [`AuError::InvalidPreset`] if CoreFoundation declines to build the dictionary
-/// or serialize it.
-fn rebuild_with_identity(
-    source: &CFDictionary<CFString, CFType>,
-    overrides: &[(&str, i64); 4],
-    name: &str,
-) -> Result<Vec<u8>> {
-    let (keys, values) = source.get_keys_and_values();
-
-    // Owned replacements, kept alive until after `CFDictionaryCreate` has retained
-    // them. Dropping them earlier would release the only reference while the
-    // pointers below still name them.
-    let name_key = CFString::new(KEY_NAME);
-    let name_value = CFString::new(name);
-    let override_cells: Vec<(CFString, CFNumber)> = overrides
-        .iter()
-        .map(|(k, v)| (CFString::new(k), CFNumber::from(*v)))
-        .collect();
-
-    let replaced: Vec<&str> = overrides
-        .iter()
-        .map(|(k, _)| *k)
-        .chain(std::iter::once(KEY_NAME))
-        .collect();
-
-    let mut out_keys: Vec<CFTypeRef> = Vec::with_capacity(keys.len() + replaced.len());
-    let mut out_values: Vec<CFTypeRef> = Vec::with_capacity(keys.len() + replaced.len());
-
-    for (k, v) in keys.iter().zip(values.iter()) {
-        // SAFETY: `k` borrows a key from `source`, which the caller keeps alive.
-        // Preset dictionary keys are CFStrings; the checked converter decides
-        // rather than assuming, and an unreadable key is skipped below.
-        let key_name = unsafe { cfstring_to_string_checked(*k as crate::types::CFStringRef) };
-        match key_name {
-            // Drop the keys being replaced; they are re-added from the overrides.
-            Some(n) if replaced.contains(&n.as_str()) => continue,
-            Some(_) => {
-                out_keys.push(*k);
-                out_values.push(*v);
-            }
-            // A key that is not a readable CFString cannot be a preset key. Carry
-            // it across anyway rather than silently dropping AU state: the AU put
-            // it there and is the only party that can interpret it.
-            None => {
-                out_keys.push(*k);
-                out_values.push(*v);
-            }
-        }
-    }
-
-    for (key, value) in &override_cells {
-        out_keys.push(key.as_CFTypeRef());
-        out_values.push(value.as_CFTypeRef());
-    }
-    out_keys.push(name_key.as_CFTypeRef());
-    out_values.push(name_value.as_CFTypeRef());
-
-    // SAFETY: `out_keys`/`out_values` are equal-length arrays of live CF
-    // references (borrowed from `source` or from the owned cells above, all of
-    // which outlive this call). The kCFType callbacks make the new dictionary
-    // retain every key and value, so it is independent of those owners once
-    // created.
-    let dict_ref = unsafe {
-        core_foundation_sys::dictionary::CFDictionaryCreate(
-            std::ptr::null(),
-            out_keys.as_ptr(),
-            out_values.as_ptr(),
-            out_keys.len() as core_foundation_sys::base::CFIndex,
-            &core_foundation_sys::dictionary::kCFTypeDictionaryKeyCallBacks,
-            &core_foundation_sys::dictionary::kCFTypeDictionaryValueCallBacks,
-        )
-    };
-    if dict_ref.is_null() {
-        return Err(AuError::invalid_preset(
-            "<new preset>".to_string(),
-            "CFDictionaryCreate failed".to_string(),
-        ));
-    }
-
-    let serialized = propertylist::create_data(
-        dict_ref as core_foundation_sys::propertylist::CFPropertyListRef,
-        propertylist::kCFPropertyListBinaryFormat_v1_0,
-    );
-    // Release on both paths — the dictionary was created with a +1 this function
-    // owns, and an early `?` on the serialize failure would otherwise leak it.
-    // SAFETY: `dict_ref` is the non-null +1 reference from `CFDictionaryCreate`
-    // above, released exactly once here and not used afterwards.
-    unsafe { CFRelease(dict_ref as *const c_void) };
-
-    let data = serialized.map_err(|_| {
+/// The identity keys of the preset dictionary in `bytes`, or the reason it is
+/// not one, worded for the file or source it came from.
+fn parse_facts(bytes: &[u8], source: &str) -> Result<PresetFacts> {
+    preset_facts(bytes).map_err(|why| {
         AuError::invalid_preset(
-            "<new preset>".to_string(),
-            "CFPropertyListCreateData failed".to_string(),
+            source.to_string(),
+            match why {
+                NotADictionary::Empty => "the file is empty".to_string(),
+                NotADictionary::NotAPlist => {
+                    "not a property list (corrupt, truncated, or not a preset at all)".to_string()
+                }
+                NotADictionary::Null => "the property list decoded to null".to_string(),
+                NotADictionary::NotADictionary => "the property list's root is not a dictionary; \
+                     a .aupreset root must be the AU's ClassInfo dictionary"
+                    .to_string(),
+                _ => "not a preset dictionary".to_string(),
+            },
         )
-    })?;
-    Ok(data.bytes().to_vec())
+    })
 }

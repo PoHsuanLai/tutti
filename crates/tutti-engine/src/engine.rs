@@ -346,17 +346,32 @@ impl Engine {
     /// width where it has one, and the root the same: see
     /// [`Fold::widths`](tutti_types::Fold::widths). A buffer of a width not
     /// supported is not rendered into: the call is silent and counted in
-    /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced) (and
-    /// panics in a debug build, since it is a caller's bug).
+    /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced), in
+    /// every build.
+    ///
+    /// Where a mono root lands: the centre of a 6, 8 or 12-wide device, the
+    /// front pair of a 4-wide (quad) or a stereo one. A **4-wide root is
+    /// treated as quad** into a 6, 8 or 12-wide device (its rears are the back
+    /// pair, not the centre and LFE), because `MasterSources` cannot declare it
+    /// `Discrete` yet.
     ///
     /// A callback mid-block keeps the folds it lent, and the next call reads
-    /// the new ones.
+    /// the new ones. Returns at once, publishing nothing, for a width already
+    /// supported.
+    ///
+    /// **One writer.** The update is read-modify-write (it publishes the
+    /// current set plus this width), so two concurrent calls could lose one
+    /// width. Call it from the one control thread that builds the stream.
     ///
     /// # Errors
     ///
     /// [`FoldError::Empty`] for a device of no channels; nothing is published.
     pub fn support_output(&self, device: ChannelLayout) -> Result<(), FoldError> {
-        let mut folds = (*self.output.current()).clone();
+        let current = self.output.current();
+        if current.supports(device) {
+            return Ok(());
+        }
+        let mut folds = (*current).clone();
         folds.support(device)?;
         self.output.publish(folds);
         self.output.reclaim();
@@ -455,10 +470,6 @@ impl Engine {
         // (`apply_pending` racing a callback): this block is silent.
         let graph = self.graph.try_borrow_mut();
         let declared = folds.get(out_ch, 1).is_some();
-        debug_assert!(
-            declared,
-            "a buffer of {out_ch} channels, which the engine does not support: call `support_output`"
-        );
         let (true, Some(mut graph)) = (declared, graph) else {
             output.fill(0.0);
             self.hearing.borrow_mut().write(output, out_ch);
@@ -538,10 +549,6 @@ impl Engine {
         let folds = reader.lend();
         let graph = self.graph.try_borrow_mut();
         let declared = folds.get(out_ch, 1).is_some();
-        debug_assert!(
-            declared,
-            "a buffer of {out_ch} channels, which the engine does not support: call `support_output`"
-        );
         let (true, Some(mut graph)) = (declared, graph) else {
             output.fill(0.0);
             self.hearing.borrow_mut().write(output, out_ch);
@@ -1530,7 +1537,10 @@ mod tests {
     /// fold built on the audio thread.
     ///
     /// Mutation (run): `support_output` publishing nothing → the 20-wide
-    /// block is silent and fails.
+    /// block is silent and fails; `declared` forced to `true` in
+    /// `process_segment` → the 40-wide block is still silent but not counted,
+    /// and the `silenced` assertion fails (it survived while the check was a
+    /// release-only branch).
     #[test]
     fn a_wider_device_is_added_and_an_unsupported_width_is_silent() {
         let transport = Transport::new(48_000.0);
@@ -1550,16 +1560,14 @@ mod tests {
             engine.support_output(ChannelLayout::EMPTY),
             Err(FoldError::Empty(tutti_types::FoldEnd::Destination))
         );
-        // Not added: silent, and counted. (A debug build asserts instead.)
-        if !cfg!(debug_assertions) {
-            let mut out = vec![-9.0f32; 40 * 8];
-            engine.process_segment(&mut InterleavedMut::new(
-                &mut out,
-                ChannelLayout::from(40u16),
-            ));
-            assert!(out.iter().all(|&s| s == 0.0));
-            assert_eq!(engine.load_meter().peek().silenced, 1);
-        }
+        // Not added: silent, and counted, in every build.
+        let mut out = vec![-9.0f32; 40 * 8];
+        engine.process_segment(&mut InterleavedMut::new(
+            &mut out,
+            ChannelLayout::from(40u16),
+        ));
+        assert!(out.iter().all(|&s| s == 0.0));
+        assert_eq!(engine.load_meter().peek().silenced, 1);
     }
 
     /// A commit that lands between `settle` and `render` waits for the next

@@ -34,7 +34,7 @@ pub fn memory_voice(
     play: Playback,
     window: VoiceWindow,
 ) -> Result<Voice, PlaceError> {
-    let source = MemorySource::try_with_channels(wave, width)?.placed_at(window);
+    let source = MemorySource::with_channels(wave, width)?.placed_at(window);
     Ok(Voice {
         source: VoiceSource::Memory(source),
         play,

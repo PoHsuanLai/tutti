@@ -821,7 +821,7 @@ fn timeline() -> Arc<OfflineTimeline> {
 /// here, the render clock's.
 fn placed_pool(cents: f32) -> tutti_sampler::VoicePool {
     use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-    let source = MemorySource::placed(tone(), Beat(0.0), None);
+    let source = MemorySource::placed(tone(), Beat(0.0), None).expect("a placeable wave");
     let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),
@@ -979,7 +979,9 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
 
     // Live, the voice plays on another transport, somewhere else.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let (k, _params) = g.add_with_controls(MemorySource::placed(tone(), Beat(0.0), None));
+    let (k, _params) = g.add_with_controls(
+        MemorySource::placed(tone(), Beat(0.0), None).expect("a placeable wave"),
+    );
     g.pipe_output(k);
     let (live, mut exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     exec.apply_pending();

@@ -136,7 +136,8 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
             placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
 
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
@@ -399,7 +400,8 @@ fn loop_is_continuous(len: usize, start: f64, end: f64, fade: usize) {
                 placement: Some(tutti_sampler::VoiceWindow::default()),
                 ..Default::default()
             },
-        );
+        )
+        .expect("a placeable wave");
         source.set_loop_setting(LoopSetting::On {
             start: SamplePosition(start),
             end: SamplePosition(end),
@@ -437,7 +439,8 @@ fn looping_source(wave: Arc<Wave>, start: f64, end: f64, xfade: usize) -> Memory
             channels: ChannelLayout::STEREO,
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     source.set_loop_setting(LoopSetting::On {
         start: SamplePosition(start),
         end: SamplePosition(end),
@@ -603,7 +606,8 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
             placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     source.set_loop_setting(LoopSetting::On {
         start: SamplePosition(500.0),
         end: SamplePosition(2500.0),
@@ -653,7 +657,8 @@ fn a_one_shot_source_stops_at_the_end() {
             channels: ChannelLayout::STEREO,
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     source.trigger_at(SamplePosition(0.0));
     source.play();
     let mut source = source;
@@ -691,7 +696,8 @@ fn reverse_and_loop_work_at_mono_width() {
             channels: ChannelLayout::MONO,
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     source.set_loop_setting(LoopSetting::On {
         start: SamplePosition(200.0),
         end: SamplePosition(1200.0),

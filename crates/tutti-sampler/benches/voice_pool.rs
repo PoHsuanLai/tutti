@@ -105,7 +105,8 @@ fn pool_with(n: usize, stretch: f32, cents: f32) -> Rig {
     let wave = tone(440.0, 48_000 * 4);
 
     for i in 0..n {
-        let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
+        let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+            .expect("a placeable wave");
         handle
             .send(VoiceCommand::AddVoice {
                 id: SlotId(i as u128 + 1),
@@ -291,7 +292,10 @@ fn pool_knobs(
             let wave = Arc::new(wave);
             (0..n)
                 .map(|_| {
-                    VoiceSource::Memory(MemorySource::placed(Arc::clone(&wave), knobs.start, None))
+                    VoiceSource::Memory(
+                        MemorySource::placed(Arc::clone(&wave), knobs.start, None)
+                            .expect("a placeable wave"),
+                    )
                 })
                 .collect()
         }
@@ -471,7 +475,8 @@ impl Clips {
         let wave = Arc::new(wave);
         let nodes = (0..n)
             .map(|_| {
-                let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
+                let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+                    .expect("a placeable wave");
                 let node = VoiceNode::new(Voice {
                     source: VoiceSource::Memory(source),
                     play: Playback::default(),
@@ -533,7 +538,8 @@ fn bench_sources(c: &mut Criterion) {
     let wave = Arc::new(wave);
     let mut nodes: Vec<Direct<MemorySource>> = (0..64)
         .map(|_| {
-            let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
+            let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+                .expect("a placeable wave");
             Direct::new(source, SampleRate(SR), BLOCK)
         })
         .collect();

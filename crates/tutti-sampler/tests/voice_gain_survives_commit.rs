@@ -65,7 +65,9 @@ fn rolling(frame: Frame) -> Transport {
 /// guard below, which is what it is for.
 fn solo_voice() -> Solo<VoiceNodeHandle> {
     let voice = Voice {
-        source: VoiceSource::Memory(MemorySource::placed(flat_wave(48_000), Beat(0.0), None)),
+        source: VoiceSource::Memory(
+            MemorySource::placed(flat_wave(48_000), Beat(0.0), None).expect("a placeable wave"),
+        ),
         play: Playback::default(),
         channel_index: None,
     };
@@ -291,7 +293,8 @@ fn drive_volume(ed: &mut tutti_graph::Editor, at: ParamIn, knob: Arc<AtomicF32>,
 #[test]
 fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
     let mut s = Solo::new(
-        MemorySource::with_channels(flat_wave(48_000), ChannelLayout::MONO),
+        MemorySource::with_channels(flat_wave(48_000), ChannelLayout::MONO)
+            .expect("a placeable wave"),
         Prepare::new(RATE, Samples(BLOCK)),
     );
     s.renderer_mut().set_transport_fn(rolling);
@@ -325,7 +328,9 @@ fn a_voices_gain_port_reads_its_cell_as_its_base() {
     use tutti_graph::Node;
 
     let voice = Voice {
-        source: VoiceSource::Memory(MemorySource::placed(flat_wave(64), Beat(0.0), None)),
+        source: VoiceSource::Memory(
+            MemorySource::placed(flat_wave(64), Beat(0.0), None).expect("a placeable wave"),
+        ),
         play: Playback {
             gain: Amplitude::new(0.25),
             ..Playback::default()

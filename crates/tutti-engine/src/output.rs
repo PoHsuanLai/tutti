@@ -55,6 +55,14 @@ impl OutputFolds {
         folds
     }
 
+    /// Whether the folds into a device of `device` channels are held.
+    pub(crate) fn supports(&self, device: ChannelLayout) -> bool {
+        usize::from(device.count())
+            .checked_sub(1)
+            .and_then(|slot| self.by_device.get(slot))
+            .is_some_and(Option::is_some)
+    }
+
     /// Adds the folds into a device of `device` channels (a no-op if present).
     ///
     /// # Errors

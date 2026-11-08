@@ -1200,7 +1200,7 @@ mod tests {
         assert!(Place::for_wave(&mono, ChannelLayout::STEREO).is_err());
         let wave = Arc::new(wave);
         assert_eq!(
-            super::super::MemorySource::try_with_channels(Arc::clone(&wave), ChannelLayout::STEREO)
+            super::super::MemorySource::with_channels(Arc::clone(&wave), ChannelLayout::STEREO)
                 .err(),
             Some(PlaceError::Fold(refused))
         );

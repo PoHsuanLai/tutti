@@ -338,42 +338,27 @@ impl MemorySource {
     /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
     /// Use [`with_channels`](Self::with_channels) to declare a different width.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If a channel of `wave` cannot be placed (a file channel no speaker
-    /// names). A wave decoded from a file goes through
-    /// [`try_with_channels`](Self::try_with_channels) instead, which says so.
-    #[must_use]
-    pub fn new(wave: Arc<Wave>) -> Self {
+    /// As [`with_channels`](Self::with_channels).
+    pub fn new(wave: Arc<Wave>) -> Result<Self, PlaceError> {
         Self::with_channels(wave, ChannelLayout::STEREO)
     }
 
-    /// A `channels`-wide sampler over `wave`.
+    /// A `channels`-wide sampler over `wave`, refusing a wave that cannot be
+    /// placed.
     ///
     /// The wave's own channels are placed into this width by
     /// [`read_frame`](super::interp::read_frame)'s channel policy (mono is the
     /// centre or the front pair, anything else by its
-    /// [`topology`](Wave::topology)).
-    ///
-    /// # Panics
-    ///
-    /// As [`new`](Self::new).
-    #[must_use]
-    pub fn with_channels(wave: Arc<Wave>, channels: impl Into<ChannelLayout>) -> Self {
-        Self::try_with_channels(wave, channels).expect("a wave whose channels can be placed")
-    }
-
-    /// As [`with_channels`](Self::with_channels), refusing a wave that cannot
-    /// be placed.
-    ///
-    /// Control side: it builds the fold from the wave's topology to the
-    /// source's width.
+    /// [`topology`](Wave::topology)). Control side: it builds the fold from
+    /// the wave's topology to the source's width.
     ///
     /// # Errors
     ///
     /// [`PlaceError`] for a wave with a channel no speaker names (a second
     /// LFE, a wide or high speaker), or one the frame has no place for.
-    pub fn try_with_channels(
+    pub fn with_channels(
         wave: Arc<Wave>,
         channels: impl Into<ChannelLayout>,
     ) -> Result<Self, PlaceError> {
@@ -413,30 +398,15 @@ impl MemorySource {
     /// (via [`set_loop_range`](Self::set_loop_range)); `crossfade_frames == 0`
     /// loops with no crossfade.
     ///
-    /// # Panics
-    ///
-    /// As [`new`](Self::new); [`try_with_config`](Self::try_with_config) refuses
-    /// instead.
-    #[must_use]
-    pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
-        Self::try_with_config(wave, config).expect("a wave whose channels can be placed")
-    }
-
-    /// As [`with_config`](Self::with_config), refusing a wave that cannot be
-    /// placed.
-    ///
     /// # Errors
     ///
-    /// As [`try_with_channels`](Self::try_with_channels).
-    pub fn try_with_config(
-        wave: Arc<Wave>,
-        config: MemorySourceConfig,
-    ) -> Result<Self, PlaceError> {
+    /// As [`with_channels`](Self::with_channels).
+    pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Result<Self, PlaceError> {
         let mut unit = Self {
             gain: Param::new(config.gain),
             speed: config.speed,
             placement: config.placement,
-            ..Self::try_with_channels(wave, config.channels)?
+            ..Self::with_channels(wave, config.channels)?
         };
         if let LoopSetting::On {
             start,
@@ -458,7 +428,15 @@ impl MemorySource {
     /// at the timeline call sites — the same reason tutti-polysynth keeps
     /// convenience constructors alongside its config one. `duration_beats` of
     /// `None` plays the whole source.
-    pub fn placed(wave: Arc<Wave>, start_beat: Beat, duration_beats: Option<BeatDuration>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// As [`with_channels`](Self::with_channels).
+    pub fn placed(
+        wave: Arc<Wave>,
+        start_beat: Beat,
+        duration_beats: Option<BeatDuration>,
+    ) -> Result<Self, PlaceError> {
         Self::with_config(
             wave,
             MemorySourceConfig {

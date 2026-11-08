@@ -180,7 +180,8 @@ fn voice(cents: f32) -> tutti_sampler::VoicePool {
     for i in 0..RATE as usize {
         wave.push_frame(&[tone_at(i)]);
     }
-    let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None);
+    let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None)
+        .expect("a placeable wave");
     let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),

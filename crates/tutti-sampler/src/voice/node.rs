@@ -410,7 +410,7 @@ mod tests {
     fn reclaim_frees_a_window_a_block_held_across_the_next() {
         let wave = Arc::new(tutti_codec::Wave::from_samples(48_000.0, &[0.0; 64]));
         let voice = Voice {
-            source: VoiceSource::Memory(MemorySource::new(wave)),
+            source: VoiceSource::Memory(MemorySource::new(wave).expect("a placeable wave")),
             play: Playback::default(),
             channel_index: None,
         };

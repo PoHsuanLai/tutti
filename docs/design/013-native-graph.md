@@ -7966,7 +7966,10 @@ by width alone.
     `Engine::support_output(device)` adds a wider device (`OutputBlock::new` and
     `SessionBuilder::build_offline` call it). `planar_to_interleaved` writes the
     device buffer, so the heard tap still sees exactly the engine's output buffer.
-    A buffer of an unsupported width is a silent counted block (a panic in debug).
+    A buffer of an unsupported width is a silent counted block, in every build.
+    Mono lands on the centre of a 6, 8 or 12-wide device and on the front pair of
+    a 4 or 2-wide one; a 4-wide root is treated as quad into 6, 8 and 12
+    (`MasterSources` cannot declare it `Discrete` yet, a follow-up).
   - **Export.** `GraphSource::new` builds `Fold::widths(graph, file)`, or
     `Fold::between` the graph and `EncodeConfig::topology` when the config states
     one, and the render writes through `planar_to_interleaved`. A graph wider than

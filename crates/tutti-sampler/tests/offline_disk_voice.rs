@@ -857,7 +857,8 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             wave.push_frame(&[value(i), -value(i)]);
         }
         let clock = clock_at(SR);
-        let mut source = tutti_sampler::MemorySource::placed(Arc::new(wave), Beat(1.0), None);
+        let mut source = tutti_sampler::MemorySource::placed(Arc::new(wave), Beat(1.0), None)
+            .expect("a placeable wave");
         source.set_speed(tutti_types::PlaybackRate::new(case.speed));
         source.set_loop_setting(case.loop_);
         let mut memory: Box<dyn Node> = if case.reverse {

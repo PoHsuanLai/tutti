@@ -437,7 +437,8 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         wave.push_frame(&[tone(i)]);
     }
     let voice = {
-        let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(3.0), None);
+        let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(3.0), None)
+            .expect("a placeable wave");
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let (node, _params) = graph.graph().insert(source);
         graph.graph().set_outputs_from(node);
@@ -448,7 +449,8 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         for i in 0..RATE as usize {
             wave.push_frame(&[tone(i)]);
         }
-        let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None);
+        let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None)
+            .expect("a placeable wave");
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let (node, _params) = graph.graph().insert(source);
         app.world_mut().spawn(AudioNode(node)).id()
@@ -1509,11 +1511,9 @@ mod disk {
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);
             }
-            let memory = node_of(VoiceSource::Memory(MemorySource::placed(
-                Arc::new(wave),
-                Beat(3.0),
-                None,
-            )));
+            let memory = node_of(VoiceSource::Memory(
+                MemorySource::placed(Arc::new(wave), Beat(3.0), None).expect("a placeable wave"),
+            ));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             let (bare, _) = graph.graph().insert(bare);
             graph.graph().set_outputs_from(bare);

@@ -257,7 +257,10 @@ mod tests {
         graph
             .graph()
             .set_output_source(0, crate::graph::GraphSource::Node(dc, 0));
-        let mut tap = graph.graph().open_output_tap(tutti_types::Samples(1_024));
+        let mut tap = graph
+            .graph()
+            .open_output_tap(tutti_types::Samples(1_024))
+            .expect("the sources exist");
         graph.session().update();
         stream.render_block(64).expect("the stream is open");
         assert_eq!(

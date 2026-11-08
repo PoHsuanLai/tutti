@@ -48,7 +48,10 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
     session
         .graph()
         .set_output_source(0, GraphSource::Node(dc, 0));
-    let mut tap = session.graph().open_output_tap(Samples(1_024));
+    let mut tap = session
+        .graph()
+        .open_output_tap(Samples(1_024))
+        .expect("the sources exist");
     session.update();
     let mut meter = session.take_master_meter().expect("declared at the build");
     stream.render_block(64).expect("the stream is open");

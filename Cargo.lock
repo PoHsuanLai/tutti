@@ -3521,12 +3521,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustysynth"
-version = "1.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2fafc9b46be0b8ad0a15bb17406e34b4602987c90d12509ca71710ab545b40f"
-
-[[package]]
 name = "safe_arch"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4702,17 +4696,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-rustysynth"
-version = "0.0.1"
-dependencies = [
- "thiserror 2.0.21",
- "tutti-fixtures",
- "tutti-sf2",
- "tutti-types",
- "tutti-ump",
-]
-
-[[package]]
 name = "tutti-sampler"
 version = "0.0.1"
 dependencies = [
@@ -4821,7 +4804,6 @@ name = "tutti-soundfont"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
- "rustysynth",
  "thiserror 2.0.21",
  "tutti-fixtures",
  "tutti-graph",
@@ -4829,10 +4811,10 @@ dependencies = [
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-nodes",
- "tutti-rustysynth",
  "tutti-sf2",
  "tutti-types",
  "tutti-ump",
+ "tutti-voicing",
 ]
 
 [[package]]

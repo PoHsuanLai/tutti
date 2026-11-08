@@ -2,7 +2,7 @@
 
 `tutti-sf2` reads a SoundFont 2 (`.sf2`) file into data: the presets, the
 instruments, the sample headers and the 16-bit sample data. It holds nothing
-that plays; `tutti-rustysynth` is the synthesizer over it.
+that plays; `tutti-soundfont` is the player over it.
 
 The code is the file-reading half of Nobuaki Tanaka's
 [rustysynth](https://github.com/sinshu/rustysynth) (ported from

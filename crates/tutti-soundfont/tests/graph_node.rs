@@ -1,5 +1,5 @@
 //! The unit as a graph node: a clip node's note
-//! sounds on its frame (to rustysynth's 8-frame chunk), the node follows its
+//! sounds on its frame (to the voices' 8-frame chunk), the node follows its
 //! graph's rate, and a forked graph plays the clip.
 //!
 //! Against the committed `TimGM6mb.sf2`; a missing fixture fails, as in the

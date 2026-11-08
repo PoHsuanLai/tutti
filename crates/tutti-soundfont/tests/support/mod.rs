@@ -10,6 +10,9 @@
 
 use std::ops::{Deref, DerefMut};
 
+pub mod font;
+pub mod rig;
+
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::ump::MidiEvent;

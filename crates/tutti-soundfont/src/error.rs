@@ -1,8 +1,7 @@
-//! The crate's error type. The crate root re-exports `SoundFont` and
-//! `SoundFontError` (what `SoundFont::new` returns) from `tutti-sf2`.
+//! The crate's error type.
 
 use thiserror::Error;
-use tutti_rustysynth::SynthesizerError;
+use tutti_types::SampleRate;
 
 /// `Result` with this crate's [`enum@Error`] as the failure type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -18,8 +17,11 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// The synthesizer refused the [`Settings`](crate::Settings), or the rate
-    /// a graph runs at.
-    #[error("SoundFont error: {0}")]
-    Synthesizer(#[from] SynthesizerError),
+    /// The rate is outside 16 to 192 kHz.
+    #[error("the sample rate must be between 16000 and 192000 Hz, but was {0}")]
+    SampleRateOutOfRange(SampleRate),
+
+    /// The unit was asked for no voices.
+    #[error("the polyphony must be at least 1 voice, but was {0}")]
+    PolyphonyOutOfRange(usize),
 }

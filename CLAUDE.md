@@ -326,8 +326,9 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-cpal     device
   tutti-export   offline render
   tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
-  tutti-soundfont, tutti-sf2 (the SoundFont 2 file as data), tutti-rustysynth
-                 (the synthesizer over it; a port of rustysynth)
+  tutti-soundfont (the SoundFont player: the node, the voices, the patch that
+                 turns a note into voices; it executes `tutti-voicing`'s
+                 commands), tutti-sf2 (the SoundFont 2 file as data)
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
@@ -350,7 +351,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-sf2`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`
-3. `tutti-transport`, `tutti-plugin-types`, `tutti-rustysynth`
+3. `tutti-transport`, `tutti-plugin-types`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
    `tutti-plugin-db`
@@ -366,7 +367,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   dependency on `testing/`; a test reaches `testing/` through a
   dev-dependency.
 - `vendor/` holds third-party code we never edit and no workspace member.
-  Our own forks (`tutti-sf2`, `tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
+  Our own forks (`tutti-sf2`, `vst-tutti`) are crates, not vendored.
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
   them.
 
@@ -517,11 +518,16 @@ list (normal and build edges; dev-dependencies may go anywhere).
   sample headers, sample data, raw generators) and holds nothing that plays.
   It depends on `tutti-ump` alone, keeps every module private
   (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
-  `#![forbid(unsafe_code)]`. `tutti-rustysynth` is the synthesizer over it
-  (`Synthesizer`, typed over `MidiChannel`, `NoteNumber`, `U7`, `U14` and
-  `SampleRate`), with the same rules. It sits in layer 3 so that it may take
-  `tutti-dsp` (layer 2) later; it names nothing of it today. Both keep the
-  original author's MIT license and copyright (`LICENSE.txt`).
+  `#![forbid(unsafe_code)]`. `tutti-soundfont` is the player over it: the
+  note logic is `tutti-voicing`'s (`Voicing::step` and its `Rules`, with a
+  `Patch` that starts one voice for each matching preset zone and instrument
+  zone), and the crate keeps what renders a voice (the oscillator, filter,
+  envelopes, LFOs, the generator summing of SF2 section 9.4 and the unit
+  conversions of 9.3). That voice render derives from Nobuaki Tanaka's
+  rustysynth (the former `tutti-rustysynth`, folded in): every file derived from
+  it carries the MIT notice in its header and `LICENSE-RUSTYSYNTH.txt` is the
+  licence text. `tutti-sf2` keeps the original author's MIT license and
+  copyright (`LICENSE.txt`) likewise.
 - A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
   holds only code that names two or more engine crates, or the order they
@@ -788,7 +794,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
+- **Dead crate names:** `tutti-rustysynth` → `tutti-soundfont` (the voice
+  render; the note logic went to `tutti-voicing`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;

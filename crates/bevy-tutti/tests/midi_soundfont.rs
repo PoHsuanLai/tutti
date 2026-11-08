@@ -405,7 +405,7 @@ mod midi_soundfont_audio {
     /// A note declared in the ECS makes sound.
     ///
     /// The end-to-end claim: `MidiSourceInstall` → `rebuild` → clip node →
-    /// event edge → engine beat→offset → rustysynth → samples. Silence here
+    /// event edge → engine beat→offset → SoundFont player → samples. Silence here
     /// means a break anywhere along it.
     #[test]
     fn a_declared_note_produces_audio() {

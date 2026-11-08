@@ -1,10 +1,14 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
 use crate::envelope_stage::EnvelopeStage;
+use crate::render::Render;
 use crate::soundfont_math::SoundFontMath;
-use crate::synthesizer_settings::SynthesizerSettings;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub(crate) struct ModulationEnvelope {
+pub(crate) struct VolumeEnvelope {
     sample_rate: i32,
 
     attack_slope: f64,
@@ -14,9 +18,7 @@ pub(crate) struct ModulationEnvelope {
     attack_start_time: f64,
     hold_start_time: f64,
     decay_start_time: f64,
-
-    decay_end_time: f64,
-    release_end_time: f64,
+    release_start_time: f64,
 
     sustain_level: f32,
     release_level: f32,
@@ -26,8 +28,8 @@ pub(crate) struct ModulationEnvelope {
     value: f32,
 }
 
-impl ModulationEnvelope {
-    pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
+impl VolumeEnvelope {
+    pub(crate) fn new(settings: &Render) -> Self {
         Self {
             sample_rate: settings.hz(),
             attack_slope: 0_f64,
@@ -36,8 +38,7 @@ impl ModulationEnvelope {
             attack_start_time: 0_f64,
             hold_start_time: 0_f64,
             decay_start_time: 0_f64,
-            decay_end_time: 0_f64,
-            release_end_time: 0_f64,
+            release_start_time: 0_f64,
             sustain_level: 0_f32,
             release_level: 0_f32,
             processed_sample_count: 0,
@@ -56,15 +57,13 @@ impl ModulationEnvelope {
         release: f32,
     ) {
         self.attack_slope = 1_f64 / attack as f64;
-        self.decay_slope = 1_f64 / decay as f64;
-        self.release_slope = 1_f64 / release as f64;
+        self.decay_slope = -9.226_f64 / decay as f64;
+        self.release_slope = -9.226_f64 / release as f64;
 
         self.attack_start_time = delay as f64;
         self.hold_start_time = self.attack_start_time + attack as f64;
         self.decay_start_time = self.hold_start_time + hold as f64;
-
-        self.decay_end_time = self.decay_start_time + decay as f64;
-        self.release_end_time = release as f64;
+        self.release_start_time = 0_f64;
 
         self.sustain_level = SoundFontMath::clamp(sustain, 0_f32, 1_f32);
         self.release_level = 0_f32;
@@ -78,8 +77,20 @@ impl ModulationEnvelope {
 
     pub(crate) fn release(&mut self) {
         self.stage = EnvelopeStage::Release;
-        self.release_end_time += self.processed_sample_count as f64 / self.sample_rate as f64;
+        self.release_start_time = self.processed_sample_count as f64 / self.sample_rate as f64;
         self.release_level = self.value;
+    }
+
+    /// Releases within `seconds` at the longest: the release already running,
+    /// or the one to come, is made at least as steep as one of that length.
+    /// Called on a voice that is releasing, it continues from the level it
+    /// has and never slows the fall.
+    pub(crate) fn release_within(&mut self, seconds: f32) {
+        self.release_slope = self.release_slope.min(-9.226_f64 / seconds as f64);
+        if self.stage == EnvelopeStage::Release {
+            self.release_start_time = self.processed_sample_count as f64 / self.sample_rate as f64;
+            self.release_level = self.value;
+        }
     }
 
     pub(crate) fn process(&mut self, sample_count: usize) -> bool {
@@ -116,24 +127,24 @@ impl ModulationEnvelope {
             }
             EnvelopeStage::Decay => {
                 self.value = SoundFontMath::max(
-                    (self.decay_slope * (self.decay_end_time - current_time)) as f32,
+                    SoundFontMath::exp_cutoff(
+                        self.decay_slope * (current_time - self.decay_start_time),
+                    ) as f32,
                     self.sustain_level,
                 );
                 self.value > SoundFontMath::NON_AUDIBLE
             }
             EnvelopeStage::Release => {
-                self.value = SoundFontMath::max(
-                    (self.release_level as f64
-                        * self.release_slope
-                        * (self.release_end_time - current_time)) as f32,
-                    0_f32,
-                );
+                self.value = (self.release_level as f64
+                    * SoundFontMath::exp_cutoff(
+                        self.release_slope * (current_time - self.release_start_time),
+                    )) as f32;
                 self.value > SoundFontMath::NON_AUDIBLE
             }
         }
     }
 
-    pub(crate) fn get_value(&self) -> f32 {
+    pub(crate) fn value(&self) -> f32 {
         self.value
     }
 }

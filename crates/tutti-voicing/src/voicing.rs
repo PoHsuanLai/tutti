@@ -264,6 +264,15 @@ pub enum Command {
     },
     /// Silence a voice at once and free its slot.
     Cut(VoiceId),
+    /// Let a voice go into a short release of the instrument's own choosing,
+    /// whatever its envelope's release is and whatever holds it: the "rapid
+    /// termination" of an exclusive class (SF2 2.04 section 8.1.2, generator
+    /// 57). The voice still exists until it fades; the core counts it as
+    /// released (so it is the first to give way), and a later note-off, pedal
+    /// or panic has nothing left to release in it. Only a voice of an
+    /// exclusive group is ever damped, so an instrument without
+    /// [`Rules::exclusive_groups`] never sees this command.
+    Damp(VoiceId),
     /// A channel's pitch moved: its notes sound `bend` away from their keys.
     /// Sent for each channel a bend, its sensitivity or a reset reaches.
     Retune {
@@ -287,6 +296,8 @@ struct Note {
     tag: u32,
     holds: Holds,
     released: bool,
+    /// Already told to fade quickly: told only once.
+    damped: bool,
     /// What the note-off said, for the release a pedal later lets through.
     off_velocity: u16,
 }
@@ -547,25 +558,27 @@ impl Voicing {
 
     /// A voice of an exclusive class ends the sounding voices of that class in
     /// its scope (SF2 2.04 section 8.1.2, generator 57), on any channel, never
-    /// one of its own strike. `except` is a (channel, tag) taken over in place
-    /// instead (mono), which is not cut.
-    fn cut_exclusive(&mut self, spec: VoiceSpec, except: Option<(MidiChannel, u32)>) {
+    /// one of its own strike. The spec says "rapidly terminated", not cut: the
+    /// voices are told to [`Command::Damp`], once, and count as released from
+    /// then on. `except` is a (channel, tag) taken over in place instead
+    /// (mono), which is not damped.
+    fn damp_exclusive(&mut self, spec: VoiceSpec, except: Option<(MidiChannel, u32)>) {
         if !self.rules.exclusive_groups || spec.group == 0 {
             return;
         }
         let strike = self.strike;
-        let mut i = 0;
-        while i < self.notes.len() {
-            let n = self.notes[i];
+        for i in 0..self.notes.len() {
+            let n = &mut self.notes[i];
             if n.group == spec.group
                 && n.scope == spec.scope
                 && n.strike != strike
+                && !n.damped
                 && except != Some((n.channel, n.tag))
             {
-                self.push(Command::Cut(n.id));
-                self.notes.remove(i);
-            } else {
-                i += 1;
+                n.damped = true;
+                n.released = true;
+                let id = n.id;
+                self.push(Command::Damp(id));
             }
         }
     }
@@ -578,7 +591,7 @@ impl Voicing {
         spec: VoiceSpec,
         voices: &[VoiceView],
     ) {
-        self.cut_exclusive(spec, None);
+        self.damp_exclusive(spec, None);
         let steal = if self.notes.len() < self.rules.polyphony {
             None
         } else if let Some(v) = self.victim(voices) {
@@ -616,7 +629,7 @@ impl Voicing {
         let (specs, count) = Self::specs(patch, channel, key, velocity);
         let strike = self.strike;
         for &spec in &specs[..count] {
-            self.cut_exclusive(spec, Some((channel, spec.tag)));
+            self.damp_exclusive(spec, Some((channel, spec.tag)));
             // The prior voice of this layer, a sounding one before a tail.
             let prior = |notes: &[Note], released: bool| {
                 notes.iter().position(|n| {
@@ -670,6 +683,7 @@ impl Voicing {
             tag: spec.tag,
             holds: Holds::struck(),
             released: false,
+            damped: false,
             off_velocity: NEUTRAL_RELEASE,
         });
         self.push(Command::Start {
@@ -1192,7 +1206,7 @@ mod tests {
         let mut s = Sim::new(EXCLUSIVE);
         s.on_with(1, 60, &Grouped { scope: 5 });
         let c = s.on_with(0, 62, &Grouped { scope: 5 });
-        assert_eq!(c[0], Command::Cut(id(1)), "{c:?}");
+        assert_eq!(c[0], Command::Damp(id(1)), "{c:?}");
     }
 
     /// The same group number in another preset is another group.
@@ -1203,7 +1217,7 @@ mod tests {
         let mut s = Sim::new(EXCLUSIVE);
         s.on_with(0, 60, &Grouped { scope: 5 });
         let c = s.on_with(0, 62, &Grouped { scope: 6 });
-        assert!(!c.iter().any(|x| matches!(x, Command::Cut(_))), "{c:?}");
+        assert!(!c.iter().any(|x| matches!(x, Command::Damp(_))), "{c:?}");
     }
 
     /// The voices one strike starts (a stereo pair, both of one class) do not
@@ -1216,12 +1230,17 @@ mod tests {
         let mut s = Sim::new(EXCLUSIVE);
         let pair = Pair { group: 7, scope: 5 };
         let c = s.on_with(0, 60, &pair);
-        assert!(!c.iter().any(|x| matches!(x, Command::Cut(_))), "{c:?}");
+        assert!(!c.iter().any(|x| matches!(x, Command::Damp(_))), "{c:?}");
         assert_eq!(s.voices.len(), 2);
         let c = s.on_with(0, 62, &pair);
-        let cuts: Vec<_> = c.iter().filter(|x| matches!(x, Command::Cut(_))).collect();
-        assert_eq!(cuts.len(), 2, "{c:?}");
-        assert_eq!(s.voices.len(), 2);
+        let damps: Vec<_> = c.iter().filter(|x| matches!(x, Command::Damp(_))).collect();
+        assert_eq!(damps.len(), 2, "{c:?}");
+        // A damp is a release, not a cut: all four voices still exist.
+        assert_eq!(s.voices.len(), 4);
+        // Told once: a third strike damps only the second's pair.
+        let c = s.on_with(0, 64, &pair);
+        let damps: Vec<_> = c.iter().filter(|x| matches!(x, Command::Damp(_))).collect();
+        assert_eq!(damps.len(), 2, "{c:?}");
     }
 
     // ---- pedals, panics, reset ------------------------------------------
@@ -1724,10 +1743,55 @@ mod tests {
         }
     }
 
+    /// The "rapid termination" of an exclusive class is a release of the
+    /// instrument's own choosing (SF2 2.04 section 8.1.2, generator 57), told
+    /// once: a damped voice counts as released, so a later note-off, pedal or
+    /// All Notes Off has nothing to release in it, a panic still cuts it, and
+    /// it is the first to give way when the pool is full.
+    ///
+    /// Mutation (run): not setting `released` in `damp_exclusive` makes the
+    /// note-off release it again and fails the first assertion; not setting
+    /// `damped` damps it again on the third strike and fails the second.
+    #[test]
+    fn a_damped_voice_counts_as_released_and_is_told_once() {
+        let mut s = Sim::new(Rules {
+            polyphony: 2,
+            ..EXCLUSIVE
+        });
+        s.on_with(0, 60, &Grouped { scope: 5 });
+        let c = s.on_with(0, 62, &Grouped { scope: 5 });
+        assert_eq!(c[0], Command::Damp(id(1)), "{c:?}");
+        assert!(
+            s.off(0, 60).is_empty(),
+            "a damped voice has nothing left to release"
+        );
+        let c = s.on_with(0, 64, &Grouped { scope: 5 });
+        assert_eq!(
+            c.iter().filter(|x| matches!(x, Command::Damp(_))).count(),
+            1,
+            "only the second voice is damped now: {c:?}"
+        );
+        // Full pool (2): the third strike took the first voice's slot (a
+        // released one goes first), so the second is damped and the third is
+        // held; a fourth takes the second, never the held third.
+        let c = s.on_with(0, 65, &One);
+        assert!(
+            c.iter().any(
+                |x| matches!(x, Command::Start { steal: Some(v), .. } if *v == id(1) || *v == id(2))
+            ),
+            "a released voice gives way: {c:?}"
+        );
+        assert!(
+            !c.iter()
+                .any(|x| matches!(x, Command::Start { steal: Some(v), .. } if *v == id(3))),
+            "the held voice stays: {c:?}"
+        );
+    }
+
     /// A mono note of an exclusive class ends the others of its class even when
     /// it takes its own channel's voice over in place.
     ///
-    /// Mutation (run): no `cut_exclusive` in `play_mono` leaves channel 1's
+    /// Mutation (run): no `damp_exclusive` in `play_mono` leaves channel 1's
     /// grouped voice sounding.
     #[test]
     fn a_mono_takeover_still_ends_its_exclusive_class() {
@@ -1738,7 +1802,7 @@ mod tests {
         s.on(0, 60);
         s.on_with(1, 62, &Grouped { scope: 5 });
         let c = s.on_with(0, 64, &Grouped { scope: 5 });
-        assert!(c.contains(&Command::Cut(id(2))), "{c:?}");
+        assert!(c.contains(&Command::Damp(id(2))), "{c:?}");
         assert!(
             c.iter()
                 .any(|x| matches!(x, Command::Start { steal: Some(v), .. } if *v == id(1))),
@@ -2074,6 +2138,7 @@ mod tests {
                         let named = match *cmd {
                             Command::Release { id, .. }
                             | Command::Cut(id)
+                            | Command::Damp(id)
                             | Command::Retarget { id, .. } => Some(id),
                             Command::Start { steal, .. } => steal,
                             Command::Retune { .. } => None,

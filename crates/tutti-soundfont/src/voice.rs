@@ -1,4 +1,23 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
 use std::f32::consts;
+
+/// The longest an exclusive class's quick release takes, in seconds: the floor
+/// every release is given at its start, to avoid a pop. The spec says "rapidly"
+/// and no more (SF2 2.04 section 8.1.2, generator 57); this is tutti's figure,
+/// the shortest release a voice can have.
+pub(crate) const QUICK_RELEASE: f32 = 0.01;
+
+/// The shortest a voice sounds before a release is honoured, in seconds. This
+/// is tutti's rule and not the specification's: section 9.1.7 enters the
+/// release phase at once, from the envelope's current value, so a key let go
+/// in the delay or attack stage (a key struck again within a millisecond or two
+/// of its first strike, or a note-off a few frames after its note-on) leaves a
+/// voice that never sounded. Deferring the release by this much keeps a short
+/// note audible. It is the figure rustysynth used, 2 ms: a 500th of a second.
+const MIN_SOUNDING_PER_SECOND: i32 = 500;
 
 use crate::bi_quad_filter::BiQuadFilter;
 use crate::channel::Channel;
@@ -7,16 +26,17 @@ use crate::modulation_envelope::ModulationEnvelope;
 use crate::oscillator::Oscillator;
 use crate::region_ex::RegionEx;
 use crate::region_pair::RegionPair;
+use crate::render::Render;
 use crate::soundfont_math::SoundFontMath;
-use crate::synthesizer_settings::SynthesizerSettings;
 use crate::volume_envelope::VolumeEnvelope;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 enum VoiceState {
-    Playing = 0,
-    ReleaseRequested = 1,
-    Released = 2,
+    Playing,
+    /// Told to release; the release starts once the voice has sounded
+    /// [`MIN_SOUNDING_PER_SECOND`]'s 2 ms.
+    ReleaseRequested,
+    Released,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +67,6 @@ pub(crate) struct Voice {
     pub(crate) current_reverb_send: f32,
     pub(crate) current_chorus_send: f32,
 
-    exclusive_class: i32,
     channel: i32,
     key: i32,
     velocity: i32,
@@ -77,13 +96,16 @@ pub(crate) struct Voice {
     smoothed_cutoff: f32,
 
     voice_state: VoiceState,
-    /// Time elapsed in samples
+    /// Whether the release to come is the quick one of an exclusive class.
+    quick: bool,
+    /// Time elapsed in samples, so a voice's first block takes its gains whole
+    /// and a release waits for [`MIN_SOUNDING_PER_SECOND`]'s 2 ms.
     voice_length: usize,
-    min_voice_length: usize,
+    min_sounding: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
+    pub(crate) fn new(settings: &Render) -> Self {
         Self {
             vol_env: VolumeEnvelope::new(settings),
             mod_env: ModulationEnvelope::new(settings),
@@ -100,7 +122,6 @@ impl Voice {
             previous_chorus_send: 0_f32,
             current_reverb_send: 0_f32,
             current_chorus_send: 0_f32,
-            exclusive_class: 0,
             channel: 0,
             key: 0,
             velocity: 0,
@@ -120,13 +141,13 @@ impl Voice {
             instrument_chorus: 0_f32,
             smoothed_cutoff: 0_f32,
             voice_state: VoiceState::Playing,
+            quick: false,
             voice_length: 0,
-            min_voice_length: (settings.hz() / 500) as usize,
+            min_sounding: (settings.hz() / MIN_SOUNDING_PER_SECOND) as usize,
         }
     }
 
     pub(crate) fn start(&mut self, region: &RegionPair, channel: i32, key: i32, velocity: i32) {
-        self.exclusive_class = region.get_exclusive_class();
         self.channel = channel;
         self.key = key;
         self.velocity = velocity;
@@ -134,8 +155,8 @@ impl Voice {
         if velocity > 0 {
             // According to the Polyphone's implementation, the initial attenuation should be reduced to 40%.
             // I'm not sure why, but this indeed improves the loudness variability.
-            let sample_attenuation = 0.4_f32 * region.get_initial_attenuation();
-            let filter_attenuation = 0.5_f32 * region.get_initial_filter_q();
+            let sample_attenuation = 0.4_f32 * region.initial_attenuation();
+            let filter_attenuation = 0.5_f32 * region.initial_filter_q();
             let decibels = 2_f32 * SoundFontMath::linear_to_decibels(velocity as f32 / 127_f32)
                 - sample_attenuation
                 - filter_attenuation;
@@ -144,23 +165,23 @@ impl Voice {
             self.note_gain = 0_f32;
         }
 
-        self.cutoff = region.get_initial_filter_cutoff_frequency();
-        self.resonance = SoundFontMath::decibels_to_linear(region.get_initial_filter_q());
+        self.cutoff = region.initial_filter_cutoff_frequency();
+        self.resonance = SoundFontMath::decibels_to_linear(region.initial_filter_q());
 
-        self.vib_lfo_to_pitch = 0.01_f32 * region.get_vibrato_lfo_to_pitch() as f32;
-        self.mod_lfo_to_pitch = 0.01_f32 * region.get_modulation_lfo_to_pitch() as f32;
-        self.mod_env_to_pitch = 0.01_f32 * region.get_modulation_envelope_to_pitch() as f32;
+        self.vib_lfo_to_pitch = 0.01_f32 * region.vibrato_lfo_to_pitch() as f32;
+        self.mod_lfo_to_pitch = 0.01_f32 * region.modulation_lfo_to_pitch() as f32;
+        self.mod_env_to_pitch = 0.01_f32 * region.modulation_envelope_to_pitch() as f32;
 
-        self.mod_lfo_to_cutoff = region.get_modulation_lfo_to_filter_cutoff_frequency();
-        self.mod_env_to_cutoff = region.get_modulation_envelope_to_filter_cutoff_frequency();
+        self.mod_lfo_to_cutoff = region.modulation_lfo_to_filter_cutoff_frequency();
+        self.mod_env_to_cutoff = region.modulation_envelope_to_filter_cutoff_frequency();
         self.dynamic_cutoff = self.mod_lfo_to_cutoff != 0 || self.mod_env_to_cutoff != 0;
 
-        self.mod_lfo_to_volume = region.get_modulation_lfo_to_volume();
+        self.mod_lfo_to_volume = region.modulation_lfo_to_volume();
         self.dynamic_volume = self.mod_lfo_to_volume > 0.05_f32;
 
-        self.instrument_pan = SoundFontMath::clamp(region.get_pan(), -50_f32, 50_f32);
-        self.instrument_reverb = 0.01_f32 * region.get_reverb_effects_send();
-        self.instrument_chorus = 0.01_f32 * region.get_chorus_effects_send();
+        self.instrument_pan = SoundFontMath::clamp(region.pan(), -50_f32, 50_f32);
+        self.instrument_reverb = 0.01_f32 * region.reverb_effects_send();
+        self.instrument_chorus = 0.01_f32 * region.chorus_effects_send();
 
         RegionEx::start_volume_envelope(&mut self.vol_env, region, key, velocity);
         RegionEx::start_modulation_envelope(&mut self.mod_env, region, key, velocity);
@@ -173,17 +194,54 @@ impl Voice {
         self.smoothed_cutoff = self.cutoff;
 
         self.voice_state = VoiceState::Playing;
+        self.quick = false;
         self.voice_length = 0;
     }
 
-    pub(crate) fn end(&mut self) {
+    /// Lets the voice go into its release (SF2 2.04 section 9.1.7: the
+    /// volume and modulation envelopes' release stages, and a loop that runs
+    /// until the key is up ends). The release starts once the voice has
+    /// sounded [`MIN_SOUNDING_PER_SECOND`]'s 2 ms, at the next chunk. A voice already released
+    /// is left alone.
+    pub(crate) fn release(&mut self) {
         if self.voice_state == VoiceState::Playing {
             self.voice_state = VoiceState::ReleaseRequested;
         }
     }
 
-    pub(crate) fn kill(&mut self) {
-        self.note_gain = 0_f32;
+    /// Lets the voice go into the quick release of an exclusive class (SF2
+    /// 2.04 section 8.1.2, generator 57: "rapidly terminated"): its volume
+    /// envelope falls over [`QUICK_RELEASE`] at the longest, whatever its
+    /// own release is. A voice already releasing is sped up, never slowed.
+    pub(crate) fn damp(&mut self) {
+        match self.voice_state {
+            VoiceState::Released => self.vol_env.release_within(QUICK_RELEASE),
+            VoiceState::Playing | VoiceState::ReleaseRequested => {
+                self.quick = true;
+                self.release();
+            }
+        }
+    }
+
+    /// Starts a requested release once the voice has sounded long enough.
+    fn release_if_necessary(&mut self) {
+        if self.voice_length < self.min_sounding {
+            return;
+        }
+        if self.voice_state == VoiceState::ReleaseRequested {
+            if self.quick {
+                self.vol_env.release_within(QUICK_RELEASE);
+            }
+            self.vol_env.release();
+            self.mod_env.release();
+            self.oscillator.release();
+            self.voice_state = VoiceState::Released;
+        }
+    }
+
+    /// The volume envelope's level now: what the core steals by.
+    pub(crate) fn level(&self) -> f32 {
+        self.vol_env.value()
     }
 
     pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel]) -> bool {
@@ -193,7 +251,7 @@ impl Voice {
 
         let channel_info = &channels[self.channel as usize];
 
-        self.release_if_necessary(channel_info);
+        self.release_if_necessary();
 
         if !self.vol_env.process(self.block.len()) {
             return false;
@@ -203,19 +261,19 @@ impl Voice {
         self.vib_lfo.process();
         self.mod_lfo.process();
 
-        let vib_pitch_change = (0.01_f32 * channel_info.get_modulation() + self.vib_lfo_to_pitch)
-            * self.vib_lfo.get_value();
-        let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.get_value()
-            + self.mod_env_to_pitch * self.mod_env.get_value();
-        let channel_pitch_change = channel_info.get_tune() + channel_info.get_pitch_bend();
+        let vib_pitch_change =
+            (0.01_f32 * channel_info.modulation() + self.vib_lfo_to_pitch) * self.vib_lfo.value();
+        let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.value()
+            + self.mod_env_to_pitch * self.mod_env.value();
+        let channel_pitch_change = channel_info.tune() + channel_info.pitch_bend();
         let pitch = self.key as f32 + vib_pitch_change + mod_pitch_change + channel_pitch_change;
         if !self.oscillator.process(data, &mut self.block[..], pitch) {
             return false;
         }
 
         if self.dynamic_cutoff {
-            let cents = self.mod_lfo_to_cutoff as f32 * self.mod_lfo.get_value()
-                + self.mod_env_to_cutoff as f32 * self.mod_env.get_value();
+            let cents = self.mod_lfo_to_cutoff as f32 * self.mod_lfo.value()
+                + self.mod_env_to_cutoff as f32 * self.mod_env.value();
             let factor = SoundFontMath::cents_to_multiplying_factor(cents);
             let new_cutoff = factor * self.cutoff;
 
@@ -235,17 +293,16 @@ impl Voice {
         self.previous_chorus_send = self.current_chorus_send;
 
         // According to the GM spec, the following value should be squared.
-        let ve = channel_info.get_volume() * channel_info.get_expression();
+        let ve = channel_info.volume() * channel_info.expression();
         let channel_gain = ve * ve;
 
-        let mut mix_gain = self.note_gain * channel_gain * self.vol_env.get_value();
+        let mut mix_gain = self.note_gain * channel_gain * self.vol_env.value();
         if self.dynamic_volume {
-            let decibels = self.mod_lfo_to_volume * self.mod_lfo.get_value();
+            let decibels = self.mod_lfo_to_volume * self.mod_lfo.value();
             mix_gain *= SoundFontMath::decibels_to_linear(decibels);
         }
 
-        let angle =
-            (consts::PI / 200_f32) * (channel_info.get_pan() + self.instrument_pan + 50_f32);
+        let angle = (consts::PI / 200_f32) * (channel_info.pan() + self.instrument_pan + 50_f32);
         if angle <= 0_f32 {
             self.current_mix_gain_left = mix_gain;
             self.current_mix_gain_right = 0_f32;
@@ -258,12 +315,12 @@ impl Voice {
         }
 
         self.current_reverb_send = SoundFontMath::clamp(
-            channel_info.get_reverb_send() + self.instrument_reverb,
+            channel_info.reverb_send() + self.instrument_reverb,
             0_f32,
             1_f32,
         );
         self.current_chorus_send = SoundFontMath::clamp(
-            channel_info.get_chorus_send() + self.instrument_chorus,
+            channel_info.chorus_send() + self.instrument_chorus,
             0_f32,
             1_f32,
         );
@@ -280,45 +337,7 @@ impl Voice {
         true
     }
 
-    fn release_if_necessary(&mut self, channel_info: &Channel) {
-        if self.voice_length < self.min_voice_length {
-            return;
-        }
-
-        if self.voice_state == VoiceState::ReleaseRequested && !channel_info.get_hold_pedal() {
-            self.vol_env.release();
-            self.mod_env.release();
-            self.oscillator.release();
-
-            self.voice_state = VoiceState::Released;
-        }
-    }
-
     pub(crate) fn block(&self) -> &[f32] {
         &self.block
-    }
-
-    pub(crate) fn voice_length(&self) -> usize {
-        self.voice_length
-    }
-
-    pub(crate) fn exclusive_class(&self) -> i32 {
-        self.exclusive_class
-    }
-
-    pub(crate) fn channel(&self) -> i32 {
-        self.channel
-    }
-
-    pub(crate) fn key(&self) -> i32 {
-        self.key
-    }
-
-    pub(crate) fn priority(&self) -> f32 {
-        if self.note_gain < SoundFontMath::NON_AUDIBLE {
-            0_f32
-        } else {
-            self.vol_env.get_priority()
-        }
     }
 }

@@ -140,22 +140,35 @@ fn a_note_on_at_velocity_0_leaves_no_voice_sounding() {
     }
 }
 
-/// A nonzero 16-bit velocity below 0x0200 narrows to 0, which RustySynth reads
-/// as a Note Off. It must be a Note On: here it lands on a held key, and the
-/// held note keeps sounding. (At 1 the new note itself is below what
-/// RustySynth renders, so the held note is the evidence.)
+/// A nonzero 16-bit velocity below 0x0200 narrows to 0, which MIDI 1.0 reads as
+/// a Note Off. A native one is a Note On (M2-104 section 7.4.2) and must be
+/// played as one. The evidence is the sustain pedal (SF2 2.04 section 9.2, CC
+/// 64): a Note Off on the held key would be stored and run when the pedal
+/// lifts, so the note keeps sounding; a Note On strikes the key again, which
+/// releases the earlier strike whatever holds it (the retrigger rule), and the
+/// new note at that velocity is below what is rendered, so the note ends.
+/// (The test used to hold the note without a pedal: a key struck again layered
+/// then, and no longer does.)
+///
+/// Mutation (run): `Player::apply` reading a velocity below 0x200 as a Note Off leaves
+/// the pedal-held note sounding, and the test fails.
 #[test]
 fn a_nonzero_velocity_that_narrows_to_zero_still_sounds() {
     for velocity in [1, 0x01FF] {
         let mut unit = organ();
-        let out = render(&mut unit, &[note_on_2(60, 0xFFFF)], 22_050);
+        let pedal = m2(Voice2::ControlChange {
+            controller: CCNumber::of(64),
+            value: u32::MAX,
+        });
+        let out = render(&mut unit, &[pedal, note_on_2(60, 0xFFFF)], 22_050);
         let held = rms(&out[11_025..]);
         assert!(held > 0.001, "the note must sound at all");
         render(&mut unit, &[note_on_2(60, velocity)], 22_050);
         let later = rms(&render(&mut unit, &[], 11_025));
         assert!(
-            later > held * 0.5,
-            "velocity {velocity:#x} released the held note: {later} against {held}"
+            later < held * 0.01,
+            "velocity {velocity:#x} was read as a Note Off, which the pedal holds: \
+             {later} against {held}"
         );
     }
 }

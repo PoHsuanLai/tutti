@@ -1,3 +1,7 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DataType {
     None,
@@ -17,7 +21,6 @@ pub(crate) struct Channel {
     volume: i16,
     pan: i16,
     expression: i16,
-    hold_pedal: bool,
 
     reverb_send: u8,
     chorus_send: u8,
@@ -42,7 +45,6 @@ impl Channel {
             volume: 0,
             pan: 0,
             expression: 0,
-            hold_pedal: false,
             reverb_send: 0,
             chorus_send: 0,
             rpn: 0,
@@ -66,7 +68,6 @@ impl Channel {
         self.volume = 100 << 7;
         self.pan = 64 << 7;
         self.expression = 127 << 7;
-        self.hold_pedal = false;
 
         self.reverb_send = 40;
         self.chorus_send = 0;
@@ -82,7 +83,6 @@ impl Channel {
     pub(crate) fn reset_all_controllers(&mut self) {
         self.modulation = 0;
         self.expression = 127 << 7;
-        self.hold_pedal = false;
 
         self.rpn = -1;
 
@@ -131,10 +131,6 @@ impl Channel {
 
     pub(crate) fn set_expression_fine(&mut self, value: i32) {
         self.expression = (((self.expression as i32) & 0xFF80) | value) as i16;
-    }
-
-    pub(crate) fn set_hold_pedal(&mut self, value: i32) {
-        self.hold_pedal = value >= 64;
     }
 
     pub(crate) fn set_reverb_send(&mut self, value: i32) {
@@ -193,51 +189,47 @@ impl Channel {
         self.pitch_bend = (1_f32 / 8192_f32) * ((value1 | (value2 << 7)) - 8192) as f32;
     }
 
-    pub(crate) fn get_bank_number(&self) -> i32 {
+    pub(crate) fn bank_number(&self) -> i32 {
         self.bank_number
     }
 
-    pub(crate) fn get_patch_number(&self) -> i32 {
+    pub(crate) fn patch_number(&self) -> i32 {
         self.patch_number
     }
 
-    pub(crate) fn get_modulation(&self) -> f32 {
+    pub(crate) fn modulation(&self) -> f32 {
         (50_f32 / 16383_f32) * self.modulation as f32
     }
 
-    pub(crate) fn get_volume(&self) -> f32 {
+    pub(crate) fn volume(&self) -> f32 {
         (1_f32 / 16383_f32) * self.volume as f32
     }
 
-    pub(crate) fn get_pan(&self) -> f32 {
+    pub(crate) fn pan(&self) -> f32 {
         (100_f32 / 16383_f32) * self.pan as f32 - 50_f32
     }
 
-    pub(crate) fn get_expression(&self) -> f32 {
+    pub(crate) fn expression(&self) -> f32 {
         (1_f32 / 16383_f32) * self.expression as f32
     }
 
-    pub(crate) fn get_hold_pedal(&self) -> bool {
-        self.hold_pedal
-    }
-
-    pub(crate) fn get_reverb_send(&self) -> f32 {
+    pub(crate) fn reverb_send(&self) -> f32 {
         (1_f32 / 127_f32) * self.reverb_send as f32
     }
 
-    pub(crate) fn get_chorus_send(&self) -> f32 {
+    pub(crate) fn chorus_send(&self) -> f32 {
         (1_f32 / 127_f32) * self.chorus_send as f32
     }
 
-    pub(crate) fn get_pitch_bend_range(&self) -> f32 {
+    pub(crate) fn pitch_bend_range(&self) -> f32 {
         (self.pitch_bend_range >> 7) as f32 + 0.01_f32 * (self.pitch_bend_range & 0x7F) as f32
     }
 
-    pub(crate) fn get_tune(&self) -> f32 {
+    pub(crate) fn tune(&self) -> f32 {
         self.coarse_tune as f32 + (1_f32 / 8192_f32) * (self.fine_tune - 8192) as f32
     }
 
-    pub(crate) fn get_pitch_bend(&self) -> f32 {
-        self.get_pitch_bend_range() * self.pitch_bend
+    pub(crate) fn pitch_bend(&self) -> f32 {
+        self.pitch_bend_range() * self.pitch_bend
     }
 }

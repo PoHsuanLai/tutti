@@ -1,4 +1,10 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
 use std::cmp;
+
+use crate::soundfont_math::SoundFontMath;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -210,8 +216,27 @@ impl Reverb {
         }
     }
 
-    pub fn get_input_gain(&self) -> f32 {
+    pub fn input_gain(&self) -> f32 {
         self.gain
+    }
+
+    /// Seconds a note's tail in the comb filters takes to fall to
+    /// `SoundFontMath::NON_AUDIBLE` of itself, the threshold the voices end
+    /// at. Each trip round the longest comb loop keeps the room size's
+    /// fraction of what it carried (at the lowest frequency the damping
+    /// leaves it, the figure of the loop's DC gain), and the all-pass chain
+    /// adds its delay once. A bound, not a measure.
+    pub(crate) fn ring_out(&self, sample_rate: i32) -> f32 {
+        let longest = self
+            .cfs_l
+            .iter()
+            .chain(&self.cfs_r)
+            .map(|c| c.buffer.len())
+            .max()
+            .unwrap_or(0);
+        let chain: usize = self.apfs_l.iter().map(|a| a.buffer.len()).sum();
+        let loops = (SoundFontMath::NON_AUDIBLE.ln() / self.room_size1.ln()).ceil();
+        (loops * longest as f32 + chain as f32) / sample_rate as f32
     }
 
     fn set_room_size(&mut self, value: f32) {

@@ -42,7 +42,11 @@ impl FileChannels<'_> {
     /// the file or cannot take the graph's channels, or the declared root is
     /// not as wide as the graph, or the graph has more channels than a layout
     /// holds ([`FoldError::TooWide`](tutti_types::FoldError::TooWide)).
-    fn fold_from(&self, outputs: usize, root: Option<&ChannelTopology>) -> crate::Result<Fold> {
+    pub(crate) fn fold_from(
+        &self,
+        outputs: usize,
+        root: Option<&ChannelTopology>,
+    ) -> crate::Result<Fold> {
         let graph = ChannelLayout::try_from(outputs)
             .map_err(|_| ConfigError::Placement(tutti_types::FoldError::TooWide(outputs)))?;
         if let Some(root) = root
@@ -338,15 +342,23 @@ pub(crate) fn check_loss(policy: crate::EventLossPolicy, lost: u64) -> crate::Re
 }
 
 /// Replays already-rendered planes as a frame source.
+///
+/// Planes of the file's own width replay as they are. Any other width is
+/// folded onto the file's through the [`Fold`] the caller built
+/// ([`FileChannels::fold_from`]), the way the graph's outputs are: a wider
+/// render is placed by position and a narrower one by the engine's order,
+/// never truncated or zero-padded.
 pub(crate) struct PlaneSource<'a> {
     planes: &'a [Vec<f32>],
+    fold: Option<Fold>,
     pos: Samples,
 }
 
 impl<'a> PlaneSource<'a> {
-    pub(crate) fn new(planes: &'a [Vec<f32>]) -> Self {
+    pub(crate) fn new(planes: &'a [Vec<f32>], fold: Option<Fold>) -> Self {
         Self {
             planes,
+            fold,
             pos: Samples(0),
         }
     }
@@ -359,16 +371,22 @@ impl FrameSource for PlaneSource<'_> {
             .first()
             .map_or(0, |p| p.len().saturating_sub(self.pos.get()));
         let n = out.len().min(available);
-        // A channel with no plane zero-fills, matching the graph path's
-        // upmix rule. `interleave_from` writes every sample of every frame
-        // (rather than leaving whatever the buffer held), which matters
-        // because `drive`'s block is reused across iterations.
         let layout = out.layout();
-        InterleavedMut::new(
-            &mut out.samples_mut()[..n * usize::from(layout.count())],
-            layout,
-        )
-        .interleave_from(self.planes, self.pos.get());
+        let block = &mut out.samples_mut()[..n * usize::from(layout.count())];
+        let pos = self.pos.get();
+        match &self.fold {
+            Some(fold) => {
+                let planes = self.planes;
+                fold.planar_to_interleaved(
+                    |c| &planes[c][pos..pos + n],
+                    InterleavedMut::new(block, layout),
+                );
+            }
+            // `interleave_from` writes every sample of every frame (rather
+            // than leaving whatever the buffer held), which matters because
+            // `drive`'s block is reused across iterations.
+            None => InterleavedMut::new(block, layout).interleave_from(self.planes, pos),
+        }
         self.pos = Samples(self.pos.get() + n);
         n
     }

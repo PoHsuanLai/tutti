@@ -121,8 +121,13 @@ pub struct EncodeConfig {
     /// width among them. A width that does not quantize (`Pcm::Float32`, and
     /// Ogg Vorbis) is also where [`ExportConfig::dither`] is ignored.
     pub format: Format,
-    /// Width of the written file. A graph wider than this is folded with the
-    /// ITU/Dolby matrix, never truncated; a narrower one is zero-filled.
+    /// Width of the written file. A graph (or, for
+    /// [`write_buffers`](crate::write_buffers), a set of planes) of another
+    /// width is folded onto it by speaker position: a wider one with the
+    /// ITU/Dolby matrix, a narrower one by the engine's order, with the
+    /// channels the source lacks left silent. A width the fold cannot place
+    /// is [`ConfigError::Placement`](crate::ConfigError::Placement), never a
+    /// dropped channel.
     pub channels: ChannelLayout,
     /// Which speaker each file channel feeds, for the WAV speaker mask and Ogg
     /// Vorbis's channel order: `None`

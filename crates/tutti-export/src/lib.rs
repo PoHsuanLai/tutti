@@ -177,7 +177,12 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// measure-then-apply possible: render to buffers, measure, apply a gain,
 /// write.
 ///
-/// `config.encode` is honoured as-is. `config.render` is not consulted — the
+/// `config.encode` is honoured as-is, `channels` and `topology` included:
+/// planes of another width than `config.encode.channels` are folded onto it
+/// the way a graph's outputs are (the engine's order for the plane width, the
+/// file's `topology` for the file; a 5.1 render written as stereo carries its
+/// centre and surrounds at -3 dB), and planes of the file's own width are
+/// written as they are. `config.render` is not consulted — the
 /// frames already exist and carry their own rate in [`Rendered::sample_rate`] —
 /// but `config.resample` still applies, so a caller can convert on the way out.
 /// Dither is applied here, at the real depth and after any resample, which is
@@ -186,8 +191,10 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// # Errors
 ///
 /// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
-/// [`Error::InvalidConfig`], [`Error::Resample`] or [`Error::Encode`] from the
-/// resample and encode stages.
+/// [`Error::InvalidConfig`] ([`ConfigError::Placement`]) for a plane width the
+/// fold cannot place onto the file's — a channel is never dropped to make it
+/// fit; [`Error::Resample`] or [`Error::Encode`] from the resample and encode
+/// stages.
 pub fn write_buffers(
     rendered: &Rendered,
     config: &ExportConfig,

@@ -267,7 +267,7 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
 #[test]
 fn plane_source_zero_fills_a_missing_channel_every_block() {
     let planes = vec![vec![1.0f32; 64]];
-    let mut src = PlaneSource::new(&planes);
+    let mut src = PlaneSource::new(&planes, None);
     let mut out = vec![9.9f32; 4 * 4];
     let quad = ChannelLayout::from(4u16);
     assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)), 4);

@@ -262,7 +262,15 @@ pub(crate) fn encode_planes(
     control: &mut Control<'_>,
 ) -> Result<Outcome<Written>> {
     let frames = rendered.frames();
-    let mut src = PlaneSource::new(&rendered.planes);
+    // Planes of another width than the file's are folded onto it, by the
+    // same rule the graph's outputs are (the file's `topology` included); a
+    // width it cannot place is an error, never a dropped channel.
+    let fold = if rendered.planes.is_empty() || rendered.layout() == config.encode.channels {
+        None
+    } else {
+        Some(crate::file_channels(config).fold_from(rendered.channels(), None)?)
+    };
+    let mut src = PlaneSource::new(&rendered.planes, fold);
     let plan = RenderPlan {
         total: frames,
         output_length: frames,

@@ -21,7 +21,7 @@ use crate::butler::{
 };
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_codec::Wave;
-use tutti_types::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, PlaybackRate, SamplePosition, SampleRate};
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`).
@@ -331,15 +331,59 @@ impl Status {
     /// [`TakeVoiceError::NotStreaming`] while the butler has not opened the
     /// stream yet: a caller polls again next frame rather than treating it as
     /// a failure. [`TakeVoiceError::ReaderTaken`] once a voice has been taken
-    /// from the stream: a stream serves one live voice.
+    /// from the stream: a stream serves one live voice. The voice is as wide
+    /// as the file ([`voice_width`](crate::voice_width)) and plays its
+    /// channels where they are, unless the file's order is not the engine's
+    /// (a WAV 7.1): that is permuted to it. A file with a channel no speaker
+    /// names (a second LFE, a wide or high speaker) is
+    /// [`TakeVoiceError::Place`].
     pub fn take_disk_voice(
         &self,
         channel_index: usize,
         start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> Result<DiskVoice, TakeVoiceError> {
+        self.take_placed_disk_voice(channel_index, None, start_beat, duration)
+    }
+
+    /// [`take_disk_voice`](Self::take_disk_voice) for a voice `width` channels
+    /// wide: the file's channels are placed into it by their
+    /// [`ChannelTopology`](tutti_types::ChannelTopology), as
+    /// [`memory_voice`](crate::memory_voice) places a wave. A file in another
+    /// order than the engine's (a WAV 7.1 lists the rears before the sides) is
+    /// permuted to it, one wider than `width` with an order is folded into it,
+    /// and a mono one takes the centre of a wider frame.
+    ///
+    /// The placement is built here, on the control side, before the stream's
+    /// reader is taken; the audio thread only applies it.
+    ///
+    /// # Errors
+    ///
+    /// As [`take_disk_voice`](Self::take_disk_voice), and
+    /// [`TakeVoiceError::Place`] when the file cannot be placed into `width`:
+    /// a channel no speaker names (a second LFE, a wide or high speaker), or a
+    /// narrowing with an unordered end (a 5.1 file into 5 channels, 10 into
+    /// 8). The stream keeps its reader, so a caller may take again at another
+    /// width.
+    pub fn take_disk_voice_into(
+        &self,
+        channel_index: usize,
+        width: ChannelLayout,
+        start_beat: Beat,
+        duration: Option<BeatDuration>,
+    ) -> Result<DiskVoice, TakeVoiceError> {
+        self.take_placed_disk_voice(channel_index, Some(width), start_beat, duration)
+    }
+
+    fn take_placed_disk_voice(
+        &self,
+        channel_index: usize,
+        width: Option<ChannelLayout>,
+        start_beat: Beat,
+        duration: Option<BeatDuration>,
+    ) -> Result<DiskVoice, TakeVoiceError> {
         let (inner, rt_state, file_sample_rate, origin) =
-            crate::butler::control::take_streaming_unit(&self.plans, channel_index, true)?;
+            crate::butler::control::take_streaming_unit(&self.plans, channel_index, width, true)?;
 
         Ok(DiskVoice::new(
             inner,
@@ -376,7 +420,7 @@ impl Status {
         TakeVoiceError,
     > {
         let (unit, rt_state, _, _) =
-            crate::butler::control::take_streaming_unit(&self.plans, channel_index, false)?;
+            crate::butler::control::take_streaming_unit(&self.plans, channel_index, None, false)?;
         Ok((unit, rt_state))
     }
 }

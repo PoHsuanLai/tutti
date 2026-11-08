@@ -142,6 +142,9 @@ pub(crate) struct LiveRead {
     /// A reader of the ring's map, registered beside `reader` when the voice
     /// is built and dropped with it (`None` exactly when `reader` is).
     map: Option<Reader<RingMap>>,
+    /// Where the ring's channels go in the voice's frame: built once, on the
+    /// control side, from the file's topology (`Place::for_topology`).
+    place: Place,
     st: State,
 }
 
@@ -153,6 +156,7 @@ impl Clone for LiveRead {
             ring: self.ring.clone(),
             reader: None,
             map: None,
+            place: self.place.clone(),
             st: self.st.clone(),
         }
     }
@@ -160,14 +164,21 @@ impl Clone for LiveRead {
 
 impl LiveRead {
     /// A reader over `ring` through its one `reader` (`None`: silent), `width`
-    /// wide (at most [`MAX_SAMPLER_CHANNELS`]). Control thread: with a
-    /// `reader`, it registers a reader of the ring's map, which may allocate.
-    pub(crate) fn new(ring: SharedReader, reader: Option<PosReader>, width: usize) -> Self {
+    /// wide (at most [`MAX_SAMPLER_CHANNELS`]), placing the ring's channels by
+    /// `place`. Control thread: with a `reader`, it registers a reader of the
+    /// ring's map, which may allocate.
+    pub(crate) fn new(
+        ring: SharedReader,
+        reader: Option<PosReader>,
+        width: usize,
+        place: Place,
+    ) -> Self {
         let src = ring.channels().count().max(1) as usize;
         Self {
             map: reader.as_ref().map(|_| ring.map_reader()),
             ring,
             reader,
+            place,
             st: State {
                 width,
                 src,
@@ -187,6 +198,11 @@ impl LiveRead {
                 steady: 0,
             },
         }
+    }
+
+    /// Where the ring's channels go in the voice's frame.
+    pub(crate) fn place(&self) -> &Place {
+        &self.place
     }
 
     /// The ring.
@@ -279,6 +295,7 @@ impl LiveRead {
         out: &mut Out<'_, F>,
     ) {
         let ring = &self.ring;
+        let place = &self.place;
         let st = &mut self.st;
         let w = st.width;
         let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
@@ -325,7 +342,7 @@ impl LiveRead {
             // window still holds it.
             st.continue_from(ring.fade_frames(), |j, out| {
                 let pos = expected + rate * j as f64;
-                read_ring(&claim, src, map.arrangement(pos), pos, out)
+                read_ring(&claim, src, place, map.arrangement(pos), pos, out)
             });
         }
 
@@ -333,7 +350,7 @@ impl LiveRead {
             && jump.is_none()
             && st.fade.is_none()
             && st.recover.is_none()
-            && steady_lanes(&claim, &map, st, positions, gain, lanes, at, gather)
+            && steady_lanes(&claim, &map, place, st, positions, gain, lanes, at, gather)
         {
             st.last = positions.last().copied().flatten().map(SamplePosition::get);
             #[cfg(test)]
@@ -354,8 +371,15 @@ impl LiveRead {
                 st.fade = None;
                 continue;
             };
-            st.cross_switch(&map, pos, rate);
-            let new = read_ring(&claim, src, map.arrangement(pos), pos, &mut frame[..w]);
+            st.cross_switch(place, &map, pos, rate);
+            let new = read_ring(
+                &claim,
+                src,
+                place,
+                map.arrangement(pos),
+                pos,
+                &mut frame[..w],
+            );
             let sounded = st.mix(new, &mut frame[..w]);
             if sounded {
                 if let Some(r) = st.recover {
@@ -412,18 +436,20 @@ impl<F: FnMut(usize, &[f32])> Out<'_, F> {
 /// A steady block's read along time (see [`LiveRead::render`]): frame `i`
 /// into frame `at + i` of `lanes`, gained, when every frame has a position
 /// whose four taps are consecutive positions `claim` holds, no switch is
-/// crossed, and the ring is mono or as wide as the reader (the two widths
-/// `interpolate_taps` reads without folding). `false`, with nothing
-/// written, otherwise.
+/// crossed, and the ring is as wide as the reader and read channel for
+/// channel (`Place::is_direct`: no fold, so a whole channel can be read at a
+/// time). `false`, with nothing written, otherwise: a mono ring into a wider
+/// frame, and a ring the placement permutes or folds, read a frame at a
+/// time.
 ///
 /// Writes what the frame path's [`Out::put`] would: the reader's frame is
 /// `st.width` wide and lands on as many lanes as there are, so a reader
-/// wider than the caller drops its last channels. A reader of width 1 never
-/// fans: it writes one lane.
+/// wider than the caller drops its last channels.
 #[allow(clippy::too_many_arguments)] // one block's read, and where it goes
 fn steady_lanes(
     claim: &PosClaim<'_>,
     map: &RingMap,
+    place: &Place,
     st: &State,
     positions: &[Option<SamplePosition>],
     gain: f32,
@@ -435,7 +461,7 @@ fn steady_lanes(
     let (w, src) = (st.width, st.src);
     // `put` zips the frame with the lanes: the shorter of the two.
     let lanes_n = lanes.len().min(w);
-    if frames == 0 || lanes_n == 0 || frames > gather.frames() || !(src == 1 || src == w) {
+    if frames == 0 || lanes_n == 0 || frames > gather.frames() || !(src == w && place.is_direct()) {
         return false;
     }
     let lanes = &mut lanes[..lanes_n];
@@ -471,11 +497,7 @@ fn steady_lanes(
         frac[i] = f;
     }
     let (index, frac) = (&index[..frames], &frac[..frames]);
-    // `LiveRead::new` is the only constructor and takes `width` from the
-    // ring, so `src == 1` means `w == 1`, `lanes_n == 1`, and the fan below
-    // copies nothing. No reader has a mono ring and a wider width to test.
-    let reads = if src == 1 { 1 } else { lanes_n };
-    for (c, lane_out) in lanes.iter_mut().enumerate().take(reads) {
+    for (c, lane_out) in lanes.iter_mut().enumerate() {
         for (t, lane) in y.iter_mut().enumerate() {
             for (s, &k) in lane.iter_mut().zip(index) {
                 *s = claim.frame(base + k as u64 + t as u64).get(c);
@@ -490,12 +512,6 @@ fn steady_lanes(
         );
         for s in out.iter_mut() {
             *s *= gain;
-        }
-    }
-    if src == 1 {
-        let (first, rest) = lanes.split_at_mut(1);
-        for lane in rest {
-            lane[at..at + frames].copy_from_slice(&first[0][at..at + frames]);
         }
     }
     true
@@ -537,7 +553,7 @@ impl State {
     /// Cross a published switch when `pos` first reaches it (two frames early:
     /// the taps reach two frames ahead): the old side becomes the record of
     /// the old mapping from here on, at this rate.
-    fn cross_switch(&mut self, map: &RingMap, pos: f64, rate: f64) {
+    fn cross_switch(&mut self, place: &Place, map: &RingMap, pos: f64, rate: f64) {
         let Some(record) = map.fade.as_ref() else {
             return;
         };
@@ -555,6 +571,7 @@ impl State {
                 record.start,
                 record.frames,
                 src,
+                place,
                 before,
                 pos + rate * j as f64,
                 out,
@@ -615,6 +632,7 @@ impl State {
 fn read_ring(
     claim: &PosClaim<'_>,
     src: usize,
+    place: &Place,
     arrangement: Arrangement,
     pos: f64,
     out: &mut [f32],
@@ -635,9 +653,9 @@ fn read_ring(
         claim.frame(taps[2]),
         claim.frame(taps[3]),
     ];
-    // The ring is as wide as the voice (`LiveRead::new`), so a mono ring is a
-    // one-wide frame and the spread is the identity.
-    interpolate_taps(src, &Place::FAN, frac, out, |c, t| frames[t].get(c));
+    // The placement is the memory tier's: the ring's channels in the file's
+    // order, into the voice's frame.
+    interpolate_taps(src, place, frac, out, |c, t| frames[t].get(c));
     true
 }
 
@@ -650,6 +668,7 @@ fn read_frames(
     start: u64,
     frames: usize,
     src: usize,
+    place: &Place,
     arrangement: Arrangement,
     pos: f64,
     out: &mut [f32],
@@ -662,7 +681,7 @@ fn read_frames(
     if !taps.iter().all(|&t| t >= start && t < end) {
         return false;
     }
-    interpolate_taps(src, &Place::FAN, frac, out, |c, t| {
+    interpolate_taps(src, place, frac, out, |c, t| {
         data[(taps[t] - start) as usize * src + c]
     });
     true

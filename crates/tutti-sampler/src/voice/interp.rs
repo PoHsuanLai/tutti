@@ -24,8 +24,8 @@ use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_dsp::cubic_hermite;
 use tutti_types::{
-    Beat, BeatDuration, Bpm, ChannelLayout, Fold, FoldEnd, FoldError, Frame, ReadRate,
-    SamplePosition, SampleRate, Samples, Speaker, TimelineSegment, snap_to_whole_frame,
+    Beat, BeatDuration, Bpm, ChannelLayout, ChannelTopology, Fold, FoldEnd, FoldError, Frame,
+    ReadRate, SamplePosition, SampleRate, Samples, Speaker, TimelineSegment, snap_to_whole_frame,
 };
 
 use super::clock::{BlockClock, Run, Wrap};
@@ -628,7 +628,7 @@ static NO_SPREAD: MonoSpread = MonoSpread::FAN;
 impl Place {
     /// A wave read as it stands: every channel of one as wide as the frame in
     /// its own slot, and a mono one to every channel. For the readers whose
-    /// frame is the wave's own width (the streaming tier's ring) and for a
+    /// frame is the wave's own width (the butler's ring writers, which carry the file as it is) and for a
     /// test; a wave of another width than the frame is a bug there.
     pub const FAN: Self = Self::Native(MonoSpread::FAN);
 
@@ -654,8 +654,22 @@ impl Place {
     ///   than the frame where either has no channel order (10 channels into 8,
     ///   a 5.1 file into 5): its extra channels would be dropped.
     pub fn for_wave(wave: &Wave, width: ChannelLayout) -> Result<Self, PlaceError> {
+        Self::for_topology(wave.topology(), width)
+    }
+
+    /// The placement of a file whose channels feed `topology` into a frame of
+    /// `width` channels: [`for_wave`](Self::for_wave) for a source that is
+    /// not a resident wave (the streaming tier's ring). Refuses and places as
+    /// `for_wave` does; control side, it allocates.
+    ///
+    /// # Errors
+    ///
+    /// As [`for_wave`](Self::for_wave).
+    pub fn for_topology(
+        topology: &ChannelTopology,
+        width: ChannelLayout,
+    ) -> Result<Self, PlaceError> {
         let frame = ChannelLayout::from_count(width.count().min(MAX_SAMPLER_CHANNELS as u16));
-        let topology = wave.topology();
         if let Some(channel) = topology
             .positions()
             .iter()
@@ -667,7 +681,7 @@ impl Place {
             }
             .into());
         }
-        if wave.channels() == 1 {
+        if topology.positions().len() == 1 {
             return Ok(Self::native(frame));
         }
         let fold = Fold::to_width(topology, frame)?;

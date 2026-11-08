@@ -498,7 +498,16 @@ unsafe extern "C" fn on_main_thread(_p: *const clap_plugin) {}
 struct Sync<T>(T);
 unsafe impl<T> std::marker::Sync for Sync<T> {}
 
-static FEATURES: Sync<[*const c_char; 2]> = Sync([c"audio-effect".as_ptr(), ptr::null()]);
+/// Both roles, because one descriptor has to cover every mode and a role is
+/// read from the factory before any state is loaded: in `Notes` mode the plugin
+/// is a note-driven source (the session's instrument contract hosts it so), in
+/// the others an effect. The shell's feature list is not the core's spec: the
+/// modes' behaviour is, and it is unchanged.
+static FEATURES: Sync<[*const c_char; 3]> = Sync([
+    c"instrument".as_ptr(),
+    c"audio-effect".as_ptr(),
+    ptr::null(),
+]);
 static DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
     id: ID.as_ptr(),

@@ -6,6 +6,8 @@
 //!   hardware ports), translates, and sends each event out of its channel's
 //!   port: routing by channel is which ports a listener is wired to.
 //! - [`MidiQueueNode`] sends what a control thread pushes (a keyboard).
+//! - [`TimedQueueNode`] is the queue for a frame: each event leaves on the
+//!   frame its [`At`](tutti_types::At) names.
 //! - [`MidiOutNode`] hands what reaches it to a control thread (a hardware
 //!   pump).
 //! - [`MidiMailbox`] is the ring the last two cross the thread boundary on.
@@ -18,6 +20,7 @@ pub(crate) mod order;
 pub mod out_node;
 pub mod queue_node;
 mod route;
+pub mod timed_queue;
 
 pub use input_node::{
     CHANNELLESS_PORT, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
@@ -27,3 +30,4 @@ pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
 pub use out_node::{MIDI_OUT_CAPACITY, MidiOutControls, MidiOutNode};
 pub use queue_node::{MIDI_QUEUE_CAPACITY, MidiQueueNode};
 pub use route::{RouteRule, compile_routes};
+pub use timed_queue::{TIMED_QUEUE_CAPACITY, TimedQueueNode, TimedSendError, TimedSender};

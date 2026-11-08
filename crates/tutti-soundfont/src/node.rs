@@ -87,3 +87,7 @@ impl IntoNode for SoundFontUnit {
         }
     }
 }
+
+/// A SoundFont unit is an instrument: MIDI on event input 0, its stereo pair on
+/// outputs 0 and 1.
+impl tutti_graph::Instrument for SoundFontUnit {}

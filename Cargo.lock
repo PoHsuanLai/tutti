@@ -4750,6 +4750,7 @@ dependencies = [
 name = "tutti-session"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -4773,6 +4774,7 @@ dependencies = [
  "tutti-polysynth",
  "tutti-rt",
  "tutti-sampler",
+ "tutti-shared-plugin",
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-transport",

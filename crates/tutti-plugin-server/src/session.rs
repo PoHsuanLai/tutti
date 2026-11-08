@@ -113,6 +113,12 @@ pub(crate) struct Session {
     /// on completion *and* on any failure, so a malformed sequence cannot leave
     /// bytes behind that would corrupt the next load.
     pub(crate) state_in: Option<Reassembler>,
+    /// Whether the plugin has been loaded and has seen no block since. A state
+    /// restored now reaches a plugin already activated, so the plugin is
+    /// activated again against it (`PluginAudio::reactivate`): the order a host
+    /// that restored the state first would have had. Once a block has run, a
+    /// state load is an ordinary state load.
+    pub(crate) fresh: bool,
 }
 
 impl Session {
@@ -128,6 +134,7 @@ impl Session {
             clock,
             rate_refused: None,
             state_in: None,
+            fresh: false,
         }
     }
 
@@ -424,6 +431,7 @@ impl Session {
         );
         self.plugin = Some(plugin);
         self.rate_refused = None;
+        self.fresh = true;
         Ok(BridgeMessage::PluginLoaded {
             descriptor: Box::new(descriptor),
             loaded,
@@ -482,6 +490,7 @@ impl Session {
             .into());
         };
 
+        self.fresh = false;
         let output = self
             .pipeline
             .process(plugin.instance_mut(), shm, &self.clock, block)?;
@@ -607,10 +616,20 @@ impl Session {
             }
             .into();
         };
-        let error = match plugin.instance_mut().set_state(&data) {
+        let mut error = match plugin.instance_mut().set_state(&data) {
             Ok(()) => None,
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
+        if error.is_none() && self.fresh {
+            // Activated before this state reached it: activate it against the
+            // state, as a host that restored first would have. A plugin that
+            // cannot be brought back is silent, like one that refused a rate.
+            if let Err(e) = plugin.instance_mut().reactivate() {
+                tracing::warn!("plugin not re-activated after its state: {e}");
+                self.rate_refused = Some(e.to_string());
+                error = Some(format!("Failed to activate against the state: {e}"));
+            }
+        }
         BridgeMessage::StateLoaded { error }.into()
     }
 }

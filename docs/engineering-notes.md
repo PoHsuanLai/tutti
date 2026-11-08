@@ -740,3 +740,39 @@ comments and docs, and treat it as a bug when you find it:
 
   There is no `tutti-plugin-host` package either — `bevy_tutti::plugin_host`
   is a *module*.
+
+## Playing an instrument live: a frame is on the engine's clock
+
+`Session::add_instrument` puts a `TimedQueueNode` before the instrument's event
+input and a strip after its main pair (`Instrument::main_outputs`). A send
+takes an `At`: `NextBlock` and `Frame` work, `Beat` is refused with a typed
+error because a beat is resolved against the transport and a control thread's
+send has none. Events leave in due order, and those due together (a late one, a
+`NextBlock`, the same frame) in the order they were sent.
+
+**An absolute `At::Frame` is on the engine's clock, which is not a count of
+frames rendered.** The executor counts frames at the current rate, and a
+re-prepare at another rate moves the clock, and every frame-timed command, to
+the same wall-clock time at the new rate (`Executor`, the rate branch of the
+commit). That is intended: a command scheduled before the change lands at the
+same moment after it. A sender that counted the frames it had rendered landed
+about 21 frames late on `PolySynth` and the plugin after a 48 to 44.1 kHz
+change (the rescale of the frames before the commit, 256 x (1 - 0.91875)), and
+a plugin re-prepared twice 11 frames early. The skew was in the sender, and the
+missing piece was a way to read the clock: `InstrumentHandle::clock` is where
+the instrument's queue last ended its block, on the clock it ran on. It stands
+still while the graph is suspended for a re-prepare, so read it after the
+re-prepare has landed. `a_rate_change_keeps_the_note_on_its_frame` pins it.
+
+## A plugin's state is restored before it is activated
+
+A load activates the plugin at once and the host's saved state arrives after,
+on an instance already active. A plugin that takes its mode (or its sample set,
+its routing) from the state when it is activated keeps what it was activated
+with. The shared test plugin's `Notes` mode is one: a graph fork loaded the
+live state into a fresh server and the fork came up in the default mode, four
+runs in six. The server now activates a plugin again against a state restored
+before its first block (`PluginAudio::reactivate`, CLAP, VST2 and VST3; AU keeps
+the old order, and no macOS machine was at hand to build the change), which is
+the order a host that restored first would have. Once a block has run a state
+load is an ordinary state load.

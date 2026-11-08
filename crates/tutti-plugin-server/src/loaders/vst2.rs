@@ -303,6 +303,35 @@ impl PluginMeta for Vst2Instance {
     }
 }
 
+impl Vst2Instance {
+    /// Runs the plugin at `rate`: a no-op for the rate it already runs at
+    /// unless `restart`.
+    fn retarget(&mut self, rate: f64, restart: bool) -> PluginResult<()> {
+        let Some(previous) = self.state.prepare() else {
+            return Err(PluginError::Other(
+                "VST2 plugin has no configuration to change".to_string(),
+            ));
+        };
+        if !restart && self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
+            return Ok(());
+        }
+        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+            return Err(PluginError::Other(format!(
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
+            )));
+        };
+        let refusal = self.drive(Event::Op(HostOp::Reconfigure(wanted)));
+        self.finish_refusals();
+        refusal.map_or(Ok(()), |reason| {
+            Err(PluginError::Other(format!(
+                "VST2 plugin refused sample rate {rate} ({}): {reason}",
+                standing(self.is_active(), previous.rate())
+            )))
+        })
+    }
+}
+
 impl PluginAudio for Vst2Instance {
     fn process(
         &mut self,
@@ -337,28 +366,17 @@ impl PluginAudio for Vst2Instance {
     /// The plugin may also change its pins and its latency across the
     /// re-activation; the metadata follows them and the host is told.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+        self.retarget(rate, false)
+    }
+
+    fn reactivate(&mut self) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
-            return Err(PluginError::Other(
-                "VST2 plugin has no configuration to change".to_string(),
-            ));
+            return Ok(());
         };
-        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
+        if !self.is_active() {
             return Ok(());
         }
-        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
-            return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate} ({}): not a positive finite rate",
-                standing(self.is_active(), previous.rate())
-            )));
-        };
-        let refusal = self.drive(Event::Op(HostOp::Reconfigure(wanted)));
-        self.finish_refusals();
-        refusal.map_or(Ok(()), |reason| {
-            Err(PluginError::Other(format!(
-                "VST2 plugin refused sample rate {rate} ({}): {reason}",
-                standing(self.is_active(), previous.rate())
-            )))
-        })
+        self.retarget(previous.rate().0, true)
     }
 
     /// Store the level the host reports through

@@ -102,6 +102,10 @@ tutti-cpal = { path = "../tutti-cpal", default-features = false }
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 # Finds both beside the running binary (`tests/support`).
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# The shared test plugin the instrument contract hosts in `Notes` mode, and
+# the font its SoundFont subject plays.
+tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
+assert_no_alloc = { version = "1", default-features = false }
 # The directory a cancelled export's file is looked for in (`tests/export_cancel.rs`).
 tempfile = "3.10"
 
@@ -147,6 +151,29 @@ required-features = ["export"]
 [[test]]
 name = "plugin"
 required-features = ["clap", "export"]
+
+# The instrument contract (`tests/instrument_support`): the same cases against
+# `PolySynth`, the SoundFont unit and a hosted plugin. The plugin subject needs
+# a built `plugin-server`, and fails without it.
+[[test]]
+name = "instrument_polysynth"
+required-features = ["synth", "soundfont", "clap"]
+
+[[test]]
+name = "instrument_soundfont"
+required-features = ["synth", "soundfont", "clap"]
+
+[[test]]
+name = "instrument_plugin"
+required-features = ["synth", "soundfont", "clap"]
+
+[[test]]
+name = "instrument_refusal"
+required-features = ["synth", "soundfont", "clap"]
+
+[[test]]
+name = "instrument_main_pair"
+required-features = ["synth", "soundfont", "clap"]
 
 # Each block's load against its deadline, on a heavy scene of the engine's
 # own nodes, serial and on the pool: a percentile harness, not criterion.

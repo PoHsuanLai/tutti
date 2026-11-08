@@ -229,6 +229,7 @@ mod fade;
 mod fork;
 mod held;
 mod history;
+mod instrument;
 mod io;
 mod kernels;
 mod loss;
@@ -264,6 +265,7 @@ pub use fork::{
     ForkRemains, ForkSource, ForkTarget, Forked, PendingFork, Unforkable,
 };
 pub use history::TransportHistory;
+pub use instrument::Instrument;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use loss::EventLoss;
 pub use node::{

@@ -156,6 +156,9 @@ pub enum Feeder {
     LiveInput,
     /// The session's MIDI route rules.
     Routes,
+    /// The timed queue of an instrument's handle
+    /// (`Session::add_instrument`, feature `midi`).
+    Instrument,
     /// The clock the hardware out carries.
     Clock,
     /// A host's declarations (bevy-tutti's `EventSources`).

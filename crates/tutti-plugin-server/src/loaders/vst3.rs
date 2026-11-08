@@ -344,6 +344,38 @@ impl PluginMeta for Vst3Instance {
     }
 }
 
+impl Vst3Instance {
+    /// Runs the plugin at `rate`: a no-op for the rate it already runs at
+    /// unless `restart`.
+    fn retarget(&mut self, rate: f64, restart: bool) -> PluginResult<()> {
+        let Some(previous) = self.state.prepare() else {
+            return Err(PluginError::Other(
+                "VST3 plugin has no configuration to change".to_string(),
+            ));
+        };
+        if !restart && self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
+            return Ok(());
+        }
+        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+            return Err(PluginError::Other(format!(
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
+            )));
+        };
+        self.reconfigure(previous, wanted)
+            .map_err(|(reason, rolled_back)| {
+                PluginError::Other(format!(
+                    "VST3 plugin refused sample rate {rate} ({}): {reason}",
+                    if rolled_back {
+                        format!("running at {}", previous.rate().0)
+                    } else {
+                        "deactivated".to_string()
+                    }
+                ))
+            })
+    }
+}
+
 impl PluginAudio for Vst3Instance {
     fn process(
         &mut self,
@@ -380,31 +412,17 @@ impl PluginAudio for Vst3Instance {
     /// The plugin may also change its bus layout and its latency across the
     /// re-activation; the metadata follows them and the host is told.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+        self.retarget(rate, false)
+    }
+
+    fn reactivate(&mut self) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
-            return Err(PluginError::Other(
-                "VST3 plugin has no configuration to change".to_string(),
-            ));
+            return Ok(());
         };
-        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
+        if !self.is_active() {
             return Ok(());
         }
-        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
-            return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate} ({}): not a positive finite rate",
-                standing(self.is_active(), previous.rate())
-            )));
-        };
-        self.reconfigure(previous, wanted)
-            .map_err(|(reason, rolled_back)| {
-                PluginError::Other(format!(
-                    "VST3 plugin refused sample rate {rate} ({}): {reason}",
-                    if rolled_back {
-                        format!("running at {}", previous.rate().0)
-                    } else {
-                        "deactivated".to_string()
-                    }
-                ))
-            })
+        self.retarget(previous.rate().0, true)
     }
 
     /// Activates the plugin again in the requested mode, keeping its state.

@@ -515,12 +515,30 @@ impl PluginAudio for ClapInstance {
     /// The plugin may also change its bus layout across the re-activation; the
     /// metadata follows it and the host is told the same way.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+        self.retarget(rate, false)
+    }
+
+    fn reactivate(&mut self) -> PluginResult<()> {
+        let Some(previous) = self.state.prepare() else {
+            return Ok(());
+        };
+        if !self.is_active() {
+            return Ok(());
+        }
+        self.retarget(previous.rate().0, true)
+    }
+}
+
+impl ClapInstance {
+    /// Runs the plugin at `rate`: a no-op for the rate it already runs at
+    /// unless `restart`.
+    fn retarget(&mut self, rate: f64, restart: bool) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
             return Err(PluginError::Other(
                 "CLAP plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
+        if !restart && self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {

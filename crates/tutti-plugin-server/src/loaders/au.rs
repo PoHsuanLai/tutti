@@ -382,6 +382,7 @@ impl AuInstance {
     ///
     /// AU plugins are registered system-wide; the path is used for identification
     /// but the actual loading goes through AudioComponentFindNext.
+    #[cfg(test)]
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
         Self::load_with_state(path, sample_rate, block_size, None, &mut || {})
             .map(|(instance, _)| instance)

@@ -147,9 +147,10 @@ pub(crate) struct GraphSource<'a> {
     fold: Fold,
     max_block: usize,
     produced: Samples,
-    /// The executor's dropped and recovered counts when the render began;
-    /// kept apart, because a recovery in the render may be of a refusal
-    /// before it.
+    /// The executor's dropped and recovered counts the render counts from
+    /// ([`RenderGraph`]'s settled figures: where the last render ended, or
+    /// where the pair was wrapped); kept apart, because a recovery in the
+    /// render may be of a refusal before it.
     before: (u64, u64),
 }
 
@@ -168,6 +169,7 @@ impl<'a> GraphSource<'a> {
         clock: &'a dyn RenderClock,
         file: &FileChannels<'_>,
         root: Option<&ChannelTopology>,
+        before: (u64, u64),
     ) -> crate::Result<Self> {
         let prepared = executor.prepare().sample_rate();
         if prepared.get() != sample_rate.get() {
@@ -182,11 +184,11 @@ impl<'a> GraphSource<'a> {
         // spec: the spec may hold edits that were never committed, and the
         // executor renders only what was. (Nothing commits during the render,
         // so the plan applied here is the one every block runs.)
+        //
+        // Installing a commit can itself drop events (a note-off closing into
+        // a full delay), so the loss is counted from `before`, which predates
+        // this call, and not from here.
         executor.apply_pending();
-        let before = (
-            executor.dropped_event_count(),
-            executor.recovered_event_count(),
-        );
         let (global_inputs, outputs) = executor.plan().map_or_else(
             || {
                 let topology = &editor.spec().topology;
@@ -208,6 +210,16 @@ impl<'a> GraphSource<'a> {
             produced: Samples(0),
             before,
         })
+    }
+}
+
+impl GraphSource<'_> {
+    /// The executor's `(dropped, recovered)` event counts now.
+    fn counts(&self) -> (u64, u64) {
+        (
+            self.executor.dropped_event_count(),
+            self.executor.recovered_event_count(),
+        )
     }
 }
 
@@ -272,13 +284,7 @@ impl FrameSource for GraphSource<'_> {
     }
 
     fn lost_events(&self) -> u64 {
-        lost_over(
-            self.before,
-            (
-                self.executor.dropped_event_count(),
-                self.executor.recovered_event_count(),
-            ),
-        )
+        lost_over(self.before, self.counts())
     }
 
     fn check_health(&self) -> crate::Result<()> {
@@ -310,14 +316,28 @@ pub(crate) fn with_source<R>(
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
     let root = graph.root_topology().cloned();
+    let settled = graph.settled();
     let (editor, executor) = graph.parts_mut();
-    let mut src = GraphSource::new(editor, executor, sample_rate, clock, file, root.as_ref())?;
-    let rendered = f(&mut src)?;
+    let mut src = GraphSource::new(
+        editor,
+        executor,
+        sample_rate,
+        clock,
+        file,
+        root.as_ref(),
+        settled,
+    )?;
+    let rendered = f(&mut src);
+    // The next render counts from here, whether this one finished or not.
+    let counts = src.counts();
     let lost = src.lost_events();
     // The fallback: the entry points that put a file in place ask before they
     // do (`encode_to_file`), and the one that holds planes asks before it
     // returns them (`render_pass`); this one covers any caller that did not.
-    src.check_health()?;
+    let health = src.check_health();
+    graph.settle(counts);
+    let rendered = rendered?;
+    health?;
     Ok((rendered, lost))
 }
 
@@ -415,11 +435,19 @@ impl FrameSource for PlaneSource<'_> {
 ///
 /// After each block `control` is told how far the render is; if it answers
 /// [`Flow::Stop`] the render ends there as [`Outcome::Cancelled`].
+///
+/// Under [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail) the render
+/// stops at the first block that has lost an event, after that block's tick
+/// (a render the tick cancelled is not judged), with
+/// [`Error::EventsDropped`](crate::Error::EventsDropped) counting what had
+/// been lost by then: a render that is going to fail does not spend the rest
+/// of its length first.
 pub(crate) fn drive<F>(
     src: &mut dyn FrameSource,
     layout: ChannelLayout,
     plan: &crate::render::RenderPlan,
     control: &mut Control<'_>,
+    on_loss: crate::EventLossPolicy,
     mut consume: F,
 ) -> crate::Result<Outcome<()>>
 where
@@ -467,6 +495,8 @@ where
         if control.report(src.produced(), plan.total) == Flow::Stop {
             return Ok(Outcome::Cancelled);
         }
+        // After the tick, so a render the caller cancelled is not judged.
+        check_loss(on_loss, src.lost_events())?;
     }
 
     Ok(Outcome::Finished(()))

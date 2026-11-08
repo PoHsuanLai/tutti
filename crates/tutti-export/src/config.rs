@@ -91,8 +91,10 @@ pub struct RenderConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum EventLossPolicy {
-    /// The render fails with [`Error::EventsDropped`](crate::Error::EventsDropped), and a
-    /// file it wrote is removed.
+    /// The render stops at the first block that dropped an event with
+    /// [`Error::EventsDropped`](crate::Error::EventsDropped), and a file it
+    /// wrote is removed. [`write_buffers`](crate::write_buffers) applies it to
+    /// the planes' own count.
     #[default]
     Fail,
     /// The render succeeds and says how many events were dropped

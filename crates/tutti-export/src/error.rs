@@ -92,9 +92,13 @@ pub enum Error {
     /// a full delay): the audio of a dropped note-on or note-off is wrong, and
     /// a note whose note-off was dropped may sound to the end. Raised under
     /// [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail), the default;
-    /// a file export removes the file. `count` is the executor's
-    /// `lost_event_count` over the render: events that never arrived, not a
-    /// note-off that was refused and sent again.
+    /// a file export removes the file. The render stops at the first block
+    /// that lost an event, so `count` is the executor's `lost_event_count`
+    /// from when the render began (or, for a graph that had a commit
+    /// installed since its last render, from that render's end) to the end of
+    /// that block: events that never arrived, not a note-off that was
+    /// refused and sent again. [`write_buffers`](crate::write_buffers) raises
+    /// it too, for planes whose render lost events.
     #[error("Export failed: the graph dropped {count} events during the render")]
     EventsDropped {
         /// How many.

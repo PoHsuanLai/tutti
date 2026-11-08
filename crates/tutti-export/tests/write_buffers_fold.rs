@@ -83,7 +83,10 @@ fn the_files_topology_places_the_channels() {
     let planes = rendered(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
     write_buffers(&planes, &config(ChannelLayout::QUAD, Some(topology)), &path).unwrap();
     let frame = first_frame(&path, 4);
-    assert!((frame[2] - 0.3).abs() < 1e-6, "the centre keeps its channel");
+    assert!(
+        (frame[2] - 0.3).abs() < 1e-6,
+        "the centre keeps its channel"
+    );
     assert!((frame[3] - 0.4).abs() < 1e-6, "and the LFE its own");
 }
 

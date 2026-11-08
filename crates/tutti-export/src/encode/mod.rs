@@ -168,6 +168,7 @@ where
 {
     // Once, at entry — never inside a per-block or per-frame loop.
     let layout = config.encode.channels;
+    let on_loss = config.render.on_event_loss;
     let ch = usize::from(layout.count());
     if ch == 0 {
         return Err(crate::Error::UnsupportedChannels(0));
@@ -200,7 +201,7 @@ where
     };
 
     if let Some((rs, planes, out)) = resampler.as_mut() {
-        let driven = drive(src, layout, plan, control, |block| {
+        let driven = drive(src, layout, plan, control, on_loss, |block| {
             block.deinterleave_into(planes);
             rs.push(planes, out)?;
             emit_planes(out, &mut staging, &mut dither, layout, &mut write)
@@ -214,9 +215,9 @@ where
     } else if dither.is_off() {
         // Nothing to add, so nothing to copy: the gated block goes straight
         // to the encoder.
-        drive(src, layout, plan, control, write)
+        drive(src, layout, plan, control, on_loss, write)
     } else {
-        drive(src, layout, plan, control, |block| {
+        drive(src, layout, plan, control, on_loss, |block| {
             staging.clear();
             staging.extend_from_slice(block.samples());
             dither.apply(&mut staging);
@@ -261,6 +262,9 @@ pub(crate) fn encode_planes(
     path: &Path,
     control: &mut Control<'_>,
 ) -> Result<Outcome<Written>> {
+    // The planes carry the events their render lost: judged by this config's
+    // policy, before anything is written.
+    crate::render::check_loss(config.render.on_event_loss, rendered.dropped_events)?;
     let frames = rendered.frames();
     // Planes of another width than the file's are folded onto it, by the
     // same rule the graph's outputs are (the file's `topology` included); a

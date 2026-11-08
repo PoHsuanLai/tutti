@@ -7,8 +7,8 @@
 //! all.
 
 use tutti_export::{
-    Error, EventLossPolicy, ExportConfig, FrozenClock, RenderConfig, RenderGraph,
-    render_to_buffers, render_to_file,
+    Error, EventLossPolicy, ExportConfig, Flow, FrozenClock, RenderConfig, RenderGraph,
+    render_to_buffers, render_to_buffers_with, render_to_file, write_buffers,
 };
 use tutti_graph::{Cx, Event, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;
@@ -75,17 +75,29 @@ fn config(policy: EventLossPolicy) -> ExportConfig {
     }
 }
 
-/// By default the render is an error naming how many were dropped.
+/// By default the render is an error naming how many were dropped, and it
+/// stops at the first block that dropped any: the 6 refused in block one, not
+/// the 12 of the whole render, so the tick hears of one block and no more.
 ///
-/// Mutation: drop the `on_loss == Fail` check in `with_source` → the render
-/// returns `Ok` → fails. Mutation: compare the executor's total, not its
-/// change over the render, where the graph was reused → covered by the
-/// reused-graph assertion below.
+/// Mutation: drop the per-block `check_loss` in `drive` → the render runs both
+/// blocks and reports 12 (and ticks twice) → fails. Mutation: compare the
+/// executor's total, not its change over the render, where the graph was
+/// reused → covered by the reused-graph assertion below.
 #[test]
-fn a_render_that_dropped_events_fails_by_default() {
-    let err = render_to_buffers(graph(), &config(EventLossPolicy::Fail), &FrozenClock)
-        .expect_err("events were dropped");
-    assert!(matches!(err, Error::EventsDropped { count: 12 }), "{err:?}");
+fn a_render_that_dropped_events_stops_at_the_first_block_that_did() {
+    let mut ticks = 0;
+    let err = render_to_buffers_with(
+        graph(),
+        &config(EventLossPolicy::Fail),
+        &FrozenClock,
+        &mut |_| {
+            ticks += 1;
+            Flow::Continue
+        },
+    )
+    .expect_err("events were dropped");
+    assert!(matches!(err, Error::EventsDropped { count: 6 }), "{err:?}");
+    assert_eq!(ticks, 1, "the second block was never rendered");
 }
 
 /// Allowed, it succeeds and carries the figure; a graph rendered a second
@@ -131,7 +143,7 @@ fn a_render_that_lost_events_replaces_nothing() {
 
     let err = render_to_file(graph(), &config(EventLossPolicy::Fail), &FrozenClock, &path)
         .expect_err("events were dropped");
-    assert!(matches!(err, Error::EventsDropped { count: 12 }), "{err:?}");
+    assert!(matches!(err, Error::EventsDropped { count: 6 }), "{err:?}");
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(leftovers(), vec!["out.wav".to_string()], "no temporary");
 
@@ -146,7 +158,7 @@ fn a_render_that_lost_events_replaces_nothing() {
         &path,
     )
     .expect_err("events were dropped");
-    assert!(matches!(err, Error::EventsDropped { count: 12 }), "{err:?}");
+    assert!(matches!(err, Error::EventsDropped { count: 6 }), "{err:?}");
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(leftovers(), vec!["out.wav".to_string()], "no temporary");
 
@@ -173,4 +185,29 @@ fn a_render_that_lost_events_replaces_nothing() {
     assert_ne!(std::fs::read(&path).unwrap(), before);
     assert_eq!(leftovers(), vec!["out.wav".to_string()]);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Planes that carry a loss are judged by the config they are written with:
+/// `Fail` refuses them and leaves the file alone, `Allow` writes them and
+/// reports the count.
+///
+/// Mutation: drop the `check_loss` in `encode_planes` → the write under `Fail`
+/// succeeds and replaces the file → fails.
+#[test]
+fn write_buffers_applies_the_event_loss_policy() {
+    let rendered =
+        render_to_buffers(graph(), &config(EventLossPolicy::Allow), &FrozenClock).expect("allowed");
+    assert_eq!(rendered.dropped_events, 12);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.wav");
+    std::fs::write(&path, b"old").unwrap();
+    let err = write_buffers(&rendered, &config(EventLossPolicy::Fail), &path)
+        .expect_err("the planes lost events");
+    assert!(matches!(err, Error::EventsDropped { count: 12 }), "{err:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"old");
+
+    let written =
+        write_buffers(&rendered, &config(EventLossPolicy::Allow), &path).expect("allowed");
+    assert_eq!(written.dropped_events, 12);
 }

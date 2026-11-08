@@ -370,10 +370,17 @@ fn render_pass(
         clock,
         &file_channels(config),
         |src| {
-            let driven = render::drive(src, config.encode.channels, &plan, control, |block| {
-                block.append_to_planes(&mut planes);
-                Ok(())
-            })?;
+            let driven = render::drive(
+                src,
+                config.encode.channels,
+                &plan,
+                control,
+                config.render.on_event_loss,
+                |block| {
+                    block.append_to_planes(&mut planes);
+                    Ok(())
+                },
+            )?;
             // Before the planes are handed back: a unit that failed rendered
             // silence into them.
             if driven == Outcome::Finished(()) {

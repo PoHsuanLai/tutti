@@ -1,4 +1,8 @@
-use crate::synthesizer_settings::SynthesizerSettings;
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
+use crate::render::Render;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -16,7 +20,7 @@ pub(crate) struct Lfo {
 }
 
 impl Lfo {
-    pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
+    pub(crate) fn new(settings: &Render) -> Self {
         Self {
             sample_rate: settings.hz(),
             block_size: settings.block_len(),
@@ -66,7 +70,7 @@ impl Lfo {
         }
     }
 
-    pub(crate) fn get_value(&self) -> f32 {
+    pub(crate) fn value(&self) -> f32 {
         self.value
     }
 }

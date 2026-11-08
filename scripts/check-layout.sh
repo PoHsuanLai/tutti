@@ -156,7 +156,7 @@ LAYERS = [
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-sf2"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing"],
-    ["tutti-transport", "tutti-plugin-types", "tutti-rustysynth"],
+    ["tutti-transport", "tutti-plugin-types"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-host", "tutti-vst2-host",
      "tutti-plugin-db"],

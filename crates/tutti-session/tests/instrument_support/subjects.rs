@@ -47,15 +47,7 @@ pub struct Soundfont;
 
 impl Subject for Soundfont {
     const NAME: &'static str = "SoundFontUnit";
-    const GAPS: &'static [Gap] = &[Gap {
-        case: "tail_covers_the_ring_out",
-        why: "the unit's Shape declares no tail, and its envelopes ring for a \
-              fraction of a second to seconds after a note-off; an offline \
-              render that stops at the last note-off plus the declared tail \
-              cuts every note. The native rewrite (stage 3) declares the tail \
-              its release implies",
-        fails_with: "declared tail",
-    }];
+    const GAPS: &'static [Gap] = &[];
     const PITCHED: bool = true;
     /// The release of the font's first preset, measured: silent within 6 s.
     const SETTLE: usize = 6 * 48_000;

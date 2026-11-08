@@ -1,6 +1,10 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
 use std::f32::consts;
 
-use crate::synthesizer_settings::SynthesizerSettings;
+use crate::render::Render;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -24,7 +28,7 @@ pub(crate) struct BiQuadFilter {
 impl BiQuadFilter {
     const RESONANCE_PEAK_OFFSET: f32 = 1_f32 - 1_f32 / core::f32::consts::SQRT_2;
 
-    pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
+    pub(crate) fn new(settings: &Render) -> Self {
         Self {
             sample_rate: settings.hz(),
             active: false,

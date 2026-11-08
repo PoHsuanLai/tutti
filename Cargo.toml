@@ -96,7 +96,6 @@ members = [
     "testing/tutti-vst2-test-plugin",
     "testing/tutti-fixtures",
     "crates/tutti-sf2",
-    "crates/tutti-rustysynth",
     "testing/tutti-clap-test-plugin",
     # One test plugin (a format-free core, a shell per format) and the contract
     # every format's host runs against it.

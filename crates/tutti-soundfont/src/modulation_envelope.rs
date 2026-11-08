@@ -1,6 +1,10 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
 use crate::envelope_stage::EnvelopeStage;
+use crate::render::Render;
 use crate::soundfont_math::SoundFontMath;
-use crate::synthesizer_settings::SynthesizerSettings;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -27,7 +31,7 @@ pub(crate) struct ModulationEnvelope {
 }
 
 impl ModulationEnvelope {
-    pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
+    pub(crate) fn new(settings: &Render) -> Self {
         Self {
             sample_rate: settings.hz(),
             attack_slope: 0_f64,
@@ -133,7 +137,7 @@ impl ModulationEnvelope {
         }
     }
 
-    pub(crate) fn get_value(&self) -> f32 {
+    pub(crate) fn value(&self) -> f32 {
         self.value
     }
 }

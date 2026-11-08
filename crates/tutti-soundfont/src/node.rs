@@ -1,5 +1,5 @@
 //! The unit as a graph node: MIDI arrives on an
-//! event input, on its frame (to rustysynth's 8-frame chunk, see
+//! event input, on its frame (to the voices' 8-frame chunk, see
 //! [`SoundFontUnit`]'s "How an event's offset is honoured").
 //!
 //! It follows its graph's rate: `prepare` rebuilds the synthesizer at the
@@ -15,7 +15,7 @@ use crate::SoundFontUnit;
 
 impl Node for SoundFontUnit {
     /// No audio in, stereo out, one MIDI event input, placed to the 8-frame
-    /// chunk rustysynth renders in.
+    /// chunk the voices render in, and the tail of the longest release.
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
             .with_events(1, 0)
@@ -25,6 +25,10 @@ impl Node for SoundFontUnit {
             // against `SvfFilterNode`'s 7.2 (doc 013, "The cost model and coarsening").
             // The default, stated.
             .with_cost(tutti_graph::Cost::Heavy)
+            // The longest a voice rings after its key is up, and the effects
+            // after it: an export that ends at the last note-off extends by
+            // this, and keeps the release.
+            .with_tail(self.shape_tail())
     }
 
     /// Re-rate to the prepared rate (keeping the preset), and size the
@@ -68,7 +72,7 @@ impl Node for SoundFontUnit {
     }
 
     fn reset(&mut self) {
-        self.release_all();
+        self.reset_player();
     }
 }
 

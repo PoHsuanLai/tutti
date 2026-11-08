@@ -79,6 +79,7 @@ use tutti_types::graph::OutPort;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitAddr,
 };
+use tutti_ump::Ump;
 
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
@@ -223,7 +224,9 @@ pub enum Path {
     BehindPdc,
     /// Through an event fan-in merge: two sources on the node's port, the
     /// exciting one second in source order (the higher key), the first
-    /// sending the same event a few frames **later**: usually in the same
+    /// sending its event a few frames **later**: the same event, except that
+    /// a note is on another key (so no retrigger policy decides the case, see
+    /// `Row::other_source_kind`). Usually in the same
     /// block, so a merge that is not by offset hands the node the two out of
     /// order. Direct, and behind PDC: there the latent sibling is a third
     /// source on the same port, so both emitters' events are delayed
@@ -232,6 +235,12 @@ pub enum Path {
     ///
     /// Both responses are expected, the second at `f + gap`, and nothing
     /// else.
+    ///
+    /// What this case does not catch: a merge that drops the **first**
+    /// source's events, on an instrument row. An instrument's sustained first
+    /// response hides the second onset, so only the Pulse rows (and
+    /// `a_fan_in_tie_goes_by_source_order`) hold that property; the
+    /// instrument rows did not hold it with the same key either.
     ///
     /// Mutation (run): in `compile`, delay only an event input's first two
     /// sources (`d if !d.is_zero() && refs.len() < 2`) → behind PDC the
@@ -265,6 +274,23 @@ pub enum Path {
     ///
     /// Mutation (run): in `Executor::rebuild`, drop the carried ring of any
     /// delay whose sink or source changed generation → only this path fails.
+    ///
+    /// The executor closes the keys a replaced source holds (no note is left
+    /// stuck), and the close travels the same delay as the note-on: it
+    /// reaches the sink on the onset frame or later. A row marked
+    /// [`Row::onset_release_is_silent`] (a SoundFont, whose envelope releases
+    /// from 0 at the onset) cannot be held to a sound there, so the path
+    /// asserts from evidence what it is about, with a recording wrapper around the
+    /// node: the node was handed the note-on on exactly the expected frame and
+    /// then the close of that key, and its render is silent when the close
+    /// came within the row's delay stage. Mutations (run), on the SoundFont
+    /// row, each failing on the recorded events: drop the carried ring of a
+    /// delay whose sink or source changed generation (in `Executor::rebuild`,
+    /// by comparing the plans' generations) → "the delayed note-on should
+    /// reach the node on frame 653"; lengthen an event delay by one frame (in
+    /// `compile`) → the same, one frame late; push no close into the carried
+    /// FIFO (in `Executor::rebuild`) → "the node should be handed the note-on
+    /// and the close, and was handed" the note-on alone.
     RecompileUpstreamGeneration,
     /// Direct and behind PDC, in blocks of one frame.
     Blocks1,
@@ -373,6 +399,8 @@ pub struct Row {
     output: u16,
     latency: Option<Samples>,
     lead: u64,
+    /// `Some(n)`: a note closed within `n` frames of its onset is silent.
+    onset_release_silent: Option<u64>,
 }
 
 impl std::fmt::Debug for Row {
@@ -415,7 +443,45 @@ impl Row {
             output: 0,
             latency: None,
             lead: 0,
+            onset_release_silent: None,
         }
+    }
+
+    /// The node is silent for a note that ends on the frame it starts: its
+    /// envelope releases from its value at the onset, which is 0 (SF2 2.04
+    /// section 9.1.7 for a SoundFont) and stays 0 through its delay stage, so a
+    /// note closed within `within` frames of its onset is silent. Set it only
+    /// for such a node; one that still sounds (a synth with a minimum envelope)
+    /// keeps requiring its response.
+    ///
+    /// It changes one path, [`Path::RecompileUpstreamGeneration`] on an event
+    /// row. There the replaced source's held notes are closed by the executor
+    /// on the frame the delayed note-on comes out, which is right (no stuck
+    /// note), and a node of this kind makes no sound. The path then asserts
+    /// what it is about from evidence instead of from sound: the new
+    /// generation is installed (the delay ring carried), a recording wrapper
+    /// around the node saw the delayed note-on on exactly the expected frame
+    /// followed by the close of the same key, and the render is silent when the
+    /// close is within `within` frames of the onset (so a stray onset still
+    /// fails) or has its usual response when it is later. Every other path
+    /// is unchanged.
+    ///
+    /// `within` is derived, not measured: the default delayVolEnv is -12000
+    /// timecents, 1 ms, 46.9 frames at 48 kHz, during which a volume envelope is
+    /// 0; a node applies an event on its control chunk (8 frames for a
+    /// SoundFont), so a close up to 8 frames into the chunk reaches the voice
+    /// after the envelope has been computed once more. The SoundFont row sets
+    /// 48. The closes this path sees are 12, 13, 28, 41, 64, 65, 77, 78, 127
+    /// and 128 frames after the onset: those up to 41 are in the delay stage
+    /// and silent, those from 64 are audible. A close between 42 and 63 frames
+    /// after the onset has not been seen; the delay stage ends at 46.9 frames
+    /// and the chunk adds up to 8 more, so the answer there depends on the
+    /// chunk, and `within` sits at 48 in that gap. Such a close would have to
+    /// be looked at, not assumed.
+    #[must_use]
+    pub fn onset_release_is_silent(mut self, within: Samples) -> Self {
+        self.onset_release_silent = Some(within.get() as u64);
+        self
     }
 
     /// Watch output channel `channel` (the first by default).
@@ -694,7 +760,71 @@ impl Row {
                 "{ctx}: the command never landed"
             );
         }
-        self.assert_responses(&out, &expect, &ctx);
+        if let (Some(within), Edit::Regenerate) = (self.onset_release_silent, edit) {
+            self.assert_closed_at_onset(
+                &rig,
+                &out,
+                &expect,
+                (expect[0].0 - rig.latency.get() as u64, within),
+                &ctx,
+            );
+        } else {
+            self.assert_responses(&out, &expect, &ctx);
+        }
+    }
+
+    /// The recompile path of a [`Row::onset_release_is_silent`] row, from
+    /// evidence. The node was handed the delayed note-on on exactly frame
+    /// `onset`, then the executor's close of the same key, and nothing else
+    /// (the installed generation was checked right after the edit). Where the
+    /// close travels the carried delay it lands on the onset frame or a block
+    /// later, depending on where the edit fell: on the onset frame the node
+    /// must render silence (a stray onset fails); a block later it has sounded
+    /// in between, and the usual response is expected.
+    fn assert_closed_at_onset(
+        &self,
+        rig: &Rig,
+        out: &[f32],
+        expect: &[(u64, u64)],
+        (onset, within): (u64, u64),
+        ctx: &str,
+    ) {
+        let log = rig.log.as_ref().expect("the row records its node's events");
+        let seen = log.lock().expect("the log").clone();
+        let kind = self.event_kind();
+        let EventKind::Midi(on) = kind else {
+            panic!("{ctx}: an onset-release row is excited by a note");
+        };
+        let key = |u: Ump| (u.0[0] >> 8) & 0x7F;
+        assert_eq!(
+            seen.len(),
+            2,
+            "{ctx}: the node should be handed the note-on and the close, and was handed {seen:?}"
+        );
+        assert_eq!(
+            seen[0],
+            (onset, kind),
+            "{ctx}: the delayed note-on should reach the node on frame {onset}"
+        );
+        let (frame, closed) = seen[1];
+        assert!(
+            matches!(closed, EventKind::Midi(off) if off.is_note_off() && key(off) == key(on)),
+            "{ctx}: the second event should close the key: {closed:?}"
+        );
+        if frame < onset + within {
+            assert!(
+                out.iter().all(|&x| x == 0.0),
+                "{ctx}: a note closed {} frames after its onset should be silent, and the render has a sample at frame {:?}",
+                frame - onset,
+                out.iter().position(|&x| x != 0.0)
+            );
+        } else {
+            assert!(
+                frame > onset,
+                "{ctx}: the close at {frame} is before the note-on at {onset}"
+            );
+            self.assert_responses(out, expect, ctx);
+        }
     }
 
     /// Check `out` against the expected responses, each `(exact frame,
@@ -771,6 +901,30 @@ impl Row {
         }
     }
 
+    /// The event the fan-in's first, later source sends: `kind` itself, except
+    /// that a note's key is another one. Two sources sending the same key
+    /// would test the node's retrigger policy (an instrument that releases a
+    /// key struck again is right to drop the earlier strike), and this case
+    /// is about merge order and carry, so each source's note is its own and
+    /// each response is expected under any retrigger rule. Anything that is
+    /// not a note message (a controller, a ramp) is sent as it is: two
+    /// identical events merged are what the rows of an echoing node pin.
+    fn other_source_kind(kind: EventKind) -> EventKind {
+        let EventKind::Midi(Ump(mut words)) = kind else {
+            return kind;
+        };
+        let message_type = words[0] >> 28;
+        let status = (words[0] >> 20) & 0xF;
+        // MIDI 1.0 (type 2) and MIDI 2.0 (type 4) channel voice, Note Off or
+        // Note On: the key is the second byte of the first word in both.
+        if matches!(message_type, 2 | 4) && matches!(status, 8 | 9) {
+            let key = (words[0] >> 8) & 0x7F;
+            let other = if key < 127 { key + 1 } else { key - 1 };
+            words[0] = (words[0] & !(0x7F << 8)) | (other << 8);
+        }
+        EventKind::Midi(Ump(words))
+    }
+
     fn event_kind(&self) -> EventKind {
         match self.excite {
             Excite::Event { kind, .. } => kind,
@@ -804,6 +958,12 @@ impl Row {
         let shape = node.shape();
         let audio = matches!(self.excite, Excite::Impulse { .. });
         let port = self.event_port();
+        let (node, log) = if self.onset_release_silent.is_some() && !audio {
+            let (recorder, log) = Recorder::wrap(node, usize::from(port));
+            (Box::new(recorder) as Box<dyn Node>, Some(log))
+        } else {
+            (node, None)
+        };
         if audio {
             assert!(
                 port < shape.audio_in.count(),
@@ -856,7 +1016,10 @@ impl Row {
                     feeder = Some((e, FeederKind::Emitter(Frame(f), kind)));
                 }
                 Feed::FanIn => {
-                    let late = g.add(Unforkable(Emitter::new(Frame(f + gap), kind)));
+                    let late = g.add(Unforkable(Emitter::new(
+                        Frame(f + gap),
+                        Self::other_source_kind(kind),
+                    )));
                     let e = g.add(Unforkable(Emitter::new(Frame(f), kind)));
                     g.connect_events(late, 0, n, p).connect_events(e, 0, n, p);
                 }
@@ -881,6 +1044,7 @@ impl Row {
             latency: prepared.latency.samples(),
             resolution: prepared.event_resolution,
             has_input: audio,
+            log,
         }
     }
 }
@@ -933,6 +1097,7 @@ impl Row {
             latency: prepared.latency.samples(),
             resolution: prepared.event_resolution,
             has_input: false,
+            log: None,
         }
     }
 }
@@ -956,6 +1121,9 @@ struct Rig {
     latency: Samples,
     resolution: Resolution,
     has_input: bool,
+    /// What the node under test was handed on its event input, when the row
+    /// records it (see [`Row::onset_release_is_silent`]).
+    log: Option<EventLog>,
 }
 
 impl Rig {
@@ -1335,6 +1503,61 @@ impl Node for Latent {
     }
 
     fn reset(&mut self) {}
+}
+
+/// The events a [`Recorder`] saw: `(absolute frame, event)`, in the order the
+/// node was handed them.
+type EventLog = std::sync::Arc<std::sync::Mutex<Vec<(u64, EventKind)>>>;
+
+/// A wrapper around the node under test that records what its event input
+/// `port` is handed, then delegates every call. It is in the harness so that
+/// a path can assert what reached a node without a hook inside the node.
+struct Recorder {
+    inner: Box<dyn Node>,
+    port: usize,
+    log: EventLog,
+}
+
+impl Recorder {
+    fn wrap(inner: Box<dyn Node>, port: usize) -> (Self, EventLog) {
+        let log = EventLog::default();
+        (
+            Self {
+                inner,
+                port,
+                log: log.clone(),
+            },
+            log,
+        )
+    }
+}
+
+impl Node for Recorder {
+    fn shape(&self) -> Shape {
+        self.inner.shape()
+    }
+
+    fn prepare(&mut self, p: &Prepare) {
+        self.inner.prepare(p);
+    }
+
+    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
+        let block = cx.env.frame.get();
+        let mut log = self.log.lock().expect("the log");
+        for e in io.events(self.port).iter() {
+            log.push((block + e.offset.index() as u64, e.kind));
+        }
+        drop(log);
+        self.inner.process(cx, io)
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn param_base(&self, port: usize) -> Option<f32> {
+        self.inner.param_base(port)
+    }
 }
 
 /// Sends one event, `kind`, on its one event output at absolute frame `at`.

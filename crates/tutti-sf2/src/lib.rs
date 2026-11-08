@@ -1,6 +1,6 @@
 //! A SoundFont 2 (`.sf2`) file as data: [`SoundFont`] parses one into its
 //! presets, instruments, sample headers and sample data, and holds nothing
-//! that plays. `tutti-rustysynth` is the synthesizer over it.
+//! that plays. `tutti-soundfont` is the player over it.
 //!
 //! Generator values stay raw, in the unit the SoundFont 2.04 specification
 //! gives each ([`GeneratorType`]); turning a value into seconds or hertz is

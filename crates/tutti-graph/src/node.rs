@@ -151,7 +151,7 @@ pub struct Shape {
 /// Ordered from finest to coarsest. A node written against
 /// [`Io::sub_blocks`](crate::Io::sub_blocks) is [`Sample`](Self::Sample) by
 /// construction; one bound by an engine that renders in fixed chunks declares
-/// the chunk (a rustysynth-backed SoundFont is `Frames(8)`); one that reads its
+/// the chunk (a SoundFont, whose voices render 8 frames at a time, is `Frames(8)`); one that reads its
 /// events once per call is [`Block`](Self::Block).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Resolution {

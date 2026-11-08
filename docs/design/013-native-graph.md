@@ -274,7 +274,7 @@ the interpreter.
   latency plus tail has elapsed; inside `with_no_denormals` (FTZ/DAZ). The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
   the node's job (PolySynth already does it, SoundFont is limited to 8 frames
-  by rustysynth). An out-of-process plugin must get whole blocks, or its
+  by the chunk its voices render in). An out-of-process plugin must get whole blocks, or its
   declared one-block pipeline latency stops being constant and PDC goes wrong.
   **The executor never splits a block, not even at a loop wrap** (decided in
   the #12 review): splitting would break the whole-block promise to plugins.
@@ -623,7 +623,7 @@ means:
 
 | What | How | Where it can fall short |
 |---|---|---|
-| Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
+| Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. The SoundFont player (its voices render 8 frames at a time) resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events (relative: from where the param stands, linear or along a `SegmentShape`) and `ParamSegment` events (a closed set of curve shapes, evaluated by the param port per frame) at an offset, starting on their exact frame (decision 7, "Curve segments") | A curve shape outside the closed set (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Bezier`, `Circular`): an automation lane sends it as linear pieces, exact at block edges |
 | Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (point 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction (a declick moves the transport on its frame; the fade is audio only). The sampler reads `Env::transport_at` like every other clip reader; the `Legacy` adapter, whose clip readers polled a timeline once per 64-frame chunk, is deleted ([below](#legacy-deleted)) |
@@ -815,8 +815,8 @@ place that loses precision to be written out explicitly:
    the `ParamRamp` edge is the one to mark. The contract suite checks each
    node against what it declared. **Decision: a `Frames(n)` node honours an event when its response lands
    within `n - 1` frames of the exact frame, in either direction**, with no
-   grid origin assumed (a node chunking on its own cursor, as rustysynth
-   does, passes whatever its phase against the blocks); `Block` means
+   grid origin assumed (a node chunking on its own cursor, as the SoundFont
+   player does, passes whatever its phase against the blocks); `Block` means
    within the block the event arrives in. A node finer than it declares
    passes.
 6. **The frame is the source of truth for the playhead.** Every
@@ -2372,7 +2372,7 @@ Export issues found along the way:
   graph node ("SoundFont as a graph node") does it: the node's
   `prepare` swaps in `SoundFontUnit::with_sample_rate` (same SoundFont,
   channel state and preset, no sounding voice) when the prepared rate
-  differs (on failure, a rate rustysynth refuses, it keeps the old rate),
+  differs (on failure, a rate outside 16 to 192 kHz, it keeps the old rate),
   so `restart_device`'s re-prepare re-rates it with the graph and
   no hook-side crossfade is needed. Pinned by `graph_node.rs`'s
   `the_node_follows_its_graphs_rate` and `soundfont_unit_audio.rs`'s
@@ -2922,9 +2922,9 @@ never touches the live ring; a free-running source follows a relayed seek).
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the
   transport's shared rate):
-  - Not `SoundFontUnit` (`tutti-soundfont`): rustysynth still fixes a
-    `Synthesizer`'s rate, but the graph node's `prepare` rebuilds it at the prepared rate (keeping the preset, losing the
-    sounding voices; on failure, a rate rustysynth refuses, it keeps the
+  - Not `SoundFontUnit` (`tutti-soundfont`): the player's voices are
+    built against a rate, but the graph node's `prepare` rebuilds it at the prepared rate (keeping the preset, losing the
+    sounding voices; on failure, a rate outside 16 to 192 kHz, it keeps the
     old rate), so a restart's re-prepare re-rates it.
   - A host-built `UmpOut` (`midi-hardware`; connected with
     `Midi::set_hardware_out`): its `JrStream` stamps JR
@@ -4929,8 +4929,8 @@ properties:
    `Arc` that cloning forced to be shared), hand-written `Clone` impls, and the
    "`&mut self` setter cannot reach a live node" caveat (about 6 places). Some
    of these clones are **deep copies**: the Convolver's FFT partitions, HRTF
-   re-parsing its HRIR sphere, and SoundFont copying the whole rustysynth
-   `Synthesizer`.
+   re-parsing its HRIR sphere, and SoundFont copying the whole player
+   (its voice pool).
 2. **No per-block `Env`.** At least six nodes each hold their own
    `Arc<dyn Timeline>` plus a `BeatCursor` with its own seek detection
    (`pool.rs:320-333`: "`Timeline` is poll-only … 'since when' differs per
@@ -5544,8 +5544,8 @@ under both.
   until they become event sources too.
 
 - **SoundFont as a graph node**, the synth's shape at `Resolution::Frames(8)`
-  (rustysynth's chunk). It follows its graph's rate: `prepare` rebuilds the
-  synthesizer at the prepared rate (control thread), which closes the "can't
+  (the voices' chunk). It follows its graph's rate: `prepare` rebuilds the
+  player at the prepared rate (control thread), which closes the "can't
   re-rate live on a device restart" follow-up for the path bevy-tutti now
   takes. The port/event-input merge moved to `MidiInPort::gather`, shared.
 
@@ -7659,7 +7659,7 @@ converts at its edges in an f64 graph.
 | `HrtfBinauralNode` | tutti-spatial | f32, converted at its edges | as the convolver |
 | `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (rustfft f32) and its output widens |
 | `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
-| `SoundFontUnit` | tutti-soundfont | f32 | rustysynth renders in f32 internally |
+| `SoundFontUnit` | tutti-soundfont | f32 | the voices render in f32 internally |
 | `ClickNode` | tutti-nodes | Both | a generated click; cheap to make generic |
 | `MicMonitorNode` | tutti-io | f32 | it reads the device ring, which is f32; the widen at its edge is exact |
 | `PluginClient<Bound>`, `InProcessVst` | tutti-plugin | what the plugin negotiated (below) | |

@@ -63,7 +63,7 @@ fn the_first_instrument_has_the_regions_decoded_from_the_file() {
 
 // Mutation (run): `contains` testing the key against `start..end` (exclusive)
 // fails at the last key of a range. The fixture has no velocity range, so the
-// velocity half of `contains` is covered by `tutti-rustysynth`'s
+// velocity half of `contains` is covered by `tutti-soundfont`'s
 // `a_region_answers_only_the_velocities_of_its_range`.
 #[test]
 fn a_region_contains_the_keys_and_velocities_of_the_decoded_ranges() {

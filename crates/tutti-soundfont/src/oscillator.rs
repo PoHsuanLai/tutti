@@ -1,4 +1,8 @@
-use crate::synthesizer_settings::SynthesizerSettings;
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate.
+
+use crate::render::Render;
 use tutti_sf2::LoopMode;
 
 // In this class, fixed-point numbers are used for speed-up.
@@ -33,7 +37,7 @@ impl Oscillator {
     const FRAC_UNIT: i64 = 1_i64 << Oscillator::FRAC_BITS;
     const FP_TO_SAMPLE: f32 = 1_f32 / (32768 * Oscillator::FRAC_UNIT) as f32;
 
-    pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
+    pub(crate) fn new(settings: &Render) -> Self {
         Self {
             synthesizer_sample_rate: settings.hz(),
             loop_mode: LoopMode::NoLoop,

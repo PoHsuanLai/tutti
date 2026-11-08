@@ -470,8 +470,7 @@ pub(crate) unsafe fn take_string(raw: coreaudio_sys::CFStringRef) -> Option<Stri
     // SAFETY: the caller's contract; `owner` releases the retain on return.
     let owner = unsafe { CfString::from_copied(raw) }?;
     // SAFETY: `owner` keeps the object alive across the copy.
-    let text = unsafe { cfstring_to_string_checked(owner.as_raw()) };
-    text
+    unsafe { cfstring_to_string_checked(owner.as_raw()) }
 }
 
 #[cfg(test)]

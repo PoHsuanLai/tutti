@@ -571,6 +571,14 @@ impl OpenInput {
         &self.info.name
     }
 
+    /// Whether the connection is still delivering. `false` once the backend's
+    /// reader has ended on an error (a warning is logged): the device is
+    /// still listed, but nothing will arrive until the input is reopened.
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        self.connection.as_ref().is_some_and(|c| c.is_alive())
+    }
+
     /// The port its events land in, for the ring manager's
     /// `set_port_active` and the drain's tag.
     #[must_use]

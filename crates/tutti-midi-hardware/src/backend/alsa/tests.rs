@@ -121,10 +121,9 @@ fn removed(id: DeviceId) -> impl Fn(&DeviceEvent) -> bool {
     move |e| matches!(e, DeviceEvent::Removed(i) if i.id == id)
 }
 
-/// Runs `open` until it succeeds. The kernel can announce the exit of a client
-/// number's previous owner after a new client has taken it; the watch then
-/// re-reports the device (`Removed`, `Added`, the same id) and the id is
-/// unlisted for a moment, so an open in that moment is refused.
+/// Runs `open` until it succeeds, for an open that lands in the moment a
+/// device is being replaced (an exit announcement the sequencer's queue
+/// overran is the one thing the watch cannot pair with its look).
 fn when_listed<T>(devices: &Watched, open: impl Fn() -> crate::Result<T>) -> T {
     let deadline = Instant::now() + PATIENCE;
     loop {
@@ -201,10 +200,17 @@ fn watch_threads() -> usize {
 // - no `catch_unwind` in the watch thread: `a_watch_that_panics_reports_its_failure`
 //   fails.
 //
-// The kernel can announce a client's exit after a new client has taken its
-// number, and the watch then re-reports the new device (`Removed`, `Added`, the
-// same id). Parallel runs hit it, so these tests read ids from the list or retry
-// an open (`when_listed`) where it would matter.
+// - `watch::settle`'s loop bound `0..0` (the order the watch had before: a drain,
+//   a look):
+//   `a_device_that_takes_a_departed_clients_number_is_added_once` fails
+//   when four copies of it run at once (3 of 4 failed, 12 of 12 pass with the
+//   fix); alone and idle the race is not hit and it passes. The review that
+//   found the bug saw the extra `Removed` in 139 of 300 cycles.
+//
+// The watch pairs each look with the announcements read before it (`settle`), and
+// a client's start is what says a number has a new occupant, so a reused number
+// is one removal and one addition. These tests still read ids from the list or
+// retry an open (`when_listed`) where a dropped announcement could matter.
 
 /// A client that appears is listed with its identity.
 #[test]
@@ -402,16 +408,24 @@ fn the_engines_own_clients_are_not_listed() {
     drop((input, output));
 }
 
-/// The engine's clients are told by their ports, not their names: a device may
-/// be called `tutti-in`. Mutation: skipping clients whose name starts with
-/// `tutti-` hides it.
+/// The engine's clients are told by their capabilities (the pump's and the
+/// output's ports are not subscribable), not their names: a device may be
+/// called like one. The engine opens exactly `tutti-in` and `tutti-out`
+/// (`input.rs`, `output.rs`); this device is `tutti-in-<pid>`, because client
+/// names are global to the machine and a fixed `tutti-in` is shared by parallel
+/// copies of the suite. So the exact-name case is given up: a skip of the
+/// single name `tutti-in` would not be caught here, though a skip by the
+/// `tutti-` prefix is. No function filters by name (there is nothing to unit
+/// test); the listing is by capability. Mutation: skipping clients whose name
+/// starts with `tutti-` hides it.
 #[test]
 fn a_device_called_like_an_engine_client_is_listed() {
     let devices = Watched::open();
-    let _device = plug("tutti-in");
+    let name = format!("tutti-in-{}", std::process::id());
+    let _device = plug(&name);
     let device = info(until(
         &devices,
-        |e| matches!(e, DeviceEvent::Added(i) if i.id.identity() == &Identity::alsa("tutti-in", "port")),
+        |e| matches!(e, DeviceEvent::Added(i) if i.id.identity() == &Identity::alsa(&name, "port")),
     ));
     assert!(devices.list().contains(&device));
 }
@@ -455,6 +469,30 @@ fn a_renamed_client_is_removed_and_added_under_its_new_name() {
     assert_ne!(after.id, before);
 }
 
+/// A client renamed in place is reported removed and added (the identity is the
+/// name), and no exit follows it: an identical device that later takes the
+/// number must still be reported removed and added. The kernel posts the new
+/// client's start for it, whatever came before. Mutation: `Tracker::replaced`
+/// ignoring `ClientStart` makes the wait for `Removed` time out.
+#[test]
+fn a_renamed_client_replaced_by_an_identical_one_is_removed_then_added() {
+    let devices = Watched::open();
+    let name = unique("rename-replug");
+    let device = plug(&name);
+    let mut backlog = Vec::new();
+    until_in(&devices, &mut backlog, added(&name));
+    let renamed = format!("{name}-two");
+    device.rename(&renamed);
+    let id = info(until_in(&devices, &mut backlog, added(&renamed))).id;
+    drop(device);
+    let _next = plug(&renamed);
+    until_in(&devices, &mut backlog, removed(id.clone()));
+    assert_eq!(
+        info(until_in(&devices, &mut backlog, added(&renamed))).id,
+        id
+    );
+}
+
 /// The kernel's own client is not a device. Mutation: dropping the
 /// `SND_SEQ_CLIENT_SYSTEM` skip lists `System: Announce` and `System: Timer`.
 #[test]
@@ -476,7 +514,7 @@ impl crate::MidiEndpoints for Panicky {
                 !armed.load(std::sync::atomic::Ordering::SeqCst),
                 "enumeration panics"
             );
-            Vec::new()
+            Some(Vec::new())
         })
     }
     fn inputs(&self) -> Vec<crate::EndpointInfo> {
@@ -538,4 +576,50 @@ fn asking_for_capabilities_does_not_wake_the_watch() {
     }
     let opened = super::client::OPENS.load(std::sync::atomic::Ordering::SeqCst) - opens;
     assert_eq!(opened, 0, "{opened} sequencer clients opened for 1000 asks");
+}
+
+/// A client that takes the number of one that just exited is a new device, not
+/// a device that comes and goes: the exit the kernel announces for the old
+/// owner arrives after the look that already shows the new one, and the new
+/// device must be added once and never removed while it lives. One `Devices`,
+/// `A` dropped and `B` plugged at once, `B` held for 150 ms.
+///
+/// The old owner's `CLIENT_EXIT` is posted after the number is free, so it can
+/// arrive after the look that shows `B`; only a start says a number has a new
+/// occupant, so that exit is nothing. The test holds three
+/// clients for six seconds. The sequencer has 64 dynamic client slots, so
+/// `.config/nextest.toml` runs the tests of this file at most four at a time
+/// (test group `sequencer`): parallel copies of the suite ran out of slots
+/// (`snd_seq_open` ENOMEM) with this test beside them.
+///
+/// Mutation: see the record above (`settle` with a bound of 0 reports
+/// `Added, Removed, Added` for `B`, under load).
+#[test]
+fn a_device_that_takes_a_departed_clients_number_is_added_once() {
+    let devices = Watched::open();
+    let mut a = plug(&unique("flap-a"));
+    for cycle in 0..40 {
+        let name = unique(&format!("flap-b-{cycle}"));
+        drop(a);
+        let b = plug(&name);
+        let end = Instant::now() + Duration::from_millis(150);
+        let mut seen = Vec::new();
+        while let Some(left) = end.checked_duration_since(Instant::now()) {
+            seen.extend(devices.wait(left));
+        }
+        let of_b: Vec<_> = seen
+            .iter()
+            .filter(|e| e.info().name.starts_with(&format!("{name}:")))
+            .map(|e| matches!(e, DeviceEvent::Added(_)))
+            .collect();
+        assert_eq!(of_b, [true], "cycle {cycle}: events for the live device");
+        assert!(
+            devices
+                .list()
+                .iter()
+                .any(|d| d.name.starts_with(&format!("{name}:"))),
+            "cycle {cycle}"
+        );
+        a = b;
+    }
 }

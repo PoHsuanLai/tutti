@@ -552,3 +552,40 @@ fn the_reporter_reports_a_departure_a_re_enumeration_omits() {
         Some(DeviceEvent::Removed(info)) if info.name == "B"
     ));
 }
+
+/// A device reported gone and present again is never missing from the list
+/// between the two: they are applied under one hold of the state. A reader
+/// polls `list` while the reporter replaces the device; a miss only passes, so
+/// the loop is long. Mutation: `Reporter::report` sending each change with its
+/// own `ChangeSink::send` makes the reader see the list without "Twin" (seen to fail).
+#[test]
+fn a_replaced_device_is_never_missing_from_the_list() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let shared = Arc::new(Shared::default());
+    let devices = Devices {
+        inner: Arc::new(Inner {
+            _watch: Box::new(crate::endpoints::NoWatch),
+            backend: FakeBackend::build().0,
+            shared: Arc::clone(&shared),
+        }),
+    };
+    let mut reporter = Reporter::new(ChangeSink { shared });
+    let twin = os_devices(&[endpoint(7, "Twin")], &[]);
+    reporter.seed(twin.clone());
+    let done = Arc::new(AtomicBool::new(false));
+    let reader = {
+        let (devices, done) = (devices.clone(), Arc::clone(&done));
+        std::thread::spawn(move || {
+            let mut misses = 0_usize;
+            while !done.load(Ordering::Relaxed) {
+                misses += usize::from(devices.list().is_empty());
+            }
+            misses
+        })
+    };
+    for _ in 0..20_000 {
+        reporter.report(twin.clone(), |h| h == EndpointId::from_raw(7));
+    }
+    done.store(true, Ordering::Relaxed);
+    assert_eq!(reader.join().unwrap(), 0, "the list was seen without Twin");
+}

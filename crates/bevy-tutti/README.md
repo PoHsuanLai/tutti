@@ -49,7 +49,9 @@ yourself in that case.
   breaking its wiring.
 - **Wiring is declared.** `PortSources` on an entity names what feeds each of
   its input ports; the `MasterSources` resource names what feeds each output
-  channel; `EventSources` names what feeds a node's event (MIDI) input. Nothing
+  channel and `MasterTopology` what those channels are (independent buses or
+  speakers, so a wider device places them by index or by position);
+  `EventSources` names what feeds a node's event (MIDI) input. Nothing
   calls `connect`.
 - **Parameters are components.** `AudioParam<U, P>` holds one parameter value
   (unit `U`, parameter address `P`, a packed `UnitAddr`: the plain
@@ -87,6 +89,8 @@ fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) -> Result {
 | `MetronomeRes` | always | The metronome click state |
 | `MeteringRes` | always | The master meter: peak (held since the last read) and RMS of each output channel |
 | `MasterSources` | always | What feeds each output channel |
+| `MasterTopology` | always | What the output channels are (`Discrete` buses or speakers); none keeps the engine's order for the width |
+| `MasterTopologyStatus` | always | Whether the session has the root as declared (`Applied`, or `Refused` with why) |
 | `AudioDeviceState`, `AudioEngineState`, `AudioDeviceFault` (message) | always | The output device, whether the engine is running, and the device's faults |
 | `GraphLatency`, `ChannelCompensation` | always | Latency compensation figures |
 | `MidiEngineNodes`, `MpeModeRes` | `midi` | The engine's MIDI nodes and the input's MPE mode |

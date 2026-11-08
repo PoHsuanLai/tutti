@@ -691,6 +691,14 @@ Scalars use `Param<U>`.
   the compiler's, and nothing is spliced into the graph.
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
+- **The root's channels are declared too** (`MasterTopology`, a pure
+  translation into `Session::declare_root_topology` /
+  `SessionBuilder::root_topology`): `Discrete` for independent buses, a named
+  topology for speaker feeds, nothing for the engine's `assumed` order. A
+  declaration sets the root's width (no device floor) and the width cannot
+  leave it: `Graph::widen_outputs` refuses to widen a declared root, and a
+  declaration the device or file cannot place is `FoldError`, never a silent
+  drop (doc 013, "Channel placement").
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
   wires them through `AudioGraphRes`. The rebuild's debug check

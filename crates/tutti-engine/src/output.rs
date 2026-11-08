@@ -23,8 +23,10 @@
 //! device is wider, and a pair that would drop a channel has no fold, so that
 //! root renders a silent, counted block into that device.
 
+use std::sync::{Arc, Mutex, PoisonError};
 use tutti_graph::MAX_ROOT_CHANNELS;
-use tutti_types::{ChannelLayout, Fold, FoldError};
+use tutti_rt::ArcLend;
+use tutti_types::{ChannelLayout, ChannelTopology, Fold, FoldError};
 
 /// The widest device an engine can render into without being told
 /// ([`Engine::support_output`](crate::Engine::support_output)).
@@ -34,6 +36,25 @@ pub(crate) const DEFAULT_DEVICE_WIDTHS: usize = 16;
 /// width supported.
 #[derive(Debug, Clone)]
 pub(crate) struct OutputFolds {
+    /// The root topologies declared ([`OutputControl::declare_root`]), at most
+    /// one per root width, sorted by width: the one last declared at each
+    /// width, so a plan of that width is folded from it. Every other width is
+    /// a bare count.
+    ///
+    /// **Why a table by width, and its limit.** The audio thread installs a
+    /// plan some blocks after a declaration, and the engine cannot see when,
+    /// so the fold has to follow the plan and not the newest declaration. A
+    /// plan carries a width and not the topology it was compiled under, so the
+    /// width is the key: declaring at another width leaves the entries at the
+    /// widths already held, and a plan still rendering at one of them keeps
+    /// its fold through any number of declarations. The limit is what a width
+    /// cannot tell: a declaration at the *same* width as the plan in flight
+    /// replaces its entry at once (the plan is the one it describes, only its
+    /// reading changes), and undeclaring (`None`) drops every entry at once,
+    /// including a plan still in flight at another width, which reads as a
+    /// bare count until it is replaced. Exact, per plan, would carry the
+    /// topology in `tutti_graph::Topology` and its `Plan`.
+    roots: Vec<ChannelTopology>,
     /// Index `d - 1` holds the folds into a device of `d` channels, `None` for
     /// a width not supported; inside, index `w - 1` folds a root of `w`.
     by_device: Vec<Option<Box<[Option<Fold>]>>>,
@@ -48,6 +69,7 @@ impl OutputFolds {
     /// silent block, never a wrong one.
     pub(crate) fn up_to(widest: usize) -> Self {
         let mut folds = Self {
+            roots: Vec::new(),
             by_device: Vec::new(),
         };
         for device in 1..=widest {
@@ -83,11 +105,25 @@ impl OutputFolds {
             // (`SessionBuilder`), so only a plan that changes the root width
             // later meets it.
             let by_root = (1..=MAX_ROOT_CHANNELS)
-                .map(|w| Fold::widths(ChannelLayout::from(w), device).ok())
+                .map(|w| self.root_fold(w, device).ok())
                 .collect();
             self.by_device[slot] = Some(by_root);
         }
         Ok(())
+    }
+
+    /// The fold of a root of `width` channels into `device`: from the declared
+    /// topology when the root is as wide as the declaration, otherwise from the
+    /// engine's order for the bare width.
+    fn root_fold(&self, width: usize, device: ChannelLayout) -> Result<Fold, FoldError> {
+        let declared = self
+            .roots
+            .iter()
+            .find(|root| usize::from(root.layout().count()) == width);
+        match declared {
+            Some(root) => Fold::declared(root, device),
+            None => Fold::widths(ChannelLayout::from(width), device),
+        }
     }
 
     /// The fold of a root of `root` channels into a device of `device`, or
@@ -108,5 +144,116 @@ impl OutputFolds {
             .checked_sub(1)
             .and_then(|slot| self.by_device.get(slot))
             .is_some_and(Option::is_some)
+    }
+}
+
+/// The control side of the engine's output folds: what the session keeps when
+/// the [`Engine`](crate::Engine) goes to the audio thread, to say what the
+/// graph root is and which devices it can take.
+///
+/// Cloneable; every clone publishes into the one cell the engine lends from.
+/// A publish is a read-modify-write, so clones serialize on a lock (control
+/// side only; the audio thread never touches it).
+#[derive(Debug, Clone)]
+pub struct OutputControl {
+    cell: Arc<ArcLend<OutputFolds>>,
+    writer: Arc<Mutex<()>>,
+}
+
+impl OutputControl {
+    pub(crate) fn new(folds: OutputFolds) -> Self {
+        Self {
+            cell: Arc::new(ArcLend::new(folds)),
+            writer: Arc::default(),
+        }
+    }
+
+    pub(crate) fn cell(&self) -> &Arc<ArcLend<OutputFolds>> {
+        &self.cell
+    }
+
+    /// Publishes the current set as `edit` leaves it, unless `edit` finds
+    /// nothing to do (`Ok(false)`). Nothing is published on an error.
+    fn update(
+        &self,
+        edit: impl FnOnce(&mut OutputFolds) -> Result<bool, FoldError>,
+    ) -> Result<(), FoldError> {
+        let _writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut folds = (*self.cell.current()).clone();
+        if edit(&mut folds)? {
+            self.cell.publish(folds);
+            self.cell.reclaim();
+        }
+        Ok(())
+    }
+
+    /// As [`Engine::support_output`](crate::Engine::support_output).
+    ///
+    /// # Errors
+    ///
+    /// [`FoldError::Empty`] for a device of no channels.
+    pub fn support(&self, device: ChannelLayout) -> Result<(), FoldError> {
+        if self.cell.current().supports(device) {
+            return Ok(());
+        }
+        self.update(|folds| folds.support(device).map(|()| true))
+    }
+
+    /// Declares what the graph root's channels are, for `device`: the engine
+    /// folds a root of that many channels from `root` instead of from the
+    /// engine's order for the bare width, here and into every other device.
+    /// `None` takes the declaration back.
+    ///
+    /// A declaration of independent buses
+    /// ([`ChannelTopology::discrete`]) stays by index: a 4-wide one into a
+    /// 6-wide device keeps channels 2 and 3 at 2 and 3 (undeclared, a 4-wide
+    /// root is quad, and they land on the side pair).
+    ///
+    /// Control side: it allocates, and publishes the new set for the next
+    /// block. A callback mid-block keeps the folds it lent.
+    ///
+    /// # Errors
+    ///
+    /// The [`FoldError`] when the declaration cannot be placed on `device`
+    /// (a discrete root wider than it, or an unnamed channel); nothing is
+    /// published. Other devices the engine holds a fold for that cannot take
+    /// it render a silent, counted block, as an unplaceable bare width does.
+    pub fn declare_root(
+        &self,
+        root: Option<ChannelTopology>,
+        device: ChannelLayout,
+    ) -> Result<(), FoldError> {
+        if let Some(root) = &root {
+            Fold::declared(root, device)?;
+        }
+        self.update(|folds| {
+            let mut next = folds.roots.clone();
+            match &root {
+                Some(new) => {
+                    next.retain(|old| old.layout() != new.layout());
+                    next.push(new.clone());
+                    next.sort_by_key(|t| t.layout().count());
+                }
+                None => next.clear(),
+            }
+            if next == folds.roots {
+                return Ok(false);
+            }
+            folds.roots = next;
+            // Every held device is rebuilt against the new declaration.
+            let held: Vec<usize> = (1..=folds.by_device.len())
+                .filter(|d| folds.has_device(*d))
+                .collect();
+            folds.by_device.clear();
+            for device in held {
+                folds.support(ChannelLayout::from(device))?;
+            }
+            Ok(true)
+        })
+    }
+
+    /// As [`Engine::reclaim`](crate::Engine::reclaim).
+    pub fn reclaim(&self) -> usize {
+        self.cell.reclaim()
     }
 }

@@ -36,14 +36,16 @@
 //! wake itself for ever.
 
 use std::collections::BTreeSet;
-use std::io;
 use std::os::fd::AsRawFd;
-use std::os::raw::{c_int, c_short, c_uint};
+use std::os::raw::c_int;
 use std::os::unix::net::UnixStream;
 use std::thread::JoinHandle;
 
 use super::client::{SeqClient, check};
 use super::enumerate::{pack_id, unpack_id};
+#[cfg(test)]
+use super::poll::MAX_DRAIN_ERRORS;
+use super::poll::{ErrorRun, PollSet, Wait};
 use crate::devices::{ChangeSink, Reporter};
 use crate::endpoints::Watch;
 use crate::error::{Error, Result};
@@ -55,8 +57,6 @@ use tutti_midi_device::{EndpointId, OsDevice};
 pub(super) static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 const EAGAIN: i32 = -11;
-/// Read errors in a row a drain puts up with before it stops.
-const MAX_DRAIN_ERRORS: usize = 8;
 /// Looks a settle takes before it reports the last one.
 const MAX_SETTLE: usize = 8;
 /// Linux truncates a thread name to 15 bytes.
@@ -66,28 +66,9 @@ const THREAD_NAME: &str = "tutti-devwatch";
 struct Announce {
     seq: SeqClient,
     /// The sequencer's descriptors, then the stop descriptor.
-    polls: Vec<libc::pollfd>,
+    polls: PollSet,
     /// The read end of the stop pair; the owner drops the write end to wake us.
     _stop: UnixStream,
-}
-
-/// Read errors in a row, which end a drain at [`MAX_DRAIN_ERRORS`]. A read that
-/// succeeds starts the count again, so scattered overruns in a long burst do
-/// not end the drain with events unread.
-#[derive(Debug, Default)]
-struct ErrorRun(usize);
-
-impl ErrorRun {
-    /// Counts an error; true when the run has reached the limit.
-    fn failed(&mut self) -> bool {
-        self.0 += 1;
-        self.0 >= MAX_DRAIN_ERRORS
-    }
-
-    /// A read succeeded.
-    fn read(&mut self) {
-        self.0 = 0;
-    }
 }
 
 /// An announcement the watch reads, with the client (and port) it names.
@@ -443,38 +424,7 @@ impl Announce {
             "snd_seq_connect_from",
         )?;
 
-        let events = libc::POLLIN as c_short;
-        // SAFETY: `seq` is open.
-        let count = check(
-            unsafe { sys::snd_seq_poll_descriptors_count(seq.raw(), events) },
-            "snd_seq_poll_descriptors_count",
-        )?;
-        let mut polls = vec![
-            libc::pollfd {
-                fd: -1,
-                events: 0,
-                revents: 0
-            };
-            count as usize
-        ];
-        // SAFETY: `polls` is `count` `pollfd`s, and alsa-lib writes at most
-        // `space` of them.
-        check(
-            unsafe {
-                sys::snd_seq_poll_descriptors(
-                    seq.raw(),
-                    polls.as_mut_ptr().cast(),
-                    count as c_uint,
-                    events,
-                )
-            },
-            "snd_seq_poll_descriptors",
-        )?;
-        polls.push(libc::pollfd {
-            fd: stop.as_raw_fd(),
-            events,
-            revents: 0,
-        });
+        let polls = PollSet::new(&seq, stop.as_raw_fd())?;
         Ok(Self {
             seq,
             polls,
@@ -485,40 +435,11 @@ impl Announce {
     /// Blocks until the sequencer announces something or the stop pair closes,
     /// or `timeout` passes.
     fn wait(&mut self, timeout: Option<std::time::Duration>) -> Result<Woken> {
-        let timeout_ms = timeout.map_or(-1, |t| {
-            c_int::try_from(t.as_millis().max(1)).unwrap_or(c_int::MAX)
-        });
-        loop {
-            for p in &mut self.polls {
-                p.revents = 0;
-            }
-            // SAFETY: `polls` is a live array of `polls.len()` `pollfd`s.
-            let ready = unsafe {
-                libc::poll(
-                    self.polls.as_mut_ptr(),
-                    self.polls.len() as libc::nfds_t,
-                    timeout_ms,
-                )
-            };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error.into());
-            }
-            if ready == 0 {
-                return Ok(Woken::Timeout);
-            }
-            let (stop, seq) = self.polls.split_last().expect("the stop descriptor");
-            if stop.revents != 0 {
-                return Ok(Woken::Stopped);
-            }
-            let broken = (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) as c_short;
-            if seq.iter().any(|p| p.revents & broken != 0) {
-                return Err(Error::MidiPort("the sequencer descriptor failed".into()));
-            }
-            return Ok(Woken::Announced(self.drain()));
+        match self.polls.wait(timeout)? {
+            Wait::Timeout => Ok(Woken::Timeout),
+            Wait::Stopped => Ok(Woken::Stopped),
+            Wait::Broken => Err(Error::MidiPort("the sequencer descriptor failed".into())),
+            Wait::Ready => Ok(Woken::Announced(self.drain())),
         }
     }
 

@@ -65,7 +65,9 @@ pub use spawn::{
 };
 pub use topology::LiveGraph;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};
-pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};
+pub use wire::{
+    GraphWirePlugin, MasterSources, MasterTopology, MasterTopologyStatus, PortSource, PortSources,
+};
 
 // The session's items this crate's own signatures take, one by one: the
 // session crate itself is not re-exported (design 015 §6).

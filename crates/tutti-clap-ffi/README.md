@@ -5,9 +5,10 @@ CLAP plugin lives here, behind safe handles over [`clap-sys`]; the host crate
 above it, `tutti-clap-host`, is `#![forbid(unsafe_code)]` and holds the logic
 (the lifecycle, the shell, the request words, the edit ring).
 
-This crate names nothing of tutti's except `tutti-plugin-types`, for the one
-value whose unsafe constructor carries a claim this crate relies on
-(`WindowHandle`, a valid parent window).
+This crate names nothing of tutti's except `tutti-plugin-types` (`WindowHandle`,
+whose unsafe constructor carries the claim of a valid parent window, and
+`MainThread`, the proof of the main thread) and, for `GraphPool`, `tutti-graph`
+and `tutti-rt`.
 
 ## What is here
 
@@ -20,13 +21,19 @@ value whose unsafe constructor carries a claim this crate relies on
 | `EventSource`, `EventSink` | the host's input and output event lists as safe traits; the raw `clap_input_events` and `clap_output_events` exist only on the stack of the call that needs them |
 | `PortScratch`, `ProcessCall` | the channel-pointer tables and the one call that binds a block's buffers and runs the plugin |
 | `InputStream`, `OutputStream` | `clap_istream` and `clap_ostream` over byte buffers |
-| `TaskPool`, `PoolHandle` | `clap.thread-pool`: a plugin's `request_exec` served on a pool for the span of its `process` call; a handle is bound to the instance it was made for and ignored by any other |
+| `TaskPool`, `GraphPool`, `PoolHandle` | `clap.thread-pool`: a plugin's `request_exec` served on a pool for the span of its `process` call; `TaskPool` is an `unsafe trait` (its `try_run` must return only once no participant is inside the job) and `GraphPool` is the one safe implementation, over a `tutti_graph::Pool`; a handle is bound to the instance it was made for and ignored by any other |
 | `ThreadRoles`, `AudioClaim` | which thread is the `[main-thread]` and `[audio-thread]`, and the lock that keeps audio-side entries from overlapping |
 
 ## How the thread rules are in the types
 
 CLAP annotates every entry with the thread it may be called on. Here a
 `[main-thread]` entry is a method of `Plugin`, which is `Send` but not `Sync`,
+and which takes a `&MainThread`: holding one is the proof, and `ThreadRoles`
+(built from one) is the single place the main thread is named. A `Plugin`
+dropped on another thread calls nothing and leaks the instance, since its
+`gui.destroy` and `destroy` are main-thread entries too. The host callbacks CLAP
+marks `[main-thread]` (timers, descriptors, rescans) are refused when a plugin
+makes them from another thread, `process` included.
 and an `[audio-thread]` entry is a method of `AudioSide`, which takes the
 instance's `AudioClaim` for the whole call. A processor that holds an
 `AudioSide` therefore cannot make a main-thread call, and a controller that

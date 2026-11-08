@@ -22,6 +22,7 @@ use tutti_graph::WorkerPool;
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 use support::probe_path::probe_path;
 
 #[global_allocator]
@@ -82,8 +83,8 @@ fn load(tasks: u32, task_us: u32, nested: bool) -> Active<f32> {
         f();
     }
     let path = Path::new(probe_path());
-    let loaded =
-        ClapLoaded::load(path, LoadOptions::new().library(path)).expect("reference plugin loads");
+    let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
+        .expect("reference plugin loads");
     assert!(
         loaded.supports_thread_pool(),
         "the armed probe offers clap.thread-pool"

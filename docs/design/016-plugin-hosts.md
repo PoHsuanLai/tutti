@@ -1692,6 +1692,19 @@ nothing in release and nothing while no thread was marked. It is now a type.
   `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
   claims); the VST3 `Plugin` tears down on the dropping thread. The per-format
   lanes' main-thread handles make that the main thread by construction.
+- CLAP, below the host crate: every `Plugin` entry that calls into the plugin
+  takes `&MainThread` (`tutti-clap-ffi`), and `ThreadRoles::new(&MainThread)` is
+  the one place the main thread is named: `HostState` keeps no second copy, and
+  `thread-check`, the `[main-thread]` host callbacks and `Plugin`'s drop read
+  it. A `Plugin` dropped on another thread destroys the editor and the instance
+  nowhere: it leaks them (and the library) rather than call `[main-thread]`
+  entries off the thread, so the `ClapLoaded` `debug_assert!` above is gone. The
+  host callbacks CLAP marks `[main-thread]` (timers, descriptors, rescans,
+  `mark_dirty`, `latency.changed`, undo, ...) are refused, not forwarded, when
+  a plugin calls them from any other thread or from inside an audio claim.
+  `Control::info` has no token, so it measures a CLAP plugin's editor on the
+  first ask from the main thread and answers `EditorPresence::Unknown`
+  elsewhere.
 - `Session` paths that free a retired unit (collect, commit, update, drop) take
   no token and check with the same `debug_assert!`; the entries that open an
   in-process plugin (`add_plugin`, `land_reload`) take the token.

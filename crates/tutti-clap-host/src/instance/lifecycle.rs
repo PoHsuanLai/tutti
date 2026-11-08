@@ -144,7 +144,7 @@ impl ClapLoaded {
         // CLAP's render mode is `[main-thread]` and carries no activation
         // constraint; a plugin without the extension has declined, which is
         // not a failure.
-        let _ = self.set_render_mode(prepare.mode().is_offline());
+        let _ = self.set_render_mode(main, prepare.mode().is_offline());
 
         // The plugin may have changed its ports since it was loaded or last
         // deactivated, and the 64-bit flag is part of them.
@@ -162,13 +162,13 @@ impl ClapLoaded {
             return Err(refuse(self, err));
         }
 
-        if let Err(e) = self.activate_plugin() {
+        if let Err(e) = self.activate_plugin(main) {
             self.audio = previous;
             return Err(refuse(self, e));
         }
         self.audio.f64_active = wide;
 
-        let table = self.read_param_ranges();
+        let table = self.read_param_ranges(main);
         let max_frames = self.audio.max_frames as usize;
         let mut scratch = AudioScratch::new(prepare.format());
         let port_channels = |ports: &tutti_plugin_types::BusChannels| -> Vec<u32> {
@@ -205,7 +205,9 @@ impl ClapLoaded {
         // (`ClapProcessor::output_param_points_dropped`).
         reserve_input_events(&mut scratch, &table, max_frames);
         reserve_output_params(&mut scratch, &table, max_frames);
-        scratch.input_events.set_midi_notes(self.sends_midi_notes());
+        scratch
+            .input_events
+            .set_midi_notes(self.sends_midi_notes(main));
         scratch
             .in_note_expressions
             .reserve_exact(super::config::INPUT_NOTE_EXPRESSIONS);
@@ -239,9 +241,9 @@ impl ClapLoaded {
     /// Reads each param's native range for denormalizing incoming automation
     /// (the host authors normalized 0..1; CLAP wants plain), and whether the
     /// plugin claims parameters at all. Queries the plugin: control thread only.
-    pub(crate) fn read_param_ranges(&self) -> RangeTable {
+    pub(crate) fn read_param_ranges(&self, main: &MainThread) -> RangeTable {
         let mut ranges: Vec<(u32, f32, f32)> = self
-            .native_parameters()
+            .native_parameters(main)
             .into_iter()
             // A parameter with no declared bounds has nothing to denormalize
             // against; dropping it leaves its automation to pass through
@@ -260,16 +262,16 @@ impl ClapLoaded {
             // they differ exactly when the enumeration truncated at a hole,
             // which is the case `add_param_changes` has to tell apart from a
             // params-less plugin.
-            claims: self.parameter_count() > 0,
+            claims: self.parameter_count(main) > 0,
         }
     }
 
     /// Calls the plugin's `activate` FFI. Shared by `activate_now` and the
     /// transitions built on it.
-    pub(crate) fn activate_plugin(&mut self) -> Result<()> {
+    pub(crate) fn activate_plugin(&mut self, main: &MainThread) -> Result<()> {
         if let Err(e) = self
             .plugin
-            .activate(self.audio.sample_rate, 1, self.audio.max_frames)
+            .activate(main, self.audio.sample_rate, 1, self.audio.max_frames)
         {
             return Err(ClapError::LoadFailed {
                 path: PathBuf::new(),
@@ -277,6 +279,10 @@ impl ClapLoaded {
                 reason: match e {
                     ActivateError::ProcessorStillAlive => {
                         "the audio half of the previous activation is still alive".to_string()
+                    }
+                    ActivateError::AlreadyActive => "the plugin is already active".to_string(),
+                    ActivateError::BadConfig => {
+                        "the sample rate or block range is one CLAP forbids".to_string()
                     }
                     ActivateError::Refused => "Activate failed".to_string(),
                 },
@@ -304,11 +310,11 @@ impl ClapLoaded {
 
     /// Calls the plugin's `deactivate` FFI. `deactivate` is
     /// `[main-thread & active]`, so an instance already inactive is left alone.
-    pub(crate) fn deactivate_plugin(&mut self) {
+    pub(crate) fn deactivate_plugin(&mut self, main: &MainThread) {
         if !self.flags.active {
             return;
         }
-        self.plugin.deactivate();
+        self.plugin.deactivate(main);
         self.flags.active = false;
         self.audio.f64_active = false;
     }
@@ -372,7 +378,9 @@ impl Drop for ClapLoaded {
         // gui.destroy() before plugin.destroy(). A `ClapLoaded` that is dropped
         // is never active (the Controller deactivates the plugin before it lets
         // go of it), so there is no stop/deactivate to do here.
-        self.destroy_editor();
+        if let Some(main) = tutti_plugin_types::MainThread::current() {
+            self.destroy_editor(&main);
+        }
 
         // The FFI `Plugin`'s drop destroys the instance, then drops the host
         // vtable; the library unloads last.

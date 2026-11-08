@@ -17,6 +17,7 @@ use tutti_midi_types::PerNoteBendRanges;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 mod support;
+use support::main_thread;
 #[allow(unused_imports)]
 use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputStreamRaw};
 
@@ -499,7 +500,7 @@ fn test_input_stream_partial_reads() {
 
 #[test]
 fn test_clap_host_as_raw_not_null() {
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     assert!(!host.as_raw().is_null());
 }
 
@@ -726,7 +727,7 @@ fn test_transport_flags_are_distinct_bits() {
 fn test_host_state_take_clears_flag() {
     use std::sync::atomic::Ordering;
 
-    let state = HostState::new();
+    let state = HostState::new(&main_thread());
     state
         .lifecycle
         .process_requested
@@ -738,10 +739,24 @@ fn test_host_state_take_clears_flag() {
     assert!(!state.take(&state.lifecycle.process_requested));
 }
 
+/// The main thread is the one thread that proved it with a token, and no
+/// other. The answer is `ThreadRoles`' alone (`HostState` keeps no second copy
+/// of the thread to drift from it).
+///
+/// Mutation (run): make `ThreadRoles::new` record a fixed `ThreadId` instead of
+/// the calling thread's -> the first assertion fails; make `is_main_thread`
+/// ignore the thread -> the second fails.
 #[test]
-fn test_host_state_main_thread_id_is_current() {
-    let state = HostState::new();
-    assert_eq!(state.main_thread_id, std::thread::current().id());
+fn test_host_state_main_thread_is_the_one_that_proved_it() {
+    let state = std::sync::Arc::new(HostState::new(&main_thread()));
+    assert!(state.is_main_thread());
+    let elsewhere = {
+        let state = std::sync::Arc::clone(&state);
+        std::thread::spawn(move || state.is_main_thread())
+            .join()
+            .unwrap()
+    };
+    assert!(!elsewhere, "another thread is not the main thread");
 }
 
 /// The host does not route a plugin's `request_show` / `request_hide` to its
@@ -753,7 +768,7 @@ fn test_host_state_main_thread_id_is_current() {
 fn host_gui_show_and_hide_requests_are_declined() {
     use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let gui_ext = unsafe { &*(get_ext(raw, CLAP_EXT_GUI.as_ptr()) as *const clap_host_gui) };
@@ -770,7 +785,7 @@ fn host_gui_closed_was_destroyed_latches_window_destroyed() {
     use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
     use std::sync::atomic::Ordering;
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let gui_ext = unsafe { get_ext(raw, CLAP_EXT_GUI.as_ptr()) as *const clap_host_gui };
@@ -838,7 +853,7 @@ fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::track_info::CLAP_EXT_TRACK_INFO;
     use clap_sys::ext::voice_info::CLAP_EXT_VOICE_INFO;
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
 
@@ -891,7 +906,7 @@ fn test_host_get_extension_returns_non_null_for_supported() {
 
 #[test]
 fn test_host_get_extension_returns_null_for_unknown() {
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
 
@@ -901,7 +916,7 @@ fn test_host_get_extension_returns_null_for_unknown() {
 
 #[test]
 fn test_host_get_extension_returns_null_for_null_id() {
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
 
@@ -918,7 +933,7 @@ fn test_host_request_restart_raises_the_request() {
     use std::sync::Arc;
     use tutti_plugin_types::{Request, taken};
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let request_restart = unsafe { (*raw).request_restart.unwrap() };
@@ -936,7 +951,7 @@ fn test_host_request_restart_raises_the_request() {
 fn test_host_request_process_sets_flag() {
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let request_process = unsafe { (*raw).request_process.unwrap() };
@@ -954,7 +969,7 @@ fn test_host_request_callback_raises_the_request() {
     use std::sync::Arc;
     use tutti_plugin_types::{Request, taken};
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let request_callback = unsafe { (*raw).request_callback.unwrap() };
@@ -970,7 +985,7 @@ fn test_host_request_callback_raises_the_request() {
 fn test_host_thread_check_main_thread() {
     use clap_sys::ext::thread_check::clap_host_thread_check;
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let tc_ptr = unsafe { get_ext(raw, c"clap.thread-check".as_ptr()) };
@@ -987,7 +1002,7 @@ fn test_host_thread_check_audio_thread() {
     use clap_sys::ext::thread_check::clap_host_thread_check;
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let state2 = Arc::clone(&state);
     let host = ClapHost::new(state);
     let raw = host.as_raw();
@@ -1041,7 +1056,7 @@ fn thread_check_roles_are_mutually_exclusive_c1() {
     use clap_sys::ext::thread_check::clap_host_thread_check;
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let state2 = Arc::clone(&state);
     let host = ClapHost::new(state);
     let raw = host.as_raw();
@@ -1087,7 +1102,7 @@ fn audio_thread_claim_serializes_across_threads_c2() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     // Counts concurrent occupants of the claimed region; must never exceed 1.
     let inside = Arc::new(AtomicU32::new(0));
     let overlapped = Arc::new(AtomicBool::new(false));
@@ -1260,7 +1275,7 @@ fn test_host_timer_register_unregister() {
     use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1338,7 +1353,7 @@ fn track_audio_count_comes_from_the_layout() {
 fn test_host_track_info_get_returns_false_when_empty() {
     use clap_sys::ext::track_info::{CLAP_EXT_TRACK_INFO, clap_host_track_info, clap_track_info};
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let ti_ptr = unsafe { get_ext(raw, CLAP_EXT_TRACK_INFO.as_ptr()) };
@@ -1360,7 +1375,7 @@ fn test_host_event_registry_claims_no_space() {
     use clap_sys::ext::event_registry::{CLAP_EXT_EVENT_REGISTRY, clap_host_event_registry};
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1379,7 +1394,7 @@ fn test_host_transport_control_callbacks_exist() {
         CLAP_EXT_TRANSPORT_CONTROL, clap_host_transport_control,
     };
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let tc_ptr = unsafe { get_ext(raw, CLAP_EXT_TRANSPORT_CONTROL.as_ptr()) };
@@ -1407,7 +1422,7 @@ fn test_host_audio_ports_config_rescan() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1425,7 +1440,7 @@ fn test_host_remote_controls_changed_and_suggest() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1452,7 +1467,7 @@ fn test_host_thread_pool_request_exec_rejects() {
     use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};
     use std::sync::Arc;
 
-    let host = ClapHost::new(Arc::new(HostState::new()));
+    let host = ClapHost::new(Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let tp_ptr = unsafe { get_ext(raw, CLAP_EXT_THREAD_POOL.as_ptr()) };
@@ -1528,7 +1543,7 @@ fn test_host_ambisonic_changed_callback() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1546,7 +1561,7 @@ fn test_host_surround_changed_callback() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1568,7 +1583,7 @@ fn test_host_posix_fd_register_and_unregister() {
     };
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1611,7 +1626,7 @@ fn test_host_posix_fd_modify() {
     };
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1658,7 +1673,7 @@ fn test_host_triggers_rescan_callback() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1701,7 +1716,7 @@ fn test_tuning_info_type() {
 fn test_host_tuning_callbacks() {
     use clap_sys::ext::draft::tuning::{CLAP_EXT_TUNING, clap_host_tuning};
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let tuning_ptr = unsafe { get_ext(raw, CLAP_EXT_TUNING.as_ptr()) };
@@ -1726,7 +1741,7 @@ fn test_host_resource_directory_callbacks() {
         CLAP_EXT_RESOURCE_DIRECTORY, clap_host_resource_directory,
     };
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let res_ptr = unsafe { get_ext(raw, CLAP_EXT_RESOURCE_DIRECTORY.as_ptr()) };
@@ -1779,7 +1794,7 @@ fn test_host_undo_begin_cancel_change() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1800,7 +1815,7 @@ fn test_host_undo_change_made() {
     use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1833,7 +1848,7 @@ fn test_host_undo_request_undo_redo() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1856,7 +1871,7 @@ fn test_host_undo_wants_context_updates() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1880,7 +1895,7 @@ fn test_host_note_name_changed_callback() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1900,7 +1915,7 @@ fn test_host_voice_info_changed_callback() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1920,7 +1935,7 @@ fn test_host_preset_load_loaded_callback() {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    let state = Arc::new(HostState::new());
+    let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
@@ -1940,7 +1955,7 @@ fn test_host_preset_load_loaded_callback() {
 fn test_host_preset_load_on_error_doesnt_panic() {
     use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
 
-    let host = ClapHost::default();
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let pl_ptr = unsafe { get_ext(raw, CLAP_EXT_PRESET_LOAD.as_ptr()) };

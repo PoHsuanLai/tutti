@@ -4270,7 +4270,9 @@ dependencies = [
  "libloading 0.8.9",
  "tutti-clap-test-plugin",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-plugin-types",
+ "tutti-rt",
 ]
 
 [[package]]

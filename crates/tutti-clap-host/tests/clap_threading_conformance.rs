@@ -85,7 +85,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -842,4 +842,33 @@ fn main_thread_methods_run_on_the_loading_thread() {
          that it returns rather than panicking"
     );
     inst.on_main_thread(&main_thread());
+}
+
+/// `Control::info` has no token, and the editor's presence is a question put
+/// to the plugin (`gui.is_api_supported`, a `[main-thread]` entry), so off the
+/// thread that holds the main role it answers from the factory alone
+/// (`EditorPresence::Unknown`) and asks nothing; on the main thread it
+/// measures, and keeps the measurement.
+///
+/// Mutation (run): in `info`, answer the `None` arm (no `MainThread`) with a
+/// measured descriptor -> the off-thread assertion fails.
+#[test]
+fn info_off_the_main_thread_asks_the_plugin_nothing() {
+    use tutti_plugin_types::{Control, EditorPresence};
+
+    let probe = Probe::acquire();
+    let inst = probe.load();
+    let _main = main_thread();
+    let (inst, off) = std::thread::spawn(move || {
+        let editor = Control::info(&inst).editor;
+        (inst, editor)
+    })
+    .join()
+    .expect("info does not panic");
+    assert_eq!(off, EditorPresence::Unknown);
+    assert_ne!(
+        Control::info(&inst).editor,
+        EditorPresence::Unknown,
+        "the main thread measures"
+    );
 }

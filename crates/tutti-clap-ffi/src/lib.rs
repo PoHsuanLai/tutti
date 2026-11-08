@@ -38,7 +38,7 @@ pub use menu::{MenuItem, MenuTarget};
 pub use plugin::{
     ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortConfigRequest, PortKind,
 };
-pub use pool::{PoolHandle, TaskPool};
+pub use pool::{GraphPool, PoolHandle, TaskPool};
 pub use roles::{AudioClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};
 

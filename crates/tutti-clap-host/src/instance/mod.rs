@@ -72,6 +72,9 @@ pub struct ClapLoaded {
     /// editor measured, which is done on first use and not at load: the
     /// measurement asks the plugin about its GUI.
     pub(crate) descriptor: std::cell::OnceCell<PluginDescriptor>,
+    /// The descriptor without the editor measured: what `info` answers off the
+    /// main thread, where asking the plugin is not allowed.
+    pub(crate) unmeasured: PluginDescriptor,
     pub(crate) audio: AudioConfig,
     pub(crate) ports: PortLayout,
     pub(crate) flags: LifecycleFlags,

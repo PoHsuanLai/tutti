@@ -3,26 +3,10 @@
 
 use std::sync::Arc;
 
-use tutti_clap_ffi::{PoolHandle, TaskPool};
+use tutti_clap_ffi::{GraphPool, PoolHandle};
 use tutti_graph::Pool;
-use tutti_rt::with_no_denormals;
 
 use super::ClapLoaded;
-
-/// A graph [`Pool`] as the FFI crate's [`TaskPool`]: every participant runs
-/// under the audio thread's float mode, as the helpers run the plugin's DSP on
-/// its behalf.
-struct GraphPool(Arc<dyn Pool>);
-
-impl TaskPool for GraphPool {
-    fn participants(&self) -> usize {
-        self.0.participants()
-    }
-
-    fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
-        self.0.try_run(wake, &|i| with_no_denormals(|| job(i)))
-    }
-}
 
 impl ClapLoaded {
     /// Whether the plugin implements `clap.thread-pool` (it has tasks it can
@@ -62,7 +46,7 @@ impl ClapLoaded {
         if pool.participants() < 2 {
             return None;
         }
-        let handle = self.plugin.pool_handle(Arc::new(GraphPool(pool)))?;
+        let handle = self.plugin.pool_handle(Arc::new(GraphPool::new(pool)))?;
         Some(PoolSnapshot { handle })
     }
 }

@@ -235,6 +235,7 @@ fn block_reason(error: &crate::ClapError) -> &'static str {
     match error {
         ClapError::PluginReturnedError => "the plugin returned CLAP_PROCESS_ERROR",
         ClapError::BlockTooLarge { .. } => "the block is longer than the activated max_frames",
+        ClapError::BlockTooSmall => "the block is shorter than the activated min_frames",
         ClapError::StartProcessingFailed => "the plugin refused to start processing",
         ClapError::NotActive => "the plugin is no longer active",
         ClapError::BufferTooShort => "a channel buffer is shorter than the block",

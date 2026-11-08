@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::ThreadId;
 
+use tutti_plugin_types::MainThread;
+
 /// The thread roles of one plugin instance.
 #[derive(Debug)]
 pub struct ThreadRoles {
@@ -61,8 +63,12 @@ impl Drop for AudioClaim<'_> {
 
 impl ThreadRoles {
     /// Roles with the calling thread as the main thread and no audio claim.
+    /// The token proves the caller is on the process's main thread, so the
+    /// thread recorded here is the one every `&MainThread` entry runs on: this
+    /// is the one place the main thread is named, and the `thread-check`
+    /// answer, the host shims and `Plugin`'s drop all read it.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(_main: &MainThread) -> Self {
         Self {
             main: std::thread::current().id(),
             audio: AtomicU64::new(NO_AUDIO_THREAD),
@@ -105,11 +111,5 @@ impl ThreadRoles {
     #[must_use]
     pub fn is_main_thread(&self) -> bool {
         std::thread::current().id() == self.main && !self.is_audio_thread()
-    }
-}
-
-impl Default for ThreadRoles {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -42,15 +42,36 @@ use clap_sys::plugin::clap_plugin;
 
 /// A pool of threads a job can be spread over.
 ///
+/// # Safety
+///
 /// The implementor owes the contract below, which this crate cannot check: a
 /// `try_run` that returns `true` has no participant left inside `job`, since
-/// `job` borrows the caller's stack. (The same contract `tutti_graph::Pool`
-/// states for its own jobs.)
+/// `job` borrows the caller's stack, and a participant that is slow, leaked or
+/// late would otherwise run the plugin's tasks on a dead frame. (The same
+/// contract `tutti_graph::Pool` states for its own jobs.)
 ///
 /// The contract `clap.thread-pool` needs, and no more: the caller joins the
 /// job, `try_run` returns after every participant has left it, and a busy pool
 /// refuses rather than waits.
-pub trait TaskPool: Send + Sync + 'static {
+///
+/// Safe code cannot claim it:
+///
+/// ```compile_fail
+/// struct Early;
+///
+/// impl tutti_clap_ffi::TaskPool for Early {
+///     fn participants(&self) -> usize {
+///         2
+///     }
+///
+///     fn try_run(&self, _wake: usize, _job: &(dyn Fn(usize) + Sync)) -> bool {
+///         true // "every participant has left" -- nobody ran anything
+///     }
+/// }
+/// ```
+// Mutation record (the `compile_fail` doctest above): declaring the trait
+// without `unsafe` makes the safe impl compile, and the doctest then fails.
+pub unsafe trait TaskPool: Send + Sync + 'static {
     /// Participants a job can have, the caller included. At least 1.
     fn participants(&self) -> usize;
 
@@ -63,6 +84,42 @@ pub trait TaskPool: Send + Sync + 'static {
     /// implementation that moves it to a helper thread sets that thread's
     /// denormal mode first.
     fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool;
+}
+
+/// A [`tutti_graph::Pool`] as a [`TaskPool`]: every participant runs under the
+/// audio thread's float mode, as the helpers run the plugin's DSP on its
+/// behalf.
+pub struct GraphPool(Arc<dyn tutti_graph::Pool>);
+
+impl GraphPool {
+    /// `pool`, served to a plugin's `request_exec`.
+    #[must_use]
+    pub fn new(pool: Arc<dyn tutti_graph::Pool>) -> Self {
+        Self(pool)
+    }
+}
+
+impl std::fmt::Debug for GraphPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphPool")
+            .field("participants", &self.0.participants())
+            .finish()
+    }
+}
+
+// SAFETY: `tutti_graph::Pool::try_run` has the contract `TaskPool::try_run`
+// asks for (`par.rs`: it "returns only once no call of `job` is still
+// running"), and the wrapper only adds `with_no_denormals` inside the job, which
+// returns before the participant leaves it.
+unsafe impl TaskPool for GraphPool {
+    fn participants(&self) -> usize {
+        self.0.participants()
+    }
+
+    fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
+        self.0
+            .try_run(wake, &|i| tutti_rt::with_no_denormals(|| job(i)))
+    }
 }
 
 /// The plugin's `clap_plugin_thread_pool::exec`.

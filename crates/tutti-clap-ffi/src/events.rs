@@ -117,8 +117,17 @@ impl EventRef<'_> {
             ),
             EventRef::Midi(e) => checked(e, &e.header, &[CLAP_EVENT_MIDI]),
             EventRef::NoteExpression(e) => checked(e, &e.header, &[CLAP_EVENT_NOTE_EXPRESSION]),
-            EventRef::ParamValue(e) => checked(e, &e.header, &[CLAP_EVENT_PARAM_VALUE]),
-            EventRef::ParamMod(e) => checked(e, &e.header, &[CLAP_EVENT_PARAM_MOD]),
+            // The cookie is a pointer the plugin gave `params.get_info` and
+            // expects back untouched; this crate hands none out (`param_info`
+            // zeroes it), so a non-null one was made up by safe code and the
+            // plugin would dereference it.
+            EventRef::ParamValue(e) if e.cookie.is_null() => {
+                checked(e, &e.header, &[CLAP_EVENT_PARAM_VALUE])
+            }
+            EventRef::ParamMod(e) if e.cookie.is_null() => {
+                checked(e, &e.header, &[CLAP_EVENT_PARAM_MOD])
+            }
+            EventRef::ParamValue(_) | EventRef::ParamMod(_) => None,
             EventRef::ParamGesture(e) => checked(
                 e,
                 &e.header,
@@ -333,11 +342,20 @@ extern "C" fn output_events_try_push(
         // (`events.h`); read unaligned, as the plugin may have packed it at
         // 4-byte alignment.
         let header = unsafe { ptr::read_unaligned(event) };
+        // Only the bytes the decoder reads are made a slice: the type's own
+        // size, once the header claims at least that much. A header that
+        // claims less, or a type that is not ours, is malformed before any
+        // byte past the header is touched.
         let claimed = header.size as usize;
+        let readable = match core_event_size(header.type_) {
+            Some(min) if claimed >= min => min,
+            _ => size_of::<clap_event_header>().min(claimed),
+        };
         // SAFETY: the plugin guarantees `header.size` readable bytes at
-        // `event` for the call (`events.h`); `claimed` is that size. The event
-        // is re-read from these bytes below, never through `event` again.
-        let bytes = unsafe { std::slice::from_raw_parts(event.cast::<u8>(), claimed) };
+        // `event` for the call (`events.h`), and `readable <= header.size`.
+        // The event is re-read from these bytes below, never through `event`
+        // again.
+        let bytes = unsafe { std::slice::from_raw_parts(event.cast::<u8>(), readable) };
         let Some(decoded) = decode(&header, bytes) else {
             sink.refuse_malformed();
             return false;
@@ -367,7 +385,11 @@ fn decode<'a>(header: &clap_event_header, bytes: &'a [u8]) -> Option<PluginEvent
         }
         CLAP_EVENT_MIDI_SYSEX => {
             let event = read::<clap_event_midi_sysex>(bytes)?;
-            let data: &[u8] = if event.buffer.is_null() || event.size == 0 {
+            // A length no slice can have is no payload.
+            let data: &[u8] = if event.buffer.is_null()
+                || event.size == 0
+                || event.size as usize > isize::MAX as usize
+            {
                 &[]
             } else {
                 // SAFETY: the plugin guarantees `buffer` addresses `size`
@@ -583,5 +605,57 @@ mod tests {
         let mut unknown = body.header;
         unknown.type_ = 999;
         assert_eq!(pushed(unknown, &body), (vec![], 1));
+    }
+
+    /// An event whose `cookie` is not null is never lent: the cookie is a
+    /// pointer the plugin gave `params.get_info` and dereferences when it
+    /// returns, and this crate hands none out, so a non-null one is made up.
+    ///
+    /// Mutation: drop the `is_null` guards in `header_ptr` (use
+    /// `checked(..)` unconditionally): the cookie-carrying events are lent and
+    /// the assertions fail.
+    #[test]
+    fn a_param_event_with_a_cookie_is_never_lent() {
+        let header = |type_, size| clap_event_header {
+            size,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_,
+            flags: 0,
+        };
+        let mut value = clap_event_param_value {
+            header: header(
+                CLAP_EVENT_PARAM_VALUE,
+                header_size::<clap_event_param_value>(),
+            ),
+            param_id: 1,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            value: 0.5,
+        };
+        let mut modulation = clap_event_param_mod {
+            header: header(CLAP_EVENT_PARAM_MOD, header_size::<clap_event_param_mod>()),
+            param_id: 1,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            amount: 0.5,
+        };
+        let lent = (CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE);
+        let inert = (u16::MAX, u16::MAX);
+        assert_eq!(seen(EventRef::ParamValue(&value)), lent);
+        assert_eq!(
+            seen(EventRef::ParamMod(&modulation)),
+            (CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_MOD)
+        );
+        value.cookie = 0x1000 as *mut c_void;
+        modulation.cookie = 0x1000 as *mut c_void;
+        assert_eq!(seen(EventRef::ParamValue(&value)), inert);
+        assert_eq!(seen(EventRef::ParamMod(&modulation)), inert);
     }
 }

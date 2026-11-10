@@ -6254,7 +6254,7 @@ plugin host know nothing):
 - **`Bypassed`**: the node's outputs are its inputs, **delayed by the node's
   declared latency**, and the node is **parked**.
 
-**The bypass path, and the channel mapping.** The dry path is a delay of
+**The bypass path, and the channel mapping.** The aligned-input path is a delay of
 `shape.latency` frames (the node's declared processing latency, never the
 musical delay), so a bypassed node arrives at the same time as an active one
 and the plan, the PDC and the arrival of everything downstream hold with no
@@ -6278,12 +6278,12 @@ recompile. The mapping from inputs to outputs:
 - **Event outputs** of a bypassed node are empty. **Event inputs** are
   discarded while it is parked; what it held is closed on the way in (below).
 
-**The dry path's history.** Output must be input delayed by `L`, so the last
+**The aligned input's history.** Output must be input delayed by `L`, so the last
 `L` input frames must exist when the toggle comes. A node with `L > 0`
 therefore carries a **bypass line**: an `AudioRing` per input channel of its
 main bus, of capacity `L`, **allocated at apply time on the control side** and
 fed every block by the node's op (a copy of the input, the same cost as a PDC
-delay's `push`). A node with `L = 0` carries none and its dry path is the
+delay's `push`). A node with `L = 0` carries none and its aligned-input path is the
 input slot. Memory is `L` frames a channel for each latent node, and only for
 latent nodes (plugins with lookahead, limiters, FFT and convolution blocks).
 A change of declared latency (`Editor::set_latency`) rebuilds the line in the
@@ -6291,23 +6291,23 @@ commit it already causes.
 
 **The toggle declick.** A change of mode is a crossfade of **256 frames**
 (`MODE_DECLICK`, **new**, the value of `PARAM_DECLICK`) on the node's
-outputs, by `CrossfadeCurve::EqualAmplitude`'s `gains(k, len)` (dry and wet
+outputs, by `CrossfadeCurve::EqualAmplitude`'s `gains(k, len)` (the aligned input and the output
 are phase-coherent, which is the case that curve is for), counted from the
 first frame of the block the toggle lands on, as a `replace` fade is. During
-the fade the node **is called**, so the wet side is real; the output is
-`wet * g_out + dry * g_in` per sample (to `Bypassed`), or `wet * g_out`
-(to `Muted`, the dry side being silence). After it, the steady state of the
+the fade the node **is called**, so the output side is real; the output is
+`y * g_out + x̂ * g_in` per sample (to `Bypassed`), or `y * g_out`
+(to `Muted`, the aligned input being silence). After it, the steady state of the
 mode holds. A toggle during a fade restarts from the current gain: the fade
 state is the outputs' current mix weight, not a count, so a flip never jumps.
 The fade state lives in the unit's record in the store, as `Fade` does, and
 is cut by a hard edit (a re-prepare, a removal) as a fade is.
 
 **Parked while bypassed.** After the fade to `Bypassed` ends, the executor does
-not call the node. It runs only the dry path (the bypass line, or a slot
+not call the node. It runs only the aligned-input path (the bypass line, or a slot
 alias when `L = 0`). The node's silence-skip rules are not involved: a bypassed
 node is parked by mode, and a sink with no outputs (a meter-like node) is
 not parked by this rule, as today. Output flags are the input's, carried
-through the dry path exactly as `Status::Bypass` carries them, so a silent
+through the aligned-input path exactly as `Status::Bypass` carries them, so a silent
 input leaves the bypassed node's output silent and downstream parks.
 
 **On un-bypass.** The node's state is stale (a delay's old repeats, a
@@ -6317,18 +6317,18 @@ reverb's old tail, a filter's old memory). So:
    **before** the first call, so the node starts clean, and starts calling it
    with its real input.
 2. For its first `L` frames the node's output is its warm-up (a lookahead
-   limiter has not yet seen `L` frames of input), so the **dry path stays
-   audible** for `L` frames, with the wet output discarded.
-3. Then the 256-frame crossfade from dry to wet runs.
+   limiter has not yet seen `L` frames of input), so the **aligned-input path stays
+   audible** for `L` frames, with the node's output discarded.
+3. Then the 256-frame crossfade from the aligned input to the output runs.
 
 So un-bypass is `reset`, warm up for `L`, fade in. For `L = 0` nodes (almost
 all) the warm-up is empty and the toggle is the fade alone. No tail of the
-old state is ever heard, and the node's latency is paid in the dry path, so
+old state is ever heard, and the node's latency is paid in the aligned-input path, so
 the output stays aligned the whole time. For a node that must **not** be
 reset (it holds the user's work: a sampler's loaded voices, a plugin's
 state), `Node::reset` is, per its contract, the clear of *signal* state, not
 of settings; a node whose `reset` loses user state breaks the contract and
-is a bug of that node. **On bypass-on**, the wet tail is not played out: the
+is a bug of that node. **On bypass-on**, the node's tail is not played out: the
 fade takes the node's output to zero in 256 frames and the tail is cut, which
 is what bypass means. A held note on a bypassed event input is closed: the
 executor already knows the keys a port holds (`held.rs`) and sends the offs
@@ -6342,7 +6342,7 @@ therefore over-counted, never under-counted.
 **Plugins.** `NodeMode` is the executor's, so any node and every plugin host
 gets it. A plugin format's own bypass parameter (the CLAP and VST3 bypass
 parameters, `kAudioUnitProperty_BypassEffect`) is **not** used for this: the
-graph's dry path is delayed by the *declared* latency, which a plugin's own
+graph's aligned-input path is delayed by the *declared* latency, which a plugin's own
 bypass need not keep. Hosts do not expose their native bypass through the
 graph's modes. A plugin's bypass parameter stays reachable as a plugin
 parameter, as any other.
@@ -6352,7 +6352,7 @@ parameter, as any other.
 already for `replace` fades. The reference keeps the same state (current mix
 weight, warm-up counter) and applies the toggle at the same block boundary;
 the differential suite drives both with one schedule. Parked and active nodes
-differ only in whether `process` runs, so serial and parallel agree; the dry
+differ only in whether `process` runs, so serial and parallel agree; the aligned-input
 path is an `AudioRing` the executor already runs identically in both.
 
 **API.** Editor: `set_mode`, `mode`. Session: `Graph::set_mode`, `mode`. The
@@ -6393,7 +6393,7 @@ says so cheaply, and it is not a mode.
   gains exactly; a toggle mid-fade has no jump (the output at the toggle frame
   equals the output at the previous frame plus one fade step); both
   directions.
-- Un-bypass: `reset` is called once before the first call; the dry path stays
+- Un-bypass: `reset` is called once before the first call; the aligned-input path stays
   audible for `L` frames; a delay node's old repeats are never heard; a
   held note on the event input is closed on bypass-on.
 - Plugin: the same through a hosted plugin node, with its declared latency,
@@ -6582,13 +6582,16 @@ the four lanes above, the graph's own surface is:
 
 **Two additions, decided by the owner (2026-11-11):**
 
-- **Dry/wet mix per node.** Lane 3 already gives every node a dry path
-  delayed by its declared latency, and a crossfade between dry and wet. A
-  continuous mix is the same machinery held at a ratio instead of run to an
-  end: `Editor::set_mix(key, Mix)`, `out = wet * m + dry * (1 - m)` per
-  channel through the bypass mapping, ramped per block like an edge gain, a
-  param target like one (`ModTarget`). `Mix::new(1.0)` is `Active` and skips
-  the dry path, bit for bit. It is **M4**, after M1. It gives any node,
+- **Blend of a node's output with its aligned input (`Mix`).** Lane 3
+  already gives every node its input delayed by its declared latency (the
+  aligned input, `x̂`) and a crossfade between it and the node's output (`y`).
+  A blend is the same machinery held at a ratio instead of run to an end:
+  `Editor::set_mix(key, Mix)`, `out = (1 - m) * x̂ + m * y` per channel through
+  the bypass mapping, ramped per block like an edge gain, a param target like
+  one (`ModTarget`). `Mix::WET` (1.0) is `Active` and skips the aligned-input
+  path, bit for bit; `Mix::DRY` (0.0) is `Bypassed` in steady state. The two
+  constants keep the studio names for the ends; the docs and the code say what
+  they mean. It is **M4**, after M1. It gives any node,
   a plugin included, the parallel-processing knob hosts expose per effect,
   with the latency alignment only the graph can do.
 - **Event tap and event inlet.** Audio has a tap and an inlet; events have
@@ -6620,7 +6623,7 @@ itself.
 |---|---|---|
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
-| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the dry/wet mix above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state). **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
+| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
 | 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses

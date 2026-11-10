@@ -11,14 +11,14 @@
 //! the reading, gate on it, or apply a gain of its own writes the four steps
 //! directly ([`render_to_buffers`],
 //! [`measure_loudness`],
-//! [`Loudness::gain_to`](tutti_dsp::Loudness::gain_to),
+//! [`Loudness::gain_to`](tutti_measure::Loudness::gain_to),
 //! [`Rendered::apply_gain`](crate::Rendered::apply_gain),
 //! [`write_buffers`]). This function exists because every
 //! host was otherwise writing the same five lines.
 
 use std::path::Path;
 
-use tutti_dsp::{LoudnessConfig, measure_loudness};
+use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_transport::RenderClock;
 use tutti_types::{Amplitude, Db, Interleaved};
 
@@ -106,9 +106,9 @@ impl Normalize {
     /// Split out so it is testable without rendering, and so the two arms sit
     /// next to each other: both are "move a measured dB figure to a target",
     /// and only the loudness arm has a ceiling to respect (which
-    /// [`Loudness::gain_to`](tutti_dsp::Loudness::gain_to) already
+    /// [`Loudness::gain_to`](tutti_measure::Loudness::gain_to) already
     /// applies).
-    fn gain_for(&self, measured: &tutti_dsp::Loudness) -> Db {
+    fn gain_for(&self, measured: &tutti_measure::Loudness) -> Db {
         match *self {
             // `Db - Db` is a gain difference, which is why `Db` implements
             // `Sub` — see the `Additive` note on `Db` in `units/level.rs`.
@@ -165,7 +165,7 @@ impl Normalize {
     /// The loudness meter reports its absolute gate (-70 LUFS) when nothing
     /// passed it, and the true-peak floor for silence: those are the readings
     /// of "no signal", not of a quiet one, and a gain from either is invented.
-    fn check(&self, reading: &tutti_dsp::Loudness) -> std::result::Result<(), Unmeasured> {
+    fn check(&self, reading: &tutti_measure::Loudness) -> std::result::Result<(), Unmeasured> {
         match self {
             // An integrated loudness is always above the gate when it was
             // measured, so the gate itself is the "passed nothing" sentinel.

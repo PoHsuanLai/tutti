@@ -38,10 +38,10 @@ list is on `ExportConfig`.
   export needs a total (to size a plan, trim latency, cap output), so it cannot
   be expressed as a live pump. Reach here to bounce a mix; reach for `tutti-io`
   to record one.
-- **Loudness measurement.** EBU R128 lives in `tutti-dsp`, which is where
+- **Loudness measurement.** EBU R128 lives in `tutti-measure`, which is where
   the engine's `Config`/`State`/step analysis vocabulary is;
   `render_normalized_to_file` measures with it. The edge is acyclic —
-  `tutti-dsp` does not depend on this crate.
+  `tutti-measure` does not depend on this crate.
 - **Threads.** Every entry point is synchronous and runs on the calling
   thread. A host that wants a render off the main thread runs it on its own
   task pool.
@@ -119,7 +119,7 @@ which path the caller is on. Hiding the two passes inside one export is what
 forces the whole signal into memory.
 
 For a gain that is logged, gated, or derived some other way, compose the steps
-directly: measure with `tutti_dsp::measure_loudness` (a streaming meter, so it can
+directly: measure with `tutti_measure::measure_loudness` (a streaming meter, so it can
 run *while* rendering), take `Loudness::gain_to`, apply it with
 `Rendered::apply_gain`, and write with `write_buffers`.
 

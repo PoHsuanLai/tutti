@@ -249,7 +249,7 @@ impl Vocoder {
             let w = self.window[i];
             // The windowed sample and the window energy that carried it, summed
             // into the same slot. `drain` divides one by the other, as
-            // `tutti_dsp::istft_transform` does; a constant COLA gain would be right
+            // `tutti_measure::istft_transform` does; a constant COLA gain would be right
             // for one window at one hop only.
             self.output.add_at(i, self.fft_buffer[i] * norm * w, w * w);
         }
@@ -279,5 +279,5 @@ pub(super) fn wrap_phase(phase: Radians) -> Radians {
 // is right only for Hann at 75% overlap, and silently wrong otherwise (a
 // Hamming window comes out 0.8 dB hot, a Blackman one 0.9 dB shy). The window
 // sum is accumulated per sample in `OverlapAdd` and divided out at the read,
-// as `tutti_dsp::istft_transform` does. See that type's doc for why the two rings
+// as `tutti_measure::istft_transform` does. See that type's doc for why the two rings
 // are one struct.

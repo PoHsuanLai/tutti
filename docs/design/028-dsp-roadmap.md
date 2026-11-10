@@ -1170,7 +1170,15 @@ re-derive it.
 
 ### 4.3 The PRs
 
-1. **The VBAP solve.** The solve and the layout into `tutti-dsp::spatial`; the
+1. **The VBAP solve.** (**Landed**, `dsp/spatial-vbap`: `tutti-dsp`'s `SpeakerLayout`,
+   `SpeakerGeometryError`, `PanningMode`, `Tuple`, `MAX_SPEAKERS`; `VbapError::Geometry`
+   replaces `Vbap`; `vbap` and `glam` are out of `Cargo.lock`. The selection is Pulkki's
+   method, the convex-hull facets of the speaker directions with the shortest diagonal of a
+   coplanar polygon (D15), not the crate's. Stereo, quad, 5.1 and 7.1 render bit for bit as
+   before; **Atmos 7.1.4's tuples changed** (the crate's selection left the centre speaker
+   in no triplet and listed each coplanar square twice over, overlapping; thirteen
+   non-overlapping triangles now) and its digest moved, argued in the PR and pinned by
+   `tutti-dsp`'s `spatial` tests and `tutti-spatial`'s `vbap_preset_digest.rs`.) The solve and the layout into `tutti-dsp::spatial`; the
    `vbap` dependency and `VbapError::Vbap` replaced; `glam` leaves the lock. Proof:
    the moved tests and digests unedited; the tuple sets of the five presets pinned;
    Pulkki's properties as new cases; `cargo tree -p tutti-dsp` shows no `glam`.

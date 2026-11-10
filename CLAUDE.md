@@ -619,7 +619,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
-  `Error`, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
+  pairs and triplets, selected from the published method, doc 028 section 4; the nodes and the
+  smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming

@@ -56,15 +56,15 @@ fn vbap_panner_stereo_process_is_allocation_free() {
 /// The rear-arc fold branch is allocation-free.
 ///
 /// `vbap_panner_stereo_process_is_allocation_free` above pans to 30 degrees,
-/// which is inside the speaker pair and takes neither branch `solve_gains`
+/// which is inside the speaker pair and takes neither branch `SpeakerLayout::gains`
 /// added. A bearing past the lateral axis on a front-only layout takes the
 /// fold: the azimuth is mirrored before the solve.
 ///
 /// The fold itself is scalar arithmetic on an `Azimuth` and cannot allocate;
 /// what this pins is that it does not push the solve onto a different path
-/// inside `vbap` that does.
+/// inside the solve that does.
 ///
-/// Mutation: have `solve_gains` build its own `Vec` for the gains instead of
+/// Mutation: have `SpeakerLayout::gains` build its own `Vec` for the gains instead of
 /// writing into the caller's scratch -> fails here and in both siblings.
 #[test]
 fn vbap_folded_rear_arc_is_allocation_free() {
@@ -81,8 +81,8 @@ fn vbap_folded_rear_arc_is_allocation_free() {
 
 /// The elevation-retreat branch is allocation-free.
 ///
-/// The other branch `solve_gains` added, and the only one that re-enters
-/// `vbap`'s solver more than once per sample. A 2D ring has no geometry at
+/// The other branch `SpeakerLayout::gains` added, and the only one that re-enters
+/// the solver more than once per sample. A 2D ring has no geometry at
 /// exactly the poles — the horizontal projection of the direction vector is the
 /// zero vector — so the first solve returns all zeros and the retreat halves the
 /// elevation and solves again.

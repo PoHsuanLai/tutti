@@ -4,7 +4,7 @@
 //! other, enable *Profiles*, and exchange *Properties* — over Universal System
 //! Exclusive messages (sub-ID#1 `0x0D`). It is **not** a UMP message type: a CI
 //! message is a byte payload carried inside a SysEx, so tutti transports it over
-//! the existing SysEx7 fragmenter ([`crate::MidiEvent::sysex7_fragments`]).
+//! the existing SysEx7 fragmenter ([`crate::ump::sysex7_fragments`]).
 //!
 //! `midi2` v0.11 does not help here — its `ci` module is a WIP stub with no
 //! usable message builders — so this layer is hand-rolled from the M2-101 byte
@@ -20,9 +20,7 @@
 //! [`discovery`] (the mandatory core), [`profile`], [`property`].
 
 use std::vec::Vec;
-use tutti_ump::MidiGroup;
-
-use crate::MidiEvent;
+use tutti_ump::{MidiGroup, Ump};
 
 pub mod discovery;
 pub mod profile;
@@ -346,19 +344,19 @@ impl CiMessage {
 }
 
 /// Encodes `message` and fragments it onto `out` as SysEx7 packets on `group`
-/// (the CI transport). Thin wrapper over [`MidiEvent::sysex7_fragments`].
-pub fn ci_to_sysex7(group: MidiGroup, message: &CiMessage, out: &mut Vec<MidiEvent>) {
+/// (the CI transport). Thin wrapper over [`sysex7_fragments`](crate::ump::sysex7_fragments).
+pub fn ci_to_sysex7(group: MidiGroup, message: &CiMessage, out: &mut Vec<Ump>) {
     let body = message.encode();
-    MidiEvent::sysex7_fragments(group, &body, out);
+    crate::ump::sysex7_fragments(group, &body, out);
 }
 
 /// Reassembles a run of SysEx7 packets (as emitted by [`ci_to_sysex7`]) back into
 /// a [`CiMessage`], or `None` if they don't form one. Concatenates each packet's
-/// payload via [`MidiEvent::sysex7_payload`] then decodes.
-pub fn sysex7_to_ci(events: &[MidiEvent]) -> Option<CiMessage> {
+/// payload via [`sysex7_payload`](crate::ump::sysex7_payload) then decodes.
+pub fn sysex7_to_ci(packets: &[Ump]) -> Option<CiMessage> {
     let mut body = Vec::new();
-    for ev in events {
-        let (_status, bytes, n) = ev.sysex7_payload()?;
+    for ev in packets {
+        let (_status, bytes, n) = crate::ump::sysex7_payload(ev)?;
         body.extend_from_slice(&bytes[..n]);
     }
     CiMessage::decode(&body)

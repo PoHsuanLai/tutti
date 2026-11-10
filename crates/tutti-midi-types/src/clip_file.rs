@@ -13,7 +13,7 @@
 //! Clockstamp Ticks Per Quarter Note). The stream is bracketed by Start-of-Clip
 //! and End-of-Clip UMP Stream messages.
 //!
-//! This module models the file as a flat list of `(delta_ticks, MidiEvent)`,
+//! This module models the file as a flat list of `(delta_ticks, Ump)`,
 //! which is all a Type-0-like clip needs; the caller supplies the DCTPQ.
 
 use std::vec::Vec;
@@ -23,9 +23,9 @@ use midi2::ump_stream::{EndOfClip, StartOfClip};
 use midi2::utility::{DeltaClockstamp, DeltaClockstampTpq};
 use midi2::ux::u20;
 
-use crate::ump::MidiEvent;
+use crate::translation::scaling::midi1_velocity_to_midi2;
 use tutti_types::{Beat, BeatDuration, Bpm};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Ump, Utility};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
 pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -44,23 +44,23 @@ pub struct ClipEvent {
     /// event after it.
     pub delta_ticks: u32,
     /// The event itself. Only its UMP words are written; position in the clip
-    /// comes from `delta_ticks`, not from the event's own frame offset.
-    pub event: MidiEvent,
+    /// comes from `delta_ticks`.
+    pub event: Ump,
 }
 
 impl ClipEvent {
     /// A timed event: `delta_ticks` since the previous event, then the event.
     #[inline]
     #[must_use]
-    pub const fn new(delta_ticks: u32, event: MidiEvent) -> Self {
+    pub const fn new(delta_ticks: u32, event: Ump) -> Self {
         Self { delta_ticks, event }
     }
 }
 
-impl From<(u32, MidiEvent)> for ClipEvent {
+impl From<(u32, Ump)> for ClipEvent {
     /// `(delta_ticks, event)` — lets a caller write the tuple form.
     #[inline]
-    fn from((delta_ticks, event): (u32, MidiEvent)) -> Self {
+    fn from((delta_ticks, event): (u32, Ump)) -> Self {
         Self { delta_ticks, event }
     }
 }
@@ -116,8 +116,6 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
 ///
 /// ```
 /// # use tutti_midi_types::{ParsedClipFile, write_clip_file_with_header, ClipHeader};
-/// # use tutti_midi_types::{write_clip_file_from_beats, Beat, MidiEvent};
-/// # use tutti_ump::{MidiChannel, MidiGroup};
 /// # let first = write_clip_file_with_header(96, ClipHeader::default(), &[]);
 /// let clip = ParsedClipFile::from_bytes(&first).unwrap();
 /// let again = write_clip_file_with_header(
@@ -169,12 +167,12 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
     out.extend_from_slice(&CLIP_FILE_MAGIC);
 
     // DCTPQ declares the tick unit (preceded by a zero DCS per §3.2.1).
-    push_words(&mut out, delta_clockstamp(0).data_words());
-    push_words(&mut out, dctpq(ticks_per_quarter).data_words());
+    push_words(&mut out, delta_clockstamp(0).words());
+    push_words(&mut out, dctpq(ticks_per_quarter).words());
 
     // Start of Clip (preceded by a zero DCS — bar 1 begins here).
-    push_words(&mut out, delta_clockstamp(0).data_words());
-    push_words(&mut out, start_of_clip().data_words());
+    push_words(&mut out, delta_clockstamp(0).words());
+    push_words(&mut out, start_of_clip().words());
 
     // Set Tempo then Set Time Signature, in that order and at the same (zero)
     // clockstamp as Start of Clip — M2-116 §7.1.1: the first Set Tempo "should
@@ -183,17 +181,17 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
     // and Set Tempo messages".
     if let Some(h) = header {
         let (numerator, denominator) = h.time_signature;
-        push_words(&mut out, delta_clockstamp(0).data_words());
+        push_words(&mut out, delta_clockstamp(0).words());
         push_words(
             &mut out,
-            MidiEvent::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm).data_words(),
+            crate::ump::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm).words(),
         );
-        push_words(&mut out, delta_clockstamp(0).data_words());
+        push_words(&mut out, delta_clockstamp(0).words());
         push_words(
             &mut out,
             // 8 thirty-second notes per quarter — the standard value.
-            MidiEvent::flex_set_time_signature(MidiGroup::FIRST, numerator, denominator, 8)
-                .data_words(),
+            crate::ump::flex_set_time_signature(MidiGroup::FIRST, numerator, denominator, 8)
+                .words(),
         );
     }
 
@@ -202,12 +200,12 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
     // DCS·NOOP restarts (M2-116 §3.2.2) — see `push_delta`.
     for ev in events {
         push_delta(&mut out, ev.delta_ticks);
-        push_words(&mut out, ev.event.data_words());
+        push_words(&mut out, ev.event.words());
     }
 
     // End of Clip (preceded by a zero DCS).
-    push_words(&mut out, delta_clockstamp(0).data_words());
-    push_words(&mut out, end_of_clip().data_words());
+    push_words(&mut out, delta_clockstamp(0).words());
+    push_words(&mut out, end_of_clip().words());
     out
 }
 
@@ -225,22 +223,23 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 /// than `u32::MAX` ticks is clamped to it.
 ///
 /// ```
-/// # use tutti_midi_types::{write_clip_file_from_beats, ParsedClipFile, MidiEvent};
+/// # use tutti_midi_types::{write_clip_file_from_beats, ParsedClipFile};
 /// # use tutti_midi_types::Beat;
 /// # use tutti_ump::{MidiChannel, MidiGroup};
+/// use tutti_fixtures::midi::{note_off, note_on};
 /// let bytes = write_clip_file_from_beats(96, [
-///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
-///     (Beat(2.0), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
+///     (Beat(0.0), note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
+///     (Beat(2.0), note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
 /// ]);
 /// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
 /// assert_eq!(clip.iter().count(), 2);
 /// ```
 pub fn write_clip_file_from_beats(
     ticks_per_quarter: u16,
-    events: impl IntoIterator<Item = (Beat, MidiEvent)>,
+    events: impl IntoIterator<Item = (Beat, Ump)>,
 ) -> Vec<u8> {
     let tpq = f64::from(ticks_per_quarter);
-    let mut timed: Vec<(Beat, MidiEvent)> = events.into_iter().collect();
+    let mut timed: Vec<(Beat, Ump)> = events.into_iter().collect();
     // `total_cmp`: a total order even with a NaN beat, which a partial
     // order made `Equal` to everything (an inconsistent order the sort may
     // panic on).
@@ -308,7 +307,7 @@ impl ParsedClipFile {
     /// consume a clip when you schedule in beats.
     ///
     /// Beats are `delta_ticks` summed and divided by [`Self::ticks_per_quarter`].
-    pub fn iter(&self) -> impl Iterator<Item = (Beat, MidiEvent)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (Beat, Ump)> + '_ {
         let tpq = f64::from(self.ticks_per_quarter);
         let mut abs_tick: u64 = 0;
         self.events.iter().map(move |ce| {
@@ -373,7 +372,7 @@ impl ParsedClipFile {
     /// Note On on the same group *and* channel; overlapping identical notes
     /// close in LIFO order; notes still open at End of Clip are dropped (their
     /// duration is unknowable). MIDI 1.0 velocity-0 Note On counts as a Note Off
-    /// — [`MidiEvent::is_note_off`] already folds that in.
+    /// — [`Ump::is_note_off`] already folds that in.
     pub fn notes(&self) -> Vec<ClipNote> {
         use std::collections::BTreeMap;
 
@@ -382,16 +381,24 @@ impl ParsedClipFile {
         let mut out: Vec<ClipNote> = Vec::new();
 
         for (beat, event) in self.iter() {
-            let (Some(note), Some(channel)) = (event.note(), event.channel()) else {
+            // `key_event` reads the status, group, channel and note bits of a
+            // MIDI 1.0 or 2.0 channel-voice packet and counts a MIDI 1.0 Note On
+            // at velocity 0 as an off, as `Ump::is_note_off` does.
+            let Some(key_event) = event.key_event() else {
                 continue;
             };
-            let key = (event.group(), channel, note);
-            // Order matters: a velocity-0 MIDI 1.0 Note On satisfies both
-            // predicates' shapes, and `is_note_off` is the one that claims it.
-            if event.is_note_off() {
-                if let Some((start, velocity)) = held.get_mut(&key).and_then(Vec::pop) {
+            let (KeyEvent::On(key) | KeyEvent::Off(key)) = key_event else {
+                continue;
+            };
+            let lane = key.lane();
+            let group = MidiGroup::masked(lane >> 4);
+            let channel = MidiChannel::masked(lane & 0x0F);
+            let note = key.note();
+            let map_key = (group, channel, note);
+            if matches!(key_event, KeyEvent::Off(_)) {
+                if let Some((start, velocity)) = held.get_mut(&map_key).and_then(Vec::pop) {
                     out.push(ClipNote {
-                        group: key.0,
+                        group,
                         channel,
                         note,
                         velocity,
@@ -399,9 +406,17 @@ impl ParsedClipFile {
                         duration_beats: (beat - start).max(BeatDuration(0.0)),
                     });
                 }
-            } else if event.is_note_on() {
-                let velocity = event.velocity_u16().unwrap_or(0);
-                held.entry(key).or_default().push((beat, velocity));
+            } else {
+                // A Note On at velocity 0 is only an off in MIDI 1.0; a MIDI 2.0
+                // one is neither a start nor an end here.
+                let velocity = if key.is_m2() {
+                    (event.0[1] >> 16) as u16
+                } else {
+                    midi1_velocity_to_midi2((event.0[0] & 0x7F) as u8)
+                };
+                if velocity > 0 {
+                    held.entry(map_key).or_default().push((beat, velocity));
+                }
             }
         }
 
@@ -506,7 +521,7 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
         let mt = (word0 >> 28) as u8;
         let n = crate::ump::ump_word_count(mt);
         let raw = words.take(n).ok_or(ClipFileError::Truncated)?;
-        let ev = MidiEvent::from_ump(0, raw);
+        let ev = crate::ump::packet_from(raw);
 
         // Classify by message type + status.
         if mt == 0x0 {
@@ -597,10 +612,10 @@ fn push_words(out: &mut Vec<u8>, words: &[u32]) {
 /// Widest value a single 20-bit Delta Clockstamp field can carry.
 const DCS_MAX: u32 = 0x000F_FFFF;
 
-fn delta_clockstamp(ticks: u32) -> MidiEvent {
+fn delta_clockstamp(ticks: u32) -> Ump {
     let mut m = DeltaClockstamp::<[u32; 1]>::new();
     m.set_time_data(u20::new(ticks & DCS_MAX));
-    MidiEvent::from_ump(0, m.data())
+    crate::ump::packet_from(m.data())
 }
 
 /// Emit `ticks` as Delta Clockstamps, restarting the count with a NOOP each
@@ -617,25 +632,25 @@ fn delta_clockstamp(ticks: u32) -> MidiEvent {
 /// restarts. `0` still emits exactly one (zero) DCS.
 fn push_delta(out: &mut Vec<u8>, mut ticks: u32) {
     while ticks > DCS_MAX {
-        push_words(out, delta_clockstamp(DCS_MAX).data_words());
-        push_words(out, MidiEvent::noop().data_words());
+        push_words(out, delta_clockstamp(DCS_MAX).words());
+        push_words(out, Ump::from(Message::Utility(Utility::Noop)).words());
         ticks -= DCS_MAX;
     }
-    push_words(out, delta_clockstamp(ticks).data_words());
+    push_words(out, delta_clockstamp(ticks).words());
 }
 
-fn dctpq(ticks_per_quarter: u16) -> MidiEvent {
+fn dctpq(ticks_per_quarter: u16) -> Ump {
     let mut m = DeltaClockstampTpq::<[u32; 1]>::new();
     m.set_time_data(ticks_per_quarter);
-    MidiEvent::from_ump(0, m.data())
+    crate::ump::packet_from(m.data())
 }
 
-fn start_of_clip() -> MidiEvent {
-    MidiEvent::from_ump(0, StartOfClip::<[u32; 4]>::new().data())
+fn start_of_clip() -> Ump {
+    crate::ump::packet_from(StartOfClip::<[u32; 4]>::new().data())
 }
 
-fn end_of_clip() -> MidiEvent {
-    MidiEvent::from_ump(0, EndOfClip::<[u32; 4]>::new().data())
+fn end_of_clip() -> Ump {
+    crate::ump::packet_from(EndOfClip::<[u32; 4]>::new().data())
 }
 
 /// Reads big-endian u32 words from a byte slice.

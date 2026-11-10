@@ -10,10 +10,19 @@ mod conformance_support;
 
 use std::ffi::CStr;
 
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst3_host::{
-    AudioBuffer, InputEvents, Library, MidiEvent, ParameterChanges, TransportInfo,
-};
+use tutti_vst3_host::{AudioBuffer, InputEvents, Library, ParameterChanges, TransportInfo};
+
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
 
 use conformance_support::*;
 
@@ -538,20 +547,32 @@ fn note_lifecycle_across_blocks_is_spec_clean() {
         // Block 0 starts three notes; block 1 ends them. Nothing is left
         // sounding, and no note-off lacks its note-on.
         let on = [
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
-                .with_frame_offset(0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x6000)
-                .with_frame_offset(64),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000)
-                .with_frame_offset(128),
+            (
+                at(0),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            ),
+            (
+                at(64),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x6000),
+            ),
+            (
+                at(128),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000),
+            ),
         ];
         let off = [
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
-                .with_frame_offset(0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x4000)
-                .with_frame_offset(64),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x4000)
-                .with_frame_offset(128),
+            (
+                at(0),
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+            ),
+            (
+                at(64),
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x4000),
+            ),
+            (
+                at(128),
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x4000),
+            ),
         ];
         let blocks = [
             Block::of(512).midi(&on),
@@ -682,11 +703,22 @@ fn midi_event_list_is_spec_clean() {
         return;
     }
     let midi = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(200),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000).with_frame_offset(50),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
-            .with_frame_offset(400),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000).with_frame_offset(100),
+        (
+            at(200),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(50),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000),
+        ),
+        (
+            at(400),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+        ),
+        (
+            at(100),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000),
+        ),
     ];
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely

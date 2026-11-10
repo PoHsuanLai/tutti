@@ -1,5 +1,5 @@
 use super::*;
-use tutti_midi_types::MidiEvent;
+use tutti_fixtures::midi::note_on;
 use tutti_types::Beat;
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -10,7 +10,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 /// reclaiming → the first clip is still alive, fails.
 #[test]
 fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
-    let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+    let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
     let mut node = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on)]);
     let controls = MidiClipControls {
         shared: Arc::clone(&node.shared),

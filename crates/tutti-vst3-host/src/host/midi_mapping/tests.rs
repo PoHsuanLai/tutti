@@ -1,5 +1,25 @@
 use super::*;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_graph::UmpAt;
+use tutti_midi_types::{MidiMessage, sysex7_fragments};
+use tutti_types::Samples;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+
+/// A packet from its words, zero-padded to four, at offset 0.
+fn raw(words: &[u32]) -> UmpAt {
+    let mut packet = [0; 4];
+    packet[..words.len()].copy_from_slice(words);
+    (Offset::ZERO, Ump(packet))
+}
+
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
 
 #[test]
 fn empty_mapping_returns_none() {
@@ -30,20 +50,23 @@ fn lookup_resolves_mapped_slots() {
     assert_eq!(m.lookup(0, NUM_CONTROLLERS), None);
 }
 
-/// Run a `MidiEvent` through `midi_to_mapped_controller`.
-fn mapped(event: &MidiEvent) -> Option<(u8, usize, f64)> {
-    midi_to_mapped_controller(event)
+/// Run a `(Offset, Ump)` through `midi_to_mapped_controller`.
+fn mapped(event: &UmpAt) -> Option<(u8, usize, f64)> {
+    midi_to_mapped_controller(&event.1)
 }
 
 #[test]
 fn cc_decodes_to_controller_and_normalized_value() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     // CC 74 (brightness) = 64 on channel 2.
-    let (ch, ctrl, value) = mapped(&MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::of(2),
-        CCNumber::BRIGHTNESS,
-        midi1_cc_to_midi2(64),
+    let (ch, ctrl, value) = mapped(&(
+        Offset::ZERO,
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::of(2),
+            CCNumber::BRIGHTNESS,
+            midi1_cc_to_midi2(64),
+        ),
     ))
     .unwrap();
     assert_eq!(ch, 2);
@@ -54,10 +77,9 @@ fn cc_decodes_to_controller_and_normalized_value() {
 #[test]
 fn channel_pressure_decodes_to_aftertouch() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
-    let (ch, ctrl, value) = mapped(&MidiEvent::channel_pressure(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        midi1_cc_to_midi2(127),
+    let (ch, ctrl, value) = mapped(&(
+        Offset::ZERO,
+        midi::channel_pressure(MidiGroup::FIRST, MidiChannel::FIRST, midi1_cc_to_midi2(127)),
     ))
     .unwrap();
     assert_eq!(ch, 0);
@@ -68,10 +90,13 @@ fn channel_pressure_decodes_to_aftertouch() {
 #[test]
 fn pitch_bend_center_is_half() {
     use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
-    let (ch, ctrl, value) = mapped(&MidiEvent::pitch_bend(
-        MidiGroup::FIRST,
-        MidiChannel::of(4),
-        midi1_pitch_bend_to_midi2(8192),
+    let (ch, ctrl, value) = mapped(&(
+        Offset::ZERO,
+        midi::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::of(4),
+            midi1_pitch_bend_to_midi2(8192),
+        ),
     ))
     .unwrap();
     assert_eq!(ch, 4);
@@ -83,11 +108,9 @@ fn pitch_bend_center_is_half() {
 #[test]
 fn note_on_is_not_a_mapped_controller() {
     assert_eq!(
-        mapped(&MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
+        mapped(&(
+            Offset::ZERO,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
         )),
         None
     );
@@ -109,21 +132,28 @@ fn route_cc_events_splits_mapped_cc_into_params() {
     let mapping = mod_wheel_mapping(500);
     // Mod wheel (mapped) + a note-on (passes through) + an unmapped CC.
     let events = [
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(64),
-        )
-        .with_frame_offset(8),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::BRIGHTNESS,
-            midi1_cc_to_midi2(100),
-        )
-        .with_frame_offset(0),
+        (
+            at(8),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(64),
+            ),
+        ),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(0),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::BRIGHTNESS,
+                midi1_cc_to_midi2(100),
+            ),
+        ),
     ];
 
     let mut filtered = FilteredMidi::new();
@@ -142,20 +172,26 @@ fn route_cc_events_splits_mapped_cc_into_params() {
 
     // Note-on and the unmapped CC 74 stayed as MIDI events.
     assert_eq!(filtered.len(), 2);
-    assert!(filtered.iter().any(|e| e.is_note_on()));
+    assert!(
+        filtered
+            .iter()
+            .any(|e| MidiMessage::from_ump(e.1).is_note_on())
+    );
 }
 
 #[test]
 fn route_cc_events_preserves_host_params() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     let mapping = mod_wheel_mapping(500);
-    let events = [MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        CCNumber::MOD_WHEEL,
-        midi1_cc_to_midi2(127),
-    )
-    .with_frame_offset(0)];
+    let events = [(
+        at(0),
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(127),
+        ),
+    )];
 
     let mut filtered = FilteredMidi::new();
     let mut params = ParameterChanges::reserved(2, 1);
@@ -178,20 +214,24 @@ fn sort_param_points_orders_merged_host_and_cc_points() {
     let mapping = mod_wheel_mapping(500);
     // Two mapped mod-wheel CCs arriving OUT of frame order (100 before 10).
     let events = [
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(100),
-        )
-        .with_frame_offset(100),
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(10),
-        )
-        .with_frame_offset(10),
+        (
+            at(100),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(100),
+            ),
+        ),
+        (
+            at(10),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(10),
+            ),
+        ),
     ];
 
     let mut filtered = FilteredMidi::new();
@@ -321,13 +361,15 @@ fn cc_route_reserves_only_while_mapped() {
         ParameterChanges::point_budget(QUEUES, room)
     );
 
-    let events = [MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        CCNumber::MOD_WHEEL,
-        midi1_cc_to_midi2(64),
-    )
-    .with_frame_offset(3)];
+    let events = [(
+        at(3),
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        ),
+    )];
     let mut host = ParameterChanges::reserved(1, 1);
     host.add_change(7u32.into(), 0, 0.25);
     assert_no_alloc::assert_no_alloc(|| {
@@ -356,13 +398,15 @@ fn a_following_route_uses_the_published_mapping() {
 
     let cell = std::sync::Arc::new(ArcLend::new(MidiCcCell(MidiCcMapping::empty())));
     let mut route = CcRoute::following(cell.reader(), true, 4, 4);
-    let events = [MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        CCNumber::MOD_WHEEL,
-        midi1_cc_to_midi2(64),
-    )
-    .with_frame_offset(3)];
+    let events = [(
+        at(3),
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        ),
+    )];
 
     assert!(
         route.route(&events, None).is_none(),
@@ -396,14 +440,19 @@ fn a_following_route_uses_the_published_mapping() {
 fn cc_route_first_block_is_allocation_free_without_warmup() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     let events = [
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(64),
-        )
-        .with_frame_offset(16),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+        (
+            at(16),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(64),
+            ),
+        ),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
     ];
     let mut host = ParameterChanges::reserved(1, 4);
     for (offset, value) in [(0, 0.1), (8, 0.2), (24, 0.3), (40, 0.4)] {
@@ -452,13 +501,15 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
         host
     };
     let cc = |frame: u32, value: u8| {
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(value),
+        (
+            at(frame),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(value),
+            ),
         )
-        .with_frame_offset(frame)
     };
     let (warm, measured) = (chunk(0..pooled), chunk(pooled..2 * pooled));
     let one = [cc(0, 10)];
@@ -522,11 +573,14 @@ fn a_bridged_chunk_reaches_the_route_whole() {
             },
         ));
     }
-    let mapped = MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        CCNumber::MOD_WHEEL,
-        midi1_cc_to_midi2(64),
+    let mapped = (
+        Offset::ZERO,
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        ),
     );
     for events in [&[][..], &[mapped][..]] {
         let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), QUEUES, room);
@@ -610,16 +664,18 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
         assert!(host.add_change(MAPPED.into(), offset, value));
     }
     let cc = |frame: u32, value: u8| {
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(value),
+        (
+            at(frame),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(value),
+            ),
         )
-        .with_frame_offset(frame)
     };
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
-    let mut ends = |events: &[MidiEvent]| {
+    let mut ends = |events: &[UmpAt]| {
         let (_, params) = route.route(events, Some(&host)).expect("mapped");
         let q = params.queue(MAPPED.into()).expect("queued");
         assert!(
@@ -662,16 +718,18 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
         assert!(host.add_change(MAPPED.into(), 8 * k as i32, 0.25));
     }
     let cc = |frame: u32, value: u8| {
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(value),
+        (
+            at(frame),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(value),
+            ),
         )
-        .with_frame_offset(frame)
     };
     // On host frames (multiples of 8) and between them.
-    let events: Vec<MidiEvent> = (0..CCS as u32)
+    let events: Vec<UmpAt> = (0..CCS as u32)
         .map(|k| cc(100 * k + if k % 2 == 0 { 0 } else { 3 }, 127))
         .collect();
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
@@ -716,22 +774,32 @@ fn route_cc_events_is_allocation_free_after_warmup() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     let mapping = mod_wheel_mapping(500);
     let events = [
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(64),
-        )
-        .with_frame_offset(0),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(64),
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::BRIGHTNESS,
-            midi1_cc_to_midi2(10),
-        )
-        .with_frame_offset(32),
+        (
+            at(0),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(64),
+            ),
+        ),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(64),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+        ),
+        (
+            at(32),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::BRIGHTNESS,
+                midi1_cc_to_midi2(10),
+            ),
+        ),
     ];
 
     let mut route = CcRoute::new(mapping, 4, 16);
@@ -756,10 +824,10 @@ fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
     list.staged_sysex()
 }
 
-fn sysex_packets(payload: &[u8]) -> Vec<MidiEvent> {
+fn sysex_packets(payload: &[u8]) -> Vec<UmpAt> {
     let mut out = Vec::new();
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
-    out
+    sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+    out.into_iter().map(|ump| (Offset::ZERO, ump)).collect()
 }
 
 /// **A plugin with a CC mapping gets a SysEx spanning blocks whole**: a
@@ -777,13 +845,16 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
     let payload: Vec<u8> = (0..1596).map(|i| (i % 0x7F) as u8).collect();
     let packets = sysex_packets(&payload);
     assert_eq!(packets.len(), 266);
-    let cc = MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        CCNumber::MOD_WHEEL,
-        midi1_cc_to_midi2(64),
+    let cc = (
+        Offset::ZERO,
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        ),
     );
-    let first: Vec<MidiEvent> = std::iter::once(cc)
+    let first: Vec<UmpAt> = std::iter::once(cc)
         .chain(packets[..MIDI_STACK_CAPACITY - 1].iter().copied())
         .collect();
     assert_eq!(first.len(), MIDI_STACK_CAPACITY);
@@ -863,7 +934,7 @@ fn a_packet_is_mapped_by_what_it_decodes_to() {
         group: MidiGroup::FIRST,
         channel: MidiChannel::of(2),
     };
-    let packet = |message| MidiEvent::from_ump(0, Ump::from(message).words());
+    let packet = |message| (Offset::ZERO, Ump::from(message));
     let one_cc = packet(Message::Midi1(
         address,
         Voice1::ControlChange {
@@ -873,7 +944,10 @@ fn a_packet_is_mapped_by_what_it_decodes_to() {
     ));
     // Full scale widens to 0xFFFF_FFFF, which is exactly 1.0.
     assert_eq!(mapped(&one_cc), Some((2, 1, 1.0)));
-    assert_eq!(mapped(&MidiEvent::timing_clock(MidiGroup::FIRST)), None);
-    assert_eq!(mapped(&MidiEvent::from_ump(0, &[0x6000_0000])), None);
-    assert_eq!(mapped(&MidiEvent::from_ump(0, &[0x4070_0000, 0])), None);
+    assert_eq!(
+        mapped(&(Offset::ZERO, midi::timing_clock(MidiGroup::FIRST))),
+        None
+    );
+    assert_eq!(mapped(&raw(&[0x6000_0000])), None);
+    assert_eq!(mapped(&raw(&[0x4070_0000, 0])), None);
 }

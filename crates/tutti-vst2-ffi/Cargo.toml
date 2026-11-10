@@ -50,11 +50,14 @@ log = "0.4"
 num-traits = "0.2"
 num_enum = "0.5.2"
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+tutti-graph = { path = "../tutti-graph" }
 tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
-tutti-ump = { path = "../tutti-ump", default-features = false }
+# The test messages (`tutti_fixtures::midi`).
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # Test-only global allocator: the grown-pins refusal must not allocate.
 assert_no_alloc = { version = "1", default-features = false }
 

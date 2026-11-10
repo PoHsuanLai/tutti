@@ -5,111 +5,13 @@
 //! running-status dance. `RegisteredController` = RPN, `AssignableController` =
 //! NRPN (M2-104 §7.4.7–7.4.8). The MPE Configuration Message is RPN 0x0000/0x06.
 
-use midi2::prelude::*;
-use tutti_ump::{MidiChannel, MidiGroup};
-
-use super::MidiEvent;
-
-impl MidiEvent {
-    /// MIDI 2.0 **Registered Controller (RPN)** — `bank`/`index` select the
-    /// registered parameter, `data` is its full 32-bit value.
-    #[inline]
-    pub fn registered_controller(
-        group: MidiGroup,
-        channel: MidiChannel,
-        bank: u8,
-        index: u8,
-        data: u32,
-    ) -> Self {
-        use midi2::channel_voice2::RegisteredController;
-        let mut m = RegisteredController::<[u32; 2]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_channel(u4::new(channel.get()));
-        m.set_bank(u7::new(bank & 0x7F));
-        m.set_index(u7::new(index & 0x7F));
-        m.set_controller_data(data);
-        Self::from_ump(0, m.data())
-    }
-
-    /// MIDI 2.0 **Assignable Controller (NRPN)** — `bank`/`index` select the
-    /// non-registered parameter, `data` is its full 32-bit value.
-    #[inline]
-    pub fn assignable_controller(
-        group: MidiGroup,
-        channel: MidiChannel,
-        bank: u8,
-        index: u8,
-        data: u32,
-    ) -> Self {
-        use midi2::channel_voice2::AssignableController;
-        let mut m = AssignableController::<[u32; 2]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_channel(u4::new(channel.get()));
-        m.set_bank(u7::new(bank & 0x7F));
-        m.set_index(u7::new(index & 0x7F));
-        m.set_controller_data(data);
-        Self::from_ump(0, m.data())
-    }
-
-    /// MIDI 2.0 **Relative Registered Controller** — a signed *delta* applied to
-    /// the RPN at `bank`/`index`, rather than an absolute value (M2-104 §7.4.8).
-    ///
-    /// `delta` is `i32` because the spec's data field "contains a Two's
-    /// Complement value, to provide negative and positive relative control of
-    /// the destination value" — a distinct algebra from
-    /// [`registered_controller`](Self::registered_controller)'s absolute `u32`,
-    /// which is why it is a separate constructor rather than a flag.
-    ///
-    /// These share the absolute form's address space and banks, but per §7.4.8
-    /// "cannot be translated to the MIDI 1.0 Protocol" — an endless encoder has
-    /// no MIDI 1.0 equivalent.
-    #[inline]
-    pub fn relative_registered_controller(
-        group: MidiGroup,
-        channel: MidiChannel,
-        bank: u8,
-        index: u8,
-        delta: i32,
-    ) -> Self {
-        use midi2::channel_voice2::RelativeRegisteredController;
-        let mut m = RelativeRegisteredController::<[u32; 2]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_channel(u4::new(channel.get()));
-        m.set_bank(u7::new(bank & 0x7F));
-        m.set_index(u7::new(index & 0x7F));
-        m.set_controller_data(delta as u32);
-        Self::from_ump(0, m.data())
-    }
-
-    /// MIDI 2.0 **Relative Assignable Controller** — a signed *delta* applied to
-    /// the NRPN at `bank`/`index`. See
-    /// [`relative_registered_controller`](Self::relative_registered_controller)
-    /// for the two's-complement data field.
-    #[inline]
-    pub fn relative_assignable_controller(
-        group: MidiGroup,
-        channel: MidiChannel,
-        bank: u8,
-        index: u8,
-        delta: i32,
-    ) -> Self {
-        use midi2::channel_voice2::RelativeAssignableController;
-        let mut m = RelativeAssignableController::<[u32; 2]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_channel(u4::new(channel.get()));
-        m.set_bank(u7::new(bank & 0x7F));
-        m.set_index(u7::new(index & 0x7F));
-        m.set_controller_data(delta as u32);
-        Self::from_ump(0, m.data())
-    }
-}
-
-// NOTE: there is deliberately no tuple decoder (`relative_controller`) beside
-// these constructors. Decoding goes through `MidiEvent::message()` and
-// `MidiMessage::RelativeController`, which also carries the channel and frame
-// offset and re-encodes — one decode of this wire format, not two that can
-// drift apart, the same single-homing rule `translation::scaling` keeps for
-// the spec's scalers.
+// A Registered or Assignable Controller, absolute or relative, is a
+// `tutti_ump::Voice2` (`Registered`, `Assignable`, `RelativeRegistered`,
+// `RelativeAssignable`): there is no constructor here. Decoding goes through
+// `MidiMessage::from_ump` and `MidiMessage::RelativeController`, which also
+// carries the channel and re-encodes: one decode of this wire format, not two
+// that can drift apart, the same single-homing rule `translation::scaling`
+// keeps for the spec's scalers.
 
 /// RPN bank for the MPE Configuration Message and Pitch-Bend Sensitivity: `0x00`.
 pub const RPN_BANK_MPE: u8 = 0x00;

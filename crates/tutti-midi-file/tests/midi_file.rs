@@ -10,13 +10,14 @@
 mod support;
 
 use support::{Division, RawEvent, build_smf};
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_midi_file::{
     ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage,
     SmfTimedEvent, smf, write_clip_file_from_beats, write_clip_file_with_header,
 };
-use tutti_midi_types::MidiEvent;
+use tutti_midi_types::{MidiMessage, flex_set_tempo};
 use tutti_types::{Beat, Bpm};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
 const TPQ: u16 = 480;
@@ -55,7 +56,7 @@ fn smf_bytes() -> Vec<u8> {
 // ── the timed stream ────────────────────────────────────────────────────────
 
 /// **An SMF and a Clip File of the same notes yield the same
-/// `(Beat, MidiEvent)` list, the SMF's velocity widened.**
+/// `(Beat, Ump)` list, the SMF's velocity widened.**
 ///
 /// The SMF holds two tracks (so the merge is exercised), a note on channel 3,
 /// a note ended by a velocity-0 note-on (the MIDI 1.0 idiom) and one by a
@@ -84,10 +85,10 @@ fn an_smf_and_a_clip_file_of_the_same_notes_yield_the_same_events() {
     let clip = write_clip_file_from_beats(
         TPQ,
         [
-            (Beat(0.0), MidiEvent::note_on(g, c0, 60, 0xFFFF)),
-            (Beat(0.5), MidiEvent::note_on(g, c3, 64, 0x8000)),
-            (Beat(1.0), MidiEvent::note_off(g, c0, 60, 0)),
-            (Beat(1.5), MidiEvent::note_off(g, c3, 64, 0)),
+            (Beat(0.0), note_on(g, c0, 60, 0xFFFF)),
+            (Beat(0.5), note_on(g, c3, 64, 0x8000)),
+            (Beat(1.0), note_off(g, c0, 60, 0)),
+            (Beat(1.5), note_off(g, c3, 64, 0)),
         ],
     );
 
@@ -96,12 +97,12 @@ fn an_smf_and_a_clip_file_of_the_same_notes_yield_the_same_events() {
     assert_eq!(smf.kind(), MidiFileKind::StandardMidiFile);
     assert_eq!(clip.kind(), MidiFileKind::ClipFile);
 
-    let from_smf: Vec<(Beat, MidiEvent)> = smf.iter().collect();
-    let from_clip: Vec<(Beat, MidiEvent)> = clip.iter().collect();
+    let from_smf: Vec<(Beat, Ump)> = smf.iter().collect();
+    let from_clip: Vec<(Beat, Ump)> = clip.iter().collect();
     assert_eq!(from_smf.len(), 4, "every channel message of both tracks");
     assert_eq!(from_smf, from_clip);
     assert_eq!(
-        from_smf[0].1.velocity_u16(),
+        MidiMessage::from_ump(from_smf[0].1).velocity(),
         Some(0xFFFF),
         "7-bit 127 widens to full-scale 16-bit"
     );
@@ -119,9 +120,9 @@ fn a_note_on_at_tick_480_of_a_480_ppq_file_lands_at_beat_one() {
         RawEvent::note_off(BEAT, 0, 60, 0),
     ]]))
     .expect("decodes");
-    let timed: Vec<(Beat, MidiEvent)> = file.iter().collect();
+    let timed: Vec<(Beat, Ump)> = file.iter().collect();
     assert_eq!(timed[0].0, Beat(1.0));
-    assert_eq!(timed[0].1.note(), Some(60));
+    assert_eq!(MidiMessage::from_ump(timed[0].1).note(), Some(60));
     assert_eq!(timed[1].0, Beat(2.0));
     assert_eq!(file.end_beat(), Beat(2.0), "the last event, the note-off");
 }
@@ -163,7 +164,7 @@ fn tempo_reads_the_declared_tempo_from_either_container() {
         TPQ,
         &[ClipEvent::new(
             0,
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         )],
     );
     assert_eq!(MidiFile::from_bytes(&bare_clip).unwrap().tempo(), None);
@@ -332,12 +333,9 @@ fn a_clip_files_tempo_map_is_its_set_tempos() {
     let clip = write_clip_file_from_beats(
         TPQ,
         [
-            (Beat(0.0), MidiEvent::flex_set_tempo(g, Bpm::of(100.0))),
-            (
-                Beat(0.0),
-                MidiEvent::note_on(g, MidiChannel::FIRST, 60, 0x8000),
-            ),
-            (Beat(2.0), MidiEvent::flex_set_tempo(g, Bpm::of(150.0))),
+            (Beat(0.0), flex_set_tempo(g, Bpm::of(100.0))),
+            (Beat(0.0), note_on(g, MidiChannel::FIRST, 60, 0x8000)),
+            (Beat(2.0), flex_set_tempo(g, Bpm::of(150.0))),
         ],
     );
     let file = MidiFile::from_bytes(&clip).unwrap();
@@ -351,11 +349,8 @@ fn a_clip_files_tempo_map_is_its_set_tempos() {
     let late = write_clip_file_from_beats(
         TPQ,
         [
-            (
-                Beat(0.0),
-                MidiEvent::note_on(g, MidiChannel::FIRST, 60, 0x8000),
-            ),
-            (Beat(2.0), MidiEvent::flex_set_tempo(g, Bpm::of(150.0))),
+            (Beat(0.0), note_on(g, MidiChannel::FIRST, 60, 0x8000)),
+            (Beat(2.0), flex_set_tempo(g, Bpm::of(150.0))),
         ],
     );
     assert_eq!(MidiFile::from_bytes(&late).unwrap().tempo(), None);
@@ -383,33 +378,40 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
         RawEvent::running_status(BEAT, vec![60, 0]), // 0x92 60 0: a note-off
     ]]))
     .unwrap();
-    let timed: Vec<(Beat, MidiEvent)> = file.iter().collect();
+    let timed: Vec<(Beat, Ump)> = file.iter().collect();
     assert_eq!(timed.len(), 5, "every channel message: {timed:?}");
 
     // MIDI 2.0 Channel Voice: type 4, the opcode in word 0, the value in word 1.
-    let op = |e: &MidiEvent| (e.data_words()[0] >> 28, (e.data_words()[0] >> 20) & 0xF);
+    let op = |e: &Ump| (e.words()[0] >> 28, (e.words()[0] >> 20) & 0xF);
     let (_, cc) = timed[0];
     assert_eq!(op(&cc), (0x4, 0xB));
-    assert_eq!((cc.data_words()[0] >> 8) & 0x7F, 7, "the controller index");
-    assert_eq!(cc.data_words()[1], 0xC924_9249);
-    assert_eq!(cc.channel(), Some(MidiChannel::of(2)));
+    assert_eq!((cc.words()[0] >> 8) & 0x7F, 7, "the controller index");
+    assert_eq!(cc.words()[1], 0xC924_9249);
+    assert_eq!(
+        MidiChannel::masked(((cc.0[0] >> 16) & 0xF) as u8),
+        MidiChannel::of(2)
+    );
 
     let (at, bend) = timed[1];
     assert_eq!(at, Beat(0.25));
     assert_eq!(op(&bend), (0x4, 0xE));
-    assert_eq!(bend.data_words()[1], 0x8000_0000);
+    assert_eq!(bend.words()[1], 0x8000_0000);
 
     let (_, program) = timed[2];
     assert_eq!(op(&program), (0x4, 0xC));
-    assert_eq!(program.data_words()[1] >> 24, 5);
+    assert_eq!(program.words()[1] >> 24, 5);
 
     let (_, on) = timed[3];
-    assert!(on.is_note_on());
-    assert_eq!(on.velocity_u16(), Some(512));
+    let on_msg = MidiMessage::from_ump(on);
+    assert!(on_msg.is_note_on());
+    assert_eq!(on_msg.velocity(), Some(512));
 
     let (at, off) = timed[4];
     assert_eq!(at, Beat(1.75));
-    assert!(off.is_note_off() && !off.is_note_on(), "{off:?}");
+    assert!(
+        off.is_note_off() && !MidiMessage::from_ump(off).is_note_on(),
+        "{off:?}"
+    );
     assert_eq!(op(&off), (0x4, 0x8), "an explicit MIDI 2.0 note-off");
 }
 
@@ -460,18 +462,18 @@ fn a_non_finite_beat_sorts_without_moving_a_clip() {
     let bytes = write_clip_file_from_beats(
         TPQ,
         [
-            (Beat(1.0), MidiEvent::note_on(g, c, 60, 0x8000)),
-            (Beat(f64::NAN), MidiEvent::note_on(g, c, 61, 0x8000)),
-            (Beat(0.0), MidiEvent::note_on(g, c, 62, 0x8000)),
-            (
-                Beat(f64::NEG_INFINITY),
-                MidiEvent::note_on(g, c, 63, 0x8000),
-            ),
-            (Beat(f64::INFINITY), MidiEvent::note_on(g, c, 64, 0x8000)),
+            (Beat(1.0), note_on(g, c, 60, 0x8000)),
+            (Beat(f64::NAN), note_on(g, c, 61, 0x8000)),
+            (Beat(0.0), note_on(g, c, 62, 0x8000)),
+            (Beat(f64::NEG_INFINITY), note_on(g, c, 63, 0x8000)),
+            (Beat(f64::INFINITY), note_on(g, c, 64, 0x8000)),
         ],
     );
     let clip = MidiFile::from_bytes(&bytes).expect("the clip decodes");
-    let got: Vec<(Beat, Option<u8>)> = clip.iter().map(|(b, e)| (b, e.note())).collect();
+    let got: Vec<(Beat, Option<u8>)> = clip
+        .iter()
+        .map(|(b, e)| (b, MidiMessage::from_ump(e).note()))
+        .collect();
     assert_eq!(
         got,
         vec![

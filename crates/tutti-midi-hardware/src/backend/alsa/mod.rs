@@ -42,7 +42,7 @@ use client::SeqClient;
 use enumerate::Direction;
 use std::sync::{Mutex, PoisonError};
 use tutti_midi_device::{EndpointId, OsDevice};
-use tutti_midi_types::MidiOut;
+use tutti_midi_runtime::MidiOut;
 
 /// The Linux [`MidiEndpoints`] implementation.
 ///

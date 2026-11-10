@@ -29,10 +29,23 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, ParameterChanges, TransportInfo};
+use tutti_vst3_host::{AudioBuffer, InputEvents, ParameterChanges, TransportInfo};
+
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
+
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
@@ -100,7 +113,7 @@ fn load_or_skip() -> Option<Active> {
 fn drive_silent(inst: &mut Active, iters: usize, transport: &TransportInfo) {
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
-    let midi: [MidiEvent; 0] = [];
+    let midi: [UmpAt; 0] = [];
     for _ in 0..iters {
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let ins: &[&[f32]] = &[];
@@ -153,7 +166,7 @@ fn process_with_automation_does_not_allocate() {
 
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
-    let midi: [MidiEvent; 0] = [];
+    let midi: [UmpAt; 0] = [];
 
     let mut drive = |inst: &mut Active, iters: usize| {
         for _ in 0..iters {
@@ -219,8 +232,14 @@ fn process_with_midi_does_not_allocate() {
         let ins: &[&[f32]] = &[];
         let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
         let warm = [
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            (
+                Offset::ZERO,
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            ),
+            (
+                Offset::ZERO,
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            ),
         ];
         let events = InputEvents {
             midi: &warm,
@@ -230,22 +249,18 @@ fn process_with_midi_does_not_allocate() {
     }
     drive_silent(&mut inst, 32, &transport);
 
-    let on_event = [MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0x8000,
+    let on_event = [(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
     )];
-    let off_event = [MidiEvent::note_off(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0,
+    let off_event = [(
+        Offset::ZERO,
+        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
     )];
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {
-            let events: &[MidiEvent] = match i % 32 {
+            let events: &[UmpAt] = match i % 32 {
                 0 => &on_event,
                 16 => &off_event,
                 _ => &[],
@@ -287,15 +302,21 @@ fn process_with_hundreds_of_events_does_not_allocate() {
 
     // Built off the audio thread. Four events a frame across the 64-frame
     // block, alternating on and off so no note is left sounding.
-    let midi: Vec<MidiEvent> = (0..256u32)
+    let midi: Vec<UmpAt> = (0..256u32)
         .map(|i| {
             let note = (i / 2 % 128) as u8;
             let e = if i % 2 == 0 {
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x8000)
+                (
+                    Offset::ZERO,
+                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x8000),
+                )
             } else {
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
+                (
+                    Offset::ZERO,
+                    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0),
+                )
             };
-            e.with_frame_offset(i / 4)
+            (at(i / 4), e.1)
         })
         .collect();
     let expressions: Vec<NoteExpressionValue> = (0..256i32)

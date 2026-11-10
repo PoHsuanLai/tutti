@@ -1,9 +1,13 @@
 use super::*;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_fixtures::midi::{noop, note_on};
+use tutti_graph::UmpAt;
+use tutti_midi_types::MidiMessage;
+use tutti_midi_types::convert::midi2_velocity_to_midi1;
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
 /// below can index and count without threading a closure through each.
-fn drain_cycle(manager: &Arc<HardwareMidiInputs>, nframes: usize) -> Vec<(PortId, MidiEvent)> {
+fn drain_cycle(manager: &Arc<HardwareMidiInputs>, nframes: usize) -> Vec<(PortId, UmpAt)> {
     let mut out = Vec::new();
     HardwareMidiDrain::new(Arc::clone(manager))
         .cycle_start_read_all_inputs(nframes, |port, event| out.push((port, event)));
@@ -43,7 +47,7 @@ fn cycle_read_is_capped_across_ports() {
     for port in 0..4 {
         let mut handle = manager.open_input_port(format!("Input {port}"));
         for _ in 0..256 {
-            assert!(handle.push(MidiEvent::noop(), now()));
+            assert!(handle.push(noop(), now()));
         }
     }
 
@@ -103,7 +107,7 @@ fn manager_tags_drained_events_with_their_port_id() {
     let mut producer_handle = manager.open_input_port("Input");
     let input_id = producer_handle.port_id();
     // Upconvert 7-bit 127 so the downconverted velocity_u7 round-trips.
-    let event = MidiEvent::note_on(
+    let event = note_on(
         MidiGroup::FIRST,
         MidiChannel::FIRST,
         0x3C,
@@ -114,9 +118,10 @@ fn manager_tags_drained_events_with_their_port_id() {
     let events = drain_cycle(&manager, 512);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0, input_id);
-    assert!(events[0].1.is_note_on());
-    assert_eq!(events[0].1.note(), Some(0x3C));
-    assert_eq!(events[0].1.velocity_u7(), Some(0x7F));
+    let message = MidiMessage::from_ump(events[0].1.1);
+    assert!(message.is_note_on());
+    assert_eq!(message.note(), Some(0x3C));
+    assert_eq!(message.velocity().map(midi2_velocity_to_midi1), Some(0x7F));
 }
 
 #[test]
@@ -126,7 +131,7 @@ fn test_inactive_ports_ignored() {
     let mut producer_handle = manager.open_input_port("Input");
     let input_id = producer_handle.port_id();
 
-    let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 0x3C, 0x7F);
+    let event = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 0x3C, 0x7F);
     assert!(producer_handle.push(event, now()));
 
     manager.set_port_active(input_id, false);
@@ -144,11 +149,11 @@ fn test_multiple_input_ports() {
     let (id1, id2) = (handle1.port_id(), handle2.port_id());
 
     handle1.push(
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
+        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
         now(),
     );
     handle2.push(
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 100),
+        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 100),
         now(),
     );
 
@@ -230,7 +235,7 @@ fn concurrent_creators_all_land() {
 }
 
 /// Push one event that arrived `age` before the block start, and read back
-/// the `frame_offset` the conversion gives it.
+/// the offset the conversion gives it.
 ///
 /// Both instants are chosen here, so the answer is arithmetic rather than a
 /// measurement: `nframes - age * sample_rate`, clamped into the block. That
@@ -246,14 +251,14 @@ fn offset_for(sample_rate: f64, nframes: usize, age: core::time::Duration) -> u3
     // read from the clock during the conversion.
     let block_start = Instant::now();
     assert!(handle.push(
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
+        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
         block_start - age,
     ));
 
     let mut seen = Vec::new();
     drain_of(&manager).cycle_start_read_all_inputs_at(nframes, block_start, |_, e| seen.push(e));
     assert_eq!(seen.len(), 1, "exactly the event pushed");
-    seen[0].frame_offset
+    seen[0].0.get()
 }
 
 /// A known age converts to exactly one frame offset.
@@ -338,14 +343,15 @@ fn the_default_rate_mistimes_an_event_the_set_rate_times_correctly() {
     let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
     let mut handle = manager.open_input_port("Input");
     let block_start = Instant::now();
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
+    let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
 
     // Untouched: the 44100 placeholder. 1 ms is 44 samples.
     assert!(handle.push(note, block_start - Duration::from_millis(1)));
     let mut seen = Vec::new();
     drain_of(&manager).cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
     assert_eq!(
-        seen[0].frame_offset, 980,
+        seen[0].0.get(),
+        980,
         "the placeholder rate puts a 1 ms-old event at 1024 - 44"
     );
 
@@ -355,7 +361,8 @@ fn the_default_rate_mistimes_an_event_the_set_rate_times_correctly() {
     let mut seen = Vec::new();
     drain_of(&manager).cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
     assert_eq!(
-        seen[0].frame_offset, 976,
+        seen[0].0.get(),
+        976,
         "at 48 kHz the same event belongs 4 frames earlier -- the 8.8% the \
          placeholder was off by"
     );
@@ -424,7 +431,7 @@ fn a_removed_port_is_freed_by_the_publish_that_removes_it() {
     let manager = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let mut handle = manager.open_input_port("Gone");
     let id = handle.port_id();
-    assert!(handle.push(MidiEvent::noop(), now()));
+    assert!(handle.push(noop(), now()));
     let port = {
         let slots = manager.published_slots();
         Arc::downgrade(slots[0].as_ref().expect("the port is live"))
@@ -457,13 +464,10 @@ fn a_producer_outliving_its_manager_pushes_into_its_own_ring() {
     drop(manager);
 
     for i in 0..4 {
-        assert!(
-            handle.push(MidiEvent::noop(), now()),
-            "slot {i} of 4 is free"
-        );
+        assert!(handle.push(noop(), now()), "slot {i} of 4 is free");
     }
     assert!(
-        !handle.push(MidiEvent::noop(), now()),
+        !handle.push(noop(), now()),
         "nothing drains it, so it fills at its capacity"
     );
 }
@@ -486,8 +490,8 @@ fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
     let mut a = manager.open_input_port("A");
     let mut b = manager.open_input_port("B");
     for i in 0..2 {
-        assert!(a.push(MidiEvent::noop(), now()));
-        assert!(b.push(MidiEvent::noop(), now()), "event {i}");
+        assert!(a.push(noop(), now()));
+        assert!(b.push(noop(), now()), "event {i}");
     }
 
     let mut outer = Vec::new();
@@ -496,7 +500,7 @@ fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
     let visited = drain_of(&manager).cycle_start_read_all_inputs(512, |port, _| {
         outer.push(port);
         // Push one more so a nested drain would have something to take.
-        assert!(a.push(MidiEvent::noop(), now()));
+        assert!(a.push(noop(), now()));
         nested += drain_of(&manager).cycle_start_read_all_inputs(512, |_, _| nested_visits += 1);
         assert_eq!(manager.list_input_ports().len(), 2);
         assert!(manager.set_port_active(b.port_id(), true));
@@ -542,7 +546,7 @@ fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
 
     let info = manager.port_info(b_id).expect("B is still there");
     assert_eq!((info.name.as_str(), info.active), ("B", true));
-    assert!(b.push(MidiEvent::noop(), now()));
+    assert!(b.push(noop(), now()));
     let events = drain_cycle(&manager, 512);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0, b_id, "B's event carries B's id");
@@ -581,13 +585,13 @@ fn the_sample_rate_can_be_set_while_a_drain_runs() {
     let block_start = Instant::now();
     let mut drain = drain_of(&manager);
     for _ in 0..20_000 {
-        assert!(handle.push(MidiEvent::noop(), block_start - Duration::from_millis(1)));
+        assert!(handle.push(noop(), block_start - Duration::from_millis(1)));
         drain.cycle_start_read_all_inputs_at(1024, block_start, |_, e| {
             // 1 ms at 48 kHz or at 96 kHz, never anything else.
             assert!(
-                e.frame_offset == 1024 - 48 || e.frame_offset == 1024 - 96,
+                e.0.get() == 1024 - 48 || e.0.get() == 1024 - 96,
                 "offset {} is from neither rate",
-                e.frame_offset
+                e.0.get()
             );
         });
     }
@@ -606,7 +610,7 @@ fn collect_frees_a_port_removed_during_a_drain() {
     let manager = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let mut handle = manager.open_input_port("Gone");
     let id = handle.port_id();
-    assert!(handle.push(MidiEvent::noop(), now()));
+    assert!(handle.push(noop(), now()));
     drop(handle);
     let port = Arc::downgrade(
         manager.published_slots()[0]
@@ -643,7 +647,7 @@ fn a_reserved_drain_takes_a_longer_blocks_events() {
     for port in 0..4 {
         let mut handle = manager.open_input_port(format!("Input {port}"));
         for _ in 0..256 {
-            assert!(handle.push(MidiEvent::noop(), now()));
+            assert!(handle.push(noop(), now()));
         }
     }
     let mut drain = drain_of(&manager);
@@ -667,14 +671,14 @@ fn a_reserved_drain_takes_a_longer_blocks_events() {
 /// fails.
 #[test]
 fn a_poll_into_a_small_buffer_defers_and_drops_nothing() {
-    use tutti_midi_types::MidiIn;
+    use tutti_midi_runtime::MidiIn;
     let manager = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
     let mut handle = manager.open_input_port("In");
     for i in 0..30u32 {
-        assert!(handle.push(MidiEvent::noop().with_frame_offset(i), now()));
+        assert!(handle.push(Ump([i, 0, 0, 0]), now()));
     }
     let mut drain = drain_of(&manager);
-    let mut buffer = [MidiEvent::noop(); 10];
+    let mut buffer = [(Offset::ZERO, noop()); 10];
     let taken: Vec<usize> = (0..4).map(|_| drain.poll_block(512, &mut buffer)).collect();
     assert_eq!(taken, vec![10, 10, 10, 0]);
     assert_eq!(manager.dropped_events(), 0);
@@ -693,9 +697,7 @@ fn a_full_ring_counts_what_it_drops() {
     let manager = Arc::new(HardwareMidiInputs::new(4, 44_100.0));
     let mut handle = manager.open_input_port("Busy");
     let id = handle.port_id();
-    let taken = (0..10)
-        .filter(|_| handle.push(MidiEvent::noop(), now()))
-        .count();
+    let taken = (0..10).filter(|_| handle.push(noop(), now())).count();
     assert_eq!(taken, 4);
     assert_eq!(manager.port_info(id).map(|p| p.dropped), Some(6));
     assert_eq!(manager.dropped_events(), 6);

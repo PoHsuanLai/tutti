@@ -691,9 +691,9 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
 /// Feed the plugin at `plugin` from a clip node holding a chord of `n`
 /// notes, started on frame `on` and ended on frame `off`.
 fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) {
+    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
     use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -701,14 +701,8 @@ fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) 
         // Notes 0..100 on channel 0, 100..200 on channel 1.
         let (g, c, key) = (MidiGroup::FIRST, MidiChannel::of(k / 100), k % 100);
         [
-            TimedMidiEvent::new(
-                Beat(on as f64 / 24_000.0),
-                MidiEvent::note_on(g, c, key, 0xFFFF),
-            ),
-            TimedMidiEvent::new(
-                Beat(off as f64 / 24_000.0),
-                MidiEvent::note_off(g, c, key, 0),
-            ),
+            TimedMidiEvent::new(Beat(on as f64 / 24_000.0), midi::note_on(g, c, key, 0xFFFF)),
+            TimedMidiEvent::new(Beat(off as f64 / 24_000.0), midi::note_off(g, c, key, 0)),
         ]
     });
     let clip = NodeKey(1);
@@ -801,9 +795,9 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
 /// `frame` of a 120 BPM timeline at [`SAMPLE_RATE`] (a beat is 24 000
 /// frames).
 fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
+    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
     use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -813,7 +807,7 @@ fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
         "clip",
         MidiClipNode::new([TimedMidiEvent::new(
             Beat(frame as f64 / 24_000.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
         )]),
     );
     live.spec_mut().connect_events(
@@ -903,9 +897,9 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
 /// compile → fails.
 #[test]
 fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
+    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
     use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -924,7 +918,7 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
         "clip",
         MidiClipNode::new([TimedMidiEvent::new(
             Beat(NOTE_FRAME as f64 / 24_000.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
         )]),
     );
     let _controls = live.insert(key, "plugin", probe.client.bind());
@@ -1007,9 +1001,9 @@ impl tutti_graph::Node for MidiSink {
 /// test renders three times and why the wait exists).
 #[test]
 fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
+    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
     use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -1023,7 +1017,7 @@ fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
         let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
         let (mut live, _exec) = Editor::new(prepare);
         let (clip, key, sink) = (NodeKey(1), NodeKey(9), NodeKey(3));
-        let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+        let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
         live.insert(
             clip,
             "clip",
@@ -1290,9 +1284,9 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
 /// `PluginChunks::take`) → the count stays 0 → fails.
 #[test]
 fn midi_past_the_chunks_capacity_is_counted() {
+    use tutti_fixtures::midi;
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset};
-    use tutti_midi_types::MidiEvent;
     use tutti_plugin_types::MIDI_STACK_CAPACITY;
     use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -1304,13 +1298,13 @@ fn midi_past_the_chunks_capacity_is_counted() {
     let notes = |n: usize| -> Vec<Event> {
         (0..n)
             .map(|i| {
-                let on = MidiEvent::note_on(
+                let on = midi::note_on(
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     (i % 128) as u8,
                     0xFFFF,
                 );
-                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on.data)
+                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on.0)
             })
             .collect()
     };

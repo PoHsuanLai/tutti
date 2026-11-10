@@ -14,8 +14,8 @@
 //! consumer in different traits.
 //!
 //! What is deliberately **not** here: a `UmpIn`/`UmpOut` pair mirroring
-//! `AudioIn`/`AudioOut`. [`MidiEvent`](tutti_midi_types::ump::MidiEvent) already
-//! *is* a UMP message — `data_words()` hands back the `&[u32]` a driver wants —
+//! `AudioIn`/`AudioOut`. [`Ump`](tutti_ump::Ump) already
+//! *is* a UMP message — `words()` hands back the `&[u32]` a driver wants —
 //! so a `UmpOut::send_ump` would restate `MidiOut::queue`'s boundary exactly.
 //! Two names for one behaviour is not a type.
 //!
@@ -42,7 +42,7 @@ use crate::capability::EndpointInfo;
 use crate::devices::ChangeSink;
 use crate::error::Result;
 use tutti_midi_device::EndpointId;
-use tutti_midi_types::MidiOut;
+use tutti_midi_runtime::MidiOut;
 
 /// An open input connection: a live subscription to one endpoint.
 ///

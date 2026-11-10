@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tutti_graph::UmpAt;
 
 use crate::HardwareMidiInputs;
 use crate::backend;
@@ -36,8 +37,7 @@ use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
 use tutti_midi_device::{DeviceId, DeviceInfo};
-use tutti_midi_types::MidiOut;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_runtime::MidiOut;
 
 /// The set of open MIDI connections, and the endpoints available to open.
 ///
@@ -374,7 +374,7 @@ impl MidiSession {
     /// Both backends stop at the first failure rather than skipping it, so the
     /// count names an unbroken **prefix** of `events`. Control-thread only: this
     /// takes a lock and the backends allocate per send.
-    pub fn send(&self, events: &[MidiEvent]) -> usize {
+    pub fn send(&self, events: &[UmpAt]) -> usize {
         let open = self.inner.open();
         match open.output.as_ref() {
             Some(out) => out.queue(events),
@@ -388,7 +388,7 @@ impl MidiSession {
 /// The thin trait impl over the inherent [`send`](MidiSession::send), which
 /// keeps the accepted count — the same idiom `MidiSender` uses.
 impl MidiOut for MidiSession {
-    fn queue(&self, events: &[MidiEvent]) -> usize {
+    fn queue(&self, events: &[UmpAt]) -> usize {
         self.send(events)
     }
 }

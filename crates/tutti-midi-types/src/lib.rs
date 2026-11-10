@@ -24,7 +24,6 @@ mod clip_file;
 mod fixed;
 mod message;
 mod note_id;
-mod traits;
 
 // Public, each for a stated reason:
 //
@@ -60,22 +59,29 @@ pub use mpe::{
     PitchBendSensitivity, ZoneInfo,
 };
 pub use note_id::{NoteId, PerNoteMap};
-pub use traits::{MidiIn, MidiOut};
-pub use translation::{Midi1Messages, Midi1ToMidi2Translator, MidiParseError, normalize};
+pub use translation::{
+    Midi1Messages, Midi1ToMidi2Translator, MidiParseError, from_midi1_bytes, normalize,
+    parse_midi1_bytes, to_midi1_bytes, to_midi1_messages,
+};
 pub use ump::{
     ALL_FUNCTION_BLOCKS, Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
     EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
-    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent,
-    Protocol, Tonic, UmpMessageType, UmpVersion,
+    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, KeySharpsFlats, Protocol, Tonic,
+    UmpMessageType, UmpVersion, device_identity, endpoint_discovery, endpoint_info,
+    flex_set_chord_name, flex_set_key_signature, flex_set_metronome, flex_set_tempo,
+    flex_set_time_signature, function_block_discovery, function_block_info, is_sysex8_abort,
+    jr_clock_value, jr_timestamp_value, message_type, stream_configuration_notification,
+    stream_configuration_request, sysex7_fragments, sysex7_packet_count, sysex7_packets,
+    sysex7_payload, sysex7_single, sysex8_fragments, sysex8_header, sysex8_status,
 };
 
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
 ///
-/// Pulls in what building and decoding MIDI needs: the wire event
-/// ([`MidiEvent`]) and its decoded view ([`MidiMessage`] via
-/// [`MidiEvent::message`]), per-note identity ([`NoteId`]), the
-/// [`normalize`] seam, and the MIDI 2.0 Clip File codec (beat-domain
-/// [`write_clip_file_from_beats`] / [`ParsedClipFile::from_bytes`] / [`ParsedClipFile`]).
+/// Pulls in what building and decoding MIDI needs: the decoded view
+/// ([`MidiMessage`] via [`MidiMessage::from_ump`]), per-note identity
+/// ([`NoteId`]), the [`normalize`] seam, and the MIDI 2.0 Clip File codec
+/// (beat-domain [`write_clip_file_from_beats`] / [`ParsedClipFile::from_bytes`] /
+/// [`ParsedClipFile`]). The wire packet is `tutti_ump::Ump`, imported from there.
 ///
 /// Deliberately *narrow* — the advanced surfaces (UMP-Stream endpoint
 /// negotiation, Flex Data, RPN/NRPN translation state, MPE zone config, the sync
@@ -88,22 +94,29 @@ pub use ump::{
 ///
 /// ```
 /// use tutti_midi_types::prelude::*;
-/// use tutti_ump::{MidiChannel, MidiGroup};
+/// use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 ///
 /// // Build a note, decode it back — no midi2 imports, no width juggling.
-/// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-/// let msg = ev.message();
+/// let ump = Ump::from(Message::Midi2(
+///     Address { group: MidiGroup::FIRST, channel: MidiChannel::FIRST },
+///     Voice2::NoteOn {
+///         note: NoteNumber::new(60).unwrap(),
+///         velocity: 0x8000,
+///         attribute: Attribute::None,
+///     },
+/// ));
+/// let msg = MidiMessage::from_ump(ump);
 /// assert!(msg.is_note_on());
 /// assert_eq!(msg.note(), Some(60));
 ///
 /// // Round-trip a phrase through a MIDI 2.0 Clip File, in beats.
-/// let bytes = write_clip_file_from_beats(96, [(Beat(0.0), ev)]);
+/// let bytes = write_clip_file_from_beats(96, [(Beat(0.0), ump)]);
 /// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
 /// assert_eq!(clip.iter().count(), 1);
 ///
 /// // Velocity survives at full MIDI 2.0 width — the point of the format.
 /// let (_, first) = clip.iter().next().unwrap();
-/// assert_eq!(first.velocity_u16(), Some(0x8000));
+/// assert_eq!(MidiMessage::from_ump(first).velocity(), Some(0x8000));
 /// ```
 ///
 /// A clip written with a [`ClipHeader`] declares its own tempo and time
@@ -111,8 +124,9 @@ pub use ump::{
 /// rather than assuming the project's:
 ///
 /// ```
+/// use tutti_fixtures::midi::note_on;
 /// use tutti_midi_types::{
-///     ParsedClipFile, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
+///     ParsedClipFile, write_clip_file_with_header, ClipEvent, ClipHeader,
 ///     CLIP_FILE_MAGIC,
 /// };
 /// use tutti_midi_types::Bpm;
@@ -121,7 +135,7 @@ pub use ump::{
 /// let bytes = write_clip_file_with_header(
 ///     480,
 ///     ClipHeader { tempo_bpm: Bpm::of(174.0), time_signature: (7, 8) },
-///     &[ClipEvent::new(0, MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))],
+///     &[ClipEvent::new(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))],
 /// );
 ///
 /// // Self-identifying: a file can be recognised before it is parsed.
@@ -137,13 +151,14 @@ pub use ump::{
 /// narrowing velocity to 7 bits on the way:
 ///
 /// ```
-/// use tutti_midi_types::{ParsedClipFile, write_clip_file_from_beats, MidiEvent};
+/// use tutti_fixtures::midi::{note_off, note_on};
+/// use tutti_midi_types::{ParsedClipFile, write_clip_file_from_beats};
 /// use tutti_midi_types::{Beat, BeatDuration};
 /// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_from_beats(96, [
-///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
-///     (Beat(1.5), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
+///     (Beat(0.0), note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
+///     (Beat(1.5), note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
 /// ]);
 ///
 /// let notes = ParsedClipFile::from_bytes(&bytes).unwrap().notes();
@@ -152,12 +167,11 @@ pub use ump::{
 /// assert_eq!(notes[0].velocity, 0xABCD);
 /// ```
 ///
-/// [`MidiEvent::message`]: crate::MidiMessage
 /// [`MidiIo`]: https://docs.rs/tutti-midi-hardware
 pub mod prelude {
     pub use crate::{
-        ClipEvent, ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, NoteAttribute,
-        NoteId, ParsedClipFile, PerNoteController, Protocol, normalize, write_clip_file,
+        ClipEvent, ClipFileError, ControllerNamespace, MidiMessage, NoteAttribute, NoteId,
+        ParsedClipFile, PerNoteController, Protocol, normalize, write_clip_file,
         write_clip_file_from_beats,
     };
     pub use tutti_rt::ArcLend;

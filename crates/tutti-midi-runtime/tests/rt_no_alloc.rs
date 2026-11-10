@@ -7,30 +7,35 @@
 //! → the gate panics.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Harmony, LoopRange, Prepare, Transport};
-use tutti_midi_runtime::{
-    ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiMailbox, MidiOutNode, MidiQueueNode,
-    TimedHarmony, TimedMidiEvent, TimedQueueNode,
+use tutti_fixtures::midi::{note_off, registered_controller};
+use tutti_graph::UmpAt;
+use tutti_graph::{
+    Editor, EventEdge, EventIn, EventOut, Harmony, LoopRange, Offset, Prepare, Transport,
 };
-use tutti_midi_types::MidiIn;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_runtime::{
+    ClockNode, HarmonyNode, MidiClipNode, MidiIn, MidiInputNode, MidiMailbox, MidiOutNode,
+    MidiQueueNode, TimedHarmony, TimedMidiEvent, TimedQueueNode,
+};
 use tutti_types::{At, Beat, Bpm, Frame, FrameClock, NodeKey, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-fn note_on(ch: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(ch), note, 0x8000)
+fn note_on(ch: u8, note: u8) -> Ump {
+    tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::of(ch), note, 0x8000)
 }
 
 /// A wire with a fresh note on four channels every poll.
 struct Busy;
 
 impl MidiIn for Busy {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
         for (i, slot) in buffer.iter_mut().take(4).enumerate() {
-            *slot = note_on(i as u8 * 3, 60).with_frame_offset(40 - 10 * i as u32);
+            *slot = (
+                Offset::new(40 - 10 * i, Samples(512)).unwrap(),
+                note_on(i as u8 * 3, 60),
+            );
         }
         4
     }
@@ -62,7 +67,7 @@ fn the_border_nodes_process_without_allocating() {
     into_out(&mut ed, 3, 0);
     ed.commit().unwrap();
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
-    let mut drain = [MidiEvent::noop(); 256];
+    let mut drain = [(0, Ump([0; 4])); 256];
     // Warm up outside the gate.
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
@@ -70,7 +75,11 @@ fn the_border_nodes_process_without_allocating() {
     let (tx, rx) = MidiMailbox::pair();
     assert_no_alloc::assert_no_alloc(|| {
         for b in 1..200u32 {
-            keys.note_on(MidiChannel::FIRST, 60, 100);
+            keys.note_on(
+                MidiChannel::FIRST,
+                NoteNumber::new(60).unwrap(),
+                U7::new(100).unwrap(),
+            );
             let at = Beat(f64::from(b) * 512.0 / 24_000.0);
             exec.process(
                 512,
@@ -80,7 +89,7 @@ fn the_border_nodes_process_without_allocating() {
             );
             let n = out.poll_into(&mut drain);
             // Both halves of a mailbox, too.
-            tx.queue(&drain[..n.min(4)]);
+            tx.queue_stamped(&drain[..n.min(4)]);
             let _ = rx.poll_into(&mut drain);
         }
     });
@@ -91,13 +100,16 @@ fn the_border_nodes_process_without_allocating() {
 struct BendRange;
 
 impl MidiIn for BendRange {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
-        buffer[0] = MidiEvent::registered_controller(
-            MidiGroup::FIRST,
-            MidiChannel::of(2),
-            tutti_midi_types::ump::RPN_BANK_MPE,
-            tutti_midi_types::ump::RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-            tutti_midi_types::PitchBendSensitivity::of(12).to_rpn_bits(),
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
+        buffer[0] = (
+            Offset::ZERO,
+            registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::of(2),
+                tutti_midi_types::ump::RPN_BANK_MPE,
+                tutti_midi_types::ump::RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+                tutti_midi_types::PitchBendSensitivity::of(12).to_rpn_bits(),
+            ),
         );
         1
     }
@@ -131,7 +143,7 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     );
     ed.commit().unwrap();
     let t = Transport::default();
-    let mut drain = [MidiEvent::noop(); 256];
+    let mut drain = [(0, Ump([0; 4])); 256];
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
@@ -150,14 +162,17 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
 struct Mcms(bool);
 
 impl MidiIn for Mcms {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
         use tutti_midi_types::mpe::MpeZoneConfig;
         self.0 = !self.0;
-        buffer[0] = if self.0 {
-            MpeZoneConfig::upper(3).to_mcm()
-        } else {
-            MpeZoneConfig::lower(3).to_mcm()
-        };
+        buffer[0] = (
+            Offset::ZERO,
+            if self.0 {
+                MpeZoneConfig::upper(3).to_mcm()
+            } else {
+                MpeZoneConfig::lower(3).to_mcm()
+            },
+        );
         1
     }
 }
@@ -192,7 +207,7 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
     );
     ed.commit().unwrap();
     let t = Transport::default();
-    let mut drain = [MidiEvent::noop(); 256];
+    let mut drain = [(0, Ump([0; 4])); 256];
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
@@ -266,7 +281,7 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
     let region = tutti_types::LoopRange::new(start, end).unwrap();
     let looping = Some(LoopRange { start, end });
     let mut clock = FrameClock::new(start, Bpm::of(120.0), SampleRate(RATE));
-    let mut drain = [MidiEvent::noop(); 256];
+    let mut drain = [(0, Ump([0; 4])); 256];
     let mut block = |exec: &mut tutti_graph::Executor, clock: &mut FrameClock| {
         exec.process(
             512,
@@ -308,7 +323,7 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     let beat = |frame: f64| Beat(frame / 24_000.0);
     let note = |i: u32| note_on((i / 128 % 16) as u8, (i % 128) as u8);
     let off = |i: u32| {
-        MidiEvent::note_off(
+        note_off(
             MidiGroup::FIRST,
             MidiChannel::of((i / 128 % 16) as u8),
             (i % 128) as u8,
@@ -343,7 +358,7 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
         }),
     );
     ed.commit().unwrap();
-    let mut drain = [MidiEvent::noop(); 1024];
+    let mut drain = [(0, Ump([0; 4])); 1024];
     let mut polled = 0;
     let mut f = 0u64;
     let mut block = |exec: &mut tutti_graph::Executor| {
@@ -392,8 +407,11 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     let events = (0..2_100u32).flat_map(|i| {
         let (g, c, n) = key(i);
         [
-            TimedMidiEvent::new(beat(u64::from(i)), MidiEvent::note_on(g, c, n, 0x8000)),
-            TimedMidiEvent::new(beat(4_000), MidiEvent::note_off(g, c, n, 0)),
+            TimedMidiEvent::new(
+                beat(u64::from(i)),
+                tutti_fixtures::midi::note_on(g, c, n, 0x8000),
+            ),
+            TimedMidiEvent::new(beat(4_000), note_off(g, c, n, 0)),
         ]
     });
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
@@ -410,7 +428,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
         }),
     );
     ed.commit().unwrap();
-    let mut drain = [MidiEvent::noop(); 1024];
+    let mut drain = [(0, Ump([0; 4])); 1024];
     let mut f = 0u64;
     // Note-ons less note-offs the sink was sent.
     let mut sounding = 0i64;
@@ -419,7 +437,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
         exec.process(512, &t, &[], &mut []);
         let n = out.poll_into(&mut drain);
         for e in &drain[..n] {
-            match tutti_ump::Ump(e.data).key_event() {
+            match e.1.key_event() {
                 Some(tutti_ump::KeyEvent::On(_)) => sounding += 1,
                 Some(tutti_ump::KeyEvent::Off(_)) => sounding -= 1,
                 _ => {}
@@ -481,7 +499,7 @@ fn the_timed_queue_processes_without_allocating() {
     );
     ed.commit().unwrap();
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
-    let mut drain = [MidiEvent::noop(); 256];
+    let mut drain = [(0, Ump([0; 4])); 256];
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
@@ -528,7 +546,7 @@ fn the_timed_queue_with_a_full_list_processes_without_allocating() {
     );
     ed.commit().unwrap();
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
-    let mut drain = [MidiEvent::noop(); 256];
+    let mut drain = [(0, Ump([0; 4])); 256];
     let on = tutti_ump::Ump([0x2090_3C64, 0, 0, 0]);
     let off = tutti_ump::Ump([0x2080_3C00, 0, 0, 0]);
     // Outside the gate: fill the list with events for frames far ahead.

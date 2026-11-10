@@ -11,6 +11,7 @@
 //! widths are independent paths rather than one width wrapping the other.
 
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 use vst::host::RenderHandle;
 
@@ -25,7 +26,7 @@ use crate::midi::MidiIo;
 use crate::scratch::RenderScratch;
 use crate::time_info::build_vst2_time_info;
 use crate::transport_cell::TransportWriter;
-use crate::types::{MidiEvent, MidiEventVec, Vst2ProcessContext};
+use crate::types::{MidiEventVec, Vst2ProcessContext};
 
 /// The realtime half of an activation: renders blocks.
 ///
@@ -361,7 +362,7 @@ impl Vst2Processor {
         self.time_info.write(t);
     }
 
-    fn dispatch_midi(&mut self, midi: &[MidiEvent], start: usize, len: usize, total: usize) {
+    fn dispatch_midi(&mut self, midi: &[UmpAt], start: usize, len: usize, total: usize) {
         self.midi
             .send
             .send_piece(&mut self.render, midi, start, len, total);

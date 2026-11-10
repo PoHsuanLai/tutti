@@ -21,11 +21,12 @@ use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, GraphReconcilePlugin, SessionNode, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiSourceInstall, TuttiMidiPlugin};
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{
     Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status, Unforkable,
 };
 use tutti_midi_runtime::TimedMidiEvent;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::MidiMessage;
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_transport::Transport;
 use tutti_types::{Beat, BeatDuration, Bpm, NodeKey, SampleRate};
@@ -48,13 +49,13 @@ fn note(number: u8, start: Beat, duration: BeatDuration, velocity: u16) -> [Time
     [
         TimedMidiEvent::new(
             start,
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
         ),
         // `Beat + BeatDuration` is the affine operator (`Affine`): a
         // position plus a span is a position.
         TimedMidiEvent::new(
             start + duration,
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+            note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
         ),
     ]
 }
@@ -88,7 +89,7 @@ fn app() -> App {
 }
 
 /// `(absolute frame, event)` of every MIDI event a [`Tap`] received.
-type Seen = Arc<Mutex<Vec<(u64, MidiEvent)>>>;
+type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
 
 /// A stand-in synth: one MIDI event input, logged with each event's
 /// absolute frame.
@@ -108,13 +109,7 @@ impl Node for Tap {
         for e in io.events(0) {
             if let EventKind::Midi(Ump(data)) = e.kind {
                 let at = cx.env.frame.get() + u64::from(e.offset.get());
-                seen.push((
-                    at,
-                    MidiEvent {
-                        frame_offset: e.offset.get(),
-                        data,
-                    },
-                ));
+                seen.push((at, Ump(data)));
             }
         }
         Status::Modified
@@ -164,8 +159,8 @@ fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
     seen.lock()
         .unwrap()
         .iter()
-        .filter(|(_, e)| e.is_note_on())
-        .map(|(f, e)| (*f, e.note().unwrap()))
+        .filter(|(_, e)| MidiMessage::from_ump(*e).is_note_on())
+        .map(|(f, e)| (*f, MidiMessage::from_ump(*e).note().unwrap()))
         .collect()
 }
 
@@ -174,7 +169,7 @@ fn note_offs(seen: &Seen) -> Vec<(u64, u8)> {
         .unwrap()
         .iter()
         .filter(|(_, e)| e.is_note_off())
-        .map(|(f, e)| (*f, e.note().unwrap()))
+        .map(|(f, e)| (*f, MidiMessage::from_ump(*e).note().unwrap()))
         .collect()
 }
 
@@ -381,7 +376,7 @@ fn removing_the_last_install_ends_its_notes() {
 /// caught exactly that once, on the path before this one: a `note_on_7bit`
 /// that crushed the value and widened it back).
 ///
-/// Mutation (run): the clip node sending `MidiEvent::note_on_7bit` of the
+/// Mutation (run): the clip node sending a 7-bit note on (`note_on_7bit`, since deleted) of the
 /// event's note and velocity >> 9 → fails.
 #[test]
 fn velocity_keeps_its_full_width() {
@@ -396,9 +391,9 @@ fn velocity_keeps_its_full_width() {
         .lock()
         .unwrap()
         .iter()
-        .map(|(_, e)| e.message())
+        .map(|(_, e)| MidiMessage::from_ump(*e))
         .filter_map(|m| match m {
-            tutti_midi_types::MidiMessage::NoteOn { velocity, .. } => Some(velocity),
+            MidiMessage::NoteOn { velocity, .. } => Some(velocity),
             _ => None,
         })
         .collect();

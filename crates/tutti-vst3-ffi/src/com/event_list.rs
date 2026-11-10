@@ -25,7 +25,6 @@ use vst3::{Class, ComWrapper};
 use crate::types::{
     Data, Event, EventHeader, EventKind, K_DATA_TYPE_MIDI_SYSEX, Payload, TextArena, TextRef,
 };
-use tutti_plugin_types::MidiEvent;
 #[cfg(doc)]
 use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
 use tutti_plugin_types::{
@@ -33,6 +32,7 @@ use tutti_plugin_types::{
     SysExStep,
 };
 use tutti_rt::{AudioThreadCell, BorrowGuard};
+use tutti_ump::Ump;
 
 /// The room for per-note expression values in one input block: one per MIDI
 /// event. The host enforces it at staging so a dense expression block cannot
@@ -400,7 +400,7 @@ impl Staging<'_> {
     }
 
     /// Feeds one MIDI event to the SysEx reassembler.
-    pub fn reassemble(&mut self, event: &MidiEvent) -> SysExStep {
+    pub fn reassemble(&mut self, event: &Ump) -> SysExStep {
         self.0.sysex.push(event)
     }
 

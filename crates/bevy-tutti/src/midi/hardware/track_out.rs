@@ -33,9 +33,10 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
+use tutti_graph::UmpAt;
 
 use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
-use tutti_midi_types::ump::MidiEvent;
+use tutti_ump::Ump;
 
 use crate::graph::AudioGraphRes;
 
@@ -92,10 +93,10 @@ impl MidiOutRes {
     /// rather than being called directly. It consumes the events, exactly as the
     /// production pump would, so a test that drains twice sees the second one
     /// empty.
-    pub(crate) fn drain_for_test(&self) -> Vec<MidiEvent> {
+    pub(crate) fn drain_for_test(&self) -> Vec<(u32, Ump)> {
         // Its own chunk size, not the pump's: this loops until empty, so the
         // number only trades syscalls for stack and need not track that tuning.
-        let mut scratch = [MidiEvent::noop(); 64];
+        let mut scratch = [(0_u32, Ump([0; 4])); 64];
         let mut drained = Vec::new();
         loop {
             let n = self.receiver.poll_into(&mut scratch);
@@ -115,7 +116,7 @@ impl MidiOutRes {
 pub struct SendMidiOut(
     /// Queued in order, as one batch. A hot producer should clone the
     /// [`MidiOutRes::sender`] instead of paying the message round-trip.
-    pub Vec<MidiEvent>,
+    pub Vec<UmpAt>,
 );
 
 /// Forwards each [`SendMidiOut`] request into the outbound mailbox.
@@ -180,13 +181,16 @@ impl Plugin for MidiOutPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::MidiOut;
+    use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
+    use tutti_midi_runtime::MidiOut;
+    use tutti_midi_types::MidiMessage;
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// Drain the resource's receiver fully into a `Vec`.
-    fn drain(out: &MidiOutRes) -> Vec<MidiEvent> {
+    fn drain(out: &MidiOutRes) -> Vec<(u32, Ump)> {
         let mut events = Vec::new();
-        let mut buf = [MidiEvent::noop(); 16];
+        let mut buf = [(0_u32, Ump([0; 4])); 16];
         loop {
             let n = out.receiver.poll_into(&mut buf);
             events.extend_from_slice(&buf[..n]);
@@ -207,7 +211,10 @@ mod tests {
     fn with_no_graph_the_drained_events_are_counted() {
         let mut app = App::new();
         app.add_plugins(MidiOutPlugin);
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        let note = (
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        );
         app.world_mut()
             .resource_mut::<Messages<SendMidiOut>>()
             .write(SendMidiOut(vec![note, note]));
@@ -223,7 +230,10 @@ mod tests {
         world.init_resource::<MidiOutRes>();
         world.init_resource::<Messages<SendMidiOut>>();
 
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        let note = (
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        );
         world
             .resource_mut::<Messages<SendMidiOut>>()
             .write(SendMidiOut(vec![note]));
@@ -235,7 +245,7 @@ mod tests {
         let out = world.resource::<MidiOutRes>();
         let events = drain(out);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].note(), Some(60));
+        assert_eq!(MidiMessage::from_ump(events[0].1).note(), Some(60));
     }
 
     #[test]
@@ -243,18 +253,16 @@ mod tests {
         let out = MidiOutRes::default();
         let sender = out.sender();
         assert_eq!(
-            sender.queue(&[MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                64,
-                0x8000
+            sender.queue(&[(
+                Offset::ZERO,
+                note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000)
             )]),
             1
         );
 
         let events = drain(&out);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].note(), Some(64));
+        assert_eq!(MidiMessage::from_ump(events[0].1).note(), Some(64));
     }
 
     #[test]
@@ -263,15 +271,13 @@ mod tests {
         // (its own address baked in) — prove the trait path lands the event.
         let out = MidiOutRes::default();
         let tap: std::sync::Arc<dyn MidiOut> = std::sync::Arc::new(out.sender());
-        tap.queue(&[MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            67,
-            0x8000,
+        tap.queue(&[(
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x8000),
         )]);
 
         let events = drain(&out);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].note(), Some(67));
+        assert_eq!(MidiMessage::from_ump(events[0].1).note(), Some(67));
     }
 }

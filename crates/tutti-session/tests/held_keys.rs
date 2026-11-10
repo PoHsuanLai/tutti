@@ -5,11 +5,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi;
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 use tutti_midi_runtime::{MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_session::{MidiRouteRule, Session, SessionNode};
 use tutti_transport::MotionEvent;
 use tutti_types::{
@@ -125,11 +125,11 @@ fn retarget_with_a_held_clip_note() {
             [
                 TimedMidiEvent::new(
                     Beat(1.0 / 3.0),
-                    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, MF),
+                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, MF),
                 ),
                 TimedMidiEvent::new(
                     Beat(1.0 / 3.0) + BeatDuration(8.0),
-                    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+                    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
                 ),
             ],
         )

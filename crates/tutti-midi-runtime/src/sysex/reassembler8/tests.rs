@@ -1,4 +1,6 @@
 use super::*;
+use tutti_fixtures::midi::{note_on, timing_clock};
+use tutti_midi_types::sysex8_fragments;
 use tutti_midi_types::ump::{SYSEX8_BYTES_ABORT, SYSEX8_STATUS_END};
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -12,7 +14,7 @@ fn payload_of(ev: Option<Sysex8Event>) -> Vec<u8> {
 #[test]
 fn single_packet_completes_immediately() {
     let mut out = Vec::new();
-    MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x11, &[1, 2, 3], &mut out);
+    sysex8_fragments(MidiGroup::FIRST, 0x11, &[1, 2, 3], &mut out);
     assert_eq!(out.len(), 1);
 
     let mut r = Sysex8PacketReassembler::new();
@@ -23,7 +25,7 @@ fn single_packet_completes_immediately() {
 fn multi_packet_run_reassembles() {
     let data: Vec<u8> = (0u8..30).collect();
     let mut out = Vec::new();
-    MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x55, &data, &mut out);
+    sysex8_fragments(MidiGroup::FIRST, 0x55, &data, &mut out);
     assert_eq!(out.len(), 3);
 
     let mut r = Sysex8PacketReassembler::new();
@@ -39,8 +41,8 @@ fn interleaved_streams_on_one_group_stay_separate() {
     let a: Vec<u8> = (0u8..30).collect();
     let b: Vec<u8> = (100u8..130).collect();
     let (mut pa, mut pb) = (Vec::new(), Vec::new());
-    MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x01, &a, &mut pa);
-    MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x02, &b, &mut pb);
+    sysex8_fragments(MidiGroup::FIRST, 0x01, &a, &mut pa);
+    sysex8_fragments(MidiGroup::FIRST, 0x02, &b, &mut pb);
 
     // Start(1) Start(2) Continue(1) Continue(2) End(2) End(1)
     let mut r = Sysex8PacketReassembler::new();
@@ -58,18 +60,13 @@ fn unrelated_traffic_does_not_terminate_a_run() {
     // §7.8.1 permits interspersing — unlike SysEx7, this must NOT terminate.
     let data: Vec<u8> = (0u8..30).collect();
     let mut out = Vec::new();
-    MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x7F, &data, &mut out);
+    sysex8_fragments(MidiGroup::FIRST, 0x7F, &data, &mut out);
 
     let mut r = Sysex8PacketReassembler::new();
     r.push(&out[0]);
     assert!(
-        r.push(&MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        ))
-        .is_none()
+        r.push(&note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))
+            .is_none()
     );
     assert_eq!(r.in_flight_count(), 1, "note-on must not terminate SysEx8");
     r.push(&out[1]);
@@ -82,7 +79,7 @@ fn sender_abort_is_reported_not_silently_accepted() {
     // buffered data is explicitly untrustworthy.
     let data: Vec<u8> = (0u8..30).collect();
     let mut out = Vec::new();
-    MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x09, &data, &mut out);
+    sysex8_fragments(MidiGroup::FIRST, 0x09, &data, &mut out);
 
     let mut r = Sysex8PacketReassembler::new();
     r.push(&out[0]);
@@ -90,10 +87,10 @@ fn sender_abort_is_reported_not_silently_accepted() {
 
     // Hand-build the abort: End status with the 0xF byte count.
     let mut abort = out[2];
-    abort.data[0] = (abort.data[0] & !0x00FF_0000)
+    abort.0[0] = (abort.0[0] & !0x00FF_0000)
         | ((SYSEX8_STATUS_END as u32) << 20)
         | ((SYSEX8_BYTES_ABORT as u32) << 16);
-    assert!(abort.is_sysex8_abort());
+    assert!(is_sysex8_abort(&abort));
 
     assert_eq!(
         r.push(&abort),
@@ -109,7 +106,7 @@ fn sender_abort_is_reported_not_silently_accepted() {
 fn an_unterminated_run_cannot_grow_without_bound() {
     let data: Vec<u8> = (0u8..30).collect();
     let mut out = Vec::new();
-    MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x03, &data, &mut out);
+    sysex8_fragments(MidiGroup::FIRST, 0x03, &data, &mut out);
 
     let mut r = Sysex8PacketReassembler::with_max_bytes(64);
     r.push(&out[0]);
@@ -133,13 +130,8 @@ fn an_unterminated_run_cannot_grow_without_bound() {
 fn non_sysex8_event_is_ignored() {
     let mut r = Sysex8PacketReassembler::new();
     assert!(
-        r.push(&MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        ))
-        .is_none()
+        r.push(&note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))
+            .is_none()
     );
-    assert!(r.push(&MidiEvent::timing_clock(MidiGroup::FIRST)).is_none());
+    assert!(r.push(&timing_clock(MidiGroup::FIRST)).is_none());
 }

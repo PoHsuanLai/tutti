@@ -240,19 +240,17 @@ mod tests {
     /// `drain_with_errors` → 0 counted → fails.
     #[test]
     fn a_crash_drain_counts_the_queued_midi() {
-        use crate::protocol::MidiEvent;
+        use crate::protocol::WireMidi;
         use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate(48_000.0));
         for n in [3, 0, 2] {
             let mut payload = Box::new(ProcessPayload::empty());
             for _ in 0..n {
-                payload.midi_events.push(MidiEvent::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    60,
-                    1,
-                ));
+                payload.midi_events.push(WireMidi {
+                    offset: 0,
+                    ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+                });
             }
             assert!(channels.push_command(Command::Process(payload)));
         }
@@ -274,19 +272,17 @@ mod tests {
     /// removed → the chunk stays queued, 0 counted → fails.
     #[test]
     fn a_failed_connect_counts_the_queued_midi() {
-        use crate::protocol::MidiEvent;
+        use crate::protocol::WireMidi;
         use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate(48_000.0));
         let lifecycle = Lifecycle::new();
         let mut payload = Box::new(ProcessPayload::empty());
         for _ in 0..4 {
-            payload.midi_events.push(MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                1,
-            ));
+            payload.midi_events.push(WireMidi {
+                offset: 0,
+                ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+            });
         }
         assert!(channels.push_command(Command::Process(payload)));
         let socket =

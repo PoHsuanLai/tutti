@@ -519,8 +519,15 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let mut node = client.bind();
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
-    crate::protocol::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
-    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
+    let dump: Vec<crate::protocol::WireMidi> = dump
+        .into_iter()
+        .map(|ump| crate::protocol::WireMidi { offset: 0, ump })
+        .collect();
+    let note = crate::protocol::WireMidi {
+        offset: 0,
+        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+    };
     let state = &mut node.state;
     for &e in dump[..3].iter().chain([&note]) {
         assert!(state.intake.push(&mut state.pending.midi, e));
@@ -559,8 +566,15 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     node.prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
-    crate::protocol::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
-    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
+    let dump: Vec<crate::protocol::WireMidi> = dump
+        .into_iter()
+        .map(|ump| crate::protocol::WireMidi { offset: 0, ump })
+        .collect();
+    let note = crate::protocol::WireMidi {
+        offset: 0,
+        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+    };
     let state = &mut node.state;
     for &e in dump[..3].iter().chain([&note]) {
         assert!(state.intake.push(&mut state.pending.midi, e));

@@ -9,12 +9,12 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -53,15 +53,15 @@ fn beat_of(frame: u64) -> Beat {
     Beat(frame as f64 / FRAMES_PER_BEAT)
 }
 
-fn on(note: u8) -> MidiEvent {
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xFFFF)
+fn on(note: u8) -> Ump {
+    note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xFFFF)
 }
 
-fn off(note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
+fn off(note: u8) -> Ump {
+    note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
 }
 
-fn at(frame: u64, event: MidiEvent) -> TimedMidiEvent {
+fn at(frame: u64, event: Ump) -> TimedMidiEvent {
     TimedMidiEvent::new(beat_of(frame), event)
 }
 
@@ -104,8 +104,8 @@ fn roll(exec: &mut Executor, frames: u64, block: usize) {
 }
 
 /// The first word of a note-on / note-off for `note` on group 0, channel 0.
-fn word(e: MidiEvent) -> u32 {
-    e.data[0]
+fn word(e: Ump) -> u32 {
+    e.0[0]
 }
 
 /// **Notes land on their frames, whatever the blocks.** Onsets inside a
@@ -303,7 +303,7 @@ fn a_nan_beat_does_not_silence_the_clip() {
 #[test]
 fn refused_note_offs_are_retried_until_none_is_held() {
     let note = |i: u16| {
-        MidiEvent::note_on(
+        note_on(
             MidiGroup::FIRST,
             MidiChannel::of((i / 128) as u8),
             (i % 128) as u8,

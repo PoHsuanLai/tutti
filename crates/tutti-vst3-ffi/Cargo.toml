@@ -28,6 +28,7 @@ arrayvec = "0.7"
 bitflags = "2"
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-types = { path = "../tutti-types" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 vst3 = "0.3"
 

@@ -3,7 +3,7 @@ name = "tutti-midi-types"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Pure MIDI types for Tutti - MidiEvent (UMP) + tutti-domain MPE/sync"
+description = "Pure MIDI types for Tutti - UMP builders and readers + tutti-domain MPE/sync"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-midi-types"
@@ -24,10 +24,10 @@ default = []
 # it is not re-litigated: a MIDI type may carry these derives only when all three
 # of the reasons a host's durational note record exists are absent — it must be
 # authored configuration, carry no audio-thread-stamped field, and have the same
-# shape at rest as on the wire. `MpeMode` passes all three. `MidiEvent` fails the
-# last two (its `frame_offset` is stamped by the audio thread against a block
-# size the document never sees, and MIDI has no durational note record), so it
-# must never get this treatment.
+# shape at rest as on the wire. `MpeMode` passes all three. An event in a block,
+# `(Offset, Ump)`, fails the last two (its offset is stamped by the audio thread
+# against a block size the document never sees, and MIDI has no durational note
+# record), so it must never get this treatment.
 #
 # Forwards to `tutti-types`: `MpeZoneConfig` is built from that crate's
 # newtypes, so without the forward the derives here would fail to resolve.
@@ -48,6 +48,7 @@ midi2 = { workspace = true }
 midly = { workspace = true }
 
 [dev-dependencies]
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 # The MPE-config `Deserialize` impls are a document edge, so they are tested
 # against a real format rather than a hand-rolled deserializer — the same
@@ -56,8 +57,8 @@ serde_json = "1"
 tutti-midi-types = { path = ".", features = ["serde"] }
 criterion.workspace = true
 
-# The old read path against `tutti_ump::decode`, on the same packets. Goes with
-# `MidiEvent`.
+# The old read path (`MidiMessage::from_ump`) against `tutti_ump::decode`, on the
+# same packets.
 [[bench]]
 name = "message_baseline"
 harness = false

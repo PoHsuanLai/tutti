@@ -17,20 +17,21 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tutti_graph::UmpAt;
 
 use tutti_graph::{
     Cx, Event, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
-    NodeParts, Prepare, Shape, Status,
+    NodeParts, Offset, Prepare, Shape, Status,
 };
+use tutti_midi_types::Midi1ToMidi2Translator;
 use tutti_midi_types::mpe::MpeMode;
-use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{Midi1ToMidi2Translator, MidiIn};
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::ChannelLayout;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
-use super::order::{in_offset_order, offset_of};
+use super::order::{BLANK, in_offset_order, offset_of};
 use crate::outbound::mpe_ingest::{MpeIngest, Translated};
+use crate::traits::MidiIn;
 
 /// The port that carries events with no channel: after the sixteen channel
 /// ports.
@@ -57,10 +58,14 @@ pub const MIDI_INPUT_EVENT_CAPACITY: usize = 512;
 pub const MIDI_INPUT_DENSITY: EventDensity = EventDensity::per_kiloframe(128);
 
 /// The port an event leaves a [`MidiInputNode`] from.
-pub fn input_port_of(event: &MidiEvent) -> usize {
-    event
-        .channel()
-        .map_or(CHANNELLESS_PORT, |c| usize::from(c.get()))
+pub fn input_port_of(event: &Ump) -> usize {
+    // The channel nibble of a channel voice message (UMP type 0x2 or 0x4: the
+    // same bit position in both), read without a full decode.
+    let word = event.0[0];
+    match (word >> 28) & 0x0F {
+        0x2 | 0x4 => usize::from(MidiChannel::masked(((word >> 16) & 0x0F) as u8).get()),
+        _ => CHANNELLESS_PORT,
+    }
 }
 
 /// The ports a node listening to `channel` (every channel when `None`) takes
@@ -91,10 +96,10 @@ pub struct MidiInputNode {
     /// hardware drain's scratch, its read of the port set) is the node's.
     input: Option<Box<dyn MidiIn>>,
     /// What the wire's poll fills.
-    scratch: Box<[MidiEvent]>,
+    scratch: Box<[UmpAt]>,
     /// What the block sends: the translated events, which may outnumber the
     /// polled ones (a member channel's bend range fans out over its zone).
-    out: Box<[MidiEvent]>,
+    out: Box<[UmpAt]>,
     translator: Midi1ToMidi2Translator,
     mpe: MpeIngest,
     /// The MPE mode a host asked for, read once per block. The reader owns
@@ -130,8 +135,8 @@ impl MidiInputNode {
         Self {
             mpe_request: cell.reader(),
             input,
-            scratch: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
-            out: vec![MidiEvent::noop(); tutti_graph::note_off_room(MIDI_INPUT_EVENT_CAPACITY)]
+            scratch: vec![BLANK; MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
+            out: vec![BLANK; tutti_graph::note_off_room(MIDI_INPUT_EVENT_CAPACITY)]
                 .into_boxed_slice(),
             translator: Midi1ToMidi2Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
@@ -162,7 +167,7 @@ impl MidiInputNode {
             return None;
         }
         self.mpe.set_mode(mode);
-        Some(self.mpe.zone_defaults(MidiGroup::FIRST, 0))
+        Some(self.mpe.zone_defaults(MidiGroup::FIRST, Offset::ZERO))
     }
 }
 
@@ -230,9 +235,8 @@ impl Node for MidiInputNode {
         let capacity = (MIDI_INPUT_DENSITY.capacity(p) as usize).max(MIDI_INPUT_EVENT_CAPACITY);
         if capacity != self.capacity || self.scratch.len() != capacity {
             self.capacity = capacity;
-            self.scratch = vec![MidiEvent::noop(); capacity].into_boxed_slice();
-            self.out =
-                vec![MidiEvent::noop(); tutti_graph::note_off_room(capacity)].into_boxed_slice();
+            self.scratch = vec![BLANK; capacity].into_boxed_slice();
+            self.out = vec![BLANK; tutti_graph::note_off_room(capacity)].into_boxed_slice();
         }
         if let Some(input) = self.input.as_mut() {
             input.reserve(capacity);
@@ -277,11 +281,11 @@ impl Node for MidiInputNode {
             stage(reset, false);
         }
         let n = input.poll_block(block_len.get(), &mut self.scratch);
-        for raw in &self.scratch[..n.min(self.scratch.len())] {
-            let Some(ev) = self.translator.translate(raw) else {
+        for &(at, raw) in &self.scratch[..n.min(self.scratch.len())] {
+            let Some(ev) = self.translator.translate(&raw) else {
                 continue;
             };
-            stage(self.mpe.translate(&ev), ev.is_note_off());
+            stage(self.mpe.translate(&(at, ev)), ev.is_note_off());
         }
         if dropped > 0 {
             self.dropped.fetch_add(dropped, Ordering::Relaxed);
@@ -293,8 +297,8 @@ impl Node for MidiInputNode {
         for ev in events.iter() {
             // Refused past the capacity: counted by the executor.
             let _ = io
-                .event_out(input_port_of(ev))
-                .push(Event::midi(offset_of(ev, block_len), ev.data));
+                .event_out(input_port_of(&ev.1))
+                .push(Event::midi(offset_of(ev, block_len), ev.1.0));
         }
         Status::Modified
     }

@@ -9,8 +9,11 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 publish = false
 
 # A dev-dependency of the crates whose tests read a repo asset or load a
-# reference plugin or the plugin-server, or that check a range-checked type. It
-# depends on no workspace crate and is never linked into a shipped binary.
+# reference plugin or the plugin-server, check a range-checked type, or build
+# MIDI messages (`midi`). Its one workspace dependency is `tutti-ump`, the
+# bottom layer, which dev-depends on nothing here, so no crate meets two copies
+# of a type through it. It is never linked into a shipped binary.
 [dependencies]
+tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

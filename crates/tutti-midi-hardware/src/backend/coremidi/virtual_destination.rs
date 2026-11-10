@@ -21,7 +21,8 @@
 
 use coremidi::{EventList, Protocol, VirtualDestination};
 use tracing::debug;
-use tutti_midi_types::ump::{MidiEvent, split_ump_stream};
+use tutti_midi_types::ump::split_ump_stream;
+use tutti_ump::Ump;
 
 use super::shared_client;
 use crate::error::{Error, Result};
@@ -63,7 +64,7 @@ impl UmpVirtualDestination {
     /// destination endpoint.
     pub fn new<F>(name: &str, mut on_event: F) -> Result<Self>
     where
-        F: FnMut(MidiEvent) + Send + 'static,
+        F: FnMut(Ump) + Send + 'static,
     {
         let client = shared_client().map_err(|status| Error::CoreMidi {
             operation: "create client (ump destination)",

@@ -1,11 +1,12 @@
 use super::*;
+use crate::from_midi1_bytes;
 use midi2::channel_voice2::ChannelVoice2;
+use tutti_fixtures::midi;
 
 /// A MIDI *1.0* wire CC (status 0xB0 | channel) — the translator's input.
-fn cc_ev(channel: u8, control: CCNumber, value: u8) -> MidiEvent {
+fn cc_ev(channel: u8, control: CCNumber, value: u8) -> Ump {
     // `.get()` is a wire boundary — a MIDI-1 status/data byte triple.
-    MidiEvent::from_midi1_bytes(0, &[0xB0 | (channel & 0x0F), control.get(), value])
-        .expect("valid MIDI-1 CC")
+    from_midi1_bytes(&[0xB0 | (channel & 0x0F), control.get(), value]).expect("valid MIDI-1 CC")
 }
 
 #[test]
@@ -17,7 +18,7 @@ fn rpn_run_translates_to_registered_controller() {
     let out = t
         .translate(&cc_ev(3, cc::DATA_ENTRY, 10))
         .expect("emits on data entry");
-    match UmpMessage::try_from(out.data_words()).unwrap() {
+    match UmpMessage::try_from(out.words()).unwrap() {
         UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) => {
             assert_eq!(u8::from(m.channel()), 3);
             assert_eq!(u8::from(m.bank()), 0x00);
@@ -33,7 +34,7 @@ fn nrpn_run_translates_to_assignable_controller() {
     assert!(t.translate(&cc_ev(0, cc::NRPN_MSB, 0x12)).is_none());
     assert!(t.translate(&cc_ev(0, cc::NRPN_LSB, 0x34)).is_none());
     let out = t.translate(&cc_ev(0, cc::DATA_ENTRY, 64)).expect("emits");
-    match UmpMessage::try_from(out.data_words()).unwrap() {
+    match UmpMessage::try_from(out.words()).unwrap() {
         UmpMessage::ChannelVoice2(ChannelVoice2::AssignableController(m)) => {
             assert_eq!(u8::from(m.bank()), 0x12);
             assert_eq!(u8::from(m.index()), 0x34);
@@ -48,7 +49,7 @@ fn plain_cc_promotes_straight_through() {
     let out = t
         .translate(&cc_ev(1, cc::MOD_WHEEL, 100))
         .expect("plain CC promotes");
-    match UmpMessage::try_from(out.data_words()).unwrap() {
+    match UmpMessage::try_from(out.words()).unwrap() {
         UmpMessage::ChannelVoice2(ChannelVoice2::ControlChange(m)) => {
             assert_eq!(CCNumber::of(u8::from(m.control())), cc::MOD_WHEEL);
         }
@@ -59,17 +60,17 @@ fn plain_cc_promotes_straight_through() {
 #[test]
 fn note_on_promotes_straight_through() {
     let mut t = Midi1ToMidi2Translator::new();
-    let midi1 = MidiEvent::from_midi1_bytes(0, &[0x93, 60, 100]).unwrap();
+    let midi1 = from_midi1_bytes(&[0x93, 60, 100]).unwrap();
     let out = t.translate(&midi1).expect("note promotes");
     assert!(matches!(
-        UmpMessage::try_from(out.data_words()).unwrap(),
+        UmpMessage::try_from(out.words()).unwrap(),
         UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))
     ));
 }
 
 /// Bank/index of a Registered or Assignable Controller, if that's what `ev` is.
-fn controller_param(ev: &MidiEvent) -> Option<(u8, u8, u32)> {
-    match UmpMessage::try_from(ev.data_words()).ok()? {
+fn controller_param(ev: &Ump) -> Option<(u8, u8, u32)> {
+    match UmpMessage::try_from(ev.words()).ok()? {
         UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) => {
             Some((u8::from(m.bank()), u8::from(m.index()), m.controller_data()))
         }
@@ -201,27 +202,27 @@ fn rpn_and_nrpn_keep_separate_numbers() {
 #[test]
 fn bank_select_attaches_to_the_next_program_change_only() {
     let mut t = Midi1ToMidi2Translator::new();
-    let pc = |ch: u8, p: u8| MidiEvent::from_midi1_bytes(0, &[0xC0 | ch, p]).unwrap();
+    let pc = |ch: u8, p: u8| from_midi1_bytes(&[0xC0 | ch, p]).unwrap();
     assert!(t.translate(&cc_ev(5, cc::BANK_SELECT, 3)).is_none());
     // Another channel's program change does not take it.
     let other = t.translate(&pc(1, 7)).unwrap();
-    assert_eq!(other.data_words(), pc_words(1, 7, None));
+    assert_eq!(other.words(), pc_words(1, 7, None));
     // MSB alone: the LSB half is 0.
     let with = t.translate(&pc(5, 8)).unwrap();
-    assert_eq!(with.data_words(), pc_words(5, 8, Some(3 << 7)));
+    assert_eq!(with.words(), pc_words(5, 8, Some(3 << 7)));
     let after = t.translate(&pc(5, 9)).unwrap();
-    assert_eq!(after.data_words(), pc_words(5, 9, None));
+    assert_eq!(after.words(), pc_words(5, 9, None));
     // The values are kept: a lone LSB pairs with the earlier MSB
     // (`ump_convert.c` clears only the flag). Mutation: clear the
     // values on a Program Change and this reads bank 6.
     assert!(t.translate(&cc_ev(5, CCNumber::of(32), 6)).is_none());
     let again = t.translate(&pc(5, 10)).unwrap();
-    assert_eq!(again.data_words(), pc_words(5, 10, Some((3 << 7) | 6)));
+    assert_eq!(again.words(), pc_words(5, 10, Some((3 << 7) | 6)));
 }
 
 fn pc_words(ch: u8, p: u8, bank: Option<u16>) -> Vec<u32> {
-    MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(ch), p, bank)
-        .data_words()
+    midi::program_change(MidiGroup::FIRST, MidiChannel::of(ch), p, bank)
+        .words()
         .to_vec()
 }
 

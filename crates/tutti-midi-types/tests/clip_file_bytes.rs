@@ -38,19 +38,20 @@
 //! simultaneous with a preceding event — separates a positional rule from a
 //! content rule.
 
+use tutti_fixtures::midi;
 use tutti_midi_types::{
-    Beat, Bpm, ClipEvent, ClipHeader, MidiEvent, ParsedClipFile, write_clip_file_with_header,
+    Beat, Bpm, ClipEvent, ClipHeader, ParsedClipFile, flex_set_tempo, write_clip_file_with_header,
 };
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const TPQ: u16 = 96;
 
-fn note_on(note: u8, vel: u16) -> MidiEvent {
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, vel)
+fn note_on(note: u8, vel: u16) -> Ump {
+    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, vel)
 }
 
-fn note_off(note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
+fn note_off(note: u8) -> Ump {
+    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
 }
 
 /// A clip with a header, two notes and a rest — enough structure that a
@@ -319,10 +320,7 @@ fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
             ClipEvent::new(0, note_on(60, 0x4000)),
             ClipEvent::new(u32::from(TPQ) * 4, note_off(60)),
             // Simultaneous with the note-off: zero-delta, but NOT leading.
-            ClipEvent::new(
-                0,
-                MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(140.0)),
-            ),
+            ClipEvent::new(0, flex_set_tempo(MidiGroup::FIRST, Bpm::of(140.0))),
         ],
     );
 

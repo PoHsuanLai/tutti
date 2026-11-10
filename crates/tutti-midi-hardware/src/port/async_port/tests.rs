@@ -1,9 +1,10 @@
 use super::*;
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
+use tutti_midi_types::MidiMessage;
+use tutti_midi_types::convert::{midi1_velocity_to_midi2, midi2_velocity_to_midi1};
 use tutti_ump::{MidiChannel, MidiGroup};
 
-fn note_on(note: u8, vel: u8) -> MidiEvent {
-    MidiEvent::note_on(
+fn note_on(note: u8, vel: u8) -> Ump {
+    tutti_fixtures::midi::note_on(
         MidiGroup::FIRST,
         MidiChannel::FIRST,
         note,
@@ -11,8 +12,14 @@ fn note_on(note: u8, vel: u8) -> MidiEvent {
     )
 }
 
+/// A packet that is only a tag: word 0 holds `i`, so a test can tell the
+/// events apart (the old tests tagged them through `frame_offset`).
+fn tagged(i: u32) -> Ump {
+    Ump([i, 0, 0, 0])
+}
+
 /// Test helper: drain input into a fresh Vec.
-fn read_input(port: &HardwareMidiInput) -> Vec<MidiEvent> {
+fn read_input(port: &HardwareMidiInput) -> Vec<Ump> {
     let mut buf = Vec::new();
     port.drain_limited(usize::MAX, |_, e| buf.push(e));
     buf
@@ -22,7 +29,7 @@ fn read_input(port: &HardwareMidiInput) -> Vec<MidiEvent> {
 fn drain_stops_at_limit_and_keeps_the_rest() {
     let (port, mut handle) = HardwareMidiInput::new("Limited", 16, PortId::TEST);
     for i in 0..8 {
-        assert!(handle.push(note_on(0x3C, 0x7F).with_frame_offset(i), Instant::now()));
+        assert!(handle.push(tagged(i), Instant::now()));
     }
 
     let mut buf = Vec::new();
@@ -55,9 +62,10 @@ fn test_input_flow() {
 
     let events = read_input(&port);
     assert_eq!(events.len(), 1);
-    assert!(events[0].is_note_on());
-    assert_eq!(events[0].note(), Some(0x3C));
-    assert_eq!(events[0].velocity_u7(), Some(0x7F));
+    let message = MidiMessage::from_ump(events[0]);
+    assert!(message.is_note_on());
+    assert_eq!(message.note(), Some(0x3C));
+    assert_eq!(message.velocity().map(midi2_velocity_to_midi1), Some(0x7F));
 }
 
 #[test]
@@ -65,7 +73,7 @@ fn test_fifo_full() {
     let (_port, mut input_handle) = HardwareMidiInput::new("Full", 4, PortId::TEST);
 
     for i in 0..4 {
-        let event = note_on(0x3C, 0x7F).with_frame_offset(i);
+        let event = tagged(i);
         assert!(
             input_handle.push(event, Instant::now()),
             "Failed to write event {}",
@@ -106,7 +114,7 @@ fn a_driver_thread_and_the_drain_run_concurrently() {
     let (port, mut handle) = HardwareMidiInput::new("Concurrent", 8, PortId::TEST);
     let driver = std::thread::spawn(move || {
         for i in 0..EVENTS {
-            let event = MidiEvent::noop().with_frame_offset(i);
+            let event = tagged(i);
             while !handle.push(event, Instant::now()) {
                 std::thread::yield_now();
             }
@@ -118,7 +126,7 @@ fn a_driver_thread_and_the_drain_run_concurrently() {
     let mut seen = Vec::new();
     loop {
         let done = driver.is_finished();
-        let taken = port.drain_limited(usize::MAX, |_, e| seen.push(e.frame_offset));
+        let taken = port.drain_limited(usize::MAX, |_, e| seen.push(e.0[0]));
         if done && taken == 0 {
             break;
         }

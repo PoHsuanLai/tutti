@@ -20,11 +20,12 @@ use std::sync::atomic::Ordering;
 
 use tutti_midi_types::ump::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
-    UmpMessageType,
+    UmpMessageType, message_type, sysex7_payload,
 };
+use tutti_ump::Ump;
 
 use super::param_delivery::DeliveryCounters;
-use crate::protocol::{MidiEvent, MidiEventVec};
+use crate::protocol::{MidiEventVec, WireMidi};
 
 /// The intake's state, one bit per UMP group, carried across chunks and
 /// blocks, and across a reset (the reassembler past it keeps its open run
@@ -49,11 +50,11 @@ pub(crate) struct MidiIntake {
 impl MidiIntake {
     /// Whether `event` passes on: `false` for the rest of a SysEx being
     /// skipped. Notes which messages are open. Never allocates.
-    pub(crate) fn admit(&mut self, event: &MidiEvent) -> bool {
-        let Some(status) = sysex7_status(event) else {
+    pub(crate) fn admit(&mut self, event: &WireMidi) -> bool {
+        let Some(status) = sysex7_status(&event.ump) else {
             return true;
         };
-        let bit = 1u16 << event.group().get();
+        let bit = group_bit(&event.ump);
         match status {
             SYSEX7_STATUS_START | SYSEX7_STATUS_SINGLE => self.skipping &= !bit,
             SYSEX7_STATUS_CONTINUE | SYSEX7_STATUS_END if self.skipping & bit != 0 => {
@@ -76,7 +77,7 @@ impl MidiIntake {
     /// taken; the caller counts what was not
     /// ([`DeliveryCounters::count_midi_dropped`]). Never allocates.
     #[must_use = "a dropped event is counted by the caller"]
-    pub(crate) fn push(&mut self, list: &mut MidiEventVec, event: MidiEvent) -> bool {
+    pub(crate) fn push(&mut self, list: &mut MidiEventVec, event: WireMidi) -> bool {
         if !self.admit(&event) {
             return false;
         }
@@ -87,10 +88,10 @@ impl MidiIntake {
         // (A refused `END` or `SINGLE` leaves none: its message's packets
         // all went or none did.)
         if matches!(
-            sysex7_status(&event),
+            sysex7_status(&event.ump),
             Some(SYSEX7_STATUS_START | SYSEX7_STATUS_CONTINUE)
         ) {
-            let bit = 1u16 << event.group().get();
+            let bit = group_bit(&event.ump);
             self.skipping |= bit;
             self.open &= !bit;
         }
@@ -117,30 +118,30 @@ impl MidiIntake {
     /// worst case is 256 passes and one empty one, whatever the input
     /// carries. Never allocates (`ArrayVec::remove` shifts in place).
     #[must_use = "the lost events are counted by the caller"]
-    pub(crate) fn push_displacing(&mut self, list: &mut MidiEventVec, event: MidiEvent) -> u64 {
+    pub(crate) fn push_displacing(&mut self, list: &mut MidiEventVec, event: WireMidi) -> u64 {
         if self.push(list, event) {
             return 0;
         }
-        if self.exhausted || !is_off(&event.data) || !list.is_full() {
+        if self.exhausted || !is_off(&event.ump.0) || !list.is_full() {
             return 1;
         }
         #[cfg(test)]
         {
             self.scans += 1;
         }
-        let key = key_of(&event.data);
+        let key = key_of(&event.ump.0);
         let mut latest_on = None;
         let mut latest_other = None;
         let mut victim = None;
         for (i, e) in list.iter().enumerate().rev() {
-            let w = e.data[0];
-            if is_on(&e.data) {
-                if key_of(&e.data) == key {
+            let w = e.ump.0[0];
+            if is_on(&e.ump.0) {
+                if key_of(&e.ump.0) == key {
                     victim = Some(i);
                     break;
                 }
                 latest_on.get_or_insert(i);
-            } else if is_channel_message(w) && !is_off(&e.data) {
+            } else if is_channel_message(w) && !is_off(&e.ump.0) {
                 latest_other.get_or_insert(i);
             }
         }
@@ -212,11 +213,16 @@ fn key_of(data: &[u32; 4]) -> (u32, u32, u32) {
 }
 
 /// A SysEx7 packet's status, or `None` for any other message.
-fn sysex7_status(event: &MidiEvent) -> Option<u8> {
-    if event.message_type() != UmpMessageType::Sysex7 {
+fn sysex7_status(event: &Ump) -> Option<u8> {
+    if message_type(event) != UmpMessageType::Sysex7 {
         return None;
     }
-    event.sysex7_payload().map(|(status, _, _)| status)
+    sysex7_payload(event).map(|(status, _, _)| status)
+}
+
+/// The bit of `event`'s UMP group in the intake's per-group masks.
+fn group_bit(event: &Ump) -> u16 {
+    1u16 << ((event.0[0] >> 24) & 0xF)
 }
 
 impl DeliveryCounters {
@@ -251,18 +257,28 @@ impl DeliveryCounters {
 mod tests {
     use super::*;
     use crate::protocol::MIDI_STACK_CAPACITY;
+    use tutti_fixtures::midi;
     use tutti_plugin_types::{SysExAssembler, SysExStep};
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    fn packets(group: MidiGroup, len: usize) -> Vec<MidiEvent> {
-        let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
-        let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(group, &payload, &mut out);
-        out
+    fn wire(ump: Ump) -> WireMidi {
+        WireMidi { offset: 0, ump }
     }
 
-    fn note() -> MidiEvent {
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+    fn packets(group: MidiGroup, len: usize) -> Vec<WireMidi> {
+        let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
+        let mut out = Vec::new();
+        tutti_midi_types::sysex7_fragments(group, &payload, &mut out);
+        out.into_iter().map(wire).collect()
+    }
+
+    fn note() -> WireMidi {
+        wire(midi::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000,
+        ))
     }
 
     /// **Past the cap, events are dropped and reported, without allocating.**
@@ -322,11 +338,11 @@ mod tests {
     /// The plugin's host at the far end of the chunks: a reassembler, fed
     /// each chunk that arrives as one block. Returns the complete messages'
     /// byte lengths.
-    fn deliver(asm: &mut SysExAssembler, chunk: &[MidiEvent]) -> Vec<usize> {
+    fn deliver(asm: &mut SysExAssembler, chunk: &[WireMidi]) -> Vec<usize> {
         asm.begin_block();
         chunk
             .iter()
-            .filter_map(|e| match asm.push(e) {
+            .filter_map(|e| match asm.push(&e.ump) {
                 SysExStep::Complete(m) => Some(m.len()),
                 _ => None,
             })
@@ -461,7 +477,7 @@ mod tests {
         let cut = packets(MidiGroup::FIRST, 30);
         let single = packets(MidiGroup::of(1), 4);
         assert_eq!(single.len(), 1, "a SINGLE");
-        assert_ne!(single[0].group(), cut[0].group());
+        assert_ne!(group_bit(&single[0].ump), group_bit(&cut[0].ump));
         let mut intake = MidiIntake::default();
 
         let mut lost = MidiEventVec::new();
@@ -478,12 +494,17 @@ mod tests {
         assert_eq!(chunk.as_slice(), single.as_slice());
     }
 
-    fn on(key: u8) -> MidiEvent {
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0xFFFF)
+    fn on(key: u8) -> WireMidi {
+        wire(midi::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            key,
+            0xFFFF,
+        ))
     }
 
-    fn off(key: u8) -> MidiEvent {
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0)
+    fn off(key: u8) -> WireMidi {
+        wire(midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0))
     }
 
     /// A list full of note-ons takes a note-off over the note-on of its own
@@ -509,14 +530,14 @@ mod tests {
             Some(&on(127)),
             "a refused note-on displaces nothing"
         );
-        assert!(list.iter().all(MidiEvent::is_note_on));
+        assert!(list.iter().all(|e| is_on(&e.ump.0)));
         assert_eq!(intake.push_displacing(&mut list, off(5)), 1);
         assert_eq!(list.len(), MIDI_STACK_CAPACITY);
         assert_eq!(list.last(), Some(&off(5)));
         // The later note-on of key 5 (index 133) is the one that went.
         let ons_of_5 = list
             .iter()
-            .filter(|e| e.is_note_on() && e.note() == Some(5))
+            .filter(|e| is_on(&e.ump.0) && key_of(&e.ump.0).2 == 5)
             .count();
         assert_eq!(ons_of_5, 1);
         assert_eq!(list[5], on(5));
@@ -544,7 +565,7 @@ mod tests {
         }
         let took = start.elapsed();
         assert_eq!(lost, 8_192);
-        assert_eq!(list.iter().filter(|e| e.is_note_on()).count(), 0);
+        assert_eq!(list.iter().filter(|e| is_on(&e.ump.0)).count(), 0);
         assert_eq!(list.len(), MIDI_STACK_CAPACITY);
         // 256 passes that displace and one that finds nothing: not 8,192.
         assert_eq!(intake.scans, 257);

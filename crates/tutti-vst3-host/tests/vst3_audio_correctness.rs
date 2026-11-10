@@ -40,13 +40,27 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_midi_types::sysex7_fragments;
 use tutti_plugin_types::ParamId;
+use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{
-    AudioBuffer, InputEvents, LoadOptions, MidiEvent, NoteExpressionType, NoteExpressionValue,
+    AudioBuffer, InputEvents, LoadOptions, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, TransportInfo, Vst3Loaded,
 };
+
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
+
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
@@ -228,7 +242,7 @@ struct Rendered {
 fn render(
     inst: &mut Active,
     frames: usize,
-    midi: &[MidiEvent],
+    midi: &[UmpAt],
     params: Option<&ParameterChanges>,
     input_at: impl Fn(usize, usize, usize) -> f32,
 ) -> Rendered {
@@ -737,10 +751,10 @@ fn note_on_takes_effect_at_its_sample_offset() {
     let mut failures = Vec::new();
 
     for &offset in &[0usize, 1, 63, 128, 511] {
-        let midi = [
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
-                .with_frame_offset(offset as u32),
-        ];
+        let midi = [(
+            at(offset as u32),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        )];
         let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
         let ch0 = &rendered.out[0][0];
 
@@ -881,13 +895,26 @@ fn full_midi_event_list_survives_intact() {
     // Deliberately out of order, with two events sharing offset 256 — the host
     // must sort without merging, and must not drop the note-offs.
     let midi = [
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x4000)
-            .with_frame_offset(300),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x6000).with_frame_offset(100),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
-            .with_frame_offset(256),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, 0x7000).with_frame_offset(256),
+        (
+            at(300),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x4000),
+        ),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(100),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x6000),
+        ),
+        (
+            at(256),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+        ),
+        (
+            at(256),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, 0x7000),
+        ),
     ];
 
     let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
@@ -1120,9 +1147,10 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 
     // A note to attach the expressions to, then two expressions of different
     // types and values at distinct offsets.
-    let midi = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-    ];
+    let midi = [(
+        at(0),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+    )];
     let expressions = [
         NoteExpressionValue {
             sample_offset: 64,
@@ -1219,26 +1247,33 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     const NOTE_EXPR_BASE: f32 = 5000.0;
     const TUNING_TYPE_ID: f32 = 2.0;
 
-    let quarter_bend = |at: u32| {
-        MidiEvent::per_note_pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            signed_f32_to_bend_u32(0.25),
+    let quarter_bend = |frame: u32| {
+        (
+            at(frame),
+            midi::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                signed_f32_to_bend_u32(0.25),
+            ),
         )
-        .with_frame_offset(at)
     };
     let midi = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
         quarter_bend(64),
-        MidiEvent::registered_controller(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            RPN_BANK_MPE,
-            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::of(24).to_rpn_bits(),
-        )
-        .with_frame_offset(100),
+        (
+            at(100),
+            midi::registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                RPN_BANK_MPE,
+                RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                PitchBendSensitivity::of(24).to_rpn_bits(),
+            ),
+        ),
         quarter_bend(192),
     ];
 
@@ -1287,7 +1322,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
 /// The reverse direction of every other MIDI test here. `legacy-midicc-out`
 /// emits a legacy MIDI CC from its `process` when its controller parameter
 /// changes; the host has to decode that from `outputEvents` and surface it as a
-/// `MidiEvent`. A host that never drains the output list silently drops
+/// `(Offset, Ump)`. A host that never drains the output list silently drops
 /// everything an arpeggiator or MIDI-effect plugin produces.
 #[test]
 fn midi_emitted_by_the_plugin_reaches_the_host() {
@@ -1468,8 +1503,10 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     let packets = |len: usize| {
         let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
         let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
-        out
+        sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+        out.into_iter()
+            .map(|ump| (Offset::ZERO, ump))
+            .collect::<Vec<_>>()
     };
     let cut = packets(60);
     let next = packets(12);
@@ -1478,7 +1515,7 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 0);
     inst.stop();
     assert_eq!(inst.sysex_dropped(), 1, "the open message, at the stop");
-    let rest: Vec<MidiEvent> = cut[3..].iter().chain(&next).copied().collect();
+    let rest: Vec<UmpAt> = cut[3..].iter().chain(&next).copied().collect();
     render(&mut inst, 64, &rest, None, |_, _, _| 0.0);
     assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");
 }

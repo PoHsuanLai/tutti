@@ -32,6 +32,7 @@
 #![cfg(target_os = "macos")]
 
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 mod support;
 use support::corpus::{
@@ -803,10 +804,4 @@ fn unrepresentable_midi_is_dropped_not_mangled() {
         loudest > 1e-3,
         "the representable note-on beside the dropped message never sounded"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

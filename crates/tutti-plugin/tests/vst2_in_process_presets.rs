@@ -21,12 +21,10 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{FeatureReport, Features, PresetId, in_process_vst2_client};
-
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -55,7 +53,7 @@ fn clear_probe_env() {
 /// Load the probe through the in-process VST2 path and keep only the handle,
 /// which is what a real host is left holding.
 fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
-    let path: PathBuf = probe_path::probe_path().clone();
+    let path: PathBuf = tutti_fixtures::vst2_probe().to_path_buf();
     clear_probe_env();
     for (k, v) in env {
         // SAFETY: as above.
@@ -190,10 +188,4 @@ fn a_plugin_with_programs_answers_both_preset_bits() {
     let report = FeatureReport::new(loaded.probed, loaded.features);
     assert_eq!(report.get(Features::PRESET_LIST), Some(true));
     assert_eq!(report.get(Features::PRESET_LOAD), Some(true));
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

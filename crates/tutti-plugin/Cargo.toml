@@ -130,7 +130,7 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-modulation = { path = "../tutti-modulation", default-features = false }
 criterion.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
-tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types" }
 # The reference VST2 plugin the in-process lifecycle tests load, plus

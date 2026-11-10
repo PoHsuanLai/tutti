@@ -33,6 +33,7 @@ use assert_no_alloc::AllocDisabler;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use tutti_clap_host::HostState;
+use tutti_fixtures::main_thread;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -174,10 +175,4 @@ fn a_claim_names_exactly_the_claiming_thread() {
         !state.is_audio_thread(),
         "the other thread's claim ended with it"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

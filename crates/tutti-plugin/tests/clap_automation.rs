@@ -10,7 +10,8 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use std::sync::Arc;
 
@@ -67,7 +68,7 @@ fn gained(v: f64) -> f32 {
 /// there fails (run); here it survives, as a lane sends segments.
 #[test]
 fn automation_reaches_the_plugin_through_its_event_input() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_ONLY)
         .gain_enabled(true);
@@ -127,7 +128,7 @@ fn render_gain(
     schedule: &[(u64, EventKind)],
     blocks: usize,
 ) -> (Vec<f32>, usize) {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_ONLY)
         .gain_enabled(true);

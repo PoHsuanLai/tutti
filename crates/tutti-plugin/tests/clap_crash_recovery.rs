@@ -44,23 +44,14 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
+// Paced to `PACE`: a starved subprocess reads back silence, which here would
+// be indistinguishable from the crash this suite observes.
+use clap_probe::{BLOCK, PACE, ProbeEnv, Rig, SAMPLE_RATE, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use std::time::{Duration, Instant};
 
 use tutti_plugin::handles::PluginStatus;
-
-const SAMPLE_RATE: f64 = 48_000.0;
-const BLOCK: usize = 64;
-
-/// One block period, and the pace the driving loop keeps.
-///
-/// The same reasoning as `clap_pdc_alignment`'s: the pipeline never waits for a
-/// reply, so a tight loop starves the subprocess and every block reads back
-/// silence — which here would be indistinguishable from the crash this suite is
-/// trying to observe.
-const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
-const PACE: Duration = PERIOD.saturating_mul(20);
 
 /// Which `process()` call kills the plugin.
 ///
@@ -181,7 +172,7 @@ fn wait_for_death(handle: &tutti_plugin::handles::PluginHandle) -> PluginStatus 
 /// then death, then silence, in that order, from one plugin.
 #[test]
 fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
         .crash_on_block(CRASH_AT_BLOCK);
@@ -309,7 +300,7 @@ fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
 /// spend its full reply budget per block on top of that.
 #[test]
 fn rendering_through_a_dead_plugin_does_not_block() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
         .crash_on_block(1);
@@ -352,7 +343,7 @@ fn rendering_through_a_dead_plugin_does_not_block() {
 /// after it.
 #[test]
 fn dropping_a_crashed_plugin_is_clean() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
         .crash_on_block(1);

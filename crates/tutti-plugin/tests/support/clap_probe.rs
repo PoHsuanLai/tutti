@@ -29,11 +29,12 @@
 
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use tutti_graph::NodeKey;
-use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Renderer, Shape, Status, Unforkable};
+use tutti_graph::contract::Latent;
+use tutti_graph::{GraphBuilder, Prepare, Renderer, Unforkable};
 use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
 use tutti_types::{ChannelLayout, Latency, SampleRate, Samples};
@@ -129,13 +130,10 @@ impl Rig {
         assert!(inputs > 0, "the plugin has an audio input");
         let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout(outputs));
-        let latent = g.add(Unforkable(Latent {
-            latency,
-            width: layout(inputs),
-        }));
+        let latent = g.add(Unforkable(Latent::new(latency)));
         let (key, controls) = g.add_with_controls(client);
         for port in 0..inputs {
-            g.connect(latent, port, key, port);
+            g.connect(latent, 0, key, port);
         }
         g.pipe_output(key);
         let renderer = g.renderer(prepare).expect("the graph compiles");
@@ -188,146 +186,18 @@ impl Rig {
     }
 }
 
-/// A silent source that declares `latency`: what puts a plugin behind a
-/// latent path ([`Rig::behind`]).
-struct Latent {
-    latency: Latency,
-    width: ChannelLayout,
-}
+/// The rate the out-of-process suites run at.
+pub const SAMPLE_RATE: f64 = 48_000.0;
+/// The block the out-of-process suites run.
+pub const BLOCK: usize = 64;
 
-impl Node for Latent {
-    fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.width).with_latency(self.latency)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-        for c in 0..io.output_count() {
-            io.output(c).fill(0.0);
-        }
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
+/// One block's worth of wall time: the audio callback's deadline.
+pub const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
 
-/// These tests must not run concurrently, and a `Mutex` cannot enforce it.
-///
-/// Two things need serializing, and they need it at different scopes:
-///
-/// - **Wall clock.** Each test spawns a `plugin-server` subprocess and paces
-///   itself to the real block period, because the pipeline submits block N and
-///   collects block N-1 without waiting — the subprocess needs real time between
-///   blocks or nothing is ever published and every block reads back silence.
-///   Two tests running at once halve the time each subprocess gets. This is the
-///   same constraint `real_plugin_pressure.rs` documents.
-/// - **Process-global environment.** The probe's behaviour is selected by
-///   environment variables, and `set_var` is process-wide.
-///
-/// **A `static Mutex` serializes neither under `cargo nextest`**, which is this
-/// repo's runner: nextest gives every test its own *process*, so a
-/// process-local lock is uncontended in each one and the tests run fully
-/// parallel anyway. That is not a hypothetical — this suite was written with a
-/// `Mutex` first and failed 2 runs in 3, always in whichever test lost the race
-/// for wall clock rather than in the one that took it.
-///
-/// So the gate is a **lock directory**: `create_dir` is atomic and fails with
-/// `AlreadyExists` on every OS this builds for, which is the one primitive that
-/// works across processes without a new dependency. A directory rather than a
-/// file because `File::create` truncates an existing file and succeeds, which
-/// would hand the lock to everyone.
-pub mod cross_process_lock {
-    use std::path::PathBuf;
-    use std::time::{Duration, Instant};
-
-    /// Where the lock lives. Under the system temp dir rather than the target
-    /// dir: every test process must agree on the path, and this one needs no
-    /// build-time plumbing to compute.
-    fn lock_path() -> PathBuf {
-        std::env::temp_dir().join("tutti-plugin-clap-probe.lock")
-    }
-
-    /// How long to wait for the lock before assuming its holder died.
-    ///
-    /// A crashed test process leaves the directory behind — there is no OS
-    /// cleanup for this the way there is for a real `flock` — so the wait has to
-    /// end in a *steal* rather than a hang. Generous enough that a slow but
-    /// live test is never robbed. The suites that first used this run in well
-    /// under a second each; the later consumer, `real_plugin_pressure.rs`,
-    /// spawns up to eight subprocesses and paces itself to a 1.333 ms block,
-    /// which is seconds rather than milliseconds and slower again on a shared
-    /// CI runner. Sized for that.
-    ///
-    /// Being generous costs only how long a genuinely wedged holder delays
-    /// the next test. Being tight costs stealing the lock from a live one,
-    /// which reintroduces exactly the contention this exists to prevent.
-    const STALE_AFTER: Duration = Duration::from_secs(120);
-
-    /// Held for the duration of one test; released on drop, including on the
-    /// unwind of a failing assertion.
-    pub struct Guard;
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir(lock_path());
-        }
-    }
-
-    /// Take the lock, waiting for whoever holds it.
-    pub fn acquire() -> Guard {
-        let path = lock_path();
-        let deadline = Instant::now() + STALE_AFTER;
-        loop {
-            match std::fs::create_dir(&path) {
-                Ok(()) => return Guard,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if Instant::now() >= deadline {
-                        // The holder is gone or wedged. Steal rather than hang:
-                        // a hung suite reports as a harness timeout with no clue
-                        // which test is at fault, while a stolen lock at worst
-                        // reproduces the contention this exists to prevent.
-                        let _ = std::fs::remove_dir(&path);
-                        continue;
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                // An unusable lock path (a read-only temp dir, say) must not
-                // silently disable the serialization the suites depend on, but
-                // it must not fail them either — fall back to running
-                // unserialized.
-                Err(_) => return Guard,
-            }
-        }
-    }
-}
-
-/// Take the machine, across processes. See [`cross_process_lock`].
-pub fn exclusive() -> cross_process_lock::Guard {
-    cross_process_lock::acquire()
-}
-
-/// Absolute path to the freshest built copy of the reference CLAP plugin,
-/// published under a `.clap` extension.
-///
-/// The extension matters: the server's format dispatch is by file extension,
-/// and the cdylib cargo builds is `libtutti_clap_test_plugin.so` — which that
-/// table reads as **VST2**, so the CLAP loader is never reached and the load
-/// fails with `NotAPlugin`.
-///
-/// The link path is shared by every test process of every suite;
-/// `tutti_fixtures::publish_with_extension` says how it is published
-/// without a reader ever missing it. A symlink rather than a copy so it cannot
-/// go stale against a rebuilt plugin.
-///
-/// # Panics
-///
-/// If no candidate exists. The plugin is a dev-dependency built by this same
-/// `cargo test`, so that is a build failure and not a property of the machine.
-pub fn clap_probe_path() -> &'static Path {
-    static LINKED: OnceLock<PathBuf> = OnceLock::new();
-    LINKED.get_or_init(|| {
-        let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-        tutti_fixtures::publish_with_extension(&real, "clap")
-    })
-}
+/// The pace a live driving loop keeps. The pipeline never waits for a reply,
+/// so an unpaced loop starves the subprocess and every block reads back
+/// silence.
+pub const PACE: Duration = PERIOD.saturating_mul(20);
 
 /// Absolute path to the `plugin-server` binary these tests spawn.
 ///
@@ -506,8 +376,12 @@ pub fn load_probe_with(config: BridgeConfig, sample_rate: f64) -> LoadedProbe {
     // SAFETY: `exclusive()` is held; see `ProbeEnv::set`.
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server_path()) };
 
-    let client = PluginClient::new(config, clap_probe_path().to_path_buf(), sample_rate)
-        .expect("load the reference CLAP plugin through a real plugin-server");
+    let client = PluginClient::new(
+        config,
+        tutti_fixtures::clap_probe().to_path_buf(),
+        sample_rate,
+    )
+    .expect("load the reference CLAP plugin through a real plugin-server");
     let handle = PluginHandle::from_client(&client);
     LoadedProbe { client, handle }
 }

@@ -14,6 +14,7 @@
 
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::{
     Control, MaxBlock, Normalized, ParamId, PluginError, Prepare, RenderMode, SampleFormat,
@@ -415,10 +416,4 @@ impl<T: Vst3Sample> StateExt for Active<T> {
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
         StateExt::set_state(self.controller_mut(), bytes)
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

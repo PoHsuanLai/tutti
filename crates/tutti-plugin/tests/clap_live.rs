@@ -19,7 +19,8 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -365,7 +366,7 @@ fn assert_live(rate: f64, quantum: usize) {
 /// the same 480); the batcher's unit test pins it.
 #[test]
 fn a_480_frame_device_hears_its_plugin() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     assert_live(48_000.0, 480);
 }
@@ -374,7 +375,7 @@ fn a_480_frame_device_hears_its_plugin() {
 /// which the reversed pipeline could fill only the first.
 #[test]
 fn a_1024_frame_device_hears_its_plugin() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     assert_live(48_000.0, 1024);
 }
@@ -383,7 +384,7 @@ fn a_1024_frame_device_hears_its_plugin() {
 /// could line up with it.
 #[test]
 fn a_441_frame_device_hears_its_plugin() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     assert_live(44_100.0, 441);
 }
@@ -420,7 +421,7 @@ fn a_burst_of_callbacks_loses_blocks_but_never_corrupts_them() {
     const BURST_AT: usize = 60;
     /// Blocks after the run's warm-up that may still be start-up silence.
     const SETTLE: usize = 10;
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
 
     let run = run_live(48_000.0, QUANTUM, BLOCKS, Some(BURST_AT));

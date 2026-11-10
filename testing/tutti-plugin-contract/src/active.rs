@@ -141,8 +141,4 @@ impl<L: Loaded> Active<L> {
     }
 }
 
-/// This process's main thread, for the cases: every case runs in a process of
-/// its own under nextest, so the claim cannot be refused.
-pub(crate) fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one case, one process")
-}
+pub(crate) use tutti_fixtures::main_thread;

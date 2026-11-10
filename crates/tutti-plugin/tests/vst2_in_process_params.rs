@@ -22,6 +22,7 @@
 #![cfg(feature = "vst2")]
 
 use std::sync::{Arc, Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_graph::contract::Direct;
 use tutti_graph::{
@@ -33,9 +34,6 @@ use tutti_plugin::handles::{Normalized, ParamId, PluginHandle};
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
-
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -85,7 +83,7 @@ impl Drop for ProbeEnv {
 }
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
-    let path = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
@@ -280,10 +278,4 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         "the export plays the held lane over the edit live playback keeps"
     );
     drop(handle);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

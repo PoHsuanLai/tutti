@@ -20,7 +20,8 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, Rig, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use std::time::Duration;
 
@@ -154,7 +155,7 @@ fn offset(i: usize, block: usize) -> Offset {
 /// is invisible at offset 0; the offline test below catches it.)
 #[test]
 fn the_transport_a_live_plugin_sees_is_env_at_every_block() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
     let mut rig = Rig::new(probe.client.bind(), SAMPLE_RATE, CHUNK);
@@ -194,7 +195,7 @@ fn the_transport_a_live_plugin_sees_is_env_at_every_block() {
 /// snapshot → the tempo scene's second chunk reports 120 → fails.
 #[test]
 fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
@@ -277,7 +278,7 @@ fn said_at(seen: &[(Env, Vec<f32>)], f: Option<u64>) -> Transport {
 /// with `arrival: Latency::ZERO` in `PluginChunks::begin` → fails.
 #[test]
 fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe

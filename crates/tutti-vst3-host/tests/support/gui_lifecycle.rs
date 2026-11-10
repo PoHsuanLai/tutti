@@ -27,6 +27,7 @@
 // rustc strips an `#[ignore]` function out of a `harness = false` binary, so
 // the runner would have nothing left to call.
 
+use tutti_fixtures::main_thread;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
@@ -795,8 +796,3 @@ fn editor_accepts_keyboard_wheel_and_focus() {
 }
 }
 
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
-}

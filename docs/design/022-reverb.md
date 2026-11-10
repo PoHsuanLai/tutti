@@ -17,8 +17,9 @@ noun of the API, not of the engine: the API compiles, a node evaluates". Here
 the model is the *noun* (a value, with analytic queries), and the kernel is what
 evaluates. Nothing in the model forces a runtime shape on a kernel.
 
-Numbering: 019 (bounce), 020 (tempo map) and 021 (plugin hosting) are drafts on
-other branches; `docs/design` on `main` ends at 018.
+Numbering: 021 (plugin hosting) and 023 (plugin capabilities) are on `main`
+beside this doc; 019 (bounce), 020 (tempo map) and 024 (the design model) are
+drafts on other branches until they merge.
 
 ## Summary
 

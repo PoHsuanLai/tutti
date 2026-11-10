@@ -659,9 +659,9 @@ comments and docs, and treat it as a bug when you find it:
 - **The engine must not reference `dawai` at all.** All of `crates/` is now
   clear of it — the one remaining mention is the provenance note at the top of
   `crates/bevy-tutti/Cargo.toml`, which is deliberate. What is left sits in
-  `docs/`: historical audit records (`fundsp-fork-audit.md`,
-  `fundsp-comparison.md`, `unit-adoption-backlog.md`) that surveyed what the app
-  workspace reached for, plus a few plugin-hosting plans. Those are *dated
+  `docs/`: historical audit records (`archive/fundsp-fork-audit.md`,
+  `archive/fundsp-comparison.md`, `archive/unit-adoption-backlog.md`) that surveyed what the app
+  workspace reached for, plus a few plugin-hosting plans (all under `docs/archive/`). Those are *dated
   records of an audit*, so rewriting their findings would falsify them; leave the
   findings and fix only what claims to be current.
 

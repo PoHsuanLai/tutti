@@ -90,7 +90,7 @@ named here so the list can be checked against the tree
 Not sites: `tutti-engine/src/engine.rs` (`Engine::apply_pending` is a safe
 `pub fn` that panics on a conflicting borrow), `tutti-cpal` (its stream
 lives on an owner thread, with no `unsafe`), and
-`tutti-sampler/src/butler/prefetch.rs` (no `unsafe`). `tutti-polysynth` and
+`tutti-sampler/src/streamer/prefetch.rs` (no `unsafe`). `tutti-polysynth` and
 `tutti-dsp` mention it in prose only. Beyond the seven there is only
 platform FFI (the native windows in `bevy-tutti/src/plugin_host/`), a
 libc-version probe in `tutti-nodes`' golden test helper, and

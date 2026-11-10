@@ -20,7 +20,7 @@
 //! frames and a frozen one loses nothing to interpolation; a modulated line
 //! reads between frames, and freezing turns the modulation off.
 
-use tutti_types::{ChannelLayout, Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
+use tutti_types::{Amplitude, ChannelLayout, Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
 
 use crate::fdn::FdnKernel;
 use crate::network::{
@@ -188,6 +188,29 @@ impl Default for FdnDesign {
     }
 }
 
+/// The absorption with its band gains scaled as [`FdnKernel`] scales them (peak at
+/// most 0.9999), so the network carries the gains the kernel runs.
+fn rescaled(a: Absorption, rate: SampleRate) -> Absorption {
+    let Absorption::Bands {
+        low,
+        mid,
+        high,
+        crossover,
+    } = a
+    else {
+        return a;
+    };
+    let pole = crossover
+        .map(|f| libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32);
+    let [low, mid, high] = crate::fdn::rescale_bands([low.get(), mid.get(), high.get()], pole);
+    Absorption::Bands {
+        low: Amplitude(low),
+        mid: Amplitude(mid),
+        high: Amplitude(high),
+        crossover,
+    }
+}
+
 /// `v` if finite, else `default`.
 fn finite(v: f32, default: f32) -> f32 {
     if v.is_finite() { v } else { default }
@@ -270,7 +293,7 @@ impl Design for FdnDesign {
                     depth: depth_frames,
                     rate: Hz(mod_rate),
                 },
-                absorption: Absorption::from_rt60(rt60, CROSSOVER, length, rate),
+                absorption: rescaled(Absorption::from_rt60(rt60, CROSSOVER, length, rate), rate),
                 diffuser: None,
             });
         }
@@ -519,7 +542,25 @@ mod tests {
             ]
         }
 
-        fn requested_rt60(&self, c: &FdnControls, _: SampleRate, band: Band) -> Option<Seconds> {
+        /// `None` where the controls ask for band gains whose response exceeds 1
+        /// (a mid band ringing far longer than a neighbour): the design scales them
+        /// to peak at 0.9999, as the kernel does, so the decay asked for is not the
+        /// decay the network has, and there is no figure to hold it to.
+        fn requested_rt60(&self, c: &FdnControls, rate: SampleRate, band: Band) -> Option<Seconds> {
+            let n = self.design(c, rate);
+            if let Some(Stage::Fdn(f)) = n.stages.first()
+                && let Some(l) = f.lines.first()
+                && !(self.freezable && c.freeze)
+            {
+                let rt = |i: usize| c.decay[i].clamp(MIN_DECAY, self.max_decay);
+                let g = [1usize, 0, 2].map(|i| crate::loop_gain(l.length, rt(i), rate).get());
+                let pole = CROSSOVER.map(|f| {
+                    libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
+                });
+                if crate::fdn::peak_response(g, pole) > 1.0 {
+                    return None;
+                }
+            }
             Some(if self.freezable && c.freeze {
                 Seconds(f64::INFINITY)
             } else {

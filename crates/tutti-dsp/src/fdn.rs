@@ -294,46 +294,7 @@ impl FdnKernel {
     /// above 1.
     fn absorption_gains(&self, a: Absorption) -> [f32; 3] {
         let g = [Band::Low, Band::Mid, Band::High].map(|b| a.gain(b).get());
-        if !g.iter().all(|x| x.is_finite() && *x >= 0.0) {
-            return [0.0; 3];
-        }
-        let peak = self.peak_response(g);
-        if peak > 1.0 {
-            g.map(|x| (f64::from(x) * 0.9999 / peak) as f32)
-        } else {
-            g
-        }
-    }
-
-    /// The largest `|y(w)|` of the absorption with gains `g = [low, mid,
-    /// high]`, over a grid of frequencies.
-    fn peak_response(&self, g: [f32; 3]) -> f64 {
-        let (low, mid, high) = (f64::from(g[0]), f64::from(g[1]), f64::from(g[2]));
-        let (c2, c1) = (mid - high, low - mid);
-        // |L1|, |L2| <= 1, so the response is at most the sum of the magnitudes
-        // of its three terms: when that is under 1 (every gain falling with
-        // frequency, the usual case) there is nothing to measure.
-        let bound = high.abs() + c2.abs() + c1.abs();
-        if bound <= 1.0 {
-            return bound;
-        }
-        let pole = self.pole.map(f64::from);
-        // |L(w)|: ((1 - p) / (1 - p e^-jw))^2.
-        let l = |p: f64, w: f64| -> (f64, f64) {
-            let (re, im) = (1.0 - p * libm::cos(w), p * libm::sin(w));
-            let den = re * re + im * im;
-            let (hr, hi) = ((1.0 - p) * re / den, -(1.0 - p) * im / den);
-            (hr * hr - hi * hi, 2.0 * hr * hi)
-        };
-        let mut peak = 0.0f64;
-        for k in 0..=96 {
-            let w = std::f64::consts::PI * (f64::from(k) / 96.0).powi(2);
-            let (a, b) = l(pole[0], w);
-            let (c, d) = l(pole[1], w);
-            let (re, im) = (high + c2 * c + c1 * a, c2 * d + c1 * b);
-            peak = peak.max(libm::hypot(re, im));
-        }
-        peak
+        rescale_bands(g, self.pole)
     }
 
     fn begin_chunk(&mut self) {
@@ -373,6 +334,54 @@ impl FdnKernel {
         self.c_width = self.width.cur;
         self.c_pre = self.pre_len.cur;
     }
+}
+
+/// The gains `g = [low, mid, high]` of a three-band absorption whose one-poles are
+/// `pole` (`exp(-2 pi fc / fs)` for the two crossovers), scaled to peak at 0.9999
+/// if their response would exceed 1 anywhere; NaN, infinite or negative gains
+/// are silence. The model's design applies it too, so the gains a network
+/// carries are the ones this kernel runs.
+pub(crate) fn rescale_bands(g: [f32; 3], pole: [f32; 2]) -> [f32; 3] {
+    if !g.iter().all(|x| x.is_finite() && *x >= 0.0) {
+        return [0.0; 3];
+    }
+    let peak = peak_response(g, pole);
+    if peak > 1.0 {
+        g.map(|x| (f64::from(x) * 0.9999 / peak) as f32)
+    } else {
+        g
+    }
+}
+
+/// The largest `|y(w)|` of the absorption with gains `g = [low, mid, high]`,
+/// over a grid of frequencies.
+pub(crate) fn peak_response(g: [f32; 3], pole: [f32; 2]) -> f64 {
+    let (low, mid, high) = (f64::from(g[0]), f64::from(g[1]), f64::from(g[2]));
+    let (c2, c1) = (mid - high, low - mid);
+    // |L1|, |L2| <= 1, so the response is at most the sum of the magnitudes
+    // of its three terms: when that is under 1 (every gain falling with
+    // frequency, the usual case) there is nothing to measure.
+    let bound = high.abs() + c2.abs() + c1.abs();
+    if bound <= 1.0 {
+        return bound;
+    }
+    let pole = pole.map(f64::from);
+    // |L(w)|: ((1 - p) / (1 - p e^-jw))^2.
+    let l = |p: f64, w: f64| -> (f64, f64) {
+        let (re, im) = (1.0 - p * libm::cos(w), p * libm::sin(w));
+        let den = re * re + im * im;
+        let (hr, hi) = ((1.0 - p) * re / den, -(1.0 - p) * im / den);
+        (hr * hr - hi * hi, 2.0 * hr * hi)
+    };
+    let mut peak = 0.0f64;
+    for k in 0..=96 {
+        let w = std::f64::consts::PI * (f64::from(k) / 96.0).powi(2);
+        let (a, b) = l(pole[0], w);
+        let (c, d) = l(pole[1], w);
+        let (re, im) = (high + c2 * c + c1 * a, c2 * d + c1 * b);
+        peak = peak.max(libm::hypot(re, im));
+    }
+    peak
 }
 
 /// `buf[(w - delay) mod cap]` interpolated to a fractional `delay` of at least 0.

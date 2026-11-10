@@ -133,8 +133,8 @@ pub use network::{
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
-pub use smoother::Smoother;
 pub use rustfft::num_complex::Complex64;
+pub use smoother::Smoother;
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

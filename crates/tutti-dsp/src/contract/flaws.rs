@@ -346,7 +346,29 @@ impl Design for ToyFdn {
             let _ = lines.push(Line {
                 length,
                 modulation: Modulation::NONE,
-                absorption: Absorption::from_rt60(rt60, [Hz(250.0), Hz(4000.0)], length, rate),
+                absorption: {
+                    // As `FdnDesign` does: scaled to peak at most 0.9999.
+                    let Absorption::Bands {
+                        low,
+                        mid,
+                        high,
+                        crossover,
+                    } = Absorption::from_rt60(rt60, [Hz(250.0), Hz(4000.0)], length, rate)
+                    else {
+                        unreachable!()
+                    };
+                    let pole = crossover.map(|f| {
+                        libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
+                    });
+                    let [low, mid, high] =
+                        crate::fdn::rescale_bands([low.get(), mid.get(), high.get()], pole);
+                    Absorption::Bands {
+                        low: Amplitude(low),
+                        mid: Amplitude(mid),
+                        high: Amplitude(high),
+                        crossover,
+                    }
+                },
                 diffuser: None,
             });
         }
@@ -507,7 +529,22 @@ impl LtiCase for ToyFdn {
 }
 
 impl ReverbCase for ToyFdn {
-    fn requested_rt60(&self, c: &ToyControls, _rate: SampleRate, band: Band) -> Option<Seconds> {
+    fn requested_rt60(&self, c: &ToyControls, rate: SampleRate, band: Band) -> Option<Seconds> {
+        // Not where the asked bands would exceed 1: the design scales them.
+        let d = |i: usize| ToyFdn::decay(c.decay[i]);
+        let n = self.design(c, rate);
+        if let Some(Stage::Fdn(f)) = n.stages.first()
+            && !c.freeze
+            && let Some(l) = f.lines.first()
+        {
+            let g = [0, 1, 2].map(|i| crate::loop_gain(l.length, d(i), rate).get());
+            let pole = [Hz(250.0), Hz(4000.0)].map(|f| {
+                libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
+            });
+            if crate::fdn::peak_response(g, pole) > 1.0 {
+                return None;
+            }
+        }
         Some(if c.freeze {
             Seconds(f64::INFINITY)
         } else {

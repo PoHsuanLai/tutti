@@ -1472,12 +1472,22 @@ the realization's whole response, but the RT60 cases read the model's `rt60` and
 - `FdnKernel` realizes `Matrix::Diagonal` as the reflection along line 0 (`I - 2 e0 e0^T`, a sign on line 0's
   loop, so that `v` stays a unit vector through a ramp). That changes no decay and moves line 0's comb teeth
   half a spacing, so at diffusion 0 the realization's response is not the model's (relative error 0.8). The
-  `response` case leaves the diffusion-0 probe out (`LtiCase::response_probes`) and says why.
-- The kernel rescales a set of band gains whose response exceeds 1 anywhere (to peak at 0.9999), the model
-  does not, and **reachable controls do ask for it** (a mid band that rings far longer than both
-  neighbours: peak 1.015 at corners of the grid, so the kernel lowers the loop gains by 1.5%, which at an 8 s decay is a large share of the decay). The
-  `no_rescale` case holds it on the controls the measured cases run and not on every reachable one, as the
-  plan asked; `Absorption::peak` is what it reads.
+  `response` case leaves the diffusion-0 probe out (`LtiCase::response_probes`) and says why. The model
+  cannot describe it: `Matrix::Diagonal` is the identity (doc 022; Freeverb's realization is that identity
+  too), `Reflection(e0)` would make `rt60` a mixing estimate and break the pinned
+  `diffusion_is_the_reflection_vector`. Against doc 022's stated semantics the kernel's behaviour is a
+  deviation; changing it is a sound change, left to the owner.
+- The kernel rescales a set of band gains whose response exceeds 1 anywhere (to peak at 0.9999), and
+  **reachable controls do ask for it** (a mid band that rings far longer than both neighbours: peak 1.015
+  at corners of the grid, so the kernel lowered the loop gains by 1.5%, a large share of the decay at 8 s).
+  The scaling now lives in the design: `FdnDesign::design_into` writes the scaled gains into the network
+  (`fdn::rescale_bands`, the one function the kernel also calls), so the kernel finds nothing to rescale
+  and the network is what runs. The renders are bit-identical (the GM digest, the node digests and
+  `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged). The cost is one
+  existing case: `rt60_matches` and `band_order` read the decay the controls ask for, which for such
+  controls is not the decay the network has, so `requested_rt60` returns `None` there (the controls ask
+  for something unrealizable). `no_rescale` holds every reachable design to a peak of at most 1.01 (the
+  kernel's own 97-point grid reads up to 0.12% under the true peak).
 - The slack of `hinf_norm` is checked only where a grid resolves the sharpest pole (its bandwidth is at
   least twice the bin spacing): a system that rings for seconds has poles narrower than any affordable
   grid, so its measured peak is under the true one, and the slack would blame the bound.

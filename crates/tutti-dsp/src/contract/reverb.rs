@@ -392,29 +392,30 @@ pub(super) mod design {
         Ok(())
     }
 
-    /// Every absorption of the designs the measured cases run on (`probes` and
-    /// `static_probes`) peaks at or under 1: the kernel rescales a band set whose
-    /// response exceeds 1 anywhere (to peak at 0.9999), and the model does not, so
-    /// a design that asked for it would run a different loop from the one it
-    /// describes. Not every reachable control keeps this (a mid band that rings
-    /// far longer than both its neighbours does exceed 1, and the model then
-    /// overstates the decay), so the measured controls are where it is held.
+    /// Every absorption of every reachable design peaks at or under 1: the kernel
+    /// rescales a band set whose response exceeds 1 anywhere (to peak at 0.9999),
+    /// so a model that carried such gains would describe a loop the kernel does not
+    /// run. The design applies that scaling itself (`FdnDesign` writes the scaled
+    /// gains into its network), so the network is what runs.
     ///
     /// Mutation (run, in `reverb_design.rs`): every comb gain scaled by 1.1.
-    pub fn no_rescale<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn no_rescale<D: ReverbCase>(d: &D) -> Result<(), String> {
         let mut checked = 0;
-        let rate = rate_of(d);
-        for c in d.probes().into_iter().chain(d.static_probes()) {
-            let n = d.design(&c, rate);
-            for stage in n.stages.iter() {
-                let Stage::Fdn(f) = stage else { continue };
-                for line in f.lines.iter() {
-                    let peak = line.absorption.peak(rate);
-                    checked += 1;
-                    if peak > 1.0 + 1e-9 {
-                        return Err(format!(
-                            "an absorption peaks at {peak}: the realization would rescale it"
-                        ));
+        for rate in d.rates() {
+            for c in d.reachable() {
+                let n = d.design(&c, rate);
+                for stage in n.stages.iter() {
+                    let Stage::Fdn(f) = stage else { continue };
+                    for line in f.lines.iter() {
+                        let peak = line.absorption.peak(rate);
+                        checked += 1;
+                        // The kernel scales to 0.9999 on a grid of 97 points, which
+                        // reads up to 0.12% under the true peak (measured): one percent.
+                        if peak > 1.01 {
+                            return Err(format!(
+                                "an absorption peaks at {peak}: the realization would rescale it"
+                            ));
+                        }
                     }
                 }
             }

@@ -33,10 +33,33 @@
 //! ));
 //! ```
 
+//! The UMP [`Endpoint`] and [`Connection`] are the other half: an endpoint's declared
+//! state with its answers ([`Endpoint::reply`]), and the discoverer's steps over
+//! received messages and time as a value (M2-104 §7.1, M2-100 Table 4).
+//!
+//! ```
+//! use std::time::{Duration, Instant};
+//! use tutti_midi_device::{Action, Connection, Ending, STEP_TIMEOUT};
+//!
+//! let start = Instant::now();
+//! let (mut connection, discovery) = Connection::new(start);
+//! // Send `discovery`. A peer that never answers is sent it again after each
+//! // `STEP_TIMEOUT`, and is a MIDI 1.0 device after the third.
+//! assert_eq!(connection.on_timeout(start + STEP_TIMEOUT), Action::Send(discovery));
+//! connection.on_timeout(start + 2 * STEP_TIMEOUT);
+//! assert_eq!(
+//!     connection.on_timeout(start + 3 * STEP_TIMEOUT + Duration::from_millis(1)),
+//!     Action::Settled(Ending::Midi1Fallback)
+//! );
+//! ```
+//!
 #![forbid(unsafe_code)]
 
 mod ci;
+mod connection;
+mod endpoint;
 mod id;
+mod name;
 mod table;
 
 pub use ci::{
@@ -45,5 +68,8 @@ pub use ci::{
     SUB_ID2_DISCOVERY, SUB_ID2_DISCOVERY_REPLY, SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK,
 };
 
+pub use connection::{Action, Connection, Ending, MAX_ATTEMPTS, NAME_GRACE, STEP_TIMEOUT};
+pub use endpoint::{Capabilities, Endpoint, FunctionBlock, MAX_FUNCTION_BLOCKS, UMP_VERSION};
 pub use id::{DeviceId, DeviceInfo, Direction, EndpointId, Identity};
+pub use name::{BlockName, EndpointName, Name, ProductInstanceId};
 pub use table::{DeviceEvent, DeviceTable, OsChange, OsDevice, Resolved};

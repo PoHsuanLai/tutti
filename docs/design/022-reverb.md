@@ -22,8 +22,9 @@ suites) is generalised in [024](024-design-model-realization.md), whose traits
 replace this doc's reverb-only ones; the general traits are doc 024's, and this
 doc keeps the reverb specifics.
 
-Numbering: 019 (bounce), 020 (tempo map) and 021 (plugin hosting) are drafts on
-other branches; `docs/design` on `main` ends at 018.
+Numbering: 021 (plugin hosting) and 023 (plugin capabilities) are on `main`
+beside this doc; 019 (bounce), 020 (tempo map) and 024 (the design model) are
+drafts on other branches until they merge.
 
 ## Summary
 

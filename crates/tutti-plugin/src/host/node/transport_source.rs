@@ -32,7 +32,11 @@ use tutti_types::Samples;
 use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin};
 use tutti_types::{Meter, MeterMap};
 
-use tutti_plugin_types::TransportInfo;
+use std::sync::Arc;
+
+use tutti_plugin_types::{Features, TransportInfo};
+use tutti_rt::Loan;
+use tutti_transport::MeterSlotReader;
 
 /// The transport facts a plugin snapshot is made of, at one frame.
 ///
@@ -600,6 +604,133 @@ fn os_monotonic_ns() -> i64 {
     let (secs, rest) = (count / freq, count % freq);
     secs.saturating_mul(1_000_000_000)
         .saturating_add(rest * 1_000_000_000 / freq)
+}
+
+/// A node's own transport state, the same for both hostings: the project
+/// meter's cell it reads and the three clocks that ride beside the transport
+/// ([`SteadyTime`], [`ProjectTime`], [`HostClock`]). The tempo map is not
+/// here: a node lends it and keeps its cursor beside this (each hosting reads
+/// the map its own way).
+///
+/// [`block`](Self::block) lends what one block reads; [`advance`](Self::advance)
+/// counts the block's frames after it, whatever the plugin was told.
+#[derive(Clone)]
+pub(crate) struct TransportSource {
+    /// A reader of the node's meter cell, registered when the source was
+    /// built: installing or clearing a meter publishes into it.
+    meter: MeterSlotReader,
+    /// The meter read when none is installed (4/4 from bar 0), built once on
+    /// the control side because building a `MeterMap` allocates.
+    default_meter: MeterMap,
+    steady: SteadyTime,
+    project: ProjectTime,
+    /// `None` for an offline render: no clock relates to its speed.
+    host_clock: Option<HostClock>,
+}
+
+impl std::fmt::Debug for TransportSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransportSource")
+            .field("steady", &self.steady)
+            .field("offline", &self.host_clock.is_none())
+            .finish_non_exhaustive()
+    }
+}
+
+impl TransportSource {
+    /// A source reading `meter`, nothing rendered, on the host clock.
+    pub(crate) fn new(meter: MeterSlotReader) -> Self {
+        Self {
+            meter,
+            default_meter: MeterMap::default(),
+            steady: SteadyTime::default(),
+            project: ProjectTime::default(),
+            host_clock: Some(HostClock),
+        }
+    }
+
+    /// Makes this an offline render's source: no host clock.
+    pub(crate) fn go_offline(&mut self) {
+        self.host_clock = None;
+    }
+
+    /// What one block reads: the meter (one wait-free lend of the node's
+    /// cell), the steady counter at the block's first frame, project time,
+    /// and the host clock read once, `None` offline or for a plugin told no
+    /// transport. Audio thread: no allocation, no free.
+    pub(crate) fn block(&mut self, features: Features) -> BlockTransport<'_> {
+        let block_ns = self
+            .host_clock
+            .filter(|_| features.contains(Features::TRANSPORT))
+            .map(HostClock::now_ns);
+        BlockTransport {
+            meter: self.meter.lend(),
+            default_meter: &self.default_meter,
+            steady: self.steady,
+            project: &mut self.project,
+            block_ns,
+        }
+    }
+
+    /// Count `frames` rendered. Never reset, not even by `prepare`: see
+    /// [`SteadyTime`].
+    pub(crate) fn advance(&mut self, frames: usize) {
+        self.steady.advance(frames);
+    }
+}
+
+/// One block's lend of a [`TransportSource`]. Dropped before the block ends:
+/// it holds the meter's loan.
+pub(crate) struct BlockTransport<'a> {
+    meter: Loan<'a, Option<Arc<MeterMap>>>,
+    default_meter: &'a MeterMap,
+    steady: SteadyTime,
+    project: &'a mut ProjectTime,
+    block_ns: Option<i64>,
+}
+
+impl BlockTransport<'_> {
+    /// The block's pieces, borrowed apart: the meter at the playhead's
+    /// signature (the installed one, or 4/4), the steady counter at the
+    /// block's first frame, project time, and the host clock there.
+    pub(crate) fn parts(&mut self) -> (&MeterMap, SteadyTime, &mut ProjectTime, Option<i64>) {
+        let meter = self.meter.as_deref().unwrap_or(self.default_meter);
+        (meter, self.steady, self.project, self.block_ns)
+    }
+
+    /// The transport at `offset` for a chunk of `chunk` frames, as the plugin
+    /// ABIs carry it ([`from_cx`]): the tempo and slope from `tempo`, through
+    /// the node's `cursor`.
+    #[cfg_attr(
+        not(feature = "vst2"),
+        allow(
+            dead_code,
+            reason = "only the in-process VST2 node reads one transport per chunk"
+        )
+    )]
+    pub(crate) fn at(
+        &mut self,
+        cx: &Cx<'_>,
+        offset: Offset,
+        chunk: usize,
+        tempo: &TempoMap,
+        cursor: &mut Cursor,
+    ) -> TransportInfo {
+        let (meter, steady, project, block_ns) = self.parts();
+        from_cx(
+            cx,
+            offset,
+            chunk,
+            steady.at(offset.index()),
+            project,
+            block_ns,
+            &mut ProjectMaps {
+                meter,
+                tempo,
+                cursor,
+            },
+        )
+    }
 }
 
 #[cfg(test)]

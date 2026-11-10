@@ -14,7 +14,6 @@ use tutti_graph::{
     SortedEvents, Status,
 };
 use tutti_tempo::{Cursor, TempoMap};
-use tutti_types::MeterMap;
 use tutti_types::{ChannelLayout, Samples};
 
 use super::MidiIntake;
@@ -22,7 +21,9 @@ use super::batcher::Chunks;
 use super::param_delivery::ParamDelivery;
 use super::param_input;
 use super::segment_points::SegmentPoints;
-use super::transport_source::{self, HostClock, ProjectTime, Snapshot, SteadyTime};
+#[cfg(test)]
+use super::transport_source::TransportSource;
+use super::transport_source::{self, BlockTransport, Snapshot};
 use super::transport_walk::{self, TransportWalk};
 use super::{BlockPayload, Bound, PluginClient};
 use tutti_plugin_ipc::HarmonyInputs;
@@ -146,26 +147,22 @@ impl Node for PluginClient<Bound> {
         let n_out = c.outputs.min(io.output_count()).min(MAX_PORTS);
         let Bound {
             io: batcher,
-            meter,
-            default_meter,
             tempo,
             tempo_cursor,
             pending,
             out_events,
-            steady,
-            project,
             walk,
-            host_clock,
+            transport,
             segments,
             params,
             intake,
         } = &mut c.state;
         out_events.clear();
 
-        // One meter read per block, never per chunk: the node's own cell,
-        // fixed at bind (see `PluginMeter`).
-        let installed = meter.lend();
-        let meter = installed.as_deref().unwrap_or(default_meter);
+        // One meter read and one host-clock read per block, never per chunk
+        // (`TransportSource::block`); the clock is none offline and for a
+        // plugin told no transport.
+        let block = transport.block(c.loaded.features);
         // And one lend of the project's tempo map, for the same reason: every
         // chunk's tempo and slope are read from it (`Snapshot::follow`), and
         // the loan ends with the call.
@@ -176,22 +173,14 @@ impl Node for PluginClient<Bound> {
         } else {
             SortedEvents::EMPTY
         };
-        // One host-clock read per block; each chunk is placed on it by its
-        // frame. None offline, and none for a plugin told no transport.
-        let block_ns = host_clock
-            .filter(|_| c.loaded.features.contains(Features::TRANSPORT))
-            .map(HostClock::now_ns);
         let mut host = PluginChunks {
             cx: *cx,
             events,
             frames,
-            meter,
+            transport: block,
             tempo: &tempo_map,
             tempo_cursor,
             features: c.loaded.features,
-            steady: *steady,
-            project,
-            block_ns,
             pending,
             out_events,
             walk,
@@ -220,7 +209,10 @@ impl Node for PluginClient<Bound> {
         );
         // The MIDI the plugin never got is the executor's loss too: an export
         // watching its count sees it.
-        io.count_lost(host.lost);
+        let lost = host.lost;
+        // The chunks' borrows end here, the meter's loan with them.
+        drop(host);
+        io.count_lost(lost);
         if io.event_output_count() > 0 {
             let out = io.event_out(0);
             for e in out_events.iter() {
@@ -231,12 +223,11 @@ impl Node for PluginClient<Bound> {
                 let _ = out.push(Event::midi(at, e.ump.0));
             }
         }
-        // Never reset, not even by `prepare`: see `SteadyTime`. (Not pinned
-        // end to end: the reference CLAP plugin reads CLAP's own `steady_time`,
-        // which its loader counts; this counter reaches VST2 and VST3 only.
-        // `the_snapshot_is_env_at_the_frame` pins that the snapshot carries
-        // it rather than `Env`'s frame.)
-        steady.advance(frames);
+        // (Not pinned end to end: the reference CLAP plugin reads CLAP's own
+        // `steady_time`, which its loader counts; this counter reaches VST2
+        // and VST3 only. `the_snapshot_is_env_at_the_frame` pins that the
+        // snapshot carries it rather than `Env`'s frame.)
+        transport.advance(frames);
         Status::Modified
     }
 
@@ -269,18 +260,13 @@ struct PluginChunks<'a> {
     /// into ([`Chunks::take`]).
     events: SortedEvents<'a>,
     frames: usize,
-    meter: &'a MeterMap,
+    /// The block's meter and clocks (`TransportSource::block`).
+    transport: BlockTransport<'a>,
     /// The project's tempo map, lent for this call.
     tempo: &'a TempoMap,
     /// The node's cursor into it, kept across blocks.
     tempo_cursor: &'a mut Cursor,
     features: Features,
-    /// The steady-time counter at this block's first frame.
-    steady: SteadyTime,
-    /// The node's project time, advanced at each chunk's read.
-    project: &'a mut ProjectTime,
-    /// The host clock at this block's first frame; `None` offline.
-    block_ns: Option<i64>,
     pending: &'a mut BlockPayload,
     /// The transport changes inside the chunk being filled, found call by
     /// call (`transport_walk`).
@@ -310,16 +296,11 @@ impl Chunks for PluginChunks<'_> {
                 // tempo there. Its slope waits for the stretch's length: to
                 // the first change after it, or the chunk's end
                 // (`TransportWalk::finish`).
-                let mut s = Snapshot::at(
-                    &self.cx,
-                    offset,
-                    self.steady.at(at),
-                    self.project,
-                    self.block_ns,
-                );
+                let (meter, steady, project, block_ns) = self.transport.parts();
+                let mut s = Snapshot::at(&self.cx, offset, steady.at(at), project, block_ns);
                 let settled = s.settle(self.tempo, self.tempo_cursor);
                 self.walk.begin(&s, settled);
-                transport_source::transport_info(&s, self.meter)
+                transport_source::transport_info(&s, meter)
             }
             _ => {
                 self.walk.clear();
@@ -359,12 +340,9 @@ impl Chunks for PluginChunks<'_> {
             cx,
             events,
             frames,
-            meter,
+            transport,
             tempo,
             tempo_cursor,
-            steady,
-            project,
-            block_ns,
             features,
             pending,
             walk,
@@ -404,11 +382,12 @@ impl Chunks for PluginChunks<'_> {
         *lost += midi_dropped;
         // The transport changes among these frames: a map point, a loop wrap,
         // a seek, a start or a stop, each an entry at its chunk frame.
+        let (meter, steady, project, block_ns) = transport.parts();
         let call = transport_walk::Call {
             cx,
             frames: *frames,
-            steady: *steady,
-            block_ns: *block_ns,
+            steady,
+            block_ns,
             meter,
             tempo,
         };
@@ -509,6 +488,15 @@ fn push_harmony(harmony: &mut HarmonyInputs, features: Features, h: Harmony, fra
     }
 }
 
+/// A transport source over a fresh meter cell, with no host clock, as the
+/// test rigs read it.
+#[cfg(test)]
+fn offline_source() -> TransportSource {
+    let mut source = TransportSource::new(super::PluginMeter::default().reader());
+    source.go_offline();
+    source
+}
+
 #[cfg(test)]
 mod harmony_tests {
     use super::*;
@@ -595,12 +583,11 @@ mod loss_tests {
             changes: TransportChanges::NONE,
             play: PlayClock::ZERO,
         };
-        let meter = MeterMap::default();
         let tempo = tutti_tempo::TempoMap::constant(Bpm::of(120.0)).expect("a tempo");
         let mut cursor = Cursor::default();
         let mut out_events = MidiEventVec::new();
         let mut segments = SegmentPoints::default();
-        let mut project = ProjectTime::default();
+        let mut source = offline_source();
         let mut walk = TransportWalk::default();
         f(&mut PluginChunks {
             cx: Cx {
@@ -610,13 +597,10 @@ mod loss_tests {
             },
             events: SortedEvents::EMPTY,
             frames: 64,
-            meter: &meter,
+            transport: source.block(Features::empty()),
             tempo: &tempo,
             tempo_cursor: &mut cursor,
             features: Features::empty(),
-            steady: SteadyTime::default(),
-            project: &mut project,
-            block_ns: None,
             pending: &mut pending,
             out_events: &mut out_events,
             walk: &mut walk,
@@ -724,12 +708,10 @@ mod walk_tests {
         pending: BlockPayload,
         out_events: MidiEventVec,
         segments: SegmentPoints,
-        project: ProjectTime,
         walk: TransportWalk,
         cursor: Cursor,
-        meter: MeterMap,
+        source: TransportSource,
         tempo: TempoMap,
-        steady: SteadyTime,
         arrival: Latency,
     }
 
@@ -743,12 +725,10 @@ mod walk_tests {
                 pending: BlockPayload::default(),
                 out_events: MidiEventVec::new(),
                 segments: SegmentPoints::default(),
-                project: ProjectTime::default(),
                 walk: TransportWalk::default(),
                 cursor: Cursor::default(),
-                meter: MeterMap::default(),
+                source: offline_source(),
                 tempo,
-                steady: SteadyTime::default(),
                 arrival: Latency::ZERO,
             }
         }
@@ -768,13 +748,10 @@ mod walk_tests {
                     },
                     events: SortedEvents::EMPTY,
                     frames,
-                    meter: &self.meter,
+                    transport: self.source.block(Features::TRANSPORT),
                     tempo: &self.tempo,
                     tempo_cursor: &mut self.cursor,
                     features: Features::TRANSPORT,
-                    steady: self.steady,
-                    project: &mut self.project,
-                    block_ns: None,
                     pending: &mut self.pending,
                     out_events: &mut self.out_events,
                     walk: &mut self.walk,
@@ -791,7 +768,8 @@ mod walk_tests {
                 if at == chunk {
                     payload = Some(host.payload(chunk));
                 }
-                self.steady.advance(frames);
+                drop(host);
+                self.source.advance(frames);
             }
             payload.expect("the calls fill the chunk")
         }

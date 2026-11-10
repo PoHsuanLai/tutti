@@ -433,7 +433,7 @@ impl Capture {
             // VST2 fork drops its clock the same way, and
             // `vst2_in_process_fork`'s `a_fork_reads_its_transport_from_the_render`
             // pins that.
-            fork.state.host_clock = None;
+            fork.state.transport.go_offline();
         }
         fork.fork_watch = Some(watch);
         Ok(fork)

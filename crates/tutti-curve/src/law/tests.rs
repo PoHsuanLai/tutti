@@ -2,6 +2,7 @@
 //! figures are written out here, not read from another implementation.
 
 use super::Law;
+use crate::Piece;
 
 const LAWS: [Law; 8] = [
     Law::Linear,
@@ -114,7 +115,7 @@ fn exp_is_the_exponential_and_geometric_at_log_ratio() {
     let k = (to / from).ln();
     for t in [0.25f32, 0.5, 0.75] {
         let want = f64::from(from) * (f64::from(to) / f64::from(from)).powf(f64::from(t));
-        let got = f64::from(Law::Exp(k).interpolate(from, to, t));
+        let got = f64::from(Piece::new(from, to, Law::Exp(k)).value(t));
         assert!(
             (got - want).abs() < 1e-3 * want,
             "geometric at {t}: {got} vs {want}"
@@ -171,20 +172,6 @@ fn progress_is_clamped() {
         assert_eq!(law.eval(2.0), law.eval(1.0), "{law:?} above");
         assert_eq!(law.eval(f32::NAN), 0.0, "{law:?} at NaN");
     }
-}
-
-/// `interpolate` is `from + (to - from) · g(t)`, in either direction.
-///
-/// Mutation (run): `from + (to - from)` written `to + (from - to)` fails the
-/// endpoints; the factor `g` dropped (`from + (to - from) * t`) fails the
-/// quadratic.
-#[test]
-fn interpolate_scales_the_law_onto_the_endpoints() {
-    assert_eq!(Law::Linear.interpolate(2.0, 6.0, 0.25), 3.0);
-    assert_eq!(Law::PowerIn(2.0).interpolate(2.0, 6.0, 0.5), 3.0);
-    assert_eq!(Law::PowerIn(2.0).interpolate(6.0, 2.0, 0.5), 5.0);
-    assert_eq!(Law::Hold.interpolate(2.0, 6.0, 0.5), 2.0);
-    assert_eq!(Law::Hold.interpolate(2.0, 6.0, 1.0), 6.0);
 }
 
 // Moved from `tutti-graph`'s `event.rs` tests, unchanged but for the name.

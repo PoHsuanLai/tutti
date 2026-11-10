@@ -1,6 +1,6 @@
 use tutti_types::Beat;
 
-use crate::Law;
+use crate::{Law, Piece};
 
 /// A breakpoint of a [`Trajectory`]: a value at a beat, and the
 /// [`Law`] of the piece that starts there and runs to the next breakpoint.
@@ -111,7 +111,7 @@ impl Trajectory {
         let next = self.breakpoints.partition_point(|p| p.time.get() <= time);
         let (p, q) = (self.breakpoints[next - 1], self.breakpoints[next]);
         let t = ((time - p.time.get()) / (q.time.get() - p.time.get())) as f32;
-        Some(self.clamped(p.law.interpolate(p.value, q.value, t)))
+        Some(self.clamped(Piece::new(p.value, q.value, p.law).value(t)))
     }
 
     /// Drops every breakpoint whose value its neighbours' piece already gives to
@@ -130,7 +130,9 @@ impl Trajectory {
             );
             let span = next.time.get() - prev.time.get();
             let t = ((curr.time.get() - prev.time.get()) / span) as f32;
-            if (curr.value - prev.law.interpolate(prev.value, next.value, t)).abs() > tolerance {
+            if (curr.value - Piece::new(prev.value, next.value, prev.law).value(t)).abs()
+                > tolerance
+            {
                 kept.push(curr);
             }
         }

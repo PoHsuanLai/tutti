@@ -93,14 +93,6 @@ impl Law {
             Self::PowerIn(_) | Self::PowerOut(_) | Self::PowerInOut(_) | Self::Exp(_) => t,
         }
     }
-
-    /// The value `t` of the way from `from` to `to`: `from + (to - from) ·
-    /// g(t)`.
-    #[inline]
-    #[must_use]
-    pub fn interpolate(self, from: f32, to: f32, t: f32) -> f32 {
-        from + (to - from) * self.eval(t)
-    }
 }
 
 fn valid_exponent(p: f32) -> bool {

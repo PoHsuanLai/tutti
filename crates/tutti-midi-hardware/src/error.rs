@@ -76,8 +76,8 @@ pub enum Error {
     Unsupported(&'static str),
     // NOTE: there is deliberately no `File(tutti_midi_file::Error)` variant.
     // A parse failure is not a port failure — a consumer that reads files owns
-    // that error itself (`bevy_tutti::midi::file::MidiFileError::Smf` is the
-    // live example).
+    // that error itself (`tutti_midi_file::Error`, which this crate does not
+    // depend on).
 }
 
 /// The crate's result type: [`Error`](enum@Error) on the failure side.

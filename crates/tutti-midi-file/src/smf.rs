@@ -8,9 +8,10 @@
 //! # Everything here is 7-bit
 //!
 //! An SMF cannot express MIDI 2.0 resolution. Key, velocity and controller
-//! values are `u8` in 0..=127 and pitch bend is 14-bit — they are protocol
-//! integers on the wire, not measurements, and stay `u8` for that reason. The
-//! MIDI 2.0 side of the crate ([`crate::clip`], 16-bit velocity and 32-bit
+//! values are 7-bit (`U7`, `NoteNumber`, `CCNumber`) and pitch bend is 14-bit
+//! (`U14`): a message is a [`Voice1`], the MIDI 1.0 channel-voice message of
+//! `tutti-ump`, and no `midly` type is in this module's signatures. The
+//! MIDI 2.0 side of the crate ([`crate::ParsedClipFile`], 16-bit velocity and 32-bit
 //! controllers) is a *different format*, not a wider encoding of this one.
 //!
 //! Musical time is the exception, deliberately: positions are [`Beat`] and spans
@@ -26,18 +27,12 @@
 //! that wants to convert.
 
 use crate::{Error, Result};
-// NOTE: `midly::MidiMessage` is the *MIDI 1.0 7-bit* SMF message, a different
-// thing from `tutti_ump::Message` (the decoded UMP). It is imported under the
-// alias `SmfMessage` so the two are never confused.
-use midly::num::u24;
+use midly::MidiMessage;
+use midly::num::{u7, u14, u24};
 use midly::{Format, Header, MetaMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
 use tutti_types::{Beat, BeatDuration, Bpm};
-use tutti_ump::MidiChannel;
+use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, U14, Voice1};
 
-/// The MIDI 1.0 7-bit channel-voice message carried by [`SmfTimedEvent`] — a
-/// re-export of `midly::MidiMessage`, aliased so an SMF caller never confuses it
-/// with `tutti_ump::Message`.
-pub use midly::MidiMessage as SmfMessage;
 use std::path::Path;
 use tracing::debug;
 
@@ -48,9 +43,72 @@ pub struct SmfTimedEvent {
     pub time_beats: Beat,
     /// The message's channel.
     pub channel: MidiChannel,
-    /// The channel-voice message. This is a **MIDI 1.0** `midly` message
-    /// (re-exported as [`SmfMessage`]), not a `tutti_ump::Message`.
-    pub msg: SmfMessage,
+    /// The channel-voice message, MIDI 1.0 (7-bit) as the file holds it. A
+    /// note-on at velocity 0 is kept as written: it is a note-off by the
+    /// MIDI 1.0 rule, which [`SmfFile`](crate::SmfFile) and
+    /// [`MidiFile::iter`](crate::MidiFile::iter) apply, not this stream.
+    pub msg: Voice1,
+}
+
+/// A `midly` message as the `Voice1` it is. `midly`'s numbers are already
+/// framed to 7 and 14 bits, so `masked` drops nothing.
+fn voice_of(message: MidiMessage) -> Voice1 {
+    let note = |k: u7| NoteNumber::masked(k.as_int());
+    let seven = |v: u7| U7::masked(v.as_int());
+    match message {
+        MidiMessage::NoteOff { key, vel } => Voice1::NoteOff {
+            note: note(key),
+            velocity: seven(vel),
+        },
+        MidiMessage::NoteOn { key, vel } => Voice1::NoteOn {
+            note: note(key),
+            velocity: seven(vel),
+        },
+        MidiMessage::Aftertouch { key, vel } => Voice1::PolyPressure {
+            note: note(key),
+            pressure: seven(vel),
+        },
+        MidiMessage::Controller { controller, value } => Voice1::ControlChange {
+            controller: CCNumber::masked(controller.as_int()),
+            value: seven(value),
+        },
+        MidiMessage::ProgramChange { program } => Voice1::ProgramChange(seven(program)),
+        MidiMessage::ChannelAftertouch { vel } => Voice1::ChannelPressure(seven(vel)),
+        MidiMessage::PitchBend { bend } => Voice1::PitchBend(U14::masked(bend.0.as_int())),
+    }
+}
+
+/// The inverse of [`voice_of`].
+fn midly_of(voice: Voice1) -> MidiMessage {
+    let note = |n: NoteNumber| u7::from(n.get());
+    let seven = |v: U7| u7::from(v.get());
+    match voice {
+        Voice1::NoteOff { note: n, velocity } => MidiMessage::NoteOff {
+            key: note(n),
+            vel: seven(velocity),
+        },
+        Voice1::NoteOn { note: n, velocity } => MidiMessage::NoteOn {
+            key: note(n),
+            vel: seven(velocity),
+        },
+        Voice1::PolyPressure { note: n, pressure } => MidiMessage::Aftertouch {
+            key: note(n),
+            vel: seven(pressure),
+        },
+        Voice1::ControlChange { controller, value } => MidiMessage::Controller {
+            controller: u7::from(controller.get()),
+            value: seven(value),
+        },
+        Voice1::ProgramChange(program) => MidiMessage::ProgramChange {
+            program: seven(program),
+        },
+        Voice1::ChannelPressure(pressure) => MidiMessage::ChannelAftertouch {
+            vel: seven(pressure),
+        },
+        Voice1::PitchBend(bend) => MidiMessage::PitchBend {
+            bend: midly::PitchBend(u14::from(bend.get())),
+        },
+    }
 }
 
 /// An SMF read as one flat event stream, merged across all tracks.
@@ -182,7 +240,7 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
             events.push(SmfTimedEvent {
                 time_beats: Beat(tick as f64 / f64::from(ticks_per_beat)),
                 channel: MidiChannel::masked(channel.as_int()),
-                msg: *message,
+                msg: voice_of(*message),
             });
         }
     }
@@ -251,10 +309,9 @@ fn sort_by_time(events: &mut [SmfTimedEvent]) {
 // each track's name. This is the shape an importer wants (one clip per track,
 // notes with durations).
 //
-// The MIDI-wire fields stay `u8` — a channel nibble and a 7-bit key are
-// protocol integers, not measurements. The musical-time fields do not: they are
-// a position and a span, and as two bare `f64`s they were transposable at every
-// reader. `tutti-sampler` already spells the same pair `Beat`/`BeatDuration`.
+// The key and velocity are `NoteNumber` and `U7`, the range types of the MIDI
+// 1.0 wire; the musical-time fields are a position and a span, `Beat` and
+// `BeatDuration`, which as two bare `f64`s were transposable at every reader.
 
 /// One note, paired from its NoteOn/NoteOff, in beats from track start.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -262,10 +319,12 @@ pub struct SmfNote {
     /// Pairing is per-channel: a NoteOff only closes a NoteOn on the *same*
     /// channel, which multi-channel tracks (General MIDI Type-0) require.
     pub channel: MidiChannel,
-    /// MIDI key number, 0..=127.
-    pub key: u8,
-    /// NoteOn velocity, 1..=127 (velocity-0 NoteOn is treated as NoteOff).
-    pub velocity: u8,
+    /// The key.
+    pub key: NoteNumber,
+    /// NoteOn velocity, 1..=127: a velocity-0 NoteOn is a NoteOff (MIDI 1.0
+    /// Detailed Specification), so it never opens a note. `U7` holds 0, but
+    /// no note here has it.
+    pub velocity: U7,
     /// Onset, relative to the start of the file.
     pub start_beats: Beat,
     /// Length (NoteOff beat − NoteOn beat, clamped to ≥ 0).
@@ -321,12 +380,12 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
     let mut now_ticks: u64 = 0;
     // The held onset is a `Beat`, so `end - start` below *is* a `BeatDuration`
     // rather than a float that has to be trusted to be one.
-    let mut held: BTreeMap<(MidiChannel, u8), Vec<(Beat, u8)>> = BTreeMap::new();
+    let mut held: BTreeMap<(MidiChannel, NoteNumber), Vec<(Beat, U7)>> = BTreeMap::new();
     let mut out: Vec<SmfNote> = Vec::new();
 
-    let mut close = |held: &mut BTreeMap<(MidiChannel, u8), Vec<(Beat, u8)>>,
+    let mut close = |held: &mut BTreeMap<(MidiChannel, NoteNumber), Vec<(Beat, U7)>>,
                      channel: MidiChannel,
-                     key: u8,
+                     key: NoteNumber,
                      end: Beat| {
         if let Some(stack) = held.get_mut(&(channel, key))
             && let Some((start, velocity)) = stack.pop()
@@ -346,16 +405,17 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
         let beat = Beat(now_ticks as f64 / ticks_per_beat);
         if let TrackEventKind::Midi { channel, message } = event.kind {
             let channel = MidiChannel::masked(channel.as_int());
-            match message {
-                SmfMessage::NoteOn { key, vel } => {
-                    let (key, vel) = (key.as_int(), vel.as_int());
-                    if vel == 0 {
-                        close(&mut held, channel, key, beat);
+            match voice_of(message) {
+                Voice1::NoteOn { note, velocity } => {
+                    if velocity.get() == 0 {
+                        close(&mut held, channel, note, beat);
                     } else {
-                        held.entry((channel, key)).or_default().push((beat, vel));
+                        held.entry((channel, note))
+                            .or_default()
+                            .push((beat, velocity));
                     }
                 }
-                SmfMessage::NoteOff { key, .. } => close(&mut held, channel, key.as_int(), beat),
+                Voice1::NoteOff { note, .. } => close(&mut held, channel, note, beat),
                 _ => {}
             }
         }
@@ -426,18 +486,18 @@ impl Default for MidiWriteConfig {
 ///
 /// [`Error::InvalidConfig`] if `tracks` is empty, or [`Error::Io`] if the write
 /// fails.
-pub fn write(
+pub fn write_smf(
     path: impl AsRef<Path>,
     tracks: &[Vec<SmfTimedEvent>],
     config: &MidiWriteConfig,
 ) -> Result<()> {
-    let data = to_bytes(tracks, config)?;
+    let data = smf_to_bytes(tracks, config)?;
     std::fs::write(path, data)?;
     Ok(())
 }
 
 /// Encodes `tracks` to SMF bytes in memory. The in-memory half of
-/// [`write()`], with the same format rules.
+/// [`write_smf`], with the same format rules.
 ///
 /// # Errors
 ///
@@ -445,7 +505,7 @@ pub fn write(
 /// track chunk — or if an event's time is not finite: a NaN or infinite beat
 /// has no tick to land on. [`Error::MidiFileParse`] if `midly` refuses to
 /// serialise.
-pub fn to_bytes(tracks: &[Vec<SmfTimedEvent>], config: &MidiWriteConfig) -> Result<Vec<u8>> {
+pub fn smf_to_bytes(tracks: &[Vec<SmfTimedEvent>], config: &MidiWriteConfig) -> Result<Vec<u8>> {
     if tracks.is_empty() {
         return Err(Error::InvalidConfig("No tracks provided".into()));
     }
@@ -535,7 +595,7 @@ fn build_track<'a>(
             delta: delta.into(),
             kind: TrackEventKind::Midi {
                 channel: event.channel.get().into(),
-                message: event.msg,
+                message: midly_of(event.msg),
             },
         });
     }

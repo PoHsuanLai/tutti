@@ -764,8 +764,15 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
-- `tutti-midi-file` is OS-free. It holds the MIDI 2.0 Clip File codec (`ParsedClipFile`,
-  `write_clip_file*`, `ClipFileError`) beside SMF.
+- `tutti-midi-file` is OS-free and keeps every module private
+  (`tutti_midi_file::smf_to_bytes`; the per-module path gate is not in CI because the
+  parked `bevy-tutti` still names `tutti_midi_file::smf::`). It holds
+  the MIDI 2.0 Clip File codec (`ParsedClipFile`, `write_clip_file*`, `ClipFileError`)
+  beside SMF. An SMF event is a `tutti_ump::Voice1` (`SmfTimedEvent::msg`), a note's
+  key and velocity are `NoteNumber` and `U7`, and no public signature names `midly`.
+- `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
+  per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
+  types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
   sample headers, sample data, raw generators) and holds nothing that plays.
   Its workspace dependencies are `tutti-ump` and `tutti-types` (the units its

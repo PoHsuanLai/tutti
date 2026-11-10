@@ -12,7 +12,7 @@ fn round_trips_a_clip_through_a_file() {
         ClipEvent::new(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
         ClipEvent::new(96, note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
     ];
-    write(
+    write_clip(
         &path,
         96,
         Some(ClipHeader {
@@ -23,7 +23,7 @@ fn round_trips_a_clip_through_a_file() {
     )
     .unwrap();
 
-    let clip = read(&path).unwrap();
+    let clip = read_clip(&path).unwrap();
     assert_eq!(clip.time_signature(), Some((5, 4)));
     assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm::of(128.0), 0.05));
 
@@ -34,7 +34,10 @@ fn round_trips_a_clip_through_a_file() {
     assert_eq!(notes.len(), 1);
     assert_eq!(
         (notes[0].note, notes[0].duration_beats),
-        (60, tutti_types::BeatDuration(1.0))
+        (
+            tutti_ump::NoteNumber::of(60),
+            tutti_types::BeatDuration(1.0)
+        )
     );
     // The whole point of the format: velocity survives at 16 bits.
     assert_eq!(notes[0].velocity, 0xABCD);
@@ -45,7 +48,7 @@ fn detect_tells_the_two_midi_formats_apart() {
     let clip = crate::write_clip_file(96, &[]);
     assert_eq!(MidiFileKind::detect(&clip), Some(MidiFileKind::ClipFile));
 
-    let smf = crate::smf::to_bytes(&[vec![]], &crate::smf::MidiWriteConfig::default()).unwrap();
+    let smf = crate::smf_to_bytes(&[vec![]], &crate::MidiWriteConfig::default()).unwrap();
     assert_eq!(
         MidiFileKind::detect(&smf),
         Some(MidiFileKind::StandardMidiFile)
@@ -70,13 +73,13 @@ fn detect_path_reads_the_magic_not_the_extension() {
     // A clip file under an SMF extension still detects as a clip file, and
     // the SMF reader rejects it rather than mis-parsing it.
     let misnamed = dir.path().join("misnamed.mid");
-    write(&misnamed, 96, None, &[]).unwrap();
+    write_clip(&misnamed, 96, None, &[]).unwrap();
     assert_eq!(
         MidiFileKind::detect_path(&misnamed).unwrap(),
         Some(MidiFileKind::ClipFile)
     );
     assert!(crate::SmfFile::read(&misnamed).is_err());
-    assert!(read(&misnamed).is_ok());
+    assert!(read_clip(&misnamed).is_ok());
     assert!(matches!(MidiFile::read(&misnamed), Ok(MidiFile::Clip(_))));
 
     // Readable but unrecognised — `Ok(None)`, not an error.

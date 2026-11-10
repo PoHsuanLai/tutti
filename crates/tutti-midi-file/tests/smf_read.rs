@@ -30,10 +30,9 @@
 mod support;
 
 use support::{Division, RawEvent, build_smf};
-use tutti_midi_file::SmfFile;
-use tutti_midi_file::smf::ParsedMidiFile;
+use tutti_midi_file::{ParsedMidiFile, SmfFile};
 use tutti_types::{Beat, Bpm};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteNumber, U7, Voice1};
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
 const TPQ: u16 = 480;
@@ -68,7 +67,7 @@ fn a_sysex_between_notes_does_not_shift_the_beat_grid() {
     let onsets: Vec<f64> = parsed
         .events
         .iter()
-        .filter(|e| matches!(e.msg, midly::MidiMessage::NoteOn { vel, .. } if vel.as_int() > 0))
+        .filter(|e| matches!(e.msg, Voice1::NoteOn { velocity, .. } if velocity.get() > 0))
         .map(|e| e.time_beats.get())
         .collect();
     assert_eq!(
@@ -91,7 +90,7 @@ fn a_sysex_between_notes_does_not_shift_the_beat_grid() {
     let note = tracks[0]
         .notes
         .iter()
-        .find(|n| n.key == 62)
+        .find(|n| n.key == NoteNumber::of(62))
         .expect("the post-sysex note should be paired");
     assert!(
         (note.start_beats.get() - 2.0).abs() < 1e-9,
@@ -122,11 +121,11 @@ fn overlapping_same_key_notes_pair_lifo() {
 
     let b = notes
         .iter()
-        .find(|n| n.velocity == 111)
+        .find(|n| n.velocity == U7::of(111))
         .expect("the inner note");
     let a = notes
         .iter()
-        .find(|n| n.velocity == 100)
+        .find(|n| n.velocity == U7::of(100))
         .expect("the outer note");
     assert!(
         (b.duration_beats.get() - 1.0).abs() < 1e-9,
@@ -206,7 +205,11 @@ fn a_velocity_zero_note_on_closes_the_note() {
         "a velocity-0 note-on must close the note, not open a second one"
     );
     assert!((notes[0].duration_beats.get() - 1.0).abs() < 1e-9);
-    assert_eq!(notes[0].velocity, 90, "the onset velocity is the note's");
+    assert_eq!(
+        notes[0].velocity,
+        U7::of(90),
+        "the onset velocity is the note's"
+    );
 }
 
 /// **Running status parses.** A contract test on `midly` rather than on tutti
@@ -233,8 +236,8 @@ fn running_status_notes_survive_the_reader() {
          would report {} of them",
         notes.len()
     );
-    assert!(notes.iter().any(|n| n.key == 60));
-    assert!(notes.iter().any(|n| n.key == 62));
+    assert!(notes.iter().any(|n| n.key == NoteNumber::of(60)));
+    assert!(notes.iter().any(|n| n.key == NoteNumber::of(62)));
 }
 
 /// **SMPTE division is refused by both entry points.**
@@ -333,8 +336,8 @@ fn format_1_multitrack_keeps_tracks_and_names_separate() {
     );
     assert_eq!(tracks[1].notes.len(), 1);
     assert_eq!(tracks[2].notes.len(), 1);
-    assert_eq!(tracks[1].notes[0].key, 36);
-    assert_eq!(tracks[2].notes[0].key, 72);
+    assert_eq!(tracks[1].notes[0].key, NoteNumber::of(36));
+    assert_eq!(tracks[2].notes[0].key, NoteNumber::of(72));
 
     // And the merged view finds the tempo from track 0 while carrying both
     // tracks' notes — the cross-track merge `ParsedMidiFile` exists for.

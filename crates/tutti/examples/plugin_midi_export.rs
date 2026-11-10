@@ -78,10 +78,10 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
 }
 
 /// Two bars: a note on each beat, 120 BPM for the first four beats and 60
-/// for the last four. Written through `midly` (re-exported by
-/// `tutti-midi-file`): this crate's own writer sets one tempo only.
+/// for the last four. Written through `midly`: `tutti-midi-file`'s writer
+/// sets one tempo only.
 fn phrase(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use tutti::midi_file::midly::{
+    use midly::{
         Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind, num::u28,
     };
     const TPQ: u32 = 480;

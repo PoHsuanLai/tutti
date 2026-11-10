@@ -9,7 +9,8 @@ loss and stuck notes found on the way.
 
 Citations are to the MIDI Association documents M2-100 v1.1, M2-101 v1.2.1,
 M2-102 v1.1, M2-103 v1.2, M2-104 v1.1.2, M2-115 v1.0.1 and M2-116 v1.0, which
-are not vendored (`crates/tutti-midi-types/docs/midi2-spec/README.md`).
+are not vendored, and no notes on them are in the repo (the ones that sat in
+`tutti-midi-types` went with that crate, stage 5b part (c)).
 
 ## Summary
 
@@ -48,6 +49,9 @@ marked as read.
 
 ### 1.1 The model
 
+This table is the survey as it stood before stage 5b; its "Today" column is
+historical, and `MidiEvent`, `MidiMessage` and `tutti-midi-types` no longer exist.
+
 | The specification | Today | Consequence |
 |---|---|---|
 | Endpoint, Function Block, Group (M2-100 §7, M2-104 App. H) | `PortId` and a name; `EndpointId` is ALSA's client and port | Identity changes across restarts; `UmpCapability::function_blocks` was never filled, and is deleted (stage 4a) |
@@ -56,7 +60,7 @@ marked as read.
 | A translator bridges MIDI 1.0 connections (M2-104 §6.2) | One per input node, keyed by channel | RPN state crosses groups; output is forced to group 0 |
 | Decoding and translating are separate | `MidiEvent::message()` calls `normalize` | A MIDI 2.0 Note On at velocity 0 becomes a Note Off (M2-104 §7.4.2 says it does not), while `clip_node` counts it as a note-on |
 | Messages have a scope | One flat `MidiEvent` | An endpoint message can be routed like a note |
-| One packet format | `tutti_graph::Ump`, `MidiEvent`, `MidiMessage` | Note-off decoding is written by hand in four places |
+| One packet format | `tutti_graph::Ump`, `MidiEvent`, `MidiMessage` (all since removed) | Note-off decoding is written by hand in four places |
 
 Three ways of reading a message compete. `MidiMessage` has 22 variants and almost
 no production consumer outside its crate; it has no group, mints a `NoteId` on
@@ -110,8 +114,8 @@ said by the type of the position beside a `Ump`:
 - An absolute time in storage: `(Beat, Ump)` from an SMF, `(Instant, Ump)` in
   the hardware input ring.
 - Bare `Ump` or `Message` where no time is involved (`PolySynth::process_midi_event`,
-  `SoundFontUnit::apply_event(&Ump)`, `Voicing::step`, `tutti-midi-types`,
-  which sits in `tutti-graph`'s layer and cannot name `Offset`).
+  `SoundFontUnit::apply_event(&Ump)`, `Voicing::step`, and `tutti-midi-types` (deleted at stage 5b part (c); it sat in
+  `tutti-graph`'s layer and could not name `Offset`).
 
 A single message is built as `Ump::from(Message::..)`; tests use
 `tutti_fixtures::midi`, one builder per message over the same encoder.
@@ -159,7 +163,8 @@ different owners, keys and failure modes; unifying them would give one of them a
 question it does not ask.
 
 **`tutti-midi-types` was about 9,000 lines of pre-017 vocabulary:** `mpe/`, `translation/`, `cc/mapping`, and the `MidiIn` and
-`MidiOut` traits, beside the `MidiEvent` above. After stage 5b part (b) it is `MidiMessage` and `translation/`.
+`MidiOut` traits, beside the `MidiEvent` above. Stage 5b part (b) left `MidiMessage` and `translation/`, and part (c) deleted both
+with the crate.
 
 ## 2. The hierarchy
 
@@ -1465,9 +1470,9 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   pins, and the name-only comparison of the Flex and Stream families. The fuzz target
   is not run in CI yet; nothing here leans on it.
 
-`midly` stays in `tutti-midi-file`, which uses it for the SMF container only: a
-`midly` event is written to MIDI 1.0 bytes and read back by
-`tutti_ump::Midi1Parser::message`. The `midly` parse error allocates, so a plugin's
+`midly` stays in `tutti-midi-file`, which uses it for the SMF container only, and
+no public signature names it (a `midly` message becomes a `tutti_ump::Voice1` at
+the edge). The `midly` parse error allocates, so a plugin's
 stray status byte (`[0xF7, 1, 2]`) aborted a debug build under `assert_no_alloc`.
 
 ## 8. Not losing events
@@ -1602,9 +1607,9 @@ Smaller items that no stage owns:
 
 `tutti-midi-file` adds real work on top of `midly`: musical time, note
 pairing, and one reader for SMF and Clip File. The rest is thin or awkward. There
-are two read models from one parse, `pub use midly` and `SmfMessage` expose
-`midly`'s types, and `iter()` writes each parsed message to wire bytes in order to
-parse it again. Reading drops SysEx, time and key signatures and markers, merges
+are two read models from one parse. (`pub use midly` and `SmfMessage` exposed
+`midly`'s types and `iter()` wrote each parsed message to wire bytes to parse it
+again; the M3 lane below fixed both: `SmfTimedEvent::msg` is a `tutti_ump::Voice1`.) Reading drops SysEx, time and key signatures and markers, merges
 Format 2 as if parallel, rejects SMPTE division, and returns `Ok` on a truncated
 file. Writing has no tempo map, track names or SysEx.
 
@@ -1958,6 +1963,27 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    room past the ring's capacity.
 7. **Capabilities** (§9).
 
+### After 5b: the audit cleanup lanes
+
+An audit of the MIDI crates after stage 5b (2026-11) split its fixes into five
+lanes. They change no stage above.
+
+- **M1, API.** `tutti-ump`, `tutti-midi-protocol`, `tutti-graph`, `tutti-nodes`,
+  `tutti-session` and `tutti-midi-runtime`'s ledger, live, outbound and clock.
+- **M2, voicing and SoundFont.** `tutti-voicing`, `tutti-soundfont`,
+  `tutti-polysynth`.
+- **M3, shape.** `tutti-midi-file` (`SmfNote` and `ClipNote` carry `NoteNumber` and
+  `U7`; `SmfTimedEvent::msg` is a `Voice1`, so no `midly` type is public and
+  `pub use midly` is gone; the Clip File reader decodes through `tutti_ump::decode`
+  and `split_stream`; the `smf` and `clip` modules are private, their functions
+  `smf_to_bytes`, `write_smf`, `read_clip` and `write_clip` at the root),
+  `SmpteTimecode` with private fields and a refusing `new`, `tutti-midi-hardware`
+  with private modules and no re-export of the runtime's sync types, and
+  `tutti-midi-runtime` without its unused `bytemuck` dependency.
+- **M4, docs.** What a comment, a README or this document claims, brought to what the
+  code is.
+- **M5, tests.**
+
 ## 11. Testing
 
 - **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115
@@ -1966,8 +1992,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
   spec-pinned tests, and the specification is the only oracle now (§7).
 - **Properties.** `decode` never panics on any words, and `encode(decode(x)) == x`
   for a canonical `x`.
-- **Fuzzing.** `cargo-fuzz` targets for UMP, SysEx, MIDI-CI and clip files, none of
-  which exist in the repo today.
+- **Fuzzing.** `cargo-fuzz` targets for UMP, SysEx, MIDI-CI and clip files. Only
+  `crates/tutti-ump/fuzz/fuzz_targets/decode.rs` exists; the others do not.
 - **Scheduler-free connections.** `Connection` tests take a clock value and never
   sleep.
 - **A real transport in CI.** ALSA user-space virtual clients on Linux. The ALSA

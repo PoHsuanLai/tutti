@@ -446,7 +446,7 @@ fn pairs_notes_and_keeps_full_velocity() {
     ]);
 
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].note, 60);
+    assert_eq!(notes[0].note, tutti_ump::NoteNumber::of(60));
     assert_eq!(notes[0].start_beats, Beat(0.0));
     assert_eq!(notes[0].duration_beats, BeatDuration(2.5));
     // The reason pairing lives here: a caller pairing on `velocity_u7`
@@ -577,7 +577,7 @@ fn notes_left_open_at_end_of_clip_are_dropped() {
     ]);
 
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].note, 60);
+    assert_eq!(notes[0].note, tutti_ump::NoteNumber::of(60));
 }
 
 #[test]

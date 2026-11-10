@@ -17,9 +17,9 @@
 mod support;
 
 use support::decode_smf;
-use tutti_midi_file::smf::{self, MidiWriteConfig, SmfTimedEvent};
+use tutti_midi_file::{MidiWriteConfig, ParsedMidiFile, SmfTimedEvent, smf_to_bytes};
 use tutti_types::{Beat, Bpm};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteNumber, U7, Voice1};
 
 const TPQ: u16 = 480;
 
@@ -27,9 +27,9 @@ fn note_on(beat: f64, key: u8) -> SmfTimedEvent {
     SmfTimedEvent {
         time_beats: Beat(beat),
         channel: MidiChannel::FIRST,
-        msg: midly::MidiMessage::NoteOn {
-            key: key.into(),
-            vel: 100.into(),
+        msg: Voice1::NoteOn {
+            note: NoteNumber::of(key),
+            velocity: U7::of(100),
         },
     }
 }
@@ -38,9 +38,9 @@ fn note_off(beat: f64, key: u8) -> SmfTimedEvent {
     SmfTimedEvent {
         time_beats: Beat(beat),
         channel: MidiChannel::FIRST,
-        msg: midly::MidiMessage::NoteOff {
-            key: key.into(),
-            vel: 0.into(),
+        msg: Voice1::NoteOff {
+            note: NoteNumber::of(key),
+            velocity: U7::of(0),
         },
     }
 }
@@ -84,7 +84,7 @@ fn a_tick_is_rounded_to_nearest_not_truncated() {
     );
 
     let events: Vec<SmfTimedEvent> = beats.iter().map(|&b| note_on(b, 60)).collect();
-    let bytes = smf::to_bytes(&[events], &config()).expect("encodes");
+    let bytes = smf_to_bytes(&[events], &config()).expect("encodes");
 
     let decoded = decode_smf(&bytes).expect("the writer must emit decodable SMF");
     let ticks = decoded.note_on_ticks();
@@ -121,9 +121,9 @@ fn parse_write_parse_is_byte_stable() {
         events.push(note_off(2.0, key));
     }
 
-    let first = smf::to_bytes(&[events], &config()).expect("encodes");
-    let parsed = smf::ParsedMidiFile::from_bytes(&first).expect("parses");
-    let reencoded = smf::to_bytes(
+    let first = smf_to_bytes(&[events], &config()).expect("encodes");
+    let parsed = ParsedMidiFile::from_bytes(&first).expect("parses");
+    let reencoded = smf_to_bytes(
         std::slice::from_ref(&parsed.events),
         &MidiWriteConfig {
             ticks_per_beat: parsed.ticks_per_beat,
@@ -161,7 +161,7 @@ fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
         (1.0, 0xFF_FFFF),
         (f64::MIN_POSITIVE, 0xFF_FFFF),
     ] {
-        let bytes = smf::to_bytes(
+        let bytes = smf_to_bytes(
             &[vec![note_on(0.0, 60), note_off(1.0, 60)]],
             &MidiWriteConfig {
                 ticks_per_beat: TPQ,
@@ -175,7 +175,7 @@ fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
         assert_eq!(decoded.first_tempo_us(), Some(want_us), "{bpm} BPM");
 
         // And the reader's half: a usable tempo, never absent or infinite.
-        let parsed = smf::ParsedMidiFile::from_bytes(&bytes).expect("parses");
+        let parsed = ParsedMidiFile::from_bytes(&bytes).expect("parses");
         assert!(
             parsed.tempo_bpm.get().is_finite() && parsed.tempo_bpm.get() > 0.0,
             "got {}",
@@ -191,7 +191,7 @@ fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
 #[test]
 fn the_writers_framing_is_decodable_by_a_foreign_reader() {
     let bytes =
-        smf::to_bytes(&[vec![note_on(0.0, 60), note_off(4.0, 60)]], &config()).expect("encodes");
+        smf_to_bytes(&[vec![note_on(0.0, 60), note_off(4.0, 60)]], &config()).expect("encodes");
 
     let decoded = decode_smf(&bytes).expect("an independent decoder must accept the framing");
     assert_eq!(
@@ -210,7 +210,7 @@ fn the_writers_framing_is_decodable_by_a_foreign_reader() {
 /// An empty track list is refused rather than producing a headerless file.
 #[test]
 fn an_empty_track_list_is_refused() {
-    let err = smf::to_bytes(&[], &config()).expect_err("a file with no tracks is not a file");
+    let err = smf_to_bytes(&[], &config()).expect_err("a file with no tracks is not a file");
     assert!(
         matches!(err, tutti_midi_file::Error::InvalidConfig(_)),
         "expected InvalidConfig, got {err:?}"

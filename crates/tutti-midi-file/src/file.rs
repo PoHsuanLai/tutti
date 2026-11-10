@@ -11,10 +11,9 @@
 use std::path::Path;
 
 use midly::Smf;
-use midly::live::LiveEvent;
 use tutti_midi_protocol::widen_message;
 use tutti_types::{Beat, Bpm, Seconds};
-use tutti_ump::{Attribute, Message, Midi1Parser, MidiGroup, Ump, Voice1, Voice2, decode};
+use tutti_ump::{Address, Attribute, Message, MidiGroup, Ump, Voice1, Voice2, decode};
 
 use crate::clip_file::ParsedClipFile;
 use crate::flex;
@@ -32,14 +31,14 @@ use crate::{Error, MidiFileKind, Result};
 /// use tutti_types::Beat;
 /// use tutti_ump::MidiChannel;
 /// use tutti_midi_protocol::channel_voice;
-/// use tutti_ump::Voice2;
-/// use tutti_midi_file::{smf, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
+/// use tutti_ump::{NoteNumber, U7, Voice1, Voice2};
+/// use tutti_midi_file::{MidiFile, MidiWriteConfig, SmfTimedEvent, smf_to_bytes};
 ///
-/// let bytes = smf::to_bytes(
+/// let bytes = smf_to_bytes(
 ///     &[vec![SmfTimedEvent {
 ///         time_beats: Beat(2.0),
 ///         channel: MidiChannel::FIRST,
-///         msg: SmfMessage::NoteOn { key: 60.into(), vel: 127.into() },
+///         msg: Voice1::NoteOn { note: NoteNumber::of(60), velocity: U7::of(127) },
 ///     }]],
 ///     &MidiWriteConfig::default(),
 /// )?;
@@ -194,19 +193,12 @@ impl MidiFile {
         };
         // One arm of each is empty: a single return type without boxing.
         let smf_events = smf.into_iter().flat_map(|smf| {
-            // Reused across events: midly writes the message's wire bytes
-            // here, and `Midi1Parser::message` reads them back as a message.
-            let mut wire = Vec::with_capacity(3);
-            smf.stream.events.iter().filter_map(move |e| {
-                wire.clear();
-                LiveEvent::Midi {
-                    channel: e.channel.get().into(),
-                    message: e.msg,
-                }
-                .write(&mut wire)
-                .ok()?;
-                let event = Midi1Parser::message(MidiGroup::FIRST, &wire)?;
-                Some((e.time_beats, as_midi2(event)?))
+            smf.stream.events.iter().filter_map(|e| {
+                let address = Address {
+                    group: MidiGroup::FIRST,
+                    channel: e.channel,
+                };
+                Some((e.time_beats, as_midi2(Message::Midi1(address, e.msg))?))
             })
         });
         let clip_events = clip.into_iter().flat_map(|clip| {

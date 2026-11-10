@@ -1,7 +1,7 @@
 //! MIDI 2.0 **Clip File** (M2-116) file I/O — the path-level half of the codec
 //! whose byte-level half is [`ClipFileError`](crate::ClipFileError)'s codec in this crate.
 //!
-//! [`read()`] and [`write()`] move a clip to and from disk;
+//! [`read_clip`] and [`write_clip`] move a clip to and from disk;
 //! [`MidiFile::read`](crate::MidiFile::read) reads either container. [`MidiFileKind`] decides *which* of the two a
 //! path holds before committing to a parser.
 //!
@@ -83,7 +83,7 @@ impl MidiFileKind {
 /// [`Error::Io`] if the file cannot be read, or
 /// [`Error::MidiFileParse`] (prefixed with the
 /// path) if the bytes are not a valid Clip File.
-pub fn read(path: impl AsRef<Path>) -> Result<ParsedClipFile> {
+pub fn read_clip(path: impl AsRef<Path>) -> Result<ParsedClipFile> {
     let path = path.as_ref();
     let bytes = std::fs::read(path)?;
     ParsedClipFile::from_bytes(&bytes)
@@ -100,7 +100,7 @@ pub fn read(path: impl AsRef<Path>) -> Result<ParsedClipFile> {
 /// # Errors
 ///
 /// [`Error::Io`] if the file cannot be written.
-pub fn write(
+pub fn write_clip(
     path: impl AsRef<Path>,
     ticks_per_quarter: u16,
     header: Option<ClipHeader>,

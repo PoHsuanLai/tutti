@@ -242,6 +242,16 @@ impl Editor for ClapEditor {
             .collect()
     }
 
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        Control::save_state(&mut self.inner, main)
+    }
+
+    fn take_dirty(&mut self, _main: &MainThread) -> bool {
+        // `state.mark_dirty` from the editor instance: the user changed
+        // something the plugin saves.
+        self.inner.take_state_dirty()
+    }
+
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
         // Pass-through from the host crate — the shared `EditorCapabilities`
         // is already the union of vst3/clap fields, and `appkit_autoresize_friendly`

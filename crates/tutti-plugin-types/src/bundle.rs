@@ -192,6 +192,29 @@ pub fn native_module_in_bundle(bundle: &Path, kind: ModuleKind) -> Option<PathBu
     probe_dirs(bundle, native_arch_subdirs(), kind, false)
 }
 
+/// The file a host loads for `path`: its native module when `path` is a bundle
+/// directory, and `path` itself otherwise (a plain library, or a path that does
+/// not exist, which the loader then reports with its own context).
+///
+/// # Errors
+///
+/// [`PluginError::Load`](crate::PluginError::Load) at
+/// [`LoadStage::Opening`](crate::LoadStage::Opening) when `path` is a directory
+/// holding no module this target can load; the message lists where it looked.
+pub fn native_module_path(path: &Path, kind: ModuleKind) -> crate::PluginResult<PathBuf> {
+    if path.is_file() || !path.is_dir() {
+        return Ok(path.to_path_buf());
+    }
+    native_module_in_bundle(path, kind).ok_or_else(|| crate::PluginError::Load {
+        stage: crate::LoadStage::Opening,
+        reason: format!(
+            "{} holds no module for this target (looked in {})",
+            path.display(),
+            native_arch_subdirs().join(", ")
+        ),
+    })
+}
+
 /// Returns the module inside `bundle` for *any* platform, or `None`.
 ///
 /// Probes every directory in [`ALL_ARCH_SUBDIRS`] by name, then falls back to

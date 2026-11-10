@@ -153,6 +153,9 @@ jobs:
       # A tuple struct with a private field does not derive `Deserialize`
       # plainly: the derive skips `new` (python3 over the source, no build).
       - run: scripts/check-range-types.sh
+      # Every InProcess/OutOfProcess impl is listed in the plugin contract's
+      # `hostings` (python3 over the source, no build).
+      - run: scripts/check-hosting.sh
 
   clippy:
     name: clippy

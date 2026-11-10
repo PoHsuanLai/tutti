@@ -161,7 +161,7 @@ fn probes(max: usize, probes: &[u64], range: (f32, f32)) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(max)));
     for &p in probes {
         ed.insert(NodeKey(p), "probe", ForkByClone(Probe));
-        ed.spec_mut().topology.outputs.push(out(p, 0));
+        ed.spec_mut().topology.outputs.push(vec![out(p, 0)]);
     }
     for &p in probes {
         ed.set_param_range(cutoff(p), ParamRange::new(range.0, range.1))
@@ -211,7 +211,9 @@ fn wire_sink(ed: &mut Editor, key: u64, lane: ControlLaneNode, sink: u64) -> Lan
             port: 0,
         }),
     );
-    s.topology.outputs.extend([out(sink, 0), out(sink, 1)]);
+    s.topology
+        .outputs
+        .extend([vec![out(sink, 0)], vec![out(sink, 1)]]);
     controls
 }
 

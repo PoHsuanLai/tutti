@@ -155,10 +155,7 @@ fn stereo_net_widened_then_exports_four_channels() {
     // Widen the graph to quad (the new outputs silent until wired), then re-pipe
     // the master. Without the widen, `pipe_output` would only wire 2 global
     // outputs and the rears drop.
-    g.spec_mut()
-        .topology
-        .outputs
-        .resize(4, tutti_graph::Source::Zero);
+    g.spec_mut().topology.outputs.resize(4, Vec::new());
     assert_eq!(g.outputs(), 4, "graph widened to quad");
     g.pipe_output(mix);
 

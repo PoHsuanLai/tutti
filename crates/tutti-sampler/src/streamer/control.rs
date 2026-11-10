@@ -1,15 +1,14 @@
-//! The streamer's record of what a stream plays (what a fork reads), and the
-//! error a command send reports.
+//! What a stream plays ([`StreamFile`], what an export fork reads), and the error
+//! a command send reports.
 //!
 //! The control side of a stream is [`Stream`](crate::Stream); the reader it
 //! hands its voice is the reply of its open ([`Opening`](crate::Opening)).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_types::SampleRate;
-
-use crate::voice::LoopSetting;
 
 /// The streamer thread is gone, so a stream-control command was discarded.
 ///
@@ -34,84 +33,56 @@ impl core::fmt::Display for StreamerGone {
 
 impl std::error::Error for StreamerGone {}
 
-/// A streamer stream's own record of what it plays: the file, the file's rate,
-/// the loop set on it, and whether it is still running.
+/// The file a stream plays: where it is, its own rate and, when the streamer
+/// holds it decoded whole, the wave.
 ///
-/// Built when the stream opens and held by its [`Record`](super::record::Record);
-/// the voice of the stream holds it too, through a [`StreamOrigin`]. It is deliberately small: a live voice may be the last
-/// holder, and its drop can land on the audio thread, where it frees a path
-/// and this record (the same class of free as the voice's `Arc<RtState>`),
-/// never the streamer's table or a wave. The cache is held weakly for the
-/// same reason.
-pub(crate) struct StreamRecord {
+/// Immutable, built once when the stream opens and shared by the
+/// [`Stream`](crate::Stream) ([`Stream::file`](crate::Stream::file)) and the
+/// stream's [`StreamReader`](crate::StreamReader), so a fork of the voice (made
+/// from the node, which holds the reader and not the handle) plays the same
+/// material with no streamer at all. What changes while a stream runs is not
+/// here: the loop as applied and the direction are the ring's published
+/// control, and a stream that has ended is its status.
+///
+/// A live voice may be the last holder, and its drop can land where the graph
+/// frees units, never the audio thread; what it frees is a path and a wave the
+/// streamer's writer shares.
+#[derive(Clone)]
+pub struct StreamFile {
     path: PathBuf,
     file_rate: SampleRate,
-    /// The loop the streamer runs, told by [`Record::set_loop`](super::record::Record::set_loop),
-    /// the one place it changes. A lock, not an atomic: a loop is three
-    /// values that change together, and neither side is the audio thread
-    /// (the streamer writes; a fork reads, on the control thread).
-    loop_: std::sync::Mutex<LoopSetting>,
-    /// Set when the stream's record goes: closed.
-    ended: std::sync::atomic::AtomicBool,
-    /// The streamer's wave cache, to hand a fork the file already decoded
-    /// when it holds it (a file that cannot seek is always there, pinned for
-    /// the stream's life).
-    cache: std::sync::Weak<super::cache::LruCache>,
+    resident: Option<Arc<Wave>>,
 }
 
-impl StreamRecord {
-    pub(crate) fn new(
-        path: PathBuf,
-        file_rate: SampleRate,
-        cache: std::sync::Weak<super::cache::LruCache>,
-    ) -> Self {
+impl StreamFile {
+    pub(crate) fn new(path: PathBuf, file_rate: SampleRate, resident: Option<Arc<Wave>>) -> Self {
         Self {
             path,
             file_rate,
-            loop_: std::sync::Mutex::new(LoopSetting::Off),
-            ended: std::sync::atomic::AtomicBool::new(false),
-            cache,
+            resident,
         }
     }
 
-    pub(crate) fn set_loop(&self, loop_: LoopSetting) {
-        *self
-            .loop_
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = loop_;
+    /// The file the stream was opened on. A fork re-opens it by this path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
-    pub(crate) fn end(&self) {
-        self.ended.store(true, std::sync::atomic::Ordering::Release);
+    /// The file's own sample rate, from its header.
+    #[must_use]
+    pub fn file_rate(&self) -> SampleRate {
+        self.file_rate
     }
-}
 
-/// Which streamer stream a voice consumes: a read-only handle on the stream's
-/// [`StreamRecord`].
-///
-/// Nothing reachable through it can drive a stream. It exists so a fork of a
-/// disk voice can play the same material without the live streamer (see
-/// `DiskVoice::fork_copy`). The description is read when it is asked
-/// for rather than copied into the voice when the voice is built: a loop is
-/// set on the stream later (`Stream::set_loop`), and a copy would miss it.
-#[derive(Clone)]
-pub(crate) struct StreamOrigin(Arc<StreamRecord>);
-
-/// What a streamer stream plays, read from its record: the file, the file's own
-/// rate and the loop, and the file decoded when the streamer's cache holds it.
-/// Enough to play the same material with no streamer at all.
-#[derive(Clone)]
-pub(crate) struct StreamFile {
-    /// The file the stream was started on. A fork re-opens it by this path.
-    pub(crate) path: PathBuf,
-    /// The file's own rate, as the streamer recorded it from the header.
-    pub(crate) file_rate: SampleRate,
-    /// The loop set on the stream, in file frames; `Off` when there is none.
-    pub(crate) loop_: LoopSetting,
-    /// The whole file, when the streamer's cache holds it: read in place
-    /// rather than decoded (or, for a file that cannot seek, decoded whole)
-    /// a second time.
-    pub(crate) resident: Option<Arc<tutti_codec::Wave>>,
+    /// The whole file, when the streamer holds it decoded: a file that cannot
+    /// seek (mp3, ogg) is decoded whole to be streamed, and a fork reads that
+    /// wave in place rather than decode it a second time. `None` for a file the
+    /// streamer reads a piece at a time.
+    #[must_use]
+    pub fn resident(&self) -> Option<&Arc<Wave>> {
+        self.resident.as_ref()
+    }
 }
 
 impl std::fmt::Debug for StreamFile {
@@ -119,74 +90,7 @@ impl std::fmt::Debug for StreamFile {
         f.debug_struct("StreamFile")
             .field("path", &self.path)
             .field("file_rate", &self.file_rate)
-            .field("loop_", &self.loop_)
             .field("resident", &self.resident.is_some())
             .finish()
-    }
-}
-
-impl StreamOrigin {
-    pub(crate) fn new(record: Arc<StreamRecord>) -> Self {
-        Self(record)
-    }
-
-    /// Describe the stream as its record says now, or `None` once it has
-    /// ended (stopped): a voice on
-    /// it then plays nothing live either.
-    ///
-    /// Control thread only: it takes the record's lock, and a cache
-    /// lookup.
-    pub(crate) fn describe(&self) -> Option<StreamFile> {
-        let record = &self.0;
-        if record.ended.load(std::sync::atomic::Ordering::Acquire) {
-            return None;
-        }
-        let loop_ = *record
-            .loop_
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Some(StreamFile {
-            path: record.path.clone(),
-            file_rate: record.file_rate,
-            loop_,
-            resident: record
-                .cache
-                .upgrade()
-                .and_then(|cache| cache.get(&record.path)),
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::streamer::cache::LruCache;
-
-    /// A fork is handed the streamer's decoded copy of the file when its cache
-    /// holds one — the same `Arc`, not a second decode — and nothing once
-    /// the cache is gone. A file that cannot seek is always there (the stream
-    /// pins it), so a fork of one never decodes it again.
-    ///
-    /// Mutation (run): `describe` answering `resident: None` → fails.
-    #[test]
-    fn a_fork_is_handed_the_streamers_decoded_copy() {
-        let path = PathBuf::from("/cached.wav");
-        let cache = Arc::new(LruCache::new(4, 1 << 20));
-        let wave = Arc::new(tutti_codec::Wave::new(1, SampleRate::new(48_000.0)));
-        cache.insert(path.clone(), Arc::clone(&wave));
-        let origin = StreamOrigin(Arc::new(StreamRecord::new(
-            path,
-            SampleRate(48_000.0),
-            Arc::downgrade(&cache),
-        )));
-        let resident = origin.describe().expect("running").resident;
-        assert!(resident.is_some_and(|r| Arc::ptr_eq(&r, &wave)));
-        drop(cache);
-        assert!(origin.describe().expect("running").resident.is_none());
-        origin.0.end();
-        assert!(
-            origin.describe().is_none(),
-            "an ended stream describes nothing"
-        );
     }
 }

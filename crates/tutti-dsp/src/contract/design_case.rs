@@ -138,16 +138,6 @@ pub trait LtiCase: DesignCase + Design<Model: Lti> {
         false
     }
 
-    /// The controls the `response` case compares the realization's impulse
-    /// response to the model's at, or `None` for the
-    /// [`static_probes`](RealizationCase::static_probes) (the default). A family
-    /// whose realization is the model up to something the response sees and the
-    /// decay does not (a sign on one line) names the controls that leave it out and
-    /// says why.
-    fn response_probes(&self) -> Option<Vec<Self::Controls>> {
-        None
-    }
-
     /// The frames of input that make `trips` trips of the system's longest loop:
     /// what a burst must last to fill it. A tenth of a second a trip by default.
     fn fill(&self, rate: SampleRate, trips: f32) -> usize {

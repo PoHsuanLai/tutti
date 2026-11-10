@@ -39,7 +39,7 @@
 //! over [`RAMP_FRAMES`], never cut.
 //!
 //! Nothing here allocates, locks or blocks: the buffers are sized at
-//! construction, the map is read once per block (through a `Reader`
+//! construction, the control (the map in it) is read once per block (through a `Reader`
 //! registered with the voice's ring reader, on the control thread), and the
 //! ring's samples are atomics.
 //!
@@ -57,7 +57,7 @@ use tutti_rt::{PosClaim, PosReader, Reader};
 use tutti_types::SamplePosition;
 
 use crate::MAX_SAMPLER_CHANNELS;
-use crate::streamer::{Arrangement, RingMap, RtState, SharedReader};
+use crate::streamer::{Arrangement, Cells, RingControl, RingMap, SharedReader};
 
 use super::interp::{Place, hermite_lanes, interpolate_taps};
 use super::loop_span::blend;
@@ -138,9 +138,10 @@ pub(crate) struct LiveRead {
     /// The ring's one reader, this voice's alone (see the module docs);
     /// `None` once severed, in a clone, or for a ring whose reader was taken.
     reader: Option<PosReader>,
-    /// A reader of the ring's map, registered beside `reader` when the voice
-    /// is built and dropped with it (`None` exactly when `reader` is).
-    map: Option<Reader<RingMap>>,
+    /// A reader of the ring's published control (the map, and the direction and
+    /// applied loop beside it), registered beside `reader` when the voice is
+    /// built and dropped with it (`None` exactly when `reader` is).
+    control: Option<Reader<RingControl>>,
     /// Where the ring's channels go in the voice's frame: built once, on the
     /// control side, from the file's topology (`Place::for_topology`).
     place: Place,
@@ -154,7 +155,7 @@ impl Clone for LiveRead {
         Self {
             ring: self.ring.clone(),
             reader: None,
-            map: None,
+            control: None,
             place: self.place.clone(),
             st: self.st.clone(),
         }
@@ -163,20 +164,20 @@ impl Clone for LiveRead {
 
 impl LiveRead {
     /// A reader over `ring` through its one `reader` and the reader of the
-    /// ring's map registered beside it (`None`: silent), `width` wide (at most
+    /// ring's control registered beside it (`None`: silent), `width` wide (at most
     /// [`MAX_SAMPLER_CHANNELS`]), placing the ring's channels by `place`. Both
     /// are registered by whoever built them, on the control side: building the
     /// pair is what may allocate, and this does not.
     pub(crate) fn new(
         ring: SharedReader,
-        feed: Option<(PosReader, Reader<RingMap>)>,
+        feed: Option<(PosReader, Reader<RingControl>)>,
         width: usize,
         place: Place,
     ) -> Self {
         let src = ring.channels().count().max(1) as usize;
-        let (reader, map) = feed.unzip();
+        let (reader, control) = feed.unzip();
         Self {
-            map,
+            control,
             ring,
             reader,
             place,
@@ -209,6 +210,15 @@ impl LiveRead {
     /// The ring.
     pub(crate) fn ring(&self) -> &SharedReader {
         &self.ring
+    }
+
+    /// The control as the voice's reader lends it (tests): the value one
+    /// block's lend would hold now. `None` severed.
+    #[cfg(test)]
+    pub(crate) fn lent_control(&mut self) -> Option<RingControl> {
+        self.control
+            .as_mut()
+            .map(|control| (*control.lend()).clone())
     }
 
     /// The highest straight position read (tests).
@@ -247,7 +257,7 @@ impl LiveRead {
     /// reader claims no range. A severed reader or a clone changes nothing,
     /// as there.
     pub(crate) fn silence(&mut self) {
-        if let (Some(reader), Some(_)) = (self.reader.as_mut(), self.map.as_ref()) {
+        if let (Some(reader), Some(_)) = (self.reader.as_mut(), self.control.as_ref()) {
             self.st.last = None;
             self.st.fade = None;
             reader.idle();
@@ -258,7 +268,7 @@ impl LiveRead {
     /// ring again, and renders silence through it.
     pub(crate) fn sever(&mut self) {
         self.reader = None;
-        self.map = None;
+        self.control = None;
     }
 
     /// Render a block: frame `i` plays straight position `positions[i]`
@@ -282,7 +292,7 @@ impl LiveRead {
         segment: u64,
         rate: f64,
         gain: f32,
-        state: &RtState,
+        state: &Cells,
         at: usize,
         out: &mut Out<'_, F>,
     ) {
@@ -291,7 +301,7 @@ impl LiveRead {
         let st = &mut self.st;
         let w = st.width;
         let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
-        let (Some(reader), Some(map)) = (self.reader.as_mut(), self.map.as_mut()) else {
+        let (Some(reader), Some(control)) = (self.reader.as_mut(), self.control.as_mut()) else {
             // Severed, or a clone: nothing to read (not an underrun).
             for i in 0..positions.len() {
                 out.put(at + i, &silent[..w]);
@@ -327,7 +337,11 @@ impl LiveRead {
             (a, e)
         });
         let claim = reader.claim(first.max(0.0).floor() as u64, [(lo, hi), old_range]);
-        let map = map.lend();
+        // Lent once per block: the map this block reads by (the direction and the
+        // applied loop ride in the same value; a fork reads those, on the control
+        // side).
+        let control = control.lend();
+        let map = &control.map;
         let src = st.src;
         if let Some(expected) = jump {
             // The old position's continuation, read from the ring while the
@@ -342,7 +356,7 @@ impl LiveRead {
             && jump.is_none()
             && st.fade.is_none()
             && st.recover.is_none()
-            && steady_lanes(&claim, &map, place, st, positions, gain, lanes, at, gather)
+            && steady_lanes(&claim, map, place, st, positions, gain, lanes, at, gather)
         {
             st.last = positions.last().copied().flatten().map(SamplePosition::get);
             #[cfg(test)]
@@ -363,7 +377,7 @@ impl LiveRead {
                 st.fade = None;
                 continue;
             };
-            st.cross_switch(place, &map, pos, rate);
+            st.cross_switch(place, map, pos, rate);
             let new = read_ring(
                 &claim,
                 src,

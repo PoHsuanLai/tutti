@@ -478,7 +478,7 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
 #### Inlets: audio into the graph
 
 The inverse of the tap. `InletNode` has no inputs and one output a channel,
-and copies a standalone ring (`TapReader::standalone`, the writer kept by
+and copies a ring of its own (`TapReader::pair`, the writer kept by
 a thread of your own) into the graph: a block pops one frame per output frame,
 and a ring that runs dry writes silence for the frames it lacks. A width other
 than the ring's writes silence on every output and pops nothing. It is
@@ -5643,10 +5643,16 @@ two instruments to the master without a mix node.
 
 - **One source** is aliased: the sink reads the source's slot. No op, no
   copy, as today. A one-source port is bit-for-bit what it was.
-- **No source** is silence (`ARef::Zero`), as today.
-- **A source is an `Edge`** (`Edge::Direct(Source)` or `Edge::Feedback`). A
-  `Source::Zero` is refused beside any other source: it adds nothing and
-  would make two equal wirings compare unequal.
+- **No source** is silence (`ARef::Zero`), as today. The empty set is the one
+  representation of silence: an absent key for an input port, an empty `Vec`
+  for an output channel.
+- **A source is an `Edge`** (`Edge::Direct(Source)` or `Edge::Feedback`).
+  `Source::Zero` is **never stored in a set**, alone or beside others: two
+  representations of silence (`[]` and `[Zero]`) would make equal wirings
+  compare unequal, and the rebuild's diff and `topology::disagreements`
+  compare these sets. `Zero` stays a value a caller may pass to a one-source
+  setter and a one-source getter may return for an empty set; the setter
+  stores the empty set.
 - **Sources are distinct.** The same `Edge` twice at one sink is
   `Invalid::DuplicateEdge` (**new**), as events refuse a duplicate. A source
   wired twice at the same gain is a weight of 2, written as a weight.
@@ -5887,8 +5893,16 @@ pub struct Topology {
   `GraphSpec::connect_events`. `GraphSpec` re-exposes them. A raw write to
   `edges` is still legal and is canonicalised by compile's sort, as for
   events.
+- **Every writer normalises silence to the empty set:** `Topology::connect`
+  given `Edge::Direct(Source::Zero)` stores nothing, `Topology::set_outputs`
+  (**new**: one source per channel) stores `[]` for a `Zero`, the builder's
+  per-channel default is `[]`, `set_source`/`set_output` with `Zero` clear the
+  port or channel, the session's `set_source`/`set_output_source` with
+  `GraphSource::Silence` do the same, and `Editor::remove` leaves a channel
+  that lost its only source `[]`.
 - `Topology::validate` adds `Invalid::DuplicateEdge`, and
-  `Invalid::SilenceBesideSources` for a `Source::Zero` that is not alone; the
+  `Invalid::StoredSilence` for any `Source::Zero` found in a set (alone or
+  beside others; `Sink` names an input port or an output channel); the
   existing range checks run per edge. `Invalid::Cycle` ignores nothing new.
 - **Why one map and not a `GraphSpec.sums` beside it.** A second map would
   keep a "normal" single edge and a "sum" edge as two things for the same
@@ -5927,8 +5941,8 @@ of `graph.rs` carry the same sentence and change with it. So does
 | `output_source` / `set_output_source` | `output_sources(channel)` / `set_output_sources(channel, &[GraphSource])`, with `set_output_source` as exactly one |
 | `set_outputs_from(node)` | unchanged: it replaces every output's set with the one source |
 
-`GraphSource::Silence` in a set of several is refused (as `Source::Zero`
-beside others); in a set of one it clears the port, as now. `GraphBuilder::connect`
+`GraphSource::Silence` is never stored: in a set of several it is refused
+(`StoredSilence`), in a set of one it clears the port (the empty set), as now. `GraphBuilder::connect`
 adds a source (it replaced); `connect_output` likewise; `disconnect(node,
 port)` clears the port and `disconnect_from` (**new**) removes one. This
 changes the meaning of `connect` for a caller that wired a port twice to
@@ -6031,7 +6045,7 @@ mutation in a comment.
 - **Plan tests.** `verify` rejects an `Op::Sum` with one source, 65 sources,
   or a write that aliases a non-first read. A feedback addend sorts last and
   has no ring. A fan-in with a feedback edge and a direct edge sums both.
-- **Compile refusals.** `Invalid::DuplicateEdge` and `SilenceBesideSources`.
+- **Compile refusals.** `Invalid::DuplicateEdge` and `StoredSilence`.
 
 ##### 10. Staging of the fan-in
 
@@ -6052,7 +6066,11 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    hand-built `Topology`.
 4. **Session API.** `sources`, `set_sources`, `add_source`, `remove_source`,
    the output forms, the builder's `connect` and `disconnect_from`. `ChannelSumNode`
-   still exists. Before `connect` starts adding, the PR lists every caller in
+   still exists. `Graph::follow_outputs` snapshots each output channel's
+   sources into an output tap's `sources`; with fan-in on an output that
+   cannot express the sum, so this PR gives `TapSpec` an outputs variant
+   (post-sum and aligned, like `MeterSpec::Outputs`), or `open_output_tap`
+   reads only the first source. Before `connect` starts adding, the PR lists every caller in
    the workspace (code, tests, examples, doc comments) that connects one port
    twice, and decides each: a caller that meant to replace moves to
    `set_source` in the same PR, so no render changes silently.
@@ -7073,7 +7091,7 @@ fourth.
   that lost a packet. A SysEx ended by another status byte gets no `END`, and
   the receiver drops the open message. Nothing wires that callback into the
   server today. The AU input side reassembles
-  with the `SysExAssembler`, reserved by `AuInstance::initialize`, so
+  with `tutti_ump::SysexAssembler` (`tutti_plugin_types::sysex_assembler()`), reserved by `AuInstance::initialize`, so
   `send_midi` allocates nothing and counts what it drops
   (`AuInstance::sysex_dropped`); it hands `MusicDeviceSysEx` the complete
   message, `0xF0` and `0xF7` included, as `MusicDevice.h` asks. Pinned by the `a_sysex_from_the_plugin_*`

@@ -764,7 +764,7 @@ fn disk_varispeed_transposes_by_its_factor() {
 /// Varispeed on the disk tier must match varispeed on the memory tier.
 ///
 /// The two tiers apply speed through different machinery — memory scales its
-/// derived read position, disk publishes into `RtState` and drains a ring — so
+/// derived read position, disk publishes into `Cells` and drains a ring — so
 /// "both transpose by the factor" does not by itself mean they agree. This
 /// compares them directly, which is the claim a user actually depends on: the
 /// same clip at the same speed sounds the same regardless of which tier the

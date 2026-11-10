@@ -63,7 +63,7 @@ fn the_wire_tag_is_derived_from_the_payload() {
         assert_eq!(EventKind::try_from(c.r#type), Ok(payload.kind()));
         assert_eq!(c.sampleOffset, 3);
     }
-    let sysex = Event::at(0, Payload::SysEx(SysExRef::new(0, 4)));
+    let sysex = Event::at(0, Payload::SysEx(SysexRef::new(0, 4)));
     let c = sysex.to_c(&[], &[0xF0, 1, 2, 0xF7]);
     assert_eq!(EventKind::try_from(c.r#type), Ok(EventKind::Data));
 }

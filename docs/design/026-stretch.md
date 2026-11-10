@@ -52,7 +52,7 @@ wiring is this doc's, and the disk tier waits for doc 025 stage 5.
 |---|---|---|
 | `Unit` | `tutti_sampler::stretch` | A frame-in, frame-out filter with plain methods, not a trait. One vocoder per channel, FFT 2048 (`FftSize`), hop a quarter window. `stretch_factor` and `pitch_cents` are cells. |
 | `Unit::input_rate` | same | How fast the **caller** must advance its source cursor: `1 / stretch`. The pitch half is internal: `tick` drops or repeats whole fed samples (`intake_rate`). |
-| Callers | sampler voice: `PlaybackSlot` (field `stretch`, `prime_stretch`, `render_lanes`), `VoiceCommand::UpdateStretch`, `VoicePool`, `VoiceNode` | A memory voice reads its source at `placed_positions(.., stretch_rate)` and feeds the unit; a disk voice publishes the stretch into `RtState` (`set_stretch_rate`) and the streamer reads at the composed rate. |
+| Callers | sampler voice: `PlaybackSlot` (field `stretch`, `prime_stretch`, `render_lanes`), `VoiceCommand::UpdateStretch`, `VoicePool`, `VoiceNode` | A memory voice reads its source at `placed_positions(.., stretch_rate)` and feeds the unit; a disk voice publishes the stretch into its stream's `Cells` (`set_stretch_rate`) and the streamer reads at the composed rate. |
 | `Playback` | `tutti_sampler` voice types | `speed: PlaybackRate` (varispeed), `stretch: StretchFactor` (0.25 to 4.0) and `pitch: Cents` as three independent fields. |
 | Latency | `Unit::latency_samples` | One window (2048 frames) while processing, 0 bypassing. The voice's `Shape` declares **0**, so PDC sees none and the delay is simply uncompensated. |
 | After a jump | `PlaybackSlot::prime_stretch` | A flushed unit holds no window, so a memory voice re-feeds it `refill_frames` of source after every seek or wrap. |

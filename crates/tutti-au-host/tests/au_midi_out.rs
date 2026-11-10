@@ -943,7 +943,8 @@ fn system_common_clears_running_status() {
 /// `Message::Sysex7` → the SysEx7 packet is missing → fails.
 #[test]
 fn sysex_is_delivered_whole_between_its_neighbours() {
-    use tutti_plugin_types::{SysExAssembler, SysExStep};
+    use tutti_plugin_types::sysex_assembler;
+    use tutti_ump::SysexStep;
 
     let list =
         PacketListBuf::from_raw(&[(0, &[0x90, 60, 100, 0xF0, 0x7E, 0x00, 0xF7, 0x80, 60, 0])]);
@@ -951,11 +952,11 @@ fn sysex_is_delivered_whole_between_its_neighbours() {
     assert_eq!(events.len(), 3, "note-on, one SysEx7 packet, note-off");
     assert!(is_note_on(&events[0]));
     assert!(events[2].ump.is_note_off());
-    let mut assembler = SysExAssembler::reserved();
-    let SysExStep::Complete(done) = assembler.push(&events[1].ump) else {
+    let mut assembler = sysex_assembler();
+    let SysexStep::Complete(done) = assembler.push(events[1].ump) else {
         panic!("a SINGLE packet completes");
     };
-    assert_eq!(assembler.message(done), [0xF0, 0x7E, 0x00, 0xF7]);
+    assert_eq!(assembler.message(done).bytes(), [0xF0, 0x7E, 0x00, 0xF7]);
 }
 
 /// A SysEx split across packets, with a long body, arrives as one message at
@@ -967,7 +968,8 @@ fn sysex_is_delivered_whole_between_its_neighbours() {
 /// offsets are 8 and 9 → fails.
 #[test]
 fn a_sysex_spanning_packets_is_delivered_once() {
-    use tutti_plugin_types::{SysExAssembler, SysExStep};
+    use tutti_plugin_types::sysex_assembler;
+    use tutti_ump::SysexStep;
 
     let body: Vec<u8> = (0..40u8).collect();
     let mut message = vec![0xF0];
@@ -978,11 +980,11 @@ fn a_sysex_spanning_packets_is_delivered_once() {
     let list = PacketListBuf::from_raw(&[(7, a), (8, b), (9, c)]);
     let events = list.decode();
     assert!(events.iter().all(|e| e.offset == 7));
-    let mut assembler = SysExAssembler::reserved();
+    let mut assembler = sysex_assembler();
     let mut done = Vec::new();
     for e in &events {
-        if let SysExStep::Complete(r) = assembler.push(&e.ump) {
-            done.push(assembler.message(r).to_vec());
+        if let SysexStep::Complete(r) = assembler.push(e.ump) {
+            done.push(assembler.message(r).bytes().to_vec());
         }
     }
     assert_eq!(done, vec![message]);

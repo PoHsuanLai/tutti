@@ -531,9 +531,10 @@ fn a_fork_places_every_read_path() {
                 rig.stream.set_loop(loop_1000_3000()).expect("alive");
                 assert!(rig.streamer.step_until_settled(1_000) < 1_000);
             }
-            let mut voice = voice_of(reader);
+            let voice = voice_of(reader);
             if path == "reversed" {
-                voice.set_direction(Direction::Reverse);
+                rig.stream.set_direction(Direction::Reverse).expect("alive");
+                assert!(rig.streamer.step_until_settled(1_000) < 1_000);
             }
             let mut node = fork(&voice);
             let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));

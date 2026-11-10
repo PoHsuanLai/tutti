@@ -1204,7 +1204,12 @@ impl Modulation {
             }
         };
         let spec = editor.spec();
-        for (at, edge) in &spec.topology.edges {
+        for (at, edge) in spec
+            .topology
+            .edges
+            .iter()
+            .flat_map(|(at, es)| es.iter().map(move |e| (at, e)))
+        {
             // A feedback edge is a declared cycle, delayed: not a path.
             if let Edge::Direct(Source::Node(p)) = edge {
                 link(p.node, at.node);
@@ -1318,7 +1323,7 @@ fn wire_feed(editor: &mut Editor, key: NodeKey, feed: Option<Feed>) {
             for port in 0..width {
                 t.edges.insert(
                     InPort { node: key, port },
-                    Edge::Direct(Source::Node(OutPort { node: from, port })),
+                    vec![Edge::Direct(Source::Node(OutPort { node: from, port }))],
                 );
             }
         }
@@ -1341,9 +1346,7 @@ fn unwire_feed(editor: &mut Editor, key: NodeKey, feed: Option<Feed>, width: Cha
             for port in 0..width.count() {
                 let at = InPort { node: key, port };
                 let ours = Edge::Direct(Source::Node(OutPort { node: from, port }));
-                if t.edges.get(&at) == Some(&ours) {
-                    t.edges.remove(&at);
-                }
+                t.disconnect(at, ours);
             }
         }
         Some(Feed::Events(from)) => {

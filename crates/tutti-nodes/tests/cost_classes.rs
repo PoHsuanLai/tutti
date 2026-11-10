@@ -112,12 +112,12 @@ fn graph(workers: usize, declared: bool) -> Executor {
             ed.spec_mut()
                 .topology
                 .edges
-                .insert(port, Edge::Direct(from));
+                .insert(port, vec![Edge::Direct(from)]);
         }
     }
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: SUM, port }))
-        .collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: SUM, port })));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

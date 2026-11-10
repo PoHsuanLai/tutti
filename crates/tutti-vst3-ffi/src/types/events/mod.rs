@@ -13,7 +13,7 @@
 //! view of the event. A cast that is sound says why in its `#[allow]`.
 #![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
-use tutti_plugin_types::SysExRef;
+use tutti_ump::SysexRef;
 use vst3::Steinberg::Vst::{self as sdk, Event_::EventTypes_};
 
 mod c_event;
@@ -132,7 +132,7 @@ pub enum Payload {
     /// Up to 16 raw bytes, inline.
     Data(Data),
     /// A SysEx message held in the owning list's buffer.
-    SysEx(SysExRef),
+    SysEx(SysexRef),
     /// Per-note aftertouch.
     PolyPressure(PolyPressure),
     /// A continuous per-note expression value.

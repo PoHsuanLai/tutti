@@ -11,7 +11,7 @@ use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 const KEY: NodeKey = NodeKey(7);
 
 fn inlet() -> (InletNode, tutti_graph::TapWriter) {
-    InletNode::standalone(ChannelLayout::STEREO, Samples(256))
+    InletNode::pair(ChannelLayout::STEREO, Samples(256))
 }
 
 fn render(exec: &mut tutti_graph::Executor, blocks: usize) {
@@ -24,9 +24,9 @@ fn render(exec: &mut tutti_graph::Executor, blocks: usize) {
 }
 
 fn outputs(ed: &mut Editor) {
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: KEY, port }))
-        .collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: KEY, port })));
 }
 
 /// Replacing an inlet through a cut and through a crossfade, then removing
@@ -64,7 +64,7 @@ fn replacing_and_removing_an_inlet_drops_it_on_the_control_side() {
     }
 
     ed.remove(KEY);
-    ed.spec_mut().topology.outputs = vec![Source::Zero; 2];
+    ed.spec_mut().topology.set_outputs(vec![Source::Zero; 2]);
     ed.commit().expect("compiles");
     exec.apply_pending();
     render(&mut exec, 2);
@@ -107,7 +107,7 @@ impl tutti_graph::IntoNode for DropsInBlock {
 #[cfg(debug_assertions)]
 #[should_panic(expected = "tap reader")]
 fn a_reader_dropped_in_a_block_panics() {
-    let (reader, _writer) = TapReader::standalone(TapId(0), 2, Samples(8));
+    let (reader, _writer) = TapReader::pair(TapId(0), 2, Samples(8));
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
     ed.insert(KEY, "drops", DropsInBlock(Some(reader)));
     outputs(&mut ed);

@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 
 use tutti_graph::{
     Edge, Feed, FeedbackFrom, InPort, Invalid, LatencyGraph, NodeKey, NodeSpec, OutPort,
-    ParamValue, Source, TapAlign, TapId, TapSpec, Topology, graph_tail, latency_plan,
+    ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology, graph_tail, latency_plan,
 };
 use tutti_types::{ChannelLayout, Samples, Tail};
 
@@ -42,8 +42,8 @@ fn chain() -> Topology {
     t.nodes.insert(A, spec("dc", 0, 1));
     t.nodes.insert(B, spec("gain", 1, 1));
     t.edges
-        .insert(at(B, 0), Edge::Direct(Source::Node(out(A, 0))));
-    t.outputs = vec![Source::Node(out(B, 0))];
+        .insert(at(B, 0), vec![Edge::Direct(Source::Node(out(A, 0)))]);
+    t.set_outputs(vec![Source::Node(out(B, 0))]);
     t
 }
 
@@ -61,12 +61,12 @@ fn unequal_latency_diamond() -> Topology {
     );
     t.nodes.insert(C, spec("mix", 2, 1));
     t.edges
-        .insert(at(B, 0), Edge::Direct(Source::Node(out(A, 0))));
+        .insert(at(B, 0), vec![Edge::Direct(Source::Node(out(A, 0)))]);
     t.edges
-        .insert(at(C, 0), Edge::Direct(Source::Node(out(B, 0))));
+        .insert(at(C, 0), vec![Edge::Direct(Source::Node(out(B, 0)))]);
     t.edges
-        .insert(at(C, 1), Edge::Direct(Source::Node(out(D, 0))));
-    t.outputs = vec![Source::Node(out(C, 0))];
+        .insert(at(C, 1), vec![Edge::Direct(Source::Node(out(D, 0)))]);
+    t.set_outputs(vec![Source::Node(out(C, 0))]);
     t
 }
 
@@ -137,17 +137,18 @@ fn validate_reports_every_fault_at_once() {
 
     // (1) an edge from a port A does not have
     t.edges
-        .insert(at(B, 0), Edge::Direct(Source::Node(out(A, 7))));
+        .insert(at(B, 0), vec![Edge::Direct(Source::Node(out(A, 7)))]);
     // (2) an edge into a port B does not have
     t.edges
-        .insert(at(B, 9), Edge::Direct(Source::Node(out(A, 0))));
+        .insert(at(B, 9), vec![Edge::Direct(Source::Node(out(A, 0)))]);
     // (3) an edge naming a node that is not in the map
     t.edges
-        .insert(at(A, 0), Edge::Direct(Source::Node(out(C, 0))));
+        .insert(at(A, 0), vec![Edge::Direct(Source::Node(out(C, 0)))]);
     // (4) a global-input edge past the declared input width
-    t.edges.insert(at(B, 1), Edge::Direct(Source::Global(5)));
+    t.edges
+        .insert(at(B, 1), vec![Edge::Direct(Source::Global(5))]);
     // (5) an output channel from a port that does not exist
-    t.outputs = vec![Source::Node(out(B, 3))];
+    t.set_outputs(vec![Source::Node(out(B, 3))]);
 
     let errs = t.validate().expect_err("five faults");
 
@@ -176,6 +177,140 @@ fn validate_reports_every_fault_at_once() {
             .any(|e| matches!(e, Invalid::OutputOutOfRange { channel, .. } if *channel == 0)),
         "{errs:?}"
     );
+}
+
+/// A sink's sources are a set: the same edge twice at one input port, or at
+/// one global output channel, is `DuplicateEdge`. Two different sources are
+/// not (that is a fan-in, which `validate` accepts and `compile` refuses for
+/// now), and neither is the same node on two ports.
+///
+/// Mutation (run, recorded here): in `Topology::validate`, drop the
+/// `edges[..n].contains(edge)` push (or the `sources[..n].contains(src)` one
+/// for outputs) -> the test fails. Mutation: guard the first with `n == 1 &&`
+/// -> the non-adjacent duplicate at index 2 is missed and the test fails.
+#[test]
+fn validate_refuses_a_duplicate_edge_in_one_set() {
+    let mut t = Topology::default();
+    t.nodes.insert(A, spec("dc", 0, 2));
+    t.nodes.insert(B, spec("dc", 0, 1));
+    t.nodes.insert(C, spec("mix", 2, 1));
+    let from_a = Edge::Direct(Source::Node(out(A, 0)));
+    let from_b = Edge::Direct(Source::Node(out(B, 0)));
+
+    // Two distinct sources, and one source on two ports: both fine.
+    t.edges.insert(at(C, 0), vec![from_a, from_b]);
+    t.edges.insert(at(C, 1), vec![from_a]);
+    t.outputs = vec![vec![Source::Node(out(C, 0)), Source::Node(out(A, 1))]];
+    t.validate().expect("distinct sources are a set");
+
+    // The same edge twice at an input port, not adjacent.
+    t.edges.insert(at(C, 0), vec![from_a, from_b, from_a]);
+    let errs = t.validate().expect_err("a duplicate");
+    assert_eq!(
+        errs,
+        vec![Invalid::DuplicateEdge {
+            at: Sink::Port(at(C, 0)),
+            edge: from_a
+        }]
+    );
+
+    // The same source twice at an output channel.
+    t.edges.insert(at(C, 0), vec![from_a, from_b]);
+    t.outputs = vec![vec![Source::Node(out(C, 0)), Source::Node(out(C, 0))]];
+    let errs = t.validate().expect_err("a duplicate output");
+    assert_eq!(
+        errs,
+        vec![Invalid::DuplicateEdge {
+            at: Sink::Output(0),
+            edge: Edge::Direct(Source::Node(out(C, 0)))
+        }]
+    );
+}
+
+/// Silence has one representation, the empty set, so `validate` refuses a
+/// stored `Source::Zero`: alone, beside another source, at an input port or at
+/// an output channel. The empty set (and an absent key) is fine.
+///
+/// Mutation (run, recorded here): in `Topology::validate`, test
+/// `edges.len() > 1 && edges.contains(..)` (the old "beside" rule) -> the
+/// lone-`Zero` port case passes validation and the test fails; likewise
+/// `sources.len() > 1 && ..` for outputs. Mutation: drop the output check ->
+/// the output assertions fail.
+#[test]
+fn validate_refuses_a_stored_zero_alone_and_beside_others() {
+    let mut t = Topology::default();
+    t.nodes.insert(A, spec("dc", 0, 1));
+    t.nodes.insert(C, spec("mix", 1, 1));
+    let zero = Edge::Direct(Source::Zero);
+    let from_a = Edge::Direct(Source::Node(out(A, 0)));
+    let fb = Edge::Feedback(FeedbackFrom::new(out(C, 0), Samples(64)));
+
+    t.edges.insert(at(C, 0), vec![]);
+    t.outputs = vec![vec![]];
+    t.validate().expect("the empty set is silence");
+
+    for set in [
+        vec![zero],
+        vec![zero, from_a],
+        vec![from_a, zero],
+        vec![fb, zero],
+    ] {
+        t.edges.insert(at(C, 0), set.clone());
+        let errs = t.validate().expect_err("a stored Zero");
+        assert_eq!(
+            errs,
+            vec![Invalid::StoredSilence {
+                at: Sink::Port(at(C, 0))
+            }],
+            "{set:?}"
+        );
+    }
+
+    t.edges.remove(&at(C, 0));
+    for set in [
+        vec![Source::Zero],
+        vec![Source::Node(out(C, 0)), Source::Zero],
+    ] {
+        t.outputs = vec![set.clone()];
+        let mut errs = t.validate().expect_err("a stored Zero");
+        errs.retain(Invalid::is_fatal); // C's port 0 is unwired here
+        assert_eq!(
+            errs,
+            vec![Invalid::StoredSilence {
+                at: Sink::Output(0)
+            }],
+            "{set:?}"
+        );
+    }
+}
+
+/// `connect` keeps each list sorted and free of duplicates, so two wirings of
+/// the same sources compare and hash equal; `disconnect` removes the key with
+/// the last edge, so a port that was wired and cleared equals one never wired.
+///
+/// Mutation (run, recorded here): in `connect`, push instead of
+/// `binary_search` + insert (insert at the end) -> the test fails. Mutation:
+/// in `disconnect`, never remove the emptied key -> the test fails.
+#[test]
+fn connect_and_disconnect_keep_the_set_canonical() {
+    let from_a = Edge::Direct(Source::Node(out(A, 0)));
+    let from_b = Edge::Direct(Source::Node(out(B, 0)));
+    let mut one = Topology::default();
+    one.connect(at(C, 0), from_b);
+    one.connect(at(C, 0), from_a);
+    one.connect(at(C, 0), from_a);
+    let mut other = Topology::default();
+    other.connect(at(C, 0), from_a);
+    other.connect(at(C, 0), from_b);
+    assert_eq!(one.edges[&at(C, 0)], vec![from_a, from_b]);
+    assert_eq!(one, other);
+    assert_eq!(hash_of(&one), hash_of(&other));
+
+    assert!(one.disconnect(at(C, 0), from_a));
+    assert!(!one.disconnect(at(C, 0), from_a), "already gone");
+    assert!(one.disconnect(at(C, 0), from_b));
+    assert_eq!(one, Topology::default());
+    assert_eq!(hash_of(&one), hash_of(&Topology::default()));
 }
 
 /// A tap lane naming a source that does not exist (a node port past the
@@ -217,10 +352,10 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     t.nodes.insert(A, spec("gain", 1, 1));
     t.nodes.insert(B, spec("gain", 1, 1));
     t.edges
-        .insert(at(B, 0), Edge::Direct(Source::Node(out(A, 0))));
+        .insert(at(B, 0), vec![Edge::Direct(Source::Node(out(A, 0)))]);
     t.edges
-        .insert(at(A, 0), Edge::Direct(Source::Node(out(B, 0))));
-    t.outputs = vec![Source::Node(out(B, 0))];
+        .insert(at(A, 0), vec![Edge::Direct(Source::Node(out(B, 0)))]);
+    t.set_outputs(vec![Source::Node(out(B, 0))]);
 
     let errs = t.validate().expect_err("a -> b -> a");
     let cycle = errs
@@ -235,7 +370,10 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     let mut broken = t.clone();
     broken.edges.insert(
         at(A, 0),
-        Edge::Feedback(FeedbackFrom::one_block(out(B, 0), Samples(64))),
+        vec![Edge::Feedback(FeedbackFrom::one_block(
+            out(B, 0),
+            Samples(64),
+        ))],
     );
     let valid = broken.validate().expect("feedback breaks the cycle");
     assert_eq!(
@@ -293,18 +431,18 @@ fn insertion_order_does_not_change_the_value() {
 
     // The same graph, every insertion reversed.
     let mut backward = Topology {
-        outputs: vec![Source::Node(out(C, 0))],
+        outputs: vec![vec![Source::Node(out(C, 0))]],
         ..Topology::default()
     };
     backward
         .edges
-        .insert(at(C, 1), Edge::Direct(Source::Node(out(D, 0))));
+        .insert(at(C, 1), vec![Edge::Direct(Source::Node(out(D, 0)))]);
     backward
         .edges
-        .insert(at(C, 0), Edge::Direct(Source::Node(out(B, 0))));
+        .insert(at(C, 0), vec![Edge::Direct(Source::Node(out(B, 0)))]);
     backward
         .edges
-        .insert(at(B, 0), Edge::Direct(Source::Node(out(A, 0))));
+        .insert(at(B, 0), vec![Edge::Direct(Source::Node(out(A, 0)))]);
     backward.nodes.insert(C, spec("mix", 2, 1));
     backward.nodes.insert(
         B,
@@ -374,7 +512,8 @@ fn the_default_topology_has_no_global_inputs() {
     assert_eq!(t.inputs, ChannelLayout::EMPTY);
 
     let mut t = chain();
-    t.edges.insert(at(B, 0), Edge::Direct(Source::Global(1)));
+    t.edges
+        .insert(at(B, 0), vec![Edge::Direct(Source::Global(1))]);
     let errs = t.validate().expect_err("no global input to name");
     assert!(
         errs.iter()

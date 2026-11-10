@@ -61,7 +61,8 @@ impl From<bool> for Direction {
 /// [`Memory`](Self::Memory) indexes an `Arc<Wave>`; [`Disk`](Self::Disk) pops
 /// the streamer-fed ring, emitting silence while seeking and crossfading on
 /// refill. Every *cold* control op is a `match` on this enum — `apply_gain`,
-/// `apply_speed`, `apply_direction` and `apply_placement`.
+/// `apply_speed` and `apply_placement` (a voice's direction lives on its
+/// `Playback`, or on its stream).
 ///
 /// # There is deliberately no `ClipReader` trait
 ///
@@ -150,7 +151,8 @@ impl VoiceSource {
     /// Set varispeed.
     ///
     /// The two tiers store it differently — a unit-local field in memory, an
-    /// atomic shared with the streamer and every clone on disk — which is exactly
+    /// atomic in the stream's cells (shared with the streamer, which sizes its
+    /// fills by it) on disk — which is exactly
     /// why the bound belongs to [`PlaybackRate`] rather than to either of these
     /// arms: a bound applied in one arm is a bound the other silently skips.
     #[inline]
@@ -158,20 +160,6 @@ impl VoiceSource {
         match self {
             Self::Memory(s) => s.set_speed(speed),
             Self::Disk(s) => s.set_speed(speed),
-        }
-    }
-
-    /// Set playback direction.
-    ///
-    /// In-memory direction lives on the slot's `Playback`, not inside the unit —
-    /// the reversed index is applied at read time — so only the streaming tier
-    /// has source-side state to update. The caller writes `play.direction`
-    /// either way.
-    #[inline]
-    pub(crate) fn apply_direction(&mut self, direction: Direction) {
-        match self {
-            Self::Memory(_) => {}
-            Self::Disk(s) => s.set_direction(direction),
         }
     }
 
@@ -192,8 +180,8 @@ impl VoiceSource {
 /// it is currently doing.
 ///
 /// Each [`VoiceSource`] applies this its own way — the in-memory tier stores the
-/// state on its resident DSP, the streaming tier forwards to the streamer's shared
-/// control cell — and the apply fan-out is the [`VoiceSource`] match. This is
+/// state on its resident DSP, the streaming tier writes its stream's cells (its
+/// loop and direction are the stream's own, set through its handle) — and the apply fan-out is the [`VoiceSource`] match. This is
 /// the description; the source holds the applied state.
 ///
 /// # There is deliberately no `placement` field

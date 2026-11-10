@@ -78,7 +78,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   frames are on the rate the reader was opened at (`EventTapReader::rate`), so
   whoever re-prepares at another rate reopens it (`Graph::reopen_event_taps`).
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
-  `InletNode` (`tutti-graph`) copies a standalone ring (`TapReader::standalone`)
+  `InletNode` (`tutti-graph`) copies a ring (`TapReader::pair`)
   a thread of your own fills (a capture callback) into the graph, and
   `Graph::open_inlet` / `add_inlet` (`tutti-session`) refuse a producer whose
   rate is not the graph's with `InletError::RateMismatch`. An inlet does not

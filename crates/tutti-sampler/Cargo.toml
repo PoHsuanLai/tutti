@@ -82,7 +82,6 @@ serde = { version = "1", optional = true, features = ["derive"] }
 
 # Lock-free
 crossbeam-channel = "0.5"
-dashmap = "6.1"
 parking_lot = "0.12"
 
 # Parallel I/O

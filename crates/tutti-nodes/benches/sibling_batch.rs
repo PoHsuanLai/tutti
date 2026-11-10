@@ -345,7 +345,7 @@ fn graph(kind: Kind, variant: Variant, members: usize, frames: usize) -> Executo
     let feed = |ed: &mut Editor, node: NodeKey, port: u16, c: usize| {
         ed.spec_mut().topology.edges.insert(
             InPort { node, port },
-            Edge::Direct(Source::Global(c as u16)),
+            vec![Edge::Direct(Source::Global(c as u16))],
         );
     };
     match variant {
@@ -410,7 +410,7 @@ fn graph(kind: Kind, variant: Variant, members: usize, frames: usize) -> Executo
             }
         }
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

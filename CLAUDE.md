@@ -189,7 +189,8 @@ cargo xtask test-all              # both
   `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
-  `real_stall_tests`, `tutti-session`'s `plugin` suite, `tutti`'s §5.2
+  `real_stall_tests`, `tutti-plugin-ipc`'s `subprocess::launch` tests,
+  `tutti-session`'s `plugin` suite, `tutti`'s §5.2
   example (`plugin_midi_export`, `--features clap,export`), and `bevy-tutti`'s
   `plugin_capture`, `mod_plugin` and `export_fork` plugin tests and
   `engine::restart::tests::a_restart_to_another_callback_size_re_declares_a_plugins_latency`
@@ -290,7 +291,7 @@ These catch compile errors only. `nm` the object to confirm the branch you
 meant was taken. Windows behaviour that surprised us before (named-pipe
 timeouts, the MSVC CRT environment, VST3 UID layouts, `USERPROFILE`, bundle
 by-products) is in the engineering notes; read it before touching
-`util::transport` or plugin loading.
+`tutti-plugin-ipc`'s `transport` or plugin loading.
 
 ## Workspace
 
@@ -381,6 +382,10 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
+  tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
+                 control socket, the plugin-server's launch and probe, and the
+                 client of a served plugin, `PluginBridge`; no plugin format,
+                 design 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
                  into a result file, `tutti-plugin-types`' `probe_wire`; the format
                  hosts and no hosting; nothing depends on it, design 021 §2.5),
@@ -410,7 +415,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
 4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
-   `tutti-plugin-db`
+   `tutti-plugin-db`, `tutti-plugin-ipc`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
    `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
@@ -609,6 +614,18 @@ list (normal and build edges; dev-dependencies may go anywhere).
   snapshot and sends `Delta`s, and `PluginDb::apply` is the only code that
   changes a row. Consumers
   name its types from it, not through `tutti-plugin`.
+- `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
+  `tutti-midi-types` and `tutti-plugin-types` alone among workspace crates,
+  keeps every module private but `state_chunk` (the namespace both ends chunk
+  a state with; CI runs the per-module path gate on the rest) and has no
+  `bevy` feature. Its `unsafe` is the process edge's own (shared memory and
+  its mapping, the Windows control-socket deadline, the launch), each block
+  under a `// SAFETY:`. It knows no format:
+  the editor-only instance a `PluginBridge` opens is loaded by the host's
+  `EditorLoader`, and no `tutti-*-host` depends on it
+  (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
+  `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
+  dev-dependency turns on.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,

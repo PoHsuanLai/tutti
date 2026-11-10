@@ -4,22 +4,22 @@
 //! capability the backend lacks reads as `None` rather than erroring at the call.
 //! Audio never travels through here; this is the off-RT half.
 
-use crate::error::EditorError;
 use crate::host::handles::capabilities::{
     BlockCounts, HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode,
     HostState,
 };
-use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
-use crate::protocol::AutomationMode;
-use crate::protocol::{
-    ChannelTopology, LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginDescriptor,
-    PresetSupport,
-};
 use crate::util::window::{ContentScale, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
+use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh};
+use tutti_plugin_types::AutomationMode;
+use tutti_plugin_types::EditorError;
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{
+    ChannelTopology, LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginDescriptor,
+    PresetSupport,
+};
 
 /// The capabilities a backend may or may not honour, for
 /// [`PluginHandle::from_backend`].
@@ -205,7 +205,7 @@ impl PluginHandle {
     ///
     /// [`PluginClient`]: crate::handles::PluginClient
     pub fn from_client<S>(client: &crate::host::node::PluginClient<S>) -> Self {
-        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
+        let backend = Arc::new(crate::host::subprocess_backend::SubprocessBackend::new(
             client.bridge(),
             Arc::clone(client.process_guard()),
         ));
@@ -281,14 +281,14 @@ impl PluginHandle {
 
     #[cfg(test)]
     pub(crate) fn from_bridge_and_metadata(
-        bridge: Arc<crate::host::ipc_client::PluginBridge>,
+        bridge: Arc<tutti_plugin_ipc::PluginBridge>,
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
     ) -> Self {
         let guard = Arc::new(crate::host::node::ProcessGuard::for_test(
-            crate::util::config::BridgeConfig::default(),
+            tutti_plugin_ipc::BridgeConfig::default(),
         ));
-        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
+        let backend = Arc::new(crate::host::subprocess_backend::SubprocessBackend::new(
             bridge, guard,
         ));
         Self {
@@ -390,7 +390,8 @@ impl PluginHandle {
             // its own features say.
             return PresetSupport::None;
         }
-        let report = crate::protocol::FeatureReport::new(self.loaded.probed, self.loaded.features);
+        let report =
+            tutti_plugin_types::FeatureReport::new(self.loaded.probed, self.loaded.features);
         PresetSupport::from_report(&report)
     }
 
@@ -403,10 +404,10 @@ impl PluginHandle {
     /// `false` when this handle carries no render-mode route *or* the plugin
     /// declined. Those collapse deliberately — both mean the render is
     /// unchanged — and a caller that needs to tell them apart reads
-    /// [`Features::RENDER_MODE`](crate::protocol::Features) on
+    /// [`Features::RENDER_MODE`](tutti_plugin_types::Features) on
     /// [`loaded`](Self::loaded).
     #[must_use = "a false return means the render mode was not applied"]
-    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+    pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         self.render_mode
             .as_deref()
             .is_some_and(|r| r.set_render_mode(mode))
@@ -604,7 +605,7 @@ impl PluginHandle {
 
     /// Opens the editor as a floating window the plugin owns.
     ///
-    /// For a plugin whose [`Features::EDITOR_FLOATING`](crate::protocol::Features)
+    /// For a plugin whose [`Features::EDITOR_FLOATING`](tutti_plugin_types::Features)
     /// bit is set — CLAP plugins that cannot embed. Takes no parent and returns
     /// no size: the window is the plugin's, so the host neither supplies nor
     /// lays it out. Close it with the same
@@ -771,7 +772,7 @@ impl PluginHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{Normalized, ParamId, ParameterInfo, Preset, PresetId};
+    use tutti_plugin_types::{Normalized, ParamId, ParameterInfo, Preset, PresetId};
 
     /// A test backend that reaches presets. Doubles as proof the capability is
     /// implementable from outside this crate's own backends.
@@ -822,8 +823,8 @@ mod tests {
             /// `NoStateRoute`, matching `load_state` below: this backend hosts
             /// no plugin, so it has no state to give and must not answer with
             /// an empty one, which a caller would save as the real thing.
-            fn save_state(&self) -> std::result::Result<Vec<u8>, crate::error::StateError> {
-                Err(crate::error::StateError::NoStateRoute)
+            fn save_state(&self) -> std::result::Result<Vec<u8>, tutti_plugin_types::StateError> {
+                Err(tutti_plugin_types::StateError::NoStateRoute)
             }
             /// `NoStateRoute`, not a silent success: this backend carries no
             /// plugin at all, so a caller must not read "state loaded" from it.
@@ -831,8 +832,8 @@ mod tests {
                 &self,
                 _main: &tutti_plugin_types::MainThread,
                 _data: &[u8],
-            ) -> std::result::Result<(), crate::error::StateError> {
-                Err(crate::error::StateError::NoStateRoute)
+            ) -> std::result::Result<(), tutti_plugin_types::StateError> {
+                Err(tutti_plugin_types::StateError::NoStateRoute)
             }
         }
 
@@ -862,7 +863,7 @@ mod tests {
         // this test could not tell the route guard from the empty default.
         let mut loaded = LoadedPlugin::default();
         loaded.probed =
-            crate::protocol::Features::PRESET_LIST | crate::protocol::Features::PRESET_LOAD;
+            tutti_plugin_types::Features::PRESET_LIST | tutti_plugin_types::Features::PRESET_LOAD;
         loaded.features = loaded.probed;
 
         let handle = handle_with_loaded(None, loaded.clone());

@@ -26,7 +26,7 @@ use tutti_plugin_types::MainThread;
 /// This is a *quality* knob, not a correctness one: a late reply yields silence,
 /// never wrong audio, because the host reads a slot only when the slab's
 /// sequence number says the server published it (see
-/// `tutti_plugin::util::transport::shm::header`).
+/// `tutti-plugin-ipc`'s `transport::shm::header`).
 ///
 /// Failure is logged and ignored — elevation needs privileges a sandbox or CI
 /// runner may not grant, and degraded quality beats refusing to run.

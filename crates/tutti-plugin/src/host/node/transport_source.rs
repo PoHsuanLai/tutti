@@ -31,7 +31,7 @@ use tutti_types::Samples;
 use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin};
 use tutti_types::{Meter, MeterMap};
 
-use crate::protocol::TransportInfo;
+use tutti_plugin_types::TransportInfo;
 
 /// The transport facts a plugin snapshot is made of, at one frame.
 ///

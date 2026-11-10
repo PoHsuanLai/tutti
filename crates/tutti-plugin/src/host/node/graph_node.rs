@@ -23,8 +23,8 @@ use super::param_input;
 use super::segment_points::SegmentPoints;
 use super::transport_source::{self, HostClock, ProjectTime, SteadyTime};
 use super::{BlockPayload, Bound, PluginClient};
-use crate::host::ipc_client::audio::HarmonyInputs;
-use crate::protocol::{
+use tutti_plugin_ipc::HarmonyInputs;
+use tutti_plugin_types::{
     ChordValue, Features, MidiEventVec, ParameterChanges, ScaleValue, TransportInfo, WireMidi,
 };
 

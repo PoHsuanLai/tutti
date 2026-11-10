@@ -568,7 +568,7 @@ knowing because the same shapes recur:
   control read blocking inside the syscall while the deadline was only checked
   *between* syscalls, so a budget of any size was unenforceable. The fix is
   `PeekNamedPipe`: ask how many bytes are buffered, and only read when the
-  answer is "some". See `util::transport::control`.
+  answer is "some". See `tutti-plugin-ipc`'s `transport::control`.
 - **`set_nonblocking` is not the way out, and was tried.** It took Windows from
   37 failures to 47. `PIPE_NOWAIT` makes `ReadFile` report *success with zero
   bytes*, which this transport reads as EOF, so a quiet peer was reported as a

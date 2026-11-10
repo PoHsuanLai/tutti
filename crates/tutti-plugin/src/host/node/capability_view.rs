@@ -25,7 +25,7 @@
 //!
 //! # Declined, not merely absent
 //!
-//! The gate is [`LoadedPlugin::capability`](crate::protocol::LoadedPlugin::capability), which is three-valued: `Some(true)`
+//! The gate is [`LoadedPlugin::capability`](tutti_plugin_types::LoadedPlugin::capability), which is three-valued: `Some(true)`
 //! (asked, yes), `Some(false)` (asked, no), `None` (never asked). Only
 //! `Some(false)` withholds the view.
 //!
@@ -46,7 +46,7 @@
 //! [`PluginClient::sends_midi`] answer whether wiring them means anything.
 
 use super::PluginClient;
-use crate::protocol::Features;
+use tutti_plugin_types::Features;
 
 /// Whether a capability is open for installation.
 ///
@@ -61,7 +61,7 @@ fn declined(client: &PluginClient, f: Features) -> bool {
 /// Split out so the decision can be tested without standing up a subprocess:
 /// building a [`PluginClient`] needs a live bridge, but the rule being pinned
 /// here is a pure function of what the plugin reported.
-pub(crate) fn is_declined(loaded: &crate::protocol::LoadedPlugin, f: Features) -> bool {
+pub(crate) fn is_declined(loaded: &tutti_plugin_types::LoadedPlugin, f: Features) -> bool {
     loaded.capability(f) == Some(false)
 }
 
@@ -118,7 +118,7 @@ impl PluginClient {
 #[cfg(test)]
 mod tests {
     use super::is_declined;
-    use crate::protocol::{Features, LoadedPlugin};
+    use tutti_plugin_types::{Features, LoadedPlugin};
 
     /// `probed` set, bit clear — the plugin was asked and said no.
     fn answered_no(f: Features) -> LoadedPlugin {

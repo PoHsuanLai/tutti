@@ -153,7 +153,7 @@ impl PluginControls {
 
     /// MIDI events on the node's event input that never reached the
     /// plugin-server, since the plugin was bound. Counted: an event past the
-    /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a chunk
+    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) a chunk
     /// carries; every event of a chunk that was not sent (its audio could
     /// not be staged, the bridge refused it because its queue was full or
     /// the server had crashed, the bridge thread skipped it as stale, or it
@@ -174,7 +174,7 @@ impl PluginControls {
 
     /// What the node has delivered so far, per listed parameter: what a fork
     /// is seeded with. Control thread: allocates.
-    pub(super) fn delivered(&self) -> Vec<(crate::protocol::ParamId, f64)> {
+    pub(super) fn delivered(&self) -> Vec<(tutti_plugin_types::ParamId, f64)> {
         self.delivery.delivered()
     }
 

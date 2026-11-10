@@ -23,20 +23,18 @@
 //! A constant signal would separate none of those, which is why the ramp is
 //! load-bearing rather than decorative.
 
-use crate::host::ipc_client::PluginBridge;
-use crate::host::ipc_client::audio::BridgeThread;
 use crate::host::node::batcher::{Batcher, ChunkCounters};
+use tutti_plugin_ipc::BridgeThread;
+use tutti_plugin_ipc::PluginBridge;
 
 /// The chunk these tests ship: the slab ceiling they build each batcher and
 /// slab with, and the block they drive (so every call is one whole chunk).
 const BATCH_SIZE: usize = 64;
 use crate::host::node::BlockPayload;
-use crate::protocol::{
-    BridgeMessage, ChannelLayout, HostMessage, MidiEventVec, PROTOCOL_VERSION, SampleFormat,
-    SlabLayout,
-};
-use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use std::sync::Arc;
+use tutti_plugin_ipc::{AudioSlab, RING_SLOTS};
+use tutti_plugin_ipc::{BridgeMessage, HostMessage, PROTOCOL_VERSION, SlabLayout};
+use tutti_plugin_types::{ChannelLayout, MidiEventVec, SampleFormat};
 use tutti_types::SampleRate;
 
 const CHANNELS: usize = 2;
@@ -58,7 +56,7 @@ impl super::batcher::Chunks for MidiEventVec {
             .expect("an emptied list holds a full one");
     }
 
-    fn emit(&mut self, _frame: usize, _event: crate::protocol::WireMidi) {}
+    fn emit(&mut self, _frame: usize, _event: tutti_plugin_types::WireMidi) {}
 }
 
 /// `CHANNELS` planar channels of `BATCH_SIZE` frames: the buffers the
@@ -179,7 +177,7 @@ fn bridge_with_server(
 
     let path = unique_socket_path("process-sync");
     let _ = std::fs::remove_file(&path);
-    let name = crate::util::transport::control::socket_name(&path).unwrap();
+    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let out_channels: usize = layout.outputs.iter().map(|l| l.count() as usize).sum();
@@ -193,6 +191,7 @@ fn bridge_with_server(
         path.clone(),
         Arc::clone(&host_slab),
         std::path::PathBuf::from("test.vst3"),
+        crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -928,6 +927,7 @@ fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread) {
         path,
         host_slab,
         std::path::PathBuf::from("test.vst3"),
+        crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -1434,7 +1434,7 @@ fn stamped_server(
 
     let path = unique_socket_path("stamped");
     let _ = std::fs::remove_file(&path);
-    let name = crate::util::transport::control::socket_name(&path).unwrap();
+    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let layout = stereo_layout();
@@ -1446,6 +1446,7 @@ fn stamped_server(
         path.clone(),
         Arc::clone(&host_slab),
         std::path::PathBuf::from("test.vst3"),
+        crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -1498,7 +1499,7 @@ fn stamped_server(
                             }
                             server_slab.publish_output(seq);
                         }
-                        let midi_out = [crate::protocol::WireMidi {
+                        let midi_out = [tutti_plugin_types::WireMidi {
                             offset: 0,
                             ump: tutti_ump::Ump([seq as u32, 0, 0, 0]),
                         }]
@@ -1547,7 +1548,7 @@ impl super::batcher::Chunks for LossProbe {
     fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
 
     fn payload(&mut self, _frames: usize) -> BlockPayload {
-        let note = crate::protocol::WireMidi {
+        let note = tutti_plugin_types::WireMidi {
             offset: 0,
             ump: tutti_fixtures::midi::note_on(
                 tutti_ump::MidiGroup::FIRST,
@@ -1574,7 +1575,7 @@ impl super::batcher::Chunks for LossProbe {
         self.out.clone_from(events);
     }
 
-    fn emit(&mut self, _frame: usize, _event: crate::protocol::WireMidi) {}
+    fn emit(&mut self, _frame: usize, _event: tutti_plugin_types::WireMidi) {}
 }
 
 /// **A chunk whose audio cannot be staged reports its MIDI lost**, so the
@@ -1623,6 +1624,7 @@ fn a_refused_chunk_reports_its_midi_lost() {
         path,
         slab,
         std::path::PathBuf::from("test.vst3"),
+        crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -1670,7 +1672,7 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
     let _lock = exclusive();
     let cut = sysex_fragments(60); // 10 packets
     let next = sysex_fragments(12); // 2 packets
-    let note = crate::protocol::WireMidi {
+    let note = tutti_plugin_types::WireMidi {
         offset: 0,
         ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
     };
@@ -1709,7 +1711,7 @@ fn a_stale_block_holding_only_a_start_cuts_its_message() {
     let _lock = exclusive();
     let lost = sysex_fragments(12); // a START and an END
     let other = sysex_fragments(20);
-    let note = crate::protocol::WireMidi {
+    let note = tutti_plugin_types::WireMidi {
         offset: 0,
         ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
     };
@@ -1727,12 +1729,12 @@ fn a_stale_block_holding_only_a_start_cuts_its_message() {
 }
 
 /// `len` payload bytes as SysEx7 packets on group 1.
-fn sysex_fragments(len: usize) -> Vec<crate::protocol::WireMidi> {
+fn sysex_fragments(len: usize) -> Vec<tutti_plugin_types::WireMidi> {
     let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
     let mut out = Vec::new();
     tutti_midi_types::sysex7_fragments(tutti_ump::MidiGroup::FIRST, &payload, &mut out);
     out.into_iter()
-        .map(|ump| crate::protocol::WireMidi { offset: 0, ump })
+        .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
         .collect()
 }
 
@@ -1741,10 +1743,10 @@ fn sysex_fragments(len: usize) -> Vec<crate::protocol::WireMidi> {
 /// them. Returns the MIDI the server got in blocks 3 and 4, and the
 /// bridge's count of the MIDI it did not send.
 fn two_stale_blocks(
-    blocks: [Vec<crate::protocol::WireMidi>; 4],
+    blocks: [Vec<tutti_plugin_types::WireMidi>; 4],
 ) -> (
-    Vec<crate::protocol::WireMidi>,
-    Vec<crate::protocol::WireMidi>,
+    Vec<tutti_plugin_types::WireMidi>,
+    Vec<tutti_plugin_types::WireMidi>,
     u64,
 ) {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
@@ -1752,13 +1754,14 @@ fn two_stale_blocks(
     assert_eq!(RING_SLOTS, 2, "blocks 1 and 2 of 4 are stale");
     let path = unique_socket_path("stale-midi");
     let _ = std::fs::remove_file(&path);
-    let name = crate::util::transport::control::socket_name(&path).unwrap();
+    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
     let slab = Arc::new(AudioSlab::create(unique_shm_name("stale-midi"), stereo_layout()).unwrap());
     let (bridge, thread) = PluginBridge::new(
         path.clone(),
         slab,
         std::path::PathBuf::from("test.vst3"),
+        crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -1775,7 +1778,7 @@ fn two_stale_blocks(
         );
         while let Some(msg) = recv_host_msg(&server_stream) {
             if let HostMessage::ProcessAudio(data) = msg {
-                let midi: Vec<crate::protocol::WireMidi> = data.midi_events.to_vec();
+                let midi: Vec<tutti_plugin_types::WireMidi> = data.midi_events.to_vec();
                 let _ = got_tx.send((data.seq, midi));
                 send_bridge_msg(
                     &server_stream,
@@ -1795,7 +1798,7 @@ fn two_stale_blocks(
             i as u64 + 1,
             BATCH_SIZE,
             midi.iter().copied().collect(),
-            &mut crate::protocol::ParameterChanges::new(),
+            &mut tutti_plugin_types::ParameterChanges::new(),
             Default::default(),
             Default::default(),
             Default::default(),

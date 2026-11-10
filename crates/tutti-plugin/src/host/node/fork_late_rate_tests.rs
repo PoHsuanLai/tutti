@@ -16,7 +16,7 @@ use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use super::machine_lock as probe_lock;
 use crate::handles::PluginClient;
-use crate::util::config::BridgeConfig;
+use tutti_plugin_ipc::BridgeConfig;
 
 const LOAD_RATE: f64 = 48_000.0;
 const SLOW_RATE: f64 = 96_000.0;

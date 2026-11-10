@@ -7,10 +7,10 @@
 //! drops (i.e., after both the graph has released the node *and* every
 //! user-held handle has dropped).
 
-use crate::host::ipc_client::audio::BridgeThread;
-use crate::util::config::BridgeConfig;
 use std::process::{Child, ExitStatus};
 use std::sync::{Mutex, PoisonError};
+use tutti_plugin_ipc::BridgeConfig;
+use tutti_plugin_ipc::BridgeThread;
 
 pub(crate) struct ProcessGuard {
     /// Behind a lock only so [`exited`](Self::exited) can ask from `&self`

@@ -133,10 +133,11 @@ use tutti_types::{Latency, SampleRate};
 
 use super::controls::ForkedSources;
 use super::{Bound, PluginClient, PluginControls, ProcessGuard};
-use crate::error::{PluginForkError, PluginRenderFault, StateError};
-use crate::host::ipc_client::PluginBridge;
-use crate::protocol::RenderMode;
-use crate::util::config::{BridgeConfig, unique_socket_path};
+use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::{BridgeConfig, unique_socket_path};
+use tutti_plugin_ipc::{PluginForkError, PluginRenderFault};
+use tutti_plugin_types::RenderMode;
+use tutti_plugin_types::StateError;
 
 /// What a [`PluginClient`] was loaded from: enough to load it again.
 pub(super) struct Origin {
@@ -350,7 +351,7 @@ struct Capture {
     /// live plugin holds unchanged (under an edit made in its editor, say)
     /// is not sent to the fork either, and the export renders what live
     /// playback plays.
-    delivered: Vec<(crate::protocol::ParamId, f64)>,
+    delivered: Vec<(tutti_plugin_types::ParamId, f64)>,
     origin: Arc<Origin>,
     /// The live instance's plugin id, which the fresh one must match.
     id: String,

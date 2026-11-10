@@ -123,7 +123,7 @@ The `Reaction` loop is written twice (`server.rs:115-137`, `140-158`), and the
 
 ### 1.4 The client protocol is socket-bound
 
-`tutti-plugin/src/host/ipc_client/audio/dispatch.rs:355` `handle` is a
+`tutti-plugin-ipc/src/client/audio/dispatch.rs` `handle` is a
 400-line function over the concrete `ControlStream`. It sends, settles `Owed`,
 reads a reply with a resumable partial-frame cursor, classifies timeout against
 crash, and runs a rate-change wait loop with its own `Instant::now()` deadline.

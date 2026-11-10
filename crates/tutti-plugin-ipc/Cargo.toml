@@ -1,0 +1,64 @@
+[package]
+name = "tutti-plugin-ipc"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The plugin host's process edge for Tutti: the wire, the shared-memory slab, the plugin-server's launch, and the client of a served plugin"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# The client's test-only knobs and counters (a shortened rate wait, the replies
+# it settled), for `tutti-plugin`'s tests, which turn it on through their
+# dev-dependency. Never on in a shipping build.
+test-support = []
+
+[dependencies]
+tutti-types = { path = "../tutti-types" }
+tutti-rt = { path = "../tutti-rt" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
+
+# The probe's private result directory (pure Rust; removed on drop, panic included).
+tempfile = "3"
+
+# The wire.
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+# Shared memory.
+memmap2 = "0.9"
+
+crossbeam = "0.8"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+# Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows).
+interprocess = { version = "2" }
+
+thiserror = "2"
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = [
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    # `PeekNamedPipe`, which is how a control read gets a deadline on Windows.
+    # `interprocess` refuses `set_recv_timeout` on a named pipe, so without this
+    # every read blocks until the peer speaks. See `transport::control`.
+    "Win32_System_Pipes",
+] }
+
+[dev-dependencies]
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-midi-types = { path = "../tutti-midi-types" }
+assert_no_alloc = { version = "1", default-features = false }
+# The reference CLAP plugin the launch tests serve: a dev-dependency for the
+# artifact, which cargo builds beside the test binary.
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }

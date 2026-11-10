@@ -57,7 +57,7 @@
 //!
 //! Whether N−1's output is really there is decided by the slab's per-slot
 //! sequence numbers, not by a reply arriving: a mismatch yields silence. See
-//! `util::transport::shm::header`.
+//! `tutti-plugin-ipc`'s `transport::shm::header`.
 //!
 //! # `f32` in the graph, the plugin's format on the wire
 //!
@@ -67,29 +67,18 @@
 //! else: the `f64` stays inside the node.
 
 use super::fork::ForkWatch;
-use crate::error::Result;
-use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
-use crate::protocol::{MidiEventVec, ParameterChanges, SampleFormat, WireMidi};
-use crate::util::transport::shm::AudioSlab;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tutti_graph::Prepare;
+use tutti_plugin_ipc::AudioSlab;
+use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::Result;
+use tutti_plugin_types::{MidiEventVec, ParameterChanges, SampleFormat, WireMidi};
 use tutti_types::Samples;
 
-/// The largest chunk that crosses the process edge: the largest device
-/// callback a live plugin keeps in step with, and so the ceiling on the
-/// pipeline's declared latency (85 ms at 48 kHz).
-///
-/// The shared-memory slab is sized to this at launch (`subprocess::launch`,
-/// the other consumer of this constant; or to the host's smaller
-/// `max_buffer_size`), before the node is prepared — so [`Batcher::prepare`]
-/// can only narrow the chunk, never widen it, and the slab and the batcher
-/// agree on the per-chunk ceiling by construction. A device calling back
-/// with more frames than this gets a chunk of this many, which no longer
-/// lines up with its callbacks (module docs).
-pub(crate) const MAX_CHUNK: usize = 4096;
+pub(crate) use tutti_plugin_ipc::MAX_CHUNK;
 
 /// Single-chunk wire scratch in the plugin-negotiated format. Allocated at
 /// [`Batcher::new`] for the chunk ceiling, because the wire format is known

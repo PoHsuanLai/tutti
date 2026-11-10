@@ -9,9 +9,9 @@
 //! `tutti-plugin-types` so the host crates and the IPC protocol share
 //! the same shape.
 
-use crate::error::EditorError;
 use raw_window_handle::RawWindowHandle;
 use std::ffi::c_void;
+use tutti_plugin_types::EditorError;
 
 pub use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 

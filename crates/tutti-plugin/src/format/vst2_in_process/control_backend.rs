@@ -16,12 +16,12 @@ use parking_lot::Mutex;
 use tutti_plugin_types::Control;
 
 use super::instance::Instance;
-use crate::error::{EditorError, StateError};
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{Normalized, ParamId, ParameterInfo, RenderMode};
-use crate::protocol::{Preset, PresetId};
 use crate::util::window::{ContentScale, EditorSize};
+use tutti_plugin_types::{EditorError, StateError};
+use tutti_plugin_types::{Normalized, ParamId, ParameterInfo, RenderMode};
+use tutti_plugin_types::{Preset, PresetId};
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
 /// idle calls can drain plugin-internal automation events and notify

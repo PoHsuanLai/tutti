@@ -44,11 +44,8 @@
 //! Audio knobs are separate and default sensibly; set them with
 //! [`Plugins::with_audio_config`] when the defaults don't fit.
 
-use crate::error::{BridgeError, Result};
 use crate::host::db_probe::{probe_plugin, probe_record};
 use crate::host::plugin::Plugin;
-use crate::protocol::PluginDescriptor;
-use crate::util::config::{AudioConfig, CatalogConfig};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,7 +53,10 @@ use tutti_plugin_db::{
     BlacklistedFile, Delta, FileFacts, PluginDb, PluginEntry, Scan, ScanBusy, ScanPoll, ScanResult,
     Scanner,
 };
+use tutti_plugin_ipc::{AudioConfig, CatalogConfig};
+use tutti_plugin_ipc::{BridgeError, Result};
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::PluginDescriptor;
 use tutti_types::SampleRate;
 
 /// Identifies a plugin in a [`Plugins`] catalog by its file path.

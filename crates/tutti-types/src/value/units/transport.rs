@@ -224,11 +224,15 @@ unit! {
     /// so it sounds correct. Build it with [`SrcRatio::for_rates`] rather than
     /// by hand — that is the one place the derivation lives.
     ///
+    /// `f64`-backed, like [`ReadRate`] and [`SamplePosition`]: an `f32` ratio
+    /// drifts a converted stream against the timeline (about 2 to 12 file
+    /// frames an hour at common rate pairs).
+    ///
     /// Distinct from [`PlaybackRate`] because they answer different questions:
     /// this one asks "what does playing at the right pitch cost?", the other
     /// "how fast does the user want it?". They compose (see
     /// [`PlaybackRate::read_rate`]) but must not be confused for one another.
-    pub struct SrcRatio(pub f32): Unit, Ordered, Bounded;
+    pub struct SrcRatio(pub f64): Unit, Ordered, Bounded;
 }
 // NOT `Scalable` / `Additive`: a conversion ratio is derived from
 // two sample rates, never scaled or summed. Re-derive it instead.
@@ -252,7 +256,7 @@ impl SrcRatio {
         if session_rate <= 0.0 || (file_rate - session_rate).abs() < 0.01 {
             Self::UNITY
         } else {
-            Self((file_rate / session_rate) as f32)
+            Self(file_rate / session_rate)
         }
     }
 }
@@ -308,7 +312,7 @@ impl PlaybackRate {
     #[inline]
     #[must_use]
     pub fn read_rate(self, src: SrcRatio) -> ReadRate {
-        ReadRate(self.0 as f64 * src.0 as f64)
+        ReadRate(self.0 as f64 * src.0)
     }
 }
 

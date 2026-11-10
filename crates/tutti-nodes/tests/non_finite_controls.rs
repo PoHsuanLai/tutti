@@ -245,7 +245,7 @@ fn the_distortion_holds_off_non_finite_controls() {
         survives_node(
             "distortion",
             || DistortionNode::new(kind, 2.0),
-            |n| vec![("drive", n.drive(), 5.0)],
+            |n| vec![("drive", n.drive().into(), 5.0)],
         );
     }
 }

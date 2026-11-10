@@ -22,7 +22,7 @@ use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
 use tutti_midi_types::{MidiMessage, cc, from_midi1_bytes};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_ump::Ump;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Voice2, decode};
 
 const RATE: f64 = 48_000.0;
 
@@ -194,7 +194,10 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
     let (port, frame, ev) = seen[0];
     assert_eq!((port, frame), (3, 512));
     // MIDI 2.0 channel voice (type 4), Registered Controller (status 0x2).
-    assert_eq!((ev.0[0] >> 28, (ev.0[0] >> 20) & 0xF), (0x4, 0x2));
+    assert!(
+        matches!(decode(ev), Ok(Message::Midi2(_, Voice2::Registered { .. }))),
+        "{ev:?}"
+    );
 }
 
 /// **A requested MPE mode is adopted once and holds.** With the lower zone
@@ -230,7 +233,12 @@ fn a_requested_mpe_mode_is_adopted_once() {
     }
     let seen = seen.lock().unwrap();
     // MIDI 2.0 channel voice (type 4), Registered Controller (status 0x2).
-    let is_rpn = |ev: &Ump| (ev.0[0] >> 28, (ev.0[0] >> 20) & 0xF) == (4, 2);
+    let is_rpn = |ev: &Ump| {
+        matches!(
+            decode(*ev),
+            Ok(Message::Midi2(_, Voice2::Registered { .. }))
+        )
+    };
     let resets: Vec<u64> = seen.iter().filter(|s| is_rpn(&s.2)).map(|s| s.1).collect();
     assert_eq!(resets, vec![0; 7], "the ranges, once, at frame 0: {seen:?}");
     let music: Vec<_> = seen.iter().filter(|s| !is_rpn(&s.2)).collect();
@@ -314,7 +322,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     let mut range_ports = Vec::new();
     for (port, _, ev) in seen.iter() {
         if ranges.observe(ev) {
-            assert_eq!(((ev.0[0] >> 16) & 0x0F) as u8, *port as u8);
+            assert_eq!(ev.channel().map(u8::from), Some(*port as u8));
             range_ports.push(*port);
         }
     }

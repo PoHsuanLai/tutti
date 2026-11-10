@@ -22,8 +22,6 @@ use tutti_midi_types::ump::{
 };
 use tutti_ump::{MidiGroup, Ump};
 
-use crate::group::group_of;
-
 /// Default cap on a reassembled SysEx8 payload, in bytes. See
 /// [`Sysex8PacketReassembler::with_max_bytes`].
 pub const DEFAULT_MAX_SYSEX8_BYTES: usize = 4096;
@@ -122,7 +120,7 @@ impl Sysex8PacketReassembler {
         if message_type(event) != UmpMessageType::Sysex8 {
             return None;
         }
-        let group = group_of(event);
+        let group = event.group()?;
         let (status, stream_id, _bytes) = sysex8_header(event)?;
 
         match status {

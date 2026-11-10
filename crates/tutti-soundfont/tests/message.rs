@@ -55,15 +55,8 @@ fn unit() -> Hand {
 /// the key is down, so a level that changes is a message's doing.
 fn organ() -> Hand {
     let mut unit = unit();
-    unit.program_change(MidiChannel::FIRST, u7(16));
+    unit.program_change(MidiChannel::FIRST, U7::of(16));
     unit
-}
-
-fn note(n: u8) -> NoteNumber {
-    NoteNumber::new(n).unwrap()
-}
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap()
 }
 
 fn event(message: Message) -> Ump {
@@ -83,7 +76,7 @@ fn m2(voice: Voice2) -> Ump {
 }
 fn note_on_2(n: u8, velocity: u16) -> Ump {
     m2(Voice2::NoteOn {
-        note: note(n),
+        note: NoteNumber::of(n),
         velocity,
         attribute: Attribute::None,
     })
@@ -122,8 +115,8 @@ fn held_rms(events: &[Ump]) -> f32 {
 #[test]
 fn a_note_on_at_velocity_0_leaves_no_voice_sounding() {
     let end_1 = m1(Voice1::NoteOn {
-        note: note(60),
-        velocity: u7(0),
+        note: NoteNumber::of(60),
+        velocity: U7::of(0),
     });
     let end_2 = note_on_2(60, 0);
     for (name, end) in [("MIDI 1.0", end_1), ("MIDI 2.0", end_2)] {
@@ -178,7 +171,7 @@ fn control_change_7_reaches_the_synth_at_its_value() {
     let full = held_rms(&[
         m1(Voice1::ControlChange {
             controller: CCNumber::of(7),
-            value: u7(127),
+            value: U7::of(127),
         }),
         note,
     ]);
@@ -191,7 +184,7 @@ fn control_change_7_reaches_the_synth_at_its_value() {
                 "7-bit",
                 m1(Voice1::ControlChange {
                     controller: CCNumber::of(7),
-                    value: u7(v),
+                    value: U7::of(v),
                 }),
             ),
             ("32-bit, low bits clear", cc7_2(wide)),
@@ -243,7 +236,7 @@ fn a_bend_reaches_the_synth_at_its_value() {
         out[8_000..].to_vec()
     };
     let key = m2(Voice2::NoteOn {
-        note: note(48),
+        note: NoteNumber::of(48),
         velocity: 0xC000,
         attribute: Attribute::None,
     });
@@ -261,7 +254,7 @@ fn a_bend_reaches_the_synth_at_its_value() {
     ] {
         let want = 2.0_f64.powf(2.0 * (f64::from(b) - 8192.0) / 8192.0 / 12.0);
         let cases = [
-            ("7-bit", m1(Voice1::PitchBend(U14::new(b).unwrap()))),
+            ("7-bit", m1(Voice1::PitchBend(U14::of(b)))),
             (
                 "32-bit",
                 m2(Voice2::PitchBend(u32::from(b) << 18 | 0x3_FFFF)),
@@ -282,13 +275,13 @@ fn a_bend_reaches_the_synth_at_its_value() {
 #[test]
 fn messages_with_no_synthesizer_setter_change_nothing() {
     let key = note_on_2(60, 0xC000);
-    let n = note(60);
+    let n = NoteNumber::of(60);
     let dropped = [
         m1(Voice1::PolyPressure {
             note: n,
-            pressure: u7(90),
+            pressure: U7::of(90),
         }),
-        m1(Voice1::ChannelPressure(u7(90))),
+        m1(Voice1::ChannelPressure(U7::of(90))),
         m2(Voice2::PolyPressure {
             note: n,
             value: u32::MAX,
@@ -314,23 +307,23 @@ fn messages_with_no_synthesizer_setter_change_nothing() {
             reset: true,
         }),
         m2(Voice2::Registered {
-            bank: u7(0),
-            index: u7(0),
+            bank: U7::of(0),
+            index: U7::of(0),
             value: u32::MAX,
         }),
         m2(Voice2::Assignable {
-            bank: u7(0),
-            index: u7(7),
+            bank: U7::of(0),
+            index: U7::of(7),
             value: 0,
         }),
         m2(Voice2::RelativeRegistered {
-            bank: u7(0),
-            index: u7(0),
+            bank: U7::of(0),
+            index: U7::of(0),
             delta: 1000,
         }),
         m2(Voice2::RelativeAssignable {
-            bank: u7(0),
-            index: u7(7),
+            bank: U7::of(0),
+            index: U7::of(7),
             delta: -1000,
         }),
         event(Message::System(MidiGroup::FIRST, tutti_ump::System::Reset)),

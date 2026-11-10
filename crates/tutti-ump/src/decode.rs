@@ -54,14 +54,16 @@ pub fn decode(ump: Ump) -> Result<Message, Unknown> {
     message.ok_or(Unknown(ump))
 }
 
+// The decoder reads the header of a type it already matched, so the Group and
+// Channel fields are there: masked, as `Ump::group` and `Ump::address` read them.
 fn group(w0: u32) -> MidiGroup {
-    MidiGroup::masked(((w0 >> 24) & 0xf) as u8)
+    MidiGroup::masked((w0 >> 24) as u8)
 }
 
 fn address(w0: u32) -> Address {
     Address {
         group: group(w0),
-        channel: MidiChannel::masked(((w0 >> 16) & 0xf) as u8),
+        channel: MidiChannel::masked((w0 >> 16) as u8),
     }
 }
 
@@ -72,7 +74,7 @@ fn byte(w: u32, n: u32) -> u8 {
 
 /// A 7-bit field whose top bit is a reserved `r` bit: ignored.
 fn u7(w: u32, n: u32) -> U7 {
-    U7::wire(byte(w, n))
+    U7::masked(byte(w, n))
 }
 
 /// A data byte drawn as `0ddddddd`: refused when the top bit is set.
@@ -81,7 +83,7 @@ fn data7(w: u32, n: u32) -> Option<U7> {
 }
 
 fn note(w: u32, n: u32) -> NoteNumber {
-    NoteNumber::wire(byte(w, n))
+    NoteNumber::masked(byte(w, n))
 }
 
 fn flag(w: u32, bit: u32) -> bool {
@@ -107,7 +109,7 @@ fn utility(w0: u32) -> Option<Utility> {
         0x1 => Some(Utility::JrClock(low16)),
         0x2 => Some(Utility::JrTimestamp(low16)),
         0x3 => Some(Utility::TicksPerQuarterNote(low16)),
-        0x4 => Some(Utility::DeltaClockstamp(DeltaTicks::wire(w0 & 0xf_ffff))),
+        0x4 => Some(Utility::DeltaClockstamp(DeltaTicks::masked(w0 & 0xf_ffff))),
         _ => None,
     }
 }
@@ -117,7 +119,7 @@ fn utility(w0: u32) -> Option<Utility> {
 fn system(w0: u32) -> Option<System> {
     match byte(w0, 2) {
         0xF1 => Some(System::TimeCode(data7(w0, 1)?)),
-        0xF2 => Some(System::SongPosition(U14::wire(
+        0xF2 => Some(System::SongPosition(U14::masked(
             u16::from(data7(w0, 1)?.get()) | (u16::from(data7(w0, 0)?.get()) << 7),
         ))),
         0xF3 => Some(System::SongSelect(data7(w0, 1)?)),
@@ -156,7 +158,7 @@ fn voice1(w0: u32) -> Option<Voice1> {
         }),
         0xC => Some(Voice1::ProgramChange(d1)),
         0xD => Some(Voice1::ChannelPressure(d1)),
-        0xE => Some(Voice1::PitchBend(U14::wire(
+        0xE => Some(Voice1::PitchBend(U14::masked(
             u16::from(d1.get()) | (u16::from(d2.get()) << 7),
         ))),
         _ => None,
@@ -223,7 +225,7 @@ fn data128(w: [u32; 4]) -> Option<Data128> {
             Some(Data128::Sysex8(p))
         }
         0x8 => Some(Data128::MixedDataHeader(MixedDataHeader {
-            mds_id: U4::wire(low),
+            mds_id: U4::masked(low),
             chunk_bytes: w[0] as u16,
             chunks: (w[1] >> 16) as u16,
             chunk: w[1] as u16,
@@ -239,7 +241,7 @@ fn data128(w: [u32; 4]) -> Option<Data128> {
                 bytes[2 + 4 * i..6 + 4 * i].copy_from_slice(&word.to_be_bytes());
             }
             Some(Data128::MixedDataPayload {
-                mds_id: U4::wire(low),
+                mds_id: U4::masked(low),
                 bytes,
             })
         }
@@ -374,7 +376,7 @@ fn alteration(nibbles: u32) -> Alteration {
     };
     Alteration {
         kind,
-        degree: U4::wire((nibbles & 0xf) as u8),
+        degree: U4::masked((nibbles & 0xf) as u8),
     }
 }
 

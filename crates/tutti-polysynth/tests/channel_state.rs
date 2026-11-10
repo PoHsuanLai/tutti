@@ -47,27 +47,23 @@ fn hand(config: SynthConfig) -> Hand {
     Hand::new(PolySynth::new(config).expect("a valid config"))
 }
 
-fn ch(channel: u8) -> MidiChannel {
-    MidiChannel::of(channel)
-}
-
 fn on(channel: u8, note: u8) -> Ump {
     midi::note_on(
         MidiGroup::FIRST,
-        ch(channel),
+        MidiChannel::of(channel),
         note,
         midi1_velocity_to_midi2(100),
     )
 }
 
 fn off(channel: u8, note: u8) -> Ump {
-    midi::note_off(MidiGroup::FIRST, ch(channel), note, 0)
+    midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
 }
 
 fn cc(channel: u8, number: CCNumber, value: u8) -> Ump {
     midi::cc(
         MidiGroup::FIRST,
-        ch(channel),
+        MidiChannel::of(channel),
         number,
         midi1_cc_to_midi2(value),
     )
@@ -75,14 +71,14 @@ fn cc(channel: u8, number: CCNumber, value: u8) -> Ump {
 
 /// Full wheel up.
 fn bend_up(channel: u8) -> Ump {
-    midi::pitch_bend(MidiGroup::FIRST, ch(channel), u32::MAX)
+    midi::pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), u32::MAX)
 }
 
 /// Pitch Bend Sensitivity (RPN 0) of whole `semitones`.
 fn sensitivity(channel: u8, semitones: u8) -> Ump {
     midi::registered_controller(
         MidiGroup::FIRST,
-        ch(channel),
+        MidiChannel::of(channel),
         RPN_BANK_MPE,
         RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(semitones).to_rpn_bits(),
@@ -338,7 +334,7 @@ fn under_mpe_the_master_bend_and_the_per_note_bend_add() {
         ..config()
     });
     // Per-note bend of a quarter of the wheel's travel: 12 of 48 semitones.
-    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
+    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 69, 0xA000_0000);
     play(&mut h, &[on(1, 69), bend_up(0), per_note], 0.2);
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(14.0));
 }
@@ -398,7 +394,7 @@ fn reset_returns_the_per_note_range_to_its_default() {
     });
     let rpn7 = midi::registered_controller(
         MidiGroup::FIRST,
-        ch(1),
+        MidiChannel::of(1),
         RPN_BANK_MPE,
         tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(12).to_rpn_bits(),
@@ -406,7 +402,7 @@ fn reset_returns_the_per_note_range_to_its_default() {
     play(&mut h, &[rpn7], 0.01);
     Node::reset(&mut *h);
     // A quarter of the travel: 12 of 48 semitones.
-    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
+    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 69, 0xA000_0000);
     play(&mut h, &[on(1, 69), per_note], 0.2);
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(12.0));
 }

@@ -448,7 +448,7 @@ impl VoiceAllocator {
         velocity16: u16,
     ) -> (NoteId, f32) {
         match strike {
-            Some((id, v)) if id.note_number() == key.get() => (id, v),
+            Some((id, v)) if id.note_number() == key => (id, v),
             _ => (
                 NoteId::from_channel_note(channel, key.get()),
                 f32::from(velocity16) / 65535.0,
@@ -508,7 +508,7 @@ impl VoiceAllocator {
     /// gated off (the note actually stopped sounding), or `None` when the note
     /// is held by sustain/sostenuto or no live voice matched `id`.
     pub fn release(&mut self, id: NoteId, channel: MidiChannel) -> Option<usize> {
-        let note = NoteNumber::new(id.note_number())?;
+        let note = id.note_number();
         let off = Voice2::NoteOff {
             note,
             velocity: 0,

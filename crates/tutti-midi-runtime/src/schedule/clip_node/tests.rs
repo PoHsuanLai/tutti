@@ -49,8 +49,8 @@ fn midi1(voice: tutti_ump::Voice1) -> Ump {
 
 fn cc1(controller: u8, value: u8) -> Ump {
     midi1(tutti_ump::Voice1::ControlChange {
-        controller: tutti_ump::CCNumber::new(controller).unwrap(),
-        value: tutti_ump::U7::new(value).unwrap(),
+        controller: tutti_ump::CCNumber::of(controller),
+        value: tutti_ump::U7::of(value),
     })
 }
 
@@ -66,10 +66,10 @@ fn cc1(controller: u8, value: u8) -> Ump {
 /// beat order → the order assertion fails.
 #[test]
 fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
-    let note = tutti_ump::NoteNumber::new(60).unwrap();
+    let note = tutti_ump::NoteNumber::of(60);
     let on0 = midi1(tutti_ump::Voice1::NoteOn {
         note,
-        velocity: tutti_ump::U7::new(0).unwrap(),
+        velocity: tutti_ump::U7::of(0),
     });
     let events = [
         TimedMidiEvent::new(Beat(3.0), on0),
@@ -106,8 +106,8 @@ fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
                 tutti_ump::Message::Midi2(
                     address,
                     tutti_ump::Voice2::Registered {
-                        bank: tutti_ump::U7::new(0).unwrap(),
-                        index: tutti_ump::U7::new(0).unwrap(),
+                        bank: tutti_ump::U7::of(0),
+                        index: tutti_ump::U7::of(0),
                         // Pitch bend sensitivity 12 semitones 50 cents,
                         // zero-extended (M2-115 section 4.1).
                         value: ((12 << 7) | 50) << 18,

@@ -1491,7 +1491,7 @@ impl Reference {
 }
 
 /// `(MIDI 2.0, group, channel, note)`.
-type RefNote = (bool, u8, u8, u8);
+type RefNote = (bool, u8, u8, NoteNumber);
 
 #[derive(Debug, Default)]
 struct RefHeld {
@@ -1515,10 +1515,10 @@ fn ref_key(e: &Event) -> Option<RefKey> {
             let (g, c) = (a.group.get(), a.channel.get());
             match v {
                 Voice1::NoteOn { note, velocity } if velocity.get() == 0 => {
-                    Some(RefKey::Off((false, g, c, note.get())))
+                    Some(RefKey::Off((false, g, c, note)))
                 }
-                Voice1::NoteOn { note, .. } => Some(RefKey::On((false, g, c, note.get()))),
-                Voice1::NoteOff { note, .. } => Some(RefKey::Off((false, g, c, note.get()))),
+                Voice1::NoteOn { note, .. } => Some(RefKey::On((false, g, c, note))),
+                Voice1::NoteOff { note, .. } => Some(RefKey::Off((false, g, c, note))),
                 Voice1::ControlChange { controller, value } if controller.get() == 64 => {
                     Some(RefKey::Pedal(false, g, c, value.get() >= 64))
                 }
@@ -1528,8 +1528,8 @@ fn ref_key(e: &Event) -> Option<RefKey> {
         Message::Midi2(a, v) => {
             let (g, c) = (a.group.get(), a.channel.get());
             match v {
-                Voice2::NoteOn { note, .. } => Some(RefKey::On((true, g, c, note.get()))),
-                Voice2::NoteOff { note, .. } => Some(RefKey::Off((true, g, c, note.get()))),
+                Voice2::NoteOn { note, .. } => Some(RefKey::On((true, g, c, note))),
+                Voice2::NoteOff { note, .. } => Some(RefKey::Off((true, g, c, note))),
                 Voice2::ControlChange { controller, value } if controller.get() == 64 => {
                     Some(RefKey::Pedal(true, g, c, value >= 0x8000_0000))
                 }
@@ -1584,7 +1584,7 @@ impl RefHeld {
                     addr(g, c),
                     Voice1::ControlChange {
                         controller: cc,
-                        value: U7::new(0).unwrap(),
+                        value: U7::of(0),
                     },
                 )
             };
@@ -1593,8 +1593,7 @@ impl RefHeld {
                 kind: EventKind::Midi(Ump::from(msg)),
             });
         }
-        for &(m2, g, c, n) in &self.notes {
-            let note = NoteNumber::new(n).unwrap();
+        for &(m2, g, c, note) in &self.notes {
             let msg = if m2 {
                 Message::Midi2(
                     addr(g, c),
@@ -1609,7 +1608,7 @@ impl RefHeld {
                     addr(g, c),
                     Voice1::NoteOff {
                         note,
-                        velocity: U7::new(0).unwrap(),
+                        velocity: U7::of(0),
                     },
                 )
             };

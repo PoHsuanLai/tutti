@@ -70,9 +70,6 @@ pub enum SendError {
     /// The queue is full: the message was dropped.
     #[error("the instrument's queue is full")]
     Full,
-    /// A key or velocity outside 0..=127.
-    #[error("a key and a velocity are 0 to 127")]
-    OutOfRange,
 }
 
 impl From<TimedSendError> for SendError {
@@ -165,18 +162,14 @@ impl InstrumentHandle {
     ///
     /// # Errors
     ///
-    /// [`SendError::OutOfRange`] for a key or velocity above 127, or as
-    /// [`send`](Self::send).
+    /// As [`send`](Self::send).
     pub fn note_on(
         &self,
         at: At,
         channel: MidiChannel,
-        key: u8,
-        velocity: u8,
+        note: NoteNumber,
+        velocity: U7,
     ) -> Result<(), SendError> {
-        let (Some(note), Some(velocity)) = (NoteNumber::new(key), U7::new(velocity)) else {
-            return Err(SendError::OutOfRange);
-        };
         self.voice(at, channel, Voice1::NoteOn { note, velocity })
     }
 
@@ -184,12 +177,21 @@ impl InstrumentHandle {
     ///
     /// # Errors
     ///
-    /// As [`note_on`](Self::note_on).
-    pub fn note_off(&self, at: At, channel: MidiChannel, key: u8) -> Result<(), SendError> {
-        let (Some(note), Some(velocity)) = (NoteNumber::new(key), U7::new(0)) else {
-            return Err(SendError::OutOfRange);
-        };
-        self.voice(at, channel, Voice1::NoteOff { note, velocity })
+    /// As [`send`](Self::send).
+    pub fn note_off(
+        &self,
+        at: At,
+        channel: MidiChannel,
+        note: NoteNumber,
+    ) -> Result<(), SendError> {
+        self.voice(
+            at,
+            channel,
+            Voice1::NoteOff {
+                note,
+                velocity: U7::of(0),
+            },
+        )
     }
 
     fn voice(&self, at: At, channel: MidiChannel, voice: Voice1) -> Result<(), SendError> {

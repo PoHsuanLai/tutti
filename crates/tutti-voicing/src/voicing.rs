@@ -952,12 +952,6 @@ mod tests {
         core: Voicing,
         voices: Vec<VoiceView>,
     }
-    fn ch(n: u8) -> MidiChannel {
-        MidiChannel::of(n)
-    }
-    fn key(n: u8) -> NoteNumber {
-        NoteNumber::new(n).unwrap()
-    }
     fn id(n: u64) -> VoiceId {
         VoiceId(n)
     }
@@ -976,7 +970,10 @@ mod tests {
             }
         }
         fn send<P: Patch>(&mut self, c: u8, m: Voice2, p: &P) -> Vec<Command> {
-            let cmds = self.core.step(ch(c), &m, p, &self.voices).to_vec();
+            let cmds = self
+                .core
+                .step(MidiChannel::of(c), &m, p, &self.voices)
+                .to_vec();
             for cmd in &cmds {
                 match *cmd {
                     Command::Start { id, steal, .. } => {
@@ -999,7 +996,7 @@ mod tests {
             self.send(
                 c,
                 Voice2::NoteOn {
-                    note: key(k),
+                    note: NoteNumber::of(k),
                     velocity: 0x8000,
                     attribute: Attribute::None,
                 },
@@ -1013,7 +1010,7 @@ mod tests {
             self.send(
                 c,
                 Voice2::NoteOff {
-                    note: key(k),
+                    note: NoteNumber::of(k),
                     velocity: NEUTRAL_RELEASE,
                     attribute: Attribute::None,
                 },
@@ -1351,7 +1348,7 @@ mod tests {
             [
                 release(1),
                 Command::Retune {
-                    channel: ch(0),
+                    channel: MidiChannel::of(0),
                     bend: Semitones(0.0)
                 }
             ]
@@ -1389,7 +1386,7 @@ mod tests {
             s.send(
                 0,
                 Voice2::NoteOff {
-                    note: key(k),
+                    note: NoteNumber::of(k),
                     velocity,
                     attribute: Attribute::None,
                 },
@@ -1432,13 +1429,13 @@ mod tests {
         let mut s = Sim::new(POLY);
         s.on(0, 60);
         let one = widen(Voice1::NoteOn {
-            note: key(60),
-            velocity: U7::new(0).unwrap(),
+            note: NoteNumber::of(60),
+            velocity: U7::of(0),
         });
         assert!(matches!(one, Voice2::NoteOff { .. }));
         assert_eq!(s.send(0, one, &One), [release(1)]);
         let two = Voice2::NoteOn {
-            note: key(62),
+            note: NoteNumber::of(62),
             velocity: 0,
             attribute: Attribute::None,
         };
@@ -1544,12 +1541,12 @@ mod tests {
             [
                 Command::Retarget {
                     id: id(1),
-                    key: key(62),
+                    key: NoteNumber::of(62),
                     velocity: 0x8000
                 },
                 Command::Retarget {
                     id: id(2),
-                    key: key(62),
+                    key: NoteNumber::of(62),
                     velocity: 0x8000
                 },
             ]
@@ -1591,7 +1588,7 @@ mod tests {
             [
                 Command::Retarget {
                     id: id(1),
-                    key: key(62),
+                    key: NoteNumber::of(62),
                     velocity: 0x8000
                 },
                 release(2)
@@ -1650,7 +1647,7 @@ mod tests {
         let back = s.off(0, 64);
         assert_eq!(back.len(), 1, "{back:?}");
         assert!(
-            matches!(back[0], Command::Start { key: k, steal: Some(v), .. } if k == key(60) && v == id(2)),
+            matches!(back[0], Command::Start { key: k, steal: Some(v), .. } if k == NoteNumber::of(60) && v == id(2)),
             "{back:?}"
         );
         // 60 is the last held: letting it go releases.
@@ -1664,7 +1661,7 @@ mod tests {
         s.send(
             0,
             Voice2::NoteOn {
-                note: key(60),
+                note: NoteNumber::of(60),
                 velocity: 0x3000,
                 attribute: Attribute::None,
             },
@@ -1675,7 +1672,7 @@ mod tests {
             s.off(0, 64),
             [Command::Retarget {
                 id: id(1),
-                key: key(60),
+                key: NoteNumber::of(60),
                 velocity: 0x3000
             }]
         );
@@ -1742,7 +1739,7 @@ mod tests {
         for k in (41 + 1..=top).rev() {
             let c = s.off(0, k);
             assert!(
-                matches!(c[..], [Command::Start { key: back, .. }] if back == key(k - 1)),
+                matches!(c[..], [Command::Start { key: back, .. }] if back == NoteNumber::of(k - 1)),
                 "{k}: {c:?}"
             );
         }
@@ -1780,7 +1777,7 @@ mod tests {
             s.end(id(sounding));
             let c = s.off(0, 64);
             assert!(
-                matches!(c[..], [Command::Start { key: k, steal: None, .. }] if k == key(60)),
+                matches!(c[..], [Command::Start { key: k, steal: None, .. }] if k == NoteNumber::of(60)),
                 "{:?}: {c:?}",
                 rules.mode
             );
@@ -1890,8 +1887,8 @@ mod tests {
     }
     fn rpn0(range_semitones: f32) -> Voice2 {
         Voice2::Registered {
-            bank: U7::new(0).unwrap(),
-            index: U7::new(0).unwrap(),
+            bank: U7::of(0),
+            index: U7::of(0),
             value: (range_semitones * (1u32 << 25) as f32) as u32,
         }
     }

@@ -55,7 +55,7 @@ const MIDI_BUFFER_CAPACITY: usize = 256;
 
 /// The release velocity of a Note Off that carries none: a SoundFont does not
 /// read it.
-const NO_RELEASE_VELOCITY: U7 = U7::new(0).unwrap();
+const NO_RELEASE_VELOCITY: U7 = U7::of(0);
 
 /// The frames a voice renders in at a time, and so the resolution of the unit's
 /// MIDI timing.
@@ -123,7 +123,7 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 ///
 /// let soundfont = Arc::new(SoundFont::new(&mut File::open("piano.sf2")?)?);
 /// let mut unit = SoundFontUnit::new(soundfont, &Settings::new(SampleRate::SR_48K))?;
-/// unit.program_change(MidiChannel::FIRST, U7::new(0).unwrap());
+/// unit.program_change(MidiChannel::FIRST, U7::of(0));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///

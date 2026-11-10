@@ -39,7 +39,7 @@ impl Patch for PresetPatch<'_> {
     ) {
         // A region's range is 7 bits: the 16-bit velocity is narrowed as the
         // voice's will be, and never to a Note Off's 0.
-        let velocity = U7::new(narrow_velocity(velocity).get().max(1)).unwrap_or(U7::MAX);
+        let velocity = narrow_velocity(velocity).max(U7::of(1));
         let preset = &self.font.presets()[self.preset];
         for (p, preset_zone) in preset.regions().iter().enumerate() {
             if !preset_zone.contains(key, velocity) {

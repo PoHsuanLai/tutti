@@ -6,10 +6,7 @@ use tutti_ump::{Message, Midi1Bytes, U7, Voice1, Voice2};
 use crate::{narrow_bend, narrow_value, narrow_velocity};
 
 /// The velocity a Note On narrows to when the shift leaves 0.
-const NOTE_ON_FLOOR: U7 = match U7::new(1) {
-    Some(velocity) => velocity,
-    None => unreachable!(),
-};
+const NOTE_ON_FLOOR: U7 = U7::of(1);
 
 /// `voice` at MIDI 1.0 resolution (M2-115 section 3.4), or `None` when MIDI 1.0
 /// has no single message for it: per-note controllers and bend, RPN and NRPN,

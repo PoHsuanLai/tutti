@@ -460,9 +460,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   exports `MidiChannel` behind `midi`. A consumer that persists one with serde
   depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
   `MidiGroup::new`, `MidiChannel::new` and `CCNumber::new` return `Option` and
-  refuse out of range, like the field types. `of` is for a literal or a
-  constant (it panics out of range), and `masked` is the one constructor that
-  masks, for bits the wire has just framed.
+  refuse out of range, like the field types (`U7`, `U14`, `NoteNumber`, ...),
+  which have the same shape. `of` is for a literal or a constant (it panics out
+  of range), and `masked` is the one constructor that masks, for bits the wire
+  has just framed. A packet's Group and Channel are `Ump::group`,
+  `Ump::address` and `Ump::channel`: nothing outside `tutti-ump` shifts a
+  header by hand.
 - `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates

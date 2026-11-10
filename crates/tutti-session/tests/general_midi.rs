@@ -165,7 +165,9 @@ fn every_stage_declares_its_own_tail() {
 fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     use tutti_fixtures::sf2::{Inst, Preset, bytes, generator};
     use tutti_types::{At, InterleavedMut};
-    use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1};
+    use tutti_ump::{
+        Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
+    };
 
     let font = Arc::new(
         SoundFont::new(&mut std::io::Cursor::new(bytes(
@@ -212,8 +214,8 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
                 channel,
             },
             Voice1::ControlChange {
-                controller: CCNumber::new(controller).unwrap(),
-                value: U7::new(127).unwrap(),
+                controller: CCNumber::of(controller),
+                value: U7::of(127),
             },
         );
         handle
@@ -221,7 +223,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
             .expect("room");
     }
     handle
-        .note_on(At::NextBlock, channel, 69, 100)
+        .note_on(At::NextBlock, channel, NoteNumber::of(69), U7::of(100))
         .expect("room");
     let mut heard = Vec::new();
     let block = |session: &mut Session, heard: &mut Vec<f32>| {
@@ -234,7 +236,9 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
         block(&mut session, &mut heard);
     }
     let off = heard.len();
-    handle.note_off(At::NextBlock, channel, 69).expect("room");
+    handle
+        .note_off(At::NextBlock, channel, NoteNumber::of(69))
+        .expect("room");
     while heard.len() < off + summed + 20_000 {
         block(&mut session, &mut heard);
     }
@@ -298,7 +302,9 @@ fn peak_of_block(session: &mut Session) -> f32 {
 /// silence; the mute written to the volume param instead fails it too.
 #[test]
 fn muting_the_setup_silences_the_wet_path_too() {
-    use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1};
+    use tutti_ump::{
+        Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
+    };
     let (mut session, gm) = short_release_setup();
     let handle = gm.instrument().clone();
     let at = tutti_types::At::NextBlock;
@@ -309,20 +315,22 @@ fn muting_the_setup_silences_the_wet_path_too() {
                 channel: MidiChannel::FIRST,
             },
             Voice1::ControlChange {
-                controller: CCNumber::new(controller).unwrap(),
-                value: U7::new(127).unwrap(),
+                controller: CCNumber::of(controller),
+                value: U7::of(127),
             },
         );
         handle.send(at, Ump::from(message)).expect("room");
     };
     cc(91);
     handle
-        .note_on(at, MidiChannel::FIRST, 69, 100)
+        .note_on(at, MidiChannel::FIRST, NoteNumber::of(69), U7::of(100))
         .expect("room");
     for _ in 0..200 {
         peak_of_block(&mut session);
     }
-    handle.note_off(at, MidiChannel::FIRST, 69).expect("room");
+    handle
+        .note_off(at, MidiChannel::FIRST, NoteNumber::of(69))
+        .expect("room");
     // 0.25 s release is 12000 frames; the room rings past it.
     for _ in 0..(12_000 * 3 / 2 / 128) {
         peak_of_block(&mut session);

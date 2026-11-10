@@ -23,13 +23,6 @@ use tutti_ump::{
     Address, Attribute, CCNumber, Message, NoteNumber, U7, U14, Ump, Voice1, Voice2, decode,
 };
 
-fn note(n: u8) -> NoteNumber {
-    NoteNumber::new(n).unwrap()
-}
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap()
-}
-
 /// M2-115 section 3.3 stated bit by bit: up to the centre a left shift; above
 /// it, the low `src - 1` bits repeated, most significant first, into the
 /// `dst - src` new low bits.
@@ -52,8 +45,8 @@ fn repeat_rule(v: u32, src: u32, dst: u32) -> u32 {
 
 fn velocity(v: u8) -> u16 {
     match widen(Voice1::NoteOff {
-        note: note(60),
-        velocity: u7(v),
+        note: NoteNumber::of(60),
+        velocity: U7::of(v),
     }) {
         Voice2::NoteOff { velocity, .. } => velocity,
         other => panic!("{other:?}"),
@@ -62,14 +55,14 @@ fn velocity(v: u8) -> u16 {
 fn value(v: u8) -> u32 {
     match widen(Voice1::ControlChange {
         controller: CCNumber::of(74),
-        value: u7(v),
+        value: U7::of(v),
     }) {
         Voice2::ControlChange { value, .. } => value,
         other => panic!("{other:?}"),
     }
 }
 fn bend(v: u16) -> u32 {
-    match widen(Voice1::PitchBend(U14::new(v).unwrap())) {
+    match widen(Voice1::PitchBend(U14::of(v))) {
         Voice2::PitchBend(b) => b,
         other => panic!("{other:?}"),
     }
@@ -164,22 +157,22 @@ fn the_core_rules_hold() {
 fn a_note_on_at_velocity_0_is_a_note_off_at_the_centre() {
     assert_eq!(
         widen(Voice1::NoteOn {
-            note: note(60),
-            velocity: u7(0)
+            note: NoteNumber::of(60),
+            velocity: U7::of(0)
         }),
         Voice2::NoteOff {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity: 0x8000,
             attribute: Attribute::None,
         }
     );
     assert_eq!(
         widen(Voice1::NoteOn {
-            note: note(60),
-            velocity: u7(1)
+            note: NoteNumber::of(60),
+            velocity: U7::of(1)
         }),
         Voice2::NoteOn {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity: 0x0200,
             attribute: Attribute::None,
         }
@@ -187,11 +180,11 @@ fn a_note_on_at_velocity_0_is_a_note_off_at_the_centre() {
     for v in 1..=127u8 {
         assert_eq!(
             widen(Voice1::NoteOn {
-                note: note(61),
-                velocity: u7(v)
+                note: NoteNumber::of(61),
+                velocity: U7::of(v)
             }),
             Voice2::NoteOn {
-                note: note(61),
+                note: NoteNumber::of(61),
                 velocity: velocity(v),
                 attribute: Attribute::None,
             },
@@ -211,11 +204,11 @@ fn a_note_off_keeps_its_velocity() {
 
 #[test]
 fn every_variant_widens_and_keeps_its_fields() {
-    let n = note(72);
+    let n = NoteNumber::of(72);
     assert_eq!(
         widen(Voice1::PolyPressure {
             note: n,
-            pressure: u7(96)
+            pressure: U7::of(96)
         }),
         Voice2::PolyPressure {
             note: n,
@@ -223,14 +216,14 @@ fn every_variant_widens_and_keeps_its_fields() {
         }
     );
     assert_eq!(
-        widen(Voice1::ChannelPressure(u7(120))),
+        widen(Voice1::ChannelPressure(U7::of(120))),
         Voice2::ChannelPressure(0xF1C7_1C71)
     );
     // No bank: choosing one needs the latched Bank Select.
     assert_eq!(
-        widen(Voice1::ProgramChange(u7(33))),
+        widen(Voice1::ProgramChange(U7::of(33))),
         Voice2::ProgramChange {
-            program: u7(33),
+            program: U7::of(33),
             bank: None
         }
     );
@@ -241,7 +234,7 @@ fn every_variant_widens_and_keeps_its_fields() {
             assert_eq!(
                 widen(Voice1::ControlChange {
                     controller: CCNumber::of(c),
-                    value: u7(v)
+                    value: U7::of(v)
                 }),
                 Voice2::ControlChange {
                     controller: CCNumber::of(c),
@@ -262,8 +255,8 @@ fn the_widened_message_is_a_message() {
         channel: tutti_ump::MidiChannel::of(9),
     };
     let voice = widen(Voice1::NoteOn {
-        note: note(60),
-        velocity: u7(64),
+        note: NoteNumber::of(60),
+        velocity: U7::of(64),
     });
     let ump = Ump::from(Message::Midi2(address, voice));
     // Group 5, channel 9, Note On, note 60, velocity 0x8000, no attribute.

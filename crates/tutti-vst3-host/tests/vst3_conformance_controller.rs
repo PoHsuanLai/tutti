@@ -8,6 +8,7 @@
 #[path = "support/conformance.rs"]
 mod conformance_support;
 
+use tutti_fixtures::main_thread;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_types::Samples;
@@ -520,10 +521,4 @@ fn plugin_state_round_trips() {
         "plugin state did not round-trip:\n{}",
         failures.join("\n")
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -27,16 +27,12 @@
 //! failure, never a skip).
 
 use std::hint::black_box;
+use tutti_fixtures::main_thread;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::contract::Direct;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 use tutti_types::SampleRate;
-
-// The bench target gets dev-dependencies, and its binary sits in `deps/` like a
-// test's, so the test suites' resolver works here unchanged.
-#[path = "../tests/support/probe_path.rs"]
-mod probe_path;
 
 const SR: f64 = 48_000.0;
 /// The block every case renders (the figures `engine_render`'s header
@@ -44,7 +40,7 @@ const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 
 fn unit() -> Direct<InProcessVst2Client> {
-    let (unit, _handle) = in_process_vst2_client(&main_thread(), probe_path::probe_path(), SR)
+    let (unit, _handle) = in_process_vst2_client(&main_thread(), tutti_fixtures::vst2_probe(), SR)
         .expect("the reference VST2 plugin must be built — see tutti-fixtures");
     Direct::new(unit, SampleRate(SR), BLOCK)
 }
@@ -86,9 +82,3 @@ fn bench_many(c: &mut Criterion) {
 
 criterion_group!(benches, bench_one, bench_many);
 criterion_main!(benches);
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
-}

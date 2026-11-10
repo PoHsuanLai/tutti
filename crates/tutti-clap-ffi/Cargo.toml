@@ -48,7 +48,7 @@ tutti-clap-ffi = { path = ".", features = ["clap-extras"] }
 # same `cargo test` invocation and the tests find the artifact beside the test
 # binary (`tutti-fixtures`).
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
-tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }
 
 [package.metadata.docs.rs]

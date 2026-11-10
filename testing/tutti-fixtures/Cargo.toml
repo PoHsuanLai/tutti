@@ -10,12 +10,26 @@ publish = false
 
 # A dev-dependency of the crates whose tests read a repo asset or load a
 # reference plugin or the plugin-server, check a range-checked type, or build
-# MIDI messages (`midi`). Its workspace dependencies are `tutti-ump`, the
-# bottom layer, and `tutti-midi-protocol`, which depends on `tutti-ump` alone
-# (the widened test values); neither dev-depends on anything here, so no crate
-# meets two copies of a type through it. It is never linked into a shipped binary.
+# MIDI messages (`midi`). Its workspace dependencies without a feature are
+# `tutti-ump`, the bottom layer, and `tutti-midi-protocol`, which depends on
+# `tutti-ump` alone (the widened test values); neither dev-depends on anything
+# here, so no crate meets two copies of a type through it. It is never linked
+# into a shipped binary.
 [dependencies]
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-midi-protocol = { path = "../../crates/tutti-midi-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `plugin`: what a plugin crate's tests share (`main_thread`). Only crates above
+# `tutti-plugin-types` turn it on. In a workspace build the feature unifies, so
+# a crate at or below it may link a second copy of itself through this one; no
+# test there passes its own types into the `plugin` items, so the copies never
+# meet.
+tutti-plugin-types = { path = "../../crates/tutti-plugin-types", optional = true }
+
+[features]
+plugin = ["dep:tutti-plugin-types"]
+
+[dev-dependencies]
+# The lock test's private directory.
+tempfile = "3"

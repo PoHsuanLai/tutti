@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::{ContentScale, MainThread, WindowHandle};
 use tutti_vst3_ffi::{Module, Plugin};
@@ -228,10 +229,6 @@ fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
     assert_eq!(registered(&bystander), (1, 1));
     std::thread::spawn(move || drop(plugin)).join().unwrap();
     assert_eq!(registered(&bystander), (0, 0), "purged though not detached");
-}
-
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }
 
 /// **`activate_bus` reports the plugin's refusal.** The shared plugin has the

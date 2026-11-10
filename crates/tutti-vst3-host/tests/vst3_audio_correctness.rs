@@ -40,6 +40,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
@@ -1999,10 +2000,4 @@ mod loaded_writes {
         assert_eq!(read(&restored, PARAM_GAIN), Some(0.0), "NaN is 0");
         assert_eq!(read(&restored, PARAM_RAMP), Some(1.0), "infinity saturates");
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

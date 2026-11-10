@@ -3714,7 +3714,9 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "tutti-midi-protocol",
+ "tutti-plugin-types",
  "tutti-ump",
 ]
 

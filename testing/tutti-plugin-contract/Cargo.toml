@@ -12,7 +12,7 @@ publish = false
 # so cargo builds its cdylib in the same invocation.
 [dependencies]
 tutti-plugin-types = { path = "../../crates/tutti-plugin-types" }
-tutti-fixtures = { path = "../tutti-fixtures" }
+tutti-fixtures = { path = "../tutti-fixtures", features = ["plugin"] }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-graph = { path = "../../crates/tutti-graph" }
 tutti-midi-types = { path = "../../crates/tutti-midi-types" }

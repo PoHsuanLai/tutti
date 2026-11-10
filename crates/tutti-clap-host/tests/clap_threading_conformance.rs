@@ -38,7 +38,6 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::active::{Activate, Active};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{
@@ -82,7 +81,7 @@ impl Probe {
 
     /// Load the reference plugin through the real host, without activating.
     fn load(&self) -> ClapLoaded {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
@@ -143,7 +142,8 @@ fn read_thread_capture() -> ThreadCapture {
     type F = unsafe extern "C" fn(*mut ThreadCapture) -> bool;
     let mut cap = ThreadCapture::default();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_thread_capture\0")
             .expect("thread capture symbol present");
@@ -155,7 +155,8 @@ fn read_thread_capture() -> ThreadCapture {
 fn set_thread_command(cmd: u32) {
     type F = unsafe extern "C" fn(u32) -> u32;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_thread_command\0")
             .expect("thread command symbol present");
@@ -166,7 +167,8 @@ fn set_thread_command(cmd: u32) {
 fn thread_reset() {
     type F = unsafe extern "C" fn();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_thread_reset\0")
             .expect("thread reset symbol present");

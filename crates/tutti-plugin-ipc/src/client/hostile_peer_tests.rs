@@ -33,6 +33,7 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tutti_fixtures::main_thread;
 use tutti_types::SampleRate;
 
 use interprocess::local_socket::{ListenerOptions, Stream, traits::Listener as _};
@@ -1784,11 +1785,4 @@ fn the_rest_of_a_stalled_state_is_not_the_next_answer() {
         "a late state chunk was read as the parameter list's answer"
     );
     assert!(!mock.bridge.is_crashed());
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-#[cfg(test)]
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

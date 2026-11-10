@@ -13,6 +13,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_value,
@@ -24,12 +25,6 @@ use tutti_clap_ffi::{
 };
 use tutti_clap_test_plugin::{PLUGIN_ID, REPORTED_LATENCY_SAMPLES, probe_tag};
 use tutti_plugin_types::SampleFormat;
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
-}
 
 fn probe_path() -> &'static str {
     use std::sync::OnceLock;

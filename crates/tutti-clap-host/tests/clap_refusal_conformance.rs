@@ -18,8 +18,6 @@ use support::main_thread;
 
 use std::sync::{Mutex, MutexGuard};
 
-use support::probe_path::probe_path;
-
 use tutti_clap_host::types::StateContext;
 use tutti_clap_host::{ClapError, ClapLoaded, LoadOptions};
 use tutti_clap_test_plugin::ParamStateCapture;
@@ -59,7 +57,7 @@ impl Probe {
 
     /// Load the reference plugin through the real host, without activating.
     fn load(&self) -> ClapLoaded {
-        let path = std::path::Path::new(probe_path());
+        let path = std::path::Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
@@ -93,7 +91,8 @@ impl Drop for Probe {
 fn set_activate_refusal(refuse_rate_bits: u64, refuse_frames: u32) {
     type F = unsafe extern "C" fn(u64, u32);
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_set_activate_refusal\0")
             .expect("activate refusal symbol present");
@@ -104,7 +103,8 @@ fn set_activate_refusal(refuse_rate_bits: u64, refuse_frames: u32) {
 fn reset_activation() {
     type F = unsafe extern "C" fn();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_reset_activation\0")
             .expect("reset activation symbol present");
@@ -115,7 +115,8 @@ fn reset_activation() {
 fn activate_refusals() -> u32 {
     type F = unsafe extern "C" fn() -> u32;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_activate_refusals\0")
             .expect("activate refusals symbol present");
@@ -126,7 +127,8 @@ fn activate_refusals() -> u32 {
 fn inactive_deactivations() -> u32 {
     type F = unsafe extern "C" fn() -> u32;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_inactive_deactivations\0")
             .expect("inactive deactivations symbol present");
@@ -137,7 +139,8 @@ fn inactive_deactivations() -> u32 {
 fn activate_accepts() -> u32 {
     type F = unsafe extern "C" fn() -> u32;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_activate_accepts\0")
             .expect("activate accepts symbol present");
@@ -152,7 +155,8 @@ fn last_accepted_activation() -> Option<(f64, u32)> {
     let mut bits = 0u64;
     let mut frames = 0u32;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_last_accepted_activation\0")
             .expect("last accepted activation symbol present");
@@ -163,7 +167,8 @@ fn last_accepted_activation() -> Option<(f64, u32)> {
 fn set_state_context_refusal(refuse_save: bool, refuse_load: bool) {
     type F = unsafe extern "C" fn(bool, bool);
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_set_state_context_refusal\0")
             .expect("state-context refusal symbol present");
@@ -174,7 +179,8 @@ fn set_state_context_refusal(refuse_save: bool, refuse_load: bool) {
 fn reset_state_context_refusal() {
     type F = unsafe extern "C" fn();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_reset_state_context_refusal\0")
             .expect("reset state-context refusal symbol present");
@@ -185,7 +191,8 @@ fn reset_state_context_refusal() {
 fn param_reset() {
     type F = unsafe extern "C" fn();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_param_reset\0")
             .expect("param reset symbol present");
@@ -197,7 +204,8 @@ fn read_param_capture() -> ParamStateCapture {
     type F = unsafe extern "C" fn(*mut ParamStateCapture) -> bool;
     let mut cap = ParamStateCapture::default();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_param_capture\0")
             .expect("param capture symbol present");

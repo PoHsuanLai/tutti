@@ -22,7 +22,8 @@ static A: AllocDisabler = AllocDisabler;
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, Rig, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,7 +76,7 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// `PluginAutomation` node; it is a lane's LFO layer around its knob now.
 #[test]
 fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
     // A sine LFO a quarter beat long swinging parameter 77 across its

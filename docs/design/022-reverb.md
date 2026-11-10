@@ -805,8 +805,13 @@ registers `FdnNode` (`tutti-session` `param_session_node!`).
   tail ceiling (`Bounds::tail` is `Unbounded`), so every export of its node
   spends the whole cap (§12.4: export spends the ceiling). A reverb that cannot
   freeze keeps a finite ceiling, and its freeze control is not a port.
-  `Bounds::tail` carries a 1% margin: a reflection of a unit vector is orthogonal
-  to an `f32` entry's rounding, which lengthens a tail by up to a percent.
+  `Bounds::tail` carries a margin for the rounding of the reflection vector:
+  its entries are rounded twice (stored, then divided by the norm), 2^-23
+  relative, so `|v|^2` is 1 to within 2^-22 and `|A| <= 1 + 2^-21`; `rt60_bound` applies the norm every frame (its
+  proof's step), against a decay of `3 / (RT60 fs)` decades a frame, so the
+  bound reads a decay slower by `x = 2 e / ln 10 * RT60 fs / 3` and the tail
+  grows by `1 / (1 - x)`: 0.5% at 8 s and 44.1 kHz, 11% at 192 kHz
+  (`FdnDesign::rounding_margin`, computed, not a flat figure).
 - **Line lengths are whole frames** (rounded from a table of values near primes,
   scaled by `0.5 + size` and the rate), so a settled network delays by whole
   frames and a frozen one reads no fraction. Freezing turns the modulation off
@@ -829,7 +834,15 @@ channel), against Freeverb's 2.4 us.
 (each line's three loop gains, the reflection vector, the input and output
 gains, the wet gain, the width, the modulation depth) is a `Slew` that moves to
 its target in 20 ms of whole 32-frame chunks and lands on it exactly (so a freeze
-is exactly lossless once it has arrived); a line's length moves at most half a
+is exactly lossless once it has arrived). The reflection vector is renormalised to
+its length every chunk (a straight line between two unit vectors dips to
+`|v|^2` of 0.68 at 8 lines, and `I - 2 v v^T` of it is a contraction), so the
+matrix is orthogonal at every step of a ramp and a frozen tail keeps its energy
+through a diffusion move (`a_diffusion_ramp_keeps_a_frozen_tails_energy`); a
+diagonal network is the reflection along line 0, a sign on one line, so the
+ramp from it is a ramp of unit vectors. A size move lands over seconds by
+design: half a frame per chunk, about 6 s for the longest line going 0 to 1,
+to keep a sweep free of pitch artefacts; a line's length moves at most half a
 frame a chunk (a pitch bend of 27 cents), the pre-delay two. The chunk counter
 runs from the last reset, not from a block's edge, so blocks of 1, 17, 64 and
 512 render bit for bit alike. The first `retarget` after `prepare` (and a
@@ -870,7 +883,10 @@ What changed in the harness, and why:
   tone made a gain taken whole and a length taken whole fail (checked by hand:
   `ramp_chunks = 1`, `LENGTH_STEP = 1e6`, `PRE_STEP = 1e6`). The factor went from
   1.5 to 3 because Freeverb's tone reaches 2 times the steady jump at a step of
-  its loop gain; the 4-times gain defect still fails it by a wide margin.
+  its loop gain; the 4-times gain defect still fails it by a wide margin, and so does a
+  modest unslewed 1.5 times (both kernels' tests run it). Measured steady-jump
+  multiples of the clean kernels: Freeverb 1.98, the FDN 1.51, so 3 leaves each
+  clean kernel a margin of 1.5 (Freeverb) and 2 (the FDN) over what it measures.
 - **The stability case's bound** is `|B| m / (1 - g)` times `|C|`, the width and
   the wet gain (loose, but a runaway gain is infinite); the grid peak scan in
   `retarget` is what keeps a non-monotone set of band gains from exceeding 1

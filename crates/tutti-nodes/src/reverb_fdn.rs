@@ -75,7 +75,9 @@ const ADDRS: [UnitAddr; 11] = [
     UnitAddr::first(UnitParam::Freeze),
 ];
 
-/// The FDN's cells: the three decays, the size, the diffusion, the pre-delay,
+/// The FDN's cells: the three decays, the size (a move lands over seconds by
+/// design: half a frame per 32-frame chunk, about 6 s for the longest line going
+/// from 0 to 1, to avoid pitch artefacts), the diffusion, the pre-delay,
 /// the modulation's depth and rate, the width, the wet gain and (if the design
 /// can freeze) the freeze.
 #[derive(Clone, Debug)]

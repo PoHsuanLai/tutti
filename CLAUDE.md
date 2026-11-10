@@ -521,7 +521,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
   its two instances and `ReverbKind` the choice between them), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
-  `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`).
+  `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
+  `FdnDesign`, `FreeverbControls`, `FreeverbDesign`).
 - **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only
   the `Node` adapter.** Where an algorithm needs a `Param<U>` read, an atomic or
   a non-finite guard (`LastGood`), the node reads and guards it and hands the

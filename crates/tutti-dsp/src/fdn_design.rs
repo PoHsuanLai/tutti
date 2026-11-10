@@ -60,7 +60,10 @@ pub struct FdnControls {
     /// the low band (1) and the high band (2): `[mid, low, high]`.
     pub decay: [Seconds; 3],
     /// The room size, `0..1`: scales every line, from half to one and a half
-    /// times the table.
+    /// times the table. **A move lands over seconds, by design**: the kernel
+    /// moves a line half a frame per 32-frame chunk (a pitch bend of 27 cents),
+    /// so the longest line going from size 0 to 1 takes about 6 s, to keep a
+    /// size sweep free of pitch artefacts.
     pub size: Mix,
     /// How much the lines mix, `0..1`: `0` is parallel combs, `1` the smooth end.
     pub diffusion: Mix,
@@ -153,6 +156,25 @@ impl FdnDesign {
     #[must_use]
     pub fn freezable(&self) -> bool {
         self.freezable
+    }
+}
+
+impl FdnDesign {
+    /// What `Bounds::tail` is multiplied by for the rounding of the reflection
+    /// vector. Each entry of a unit `v` is rounded twice (stored as `f32`, then
+    /// divided by the norm and rounded again), 2^-23 relative in all, so `|v|^2`
+    /// is 1 to within `e = 2^-22` and `|A| = 1 + 2e` at most. `rt60_bound`
+    /// applies that norm **every frame** (the step of its proof), where the decay
+    /// is `3 / (RT60 fs)` decades a frame, so the bound reads a decay slower by
+    /// `x = 2e / ln 10 * RT60 fs / 3` of itself, and the tail by `1 / (1 - x)`:
+    /// 0.5% at 8 s and 44.1 kHz, 11% at 192 kHz.
+    fn rounding_margin(&self, ceiling: &Ceiling) -> f32 {
+        let e = 2.0 * f64::from(f32::EPSILON);
+        let x = 2.0 * e / std::f64::consts::LN_10
+            * f64::from(self.max_decay.get())
+            * ceiling.rate().get()
+            / 3.0;
+        (1.0 / (1.0 - x.min(0.5))) as f32
     }
 }
 
@@ -318,11 +340,8 @@ impl Design for FdnDesign {
         self.design_into(&worst, ceiling.rate(), &mut network);
         let mut b = Bounds::of(&network, ceiling.floor());
         b.tail = match b.tail {
-            // A reflection of a unit vector is orthogonal only to an `f32`
-            // entry's rounding, which lengthens a tail by less than a percent
-            // (and a freeze that is reachable has none to bound).
             _ if self.freezable => Ring::Unbounded,
-            Ring::Finite(s) => Ring::Finite(Seconds(s.get() * 1.01)),
+            Ring::Finite(t) => Ring::Finite(Seconds(t.get() * self.rounding_margin(ceiling))),
             other => other,
         };
         b
@@ -677,6 +696,13 @@ mod tests {
             cases::click_free(&defective(Defect::UnslewedGain(4.0))),
             "jump",
         );
+        // A modest step too: 1.5 times fails the 3 times allowance (measured
+        // margins of the clean kernels: Freeverb 1.98, the FDN 1.51 times the
+        // steady jump).
+        fails(
+            cases::click_free(&defective(Defect::UnslewedGain(1.5))),
+            "jump",
+        );
         fails(cases::reset(&defective(Defect::NoReset)), "reset");
         fails(cases::fresh(&defective(Defect::FreshKeepsState)), "fresh()");
         fails(
@@ -834,6 +860,95 @@ mod tests {
         }
         for bad in [0.0, 0.01, 60.001, f32::NAN, f32::INFINITY] {
             assert!(FdnDesign::new(8, Seconds(bad), false).is_none(), "{bad}");
+        }
+    }
+
+    /// A frozen tail keeps its energy through a diffusion ramp from 0 to 1: the
+    /// reflection is a unit vector at every step, not a straight line between
+    /// two (which dips to `|v|^2` of 0.68 and is a contraction). The energy the
+    /// lines hold (their whole state while frozen) before and after the 20 ms
+    /// ramp agrees to 0.01 dB. (The output's level would not do: it is the
+    /// lines' energy over their lengths, and mixing moves energy between lines of
+    /// different length.)
+    ///
+    /// Mutation (run): dropping the per-chunk renormalisation in
+    /// `FdnKernel::begin_chunk` loses 0.25 dB and fails.
+    #[test]
+    fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
+        use crate::network::{Kernel, Setup};
+        let rate = SampleRate(48_000.0);
+        let d = freezable();
+        let mut k = d.kernel();
+        k.prepare(
+            &d.bounds(&Ceiling::at(rate).unwrap()),
+            &Setup {
+                rate,
+                max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+                input: ChannelLayout::MONO,
+                output: ChannelLayout::STEREO,
+            },
+        );
+        let at = |diffusion: f32, freeze: bool| {
+            d.design(
+                &with(|c| {
+                    c.diffusion = Mix(diffusion);
+                    c.freeze = freeze;
+                    c.modulation = Depth(0.0);
+                }),
+                rate,
+            )
+        };
+        let run = |k: &mut FdnKernel, frames: usize, noise: bool| {
+            let mut rng = StdRng::seed_from_u64(5);
+            let x: Vec<f32> = (0..frames)
+                .map(|_| if noise { rng.gen_range(-0.5..0.5) } else { 0.0 })
+                .collect();
+            for chunk in x.chunks(64) {
+                let (mut l, mut r) = (vec![0.0f32; chunk.len()], vec![0.0f32; chunk.len()]);
+                k.process(&[chunk], &mut [&mut l, &mut r]);
+            }
+        };
+        k.retarget(&at(0.0, false));
+        run(&mut k, 48_000, true);
+        k.retarget(&at(0.0, true));
+        run(&mut k, 24_000, false);
+        let before = k.state_energy();
+        k.retarget(&at(1.0, true));
+        run(&mut k, 9_600, false);
+        let db = 10.0 * (k.state_energy() / before).log10();
+        assert!(
+            db.abs() < 0.01,
+            "the frozen energy moved {db:.4} dB through the ramp"
+        );
+    }
+
+    /// The bounds hold a design's tail at 192 kHz too, where the rounding of the
+    /// reflection vector (applied every frame by `rt60_bound`) is a larger share
+    /// of a frame's decay: the margin is computed from the rate and the longest
+    /// decay, not a flat figure.
+    ///
+    /// Mutation (run): a margin of 1 fails at some diffusion below.
+    #[test]
+    fn the_bounds_dominate_where_rounding_matters() {
+        let d = FdnDesign::default();
+        let rate = SampleRate(192_000.0);
+        let ceiling = Ceiling::at(rate).unwrap();
+        let bound = d.bounds(&ceiling);
+        for k in 1..100 {
+            let c = FdnControls {
+                decay: [d.max_decay(); 3],
+                size: Mix(1.0),
+                diffusion: Mix(k as f32 / 100.0),
+                pre_delay: MAX_PRE_DELAY,
+                modulation: Depth(1.0),
+                ..FdnControls::DEFAULT
+            };
+            let tail = d.design(&c, rate).tail(ceiling.floor());
+            assert!(
+                bound.tail.covers(tail),
+                "diffusion {k}%: {tail:?} over {:?}",
+                bound.tail
+            );
         }
     }
 }

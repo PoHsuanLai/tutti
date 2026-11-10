@@ -8,7 +8,7 @@
 //! round, and the loop gain is exactly the network's.
 //!
 //! **Retargeting ramps.** `retarget` only sets targets. Every parameter that
-//! sounds (the loop gains, the reflection vector, the input and output gains,
+//! sounds (the loop gains, the reflection vector (renormalised to its length every chunk, so the loop is orthogonal at every step of a ramp), the input and output gains,
 //! the wet gain, the width and the modulation depth) is a [`Slew`] that moves
 //! to it in a fixed 20 ms of whole [`CHUNK`]s, landing on it exactly; a length
 //! moves at a bounded half frame a chunk (about 1.6% of a frame a frame, a
@@ -119,6 +119,10 @@ pub struct FdnKernel {
     phase: Vec<f64>,
     gain: Vec<[Slew; 3]>,
     v: Vec<Slew>,
+    /// The length of `v` the network asks for (1 for every design here): the
+    /// reflection is renormalised to it every chunk, so it is orthogonal at
+    /// every step of a ramp and not only at its ends.
+    v_len: Slew,
     input: Vec<Slew>,
     out: Vec<[Slew; 2]>,
     wet: Slew,
@@ -164,6 +168,7 @@ impl FdnKernel {
             phase: Vec::new(),
             gain: Vec::new(),
             v: Vec::new(),
+            v_len: Slew::default(),
             input: Vec::new(),
             out: Vec::new(),
             wet: Slew::default(),
@@ -185,6 +190,24 @@ impl FdnKernel {
         }
     }
 
+    /// The energy the lines hold: the last `length` samples of each, which is the
+    /// whole state of a frozen network (the absorption's one-poles are not read
+    /// while every gain is 1). For the tests.
+    #[cfg(test)]
+    pub(crate) fn state_energy(&self) -> f64 {
+        (0..self.n)
+            .map(|j| {
+                let len = self.len[j].cur as usize;
+                (1..=len)
+                    .map(|k| {
+                        let x = self.buf[j * self.cap + (self.w + self.cap - k) % self.cap];
+                        f64::from(x) * f64::from(x)
+                    })
+                    .sum::<f64>()
+            })
+            .sum()
+    }
+
     fn start_phase(&self, j: usize) -> f64 {
         std::f64::consts::TAU * j as f64 / self.max_lines.max(1) as f64
     }
@@ -202,6 +225,7 @@ impl FdnKernel {
             s.snap();
         }
         self.pre_len.snap();
+        self.v_len.snap();
         self.depth.snap();
         self.wet.snap();
         self.width.snap();
@@ -287,6 +311,7 @@ impl FdnKernel {
         self.depth.advance();
         self.wet.advance();
         self.width.advance();
+        self.v_len.advance();
         let dphi = std::f64::consts::TAU * f64::from(self.rate_hz) * CHUNK as f64 / self.rate;
         for j in 0..n {
             self.gain[j].iter_mut().for_each(Slew::advance);
@@ -302,6 +327,13 @@ impl FdnKernel {
             self.c_v[j] = self.v[j].cur;
             self.c_in[j] = self.input[j].cur;
             self.c_out[j] = self.out[j].map(|s| s.cur);
+        }
+        // A straight line between two unit vectors is shorter than either, and
+        // `I - 2 v v^T` of a short `v` is a contraction: bring it back to length.
+        let len: f32 = self.c_v[..n].iter().map(|x| x * x).sum::<f32>().sqrt();
+        if len > 1.0e-6 {
+            let k = self.v_len.cur / len;
+            self.c_v[..n].iter_mut().for_each(|x| *x *= k);
         }
         self.c_wet = self.wet.cur;
         self.c_width = self.width.cur;
@@ -344,6 +376,7 @@ impl Kernel for FdnKernel {
         self.phase = vec![0.0; lines];
         self.gain = vec![[Slew::default(); 3]; lines];
         self.v = vec![Slew::default(); lines];
+        self.v_len = Slew::default();
         self.input = vec![Slew::default(); lines];
         self.out = vec![[Slew::default(); 2]; lines];
         self.state = vec![[0.0; 4]; lines];
@@ -388,8 +421,11 @@ impl Kernel for FdnKernel {
             for (s, t) in self.gain[j].iter_mut().zip(g) {
                 s.aim(t, ramp);
             }
+            // A diagonal network is the reflection along line 0: a sign on one
+            // line, which changes no decay, and a unit vector like the rest, so a
+            // ramp from it stays orthogonal.
             let v = match &f.matrix {
-                Matrix::Diagonal => 0.0,
+                Matrix::Diagonal => f32::from(u8::from(j == 0)),
                 Matrix::Householder => flat,
                 Matrix::Reflection(v) if v.len() == n => v[j],
                 _ => 0.0,
@@ -412,6 +448,14 @@ impl Kernel for FdnKernel {
             self.out[j][0].aim(l, ramp);
             self.out[j][1].aim(r, ramp);
         }
+        let want: f32 = (0..n)
+            .map(|j| {
+                let v = self.v[j].target;
+                v * v
+            })
+            .sum::<f32>()
+            .sqrt();
+        self.v_len.aim(want, ramp);
         for j in n..self.max_lines {
             self.input[j].aim(0.0, ramp);
             self.out[j].iter_mut().for_each(|s| s.aim(0.0, ramp));

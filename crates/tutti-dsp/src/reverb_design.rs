@@ -675,6 +675,13 @@ mod kernel_tests {
             cases::click_free(&defective(Defect::UnslewedGain(4.0))),
             "jump",
         );
+        // A modest step too: 1.5 times fails the 3 times allowance (measured
+        // margins of the clean kernels: Freeverb 1.98, the FDN 1.51 times the
+        // steady jump).
+        fails(
+            cases::click_free(&defective(Defect::UnslewedGain(1.5))),
+            "jump",
+        );
         // line lengths: the longest comb 5% long (inside the RT60 tolerance).
         let m = Defective {
             inner: FreeverbDesign,

@@ -1,15 +1,10 @@
-# Workspace root for the tutti audio engine + its Bevy adapter (bevy-tutti).
+# Workspace root for the tutti audio engine.
 #
 # tutti is a self-contained audio engine, Bevy-free at its core: `bevy` is an
-# optional, off-by-default feature on every engine crate that has one, and
-# `tutti-units` has none at all. bevy-tutti is the Bevy adapter layered on top,
-# and is the only Bevy-mandatory member.
-#
-# Every member lives under crates/**, including the adapter (crates/bevy-tutti).
-# This tree was extracted from the dawai app repo, where the engine sat at
-# crates/tutti/ and the adapter beside it at crates/bevy-tutti/ — which is why
-# the adapter used to carry an explicit `package.workspace` pointer. It no
-# longer needs one: the repo root and the workspace root are the same directory.
+# optional, off-by-default feature on every engine crate that has one.
+# bevy-tutti, the Bevy adapter layered on top, is PARKED: it lives in
+# crates/bevy-tutti, outside this workspace (`exclude` below), so nothing here
+# builds Bevy.
 [workspace]
 resolver = "2"
 members = [
@@ -112,11 +107,13 @@ members = [
     # check the Rust shells (which share the `vst3` crate with the host) cannot be.
     "testing/tutti-shared-plugin-vst3-cpp",
     "testing/tutti-plugin-contract",
-    # The Bevy adapter — the one member that mandates Bevy, and the umbrella the
-    # engine is consumed through: it depends on the subsystem crates directly
-    # and re-exports them.
-    "crates/bevy-tutti",
 ]
+
+# `crates/bevy-tutti`, the Bevy adapter, is parked: not a member, and its own
+# `[workspace]` root (CLAUDE.md, "bevy-tutti is parked"). Build it on demand with
+# `cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features full,plugin
+# --all-targets`.
+exclude = ["crates/bevy-tutti"]
 
 # The edition every member inherits with `edition.workspace = true`, vendored
 # members included, and the minimum Rust they build with (`rust-version`, the
@@ -164,17 +161,14 @@ missing_panics_doc = "warn"
 
 # Shared-dep pins the members inherit via `workspace = true`.
 #
-# The bevy 0.19 line and the `audio-automation` rev must stay in step with any
-# consumer that also depends on those crates directly — dawai does. Two revs of
-# `audio-automation` are two disjoint copies of `Curve`, and the error surfaces
-# at the consumer's seam as `expected Curve, found Curve`, nowhere near here.
+# The `audio-automation` rev must stay in step with any consumer that also
+# depends on that crate directly — dawai does. Two revs of `audio-automation`
+# are two disjoint copies of `Curve`, and the error surfaces at the consumer's
+# seam as `expected Curve, found Curve`, nowhere near here. (`bevy_reflect` is the
+# optional `bevy` feature of `tutti-types` and `tutti-modulation`; the rest of
+# the bevy 0.19 pins moved to the parked `crates/bevy-tutti/Cargo.toml`.)
 [workspace.dependencies]
-bevy_app = { version = "0.19", default-features = false }
-bevy_ecs = { version = "0.19", default-features = false, features = ["debug", "bevy_reflect"] }
-bevy_log = { version = "0.19", default-features = false }
-bevy_asset = { version = "0.19", default-features = false }
 bevy_reflect = { version = "0.19", default-features = false }
-bevy_tasks = "0.19"
 thiserror = "2"
 
 # Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —
@@ -231,8 +225,7 @@ core-foundation = "0.10"
 # `debug = "line-tables-only"` is enough for stack attribution and costs far
 # less build time and disk than full DWARF.
 #
-# Belongs here rather than in crates/bevy-tutti/Cargo.toml: bevy-tutti is a
-# *member* of this workspace, and Cargo ignores `[profile]` in non-root manifests
+# Belongs in the root manifest: Cargo ignores `[profile]` in non-root manifests
 # (with a warning that is easy to miss under `| tail`).
 #
 #   cargo build -p tutti-nodes --profile profiling --bench engine_render

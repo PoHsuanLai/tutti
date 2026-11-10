@@ -786,3 +786,31 @@ says so. The load declares the state it restores (`LoadPlugin { state: Some(Stag
 `PluginLoad::run` carry it; the in-process VST2 fork restores the program and
 the state before it activates. The AU change mirrors the others and is not
 built here (macOS only).
+
+## bevy-tutti is parked
+
+2026-11-10. `crates/bevy-tutti` is out of the workspace (root `exclude`, and its
+own `[workspace]` root with the dependency versions and lints copied from the
+root). While the engine is still changing, about a third of commits also edited
+the adapter, and every local `cargo clippy --workspace` built Bevy. Now no
+workspace command and no CI job compiles it; `.github/workflows/parked-bevy.yml`
+runs `cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features
+full,plugin --all-targets` weekly to measure drift, and gates nothing. Lanes do
+not update it. Its `Cargo.lock` is not committed (it is parked, and a lock
+there is churn that nothing reads); each build resolves fresh.
+
+What the adapter's tests covered that nothing Bevy-free did was ported first, to
+`tutti-session`'s suites (export forks, plugin latency, health and modulation,
+device restart, scene renders, modulation lanes, SoundFont, route rules,
+compensation), with the same feature gates. The tests that remain only in
+`crates/bevy-tutti` assert the ECS adapter (reconciliation, components,
+`PortSources`/`MasterSources`, systems order, the prelude, asset loaders).
+
+Two things followed from leaving the workspace. A workspace run no longer turns
+on `tutti-session`'s `device` and `record` (it was bevy-tutti's feature edge
+that did), so the dark-features job names `device` (and the ported suites' own
+`sampler` and `vst2`). `scripts/check-adapter.sh` skips its checks 3 and 5 while
+`ADAPTER_PARKED=1`, and `scripts/check-layout.sh` lets `crates/bevy-tutti` be a
+non-member only if it is its own `[workspace]` root. Un-parking is one
+migration PR: restore the member, the inheritance, the CI and xtask lines, and
+`ADAPTER_PARKED`, and fix what the weekly check has found.

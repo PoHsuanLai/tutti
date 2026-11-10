@@ -335,4 +335,8 @@ impl Processor for ClapProcessor {
     fn stop(&mut self) {
         ClapProcessor::stop(self);
     }
+
+    fn reset(&mut self) {
+        ClapProcessor::reset(self);
+    }
 }

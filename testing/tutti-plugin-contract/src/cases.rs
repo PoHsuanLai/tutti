@@ -141,6 +141,35 @@ pub fn latency_applied<F: Format>() {
     }
 }
 
+/// A reset makes the plugin forget its signal history (design 016 §6.2, case
+/// I1): an impulse in the delay line before the reset never comes out after it.
+/// The oracle is the spec's own delay, [`spec::LATENCY`]; the silence after the
+/// reset is longer than it, so a remembered impulse would be heard.
+// Mutation (run): `Processor::reset` a no-op in each host (CLAP, VST3) -> the
+//   impulse comes out at frame 37 -> fails. VST2 has no opcode that clears state,
+//   so the case is its gap.
+pub fn reset_clears_the_delay_line<F: Format>() {
+    let mut a = active_with::<F>(Mode::Delay, 128, SampleFormat::Float32);
+    let frames = 100;
+    let mut impulse = vec![0.0f32; frames];
+    impulse[0] = 1.0;
+    // Still in the delay line: it would come out at frame 137.
+    a.render(&[impulse.clone(), impulse], frames, &ProcessContext::new());
+    a.processor().reset();
+    let mut heard = Vec::new();
+    for _ in 0..4 {
+        heard.extend_from_slice(&a.render(&silence(frames), frames, &ProcessContext::new())[0]);
+    }
+    assert!(heard.len() > spec::LATENCY.0, "longer than the delay");
+    for (i, &v) in heard.iter().enumerate() {
+        assert_eq!(
+            v,
+            spec::tag(0),
+            "the impulse came out after the reset, at frame {i}"
+        );
+    }
+}
+
 /// The tail the plugin reports.
 // Mutation (run): each host reporting the tail plus one -> fails.
 pub fn tail_reported<F: Format>() {

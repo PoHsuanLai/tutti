@@ -340,14 +340,22 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
-            // Deliberately a no-op, and the host depends on that. Clearing the
-            // pipeline on a seek is entirely the host's job: it drops its
-            // in-flight block and never rewinds its sequence, so a pre-seek
-            // block published late is structurally unmatchable. Nothing useful
-            // is left for the server to do — and anything it *did* do here
-            // (zeroing a slot, resetting a counter) would be a second mechanism
-            // that could disagree with the first.
-            M::Reset => Ok(Reaction::None),
+            // The plugin forgets its signal history (design 016 §6.2), in order
+            // with the `ProcessAudio` blocks on this loop, so a reset is never
+            // reordered against a block. The pipeline is left alone, and the
+            // host depends on that: clearing it on a seek is entirely the
+            // host's job (it drops its in-flight block and never rewinds its
+            // sequence, so a pre-seek block published late is structurally
+            // unmatchable), and anything done to it here would be a second
+            // mechanism that could disagree with the first.
+            M::Reset => {
+                if let Some(plugin) = self.plugin.as_mut()
+                    && let Err(e) = plugin.instance_mut().reset()
+                {
+                    tracing::warn!("the plugin did not reset: {e}");
+                }
+                Ok(Reaction::None)
+            }
 
             M::SaveState => Ok(self.handle_save_state(main)),
             M::LoadStateChunk { seq, last, bytes } => {
@@ -1211,6 +1219,96 @@ mod tests {
             outputs: loaded.outputs.clone(),
             out,
         }
+    }
+
+    /// The probe's call-site record, from the image `load_clap` loaded.
+    #[cfg(feature = "clap")]
+    fn clap_probe_sites() -> tutti_clap_test_plugin::ThreadCapture {
+        let mut cap = tutti_clap_test_plugin::ThreadCapture::default();
+        // SAFETY: `tutti_test_plugin_thread_capture` is the reference plugin's
+        // `extern "C" fn(*mut ThreadCapture) -> bool`, and `cap` is a valid,
+        // exclusive `ThreadCapture` for the call. The handle is leaked, as
+        // `set_clap_probe_switch` leaks its own: a live instance uses the image.
+        unsafe {
+            let lib = libloading::Library::new(clap_plugin()).expect("the probe opens");
+            let capture: libloading::Symbol<
+                unsafe extern "C" fn(*mut tutti_clap_test_plugin::ThreadCapture) -> bool,
+            > = lib
+                .get(b"tutti_test_plugin_thread_capture\0")
+                .expect("the probe exports its capture");
+            assert!(capture(&mut cap), "the probe reports its capture");
+            std::mem::forget(lib);
+        }
+        cap
+    }
+
+    /// **A reset reaches the plugin, between the blocks it was sent between**
+    /// (design 016 §6.2). The server dropped `HostMessage::Reset`, so a seek
+    /// left every out-of-process CLAP and VST3 plugin's delay lines, reverb
+    /// tails and filter memories sounding across the jump.
+    ///
+    /// The probe counts its `reset` and `process` calls; after each message
+    /// the counts must be the ones that message implies, so the reset is seen
+    /// once and in order.
+    ///
+    /// Mutation (run): restore `M::Reset => Ok(Reaction::None)` → the probe's
+    /// `reset` count stays 0 → fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_reset_reaches_the_plugin_between_two_blocks() {
+        use tutti_clap_test_plugin::Site;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut s, shm) = load_clap("reset_reaches_the_plugin", SampleFormat::Float32);
+        let visits = |site: Site| clap_probe_sites().sites[site as usize].visits;
+        let resets_at_load = visits(Site::Reset);
+        let processes_at_load = visits(Site::Process);
+
+        let block = |s: &mut Session, seq: u64| {
+            for ch in 0..2 {
+                shm.write_input::<f32>(seq, ch, &[0.0; F64_FRAMES]).unwrap();
+            }
+            shm.publish_input(seq);
+            let reply = s
+                .handle(
+                    &main_thread(),
+                    HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                        seq,
+                        num_samples: F64_FRAMES,
+                        ..Default::default()
+                    })),
+                )
+                .unwrap()
+                .into_reply();
+            assert!(
+                matches!(reply, BridgeMessage::AudioProcessed { .. }),
+                "{reply:?}"
+            );
+        };
+
+        block(&mut s, 1);
+        assert_eq!(visits(Site::Process), processes_at_load + 1);
+        assert_eq!(visits(Site::Reset), resets_at_load, "no reset was sent yet");
+
+        s.handle(&main_thread(), HostMessage::Reset).unwrap();
+        assert_eq!(
+            visits(Site::Reset),
+            resets_at_load + 1,
+            "the reset reached the plugin"
+        );
+        assert_eq!(
+            visits(Site::Process),
+            processes_at_load + 1,
+            "and no block ran"
+        );
+
+        block(&mut s, 2);
+        assert_eq!(visits(Site::Process), processes_at_load + 2);
+        assert_eq!(
+            visits(Site::Reset),
+            resets_at_load + 1,
+            "one reset, between the blocks"
+        );
     }
 
     /// What [`clap_round_trip`] observed.

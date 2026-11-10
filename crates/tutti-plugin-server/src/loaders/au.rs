@@ -734,6 +734,12 @@ impl PluginMeta for AuInstance {
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginAudio for AuInstance {
+    fn reset(&mut self) -> PluginResult<()> {
+        self.inner
+            .reset()
+            .map_err(|e| PluginError::Process(format!("AudioUnitReset refused: {e}")))
+    }
+
     fn process(
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,

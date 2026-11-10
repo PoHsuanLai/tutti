@@ -13,7 +13,7 @@ filename keeps the design's old "native graph" name; it is just the graph): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
 once, and events as ports. `Engine` renders only the graph
 (`Engine::new(&transport, &mut editor, executor)`), it is `bevy-tutti`'s
-only runtime (`AudioGraphRes` wraps a `tutti_session::Session`, whose graph
+(parked, below) only runtime (`AudioGraphRes` wraps a `tutti_session::Session`, whose graph
 holds the `Editor`; PDC is the compiler's, export forks the live graph with
 `Editor::fork`), and every node is a `tutti_graph::Node`. fundsp's `Net`,
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
@@ -139,8 +139,8 @@ cargo fmt
 scripts/check-canonical-paths.sh   # the import-path gate (also searches *.md)
 scripts/check-submodule-pins.sh    # VST3 SDK pins, asserted by SHA
 scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no bevy feature
-scripts/check-adapter.sh           # bevy-tutti composes nothing, holds no policy (clock reads, usize/Duration consts); tutti-session re-exports no crate
-scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
+scripts/check-adapter.sh           # tutti-session re-exports no crate whole (bevy-tutti's composition/policy scans are skipped while it is parked)
+scripts/check-doc-features.sh      # rustdoc per feature for tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
@@ -190,10 +190,10 @@ cargo xtask test-all              # both
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
   `real_stall_tests`, `tutti-session`'s `plugin` suite, `tutti`'s §5.2
-  example (`plugin_midi_export`, `--features clap,export`), and `bevy-tutti`'s
-  `plugin_capture`, `mod_plugin` and `export_fork` plugin tests and
-  `engine::restart::tests::a_restart_to_another_callback_size_re_declares_a_plugins_latency`
-  (`--features full,plugin`) fail with that exact command, and
+  example (`plugin_midi_export`, `--features clap,export`), and `tutti-session`'s
+  `export_fork_plugin`, `plugin_latency` and `plugin_modulation` suites (ported
+  from `bevy-tutti`; `--features clap,export,modulation,device`) fail with that
+  exact command, and
   `tutti-plugin-contract`'s `server` suite (`--features server`) needs
   `--no-default-features --features clap,vst2,vst3`. They must fail
   rather than skip, and they cannot use a dev-dependency because that would
@@ -294,6 +294,20 @@ by-products) is in the engineering notes; read it before touching
 
 ## Workspace
 
+**`bevy-tutti` is parked** (2026-11, `docs/engineering-notes.md`, "bevy-tutti is
+parked"). It is in `crates/bevy-tutti` but out of the workspace (`exclude`, and
+its own `[workspace]` root): no workspace command builds Bevy, and CI does not
+build it, except a weekly drift check (`.github/workflows/parked-bevy.yml`) that
+measures and gates nothing. **Lanes do not update it**: an engine change that
+breaks it is not a reason to touch it. Build it on demand with
+`cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features full,plugin
+--all-targets` (no committed lock file; it resolves fresh). Un-parking is one
+migration PR: put it back in `members`, drop the `exclude`, restore its
+`workspace = true` inheritance, the CI/xtask lines and `ADAPTER_PARKED` in
+`scripts/check-adapter.sh`. Its engine-path tests were ported to
+Bevy-free suites in `tutti-session` first. The rules below that name it
+describe the adapter as it was parked.
+
 One workspace at the repo root. The member list in `Cargo.toml` is the source
 of truth.
 
@@ -303,7 +317,7 @@ xtask/           the development commands (`cargo xtask help`): std only, no
                  crates/ and testing/; no layer, nothing depends on it
 crates/          everything shipped; directory name = package name; no nesting
   tutti          Bevy-free umbrella. Every item is a `pub use` (tests/no_logic.rs).
-  bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
+  bevy-tutti     PARKED (out of the workspace, see above): Bevy umbrella + adapter; the only Bevy-mandatory crate.
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
                  `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`).
@@ -416,7 +430,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
    `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
 6. `tutti-plugin`, `tutti-plugin-probe`
 7. `tutti-plugin-server`, `tutti-session`
-8. `tutti`, `bevy-tutti`
+8. `tutti` (and `bevy-tutti`, when it is unparked)
 
 - A member is directly `crates/<package-name>` or `testing/<dir>`, except
   `xtask` (a named exception, the top-level directory); a nested directory is
@@ -630,7 +644,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   it carries the MIT notice in its header and `LICENSE-RUSTYSYNTH.txt` is the
   licence text. `tutti-sf2` keeps the original author's MIT license and
   copyright (`LICENSE.txt`) likewise.
-- A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
+- (While `bevy-tutti` is parked a Bevy app has no maintained adapter.) A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
   holds only code that names two or more engine crates, or the order they
   run in, has no `bevy` feature (`scripts/check-bevy-free.sh`) and
@@ -785,7 +799,7 @@ Scalars use `Param<U>`.
 
 ## Wiring is declared, not called
 
-`bevy-tutti` runs on `tutti-graph` only (doc 013, "Flip the adapter").
+`bevy-tutti` (parked) runs on `tutti-graph` only (doc 013, "Flip the adapter").
 
 - `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
   `MasterSources` resource declare what feeds each port. The rebuild builds a
@@ -933,4 +947,5 @@ both are in `[workspace.dependencies]`:
 
 - **`audio-automation`'s rev.** A mismatch surfaces as
   `expected Curve, found Curve`.
-- **The bevy 0.19 line**, for anything that touches `bevy-tutti`.
+- **The bevy 0.19 line**, for anything that touches `bevy-tutti` (its pins now
+  live in `crates/bevy-tutti/Cargo.toml`, while it is parked).

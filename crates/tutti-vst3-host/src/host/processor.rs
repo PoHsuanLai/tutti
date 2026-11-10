@@ -686,6 +686,14 @@ impl Processor for ProcessorAny {
             Self::F64(p) => p.stop(),
         }
     }
+
+    /// `setProcessing(false)`, started again by the next block: what the SDK
+    /// offers for a reset (`ivstaudioprocessor.h`: it "could be used to reset
+    /// some buffers (like Delay line or Reverb)"), with the SysEx reassembly
+    /// dropped as [`stop`](Vst3Processor::stop) drops it.
+    fn reset(&mut self) {
+        Processor::stop(self);
+    }
 }
 
 impl<T: Vst3Sample> Vst3Processor<T> {

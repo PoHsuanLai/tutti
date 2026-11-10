@@ -484,4 +484,11 @@ impl Processor for Vst2Processor {
     fn stop(&mut self) {
         Vst2Processor::stop(self);
     }
+
+    /// VST 2.4 has no opcode that clears a plugin's DSP state, so this drops
+    /// only the host's SysEx reassembly: a message open across the reset does
+    /// not complete on the far side of it.
+    fn reset(&mut self) {
+        self.midi.send.reset_sysex();
+    }
 }

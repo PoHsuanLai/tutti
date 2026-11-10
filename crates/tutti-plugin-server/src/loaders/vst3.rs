@@ -21,8 +21,9 @@ use tutti_plugin_types::{
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
-use crate::loaders::common::{Meta, standing};
+use crate::loaders::common::Meta;
 use crate::plugin::AsyncEvent;
+use tutti_plugin_types::standing;
 
 pub use tutti_vst3_host;
 

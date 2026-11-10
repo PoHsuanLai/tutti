@@ -3,19 +3,21 @@
 //!
 //! ## Steps
 //!
-//! Input accumulates into steps of [`STEP`] frames. When a step is full it is
+//! Input accumulates into steps of [`HRTF_STEP`] frames. When a step is full it is
 //! rendered in one go and its output drains over the next step, so output
-//! lags input by exactly [`LATENCY`] = `STEP` frames whatever the block size.
+//! lags input by exactly [`HRTF_LATENCY`] = `HRTF_STEP` frames whatever the block size.
 //! A step costs one real forward FFT of the input history and, per ear, one
 //! real inverse FFT of the product with the blended spectrum (see
 //! [`HrtfSet`]), plus another per ear while the direction moves. The
-//! transforms are [`tutti_dsp::RealFft`]'s, so the arithmetic does not
+//! transforms are [`crate::RealFft`]'s, so the arithmetic does not
 //! depend on the CPU.
 //!
 //! ## Direction changes
 //!
-//! The commanded position is de-zippered by an [`AngleSmoother`] stepped
-//! once per step. Each step's direction is blended across the sphere face it
+//! The caller de-zippers the commanded position and hands the convolver the
+//! direction to render once per step (the `aim` closure of
+//! [`HrtfBinaural::process`], called once for each step that completes).
+//! Each step's direction is blended across the sphere face it
 //! crosses (barycentric weights over the face's three vertices). When the
 //! blend differs from the previous step's, the step is rendered through both
 //! filters and crossfaded linearly across it, so the output moves from one
@@ -26,25 +28,24 @@
 
 use std::sync::Arc;
 
-use tutti_dsp::Complex32;
-use tutti_types::{Azimuth, ChannelLayout, Elevation, Fold, Mix, Radians, SampleRate, Samples};
+use tutti_types::{Azimuth, ChannelLayout, Elevation, Fold, Mix, Radians, SampleRate};
 
 use super::sphere::{HrirSphere, HrtfSet, Weights};
-use crate::AngleSmoother;
+use crate::Complex32;
 
 /// Frames per convolution step, and the crossfade length of a direction
 /// change.
-pub(crate) const STEP: usize = 128;
+pub const HRTF_STEP: usize = 128;
 
 /// How many frames output lags input: what the node reports to PDC.
 ///
 /// A sample written at position `k` of a step leaves when position `k` of the
-/// next step is read, `STEP` frames later. The HRIR's own onset (the
+/// next step is read, `HRTF_STEP` frames later. The HRIR's own onset (the
 /// ear-to-ear delay that *is* the spatial cue) is signal, like a convolution
 /// reverb's pre-delay, and is not latency.
-pub(crate) const LATENCY: usize = STEP;
+pub const HRTF_LATENCY: usize = HRTF_STEP;
 
-/// The error returned when an [`HrtfBinauralNode`](crate::HrtfBinauralNode)
+/// The error returned when an `HrtfBinauralNode`
 /// cannot be built from its HRIR data.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -118,11 +119,11 @@ pub enum HrtfBinauralError {
     NoFace,
 }
 
-/// The lowest sphere rate [`HrtfBinauralNode::new`](crate::HrtfBinauralNode::new)
+/// The lowest sphere rate `HrtfBinauralNode::new`
 /// accepts, in Hz.
 pub const MIN_SPHERE_RATE: u32 = 8_000;
 
-/// The highest sphere rate [`HrtfBinauralNode::new`](crate::HrtfBinauralNode::new)
+/// The highest sphere rate `HrtfBinauralNode::new`
 /// accepts, in Hz.
 pub const MAX_SPHERE_RATE: u32 = 384_000;
 
@@ -152,13 +153,15 @@ fn rate_key(sample_rate: SampleRate) -> u32 {
 }
 
 /// The streaming convolver for one source.
-pub(crate) struct HrtfBinaural {
+///
+/// A clone is [`fresh`](Self::fresh): it takes the direction to aim at.
+pub struct HrtfBinaural {
     sphere: Arc<HrirSphere>,
     set: Arc<HrtfSet>,
-    /// The input history, `fft_len` frames: the last `fft_len - STEP` frames
+    /// The input history, `fft_len` frames: the last `fft_len - HRTF_STEP` frames
     /// already rendered, then the step being filled.
     history: Vec<f32>,
-    /// Frames of the current step filled so far, `0..STEP`.
+    /// Frames of the current step filled so far, `0..HRTF_STEP`.
     fill: usize,
     /// The last rendered step, drained while the next one fills: the wet
     /// pair and the mono input it was rendered from (the dry path, equally
@@ -178,7 +181,6 @@ pub(crate) struct HrtfBinaural {
     /// The blend the last step ended on.
     current: Weights,
     face_hint: usize,
-    aim: AngleSmoother,
     /// The input pair folded to the mono the renderer convolves.
     fold: Fold,
 }
@@ -193,36 +195,37 @@ impl std::fmt::Debug for HrtfBinaural {
 }
 
 impl HrtfBinaural {
-    /// Parses `hrir_bytes` and prepares the sphere at `sample_rate`. Control
-    /// thread.
-    pub(crate) fn new(
+    /// Parses `hrir_bytes` and prepares the sphere at `sample_rate`, aimed at
+    /// `aim`. Control thread.
+    ///
+    /// # Errors
+    ///
+    /// An [`HrtfBinauralError`] if the bytes are not a well-formed sphere.
+    pub fn new(
         hrir_bytes: &[u8],
         sample_rate: SampleRate,
+        aim: (Azimuth, Elevation),
     ) -> Result<Self, HrtfBinauralError> {
         let sphere = Arc::new(HrirSphere::parse(hrir_bytes)?);
-        let set = Arc::new(HrtfSet::build(&sphere, rate_key(sample_rate), STEP));
-        Ok(Self::over(
-            sphere,
-            set,
-            AngleSmoother::new(sample_rate, Samples(STEP)),
-        ))
+        let set = Arc::new(HrtfSet::build(&sphere, rate_key(sample_rate), HRTF_STEP));
+        Ok(Self::over(sphere, set, aim))
     }
 
     /// A renderer over a prepared set, with cleared streaming state, aimed
-    /// wherever `aim` is.
-    fn over(sphere: Arc<HrirSphere>, set: Arc<HrtfSet>, aim: AngleSmoother) -> Self {
+    /// at `aim`.
+    fn over(sphere: Arc<HrirSphere>, set: Arc<HrtfSet>, aim: (Azimuth, Elevation)) -> Self {
         let n = set.fft_len;
         let bins = set.fft.bins();
         let zero = Complex32::new(0.0, 0.0);
         let mut face_hint = 0;
-        let (az, el) = aim.current();
+        let (az, el) = aim;
         let current = set.weights(direction_from_degrees(az, el), &mut face_hint);
         Self {
             history: vec![0.0; n],
             fill: 0,
-            wet_left: vec![0.0; STEP],
-            wet_right: vec![0.0; STEP],
-            dry: vec![0.0; STEP],
+            wet_left: vec![0.0; HRTF_STEP],
+            wet_right: vec![0.0; HRTF_STEP],
+            dry: vec![0.0; HRTF_STEP],
             spectrum: vec![zero; bins],
             product: vec![zero; bins],
             frame: vec![0.0; n],
@@ -230,7 +233,6 @@ impl HrtfBinaural {
             scratch: set.fft.new_scratch(),
             current,
             face_hint,
-            aim,
             fold: Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO)
                 .expect("stereo folds to mono"),
             sphere,
@@ -238,75 +240,70 @@ impl HrtfBinaural {
         }
     }
 
-    /// Frames that outlive a silent input once the [`LATENCY`] is
+    /// Frames that outlive a silent input once the [`HRTF_LATENCY`] is
     /// compensated: the response spreads a sample `ir_len - 1` frames past
     /// the frame it leaves at. A tail excludes latency, so the step's delay
     /// is not counted here. The length is fixed at a rate, so this is exact.
-    pub(crate) fn ring_out(&self) -> usize {
+    pub fn ring_out(&self) -> usize {
         self.set.ir_len - 1
     }
 
     /// Prepares the sphere at a new rate and clears the streaming state,
-    /// seating the de-zipper on `target`. At the set's current rate it only
-    /// retunes the de-zipper (allocation-free), so a re-prepare for a new
+    /// aimed at what `aim` returns. At the set's current rate it does
+    /// nothing (allocation-free, `aim` not called), so a re-prepare for a new
     /// block size keeps the tail in flight. Two graph rates above
-    /// [`MAX_PREPARED_RATE`] share one set but not one glide coefficient.
-    /// Allocates on a new rate: control thread only.
-    pub(crate) fn set_sample_rate(
+    /// [`MAX_PREPARED_RATE`] share one set. Allocates on a new rate: control
+    /// thread only.
+    pub fn set_sample_rate(
         &mut self,
         sample_rate: SampleRate,
-        target: (Azimuth, Elevation),
+        aim: impl FnOnce() -> (Azimuth, Elevation),
     ) {
         let rate = rate_key(sample_rate);
         if rate == self.set.rate {
-            self.aim.set_sample_rate(sample_rate);
             return;
         }
-        let set = HrtfSet::build(&self.sphere, rate, STEP);
-        let mut aim = self.aim.clone();
-        aim.set_sample_rate(sample_rate);
-        aim.reset_to_target(target.0, target.1);
-        *self = Self::over(self.sphere.clone(), Arc::new(set), aim);
+        let set = HrtfSet::build(&self.sphere, rate, HRTF_STEP);
+        *self = Self::over(self.sphere.clone(), Arc::new(set), aim());
     }
 
-    /// Where the de-zipper is aimed now: the direction the last step
-    /// rendered.
-    #[cfg(test)]
-    pub(crate) fn aim(&self) -> (Azimuth, Elevation) {
-        self.aim.current()
-    }
-
-    /// Zero the streaming buffers and seat the de-zipper on `target`, so the
-    /// next step renders there with no crossfade in from elsewhere.
-    pub(crate) fn reset_state(&mut self, target: (Azimuth, Elevation)) {
+    /// Zero the streaming buffers and aim at `aim`, so the next step renders
+    /// there with no crossfade in from elsewhere.
+    pub fn reset_state(&mut self, aim: (Azimuth, Elevation)) {
         self.history.fill(0.0);
         self.fill = 0;
         self.wet_left.fill(0.0);
         self.wet_right.fill(0.0);
         self.dry.fill(0.0);
-        self.aim.reset_to_target(target.0, target.1);
-        let (az, el) = self.aim.current();
         self.current = self
             .set
-            .weights(direction_from_degrees(az, el), &mut self.face_hint);
+            .weights(direction_from_degrees(aim.0, aim.1), &mut self.face_hint);
+    }
+
+    /// Shares the parsed sphere and its prepared set (nothing is reparsed or
+    /// re-planned), with cleared streaming state aimed at `aim`. Allocates
+    /// the streaming buffers: control thread.
+    #[must_use]
+    pub fn fresh(&self, aim: (Azimuth, Elevation)) -> Self {
+        Self::over(self.sphere.clone(), self.set.clone(), aim)
     }
 
     /// Renders a block: the input pair is folded to mono, and each output is
-    /// `blend` between the delayed dry mono and the binaural pair.
-    /// `target` is the commanded position, read once per block.
-    /// Allocation-free.
-    pub(crate) fn process(
+    /// `blend` between the delayed dry mono and the binaural pair. `aim` is
+    /// called once for each step the block completes and returns the
+    /// direction that step renders. Allocation-free.
+    pub fn process(
         &mut self,
-        target: (Azimuth, Elevation),
         blend: Mix,
         input: (&[f32], &[f32]),
         output: (&mut [f32], &mut [f32]),
+        mut aim: impl FnMut() -> (Azimuth, Elevation),
     ) {
         let frames = output.0.len();
-        let start = self.history.len() - STEP;
+        let start = self.history.len() - HRTF_STEP;
         let mut done = 0;
         while done < frames {
-            let n = (frames - done).min(STEP - self.fill);
+            let n = (frames - done).min(HRTF_STEP - self.fill);
             let at = self.fill;
             let ins = (&input.0[done..done + n], &input.1[done..done + n]);
             let outs = (&mut output.0[done..done + n], &mut output.1[done..done + n]);
@@ -327,28 +324,27 @@ impl HrtfBinaural {
                 .planar_channel(|c| if c == 0 { ins.0 } else { ins.1 }, 0, fresh);
             self.fill += n;
             done += n;
-            if self.fill == STEP {
-                self.render_step(target);
+            if self.fill == HRTF_STEP {
+                self.render_step(aim());
                 self.fill = 0;
             }
         }
     }
 
     /// Convolve the full step into the wet buffers and slide the history.
-    fn render_step(&mut self, target: (Azimuth, Elevation)) {
-        let (az, el) = self.aim.step(target.0, target.1);
+    fn render_step(&mut self, (az, el): (Azimuth, Elevation)) {
         let next = self
             .set
             .weights(direction_from_degrees(az, el), &mut self.face_hint);
         let set = &*self.set;
-        let start = set.fft_len - STEP;
+        let start = set.fft_len - HRTF_STEP;
         self.dry.copy_from_slice(&self.history[start..]);
 
         set.fft
             .forward(&self.history, &mut self.spectrum, &mut self.scratch);
 
         let crossfade = next != self.current;
-        let step = 1.0 / STEP as f32;
+        let step = 1.0 / HRTF_STEP as f32;
         let wet = [&mut self.wet_left, &mut self.wet_right];
         for (ear, wet) in wet.into_iter().enumerate() {
             blend_into(
@@ -383,7 +379,7 @@ impl HrtfBinaural {
             }
         }
         self.current = next;
-        self.history.copy_within(STEP.., 0);
+        self.history.copy_within(HRTF_STEP.., 0);
     }
 }
 
@@ -409,15 +405,6 @@ fn blend_into(
         *p = x * (a * wa + b * wb + c * wc);
     }
     set.fft.inverse(product, frame, scratch);
-}
-
-impl Clone for HrtfBinaural {
-    /// Shares the parsed sphere and its prepared set (nothing is reparsed or
-    /// re-planned), with cleared streaming state and the same de-zipper
-    /// position. Allocates the streaming buffers: control thread.
-    fn clone(&self) -> Self {
-        Self::over(self.sphere.clone(), self.set.clone(), self.aim.clone())
-    }
 }
 
 /// Map azimuth/elevation in degrees to a unit direction, in the sphere's

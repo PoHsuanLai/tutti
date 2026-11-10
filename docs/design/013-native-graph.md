@@ -8503,9 +8503,9 @@ the seqlock the callback reads before entering the plugin.
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>` cell (first an
   `ArcSwapOption`) shared across the node's
   clones, and the out-of-process node's `PluginControls::meter` too.
-  Installed with `InProcessVst2Client::set_meter` (`clear_meter`,
-  `has_meter`), through the `PluginMeter` inserting the node hands back as
-  its controls (`IntoNode::Controls`, was `()`), or with `Plugin::set_meter`
+  Installed through either node's controls, one `NodeControls` (`set_meter`,
+  `clear_meter`, `has_meter`; `InProcessVst2Client::controls`, and what
+  inserting the node hands back, `IntoNode::Controls`), or with `Plugin::set_meter`
   / `Plugin::meter` for either backend. A fork takes the meter installed
   when it forks, in a cell of its own; none is 4/4 from bar 0.
 - **bevy-tutti gives it the project meter.** The plugin load captured

@@ -83,6 +83,7 @@
 #![forbid(unsafe_code)]
 
 mod midi1;
+mod mpe;
 mod narrow;
 mod scale;
 mod sensitivity;
@@ -91,6 +92,7 @@ mod unit;
 mod voice;
 
 pub use midi1::{midi1, narrow};
+pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use sensitivity::PitchBendSensitivity;
 pub use translator::Translator;

@@ -70,21 +70,129 @@ pub struct PluginControls {
     /// node's `prepare` (`Batcher::prepare`). Shared so
     /// [`declared_latency`](Self::declared_latency) is right on any handle.
     pipeline: Arc<AtomicUsize>,
-    /// The project meter, for the time-signature and bar fields of the
-    /// transport the node sends. Empty until a host installs one; the node
-    /// then reads 4/4 from bar 0. A nullable hot-swap slot, like the input
-    /// slots: the node reads it once per block.
-    pub(super) meter: super::PluginMeter,
+    /// The meter cell and the delivery counters, the part every plugin node's
+    /// controls share ([`NodeControls`], which this derefs to).
+    node: NodeControls,
     /// The rate stamped onto a freshly-installed source. Shared — see the module
     /// docs for why it could not stay a per-clone field. `f64` at the atomic.
     sample_rate: Arc<AtomicF64>,
-    /// What the node's parameter delivery has done
-    /// ([`param_delivery`](Self::param_delivery)).
-    delivery: Arc<super::param_delivery::DeliveryCounters>,
     /// What the node's IPC pipeline reports
     /// ([`missed_chunks`](Self::missed_chunks),
     /// [`chunk_in_flight_answered`](Self::chunk_in_flight_answered)).
     chunks: Arc<super::batcher::ChunkCounters>,
+}
+
+/// What every plugin node's controls hold, whichever hosting runs it: the
+/// node's meter cell and its delivery counters. The in-process VST2 node's
+/// controls are this (`InProcessVst2Controls`, an alias);
+/// the out-of-process node's [`PluginControls`] hold one and deref to it.
+/// A clone is another handle on the same cells.
+#[derive(Clone, Debug)]
+pub struct NodeControls {
+    /// The project meter, for the time-signature and bar fields of the
+    /// transport the node sends. Empty until a host installs one; the node
+    /// then reads 4/4 from bar 0. A nullable hot-swap slot: the node reads it
+    /// once per block.
+    meter: super::PluginMeter,
+    /// What the node's parameter and MIDI delivery has done.
+    delivery: Arc<super::param_delivery::DeliveryCounters>,
+}
+
+impl NodeControls {
+    /// Handles on `meter` and `delivery`, the cells the node reads and writes.
+    pub(crate) fn new(
+        meter: super::PluginMeter,
+        delivery: Arc<super::param_delivery::DeliveryCounters>,
+    ) -> Self {
+        Self { meter, delivery }
+    }
+
+    /// What the node has done with the parameter changes on its event input
+    /// since the plugin was loaded: points sent (changes only), chunks whose
+    /// changes went a chunk late (in process, a block the instance was
+    /// locked for), and points dropped for a parameter it has no slot for. The node has a slot for every parameter the plugin
+    /// listed at load (and some spare), so the last stays zero unless the
+    /// plugin is sent addresses it does not have.
+    ///
+    /// The node sends a parameter only when the host's value differs from
+    /// the last one it sent: an unchanged value is never re-sent, so it
+    /// cannot overwrite an edit made in the plugin's own editor; a value
+    /// that moves is sent and replaces it. Points merged count the points a
+    /// full queue replaced (see [`ParamDeliveryStats::points_merged`]).
+    /// RT-safe: four relaxed loads.
+    ///
+    /// [`ParamDeliveryStats::points_merged`]: super::ParamDeliveryStats::points_merged
+    pub fn param_delivery(&self) -> super::ParamDeliveryStats {
+        self.delivery.snapshot()
+    }
+
+    /// MIDI events on the node's event input that never reached the plugin,
+    /// since it was bound. Counted, in either hosting: an event past the
+    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) a chunk
+    /// carries, and the rest of every SysEx message that lost a packet, so a
+    /// message never reaches the plugin with a gap. In process (VST2), every
+    /// event of a block the plugin did not run (the instance was locked).
+    /// Out of process, every event of a chunk that was not sent (its audio could
+    /// not be staged, the bridge refused it because its queue was full or
+    /// the server had crashed, the bridge thread skipped it as stale, or it
+    /// was still queued when the server crashed); the events taken towards
+    /// the next chunk when the node is reset or re-prepared; and the rest of
+    /// every SysEx message that lost a packet in any of those ways or was
+    /// open at a reset or re-prepare, so a message never reaches the plugin
+    /// with a gap (the plugin's host counts it as one dropped SysEx). A
+    /// chunk sent and then not answered in time is not counted here: the
+    /// server still runs it. Nor is a chunk queued in the instant after the
+    /// bridge thread drained its queue at a crash and exited: it was accepted,
+    /// and nothing reads it again (and no message can splice past a dead
+    /// server).
+    /// RT-safe: two relaxed loads.
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.delivery.dropped_midi_in()
+    }
+
+    /// Transport changes inside a chunk that did not fit its inline list
+    /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES), the
+    /// graph's own bound), since the plugin was bound: a map point, a seek, a
+    /// loop wrap, a start or a stop past the eighth in one chunk. Each is
+    /// counted once; its transport waits for the next chunk's first frame
+    /// (doc 020 stage 5b), and VST3, VST2 and AU, which have no transport
+    /// event inside a block, never count one. RT-safe: one relaxed load.
+    pub fn dropped_transport_changes(&self) -> u64 {
+        self.delivery.dropped_transport_changes()
+    }
+
+    /// Give the node the project meter, for the signature and bar it tells
+    /// the plugin. The node's meter follows it, so an edit the host
+    /// publishes there reaches the running plugin with nothing re-installed.
+    /// Replaces any meter installed before.
+    pub fn set_meter(&self, meter: ProjectMeter) {
+        self.meter.set_meter(meter);
+    }
+
+    /// Drop the meter; the node tells the plugin 4/4 from bar 0.
+    pub fn clear_meter(&self) {
+        self.meter.clear_meter();
+    }
+
+    /// Whether a meter is installed — what a host's binding checks.
+    #[must_use]
+    pub fn has_meter(&self) -> bool {
+        self.meter.has_meter()
+    }
+
+    /// The node's meter cell, as a handle of its own: what a host keeps to
+    /// install the meter through (the same cell as
+    /// [`set_meter`](Self::set_meter)).
+    pub fn meter(&self) -> super::PluginMeter {
+        self.meter.clone()
+    }
+}
+
+impl std::ops::Deref for PluginControls {
+    type Target = NodeControls;
+    fn deref(&self) -> &NodeControls {
+        &self.node
+    }
 }
 
 impl PluginControls {
@@ -93,9 +201,8 @@ impl PluginControls {
             latency: Arc::new(AtomicUsize::new(latency.get())),
             tail: Arc::new(Mutex::new(tail)),
             pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
-            meter: super::PluginMeter::default(),
+            node: NodeControls::new(super::PluginMeter::default(), Arc::default()),
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
-            delivery: Arc::default(),
             chunks: Arc::default(),
         }
     }
@@ -129,64 +236,13 @@ impl PluginControls {
 
     /// The counters the node's parameter delivery writes, for the node.
     pub(super) fn delivery_counters(&self) -> Arc<super::param_delivery::DeliveryCounters> {
-        Arc::clone(&self.delivery)
-    }
-
-    /// What the node has done with the parameter changes on its event input
-    /// since the plugin was loaded: points sent (changes only), chunks whose
-    /// changes went a chunk late, and points dropped for a parameter it has
-    /// no slot for. The node has a slot for every parameter the plugin
-    /// listed at load (and some spare), so the last stays zero unless the
-    /// plugin is sent addresses it does not have.
-    ///
-    /// The node sends a parameter only when the host's value differs from
-    /// the last one it sent: an unchanged value is never re-sent, so it
-    /// cannot overwrite an edit made in the plugin's own editor; a value
-    /// that moves is sent and replaces it. Points merged count the points a
-    /// full queue replaced (see [`ParamDeliveryStats::points_merged`]).
-    /// RT-safe: four relaxed loads.
-    ///
-    /// [`ParamDeliveryStats::points_merged`]: super::ParamDeliveryStats::points_merged
-    pub fn param_delivery(&self) -> super::ParamDeliveryStats {
-        self.delivery.snapshot()
-    }
-
-    /// MIDI events on the node's event input that never reached the
-    /// plugin-server, since the plugin was bound. Counted: an event past the
-    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) a chunk
-    /// carries; every event of a chunk that was not sent (its audio could
-    /// not be staged, the bridge refused it because its queue was full or
-    /// the server had crashed, the bridge thread skipped it as stale, or it
-    /// was still queued when the server crashed); the events taken towards
-    /// the next chunk when the node is reset or re-prepared; and the rest of
-    /// every SysEx message that lost a packet in any of those ways or was
-    /// open at a reset or re-prepare, so a message never reaches the plugin
-    /// with a gap (the plugin's host counts it as one dropped SysEx). A
-    /// chunk sent and then not answered in time is not counted here: the
-    /// server still runs it. Nor is a chunk queued in the instant after the
-    /// bridge thread drained its queue at a crash and exited: it was accepted,
-    /// and nothing reads it again (and no message can splice past a dead
-    /// server).
-    /// RT-safe: two relaxed loads.
-    pub fn dropped_midi_in(&self) -> u64 {
-        self.delivery.dropped_midi_in()
-    }
-
-    /// Transport changes inside a chunk that did not fit its inline list
-    /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES), the
-    /// graph's own bound), since the plugin was bound: a map point, a seek, a
-    /// loop wrap, a start or a stop past the eighth in one chunk. Each is
-    /// counted once; its transport waits for the next chunk's first frame
-    /// (doc 020 stage 5b), and VST3, VST2 and AU, which have no transport
-    /// event inside a block, never count one. RT-safe: one relaxed load.
-    pub fn dropped_transport_changes(&self) -> u64 {
-        self.delivery.dropped_transport_changes()
+        Arc::clone(&self.node.delivery)
     }
 
     /// What the node has delivered so far, per listed parameter: what a fork
     /// is seeded with. Control thread: allocates.
     pub(super) fn delivered(&self) -> Vec<(tutti_plugin_types::ParamId, f64)> {
-        self.delivery.delivered()
+        self.node.delivery.delivered()
     }
 
     /// The latency cell, for the bridge-thread listener that writes it.
@@ -230,33 +286,6 @@ impl PluginControls {
         self.pipeline.store(frames.get(), Ordering::Release);
     }
 
-    /// Give the node the project meter, for the signature and bar it tells
-    /// the plugin. The node's meter follows it, so an edit the host
-    /// publishes there reaches the running plugin with nothing re-installed.
-    /// Replaces any meter installed before.
-    pub fn set_meter(&self, meter: ProjectMeter) {
-        self.meter.set_meter(meter);
-    }
-
-    /// Drop the meter; the node tells the plugin 4/4 from bar 0.
-    pub fn clear_meter(&self) {
-        self.meter.clear_meter();
-    }
-
-    /// Whether a meter is installed — what a host's binding checks.
-    #[must_use]
-    pub fn has_meter(&self) -> bool {
-        self.meter.has_meter()
-    }
-
-    /// The node's meter cell, as a handle of its own: what a host keeps to
-    /// install the meter through (the same cell as
-    /// [`set_meter`](Self::set_meter)), and the in-process VST2 node's
-    /// controls are.
-    pub fn meter(&self) -> super::PluginMeter {
-        self.meter.clone()
-    }
-
     /// Overwrite the reported latency. See
     /// [`PluginClient::set_latency`](super::PluginClient::set_latency).
     pub fn set_latency(&self, samples: impl Into<Samples>) {
@@ -295,7 +324,7 @@ impl PluginControls {
     /// themselves.
     pub(super) fn sources_now(&self) -> ForkedSources {
         ForkedSources {
-            meter: self.meter.installed(),
+            meter: self.node.meter.installed(),
         }
     }
 }
@@ -378,7 +407,11 @@ mod tests {
         let gathered = live.sources_now();
         live.set_meter(ProjectMeter::new(MeterMap::default()));
         gathered.install(&fork);
-        let shared_meter = fork.meter.installed().is_some_and(|m| m.ptr_eq(&meter));
+        let shared_meter = fork
+            .node
+            .meter
+            .installed()
+            .is_some_and(|m| m.ptr_eq(&meter));
         assert!(shared_meter, "the fork reads the live node's meter");
     }
 

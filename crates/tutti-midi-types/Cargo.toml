@@ -3,7 +3,7 @@ name = "tutti-midi-types"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Pure MIDI types for Tutti - UMP builders and readers + tutti-domain MPE/sync"
+description = "The decoded MIDI view (MidiMessage) and the MIDI 1.0 translation of the old API, until stage 5b part (c) deletes them"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-midi-types"
@@ -14,49 +14,17 @@ categories = ["multimedia::audio"]
 [lints]
 workspace = true
 
-[features]
-default = []
-# Serialization for the **authored-configuration** types only — MPE zone setup
-# today. Off by default, so the crate's Bevy-free, dependency-light floor is
-# unchanged for anyone who does not persist MIDI config.
-#
-# **This is not a licence to derive serde on the wire types.** The criterion, so
-# it is not re-litigated: a MIDI type may carry these derives only when all three
-# of the reasons a host's durational note record exists are absent — it must be
-# authored configuration, carry no audio-thread-stamped field, and have the same
-# shape at rest as on the wire. `MpeMode` passes all three. An event in a block,
-# `(Offset, Ump)`, fails the last two (its offset is stamped by the audio thread
-# against a block size the document never sees, and MIDI has no durational note
-# record), so it must never get this treatment.
-#
-# Forwards to `tutti-types`: `MpeZoneConfig` is built from that crate's
-# newtypes, so without the forward the derives here would fail to resolve.
-serde = ["dep:serde", "tutti-types/serde", "tutti-ump/serde", "tutti-midi-protocol/serde"]
-
 [dependencies]
-bitflags = "2"
-# The unit vocabulary (`Beat`, `MidiChannel`, …) and `ArcLend`, re-exported.
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-# The widths: `widen` in `normalize`, `narrow_*` in `to_midi1_bytes`, the float converters.
+# The widths: `widen` in `normalize`, `narrow_*` in `to_midi1_bytes`.
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
-serde = { version = "1", optional = true, features = ["derive"] }
-thiserror.workspace = true
-
-# midi2's feature set is fully specified at the workspace level (this is its
-# only consumer). midly is only the `pub use midly` re-export.
+# `MidiMessage` and `translation` read and write through `midi2`; part (c)
+# of stage 5b deletes both and the dependency with them.
 midi2 = { workspace = true }
-midly = { workspace = true }
 
 [dev-dependencies]
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
-# The MPE-config `Deserialize` impls are a document edge, so they are tested
-# against a real format rather than a hand-rolled deserializer — the same
-# argument `tutti-types` makes for its meter types.
-serde_json = "1"
-tutti-midi-types = { path = ".", features = ["serde"] }
 criterion.workspace = true
 
 # The old read path (`MidiMessage::from_ump`) against `tutti_ump::decode`, on the
@@ -64,7 +32,3 @@ criterion.workspace = true
 [[bench]]
 name = "message_baseline"
 harness = false
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]

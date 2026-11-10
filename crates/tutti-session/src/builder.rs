@@ -39,7 +39,7 @@ pub struct SessionBuilder {
     #[cfg(feature = "midi-hardware")]
     midi_backend: Option<MidiBackend>,
     #[cfg(feature = "midi")]
-    mpe_mode: tutti_midi_types::MpeMode,
+    mpe_mode: tutti_midi_protocol::MpeMode,
     #[cfg(feature = "modulation")]
     unresolved_warning: std::time::Duration,
     #[cfg(feature = "plugin")]
@@ -72,7 +72,7 @@ impl Default for SessionBuilder {
             #[cfg(feature = "midi-hardware")]
             midi_backend: None,
             #[cfg(feature = "midi")]
-            mpe_mode: tutti_midi_types::MpeMode::Disabled,
+            mpe_mode: tutti_midi_protocol::MpeMode::Disabled,
             #[cfg(feature = "modulation")]
             unresolved_warning: crate::UNRESOLVED_WARNING,
             #[cfg(feature = "plugin")]
@@ -181,7 +181,7 @@ impl SessionBuilder {
     /// The MPE mode the engine's MIDI input ingests in. Default `Disabled`.
     #[cfg(feature = "midi")]
     #[must_use]
-    pub fn mpe_mode(mut self, mode: tutti_midi_types::MpeMode) -> Self {
+    pub fn mpe_mode(mut self, mode: tutti_midi_protocol::MpeMode) -> Self {
         self.mpe_mode = mode;
         self
     }

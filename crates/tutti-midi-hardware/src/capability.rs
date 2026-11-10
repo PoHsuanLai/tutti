@@ -9,12 +9,12 @@
 //! a plain value that travels with the endpoint, read from the OS rather than
 //! assumed, and code that depends on it is an ordinary `match`.
 //!
-//! [`Protocol`] is the MIDI 2.0 spec's own noun from `tutti-midi-types`, reused
+//! [`Protocol`] is the MIDI 2.0 spec's own noun from `tutti-ump`, reused
 //! here rather than restated. The endpoint's Function Blocks are not here: the
 //! `Endpoint` model of design 017 §5 (stage 4b) will hold them.
 
 use tutti_midi_device::{EndpointId, Identity};
-use tutti_midi_types::Protocol;
+use tutti_ump::Protocol;
 
 /// What an endpoint can carry.
 ///
@@ -34,9 +34,8 @@ pub struct UmpCapability {
 
 /// Hand-written rather than derived, and the polarity is the point.
 ///
-/// `Protocol`'s own `Default` is `Midi2` — correct for this engine, which is
-/// MIDI-2-native, and the **wrong** default for a *device* whose protocol the OS
-/// never told us. Deriving would inherit that and quietly claim MIDI 2.0 for
+/// MIDI 2.0 is what this engine speaks, and the **wrong** default for a *device*
+/// whose protocol the OS never told us: it would quietly claim MIDI 2.0 for
 /// every unknown endpoint, sending per-note messages into a `to_midi1_bytes`
 /// drop. Assuming MIDI 1.0 only costs resolution, so unknown means `Midi1`.
 impl Default for UmpCapability {

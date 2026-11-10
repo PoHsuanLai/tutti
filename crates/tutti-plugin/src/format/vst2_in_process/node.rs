@@ -25,8 +25,6 @@
 //! live node and its fork read the transport the same way: from the block's
 //! `Cx`, the transport its input was rendered at (`TransportFeed`).
 
-use std::sync::Arc;
-
 use arrayvec::ArrayVec;
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
@@ -36,7 +34,7 @@ use tutti_types::Latency;
 use tutti_types::{ChannelLayout, Samples};
 
 use super::client::{BoundInProcessVst2Client, InProcessVst2Client, drive_f32};
-use crate::host::node::{DeliveryCounters, ParamDeliveryStats, PluginMeter, param_input};
+use crate::host::node::{NodeControls, param_input};
 use tutti_plugin_types::{Features, WireMidi};
 
 /// The most channels a block hands the plugin (the stack tables `process`
@@ -245,7 +243,7 @@ impl Node for BoundInProcessVst2Client {
 
 /// The plugin, inserted as a graph node. Its controls
 /// ([`InProcessVst2Controls`]) are its meter cell (the same cell as
-/// [`InProcessVst2Client::set_meter`]), so a host can give it the project
+/// [`NodeControls::set_meter`]), so a host can give it the project
 /// meter after it has moved into the graph, and its parameter delivery's
 /// counters, as an out-of-process plugin's `PluginControls` are. Its
 /// [`ForkSource`] forks it **by state transfer**: a second instance of the
@@ -269,80 +267,20 @@ impl IntoNode for BoundInProcessVst2Client {
 }
 
 /// An in-process VST2 node's controls: what inserting it hands back, and what
-/// [`InProcessVst2Client::controls`] returns before then. Cheap to clone;
+/// [`InProcessVst2Client::controls`] returns before then: the meter cell and
+/// the delivery counters every plugin node's controls hold. Cheap to clone;
 /// every clone is a handle on the same node (the node itself is not
-/// `Clone`).
-#[derive(Clone, Debug)]
-pub struct InProcessVst2Controls {
-    meter: PluginMeter,
-    delivery: Arc<DeliveryCounters>,
-}
-
-impl InProcessVst2Controls {
-    /// Gives the plugin the project meter (see
-    /// [`InProcessVst2Client::set_meter`]).
-    pub fn set_meter(&self, meter: tutti_transport::ProjectMeter) {
-        self.meter.set_meter(meter);
-    }
-
-    /// Drops the meter; the plugin is told 4/4 from bar 0.
-    pub fn clear_meter(&self) {
-        self.meter.clear_meter();
-    }
-
-    /// Whether a meter is installed.
-    #[must_use]
-    pub fn has_meter(&self) -> bool {
-        self.meter.has_meter()
-    }
-
-    /// The node's meter cell, as a handle of its own.
-    pub fn meter(&self) -> PluginMeter {
-        self.meter.clone()
-    }
-
-    /// What the node has done with the parameter events on its event input
-    /// since the plugin was loaded: points sent (changes only), blocks whose
-    /// changes went a block late (the instance was locked), points dropped
-    /// for an address it has no slot for, and points a full queue replaced.
-    /// The same counters as an out-of-process node's
-    /// [`PluginControls::param_delivery`](crate::handles::PluginControls::param_delivery),
-    /// with the block as the chunk. A block's points all count as sent,
-    /// though VST2 is told only each parameter's last one. RT-safe: four
-    /// relaxed loads.
-    pub fn param_delivery(&self) -> ParamDeliveryStats {
-        self.delivery.snapshot()
-    }
-
-    /// MIDI events on the node's event input that never reached the plugin
-    /// since it was loaded. Counted: an event past the
-    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) a block
-    /// carries; every event of a block the plugin did not run (the instance
-    /// was locked; see `contention_count`); and the rest of every SysEx
-    /// message that lost a packet either way or was open at a reset, so a
-    /// message never reaches the plugin with a gap. The in-process
-    /// counterpart of
-    /// [`PluginControls::dropped_midi_in`](crate::handles::PluginControls::dropped_midi_in).
-    /// RT-safe: two relaxed loads.
-    pub fn dropped_midi_in(&self) -> u64 {
-        self.delivery.dropped_midi_in()
-    }
-}
+/// `Clone`). Its block is the out-of-process node's chunk: a block's points
+/// all count as sent, though VST2 is told only each parameter's last one, and
+/// a block the plugin did not run (the instance was locked; see
+/// `contention_count`) loses its MIDI, counted.
+pub type InProcessVst2Controls = NodeControls;
 
 impl InProcessVst2Client {
     /// The node's controls: its meter cell and its parameter delivery's
     /// counters, the same [`InProcessVst2Controls`] inserting it hands back.
     pub fn controls(&self) -> InProcessVst2Controls {
-        InProcessVst2Controls {
-            meter: self.meter(),
-            delivery: self.params.counters(),
-        }
-    }
-
-    /// What the node has done with the parameter events on its event input
-    /// (see [`InProcessVst2Controls::param_delivery`]).
-    pub fn param_delivery(&self) -> ParamDeliveryStats {
-        self.params.counters().snapshot()
+        NodeControls::new(self.transport.meter(), self.params.counters())
     }
 }
 

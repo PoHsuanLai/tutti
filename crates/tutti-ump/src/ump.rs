@@ -187,6 +187,32 @@ impl Ump {
     }
 }
 
+/// Splits a packed word stream into its packets.
+///
+/// A native-UMP transport (CoreMIDI's event packets, a MIDI 2.0 USB transfer)
+/// delivers several messages concatenated in one buffer, with no separators:
+/// each one's length is implied by its message type (M2-104 section 2.1.3,
+/// Table 4), the one table [`Ump::words`] reads. A run too short for its
+/// declared type is a truncated message and ends the stream with nothing
+/// yielded for it. A reserved type has its size too, so it is skipped without
+/// losing the packets after it. The packets carry no timing; a caller pairs
+/// each with one from its own transport.
+pub fn split_stream(words: &[u32]) -> impl Iterator<Item = Ump> + '_ {
+    let mut rest = words;
+    core::iter::from_fn(move || {
+        let first = *rest.first()?;
+        let n = Ump([first, 0, 0, 0]).words().len();
+        let Some((packet, tail)) = rest.split_at_checked(n) else {
+            rest = &[];
+            return None;
+        };
+        rest = tail;
+        let mut out = [0u32; 4];
+        out[..n].copy_from_slice(packet);
+        Some(Ump(out))
+    })
+}
+
 /// A held-note key: protocol, group, channel and note (M2-104 identifies a
 /// note by the last three), packed in 16 bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

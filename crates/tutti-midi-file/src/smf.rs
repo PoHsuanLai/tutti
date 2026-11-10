@@ -195,8 +195,7 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
 /// a Set Tempo meta event carries microseconds per quarter note.
 ///
 /// Named rather than spelled as a literal because the same relation appears in
-/// both directions here; the MIDI-2 twin is
-/// `ump::flex_data::TEN_NS_UNITS_PER_MINUTE`.
+/// both directions here; the MIDI-2 twin is `flex::TEN_NS_UNITS_PER_MINUTE`.
 const US_PER_MINUTE: f64 = 60_000_000.0;
 
 /// Every Set Tempo in `track` as `(absolute tick, Bpm)`, in track order.

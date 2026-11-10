@@ -416,10 +416,11 @@ fn round_trip_preserves_note_attribute() {
         on.set_velocity(0x8000);
         on.set_attribute(Some(NoteAttribute::Pitch7_9(Fixed7_9::from_bits(0x1234))));
     }
-    let ev = crate::ump::packet_from({
+    let ev = {
         use midi2::Data;
-        on.data()
-    });
+        let words = on.data();
+        Ump([words[0], words[1], 0, 0])
+    };
     let msg = MidiMessage::from_ump(ev);
     match msg {
         MidiMessage::NoteOn { attribute, .. } => {

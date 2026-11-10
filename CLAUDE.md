@@ -364,7 +364,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
                  `frame` and `Midi1Parser`, the status bytes the hosts use
                  (`tutti-midi-types`' `wire.rs` holds its own until the MIDI
-                 lane deletes it), `NoteId` (`channel * 128 + note`), and
+                 lane deletes it), `NoteId` (`channel * 128 + note`),
+                 `split_stream` (a buffer of concatenated packets into `Ump`s by
+                 Table 4, the one walker), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
                  (SysEx7 packets to whole messages over a caller's buffer) and its
                  inverse `sysex7_packets` (`SysexMessage::packets`,
@@ -373,7 +375,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
                  stateless `widen`, `narrow` and `midi1`, the M2-115 scaling, and the
-                 float converters (`u32_to_unit_f32` and kin); depends on `tutti-ump` alone
+                 float converters (`u32_to_unit_f32` and kin), and the MPE zone
+                 values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
+                 `tutti-ump` alone
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
                  pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
                  (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
@@ -433,7 +437,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  (both halves) is `tutti-midi-file`'s; the inbound sync decoders
                  (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`) are
                  `tutti-midi-runtime`'s, beside `ClockMaster`; `tutti-midi-types` is
-                 shrinking away (design 017 stage 5b)
+                 shrinking away (design 017 stage 5b: it holds `MidiMessage` and
+                 `translation/` until part (c), and no re-export of `midi2`, `midly`,
+                 `ArcLend` or the units)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
                  control socket, the plugin-server's launch, and the
@@ -520,7 +526,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   nothing. A consumer's call to `widen` is transitional: the stage 3 translator
   calls it at the input edge and consumers drop theirs. It also holds
   `PitchBendSensitivity`, the 7.25 fixed-point range of RPN #00/07 (its `serde`
-  feature is optional and carries the bits, for `MpeZoneConfig`).
+  feature is optional and carries the bits, for `MpeZoneConfig`), and the MPE
+  zone values (RP-053): `MpeZoneConfig` has private fields and `new(zone, members) ->
+  Option` (1 to 15 members, no clamping), `MpeZones::new` refuses a zone in the wrong role
+  and two zones that share a member channel (more than 14 members between them), and
+  `MpeMode` holds only a checked `MpeZones`; their `serde` forms read back through the same
+  checks. The state that drives a zone from incoming MIDI is `tutti-midi-runtime`'s
+  `MpeIngest`.
 - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types`
   only, keeps every module private (`tutti_voicing::Voicing`; CI runs the
   per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`

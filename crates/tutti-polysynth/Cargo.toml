@@ -23,7 +23,6 @@ std = []
 
 [dependencies]
 
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 
 # `Node`, `ForkSource`: the synth as a graph node, and its own way into a
@@ -58,7 +57,6 @@ criterion.workspace = true
 approx = "0.5"
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 # `ControlProgram` for the lane tests (`tests/param_lanes.rs`). No cycle:
 # `tutti-modulation` names no tutti crate but `tutti-types`.

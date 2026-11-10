@@ -345,9 +345,9 @@ fn the_live_node_tells_the_plugin_its_meter() {
     let _lock = lock_probe();
     reset_probe();
     let (client, handle) = load();
-    assert!(!client.has_meter());
-    client.set_meter(seven_eight());
-    assert!(client.has_meter());
+    assert!(!client.controls().has_meter());
+    client.controls().set_meter(seven_eight());
+    assert!(client.controls().has_meter());
     let (mut r, meter) = rig(client, ARRIVAL);
     let seen = render_scenes(&mut r, 2);
     assert_eq!(seen[1].1.numerator, 7);

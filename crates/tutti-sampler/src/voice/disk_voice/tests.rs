@@ -569,6 +569,11 @@ fn clip_reader_jump_edge_is_allocation_free() {
 /// frames at 120 BPM) and the ring's end (the ring holds 2,047 frames), so
 /// the run reaches the steady read, the underrun and the silence past the
 /// window.
+///
+/// Mutations (run): an allocation in `report_underrun`, in `read_ring`'s
+/// success branch, and in `render`'s all-`None` block past the window →
+/// each aborts. (`LiveRead::silence()`, the lanes path, is not reached
+/// through `Direct`.)
 #[test]
 fn clip_reader_single_frame_steady_state_is_allocation_free() {
     let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
@@ -590,6 +595,8 @@ fn clip_reader_single_frame_steady_state_is_allocation_free() {
 /// scratch, a crossfade started), and the jump's per-block work allocates
 /// nothing at the shortest block either. A jump renders its continuation
 /// ([`OLD_FRAMES`] frames), so a few thousand blocks are enough.
+///
+/// Mutation: an allocation in `continue_from` (the jump's copy) → aborts.
 #[test]
 fn clip_reader_single_frame_jump_every_block_is_allocation_free() {
     let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));

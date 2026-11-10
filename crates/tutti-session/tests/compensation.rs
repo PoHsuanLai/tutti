@@ -85,8 +85,8 @@ fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
     let mut s = detached();
     let (_, lat) = skewed(&mut s);
     let authored = [
-        s.graph_ref().output_source(0),
-        s.graph_ref().output_source(1),
+        s.graph_ref().output_sources(0),
+        s.graph_ref().output_sources(1),
     ];
     s.update();
     assert!(!s.graph_ref().is_edited(), "committed");
@@ -114,8 +114,8 @@ fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
     );
     assert_eq!(
         [
-            s.graph_ref().output_source(0),
-            s.graph_ref().output_source(1)
+            s.graph_ref().output_sources(0),
+            s.graph_ref().output_sources(1)
         ],
         authored,
         "nothing is spliced into the wiring"

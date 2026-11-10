@@ -51,11 +51,4 @@ pub trait Lti: System {
     fn is_stable(&self) -> bool {
         self.spectral_radius() < 1.0
     }
-
-    /// `|H(1)|`, the gain at 0 Hz.
-    fn dc_gain(&self) -> f64 {
-        let mut gain = [Complex64::new(0.0, 0.0)];
-        self.frequency_response(0, &[Hz(0.0)], &mut gain);
-        gain[0].norm()
-    }
 }

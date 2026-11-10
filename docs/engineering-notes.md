@@ -439,9 +439,11 @@ stored handle goes stale on a rebind), builds a `Topology` value from the
 declarations, and writes the declared ports that differ into the editor's spec;
 the frame's commit compiles it (doc 013).
 
-Keying on the *sink port* is what makes fan-in unrepresentable: a `Topology`
-holds one source per input port, and so does the declaration. Summing is a
-node's job — the graph has no summing bus. The old `AudioFeedsTo` edge component is deleted; it
+Keying on the *sink port* once made fan-in unrepresentable. It no longer does
+(doc 013, "Audio fan-in sums"): a `Topology` holds a set of sources per input
+port and per output channel, and the graph sums them. The parked adapter's
+declaration still names one source per port, and a list per port is the
+un-parking migration's job. The old `AudioFeedsTo` edge component is deleted; it
 kept a tracked map to know what to disconnect.
 
 `bevy_tutti::graph` owns the `GraphReconcileSystems` set hierarchy —

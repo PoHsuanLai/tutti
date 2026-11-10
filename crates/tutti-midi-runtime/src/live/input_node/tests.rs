@@ -9,12 +9,11 @@ use super::*;
 /// its own) → it never sees the request, fails (run).
 #[test]
 fn the_controls_report_the_mode_last_asked_for() {
-    use tutti_midi_types::mpe::MpeZoneConfig;
     let parts = MidiInputNode::new(None).into_parts();
     let controls = parts.controls;
     assert_eq!(controls.pending_mpe_mode(), None);
-    let lower = MpeMode::LowerZone(MpeZoneConfig::lower(15));
-    let upper = MpeMode::UpperZone(MpeZoneConfig::upper(7));
+    let lower = tutti_fixtures::midi::lower_zone(15);
+    let upper = tutti_fixtures::midi::upper_zone(7);
     controls.set_mpe_mode(lower);
     controls.clone().set_mpe_mode(upper);
     assert_eq!(controls.pending_mpe_mode(), Some(upper), "the last asked");
@@ -36,7 +35,6 @@ fn the_controls_report_the_mode_last_asked_for() {
 /// reclaiming → one request is still retired, fails.
 #[test]
 fn reclaim_frees_a_request_a_block_held_across_the_next() {
-    use tutti_midi_types::mpe::MpeZoneConfig;
     let mut node = MidiInputNode::new(None);
     let controls = MidiInputControls {
         request: Arc::clone(node.mpe_request.cell()),
@@ -45,7 +43,7 @@ fn reclaim_frees_a_request_a_block_held_across_the_next() {
     {
         // A block in progress across the request.
         let _held = node.mpe_request.lend();
-        controls.set_mpe_mode(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+        controls.set_mpe_mode(tutti_fixtures::midi::lower_zone(15));
     }
     assert_eq!(controls.request.retired_len(), 1, "pinned until a scan");
     assert_eq!(controls.reclaim(), 0);

@@ -8,7 +8,7 @@ use crate::{Ring, Sizes, System};
 /// The size of a [`Network`], or the worst case over a design's controls: every
 /// figure a realization allocates from.
 ///
-/// [`Bounds::of`] measures one network; [`Sizes::dominates`] says one bound holds
+/// [`Sizes::measure`] measures one network; [`Sizes::dominates`] says one bound holds
 /// another.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
@@ -34,10 +34,10 @@ pub struct Bounds {
     pub tail: Ring,
 }
 
-impl Bounds {
-    /// The size of `network`, its tail measured to `floor`.
-    #[must_use]
-    pub fn of(network: &Network, floor: Db) -> Self {
+impl Sizes for Bounds {
+    type Source = Network;
+
+    fn measure(network: &Network, floor: Db) -> Self {
         let mut b = Bounds {
             lines: 0,
             stages: network.stages.len(),
@@ -75,9 +75,7 @@ impl Bounds {
         }
         b
     }
-}
 
-impl Sizes for Bounds {
     fn tail(&self) -> Ring {
         self.tail
     }

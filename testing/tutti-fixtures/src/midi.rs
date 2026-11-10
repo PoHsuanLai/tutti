@@ -8,7 +8,7 @@
 //! Production code builds the `Message` itself: these exist so a test reads
 //! as the message it sends, not as the struct literal.
 
-use tutti_midi_protocol::widen;
+use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, widen};
 use tutti_ump::{
     Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Rpn, System, U7, U14, Ump, Utility, Voice1, Voice2,
@@ -318,6 +318,36 @@ pub fn jr_timestamp(timestamp: u16) -> Ump {
 /// A Utility JR Clock.
 pub fn jr_clock(time: u16) -> Ump {
     Message::Utility(Utility::JrClock(time)).into()
+}
+
+/// An MPE lower zone of `members` member channels as an [`MpeMode`]. Panics
+/// outside `1..=15`, which RP-053 gives no zone.
+pub fn lower_zone(members: u8) -> MpeMode {
+    zones(Some(members), None)
+}
+
+/// An MPE upper zone of `members` member channels as an [`MpeMode`].
+pub fn upper_zone(members: u8) -> MpeMode {
+    zones(None, Some(members))
+}
+
+/// Both MPE zones as an [`MpeMode`]. Panics when the two would share a member
+/// channel (more than 14 members between them).
+pub fn dual_zones(lower: u8, upper: u8) -> MpeMode {
+    zones(Some(lower), Some(upper))
+}
+
+fn zones(lower: Option<u8>, upper: Option<u8>) -> MpeMode {
+    let config = |zone, n: u8| {
+        MpeZoneConfig::new(zone, n).unwrap_or_else(|| panic!("{n} is not an MPE member count"))
+    };
+    MpeMode::Zones(
+        MpeZones::new(
+            lower.map(|n| config(MpeZone::Lower, n)),
+            upper.map(|n| config(MpeZone::Upper, n)),
+        )
+        .expect("zones that RP-053 allows"),
+    )
 }
 
 #[cfg(test)]

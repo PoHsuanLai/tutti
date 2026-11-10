@@ -27,8 +27,7 @@
 # - `tutti-dsp` depends on `tutti-types` alone, `tutti-curve` too (layer 1, above
 #   `tutti-types` in layer 0),
 #   `tutti-modulation` on `tutti-types` and `tutti-curve`,
-#   `tutti-midi-types` on `tutti-types`, `tutti-rt`, `tutti-ump` and
-#   `tutti-midi-protocol`, and
+#   `tutti-midi-types` on `tutti-ump` and `tutti-midi-protocol`, and
 #   `tutti-graph` on `tutti-types`, `tutti-rt`, `tutti-ump` and `tutti-curve`;
 # - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
@@ -464,7 +463,7 @@ if "tutti-measure" in pkgs:
 if "tutti-graph" in pkgs:
     only("tutti-graph", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-curve"])
 if "tutti-midi-types" in pkgs:
-    only("tutti-midi-types", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-midi-protocol"])
+    only("tutti-midi-types", ["tutti-ump", "tutti-midi-protocol"])
 if "tutti-nodes" in pkgs and "tutti-spatial" in deps_of("tutti-nodes"):
     fail("tutti-nodes must not depend on tutti-spatial (spatial depends on nodes)")
 if "tutti-spatial" in pkgs and "tutti-nodes" not in deps_of("tutti-spatial"):

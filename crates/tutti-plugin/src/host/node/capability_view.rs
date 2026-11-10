@@ -78,7 +78,7 @@ impl TransportView<'_> {
     /// from: the node's meter follows it (see
     /// [`PluginMeter`](super::PluginMeter)), so a later edit reaches it.
     pub fn set_meter(&mut self, meter: tutti_transport::ProjectMeter) {
-        self.0.set_meter(meter);
+        self.0.controls().set_meter(meter);
     }
 
     /// Drop the meter; subsequent blocks tell the plugin 4/4 from bar 0.

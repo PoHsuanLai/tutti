@@ -6,7 +6,6 @@ use crate::{
 };
 use tutti_fixtures::midi;
 use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32};
-use tutti_midi_types::cc;
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump,
@@ -650,7 +649,7 @@ fn test_cc64_sustain_pedal_holds_notes() {
     assert_eq!(synth.active_voice_count(), 1);
 
     // Press sustain pedal (CC64 >= 64 = on)
-    let sustain_on = ev_cc(0, cc::SUSTAIN, 127);
+    let sustain_on = ev_cc(0, CCNumber::SUSTAIN, 127);
     queue_midi(&mut synth, &[sustain_on]);
     synth.tick(&[], &mut output);
 
@@ -666,7 +665,7 @@ fn test_cc64_sustain_pedal_holds_notes() {
     );
 
     // Release sustain pedal (CC64 < 64 = off)
-    let sustain_off = ev_cc(0, cc::SUSTAIN, 0);
+    let sustain_off = ev_cc(0, CCNumber::SUSTAIN, 0);
     queue_midi(&mut synth, &[sustain_off]);
     synth.tick(&[], &mut output);
 
@@ -700,7 +699,7 @@ fn test_cc66_sostenuto_pedal_holds_notes() {
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
 
-    let sostenuto_on = ev_cc(0, cc::SOSTENUTO, 127);
+    let sostenuto_on = ev_cc(0, CCNumber::SOSTENUTO, 127);
     queue_midi(&mut synth, &[sostenuto_on]);
     synth.tick(&[], &mut output);
 
@@ -731,7 +730,7 @@ fn test_cc66_sostenuto_pedal_holds_notes() {
     );
 
     // Release sostenuto — original note should now release
-    let sostenuto_off = ev_cc(0, cc::SOSTENUTO, 0);
+    let sostenuto_off = ev_cc(0, CCNumber::SOSTENUTO, 0);
     queue_midi(&mut synth, &[sostenuto_off]);
     synth.tick(&[], &mut output);
 
@@ -766,7 +765,7 @@ fn test_cc120_all_sound_off() {
     assert_eq!(synth.active_voice_count(), 4);
 
     // CC120 = All Sound Off (immediate silence)
-    let all_sound_off = ev_cc(0, cc::ALL_SOUND_OFF, 0);
+    let all_sound_off = ev_cc(0, CCNumber::ALL_SOUND_OFF, 0);
     queue_midi(&mut synth, &[all_sound_off]);
     synth.tick(&[], &mut output);
 
@@ -802,7 +801,7 @@ fn test_cc123_all_notes_off() {
     assert_eq!(synth.active_voice_count(), 4);
 
     // CC123 = All Notes Off (release with envelope tail)
-    let all_notes_off = ev_cc(0, cc::ALL_NOTES_OFF, 0);
+    let all_notes_off = ev_cc(0, CCNumber::ALL_NOTES_OFF, 0);
     queue_midi(&mut synth, &[all_notes_off]);
     synth.tick(&[], &mut output);
 
@@ -844,7 +843,7 @@ fn test_cc123_respects_channel() {
     assert_eq!(synth.active_voice_count(), 2);
 
     // All Notes Off on channel 0 only
-    let all_notes_off = ev_cc(0, cc::ALL_NOTES_OFF, 0);
+    let all_notes_off = ev_cc(0, CCNumber::ALL_NOTES_OFF, 0);
     queue_midi(&mut synth, &[all_notes_off]);
     synth.tick(&[], &mut output);
 
@@ -1555,7 +1554,7 @@ fn test_reset_all_controllers_spares_per_note() {
     synth.tick(&[], &mut output);
 
     // Reset All Controllers on channel 1.
-    queue_midi(&mut synth, &[ev_cc(1, cc::RESET_ALL, 0)]);
+    queue_midi(&mut synth, &[ev_cc(1, CCNumber::RESET_ALL, 0)]);
     synth.tick(&[], &mut output);
 
     let bend = synth
@@ -2399,7 +2398,7 @@ fn reset_all_controllers_leaves_the_cutoff_alone() {
         let mut s = synth(config());
         let mut events = vec![ev_note_on(0, 45, 100)];
         if reset {
-            events.push(ev_cc(0, cc::RESET_ALL, 0));
+            events.push(ev_cc(0, CCNumber::RESET_ALL, 0));
         }
         queue_midi(&mut s, &events);
         let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
@@ -2691,7 +2690,7 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
         )));
         synth.allocator.holds_of(0).is_some_and(|h| h.sustained())
     };
-    let pedal = cc::SUSTAIN;
+    let pedal = CCNumber::SUSTAIN;
     assert!(sustain(Message::Midi1(
         address(0),
         Voice1::ControlChange {
@@ -2870,7 +2869,7 @@ fn midi1_values_scale_to_exact_figures() {
         synth.apply_midi(ump(Message::Midi1(
             address(1),
             Voice1::ControlChange {
-                controller: cc::MOD_WHEEL,
+                controller: CCNumber::MOD_WHEEL,
                 value: U7::of(value),
             },
         )));
@@ -2907,9 +2906,9 @@ fn reset_all_controllers_keeps_the_sound_controllers() {
         &mut s,
         &[
             ev_note_on(0, 60, 100),
-            ev_cc(0, cc::MOD_WHEEL, 100),
-            ev_cc(0, cc::BRIGHTNESS, 0),
-            ev_cc(0, cc::RESONANCE, 127),
+            ev_cc(0, CCNumber::MOD_WHEEL, 100),
+            ev_cc(0, CCNumber::BRIGHTNESS, 0),
+            ev_cc(0, CCNumber::RESONANCE, 127),
         ],
     );
     let mut out = [0.0f32; 2];
@@ -2918,7 +2917,7 @@ fn reset_all_controllers_keeps_the_sound_controllers() {
     assert_eq!((cutoff, resonance), (0.0, 1.0), "the controllers were set");
     assert!(s.voices[0].mod_wheel() > 0.5);
 
-    queue_midi(&mut s, &[ev_cc(0, cc::RESET_ALL, 0)]);
+    queue_midi(&mut s, &[ev_cc(0, CCNumber::RESET_ALL, 0)]);
     s.tick(&[], &mut out);
     assert_eq!(s.voices[0].sound_controllers(), (cutoff, resonance));
     assert_eq!(s.voices[0].mod_wheel(), 0.0);

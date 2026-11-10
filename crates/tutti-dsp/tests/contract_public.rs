@@ -60,6 +60,12 @@ impl Lti for GainModel {
 struct NoSizes;
 
 impl Sizes for NoSizes {
+    type Source = GainModel;
+
+    fn measure(_: &GainModel, _: Db) -> Self {
+        NoSizes
+    }
+
     fn tail(&self) -> Ring {
         Ring::Finite(tutti_types::Seconds::new(0.0))
     }
@@ -164,10 +170,6 @@ impl Design for GainDesign {
     }
 
     fn bounds(&self, _: &Ceiling<()>) -> NoSizes {
-        NoSizes
-    }
-
-    fn measure(&self, _: &GainModel, _: Db) -> NoSizes {
         NoSizes
     }
 

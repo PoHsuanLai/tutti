@@ -3465,6 +3465,7 @@ dependencies = [
  "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
+ "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-modulation",
@@ -3776,6 +3777,7 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "tutti-midi-protocol",
  "tutti-ump",
 ]
 
@@ -3806,18 +3808,10 @@ name = "tutti-midi-types"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
- "bitflags 2.13.2",
  "criterion",
  "midi2",
- "midly",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
  "tutti-fixtures",
  "tutti-midi-protocol",
- "tutti-midi-types",
- "tutti-rt",
- "tutti-types",
  "tutti-ump",
 ]
 
@@ -4029,7 +4023,6 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-runtime",
- "tutti-midi-types",
  "tutti-modulation",
  "tutti-nodes",
  "tutti-types",
@@ -4106,6 +4099,7 @@ dependencies = [
  "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
+ "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-modulation",
@@ -4174,7 +4168,6 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-runtime",
- "tutti-midi-types",
  "tutti-nodes",
  "tutti-sf2",
  "tutti-types",

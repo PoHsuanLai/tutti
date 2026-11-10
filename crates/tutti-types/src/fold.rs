@@ -324,17 +324,16 @@ impl Row {
 /// The matrix is **not normalised**: full scale on every 5.1 channel gives
 /// `1 + 2·`[`M3DB`]` = 2.414` per side. Headroom is the caller's.
 ///
-/// # Bit-identity with the width folds
+/// # Summing order
 ///
 /// For the topologies [`ChannelTopology::smpte`] (and [`quad`](ChannelTopology::quad))
-/// gives, a fold to one or two channels writes the bits of the width-only folds
-/// it replaced (`fold_frame_to_stereo` and `fold_frame_to_mono`, deleted),
-/// which `tests::widths_write_the_itu_formulas_to_the_bit` pins against their
-/// closed forms, in their order of operations: the direct channel, then each folded channel in source
-/// order, `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
-/// channels of a side are summed first and then scaled once, as the 12-wide
-/// fold always did; summing then scaling rounds differently from scaling each
-/// channel, so the grouping is kept for exactly the sources that had it.
+/// gives, a fold to one or two channels sums in a fixed order, which
+/// `tests::widths_write_the_itu_formulas_to_the_bit` pins against the closed
+/// forms: the direct channel, then each folded channel in source order,
+/// `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
+/// channels of a side are summed first and then scaled once; summing then
+/// scaling rounds differently from scaling each channel, so the grouping is
+/// kept for exactly the sources that have it.
 ///
 /// # Examples
 ///

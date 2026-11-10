@@ -15,7 +15,7 @@ use crate::network::{
 };
 use crate::{
     Absorption, Band, Bounds, Ceiling, Channels, Design, Effect, Lti, MaxDecay, Network,
-    Realization, Ring, Setup, Stage, System, loop_gain,
+    Realization, Ring, Setup, Sizes, Stage, System, loop_gain,
 };
 
 /// A design whose model is a reverb [`Network`] and whose realization renders it:
@@ -70,10 +70,6 @@ impl<D: NetDesign> Design for Mutant<D> {
 
     fn blank(&self, rate: SampleRate) -> Network {
         Network::new(rate)
-    }
-
-    fn measure(&self, model: &Network, floor: Db) -> Bounds {
-        self.inner.measure(model, floor)
     }
 
     fn channels(&self) -> Channels {
@@ -300,10 +296,6 @@ impl Design for ToyFdn {
         Network::new(rate)
     }
 
-    fn measure(&self, model: &Network, floor: Db) -> Bounds {
-        Bounds::of(model, floor)
-    }
-
     fn channels(&self) -> Channels {
         Channels {
             input: ChannelLayout::MONO,
@@ -420,7 +412,7 @@ impl Design for ToyFdn {
             pre_delay: TOY_MAX_PRE_DELAY,
             freeze: false,
         };
-        let mut b = Bounds::of(&self.design(&worst, ceiling.rate()), ceiling.floor());
+        let mut b = Bounds::measure(&self.design(&worst, ceiling.rate()), ceiling.floor());
         b.tail = Ring::Unbounded;
         b
     }
@@ -919,10 +911,6 @@ impl<D: NetDesign> Design for Defective<D> {
         Network::new(rate)
     }
 
-    fn measure(&self, model: &Network, floor: Db) -> Bounds {
-        self.inner.measure(model, floor)
-    }
-
     fn channels(&self) -> Channels {
         self.inner.channels()
     }
@@ -1084,6 +1072,12 @@ impl<M: System> System for Scaled<M> {
     }
 }
 
+impl<M> std::borrow::Borrow<M> for Scaled<M> {
+    fn borrow(&self) -> &M {
+        &self.inner
+    }
+}
+
 impl<M: Lti> Lti for Scaled<M> {
     fn inputs(&self) -> usize {
         self.inner.inputs()
@@ -1165,9 +1159,6 @@ impl<D: NetDesign> Design for Lying<D> {
             hinf: self.hinf,
             l1: self.l1,
         }
-    }
-    fn measure(&self, model: &Scaled<Network>, floor: Db) -> Bounds {
-        self.inner.measure(&model.inner, floor)
     }
     fn channels(&self) -> Channels {
         self.inner.channels()

@@ -494,9 +494,11 @@ fn a_fork_reads_its_transport_from_the_render() {
     let (client, handle) =
         load_with(tutti_transport::TempoReader::constant(Bpm::of(93.0)).expect("a tempo"));
     let seven_eight = TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH);
-    client.set_meter(tutti_transport::ProjectMeter::new(MeterMap::new([
-        MeterChange::new(Beat(0.0), seven_eight),
-    ])));
+    client
+        .controls()
+        .set_meter(tutti_transport::ProjectMeter::new(MeterMap::new([
+            MeterChange::new(Beat(0.0), seven_eight),
+        ])));
 
     let key = NodeKey(6);
     let editor = live_graph(key, client);

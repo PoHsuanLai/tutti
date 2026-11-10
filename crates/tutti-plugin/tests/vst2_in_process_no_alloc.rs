@@ -83,10 +83,11 @@ fn process_with_a_meter_does_not_allocate() {
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
-    unit.set_meter(ProjectMeter::new(MeterMap::new([MeterChange::new(
-        Beat(0.0),
-        TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
-    )])));
+    unit.controls()
+        .set_meter(ProjectMeter::new(MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
+        )])));
     let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
     for _ in 0..32 {
         unit.block();

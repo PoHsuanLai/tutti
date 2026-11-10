@@ -393,8 +393,8 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 fn pdc_is_the_compilers() {
     let mut s = scene(true);
     assert_eq!(
-        s.session.graph().output_source(0),
-        GraphSource::Node(s.drive, 0),
+        s.session.graph().output_sources(0),
+        [GraphSource::Node(s.drive, 0)],
         "nothing is spliced in; the plan delays the channel"
     );
     assert!(

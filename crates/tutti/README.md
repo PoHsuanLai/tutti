@@ -102,7 +102,8 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::dsp` | `tutti-dsp` | real FFT, windows, filters, dynamics, convolution, delay, reverb | `dsp` |
 | `tutti::measure` | `tutti-measure` | waveform, onsets, pitch, loudness, correlation, spectra, STFT | `dsp` |
 | `tutti::modulation` | `tutti-modulation` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
-| `tutti::midi` | `tutti-midi-types` | MIDI value types, MIDI 2.0 / UMP native | `midi` |
+| `tutti::midi` | `tutti-midi-types` | the decoded MIDI view (`MidiMessage`) | `midi` |
+| `tutti::midi_protocol` | `tutti-midi-protocol` | MIDI 1.0 to 2.0 translation, MPE zones | `midi` |
 | `tutti::midi_runtime` | `tutti-midi-runtime` | MIDI graph nodes, MPE, MIDI-CI, SysEx | `midi` |
 | `tutti::midi_file` | `tutti-midi-file` | Standard MIDI File and MIDI 2.0 Clip File codecs | `midi` |
 | `tutti::midi_hardware` | `tutti-midi-hardware` | OS MIDI I/O: endpoints, send and receive | `midi-hardware` |
@@ -125,7 +126,7 @@ None are on by default.
 - `audio-io` — mic capture and recording (implies `io`; the capture stream
   itself needs `device`).
 - `export` — `tutti::export`.
-- `midi` — `tutti::midi`, `tutti::midi_runtime`, `tutti::midi_file`.
+- `midi` — `tutti::midi`, `tutti::midi_protocol`, `tutti::midi_runtime`, `tutti::midi_file`.
 - `midi-hardware` — `tutti::midi_hardware` (implies `midi`).
 - `synth`, `soundfont`, `sampler`, `spatial`, `dsp`, `modulation` — the
   matching module (`dsp` gives both `tutti::dsp` and `tutti::measure`). `soundfont` implies `midi`; `sampler` implies `wav`.

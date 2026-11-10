@@ -293,8 +293,8 @@ fn header_round_trips_tempo_and_time_signature() {
         .iter()
         .map(|ce| {
             (
-                tutti_midi_types::ump::flex_tempo_bpm(&ce.event).is_some(),
-                tutti_midi_types::ump::flex_time_signature(&ce.event).is_some(),
+                crate::flex::tempo(&ce.event).is_some(),
+                crate::flex::time_signature(&ce.event).is_some(),
             )
         })
         .collect();

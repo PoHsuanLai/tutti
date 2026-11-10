@@ -23,7 +23,7 @@
 //! read from the audio thread, and `CLAUDE.md` names device enumeration in this
 //! crate as a deliberate exception to the publish rule.
 //!
-//! [`ArcLend`]: tutti_midi_types::ArcLend
+//! [`ArcLend`]: tutti_rt::ArcLend
 //! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
 //! [`InputProducerHandle`]: crate::InputProducerHandle
 

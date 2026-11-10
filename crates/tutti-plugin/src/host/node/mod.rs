@@ -100,11 +100,11 @@ mod tests;
 
 // The shared node primitives (change sinks) live in `crate::util::node`;
 // re-exported here so `crate::host::node::...` paths resolve.
-pub use crate::util::node::ParameterChangeSink;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
+pub use crate::util::node::{Listener, ParameterChangeSink};
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
-pub use controls::PluginControls;
+pub use controls::{NodeControls, PluginControls};
 pub use meter::PluginMeter;
 pub use param_delivery::ParamDeliveryStats;
 pub(crate) use tutti_plugin_ipc::MidiIntake;
@@ -134,7 +134,6 @@ use tutti_plugin_types::PluginTail;
 use tutti_plugin_types::{
     LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat, TransportInfo,
 };
-use tutti_types::MeterMap;
 use tutti_types::{SampleRate, Samples};
 
 /// The typestate of a [`PluginClient`] that is loaded but not yet a graph node.
@@ -165,24 +164,13 @@ pub struct Bound {
     /// while the batcher holds the audio outputs and written to the event
     /// output after it. Inline: past its capacity the rest is dropped.
     out_events: MidiEventVec,
-    /// The free-running sample counter the plugin's transport carries:
-    /// frames this node has rendered, monotonic across a re-prepare.
-    steady: transport_source::SteadyTime,
-    /// Project time the plugin's transport carries: rolls with playback,
-    /// holds while stopped, re-seated at a jump.
-    project: transport_source::ProjectTime,
     /// The transport changes inside the chunk being filled: where the walk
     /// is, between calls (`transport_walk`).
     walk: transport_walk::TransportWalk,
-    /// The host's monotonic clock the plugin's transport carries
-    /// (`systemTime`), read once per block. `None` on an offline fork: no
-    /// clock relates to a render that runs at its own speed.
-    host_clock: Option<transport_source::HostClock>,
-    /// A reader of the node's meter cell (its controls'
-    /// [`PluginMeter::reader`]), registered at bind: the one cell the node reads the project meter from, once per
-    /// block. Installing or clearing a meter publishes into it; nothing
-    /// swaps it.
-    meter: tutti_transport::MeterSlotReader,
+    /// The meter cell and the clocks the plugin's transport carries
+    /// (`TransportSource`): the steady counter, project time and the host
+    /// clock, `None` on an offline fork.
+    transport: transport_source::TransportSource,
     /// The project's tempo map, read through the reader `bind` was given and
     /// lent once per block: the tempo and slope every chunk's transport
     /// reports. A fork clones it on the control side (its own registration on
@@ -191,10 +179,6 @@ pub struct Bound {
     /// The node's cursor into the map, kept across blocks so the lookups
     /// start where the last one ended.
     tempo_cursor: tutti_tempo::Cursor,
-    /// The meter the transport snapshot reads when none is installed on the
-    /// controls: built once here, on the control thread, because building a
-    /// `MeterMap` allocates.
-    default_meter: MeterMap,
     /// The curve segments in flight on the event input, sent as parameter
     /// points until each lands. Its slots are allocated by `prepare`;
     /// nothing is allocated on the audio thread.
@@ -421,7 +405,7 @@ impl PluginClient<Unbound> {
                 listener_invalidate_sink.fire(PluginInvalidation::Tail { tail });
             }
             BridgeEvent::ParameterChanged { index, value } => {
-                listener_param_sink.fire(index, value);
+                listener_param_sink.fire((index, value));
             }
             BridgeEvent::Resync(kind) => match kind.classify() {
                 ResyncClass::Refresh(r) => listener_refresh_sink.fire(r),
@@ -511,7 +495,7 @@ impl PluginClient<Unbound> {
             self.params.iter().copied(),
             self.controls.delivery_counters(),
         );
-        let meter = self.controls.meter.reader();
+        let meter = self.controls.meter().reader();
         let Self {
             bridge,
             descriptor,
@@ -550,12 +534,8 @@ impl PluginClient<Unbound> {
                 io,
                 pending: BlockPayload::default(),
                 out_events: MidiEventVec::new(),
-                steady: transport_source::SteadyTime::default(),
-                project: transport_source::ProjectTime::default(),
                 walk: transport_walk::TransportWalk::default(),
-                host_clock: Some(transport_source::HostClock),
-                meter,
-                default_meter: MeterMap::default(),
+                transport: transport_source::TransportSource::new(meter),
                 tempo,
                 tempo_cursor: tutti_tempo::Cursor::default(),
                 segments: segment_points::SegmentPoints::default(),
@@ -715,15 +695,6 @@ impl<S> PluginClient<S> {
     /// queue is full.
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         self.bridge.set_render_mode_rt(mode)
-    }
-
-    /// Installs the project meter, from which the plugin's transport gets its
-    /// time signature and bar.
-    ///
-    /// The transport itself needs no install: the node reads it from each
-    /// block. See [`PluginControls::set_meter`].
-    pub fn set_meter(&self, meter: tutti_transport::ProjectMeter) {
-        self.controls.set_meter(meter);
     }
 
     /// Used by `PluginHandle`.

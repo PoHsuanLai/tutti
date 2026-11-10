@@ -46,7 +46,7 @@ pub mod backend {
     pub use crate::host::handles::capabilities::{
         HostAutomationState, HostEditor, HostParams, HostPresets, HostState,
     };
-    pub use crate::host::node::ParameterChangeSink;
+    pub use crate::host::node::{Listener, ParameterChangeSink};
 }
 
 // Loads a VST2 plugin in the host process; most callers use `Plugin::open`,

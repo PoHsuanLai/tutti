@@ -21,7 +21,6 @@ use tutti_graph::{EventKind, SubBlocks};
 use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_protocol::{channel_voice, narrow_value};
-use tutti_midi_types::cc;
 use tutti_types::Hz;
 use tutti_types::{Amplitude, Param, Tail};
 use tutti_ump::NoteId;
@@ -412,10 +411,12 @@ impl PolySynth {
                 // The index is a wire byte, not a 7-bit value: 0xCA is not
                 // CC74.
                 match controller {
-                    c if c == cc::BRIGHTNESS.get() => {
+                    c if c == CCNumber::BRIGHTNESS.get() => {
                         self.set_voice_mpe(id, MpeControl::Slide(data));
                     }
-                    c if c == cc::VOLUME.get() => self.set_voice_mpe(id, MpeControl::Gain(data)),
+                    c if c == CCNumber::VOLUME.get() => {
+                        self.set_voice_mpe(id, MpeControl::Gain(data))
+                    }
                     _ => {}
                 }
             }
@@ -614,10 +615,10 @@ impl PolySynth {
 
     fn handle_cc(&mut self, cc_num: CCNumber, value: f32) {
         match cc_num {
-            cc::MOD_WHEEL => {
+            CCNumber::MOD_WHEEL => {
                 self.voices.iter_mut().for_each(|v| v.set_mod_wheel(value));
             }
-            cc::RESONANCE => {
+            CCNumber::RESONANCE => {
                 self.voices
                     .iter_mut()
                     .for_each(|v| v.set_filter_resonance(value));
@@ -626,7 +627,7 @@ impl PolySynth {
             // native per-note controller at the input edge (routed per-voice via
             // the `AssignablePerNoteController` arm above), so a channel-wide CC74
             // reaching here is a plain global brightness/cutoff.
-            cc::BRIGHTNESS => {
+            CCNumber::BRIGHTNESS => {
                 self.voices.iter_mut().for_each(|v| v.set_cc_cutoff(value));
             }
             _ => {}

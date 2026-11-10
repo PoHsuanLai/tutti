@@ -119,12 +119,12 @@ marked "on `main` (#367)".
 
 | Piece | Where | Reverb-specific? |
 |---|---|---|
-| `Network`, `Stage`, `Inline`, the queries (`rt60`, `rt60_bound`, `tail`, `is_stable`, `is_lossless`, densities, `min_delay`, `latency`) | `tutti-dsp/src/network.rs`, `network/queries.rs` | The model: yes. `tail`, `is_stable` and `latency` are what every family has |
+| `Network`, `Stage`, `Inline`, the queries (`rt60`, `tail`, `is_stable`, `is_lossless`, densities, `min_delay`, `latency`) | `tutti-dsp/src/network.rs`, `network/queries.rs` | The model: yes. `tail`, `is_stable` and `latency` are what every family has |
 | `Ring { Finite(Seconds), Unbounded }` | `network/queries.rs` | No: every family's tail |
 | `Design { Controls, design_into, design, bounds, channels }`; also `type Realization`, `fn realization` (PR 1a renamed them from `Kernel`, `kernel`) | `network/design.rs` | Names `Network` and `Bounds` (the reverb's) in its signatures |
 | `Ceiling { rate, max_decay, floor }` | `network/design.rs` | `max_decay` is; `rate` and `floor` are not |
-| `Bounds { lines, stages, taps, outputs, line, delay, ir, pre_delay, tail }`, `Bounds::of`, `dominates` | `network/design.rs` | Every field but `tail` |
-| On `main`: `Realization` (non-generic; PR 1a renamed it from `Kernel`, and step 1 / PR 1b makes it `Realization<M>`), `Setup { rate, max_block, input, output }`, `Effort` | `network/realization.rs` | `Realization` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
+| `Bounds { lines, stages, taps, outputs, line, delay, ir, pre_delay, tail }`, `Sizes::measure`, `dominates` | `network/design.rs` | Every field but `tail` |
+| On `main`: `Realization` (non-generic; PR 1a renamed it from `Kernel`, and step 1 / PR 1b makes it `Realization<M>`), `Setup { rate, max_block }`, `Effort` | `network/realization.rs` | `Realization` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
 | `design_contract!`, `DesignCase`, `Mutant`; `realization_contract!`, `RealizationCase`, `Defect` (PR 1a renamed them from `kernel_contract!`, `KernelCase`) | `contract/design.rs`, `contract/realization.rs` (a crate-root `#[cfg(test)] mod contract` since PR 1a) | Crate-private and `cfg(test)`; the cases mix generic ones (pure, bounds dominate, reset, fresh, block independence, click-free, latency, no allocation) with reverb ones (`rt60`, `band_order`, `decorrelated`, `line_lengths`, freeze) |
 | On `main`: `DesignNode<D>`, `NodeDesign`, `ControlParams` (PR 1a renamed them from `ReverbNode`, `ReverbDesign`, `ReverbParams`), `DryAlign` | `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The control path, tail report, `longest`, parking, cut-to-frame, fork and dry alignment are generic; the names are not |
 | On `main`: node tests | `tutti-nodes/tests/reverb_node.rs`, `reverb_node_generic.rs` | Generic cases through a lying design |
@@ -459,15 +459,14 @@ pub trait Design: Clone + Send {
     fn design_into(&self, c: &Self::Controls, rate: SampleRate, out: &mut Self::Model);
     fn design(&self, c: &Self::Controls, rate: SampleRate) -> Self::Model { /* blank + design_into */ }
     fn bounds(&self, ceiling: &Ceiling<Self::Range>) -> Self::Bounds;   // worst case over the controls
-    fn measure(&self, model: &Self::Model, floor: Db) -> Self::Bounds;  // today's Bounds::of
     fn realization(&self) -> Self::Realization;
 }
 ```
 
 Differences from `main`: `type Model` is any class trait, not `Network`; `Bounds`
 is the design's (engineering) and no longer part of the model, so the model trait
-states only mathematics; `blank` and `measure` are the two things the old
-`Network::new` and `Bounds::of` did, now on the design that owns the sizes.
+states only mathematics; `blank` is what the old `Network::new` did, now on the design, and
+`Sizes::measure` (the old `Bounds::of`) is on the sizes that own the figure.
 `design_into` stays the required method: a `Network` is 56 KB and cannot be built
 by value on an audio thread (doc 022 "Step 1a as built"); a biquad is a few dozen
 bytes and in place is merely harmless.

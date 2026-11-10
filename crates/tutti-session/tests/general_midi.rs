@@ -24,8 +24,11 @@ fn unit() -> SoundFontUnit {
     SoundFontUnit::new(font, &Settings::new(RATE)).expect("builds")
 }
 
+/// The one source a port holds (these tests wire one), or silence.
 fn source(session: &Session, node: NodeKey, port: usize) -> GraphSource {
-    session.graph_ref().source(node, port)
+    let held = session.graph_ref().sources(node, port);
+    assert!(held.len() <= 1, "one source a port: {held:?}");
+    held.first().copied().unwrap_or(GraphSource::Silence)
 }
 
 /// The setup's nodes are the nodes it names, with the shapes the wiring needs:
@@ -115,10 +118,7 @@ fn the_setup_does_not_take_the_graphs_outputs() {
     let mut session = offline_session();
     session.add_general_midi(unit()).expect("a SoundFont unit");
     for channel in 0..session.graph_ref().outputs() {
-        assert_eq!(
-            session.graph_ref().output_source(channel),
-            GraphSource::Silence
-        );
+        assert_eq!(session.graph_ref().output_sources(channel), []);
     }
 }
 

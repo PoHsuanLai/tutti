@@ -29,9 +29,8 @@ Pure MIDI values live in `tutti-midi-types`; OS ports live in
 - [`MpeIngest`]: the input-edge transform that rewrites classic-MPE channel
   spread into native MIDI 2.0 per-note messages.
 
-The MPE mode/zone types ([`MpeMode`], [`MpeZone`], [`MpeZoneConfig`]) are
-re-exported from `tutti-midi-types`, so a consumer of the runtime needs one
-import rather than two.
+The MPE zone types (`MpeMode`, `MpeZoneConfig`, ...) are
+`tutti-midi-protocol`'s; `MidiInputNode::with_mpe` takes a `MpeMode` from there.
 
 ## What it does not own
 
@@ -41,8 +40,9 @@ or an offline export, gets its MIDI without linking CoreMIDI or ALSA.
 
 - **No ports, and no `cfg(target_os)`.** Enumerating, opening and sending on a
   real endpoint belongs to `tutti-midi-hardware`.
-- **No wire vocabulary.** `MidiMessage`, `NoteId` and the MIDI 1↔2
-  scaling belong to `tutti-midi-types`.
+- **No wire vocabulary.** `Ump`, `NoteId` and the MIDI 1↔2 scaling belong to
+  `tutti-ump` and `tutti-midi-protocol` (MPE zone values included), and the decoded
+  `MidiMessage` to `tutti-midi-types`.
 - **No files.** SMF and the path-level Clip File codec belong to
   `tutti-midi-file`.
 - **No audio, and no ECS.** Nothing here touches a sample buffer; the Bevy
@@ -101,13 +101,12 @@ has to know what MPE is.
 
 ```rust
 use tutti_midi_runtime::MpeIngest;
-use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-use tutti_fixtures::midi::{note_on, pitch_bend, wide_velocity};
+use tutti_fixtures::midi::{lower_zone, note_on, pitch_bend, wide_velocity};
 use tutti_graph::Offset;
 use tutti_midi_types::MidiMessage;
 use tutti_ump::{MidiChannel, MidiGroup};
 
-let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+let mut ingest = MpeIngest::new(lower_zone(7));
 
 // A note-on claims member channel 1; the map now resolves that channel.
 // Each event becomes none, one, or (a bend range) one per member channel,

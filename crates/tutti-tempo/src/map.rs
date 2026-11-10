@@ -1,7 +1,7 @@
 use crate::error::TempoError;
 use crate::point::{Shape, TempoPoint};
 use crate::segment::Seg;
-use tutti_types::{Beat, Bpm, Frame, SampleRate, Seconds, first_frame_at_or_after};
+use tutti_types::{Beat, BeatDuration, Bpm, Frame, SampleRate, Seconds, first_frame_at_or_after};
 
 /// An immutable tempo map.
 ///
@@ -61,19 +61,21 @@ impl TempoMap {
         let (mut sum, mut comp) = (0.0f64, 0.0f64);
         for (i, p) in pts.iter().enumerate() {
             let (r1, db) = match pts.get(i + 1) {
-                Some(n) => (n.tempo.get() / 60.0, n.beat.get() - p.beat.get()),
-                None => (p.tempo.get() / 60.0, f64::INFINITY),
+                Some(n) => (n.tempo.get() / 60.0, n.beat - p.beat),
+                None => (p.tempo.get() / 60.0, BeatDuration(f64::INFINITY)),
             };
-            let s = Seg::new(p.beat.get(), sum + comp, p.tempo, r1, p.shape, db);
+            let s = Seg::new(p.beat, Seconds(sum + comp), p.tempo, r1, p.shape, db);
             if i + 1 < pts.len() {
                 if !s.is_sound(db) {
                     return Err(TempoError::Unrepresentable(i));
                 }
-                let t = sum + s.dsec;
-                comp += if sum.abs() >= s.dsec.abs() {
-                    (sum - t) + s.dsec
+                // The compensated sum's own arithmetic is on the raw seconds.
+                let dsec = s.dsec.get();
+                let t = sum + dsec;
+                comp += if sum.abs() >= dsec.abs() {
+                    (sum - t) + dsec
                 } else {
-                    (s.dsec - t) + sum
+                    (dsec - t) + sum
                 };
                 sum = t;
                 if !(sum + comp).is_finite() {
@@ -130,7 +132,12 @@ impl TempoMap {
     /// hint. Segment `i` holds `key(i) <= x < key(i + 1)`; below the first it is
     /// the first.
     #[inline]
-    fn locate(&self, key: impl Fn(&Seg) -> f64, x: f64, hint: &mut Cursor) -> usize {
+    fn locate<T: PartialOrd + Copy>(
+        &self,
+        key: impl Fn(&Seg) -> T,
+        x: T,
+        hint: &mut Cursor,
+    ) -> usize {
         let holds =
             |i: usize| key(&self.segs[i]) <= x && self.segs.get(i + 1).is_none_or(|n| x < key(n));
         let h = hint.0.min(self.segs.len() - 1);
@@ -145,11 +152,11 @@ impl TempoMap {
         i
     }
 
-    fn by_beat(&self, beat: f64, hint: &mut Cursor) -> &Seg {
+    fn by_beat(&self, beat: Beat, hint: &mut Cursor) -> &Seg {
         &self.segs[self.locate(|s| s.beat0, beat, hint)]
     }
 
-    fn by_sec(&self, sec: f64, hint: &mut Cursor) -> &Seg {
+    fn by_sec(&self, sec: Seconds, hint: &mut Cursor) -> &Seg {
         &self.segs[self.locate(|s| s.sec0, sec, hint)]
     }
 
@@ -163,8 +170,8 @@ impl TempoMap {
         rate: SampleRate,
         hint: &mut Cursor,
     ) -> (&Seg, u64, Option<u64>) {
-        let cut = |s: &Seg| first_frame_at_or_after(s.sec0 * rate.get()).max(0) as u64;
-        let i = self.locate(|s| cut(s) as f64, frame.get() as f64, hint);
+        let cut = |s: &Seg| first_frame_at_or_after(s.sec0.get() * rate.get()).max(0) as u64;
+        let i = self.locate(cut, frame.get(), hint);
         (
             &self.segs[i],
             cut(&self.segs[i]),
@@ -183,9 +190,8 @@ impl TempoMap {
     #[must_use]
     #[inline]
     pub fn seconds_at_with(&self, beat: Beat, hint: &mut Cursor) -> Seconds {
-        let b = beat.get();
-        let s = self.by_beat(b, hint);
-        Seconds(s.sec0 + s.sec_in(b - s.beat0))
+        let s = self.by_beat(beat, hint);
+        s.sec0 + s.sec_in(beat - s.beat0)
     }
 
     /// The beat `seconds` from beat 0.
@@ -198,9 +204,8 @@ impl TempoMap {
     #[must_use]
     #[inline]
     pub fn beat_at_seconds_with(&self, seconds: Seconds, hint: &mut Cursor) -> Beat {
-        let seconds = seconds.get();
         let s = self.by_sec(seconds, hint);
-        Beat(s.beat0 + s.beat_in(seconds - s.sec0))
+        s.beat0 + s.beat_in(seconds - s.sec0)
     }
 
     /// The tempo at `beat`. A point's own beat belongs to that point, so a step
@@ -214,8 +219,8 @@ impl TempoMap {
     #[must_use]
     #[inline]
     pub fn tempo_at_with(&self, beat: Beat, hint: &mut Cursor) -> Bpm {
-        let s = self.by_beat(beat.get(), hint);
-        s.bpm_at_beat(beat.get() - s.beat0)
+        let s = self.by_beat(beat, hint);
+        s.bpm_at_beat(beat - s.beat0)
     }
 
     /// The tempo `seconds` from beat 0.
@@ -228,7 +233,6 @@ impl TempoMap {
     #[must_use]
     #[inline]
     pub fn tempo_at_seconds_with(&self, seconds: Seconds, hint: &mut Cursor) -> Bpm {
-        let seconds = seconds.get();
         let s = self.by_sec(seconds, hint);
         s.bpm_at_sec(seconds - s.sec0)
     }
@@ -247,10 +251,10 @@ impl TempoMap {
     /// reader divides it into CLAP's per-sample `tempo_inc` at the C ABI.
     #[must_use]
     pub fn tempo_slope_with(&self, from: Seconds, to: Seconds, hint: &mut Cursor) -> f64 {
-        let s = self.by_sec(from.get(), hint);
-        let ds0 = from.get() - s.sec0;
-        let ds1 = (to.get() - s.sec0).min(s.dsec);
-        let span = ds1 - ds0;
+        let s = self.by_sec(from, hint);
+        let ds0 = from - s.sec0;
+        let ds1 = (to - s.sec0).min(s.dsec);
+        let span = (ds1 - ds0).get();
         // `is_nan` too: a NaN span is no span.
         if span.is_nan() || span <= 0.0 {
             return 0.0;
@@ -333,7 +337,7 @@ impl TempoMap {
     ) -> Option<Frame> {
         let (seg, start, next) = self.by_frame(frame, rate, hint);
         // Only the first segment starts at beat 0, and that is not a change.
-        if start == frame.get() && seg.beat0 != 0.0 {
+        if start == frame.get() && seg.beat0 != Beat(0.0) {
             return Some(frame);
         }
         next.map(Frame)

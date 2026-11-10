@@ -2,9 +2,8 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_types::MidiMessage;
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, KeyEvent, MidiChannel, MidiGroup};
 
 /// A packet from its words, zero-padded to four, at offset 0.
 fn raw(words: &[u32]) -> UmpAt {
@@ -175,7 +174,7 @@ fn route_cc_events_splits_mapped_cc_into_params() {
     assert!(
         filtered
             .iter()
-            .any(|e| MidiMessage::from_ump(e.1).is_note_on())
+            .any(|e| matches!(e.1.key_event(), Some(KeyEvent::On(_))))
     );
 }
 

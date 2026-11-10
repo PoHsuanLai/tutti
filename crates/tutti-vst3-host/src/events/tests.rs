@@ -4,9 +4,8 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::{
-    bend_u32_to_signed_f32, narrow_velocity, u16_to_unit_f32, u32_to_unit_f32,
+    bend_u32_to_signed_f32, channel_voice, narrow_velocity, u16_to_unit_f32, u32_to_unit_f32,
 };
-use tutti_midi_types::MidiMessage;
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
 use tutti_types::Samples;
 use tutti_ump::{
@@ -101,9 +100,10 @@ fn note_on_lands_in_note_on_variant() {
     }
 
     let back = vst3.to_midi().expect("round-trip");
-    let message = MidiMessage::from_ump(back.ump);
-    assert!(message.is_note_on());
-    assert_eq!(message.note(), Some(60));
+    assert!(matches!(
+        channel_voice(back.ump),
+        Some((_, Voice2::NoteOn { note, .. })) if note == NoteNumber::of(60)
+    ));
     assert_eq!(back.offset, 5);
 }
 
@@ -130,12 +130,12 @@ fn note_off_lands_in_note_off_variant() {
 
     let back = vst3.to_midi().expect("round-trip");
     assert!(back.ump.is_note_off());
-    let message = MidiMessage::from_ump(back.ump);
-    assert_eq!(message.note(), Some(72));
+    let Some((_, Voice2::NoteOff { note, velocity, .. })) = channel_voice(back.ump) else {
+        panic!("a note-off");
+    };
+    assert_eq!(note, NoteNumber::of(72));
     assert!(
-        message
-            .velocity()
-            .is_some_and(|v| narrow_velocity(v).get() > 0),
+        narrow_velocity(velocity).get() > 0,
         "release velocity was dropped on the way back from the plugin"
     );
 }
@@ -176,7 +176,10 @@ fn poly_pressure_lands_in_poly_pressure_variant() {
     let vst3 = encode(&event).expect("PolyPressure should convert");
     assert!(matches!(vst3.payload, Payload::PolyPressure(_)));
     let back = vst3.to_midi().expect("round-trip");
-    assert_eq!(MidiMessage::from_ump(back.ump).note(), Some(60));
+    assert!(matches!(
+        channel_voice(back.ump),
+        Some((_, Voice2::PolyPressure { note, .. })) if note == NoteNumber::of(60)
+    ));
 }
 
 #[test]

@@ -15,9 +15,10 @@ use tutti_clap_host::{
 };
 use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
-use tutti_midi_types::{MidiMessage, PerNoteBendRanges, to_midi1_bytes};
+use tutti_midi_protocol::{channel_voice, midi1};
+use tutti_midi_types::PerNoteBendRanges;
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, decode};
+use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2, decode};
 
 /// A block long enough for every offset these tests use.
 const BLOCK: usize = 1_000;
@@ -51,9 +52,10 @@ fn test_note_on_roundtrip() {
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.offset, 10);
-    let message = MidiMessage::from_ump(back.ump);
-    assert!(message.is_note_on());
-    assert_eq!(message.note(), Some(60));
+    assert!(matches!(
+        channel_voice(back.ump),
+        Some((_, Voice2::NoteOn { note, .. })) if note == NoteNumber::of(60)
+    ));
 }
 
 /// NoteOff maps to CLAP's typed `note` event (NoteOff variant).
@@ -68,8 +70,10 @@ fn test_note_off_roundtrip() {
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.offset, 20);
-    assert!(back.ump.is_note_off());
-    assert_eq!(MidiMessage::from_ump(back.ump).note(), Some(72));
+    assert!(matches!(
+        channel_voice(back.ump),
+        Some((_, Voice2::NoteOff { note, .. })) if note == NoteNumber::of(72)
+    ));
 }
 
 /// ControlChange falls through to CLAP's generic `Midi` (3-byte wire) event.
@@ -204,9 +208,10 @@ fn test_output_event_list_push_note_on() {
     let midi_out = list.to_midi_events();
     assert_eq!(midi_out.len(), 1);
     let event = &midi_out[0];
-    let message = MidiMessage::from_ump(event.ump);
-    assert!(message.is_note_on());
-    assert_eq!(message.note(), Some(64));
+    assert!(matches!(
+        channel_voice(event.ump),
+        Some((_, Voice2::NoteOn { note, .. })) if note == NoteNumber::of(64)
+    ));
     assert_eq!(event.offset, 50);
 }
 
@@ -257,7 +262,10 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
     let event = &midi_out[0];
     assert!(event.ump.is_note_off());
     assert_eq!(
-        MidiMessage::from_ump(event.ump).note(),
+        event.ump.key_event().map(|key| match key {
+            KeyEvent::On(key) | KeyEvent::Off(key) => key.note(),
+            KeyEvent::Sustain { .. } => unreachable!("a note-off"),
+        }),
         Some(NOTE),
         "a wildcard key must resolve through note_id, not mask to 127 — \
          masking leaves every real voice ringing"
@@ -337,11 +345,11 @@ fn test_output_event_list_push_midi_cc() {
     assert_eq!(midi_out.len(), 1);
     let event = &midi_out[0];
     assert_eq!(event.offset, 33);
-    // Round-tripping a CC through tutti-midi produces a UMP CV1 event;
-    // decoding back to wire bytes yields the original CC payload.
-    let (bytes, len) = to_midi1_bytes(&event.ump).expect("CC should round-trip");
-    assert_eq!(len, 3);
-    assert_eq!(bytes, [0xB2, 74, 100]);
+    // Back to wire bytes, the CC is the original payload.
+    let bytes: Vec<_> = midi1(decode(event.ump).expect("a CC"))
+        .map(|bytes| bytes.as_slice().to_vec())
+        .collect();
+    assert_eq!(bytes, [[0xB2, 74, 100]]);
 }
 
 /// Events added to the input list should sort by frame offset after

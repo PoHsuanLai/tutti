@@ -1967,7 +1967,9 @@ mod tests {
     fn midi1_event(bytes: &[u8]) -> UmpAt {
         (
             at(0),
-            tutti_midi_types::from_midi1_bytes(bytes).expect("builds"),
+            tutti_ump::Midi1Parser::message(tutti_ump::MidiGroup::FIRST, bytes)
+                .expect("a MIDI 1.0 message")
+                .into(),
         )
     }
 

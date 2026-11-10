@@ -513,3 +513,30 @@ fn constant_tempo_is_the_single_points_tempo_to_the_bit() {
         assert_eq!(two.constant_tempo(), None, "{shape:?}");
     }
 }
+
+/// The tempo on a frame is the curve's instantaneous tempo, which is the
+/// tempo at that second: 120 -> 180 linear in time reads 150 at 0.8 s (frame
+/// 38 400) and 120 on frame 0 to the bit; linear in beats (`g = 0.25`) it reads
+/// `120 e^(0.25 x 1)` at 1 s (frame 48 000), written with `libm::exp`.
+///
+/// Mutation (run): `tempo_at_frame_with` dividing by `rate` twice -> the
+/// frame is read at the wrong second -> fails.
+#[test]
+fn tempo_on_a_frame_is_the_tempo_at_that_second() {
+    let time =
+        TempoMap::new([pt(0.0, 120.0, Shape::RampTime), pt(4.0, 180.0, Shape::Step)]).unwrap();
+    assert_eq!(time.tempo_at_frame(Frame(0), R), Bpm::of(120.0));
+    assert!((time.tempo_at_frame(Frame(38_400), R).get() - 150.0).abs() < 1e-12);
+    let beats = TempoMap::new([
+        pt(0.0, 120.0, Shape::RampBeats),
+        pt(4.0, 180.0, Shape::Step),
+    ])
+    .unwrap();
+    let want = 120.0 * libm::exp(0.25);
+    assert!((beats.tempo_at_frame(Frame(48_000), R).get() - want).abs() < 1e-12);
+    let mut hint = Cursor::default();
+    assert_eq!(
+        beats.tempo_at_frame_with(Frame(48_000), R, &mut hint),
+        beats.tempo_at_frame(Frame(48_000), R)
+    );
+}

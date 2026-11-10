@@ -6,9 +6,8 @@
 //! automation scrubbing) can use it.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use tutti_tempo::{Shape, TempoMap};
+use tutti_tempo::TempoMap;
 
-use super::settings::HasRamp;
 use super::walk::TempoWalk;
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -135,7 +134,8 @@ impl OfflineTimeline {
 
     /// As [`new`](Self::new), over `map` instead of `config.tempo`, which it
     /// replaces (doc 020, section 6): the timeline follows the map's steps,
-    /// each on the frame it falls on, as the live transport does. A render
+    /// each on the frame it falls on, and its ramps cell by cell, as the live
+    /// transport does. A render
     /// that must see the steps drives it through
     /// [`render_graph`](Self::render_graph), which knows the block it hands the
     /// graph. A map of one point is the constant tempo of `new`, bit for bit.
@@ -146,20 +146,11 @@ impl OfflineTimeline {
     /// [`tempo`](Self::tempo) and [`beats_per_sample`](Self::beats_per_sample)
     /// are the map's first point's; the tempo in force is each block's
     /// transport's.
-    ///
-    /// # Errors
-    ///
-    /// [`HasRamp`] for a map with a ramp (stage 4).
-    pub fn with_tempo_map(
-        config: &OfflineTimelineConfig,
-        map: Arc<TempoMap>,
-    ) -> Result<Self, HasRamp> {
-        if map.points().iter().any(|p| p.shape != Shape::Step) {
-            return Err(HasRamp);
-        }
+    #[must_use]
+    pub fn with_tempo_map(config: &OfflineTimelineConfig, map: Arc<TempoMap>) -> Self {
         let first = map.points()[0].tempo;
-        let stepped = map.constant_tempo().is_none().then_some(map);
-        Ok(Self::build(config, first, stepped))
+        let followed = map.constant_tempo().is_none().then_some(map);
+        Self::build(config, first, followed)
     }
 
     fn build(config: &OfflineTimelineConfig, tempo: Bpm, map: Option<Arc<TempoMap>>) -> Self {
@@ -459,6 +450,7 @@ impl super::RenderClock for OfflineTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_tempo::Shape;
 
     /// An inverted region must not arm a loop that never wraps.
     ///
@@ -782,15 +774,19 @@ mod tests {
     }
 
     /// A one-point map is the constant timeline of `new`, bit for bit, and a
-    /// ramp is refused until stage 4.
+    /// ramp is taken: from beat 0 of 97 to 120 BPM over 4 beats (tempo linear in
+    /// time, so `T = 2 x 4 / (97 + 120) x 60` s) the first cell's tempo is the
+    /// chord of the curve over its 128 frames, written out here from the closed
+    /// form `beats(s) = r0 s + a s^2 / 2`, `a = (r1 - r0) / T`.
     ///
-    /// Mutation (run): dropping the `HasRamp` check -> the ramp is taken ->
-    /// fails; `with_tempo_map` taking `config.tempo` instead of the map's -> the
-    /// 120 BPM beats differ from `new`'s 97 -> fails.
+    /// Mutation (run): `with_tempo_map` taking `config.tempo` instead of the
+    /// map's -> the first point's tempo is 120, not 97 -> fails; `advance`
+    /// rolling with the closed form instead of the walk (`self.map` taken as
+    /// `None`) -> the second cell's tempo is not higher -> fails.
     #[test]
-    fn a_constant_map_is_the_constant_timeline_and_a_ramp_is_refused() {
+    fn a_constant_map_is_the_constant_timeline_and_a_ramp_is_followed() {
         let constant = map(&[(0.0, 97.0)], Shape::Step);
-        let a = OfflineTimeline::with_tempo_map(&config(0.3), constant).expect("steps");
+        let a = OfflineTimeline::with_tempo_map(&config(0.3), constant);
         let b = OfflineTimeline::new(&OfflineTimelineConfig {
             tempo: Bpm::of(97.0),
             ..config(0.3)
@@ -801,11 +797,23 @@ mod tests {
             assert_eq!(a.beat().get().to_bits(), b.beat().get().to_bits(), "{n}");
         }
         assert_eq!(a.graph_block(), b.graph_block());
-        let ramp = map(&[(0.0, 97.0), (4.0, 120.0)], Shape::RampTime);
-        assert!(matches!(
-            OfflineTimeline::with_tempo_map(&config(0.0), ramp),
-            Err(HasRamp)
-        ));
+
+        let ramp = OfflineTimeline::with_tempo_map(
+            &config(0.0),
+            map(&[(0.0, 97.0), (4.0, 120.0)], Shape::RampTime),
+        );
+        assert_eq!(ramp.tempo(), Bpm::of(97.0), "the first point's");
+        let (r0, r1) = (97.0 / 60.0, 120.0 / 60.0);
+        let t = 2.0 * 4.0 / (r0 + r1);
+        let a = (r1 - r0) / t;
+        let s = 128.0 / 48_000.0;
+        let chord = (r0 * s + a * s * s / 2.0) * 60.0 * 48_000.0 / 128.0;
+        let first = ramp.graph_block().0.tempo.get();
+        assert!((first - chord).abs() < 1e-9, "{first} vs {chord}");
+        assert!(first > 97.0);
+        // 128 frames on, the next cell's chord is higher.
+        ramp.advance(128);
+        assert!(ramp.graph_block().0.tempo.get() > first);
     }
 
     /// 41 steps 24 frames apart: `block(512)` holds the first 8 and ends on the
@@ -819,8 +827,7 @@ mod tests {
         let points: Vec<(f64, f64)> = (0..41)
             .map(|i| (f64::from(i) * 0.001, 120.0 + f64::from(i)))
             .collect();
-        let t = OfflineTimeline::with_tempo_map(&config(0.0), map(&points, Shape::Step))
-            .expect("steps");
+        let t = OfflineTimeline::with_tempo_map(&config(0.0), map(&points, Shape::Step));
         let (first, changes, n) = t.block(512);
         assert_eq!(first.tempo, Bpm::of(120.0));
         assert_eq!(changes.len(), tutti_graph::MAX_TRANSPORT_CHANGES);
@@ -847,8 +854,7 @@ mod tests {
         let t = OfflineTimeline::with_tempo_map(
             &config(0.0),
             map(&[(0.0, 120.0), (4.0, 60.0)], Shape::Step),
-        )
-        .expect("steps");
+        );
         t.seek_to(4.5);
         assert_eq!(t.graph_block().0.tempo, Bpm::of(60.0));
         t.advance(48_000);

@@ -55,8 +55,8 @@ whatever else its code is waiting for.
 | D9 | **`rate_refusal()` locks a `Mutex` and clones a `String` on the audio thread.** | `tutti-plugin` `batcher.rs` | P2 |
 | D10 | **`POOL_CAPACITY` is one short.** It must be `COMMAND_QUEUE_SIZE + 1`. | `client::audio` | P2 |
 | D11 | **`LaunchedServer` holds a bare `Child`**, so a dropped launch leaks the process. | `subprocess/launch.rs` | P2 |
-| D12 | **`num_samples` from the wire is unbounded.** The server resizes its scratch to `channels × num_samples` on the audio thread before the slab refuses the block. The formats also disagree on an over-long block: CLAP refuses it, VST2 splits it, and VST3 passes it to the plugin above `maxSamplesPerBlock`. | `tutti-plugin-server` `session.rs`, `audio_pipeline.rs` | P2 |
-| D13 | **`SetSampleRate` writes the clock before the plugin accepts the rate.** A NaN, zero or refused rate stays in `Clock` and reaches every later block. | `session.rs` `SetSampleRate` | P2 |
+| D12 | **`num_samples` from the wire is unbounded.** The server resizes its scratch to `channels × num_samples` on the audio thread before the slab refuses the block. The formats also differ on an over-long block: CLAP and VST3 refuse it (VST3 in `tutti-vst3-ffi`'s `Processor::process`), and VST2 splits it. | `tutti-plugin-server` `session.rs`, `audio_pipeline.rs` | P2 |
+| D13 | **`SetSampleRate` takes any `f64` from the wire.** A NaN, zero or negative rate reaches the clock and the plugin. (Storing a rate the plugin then refuses is benign: `rate_refused` silences every block until a rate is accepted.) | `session.rs` `SetSampleRate` | P2 |
 | D14 | **The scratch reallocates whenever the block length changes**, on the audio thread, against the crate's "no allocation after warm-up". | `audio_pipeline.rs` `reshape` | P2 |
 | D15 | **The VST2 callback wrapper drops the panic payload**, unlike the other four guards. | `tutti-vst2-ffi` | P5 |
 | D16 | **AU drops the bank of a banked Program Change** (VST2 sends bank MSB, bank LSB, then the program), and passes the event offset unclamped. | `tutti-au-host` `instance.rs` MIDI path | P3 (MIDI item 6) |
@@ -70,8 +70,8 @@ process edge. D15 to D18 are small.
 server records the activated `max_block` at load. A block that is empty or
 longer than `max_block` is silence and is counted (the refusal path that
 already exists), and the scratch is sized to `max_block` once, which also
-fixes D14. VST3's processor gets the same check as defence in depth, since it
-is the host's own contract with the plugin.
+fixes D14. VST3 already has the same check as defence in depth, in
+`tutti-vst3-ffi` (the audit read it as missing; a host test now pins it).
 
 ## 3. The process edge (`tutti-plugin-ipc`, doc 021 step 3)
 

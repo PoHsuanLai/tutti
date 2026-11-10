@@ -1143,7 +1143,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
      brightness, pressure, expression, custom) is a second per-note vocabulary
      beside the `Ump` the graph carries. Doc 023 G2 records that no graph event
      carries it. The CLAP host drops every per-note registered controller but
-     Volume, Pan and Brightness (stage 2's residue). Decision (recommended): the graph carries per-note
+     Volume, Pan and Brightness (stage 2's residue). Decided (owner, 2026-11-10): the graph carries per-note
      expression only as `Ump` (per-note pitch bend, poly pressure, and the
      per-note registered and assignable controllers M2-104 defines), and each
      host maps that to its format's note expression at the edge, one table per

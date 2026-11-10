@@ -31,15 +31,6 @@ impl Seconds {
         self.0 as f32
     }
 
-    /// This time rounded through `f32`: what an `f32` kernel sees of a control
-    /// time. A node narrows a user's time with it before a frame conversion
-    /// (`to_samples*`), so a render does not move with the width of `Seconds`.
-    #[inline]
-    #[must_use]
-    pub fn narrowed(self) -> Self {
-        Self::from_f32(self.to_f32())
-    }
-
     /// A time held as an `f32` (a kernel's own state, a modulation lane's
     /// value), widened exactly.
     #[inline]

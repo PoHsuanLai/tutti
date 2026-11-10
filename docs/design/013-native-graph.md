@@ -346,7 +346,7 @@ the interpreter.
   so a note-off is never lost. Feedback keys include the unit generation.
 - **Global inputs are aligned like any other source** at a merge point with a
   latent path. `tutti_types::latency::plan` (the fundsp side) did not; it is
-  now the same solve as the compiler's, and does
+  now the compiler's own solve (one copy), and does
   ([the fork is deleted](#the-fork-is-deleted)).
 - **Env and PDC**: the beat comes from `Env`, not an audio signal PDC
   would delay with everything else, so `Cx` carries each node's compiled
@@ -915,7 +915,8 @@ place that loses precision to be written out explicitly:
      `f64`, bit for bit, not only after the `f32` port split, and
      `transport_at` is the host's position at any frame, through any number
      of wraps inside the block.
-   - **`OfflineTimeline`'s position is one `Mutex<FrameClock>`**, moved and
+   - **`OfflineTimeline`'s position is one `Mutex` over a `FrameClock`** (and,
+     over a map with steps, its walk position: doc 020 stage 3), moved and
      published under the lock, so a seek racing an advance cannot publish a
      mixed position; readers read the published beat lock-free.
    - **The MTC quarter-frame grid is closed form too** (quarter-frame `k`
@@ -1460,8 +1461,10 @@ Seven gaps had to close before the flip:
    included), stop/start and mid-block tempo steps, and `ClickNode` behind
    it clicks on the same frames. Offline, `OfflineTimeline::graph_block`
    gives the executor the block's `Transport` (and no changes: the tempo
-   and loop are fixed, a wrap is derived) and `render_graph` processes
-   then advances, so an offline graph reads the clock its samplers read.
+   and loop are fixed, a wrap is derived; over a map with steps, doc 020
+   stage 3, `render_graph` carries the steps as changes) and `render_graph`
+   processes then advances, so an offline graph reads the clock its samplers
+   read.
    Found on the way: `ClickNode` gates on the live play flag
    (`MotionFsm::is_playing`) once per 64-frame chunk. On the graph every
    chunk runs after the engine's walk has applied the whole block's
@@ -5029,13 +5032,11 @@ owner decided on 2026-11-07, and confirmed on 2026-11-10, that they move into
     `tutti-graph`), about 19 name `latency` and 2 name `tail`.
 - **Order:** after the core-split PR 3 and the `AudioNode` decision (done:
   `bevy-tutti` owns `AudioNode`, the engine and `tutti-session` use `NodeKey`),
-  so no prerequisite is open. Do it after the "one PDC latency solve" item
-  (the compiler at `compile/mod.rs` re-implements `latency::plan`, kept equal
-  only by `tests/compile_passes.rs`): either the compiler calls the solve, or
-  `latency.rs` becomes the test oracle only. Moving first would move two
-  copies, and the second item decides which file keeps the code. This follows
-  "And the two latency solves are one" above, which unified the figures, not
-  the code.
+  so no prerequisite is open. The "one PDC latency solve" item is done:
+  the compiler calls `latency::delays` over `ValidGraph` (which implements
+  `LatencyGraph`) and reads `Delays::arrival` / `departure` for the delays it
+  places itself, so `latency.rs` holds the only copy and the move is a plain
+  file move.
 
 ## Per-node rewrite plan
 
@@ -7060,11 +7061,12 @@ promised for "when `Net` goes":
   same figure when audio is all there is).
 
 So `latency::plan(&spec)` is the compensation `compile` gives the spec's
-plan, events included. bevy-tutti's `latency_plan` (and the debug check
+plan, events included: `compile` calls `latency::delays` itself (over
+`ValidGraph`), so there is one solve, not two kept equal. bevy-tutti's `latency_plan` (and the debug check
 comparing it with the compiled plan) folds over the spec, not its topology:
 over the topology alone a node fed events by a latent node arrived early,
 and that check would have fired. Pinned in `compile_passes.rs`
-(`pdc_delays_equal_latency_delays`,
+(`pdc_delays_equal_latency_delays`, `a_diamond_of_3_and_7_delays_the_short_branch_by_4`,
 `a_global_input_merging_with_a_latent_path_is_delayed`,
 `an_event_source_counts_toward_arrival_in_both_solves`) and the module's own
 `a_global_input_meeting_a_latent_path_is_delayed` and

@@ -486,7 +486,7 @@ pub struct LoadedProbe {
 /// Spawn a `plugin-server`, load the reference CLAP plugin into it, and return
 /// the audio node.
 ///
-/// `TUTTI_PLUGIN_SERVER` rather than a `ServerLocator`: `PluginClient::new` takes
+/// `TUTTI_PLUGIN_SERVER` rather than a `tutti_plugin_types::Locator`: `PluginClient::new` takes
 /// a `BridgeConfig`, which carries no locator field, so the environment is the
 /// only lever a test has. It is set here rather than once per suite so the value
 /// is visible in the one place that depends on it.

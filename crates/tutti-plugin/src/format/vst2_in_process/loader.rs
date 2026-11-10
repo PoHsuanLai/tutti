@@ -12,10 +12,10 @@ use tutti_plugin_types::Control;
 use super::client::{Declared, InProcessVst2Client};
 use super::control_backend::InProcessVst2Backend;
 use super::instance::Instance;
-use crate::error::{BridgeError, Result};
 use crate::host::handles::PluginHandle;
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{Features, LoadedPlugin};
+use tutti_plugin_ipc::{BridgeError, Result};
+use tutti_plugin_types::{Features, LoadedPlugin};
 
 /// The maximum block size the plugin is told (`effSetBlockSize`). A graph block
 /// longer than this (the engine renders up to 8192, more with

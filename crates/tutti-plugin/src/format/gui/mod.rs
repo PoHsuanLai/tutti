@@ -10,8 +10,9 @@
 #[cfg(all(feature = "au", target_os = "macos"))]
 mod au;
 
-use crate::error::{BridgeError, LoadStage, Result};
 use std::path::Path;
+use tutti_plugin_ipc::{BridgeError, Result};
+use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::{Editor, MainThread};
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]

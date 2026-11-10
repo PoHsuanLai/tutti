@@ -55,7 +55,7 @@ use tutti_graph::ParamSegment;
 use tutti_types::Samples;
 
 use super::param_delivery::ParamDelivery;
-use crate::protocol::ParamId;
+use tutti_plugin_types::ParamId;
 
 /// Segment slots the unit tests prepare: a figure past any they fill.
 #[cfg(test)]
@@ -227,9 +227,9 @@ fn point(changes: &mut ParamDelivery, address: ParamId, at: usize, value: f32) {
 mod tests {
     use super::*;
     use crate::host::node::param_delivery::DeliveryCounters;
-    use crate::protocol::{ParamId, ParameterChanges};
     use std::sync::Arc;
     use tutti_graph::SegmentShape;
+    use tutti_plugin_types::{ParamId, ParameterChanges};
 
     const A: ParamId = ParamId::new(7);
 

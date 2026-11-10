@@ -9,13 +9,13 @@
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
-use crate::error::Result;
 use crate::host::handles::PluginHandle;
 use crate::host::node::PluginClient;
-use crate::protocol::{Features, LoadedPlugin, PluginDescriptor};
-use crate::util::config::AudioConfig;
 use tutti_plugin_db::{PluginFormat, format_from_path};
+use tutti_plugin_ipc::AudioConfig;
+use tutti_plugin_ipc::Result;
 use tutti_plugin_types::PluginRole;
+use tutti_plugin_types::{Features, LoadedPlugin, PluginDescriptor};
 use tutti_types::SampleRate;
 
 /// The audio node, whichever backend produced it.
@@ -176,9 +176,9 @@ impl Plugin {
             // A VST2 plugin loads in this process, on the main thread: the
             // caller says it is there by passing the token.
             let Some(main) = main else {
-                return Err(crate::error::BridgeError::LoadFailed {
+                return Err(tutti_plugin_ipc::BridgeError::LoadFailed {
                     path: path.to_path_buf(),
-                    stage: crate::error::LoadStage::Opening,
+                    stage: tutti_plugin_types::LoadStage::Opening,
                     reason: "a VST2 plugin loads in the host process and needs the main \
                              thread"
                         .into(),
@@ -307,7 +307,7 @@ impl Plugin {
     /// such a plugin renders identically either way, which is exactly what
     /// declining the extension means.
     #[must_use = "a false return means the plugin declined the render mode and nothing was applied"]
-    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+    pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         if !self.accepts(Features::RENDER_MODE) {
             return false;
         }
@@ -452,7 +452,7 @@ impl tutti_graph::IntoNode for Plugin {
 #[cfg(test)]
 mod tests {
     use crate::host::node::is_declined;
-    use crate::protocol::{Features, LoadedPlugin};
+    use tutti_plugin_types::{Features, LoadedPlugin};
 
     /// `Plugin`'s capability gate is the one the node accessors use.
     ///

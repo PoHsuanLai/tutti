@@ -308,12 +308,7 @@ impl ModDelayNode {
     /// The tail the node declares (see "Tail" on [`ModDelayNode`]).
     fn tail(&self) -> Tail {
         if self.config.feedback_max == Feedback::NONE {
-            Tail::Finite(
-                self.config
-                    .max_delay
-                    .narrowed()
-                    .to_samples_ceil(self.sample_rate),
-            )
+            Tail::Finite(self.config.max_delay.to_samples_ceil(self.sample_rate))
         } else {
             Tail::Unknown
         }

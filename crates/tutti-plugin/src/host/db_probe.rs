@@ -1,47 +1,51 @@
 //! The subprocess probe, as the probe `tutti-plugin-db` scans with.
 
-use super::subprocess::{DEFAULT_PROBE_TIMEOUT, ProbeLocator, probe_metadata_with};
-use crate::error::{BridgeError, LoadStage};
-use crate::protocol::PluginDescriptor;
+pub use super::probe::DEFAULT_PROBE_TIMEOUT;
+use super::probe::probe_metadata_with;
 use std::path::Path;
 use std::time::Duration;
 use tracing::debug;
 use tutti_plugin_db::{
     Delta, FileFacts, FileRow, PluginFormat, ProbeFailure, probe_plugin_fallback,
 };
+use tutti_plugin_ipc::BridgeError;
+use tutti_plugin_types::LoadStage;
+use tutti_plugin_types::Locator;
+use tutti_plugin_types::PluginDescriptor;
 
-/// The blacklist decision for a failed probe, kept as a conversion so tests
-/// exercise this code rather than a copy of it.
+/// The blacklist decision for a failed probe: whether the scan may blacklist
+/// the plugin, and why. One function, so the tests exercise this code rather
+/// than a copy of it. (It was `From<BridgeError> for ProbeFailure`; the two
+/// types are in different crates from this one since design 021 step 3.)
 ///
 /// The split is "did we learn something about the plugin, or about our own
 /// environment?" — not severity. A crash and a broken library are equally
 /// informative; a missing `plugin-probe` tells us nothing.
-impl From<BridgeError> for ProbeFailure {
-    fn from(e: BridgeError) -> Self {
-        match e {
-            BridgeError::ProcessCrashed => Self {
-                reason: format!("crashed during probe: {e}"),
-                blacklistable: true,
-            },
-            BridgeError::Timeout { .. } => Self {
-                reason: format!("timed out during probe: {e}"),
-                blacklistable: true,
-            },
-            // The plugin was reached and its library would not load — a stub
-            // file, a wrong-arch binary, a broken install. Deterministic, and each
-            // retry costs a full subprocess spawn. Carries the loader's own stage
-            // and reason so the catalog entry says *why*.
-            BridgeError::LoadFailed { .. } => Self {
-                reason: format!("failed to load during probe: {e}"),
-                blacklistable: true,
-            },
-            // IO, a missing binary, a protocol mismatch — the environment's
-            // fault, not the plugin's.
-            other => Self {
-                reason: other.to_string(),
-                blacklistable: false,
-            },
-        }
+#[must_use]
+pub fn probe_failure(e: BridgeError) -> ProbeFailure {
+    match e {
+        BridgeError::ProcessCrashed => ProbeFailure {
+            reason: format!("crashed during probe: {e}"),
+            blacklistable: true,
+        },
+        BridgeError::Timeout { .. } => ProbeFailure {
+            reason: format!("timed out during probe: {e}"),
+            blacklistable: true,
+        },
+        // The plugin was reached and its library would not load — a stub
+        // file, a wrong-arch binary, a broken install. Deterministic, and each
+        // retry costs a full subprocess spawn. Carries the loader's own stage
+        // and reason so the catalog entry says *why*.
+        BridgeError::LoadFailed { .. } => ProbeFailure {
+            reason: format!("failed to load during probe: {e}"),
+            blacklistable: true,
+        },
+        // IO, a missing binary, a protocol mismatch — the environment's
+        // fault, not the plugin's.
+        other => ProbeFailure {
+            reason: other.to_string(),
+            blacklistable: false,
+        },
     }
 }
 
@@ -53,7 +57,7 @@ pub(crate) fn probe_plugin(
     format: PluginFormat,
 ) -> Result<PluginDescriptor, ProbeFailure> {
     interpret_probe(
-        probe_metadata_with(&ProbeLocator::Search, path, DEFAULT_PROBE_TIMEOUT),
+        probe_metadata_with(&Locator::Search, path, DEFAULT_PROBE_TIMEOUT),
         path,
         format,
     )
@@ -78,7 +82,7 @@ fn interpret_probe(
             );
             Ok(probe_plugin_fallback(path, format))
         }
-        Err(e) => Err(ProbeFailure::from(e)),
+        Err(e) => Err(probe_failure(e)),
     }
 }
 
@@ -99,7 +103,7 @@ fn interpret_probe(
 /// the plugin brought the probe down, and an I/O variant when it cannot be
 /// spawned.
 pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
-    probe_record_with(path, &ProbeLocator::Search, DEFAULT_PROBE_TIMEOUT)
+    probe_record_with(path, &Locator::Search, DEFAULT_PROBE_TIMEOUT)
 }
 
 /// [`probe_record`] with the `plugin-probe` binary named by `locator` and the
@@ -111,7 +115,7 @@ pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
 /// As [`probe_record`].
 pub fn probe_record_with(
     path: impl AsRef<Path>,
-    locator: &ProbeLocator,
+    locator: &Locator,
     timeout: Duration,
 ) -> Result<Delta, BridgeError> {
     let path = path.as_ref();
@@ -136,9 +140,9 @@ pub fn probe_record_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::PluginClass;
     use std::path::PathBuf;
     use tutti_plugin_db::format_from_path;
+    use tutti_plugin_types::PluginClass;
 
     /// A failure that is a property of the plugin must earn a catalog entry, not
     /// just a `warn!` — without one `needs_rescan` stays true and the plugin is
@@ -150,17 +154,17 @@ mod tests {
     /// as a crash, while a missing `plugin-probe` is not informative at all.
     #[test]
     fn plugin_failures_are_blacklistable_environmental_ones_are_not() {
-        use crate::error::BridgeError;
+        use tutti_plugin_ipc::BridgeError;
 
         // Exercises the *production* classifier, not a copy of it.
-        let crashed = ProbeFailure::from(BridgeError::ProcessCrashed);
+        let crashed = probe_failure(BridgeError::ProcessCrashed);
         assert!(
             crashed.blacklistable,
             "ProcessCrashed must be blacklistable"
         );
         assert!(crashed.reason.contains("crashed"));
 
-        let timed_out = ProbeFailure::from(BridgeError::Timeout {
+        let timed_out = probe_failure(BridgeError::Timeout {
             operation: "probe".into(),
             duration_ms: 5000,
             // Irrelevant to the blacklist verdict, which is what this asserts:
@@ -171,7 +175,7 @@ mod tests {
         assert!(timed_out.reason.contains("timed out"));
 
         // A load failure was the one path that recorded nothing.
-        let load_failed = ProbeFailure::from(BridgeError::LoadFailed {
+        let load_failed = probe_failure(BridgeError::LoadFailed {
             path: PathBuf::from("/plugins/Broken.vst3"),
             stage: tutti_plugin_types::LoadStage::Opening,
             reason: "dlopen failed".into(),
@@ -189,16 +193,16 @@ mod tests {
         );
 
         // Environmental failures say nothing about the plugin — never hide it.
-        assert!(!ProbeFailure::from(BridgeError::IpcError("socket".into())).blacklistable);
+        assert!(!probe_failure(BridgeError::IpcError("socket".into())).blacklistable);
         assert!(
-            !ProbeFailure::from(BridgeError::ProtocolMismatch {
+            !probe_failure(BridgeError::ProtocolMismatch {
                 expected: 2,
                 got: 1
             })
             .blacklistable
         );
         assert!(
-            !ProbeFailure::from(BridgeError::ProbeNotFound).blacklistable,
+            !probe_failure(BridgeError::ProbeNotFound).blacklistable,
             "a missing plugin-probe must never blacklist a plugin"
         );
     }
@@ -219,7 +223,7 @@ mod tests {
     /// a nonexistent path there warns and falls through to the same search.
     #[test]
     fn probe_without_a_probe_binary_falls_back_to_filename_metadata() {
-        use crate::error::BridgeError;
+        use tutti_plugin_ipc::BridgeError;
 
         let path = Path::new("/plugins/TAL-NoiseMaker.vst3");
         let descriptor = interpret_probe(Err(BridgeError::ProbeNotFound), path, PluginFormat::Vst3)
@@ -239,7 +243,7 @@ mod tests {
     /// would be silently catalogued under its filename as though it had been probed.
     #[test]
     fn a_failed_load_is_an_error_not_a_filename_fallback() {
-        use crate::error::BridgeError;
+        use tutti_plugin_ipc::BridgeError;
 
         let path = Path::new("/plugins/Broken.vst3");
         let failure = interpret_probe(

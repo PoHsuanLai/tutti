@@ -18,8 +18,8 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
-use crate::protocol::{Normalized, ParamId};
+use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh};
+use tutti_plugin_types::{Normalized, ParamId};
 
 type ParamCb = Arc<dyn Fn(ParamId, Normalized) + Send + Sync>;
 type RefreshCb = Arc<dyn Fn(PluginRefresh) + Send + Sync>;

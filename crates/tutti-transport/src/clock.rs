@@ -8,7 +8,9 @@
 
 use super::loop_region::LoopRegion;
 use super::state::ClockLinks;
+use super::walk::{TempoAhead, TempoWalk};
 use std::sync::atomic::Ordering;
+use tutti_tempo::TempoMap;
 use tutti_types::FrameClock;
 use tutti_types::{Beat, Bpm, Samples};
 
@@ -28,6 +30,12 @@ pub(crate) fn tempo_in_effect(asked: Bpm, in_force: Bpm) -> Bpm {
     } else {
         in_force
     }
+}
+
+/// The loop of a block's transport, as the clock takes it.
+fn loop_of(from: &tutti_graph::Transport) -> Option<tutti_types::LoopRange> {
+    from.looping
+        .and_then(|l| tutti_types::LoopRange::new(l.start, l.end))
 }
 
 /// The untimed transport inputs a graph block is rendered under,
@@ -110,6 +118,11 @@ pub(crate) struct TransportClock {
     /// play start moves the segment generation on
     /// ([`FrameClock::mark_play_start`]).
     rolling: bool,
+    /// Where the playhead is on the published map, for a map that changes
+    /// tempo (doc 020 stage 3). Used only when a block hands the clock the map
+    /// (`Some`): a constant map never does, and the clock then runs its own
+    /// closed form, untouched.
+    walk: TempoWalk,
 }
 
 impl TransportClock {
@@ -126,6 +139,7 @@ impl TransportClock {
             links,
             clock: FrameClock::new(Beat(0.0), initial_tempo, sample_rate),
             rolling: false,
+            walk: TempoWalk::default(),
         };
         clock.publish_tempo();
         clock
@@ -227,10 +241,28 @@ impl TransportClock {
     }
 
     #[inline]
-    fn apply_pending_seek(&mut self) {
+    fn apply_pending_seek(&mut self, map: Option<&TempoMap>) {
         if let Some(target) = self.links.seek.take() {
-            self.clock.seat(target);
+            match map {
+                // Seats at the exact beat; the map frame is its
+                // `frame_at_or_after` (doc 020, section 4).
+                Some(map) => {
+                    self.walk.seat(map, &mut self.clock, target);
+                    self.publish_tempo();
+                }
+                None => self.clock.seat(target),
+            }
         }
+    }
+
+    /// Start following a map that changes tempo: a segment at the current
+    /// beat (the playhead does not jump; the generation moves on, as for any
+    /// segment restart), the map frame found from it, and the tempo in force
+    /// there.
+    pub fn follow(&mut self, map: &TempoMap) {
+        self.clock.seat(self.clock.beat());
+        self.walk.place(map, &mut self.clock);
+        self.publish_tempo();
     }
 
     /// The rate this clock counts frames at.
@@ -249,11 +281,22 @@ impl TransportClock {
     /// [`advance`](Self::advance), so the playhead a graph node reads in its
     /// `Env` is computed by the same code, in the same order, as every other
     /// reader of this clock.
-    pub fn begin(&mut self, control: &Control, take_seek: bool) -> tutti_graph::Transport {
+    ///
+    /// `map` is the published map when it changes tempo, `None` for a constant
+    /// one: with a map the walk owns the tempo (no hysteresis, and
+    /// `control.tempo` is not read); without, `control.tempo` is the tempo.
+    pub fn begin(
+        &mut self,
+        control: &Control,
+        take_seek: bool,
+        map: Option<&TempoMap>,
+    ) -> tutti_graph::Transport {
         if take_seek {
-            self.apply_pending_seek();
+            self.apply_pending_seek(map);
         }
-        self.take_tempo(control.tempo);
+        if map.is_none() {
+            self.take_tempo(control.tempo);
+        }
         self.note_rolling(!control.paused);
         // Counted: the frame count the beat is derived from, so the graph's
         // `Env::for_each_beat` and `Env::transport_at` continue this clock
@@ -286,14 +329,48 @@ impl TransportClock {
     /// atomics, so a store from the control thread between the two calls
     /// cannot make the playhead move differently from what the block was
     /// told.
-    pub fn advance(&mut self, frames: usize, from: &tutti_graph::Transport) {
+    ///
+    /// With a `map` that changes tempo the clock rolls cell by cell and takes
+    /// the tempo at each boundary, on the frame it falls on: the same frames
+    /// [`ahead`](Self::ahead) reported.
+    pub fn advance(
+        &mut self,
+        frames: usize,
+        from: &tutti_graph::Transport,
+        map: Option<&TempoMap>,
+    ) {
         if from.playing {
-            let region = from
-                .looping
-                .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
-            self.clock.advance(Samples(frames), region);
+            let region = loop_of(from);
+            match map {
+                Some(map) => {
+                    self.walk.roll(map, &mut self.clock, frames, region, false);
+                    self.publish_tempo();
+                }
+                None => self.clock.advance(Samples(frames), region),
+            }
         }
         self.advance_steady_time(frames);
+    }
+
+    /// The tempo changes inside the next `frames` of a block that began under
+    /// `from`, at most `cap` of them, found without moving the clock
+    /// (the dry run of [`advance`](Self::advance)). Nothing for a constant map
+    /// and for a transport that is not rolling.
+    pub fn ahead(
+        &self,
+        frames: usize,
+        from: &tutti_graph::Transport,
+        map: Option<&TempoMap>,
+        cap: usize,
+    ) -> TempoAhead {
+        let (Some(map), true) = (map, from.playing) else {
+            return TempoAhead::NONE;
+        };
+        self.walk
+            .ahead(map, &self.clock, frames, loop_of(from), cap, |clock| {
+                tutti_graph::Transport::counted(true, clock.tempo(), clock.origin(), from.looping)
+                    .with_recording(from.recording())
+            })
     }
 
     /// Publish this clock's position as the live playhead — its segment's
@@ -353,8 +430,20 @@ impl TransportClock {
     /// in its `Env` and `Env::for_each_beat` steps by. A request inside the
     /// hysteresis would otherwise run this clock at a tempo it does not
     /// publish.
-    pub fn set_sample_rate(&mut self, sample_rate: tutti_types::SampleRate) {
+    ///
+    /// Under a `map` that changes tempo the playhead is re-seated at the
+    /// current beat on the map's timeline at the new rate (doc 020, section
+    /// 10), and the tempo in force there is taken.
+    pub fn set_sample_rate(
+        &mut self,
+        sample_rate: tutti_types::SampleRate,
+        map: Option<&TempoMap>,
+    ) {
         self.clock.set_sample_rate(sample_rate);
+        if let Some(map) = map {
+            self.walk.place(map, &mut self.clock);
+            self.publish_tempo();
+        }
     }
 
     /// Step `frames` as the engine steps a block, under the transport's live
@@ -376,9 +465,9 @@ impl TransportClock {
             loop_region,
             recording: false,
         };
-        let t = self.begin(&control, true);
+        let t = self.begin(&control, true, None);
         let first = self.clock.beat();
-        self.advance(frames, &t);
+        self.advance(frames, &t, None);
         self.publish_position();
         first
     }
@@ -680,7 +769,7 @@ mod tests {
         let mut clock = TransportClock::new(links, 44100.0);
         // Inside the hysteresis: asked, but not taken.
         tempo.store(Bpm::of(120.0005), Ordering::Release);
-        clock.set_sample_rate(tutti_types::SampleRate(48_000.0));
+        clock.set_sample_rate(tutti_types::SampleRate(48_000.0), None);
         tick(&mut clock);
         assert_eq!(in_force.load(Ordering::Acquire), Bpm::of(120.0));
         assert_eq!(

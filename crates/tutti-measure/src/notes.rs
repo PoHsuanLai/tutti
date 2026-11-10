@@ -341,8 +341,8 @@ impl NoteConfig {
     }
 }
 
-fn seconds(s: f32, rate: SampleRate) -> Samples {
-    Seconds::from_f32(s).to_samples(rate)
+fn seconds(s: f64, rate: SampleRate) -> Samples {
+    Seconds(s).to_samples(rate)
 }
 
 fn checked_seconds(s: Seconds, rate: SampleRate, what: &'static str) -> Result<Samples> {

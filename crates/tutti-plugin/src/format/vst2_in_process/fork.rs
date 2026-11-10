@@ -111,8 +111,9 @@ use tutti_plugin_types::Control;
 
 use super::client::{InProcessVst2Client, RateDelivery, TransportFeed};
 use super::instance::Instance;
-use crate::error::{PluginForkError, StateError};
 use crate::host::node::DeliveryCounters;
+use tutti_plugin_ipc::PluginForkError;
+use tutti_plugin_types::StateError;
 
 /// An in-process VST2 node's [`ForkSource`]: everything a fork needs from the
 /// live node, and nothing that keeps the live plugin alive.

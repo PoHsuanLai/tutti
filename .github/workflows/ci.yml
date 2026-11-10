@@ -107,6 +107,9 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_midi_device id table
       # And `tutti-plugin-db`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
+      # And `tutti-plugin-ipc`, whose modules are private but `state_chunk`, the
+      # namespace both ends of the wire chunk a state with.
+      - run: scripts/check-canonical-paths.sh tutti_plugin_ipc client config error midi_intake protocol subprocess transport
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
       # And `tutti-measure`, which keeps its modules private too.

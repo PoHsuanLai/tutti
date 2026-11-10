@@ -541,27 +541,60 @@ impl LatencyGraph for GraphSpec {
     /// Direct event sources (a feedback edge carries last block's events, so
     /// nothing along this block's path) and param sources.
     fn other_sources(&self, node: NodeKey) -> impl Iterator<Item = NodeKey> {
-        let ports = EventIn { node, port: 0 }..=EventIn {
-            node,
-            port: u16::MAX,
-        };
-        let events = self
-            .events
-            .range(ports)
-            .flat_map(|(_, sources)| sources)
-            .filter_map(|e| match *e {
-                EventEdge::Direct(from) => Some(from.node),
-                EventEdge::Feedback { .. } => None,
-            });
-        let params = self
-            .params
-            .iter()
-            .filter(move |(at, _)| at.node == node)
-            .filter_map(|(_, m)| m.source.map(|s| s.node));
-        events.chain(params)
+        driving_nodes(&self.events, &self.params, node)
     }
 
     fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
         LatencyGraph::outputs(&self.topology)
     }
+}
+
+/// The same fold over a checked graph: `compile` solves latency through it.
+impl LatencyGraph for ValidGraph {
+    type Node = NodeKey;
+
+    fn nodes(&self) -> impl Iterator<Item = NodeKey> {
+        LatencyGraph::nodes(self.topology())
+    }
+
+    fn latency(&self, node: NodeKey) -> Samples {
+        LatencyGraph::latency(self.topology(), node)
+    }
+
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
+        LatencyGraph::inputs(self.topology(), node)
+    }
+
+    fn other_sources(&self, node: NodeKey) -> impl Iterator<Item = NodeKey> {
+        driving_nodes(&self.events, &self.params, node)
+    }
+
+    fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
+        LatencyGraph::outputs(self.topology())
+    }
+}
+
+/// The nodes that drive `node` through an event input or a param: its
+/// non-audio sources, as [`LatencyGraph::other_sources`].
+fn driving_nodes<'a>(
+    events: &'a BTreeMap<EventIn, Vec<EventEdge>>,
+    params: &'a BTreeMap<ParamIn, ParamMod>,
+    node: NodeKey,
+) -> impl Iterator<Item = NodeKey> + 'a {
+    let ports = EventIn { node, port: 0 }..=EventIn {
+        node,
+        port: u16::MAX,
+    };
+    let event_sources = events
+        .range(ports)
+        .flat_map(|(_, sources)| sources)
+        .filter_map(|e| match *e {
+            EventEdge::Direct(from) => Some(from.node),
+            EventEdge::Feedback { .. } => None,
+        });
+    let param_sources = params
+        .iter()
+        .filter(move |(at, _)| at.node == node)
+        .filter_map(|(_, m)| m.source.map(|s| s.node));
+    event_sources.chain(param_sources)
 }

@@ -36,6 +36,9 @@
 # - `tutti-tempo` depends on `tutti-types` alone;
 # - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types` only;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
+# - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
+#   `tutti-midi-types` and `tutti-plugin-types` only, and no `tutti-*-host`
+#   depends on it;
 # - the codec libraries (`symphonia`, `flacenc`, `aifc`, `vorbis_rs`) are normal
 #   dependencies of `tutti-codec` alone, and in its manifest a `decode-*`
 #   feature enables no encoder library and an `encode-*` feature no
@@ -92,6 +95,10 @@
 #   'tutti-rt', 'tutti-tempo', 'tutti-types'] only";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-plugin-db`: "tutti-plugin-db
 #   may depend on ['tutti-plugin-types'] only";
+# - `tutti-graph` as a `[dependencies]` entry of `tutti-plugin-ipc`:
+#   "tutti-plugin-ipc may depend on [...] only; it depends on ['tutti-graph']";
+#   `tutti-plugin-ipc` as a `[dev-dependencies]` entry of `tutti-clap-host`:
+#   "tutti-clap-host depends on tutti-plugin-ipc; a format host knows no hosting";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-codec`: "tutti-codec ->
 #   tutti-engine (normal) points up" and "tutti-codec may depend on ['tutti-types']
 #   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS";
@@ -174,7 +181,7 @@ LAYERS = [
     ["tutti-transport", "tutti-plugin-types", "tutti-measure"],
     ["tutti-engine", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-ffi",
-     "tutti-plugin-db"],
+     "tutti-plugin-db", "tutti-plugin-ipc"],
     ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-spatial", "tutti-sampler",
      "tutti-polysynth", "tutti-soundfont", "tutti-midi-hardware",
      "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host"],
@@ -414,6 +421,16 @@ if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph", "tutti-tempo"])
 if "tutti-plugin-db" in pkgs:
     only("tutti-plugin-db", ["tutti-plugin-types"])
+# The process edge (design 021 section 6.1) knows the wire's vocabulary and no
+# plugin format, and no format host knows it: a format is served through it,
+# never built on it.
+if "tutti-plugin-ipc" in pkgs:
+    only("tutti-plugin-ipc", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-midi-types",
+                              "tutti-plugin-types"])
+    for name in pkgs:
+        if name.endswith("-host") and name.startswith("tutti-") \
+                and "tutti-plugin-ipc" in deps_of(name):
+            fail(f"{name} depends on tutti-plugin-ipc; a format host knows no hosting")
 # The probe binary (design 021 section 2.5) links the format hosts and the
 # descriptor types, and no hosting: not the facade, not the server, and the
 # `-ipc` and `-host` crates it will never gain. Nothing depends on it (a binary).

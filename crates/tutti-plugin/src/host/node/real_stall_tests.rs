@@ -38,7 +38,7 @@ use tutti_graph::{GraphBuilder, Prepare, Renderer};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use crate::handles::{PluginClient, PluginHandle};
-use crate::util::config::BridgeConfig;
+use tutti_plugin_ipc::BridgeConfig;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -185,7 +185,7 @@ fn graph_of(client: PluginClient) -> Renderer {
 }
 
 /// Drive one block of DC and return output channel 0.
-fn drive_block(unit: &mut Renderer, midi_out: &mut crate::protocol::MidiEventVec) -> Vec<f32> {
+fn drive_block(unit: &mut Renderer, midi_out: &mut tutti_plugin_types::MidiEventVec) -> Vec<f32> {
     let _ = midi_out;
     let dc = [INPUT_DC; BLOCK];
     let inputs = unit.editor().spec().topology.inputs.count() as usize;
@@ -219,7 +219,7 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
     let (client, handle) = load_probe(&mut env, 1);
     let bridge = client.bridge();
     let mut client = graph_of(client);
-    let mut midi_out = crate::protocol::MidiEventVec::new();
+    let mut midi_out = tutti_plugin_types::MidiEventVec::new();
 
     // --- Steady state before the park.
     let mut good_before = 0;
@@ -344,7 +344,7 @@ fn a_plugin_that_never_parks_settles_nothing() {
     let (client, handle) = load_probe(&mut env, 1);
     let bridge = client.bridge();
     let mut client = graph_of(client);
-    let mut midi_out = crate::protocol::MidiEventVec::new();
+    let mut midi_out = tutti_plugin_types::MidiEventVec::new();
 
     const BLOCKS: usize = 12;
     for _ in 0..BLOCKS {
@@ -414,7 +414,7 @@ fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminat
     env.set("TUTTI_CLAP_PROBE_BLOCK_FROM", PARK_FROM.to_string());
     let (client, handle) = load_probe(&mut env, 1);
     let mut client = graph_of(client);
-    let mut midi_out = crate::protocol::MidiEventVec::new();
+    let mut midi_out = tutti_plugin_types::MidiEventVec::new();
 
     assert_eq!(
         handle.block_counts().abandoned,
@@ -520,11 +520,11 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
     tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
-    let dump: Vec<crate::protocol::WireMidi> = dump
+    let dump: Vec<tutti_plugin_types::WireMidi> = dump
         .into_iter()
-        .map(|ump| crate::protocol::WireMidi { offset: 0, ump })
+        .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
         .collect();
-    let note = crate::protocol::WireMidi {
+    let note = tutti_plugin_types::WireMidi {
         offset: 0,
         ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
     };
@@ -567,11 +567,11 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
     tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
-    let dump: Vec<crate::protocol::WireMidi> = dump
+    let dump: Vec<tutti_plugin_types::WireMidi> = dump
         .into_iter()
-        .map(|ump| crate::protocol::WireMidi { offset: 0, ump })
+        .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
         .collect();
-    let note = crate::protocol::WireMidi {
+    let note = tutti_plugin_types::WireMidi {
         offset: 0,
         ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
     };

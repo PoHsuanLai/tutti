@@ -50,7 +50,7 @@ file, disk stream, plugin boundary, WAV encoder". Four of those do not:
 
 - the **disk stream** has its own positional reader (`PosReader`, `PosClaim`);
 - the **plugin shm slab** says in its own docs that it does not implement them
-  (`crates/tutti-plugin/src/util/transport/shm/slab.rs`), because it is planar;
+  (`crates/tutti-plugin-ipc/src/transport/shm/slab.rs`), because it is planar;
 - `tutti-plugin-types`' `channels.rs` frames a plugin as "an `AudioOut`
   back-to-back with an `AudioIn`", though in the graph a plugin is a node and
   the slab is a transport;

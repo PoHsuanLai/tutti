@@ -178,8 +178,8 @@ impl AudioEngine {
         Arc::clone(&self.faults)
     }
 
-    /// Builds a stream on the selected device and starts it. Does nothing if a
-    /// stream is already running.
+    /// Builds a stream on the selected device and starts it. A stream that is
+    /// already running is an error: the state handed in is not adopted.
     ///
     /// Re-reads the device's default config first, so after a
     /// [`select_device`](Self::select_device) the [`spec`](Self::spec),
@@ -190,13 +190,14 @@ impl AudioEngine {
     /// [`faults`](Self::faults).
     ///
     /// # Errors
+    /// [`Error::AlreadyRunning`] if a stream is running (it is left running),
     /// [`Error::InvalidDevice`] for an unresolvable selector,
     /// [`Error::DeviceNotAvailable`] if the config cannot be read,
     /// [`Error::InvalidConfig`] for a sample format the engine does not build,
     /// or [`Error::BuildStream`] / [`Error::PlayStream`] from CPAL.
     pub fn start(&mut self, state: Arc<AudioCallbackState>) -> Result<()> {
         if self.is_running() {
-            return Ok(());
+            return Err(Error::AlreadyRunning);
         }
         let (device, opened) = self.resolve()?;
         self.start_with(state, CpalDriver::from_device(device))?;
@@ -239,7 +240,7 @@ impl AudioEngine {
     }
 
     /// Starts a stream at the current [`spec`](Self::spec) through `driver`.
-    /// Does nothing if a stream is already running.
+    /// A stream that is already running is an error: the driver is not opened.
     ///
     /// Unlike [`start`](Self::start) it resolves no device: the driver decides
     /// where the callback runs. With a
@@ -247,7 +248,8 @@ impl AudioEngine {
     /// callback by hand. Clears [`faults`](Self::faults).
     ///
     /// # Errors
-    /// Whatever the driver's [`open`](StreamDriver::open) reports; for
+    /// [`Error::AlreadyRunning`] if a stream is running (it is left running);
+    /// otherwise whatever the driver's [`open`](StreamDriver::open) reports; for
     /// [`CpalDriver`], [`Error::InvalidConfig`] for an
     /// unsupported sample format or [`Error::BuildStream`] /
     /// [`Error::PlayStream`] from CPAL.
@@ -260,7 +262,7 @@ impl AudioEngine {
         D::Running: 'static,
     {
         if self.is_running() {
-            return Ok(());
+            return Err(Error::AlreadyRunning);
         }
         // A restart after a disconnect must report healthy again.
         self.faults.clear();

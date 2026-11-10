@@ -665,7 +665,8 @@ impl SpectrumState {
         let first = self.frames == 0;
         // Validated to fit by `with_peak_hold`.
         let hold = cfg.peak_hold_frames().get() as u32;
-        let decay = cfg.peak_decay.get() * dt.to_f32();
+        // One product per call: exact, then rounded once to the `f32` the loop runs in.
+        let decay = (f64::from(cfg.peak_decay.get()) * dt.get()) as f32;
         let floor = cfg.floor;
 
         for i in 0..self.power.len() {

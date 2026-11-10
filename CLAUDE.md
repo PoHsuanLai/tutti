@@ -19,8 +19,8 @@ holds the `Editor`; PDC is the compiler's, export forks the live graph with
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
 the numeric tower are deleted; the engine and `tutti-session` key a node by
 `NodeKey` (`AudioNode` is `bevy-tutti`'s component, wrapping one), and
-`tutti_types::latency` is a pure pass that is the compiler's own solve. A
-block's tasks can run on a worker pool (below); a cost model decides when
+`tutti_types::latency` is a pure pass that is the compiler's own solve (`compile`
+calls `latency::delays`; one copy). A block's tasks can run on a worker pool (below); a cost model decides when
 that pays, and the compiler packs tasks too cheap to dispatch alone.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
@@ -189,7 +189,8 @@ cargo xtask test-all              # both
   `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
-  `real_stall_tests`, `tutti-session`'s `plugin` suite, `tutti`'s §5.2
+  `real_stall_tests`, `tutti-plugin-ipc`'s `subprocess::launch` tests,
+  `tutti-session`'s `plugin` suite, `tutti`'s §5.2
   example (`plugin_midi_export`, `--features clap,export`), and `tutti-session`'s
   `export_fork_plugin`, `plugin_latency` and `plugin_modulation` suites (ported
   from `bevy-tutti`; `--features clap,export,modulation,device`) fail with that
@@ -290,7 +291,7 @@ These catch compile errors only. `nm` the object to confirm the branch you
 meant was taken. Windows behaviour that surprised us before (named-pipe
 timeouts, the MSVC CRT environment, VST3 UID layouts, `USERPROFILE`, bundle
 by-products) is in the engineering notes; read it before touching
-`util::transport` or plugin loading.
+`tutti-plugin-ipc`'s `transport` or plugin loading.
 
 ## Workspace
 
@@ -395,6 +396,10 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
+  tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
+                 control socket, the plugin-server's launch, and the
+                 client of a served plugin, `PluginBridge`; no plugin format,
+                 design 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
                  into a result file, `tutti-plugin-types`' `probe_wire`; the format
                  hosts and no hosting; nothing depends on it, design 021 §2.5),
@@ -424,7 +429,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
 4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
-   `tutti-plugin-db`
+   `tutti-plugin-db`, `tutti-plugin-ipc`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
    `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
@@ -513,6 +518,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   fixed `CellGrid`, also cut at every point's frame (`TempoMap::next_change`);
   `chord_cell` is a pure function of the absolute frame, a cell inside a step
   has that step's tempo to the bit, and the crate derives no grid from a block.
+  The transport follows a map of steps with one walker (`tutti-transport`'s
+  `TempoWalk`, doc 020 stage 3) on one engine grid of 128 frames: a step is a
+  `TransportChanges` entry, the engine splits a block that needs more than 8, and
+  a constant map never reaches the walker, so its render is bit-identical.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.
 - `tutti-codec` depends on `tutti-types` alone, keeps every module private
@@ -623,6 +632,18 @@ list (normal and build edges; dev-dependencies may go anywhere).
   snapshot and sends `Delta`s, and `PluginDb::apply` is the only code that
   changes a row. Consumers
   name its types from it, not through `tutti-plugin`.
+- `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
+  `tutti-midi-types` and `tutti-plugin-types` alone among workspace crates,
+  keeps every module private but `state_chunk` (the namespace both ends chunk
+  a state with; CI runs the per-module path gate on the rest) and has no
+  `bevy` feature. Its `unsafe` is the process edge's own (shared memory and
+  its mapping, the Windows control-socket deadline, the launch), each block
+  under a `// SAFETY:`. It knows no format:
+  the editor-only instance a `PluginBridge` opens is loaded by the host's
+  `EditorLoader`, and no `tutti-*-host` depends on it
+  (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
+  `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
+  dev-dependency turns on.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
@@ -669,9 +690,10 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
   are readings. Do not swap them for `Mix` or `Depth`.
 - **Where the types stop:** C ABI, IPC and WIT boundaries, and precision the
   unit cannot carry. Say why in a comment. `Seconds` is `f64` (short or long);
-  a DSP kernel that runs in `f32` narrows once at its edge (`Seconds::to_f32`,
-  or `narrowed` before a frame conversion), and a modulation lane's value is an
-  `f32` (`ParamCell`).
+  a DSP kernel that runs in `f32` narrows once at its edge (`Seconds::to_f32`),
+  and a modulation lane's value is an `f32` (`ParamCell`). A frame count or a
+  coefficient is computed from the exact `Seconds`, never from a value rounded
+  through `f32` first.
 - **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
   names for the same behaviour is not a type.
 

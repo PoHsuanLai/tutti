@@ -4,12 +4,12 @@ use super::*;
 fn endpoint_discovery_decodes_via_midi2() {
     use midi2::UmpMessage;
     use midi2::ump_stream::UmpStream;
-    let ev = MidiEvent::endpoint_discovery(
+    let ev = endpoint_discovery(
         1,
         1,
         EndpointDiscoveryRequest::ENDPOINT_INFO | EndpointDiscoveryRequest::ENDPOINT_NAME,
     );
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::EndpointDiscovery(m)) => {
             assert_eq!(m.ump_version_major(), 1);
             assert_eq!(m.ump_version_minor(), 1);
@@ -25,14 +25,8 @@ fn endpoint_discovery_decodes_via_midi2() {
 fn function_block_info_decodes_via_midi2() {
     use midi2::UmpMessage;
     use midi2::ump_stream::{Direction, UmpStream};
-    let ev = MidiEvent::function_block_info(
-        true,
-        2,
-        MidiGroup::of(4),
-        1,
-        FunctionBlockDirection::Output,
-    );
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = function_block_info(true, 2, MidiGroup::of(4), 1, FunctionBlockDirection::Output);
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(m)) => {
             assert!(m.active());
             assert_eq!(u8::from(m.function_block_number()), 2);
@@ -48,7 +42,7 @@ fn function_block_info_decodes_via_midi2() {
 fn endpoint_info_decodes_via_midi2() {
     use midi2::UmpMessage;
     use midi2::ump_stream::UmpStream;
-    let ev = MidiEvent::endpoint_info(
+    let ev = endpoint_info(
         UmpVersion::V1_1,
         FunctionBlocks {
             count: 3,
@@ -56,7 +50,7 @@ fn endpoint_info_decodes_via_midi2() {
         },
         EndpointCapabilities::MIDI2_PROTOCOL | EndpointCapabilities::MIDI1_PROTOCOL,
     );
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::EndpointInfo(m)) => {
             assert_eq!(m.ump_version_major(), 1);
             assert_eq!(u8::from(m.number_of_function_blocks()), 3);
@@ -73,8 +67,8 @@ fn endpoint_info_decodes_via_midi2() {
 fn device_identity_decodes_via_midi2() {
     use midi2::UmpMessage;
     use midi2::ump_stream::UmpStream;
-    let ev = MidiEvent::device_identity([0x00, 0x21, 0x09], 0x1234, 0x0001, [1, 2, 3, 4]);
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = device_identity([0x00, 0x21, 0x09], 0x1234, 0x0001, [1, 2, 3, 4]);
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::DeviceIdentity(m)) => {
             assert_eq!(u8::from(m.device_manufacturer()[2]), 0x09);
             assert_eq!(u16::from(m.device_family()), 0x1234);
@@ -87,11 +81,11 @@ fn device_identity_decodes_via_midi2() {
 fn stream_configuration_decodes_via_midi2() {
     use midi2::UmpMessage;
     use midi2::ump_stream::UmpStream;
-    let ev = MidiEvent::stream_configuration_notification(
+    let ev = stream_configuration_notification(
         Protocol::Midi2,
         JrTimestamps::SEND | JrTimestamps::RECEIVE,
     );
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::StreamConfigurationNotification(m)) => {
             assert_eq!(m.protocol(), 2);
             assert!(m.send_jr_timestamps());
@@ -105,8 +99,8 @@ fn stream_configuration_decodes_via_midi2() {
 fn stream_configuration_request_decodes_via_midi2() {
     use midi2::UmpMessage;
     use midi2::ump_stream::UmpStream;
-    let ev = MidiEvent::stream_configuration_request(Protocol::Midi1, JrTimestamps::RECEIVE);
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = stream_configuration_request(Protocol::Midi1, JrTimestamps::RECEIVE);
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::StreamConfigurationRequest(m)) => {
             assert_eq!(m.protocol(), 1);
             assert!(m.receive_jr_timestamps());
@@ -123,23 +117,23 @@ fn stream_configuration_request_is_status_05_not_the_notification() {
     // hand is what keeps the two from being swapped: a round-trip through
     // midi2 would be equally happy with either, and sending a Notification
     // where §7.1.6.2 wants a Request asks a peer for nothing.
-    let req = MidiEvent::stream_configuration_request(Protocol::Midi2, JrTimestamps::empty());
-    let note = MidiEvent::stream_configuration_notification(Protocol::Midi2, JrTimestamps::empty());
-    let status = |e: &MidiEvent| (e.data_words()[0] >> 16) & 0x03FF;
+    let req = stream_configuration_request(Protocol::Midi2, JrTimestamps::empty());
+    let note = stream_configuration_notification(Protocol::Midi2, JrTimestamps::empty());
+    let status = |e: &Ump| (e.words()[0] >> 16) & 0x03FF;
     assert_eq!(status(&req), 0x05, "Request is status 0x05");
     assert_eq!(status(&note), 0x06, "Notification is status 0x06");
-    assert_eq!(req.data_words()[0], 0xF005_0200);
+    assert_eq!(req.words()[0], 0xF005_0200);
 }
 
 #[test]
 fn function_block_discovery_decodes_via_midi2() {
     use midi2::UmpMessage;
     use midi2::ump_stream::UmpStream;
-    let ev = MidiEvent::function_block_discovery(
+    let ev = function_block_discovery(
         3,
         FunctionBlockDiscoveryRequest::INFO | FunctionBlockDiscoveryRequest::NAME,
     );
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(m)) => {
             assert_eq!(m.function_block_number(), 3);
             assert!(m.requesting_function_block_info());
@@ -156,15 +150,15 @@ fn function_block_discovery_filter_bits_are_independent() {
     // §7.1.7 Figure 21 places 'i' and 'n' in distinct bits, so asking for
     // one must not imply the other — the caller controls how many replies
     // it gets back.
-    let decode = |ev: &MidiEvent| match UmpMessage::try_from(ev.data_words()).unwrap() {
+    let decode = |ev: &Ump| match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(m)) => (
             m.requesting_function_block_info(),
             m.requesting_function_block_name(),
         ),
         other => panic!("expected FunctionBlockDiscovery, got {other:?}"),
     };
-    let info_only = MidiEvent::function_block_discovery(0, FunctionBlockDiscoveryRequest::INFO);
-    let name_only = MidiEvent::function_block_discovery(0, FunctionBlockDiscoveryRequest::NAME);
+    let info_only = function_block_discovery(0, FunctionBlockDiscoveryRequest::INFO);
+    let name_only = function_block_discovery(0, FunctionBlockDiscoveryRequest::NAME);
     assert_eq!(decode(&info_only), (true, false));
     assert_eq!(decode(&name_only), (false, true));
 }
@@ -176,11 +170,8 @@ fn function_block_discovery_carries_the_all_blocks_sentinel() {
     // §7.1.7: "Use 0xFF to request information about all Function Blocks."
     // Individual blocks are 0x00..=0x1F, so 0xFF must survive intact rather
     // than being masked into a block number the way a 7-bit field would.
-    let ev = MidiEvent::function_block_discovery(
-        ALL_FUNCTION_BLOCKS,
-        FunctionBlockDiscoveryRequest::INFO,
-    );
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = function_block_discovery(ALL_FUNCTION_BLOCKS, FunctionBlockDiscoveryRequest::INFO);
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(m)) => {
             assert_eq!(m.function_block_number(), 0xFF);
         }
@@ -197,7 +188,7 @@ fn function_block_name_round_trips() {
     let mut out = Vec::new();
     function_block_name(2, "Keys", &mut out);
     assert_eq!(out.len(), 1);
-    match UmpMessage::try_from(out[0].data_words()).unwrap() {
+    match UmpMessage::try_from(out[0].words()).unwrap() {
         UmpMessage::UmpStream(UmpStream::FunctionBlockName(m)) => {
             assert_eq!(m.function_block(), 2);
             assert_eq!(m.name(), "Keys");
@@ -211,7 +202,7 @@ fn function_block_name_round_trips() {
     let mut out = Vec::new();
     function_block_name(7, long, &mut out);
     assert!(out.len() > 1, "long name spans packets");
-    let words: Vec<u32> = out.iter().flat_map(|e| e.data_words().to_vec()).collect();
+    let words: Vec<u32> = out.iter().flat_map(|e| e.words().to_vec()).collect();
     match UmpMessage::try_from(&words[..]).unwrap() {
         UmpMessage::UmpStream(UmpStream::FunctionBlockName(m)) => {
             assert_eq!(m.function_block(), 7);

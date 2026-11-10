@@ -187,7 +187,7 @@ fn pump(
         // field, so the trailing words are padding whenever the message is
         // shorter. `split_ump_stream` reads the length from the type nibble and
         // yields exactly that one message — using it rather than passing all
-        // four words to `from_ump` is what keeps a 1-word message from
+        // four words into one packet is what keeps a 1-word message from
         // swallowing three words of zeros.
         let decoded = split_ump_stream(&words).next();
         if let Some(event) = decoded

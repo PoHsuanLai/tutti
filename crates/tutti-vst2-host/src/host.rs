@@ -48,11 +48,10 @@
 
 use crate::midi::to_midi;
 use crate::transport_cell::TransportReader;
-use crate::types::MidiEvent;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tutti_plugin_types::{Request, RescanScope, unframed};
+use tutti_plugin_types::{Request, RescanScope, WireMidi, unframed};
 use tutti_rt::RequestWord;
 use tutti_ump::MidiGroup;
 use vst::api::Supported;
@@ -94,7 +93,7 @@ pub(crate) const MIDI_OUT_QUEUE_CAPACITY: usize = 256;
 /// plugin writes into.
 pub(crate) struct HostState {
     param_tx: Arc<ArrayQueue<ParameterChange>>,
-    midi_out_tx: Arc<ArrayQueue<MidiEvent>>,
+    midi_out_tx: Arc<ArrayQueue<WireMidi>>,
     /// Parameter changes refused because [`param_tx`](Self::param_tx) was
     /// full. Monotonic for the instance's life.
     ///
@@ -142,7 +141,7 @@ pub(crate) struct HostState {
 impl HostState {
     pub(crate) fn new(
         param_tx: Arc<ArrayQueue<ParameterChange>>,
-        midi_out_tx: Arc<ArrayQueue<MidiEvent>>,
+        midi_out_tx: Arc<ArrayQueue<WireMidi>>,
         time_info: TransportReader,
         block_size: usize,
         default_sample_rate: f64,
@@ -215,7 +214,7 @@ impl HostState {
             return;
         }
         let payload = unframed(bytes);
-        let packets = MidiEvent::sysex7_packet_count(payload.len());
+        let packets = tutti_midi_types::sysex7_packet_count(payload.len());
         // The queue's only other end pops, so room seen now can only grow.
         let room = self.midi_out_tx.capacity() - self.midi_out_tx.len();
         if packets > room {
@@ -223,8 +222,8 @@ impl HostState {
             return;
         }
         let frame = delta_frames.max(0) as u32;
-        for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
-            let _ = self.midi_out_tx.push(packet.with_frame_offset(frame));
+        for ump in tutti_midi_types::sysex7_packets(MidiGroup::FIRST, payload) {
+            let _ = self.midi_out_tx.push(WireMidi { offset: frame, ump });
         }
     }
 
@@ -454,6 +453,19 @@ mod tests {
     use super::*;
     use crate::transport_cell::TransportWriter;
     use vst::api::PluginEvents;
+
+    /// The note-on a plugin emits, at frame 0.
+    fn a_note_on() -> WireMidi {
+        WireMidi {
+            offset: 0,
+            ump: tutti_fixtures::midi::note_on(
+                tutti_ump::MidiGroup::FIRST,
+                tutti_ump::MidiChannel::FIRST,
+                60,
+                0x8000,
+            ),
+        }
+    }
     use vst::host::Host;
 
     fn make_host(time_info: TransportReader, default_sample_rate: f64) -> HostState {
@@ -653,12 +665,7 @@ mod tests {
     #[test]
     fn midi_out_drops_are_counted_apart_from_param_drops() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
-        let ev = MidiEvent::note_on(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_ump::MidiChannel::FIRST,
-            60,
-            0x8000,
-        );
+        let ev = a_note_on();
 
         for _ in 0..MIDI_OUT_QUEUE_CAPACITY {
             assert!(host.midi_out_tx.push(ev).is_ok());
@@ -736,8 +743,8 @@ mod tests {
             let mut asm = tutti_plugin_types::SysExAssembler::reserved();
             let mut done = Vec::new();
             while let Some(e) = host.midi_out_tx.pop() {
-                assert_eq!(e.frame_offset, 13);
-                if let tutti_plugin_types::SysExStep::Complete(r) = asm.push(&e) {
+                assert_eq!(e.offset, 13);
+                if let tutti_plugin_types::SysExStep::Complete(r) = asm.push(&e.ump) {
                     done.push(asm.message(r).to_vec());
                 }
             }
@@ -759,12 +766,7 @@ mod tests {
         sysex.byte_size = 8;
         deliver(&host, &mut sysex);
 
-        let note = tutti_midi_types::MidiEvent::note_on(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_ump::MidiChannel::FIRST,
-            60,
-            0x8000,
-        );
+        let note = a_note_on();
         let mut midi = crate::midi::from_midi(&note).expect("MIDI-1 form");
         midi.byte_size = 8;
         let events = vst::api::Events {
@@ -819,12 +821,7 @@ mod tests {
 
         // A valid note-on, but with a type word (77) that is no variant: it must not
         // be read as a `Midi` event, nor as the enum at all.
-        let note = tutti_midi_types::MidiEvent::note_on(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_ump::MidiChannel::FIRST,
-            60,
-            0x8000,
-        );
+        let note = a_note_on();
         let valid = crate::midi::from_midi(&note).expect("MIDI-1 form");
         // The note-on as plain words (the layout `MidiEvent` is `repr(C)` in), then the
         // type word set to the bogus one.
@@ -876,14 +873,14 @@ mod tests {
     /// until the queue refuses one, then it is drained again.
     ///
     /// Mutation (run): collect the packets into a `Vec` in `push_sysex_out`
-    /// (`let all: Vec<_> = MidiEvent::sysex7_packets(..).collect();` before the
+    /// (`let all: Vec<_> = sysex7_packets(..).collect();` before the
     /// room check) → `assert_no_alloc` aborts on the first delivery.
     #[test]
     fn the_sysex_path_is_allocation_free() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
         let mut payload: Vec<u8> = (0..200).map(|i| (i % 0x7F) as u8).collect();
         let mut event = sysex_event(3, &mut payload);
-        let packets = MidiEvent::sysex7_packet_count(200);
+        let packets = tutti_midi_types::sysex7_packet_count(200);
 
         assert_no_alloc::assert_no_alloc(|| {
             deliver(&host, &mut event);
@@ -913,12 +910,7 @@ mod tests {
     #[test]
     fn a_stray_status_from_a_plugin_allocates_nothing() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
-        let note = MidiEvent::note_on(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_ump::MidiChannel::FIRST,
-            60,
-            0x8000,
-        );
+        let note = a_note_on();
         let mut api_ev = crate::midi::from_midi(&note).expect("note-on has a MIDI-1 form");
         let good = api_ev.midi_data;
         let events = |ev: &mut vst::api::MidiEvent| vst::api::Events {
@@ -970,12 +962,7 @@ mod tests {
     #[test]
     fn both_audio_thread_callbacks_are_allocation_free() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
-        let ev = MidiEvent::note_on(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_ump::MidiChannel::FIRST,
-            60,
-            0x8000,
-        );
+        let ev = a_note_on();
         let mut api_ev = crate::midi::from_midi(&ev).expect("note-on has a MIDI-1 form");
         let events = vst::api::Events {
             num_events: 1,

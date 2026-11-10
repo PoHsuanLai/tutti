@@ -120,7 +120,7 @@ pub use shm::SlabLayout;
 pub use tutti_plugin_types::SampleFormat;
 pub use tutti_plugin_types::{MIDI_STACK_CAPACITY, MidiEventVec};
 
-pub use tutti_midi_types::ump::MidiEvent;
+pub use tutti_plugin_types::WireMidi;
 
 // Types that are owned elsewhere but speak on the wire, adopted here so
 // `crate::protocol::{...}` is the single import point for the bridge.
@@ -148,8 +148,9 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tutti_fixtures::midi;
     use tutti_types::SampleRate;
-    use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2};
 
     /// Every preset frame survives the wire in both directions.
     ///
@@ -415,43 +416,48 @@ mod tests {
 
     use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_velocity_to_midi2};
 
-    fn is_note_on(ev: &MidiEvent) -> bool {
-        use tutti_midi_types::midi2::UmpMessage;
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
+    fn is_note_on(ev: &WireMidi) -> bool {
         matches!(
-            UmpMessage::try_from(ev.data_words()),
-            Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
+            tutti_ump::decode(ev.ump),
+            Ok(Message::Midi2(_, Voice2::NoteOn { .. }))
         )
     }
 
-    fn note_number(ev: &MidiEvent) -> Option<u8> {
-        use tutti_midi_types::midi2::UmpMessage;
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
-        match UmpMessage::try_from(ev.data_words()).ok()? {
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => Some(u8::from(m.note_number())),
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(u8::from(m.note_number())),
+    fn note_number(ev: &WireMidi) -> Option<u8> {
+        match tutti_ump::decode(ev.ump).ok()? {
+            Message::Midi2(_, Voice2::NoteOn { note, .. } | Voice2::NoteOff { note, .. }) => {
+                Some(note.get())
+            }
             _ => None,
         }
+    }
+
+    fn at(offset: u32, ump: Ump) -> WireMidi {
+        WireMidi { offset, ump }
     }
 
     #[test]
     fn audio_processed_round_trips_midi_out() {
         // The plugin's MIDI-out must survive the AudioProcessed reply wire trip.
         let midi_out: MidiEventVec = [
-            MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                midi1_velocity_to_midi2(100),
-            )
-            .with_frame_offset(0),
-            MidiEvent::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::VOLUME,
-                midi1_cc_to_midi2(64),
-            )
-            .with_frame_offset(64),
+            at(
+                0,
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    60,
+                    midi1_velocity_to_midi2(100),
+                ),
+            ),
+            at(
+                64,
+                midi::cc(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    CCNumber::VOLUME,
+                    midi1_cc_to_midi2(64),
+                ),
+            ),
         ]
         .into_iter()
         .collect();
@@ -475,9 +481,9 @@ mod tests {
                 assert_eq!(seq, 7);
                 assert_eq!(midi_out.len(), 2);
                 let events = midi_out;
-                assert_eq!(events[0].frame_offset, 0);
+                assert_eq!(events[0].offset, 0);
                 assert!(is_note_on(&events[0]));
-                assert_eq!(events[1].frame_offset, 64);
+                assert_eq!(events[1].offset, 64);
             }
             _ => panic!("wrong message type"),
         }
@@ -517,12 +523,12 @@ mod tests {
 
     /// **`AudioProcessed` encodes its MIDI-out as a sequence**: the variant
     /// index, `latency_us`, `seq`, then a length and each event as
-    /// `frame_offset` and four data words, all little-endian. The bytes are
+    /// `offset` and four data words, all little-endian. The bytes are
     /// written out, so a layout change fails here instead of as a desync
     /// between two binaries built apart.
     ///
     /// Mutation (run): the adapter encoding each event as `(data,
-    /// frame_offset)` → the bytes differ → fails.
+    /// offset)` → the bytes differ → fails.
     #[test]
     fn audio_processed_midi_out_has_pinned_bytes() {
         #[rustfmt::skip]
@@ -535,13 +541,13 @@ mod tests {
             4, 3, 2, 1, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 255, 255, 255, 255,
         ];
         let midi_out: MidiEventVec = [
-            MidiEvent {
-                frame_offset: 5,
-                data: [0x2090_3C40, 0, 0, 0],
+            WireMidi {
+                offset: 5,
+                ump: Ump([0x2090_3C40, 0, 0, 0]),
             },
-            MidiEvent {
-                frame_offset: 0x0102_0304,
-                data: [1, 2, 3, 0xFFFF_FFFF],
+            WireMidi {
+                offset: 0x0102_0304,
+                ump: Ump([1, 2, 3, 0xFFFF_FFFF]),
             },
         ]
         .into_iter()
@@ -559,27 +565,33 @@ mod tests {
     #[test]
     fn test_midi_message_serialization() {
         let midi_events: MidiEventVec = [
-            MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                midi1_velocity_to_midi2(100),
-            )
-            .with_frame_offset(0),
-            MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                64,
-                midi1_velocity_to_midi2(100),
-            )
-            .with_frame_offset(128),
-            MidiEvent::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::VOLUME,
-                midi1_cc_to_midi2(64),
-            )
-            .with_frame_offset(256),
+            at(
+                0,
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    60,
+                    midi1_velocity_to_midi2(100),
+                ),
+            ),
+            at(
+                128,
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    64,
+                    midi1_velocity_to_midi2(100),
+                ),
+            ),
+            at(
+                256,
+                midi::cc(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    CCNumber::VOLUME,
+                    midi1_cc_to_midi2(64),
+                ),
+            ),
         ]
         .into_iter()
         .collect();
@@ -602,13 +614,13 @@ mod tests {
 
                 let events = data.midi_events;
                 assert_eq!(events.len(), 3);
-                assert_eq!(events[0].frame_offset, 0);
+                assert_eq!(events[0].offset, 0);
                 assert!(is_note_on(&events[0]));
                 assert_eq!(note_number(&events[0]), Some(60));
-                assert_eq!(events[1].frame_offset, 128);
+                assert_eq!(events[1].offset, 128);
                 assert!(is_note_on(&events[1]));
                 assert_eq!(note_number(&events[1]), Some(64));
-                assert_eq!(events[2].frame_offset, 256);
+                assert_eq!(events[2].offset, 256);
             }
             _ => panic!("Wrong message type"),
         }

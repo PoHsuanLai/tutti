@@ -1,9 +1,22 @@
 use super::*;
+use tutti_graph::UmpAt;
+use tutti_midi_types::{sysex7_fragments, sysex7_packet_count, sysex7_payload};
 use tutti_ump::{MidiChannel, MidiGroup};
 
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_types::Samples;
 use tutti_vst3_ffi::EVENT_CAPACITY;
 
-fn midi_only(midi: &[MidiEvent]) -> InputEvents<'_> {
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
+
+fn midi_only(midi: &[UmpAt]) -> InputEvents<'_> {
     InputEvents {
         midi,
         ..Default::default()
@@ -27,12 +40,15 @@ fn a_per_note_bend_range_outlives_its_block() {
 
     let list = EventList::input();
     let mut stager = Stager::default();
-    let sensitivity = [MidiEvent::registered_controller(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        RPN_BANK_MPE,
-        RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-        PitchBendSensitivity::of(24).to_rpn_bits(),
+    let sensitivity = [(
+        Offset::ZERO,
+        midi::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            RPN_BANK_MPE,
+            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::of(24).to_rpn_bits(),
+        ),
     )];
     assert!(stager.stage(
         &list,
@@ -43,11 +59,14 @@ fn a_per_note_bend_range_outlives_its_block() {
     ));
     assert_eq!(len(&list), 0, "the sensitivity stages nothing");
 
-    let bend = [MidiEvent::per_note_pitch_bend(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        signed_f32_to_bend_u32(0.25),
+    let bend = [(
+        Offset::ZERO,
+        midi::per_note_pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            signed_f32_to_bend_u32(0.25),
+        ),
     )];
     assert!(stager.stage(
         &list,
@@ -89,20 +108,26 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let bend = |channel: u8| {
-        MidiEvent::per_note_pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(channel),
-            60,
-            signed_f32_to_bend_u32(0.25),
+        (
+            Offset::ZERO,
+            midi::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::of(channel),
+                60,
+                signed_f32_to_bend_u32(0.25),
+            ),
         )
     };
     let first = [
-        MidiEvent::registered_controller(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            RPN_BANK_MPE,
-            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::of(24).to_rpn_bits(),
+        (
+            Offset::ZERO,
+            midi::registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                RPN_BANK_MPE,
+                RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                PitchBendSensitivity::of(24).to_rpn_bits(),
+            ),
         ),
         bend(0),
         bend(1),
@@ -148,9 +173,10 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
 fn one_midi_event_stages_one_event() {
     let list = EventList::input();
     let mut stager = Stager::default();
-    let midi_events = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-    ];
+    let midi_events = [(
+        at(0),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+    )];
     assert!(stager.stage(&list, &midi_only(&midi_events)));
     assert_eq!(len(&list), 1);
 }
@@ -160,8 +186,14 @@ fn clear_empties_a_staged_block() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let midi_events = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(10),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(10),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+        ),
     ];
     assert!(stager.stage(&list, &midi_only(&midi_events)));
     assert!(list.clear());
@@ -175,10 +207,22 @@ fn midi_staging_is_allocation_free_after_warmup() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let events = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(32),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0x6000).with_frame_offset(64),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 64, 0).with_frame_offset(96),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(32),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+        ),
+        (
+            at(64),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0x6000),
+        ),
+        (
+            at(96),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 64, 0),
+        ),
     ];
 
     // Warm up — the first call may grow (the default Vec cap is 256,
@@ -202,8 +246,14 @@ fn staging_every_source_is_allocation_free_after_warmup() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let midi = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(64),
+        (
+            at(0),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(64),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+        ),
     ];
     let note_expr = [NoteExpressionValue {
         sample_offset: 0,
@@ -321,15 +371,17 @@ fn chord(offset: i32, root: i16) -> Utf16Chord {
 #[test]
 fn a_full_block_from_every_source_stages_without_allocating() {
     use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
-    let midi: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY)
+    let midi: Vec<UmpAt> = (0..MIDI_STACK_CAPACITY)
         .map(|i| {
-            MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                (i % 128) as u8,
-                0x8000,
+            (
+                at(2 * i as u32),
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 128) as u8,
+                    0x8000,
+                ),
             )
-            .with_frame_offset(2 * i as u32)
         })
         .collect();
     let note_expressions: Vec<NoteExpressionValue> = (0..MIDI_STACK_CAPACITY as i32)
@@ -407,14 +459,20 @@ fn a_full_block_from_every_source_stages_without_allocating() {
 #[test]
 fn events_on_one_frame_keep_their_source_order() {
     // 12 MIDI events a frame, alternating off/on, the pitch their arrival.
-    let midi: Vec<MidiEvent> = (0..120u8)
+    let midi: Vec<UmpAt> = (0..120u8)
         .map(|i| {
             let e = if i % 2 == 0 {
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, i, 0)
+                (
+                    Offset::ZERO,
+                    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, i, 0),
+                )
             } else {
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, i, 0x8000)
+                (
+                    Offset::ZERO,
+                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, i, 0x8000),
+                )
             };
-            e.with_frame_offset(u32::from(i / 12))
+            (at(u32::from(i / 12)), e.1)
         })
         .collect();
     // 20 expressions a frame, frames 9 down to 0.
@@ -476,19 +534,23 @@ fn events_on_one_frame_keep_their_source_order() {
 #[test]
 fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
     let ons = EVENT_CAPACITY;
-    let midi: Vec<MidiEvent> = (0..ons)
+    let midi: Vec<UmpAt> = (0..ons)
         .map(|i| {
-            MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                (i % 100) as u8,
-                0x8000,
+            (
+                at(i as u32),
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 100) as u8,
+                    0x8000,
+                ),
             )
-            .with_frame_offset(i as u32)
         })
         .chain((0..10u8).map(|k| {
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 100 + k, 0)
-                .with_frame_offset(ons as u32)
+            (
+                at(ons as u32),
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 100 + k, 0),
+            )
         }))
         .collect();
     let chords = [chord(0, 1)];
@@ -542,15 +604,17 @@ fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
 #[test]
 fn note_expressions_past_their_budget_leave_the_harmony_room() {
     use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
-    let midi: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY)
+    let midi: Vec<UmpAt> = (0..MIDI_STACK_CAPACITY)
         .map(|i| {
-            MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                (i % 128) as u8,
-                0x8000,
+            (
+                at(i as u32),
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 128) as u8,
+                    0x8000,
+                ),
             )
-            .with_frame_offset(i as u32)
         })
         .collect();
     let note_expressions: Vec<NoteExpressionValue> = (0..NOTE_EXPRESSION_ROOM as i32 + 44)
@@ -606,9 +670,10 @@ fn note_expressions_past_their_budget_leave_the_harmony_room() {
 /// non-negative offset and fails here.
 #[test]
 fn a_negative_offset_sorts_before_zero() {
-    let midi = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
-    ];
+    let midi = [(
+        at(0),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+    )];
     let note_expressions = [expr(3, 1), expr(-1, 2)];
     let list = EventList::input();
     let mut stager = Stager::default();
@@ -631,7 +696,7 @@ fn a_negative_offset_sorts_before_zero() {
 /// path, with a byte whose top bit is set, which reads with that bit dropped),
 /// and a message of several packets (the reassembled path).
 ///
-/// Mutation (run): `MidiEvent::sysex7_single` built through midi2's
+/// Mutation (run): `sysex7_single` built through midi2's
 /// `Sysex7::<Vec<u32>>` again → `assert_no_alloc` aborts on the first
 /// `Data` event.
 #[test]
@@ -655,8 +720,8 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     let payloads: Vec<Vec<u8>> = out
         .iter()
         .map(|e| {
-            let (status, bytes, n) = e.sysex7_payload().expect("a SysEx7 packet");
-            assert_eq!((status, e.frame_offset), (0, 7));
+            let (status, bytes, n) = sysex7_payload(&e.ump).expect("a SysEx7 packet");
+            assert_eq!((status, e.offset), (0, 7));
             bytes[..n].to_vec()
         })
         .collect();
@@ -664,11 +729,15 @@ fn draining_a_plugins_sysex_allocates_nothing() {
 
     // Several packets, staged through the reassembler and drained.
     let payload: Vec<u8> = (0..20).collect();
-    let mut packets = Vec::new();
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
+    let mut fragments = Vec::new();
+    sysex7_fragments(MidiGroup::FIRST, &payload, &mut fragments);
+    let packets: Vec<UmpAt> = fragments
+        .into_iter()
+        .map(|ump| (Offset::ZERO, ump))
+        .collect();
     let list = EventList::input();
     assert!(Stager::default().stage(&list, &midi_only(&packets)));
     let mut out = RtMidiEvents::new();
     assert_no_alloc::assert_no_alloc(|| drain_midi(&list, &mut out));
-    assert_eq!(out.len(), MidiEvent::sysex7_packet_count(20));
+    assert_eq!(out.len(), sysex7_packet_count(20));
 }

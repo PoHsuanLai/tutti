@@ -121,8 +121,8 @@ impl Variant {
     }
 }
 
+use tutti_fixtures::midi;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
-use tutti_midi_types::MidiEvent;
 use tutti_nodes::{BusStripNode, ChannelSumNode, ConvolverNode, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
@@ -159,7 +159,7 @@ impl Node for Hold {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         if self.sent < self.notes {
-            let note = MidiEvent::note_on(
+            let note = midi::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 // Spread over four octaves: no two voices share a pitch.
@@ -167,7 +167,7 @@ impl Node for Hold {
                 0xC000,
             );
             let at = Offset::new(0, Samples(io.frames())).expect("a non-empty block");
-            if io.event_out(0).push(Event::midi(at, note.data)).is_ok() {
+            if io.event_out(0).push(Event::midi(at, note.0)).is_ok() {
                 self.sent += 1;
             }
         }

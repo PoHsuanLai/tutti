@@ -727,8 +727,8 @@ mod plugin {
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingPlugin};
+    use tutti_fixtures::midi::{note_off, note_on};
     use tutti_midi_runtime::TimedMidiEvent;
-    use tutti_midi_types::ump::MidiEvent;
     use tutti_nodes::ClickState;
     use tutti_nodes::testing::Const;
     use tutti_plugin::catalog::PluginId;
@@ -970,9 +970,9 @@ mod plugin {
         let (mut app, probe) = app_with_probe(NOTES);
         let note = |beat: f64, on: bool| {
             let event = if on {
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+                note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
             } else {
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+                note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
             };
             TimedMidiEvent::new(tutti_types::Beat(beat), event)
         };
@@ -1076,16 +1076,16 @@ mod synths {
         GraphReconcilePlugin, MasterSources, SessionNode, SpawnAudioNode, TransportRes,
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
+    use tutti_fixtures::midi::{note_off, note_on};
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Node, Offset};
     use tutti_midi_runtime::TimedMidiEvent;
-    use tutti_midi_types::ump::MidiEvent;
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
     use tutti_sf2::SoundFont;
     use tutti_soundfont::{Settings, SoundFontUnit};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_types::{Beat, Bpm, Seconds};
-    use tutti_ump::{MidiChannel, MidiGroup, U7};
+    use tutti_ump::{MidiChannel, MidiGroup, U7, Ump};
 
     /// A beat at 90 BPM and 48 kHz, in frames.
     const BEAT_48K: usize = 32_000;
@@ -1155,16 +1155,16 @@ mod synths {
     /// Middle C from beat 1 to beat 2.
     fn clip() -> Vec<TimedMidiEvent> {
         vec![
-            TimedMidiEvent::new(Beat(1.0), note_on()),
+            TimedMidiEvent::new(Beat(1.0), clip_note_on()),
             TimedMidiEvent::new(
                 Beat(2.0),
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+                note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
             ),
         ]
     }
 
-    fn note_on() -> MidiEvent {
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+    fn clip_note_on() -> Ump {
+        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
     }
 
     fn install_clip(app: &mut App, synth: Entity) {
@@ -1204,7 +1204,7 @@ mod synths {
     fn reference<N: Node>(unit: N, rate: f64) -> Vec<f32> {
         let mut unit = Direct::new(unit, SampleRate(rate), 64);
         let at = Offset::new(0, Samples(64)).expect("inside");
-        unit.events(0, &[Event::midi(at, note_on().data)]);
+        unit.events(0, &[Event::midi(at, clip_note_on().0)]);
         let mut out = Vec::with_capacity(NOTE);
         while out.len() < NOTE {
             unit.block();

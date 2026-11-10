@@ -38,8 +38,8 @@ pub use param_properties::{
     NUM_MIDI_CHANNELS, ParameterCategory, ParameterProperties, ParameterPropertyFlags,
 };
 pub use types::{
-    ChannelLayout, EditorSize, MidiEvent, MidiEventVec, ParameterInfo, PluginInfo, Samples,
-    TimeSignature, TransportInfo, Vst2Category, Vst2ProcessContext, WindowHandle,
+    ChannelLayout, EditorSize, MidiEventVec, ParameterInfo, PluginInfo, Samples, TimeSignature,
+    TransportInfo, Vst2Category, Vst2ProcessContext, WindowHandle, WireMidi,
 };
 
 // Test-only global allocator for RT-safety regression tests. Panics on

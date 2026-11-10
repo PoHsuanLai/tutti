@@ -1,7 +1,7 @@
 use super::*;
 use crate::MidiFile;
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_midi_types::Bpm;
-use tutti_midi_types::MidiEvent;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 #[test]
@@ -9,14 +9,8 @@ fn round_trips_a_clip_through_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("round_trip.midi2");
     let events = [
-        ClipEvent::new(
-            0,
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD),
-        ),
-        ClipEvent::new(
-            96,
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-        ),
+        ClipEvent::new(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
+        ClipEvent::new(96, note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
     ];
     write(
         &path,

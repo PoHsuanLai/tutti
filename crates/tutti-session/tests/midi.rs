@@ -5,13 +5,16 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_graph::UmpAt;
 
 use std::time::{Duration, Instant};
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{Direction, EndpointId};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::MidiMessage;
 use tutti_transport::MotionEvent;
 use tutti_types::{
     Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
@@ -37,7 +40,7 @@ const RATE: f64 = 48_000.0;
 const MF: u16 = 0x8000;
 
 /// `(absolute frame, event)` of every MIDI event a [`Tap`] received.
-type Seen = Arc<Mutex<Vec<(u64, MidiEvent)>>>;
+type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
 
 /// A stand-in synth: one MIDI event input, logged with each event's
 /// absolute frame.
@@ -53,13 +56,7 @@ impl Node for Tap {
         for e in io.events(0) {
             if let EventKind::Midi(Ump(data)) = e.kind {
                 let at = cx.env.frame.get() + u64::from(e.offset.get());
-                seen.push((
-                    at,
-                    MidiEvent {
-                        frame_offset: e.offset.get(),
-                        data,
-                    },
-                ));
+                seen.push((at, Ump(data)));
             }
         }
         Status::Modified
@@ -95,11 +92,11 @@ fn note(number: u8, start: Beat, duration: BeatDuration) -> [TimedMidiEvent; 2] 
     [
         TimedMidiEvent::new(
             start,
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, MF),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, MF),
         ),
         TimedMidiEvent::new(
             start + duration,
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
         ),
     ]
 }
@@ -121,8 +118,9 @@ fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
     seen.lock()
         .unwrap()
         .iter()
-        .filter(|(_, e)| e.is_note_on())
-        .map(|(f, e)| (*f, e.note().unwrap()))
+        .map(|&(f, e)| (f, MidiMessage::from_ump(e)))
+        .filter(|(_, m)| m.is_note_on())
+        .map(|(f, m)| (f, m.note().unwrap()))
         .collect()
 }
 
@@ -241,9 +239,10 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     want.sort_by_key(|e| e.node);
     assert_eq!(fed, want);
 
-    live.queue(&[
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, MF).with_frame_offset(0),
-    ]);
+    live.queue(&[(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, MF),
+    )]);
     roll(&s, 9_000);
     let heard = note_ons(&new_seen);
     assert!(heard.contains(&(8_000, 60)), "the clip plays it: {heard:?}");
@@ -360,8 +359,8 @@ fn the_routes_have_one_declarer() {
 
 /// Counts what reached the wire.
 struct CountingSink(Arc<AtomicUsize>);
-impl tutti_midi_types::MidiOut for CountingSink {
-    fn queue(&self, events: &[MidiEvent]) -> usize {
+impl tutti_midi_runtime::MidiOut for CountingSink {
+    fn queue(&self, events: &[UmpAt]) -> usize {
         self.0.fetch_add(events.len(), Ordering::SeqCst);
         events.len()
     }
@@ -524,7 +523,7 @@ fn an_update_frees_a_port_set_a_drain_held_across_a_removal() {
     let ports = Arc::clone(s.midi_io().expect("the OS MIDI layer").ports());
     let mut handle = ports.open_input_port("Gone");
     let id = handle.port_id();
-    assert!(handle.push(MidiEvent::noop(), Instant::now()));
+    assert!(handle.push(midi::noop(), Instant::now()));
     drop(handle);
 
     // A block in progress: the drain borrows the set while the port goes.
@@ -803,7 +802,7 @@ fn a_port_that_loses_events_is_reported() {
     let chord = (0..1_100u32).map(|i| {
         TimedMidiEvent::new(
             Beat(0.0),
-            MidiEvent::note_on(
+            midi::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::of(((i / 128) % 16) as u8),
                 (i % 128) as u8,

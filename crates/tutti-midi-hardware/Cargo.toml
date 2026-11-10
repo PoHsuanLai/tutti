@@ -42,6 +42,8 @@ tracing = "0.1"
 # Core types
 tutti-midi-device = { path = "../tutti-midi-device" }
 tutti-midi-types = { path = "../tutti-midi-types" }
+# `Offset`: an event in a block is `(Offset, Ump)`.
+tutti-graph = { path = "../tutti-graph" }
 # NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
 # port edge. Consumers depend on `tutti-midi-file` directly.
 # The MIDI runtime: the graph's MIDI nodes and the ring they cross threads on.
@@ -81,7 +83,7 @@ tutti-midi-hardware = { path = ".", features = ["test-support"] }
 # `HardwareMidiInputs` through a `MidiInputNode` in a graph, under a disabled
 # allocator.
 assert_no_alloc = { version = "1", default-features = false }
-tutti-graph = { path = "../tutti-graph" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 [package.metadata.docs.rs]
 all-features = true

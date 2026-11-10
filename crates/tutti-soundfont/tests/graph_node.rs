@@ -7,12 +7,13 @@
 
 use std::sync::Arc;
 
+use tutti_fixtures::midi;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
     Transport,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
@@ -36,7 +37,8 @@ fn unit(rate: i32) -> SoundFontUnit {
 fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(rate), Samples(BLOCK)));
     let beat = Beat(frame as f64 / (rate / 2.0));
-    let on = MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
+    let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+    let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity);
     ed.insert(
         NodeKey(1),
         "clip",

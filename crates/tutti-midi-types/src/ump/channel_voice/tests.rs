@@ -1,10 +1,14 @@
-use super::*;
+use midi2::Channeled;
 use midi2::{UmpMessage, channel_voice2};
+use tutti_fixtures::midi;
+use tutti_ump::CCNumber;
+use tutti_ump::MidiChannel;
+use tutti_ump::MidiGroup;
 
 #[test]
 fn note_on_decodes_via_midi2() {
-    let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(5), 60, 0x8000);
-    let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+    let ev = midi::note_on(MidiGroup::FIRST, MidiChannel::of(5), 60, 0x8000);
+    let msg = UmpMessage::try_from(ev.words()).unwrap();
     match msg {
         UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::NoteOn(m)) => {
             assert_eq!(u8::from(m.channel()), 5);
@@ -17,13 +21,13 @@ fn note_on_decodes_via_midi2() {
 
 #[test]
 fn cc_decodes_via_midi2() {
-    let ev = MidiEvent::cc(
+    let ev = midi::cc(
         MidiGroup::FIRST,
         MidiChannel::of(2),
         CCNumber::BRIGHTNESS,
         0xDEAD_BEEF,
     );
-    let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+    let msg = UmpMessage::try_from(ev.words()).unwrap();
     let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::ControlChange(m)) = msg else {
         panic!("expected CV2 ControlChange");
     };
@@ -40,8 +44,8 @@ fn cc_decodes_via_midi2() {
 fn every_cc_number_round_trips_through_the_wire() {
     for raw in 0u8..128 {
         let n = CCNumber::of(raw);
-        let ev = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::of(2), n, 0);
-        let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+        let ev = midi::cc(MidiGroup::FIRST, MidiChannel::of(2), n, 0);
+        let msg = UmpMessage::try_from(ev.words()).unwrap();
         let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::ControlChange(m)) = msg else {
             panic!("expected CV2 ControlChange");
         };
@@ -58,13 +62,13 @@ fn every_cc_number_round_trips_through_the_wire() {
 fn the_channel_and_the_cc_number_land_in_different_fields() {
     // Deliberately equal raw values, so a field mix-up cannot hide behind
     // one of them: only ordering distinguishes correct from swapped.
-    let ev = MidiEvent::cc(
+    let ev = midi::cc(
         MidiGroup::FIRST,
         MidiChannel::of(7),
         CCNumber::of(3),
         0x1234_5678,
     );
-    let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+    let msg = UmpMessage::try_from(ev.words()).unwrap();
     let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::ControlChange(m)) = msg else {
         panic!("expected CV2 ControlChange");
     };
@@ -78,12 +82,10 @@ fn the_channel_and_the_cc_number_land_in_different_fields() {
 /// `per_note_management` failed both asserts.
 #[test]
 fn per_note_management_writes_the_spec_bits() {
-    let detach =
-        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, true, false);
-    assert_eq!(detach.data[0], 0x40F4_3C02);
-    let reset =
-        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, false, true);
-    assert_eq!(reset.data[0], 0x40F4_3C01);
+    let detach = midi::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, true, false);
+    assert_eq!(detach.0[0], 0x40F4_3C02);
+    let reset = midi::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, false, true);
+    assert_eq!(reset.0[0], 0x40F4_3C01);
 }
 
 /// The app-facing view reads the same bits. Mutation: reading the flags from
@@ -92,8 +94,13 @@ fn per_note_management_writes_the_spec_bits() {
 fn per_note_management_message_reads_the_spec_bits() {
     use crate::MidiMessage;
     let msg = |detach, reset| {
-        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, detach, reset)
-            .message()
+        MidiMessage::from_ump(midi::per_note_management(
+            MidiGroup::FIRST,
+            MidiChannel::of(4),
+            60,
+            detach,
+            reset,
+        ))
     };
     assert!(matches!(
         msg(true, false),

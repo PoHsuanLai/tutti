@@ -2,7 +2,7 @@
 //!
 //! The safe `coremidi` wrapper only exposes a MIDI-1.0 virtual source
 //! (`MIDISourceCreate`), whose only send path is legacy packet bytes — which
-//! forces every event through `MidiEvent::to_midi1_bytes`, dropping any
+//! forces every event through `to_midi1_bytes`, dropping any
 //! MIDI-2-only message (per-note controllers, **and JR Timestamps**). Publishing
 //! a genuine UMP stream — the one transport where a JR Timestamp actually
 //! reaches the wire — needs a MIDI-2.0-protocol endpoint, created via
@@ -70,7 +70,7 @@ const MIDI_TIMESTAMP_NOW: MIDITimeStamp = 0;
 /// A CoreMIDI virtual source that speaks the **MIDI 2.0 (UMP) protocol**.
 ///
 /// Unlike a MIDI-1.0 virtual source (byte packets, whose only send path forces
-/// every event through `MidiEvent::to_midi1_bytes`), this endpoint carries UMP
+/// every event through `to_midi1_bytes`), this endpoint carries UMP
 /// words end to end, so JR Timestamps and other MIDI-2-only messages survive to
 /// the wire. Owns its endpoint, which is disposed on drop.
 #[must_use = "dropping it removes the virtual source"]

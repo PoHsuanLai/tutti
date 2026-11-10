@@ -25,7 +25,7 @@ use crate::devices::ChangeSink;
 use crate::endpoints::{InputConnection, MidiEndpoints, NoWatch, Watch};
 use crate::error::{Error, Result};
 use tutti_midi_device::EndpointId;
-use tutti_midi_types::MidiOut;
+use tutti_midi_runtime::MidiOut;
 
 /// Why every call here fails, in the error a caller will surface.
 const REASON: &str = "no native-UMP MIDI backend on this platform (Windows, or alsa-lib < 1.2.10)";

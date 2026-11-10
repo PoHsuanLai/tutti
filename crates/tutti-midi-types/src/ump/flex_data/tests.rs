@@ -1,4 +1,5 @@
 use super::*;
+use tutti_fixtures::midi;
 use tutti_ump::MidiChannel;
 use tutti_ump::MidiGroup;
 
@@ -18,7 +19,7 @@ fn tempo_conversion_kernels_round_trip() {
         bpm_to_ten_ns_per_quarter(Bpm::of(f64::MIN_POSITIVE)),
         u32::MAX
     );
-    let fastest = MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(1e10));
+    let fastest = flex_set_tempo(MidiGroup::FIRST, Bpm::of(1e10));
     assert_eq!(flex_tempo_bpm(&fastest), Some(Bpm::of(6e9)));
     assert_eq!(ten_ns_per_quarter_to_bpm(0), None);
 }
@@ -29,13 +30,13 @@ fn tempo_conversion_kernels_round_trip() {
 fn tempo_wire_field_is_ten_ns_per_quarter() {
     assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(120.0)), 50_000_000);
     assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(60.0)), 100_000_000);
-    let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0));
-    assert_eq!(ev.data_words(), &[0xD010_0000, 0x02FA_F080, 0, 0]);
+    let ev = flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0));
+    assert_eq!(ev.words(), &[0xD010_0000, 0x02FA_F080, 0, 0]);
 }
 
 #[test]
 fn external_set_tempo_packet_decodes_to_120_bpm() {
-    let ev = MidiEvent::from_ump(0, &[0xD010_0000, 0x02FA_F080, 0, 0]);
+    let ev = Ump([0xD010_0000, 0x02FA_F080, 0, 0]);
     assert_eq!(flex_tempo_bpm(&ev), Some(Bpm::of(120.0)));
     assert_eq!(ten_ns_per_quarter_to_bpm(100_000_000), Some(Bpm::of(60.0)));
 }
@@ -43,7 +44,7 @@ fn external_set_tempo_packet_decodes_to_120_bpm() {
 #[test]
 fn flex_set_tempo_round_trips_bpm() {
     for bpm in [60.0, 120.0, 140.0, 174.0] {
-        let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(bpm));
+        let ev = flex_set_tempo(MidiGroup::FIRST, Bpm::of(bpm));
         let decoded = flex_tempo_bpm(&ev).expect("is a Set Tempo");
         // 10ns-per-qn is integer-quantized, so allow a tiny epsilon.
         assert!((decoded.get() - bpm).abs() < 0.05, "bpm {bpm} → {decoded}");
@@ -53,8 +54,8 @@ fn flex_set_tempo_round_trips_bpm() {
 #[test]
 fn flex_set_time_signature_decodes_via_midi2() {
     use midi2::flex_data::FlexData;
-    let ev = MidiEvent::flex_set_time_signature(MidiGroup::FIRST, 7, 8, 8);
-    match midi2::UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = flex_set_time_signature(MidiGroup::FIRST, 7, 8, 8);
+    match midi2::UmpMessage::try_from(ev.words()).unwrap() {
         midi2::UmpMessage::FlexData(FlexData::SetTimeSignature(m)) => {
             assert_eq!(m.numerator(), 7);
             assert_eq!(m.denominator(), 8);
@@ -67,7 +68,7 @@ fn flex_set_time_signature_decodes_via_midi2() {
 #[test]
 fn flex_tempo_bpm_rejects_non_tempo() {
     assert!(
-        flex_tempo_bpm(&MidiEvent::note_on(
+        flex_tempo_bpm(&midi::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             60,
@@ -79,7 +80,7 @@ fn flex_tempo_bpm_rejects_non_tempo() {
 
 #[test]
 fn flex_set_key_signature_round_trips() {
-    let ev = MidiEvent::flex_set_key_signature(
+    let ev = flex_set_key_signature(
         MidiGroup::FIRST,
         Tonic::D,
         KeySharpsFlats::Sharps(u3::new(2)),
@@ -88,9 +89,7 @@ fn flex_set_key_signature_round_trips() {
     assert_eq!(tonic, Tonic::D);
     assert_eq!(sf, KeySharpsFlats::Sharps(u3::new(2)));
     // A non-key-signature event decodes to None.
-    assert!(
-        flex_key_signature(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0))).is_none()
-    );
+    assert!(flex_key_signature(&flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0))).is_none());
 }
 
 #[test]
@@ -108,7 +107,7 @@ fn flex_set_chord_name_round_trips_with_bass() {
             alterations: [None, None],
         }),
     };
-    let ev = MidiEvent::flex_set_chord_name(MidiGroup::FIRST, &chord);
+    let ev = flex_set_chord_name(MidiGroup::FIRST, &chord);
     let back = flex_chord_name(&ev).expect("is a chord name");
     assert_eq!(back, chord);
 }
@@ -122,7 +121,7 @@ fn flex_set_chord_name_round_trips_without_bass() {
         alterations: [None; 4],
         bass: None,
     };
-    let ev = MidiEvent::flex_set_chord_name(MidiGroup::FIRST, &chord);
+    let ev = flex_set_chord_name(MidiGroup::FIRST, &chord);
     let back = flex_chord_name(&ev).expect("is a chord name");
     assert_eq!(back.bass, None, "no-bass encoding round-trips to None");
     assert_eq!(back.tonic, Tonic::A);
@@ -149,9 +148,9 @@ fn flex_text_single_packet_round_trips_kind_and_string() {
 
 #[test]
 fn flex_text_rejects_non_text() {
-    assert!(flex_text(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0))).is_none());
+    assert!(flex_text(&flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0))).is_none());
     assert!(
-        flex_text(&MidiEvent::note_on(
+        flex_text(&midi::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             60,
@@ -169,8 +168,8 @@ fn flex_set_metronome_decodes_via_midi2() {
         secondary: 12,
         tertiary: 6,
     };
-    let ev = MidiEvent::flex_set_metronome(MidiGroup::FIRST, 24, accents);
-    match midi2::UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = flex_set_metronome(MidiGroup::FIRST, 24, accents);
+    match midi2::UmpMessage::try_from(ev.words()).unwrap() {
         midi2::UmpMessage::FlexData(FlexData::SetMetronome(m)) => {
             assert_eq!(m.number_of_clocks_per_primary_click(), 24);
             assert_eq!(m.bar_accent1(), 24);
@@ -234,11 +233,11 @@ fn reassembler_passes_single_packet_text_straight_through() {
 
     // Non-text Flex Data and non-Flex events are ignored.
     assert!(
-        r.push(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0)))
+        r.push(&flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0)))
             .is_none()
     );
     assert!(
-        r.push(&MidiEvent::note_on(
+        r.push(&midi::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             60,

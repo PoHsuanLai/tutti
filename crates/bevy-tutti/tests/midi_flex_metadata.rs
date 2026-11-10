@@ -20,9 +20,10 @@ use bevy_tutti::midi::test_support::drain_midi_out;
 use bevy_tutti::midi::{BroadcastFlexMetadata, MidiMetadataPlugin, MidiOutRes};
 use tutti_midi_types::midi2::ux::u3;
 use tutti_midi_types::ump::{
-    BarAccents, ChordName, ChordSharpsFlats, ChordType, FlexTextKind, KeySharpsFlats, MidiEvent,
-    Tonic, flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text,
+    BarAccents, ChordName, ChordSharpsFlats, ChordType, FlexTextKind, KeySharpsFlats, Tonic,
+    flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text,
 };
+use tutti_ump::Ump;
 
 /// An app with just the metadata plugin and the mailbox it writes into.
 ///
@@ -38,11 +39,14 @@ fn app() -> App {
 }
 
 /// Raise one request, run a frame, and return what reached the mailbox.
-fn broadcast(app: &mut App, request: BroadcastFlexMetadata) -> Vec<MidiEvent> {
+fn broadcast(app: &mut App, request: BroadcastFlexMetadata) -> Vec<Ump> {
     app.world_mut().write_message(request);
     app.update();
     let out = app.world().resource::<MidiOutRes>();
     drain_midi_out(out)
+        .into_iter()
+        .map(|(_, ump)| ump)
+        .collect()
 }
 
 /// Tempo survives the BPM → 10-ns-per-quarter encoding and comes back.
@@ -80,8 +84,8 @@ fn distinct_tempos_stay_distinct_on_the_wire() {
     assert!((flex_tempo_bpm(&slow[0]).unwrap().get() - 60.0).abs() < 0.05);
     assert!((flex_tempo_bpm(&fast[0]).unwrap().get() - 174.0).abs() < 0.05);
     assert_ne!(
-        slow[0].data_words(),
-        fast[0].data_words(),
+        slow[0].words(),
+        fast[0].words(),
         "two tempos must not encode identically"
     );
 }
@@ -103,7 +107,7 @@ fn a_time_signature_broadcast_carries_all_three_fields() {
     );
 
     assert_eq!(packets.len(), 1);
-    let decoded = tutti_midi_types::midi2::UmpMessage::try_from(packets[0].data_words())
+    let decoded = tutti_midi_types::midi2::UmpMessage::try_from(packets[0].words())
         .expect("the packet is a valid UMP message");
     let tutti_midi_types::midi2::UmpMessage::FlexData(
         tutti_midi_types::midi2::flex_data::FlexData::SetTimeSignature(m),
@@ -136,7 +140,7 @@ fn a_metronome_broadcast_keeps_its_accents_in_order() {
     );
 
     assert_eq!(packets.len(), 1);
-    let decoded = tutti_midi_types::midi2::UmpMessage::try_from(packets[0].data_words())
+    let decoded = tutti_midi_types::midi2::UmpMessage::try_from(packets[0].words())
         .expect("the packet is a valid UMP message");
     let tutti_midi_types::midi2::UmpMessage::FlexData(
         tutti_midi_types::midi2::flex_data::FlexData::SetMetronome(m),

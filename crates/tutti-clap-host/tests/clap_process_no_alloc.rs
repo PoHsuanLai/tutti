@@ -20,11 +20,13 @@
 
 use std::path::Path;
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_clap_host::{
-    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, TransportInfo,
-};
+use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, TransportInfo};
+use tutti_fixtures::midi as fx;
+use tutti_graph::Offset;
+use tutti_types::Samples;
 
 mod support;
 use support::active::{Activate, Active};
@@ -61,6 +63,21 @@ const MAX_FRAMES: u32 = 512;
 use tutti_clap_test_plugin::rt_probe::status;
 use tutti_clap_test_plugin::{StatusMode, WideLayout};
 use tutti_ump::{Data128, Message, MidiChannel, MidiGroup, Sysex8Packet, SysexStatus, Ump, decode};
+
+/// A block long enough for every offset these tests use.
+const BLOCK: usize = 64;
+
+/// The offset `k` frames into the block.
+fn at(k: u32) -> Offset {
+    Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+}
+
+/// The packet of `words`, zero-padded to four, `k` frames into the block.
+fn packet(k: u32, words: &[u32]) -> UmpAt {
+    let mut w = [0u32; 4];
+    w[..words.len()].copy_from_slice(words);
+    (at(k), Ump(w))
+}
 
 /// The plugin image, opened once and **never closed**.
 ///
@@ -243,17 +260,13 @@ fn process_with_midi_does_not_allocate() {
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
 
-    let on_event = [MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0x8000,
+    let on_event = [(
+        at(0),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
     )];
-    let off_event = [MidiEvent::note_off(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0,
+    let off_event = [(
+        at(0),
+        fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
     )];
 
     // Prime with a note pair, then silent blocks, so any first-call lazy
@@ -275,7 +288,7 @@ fn process_with_midi_does_not_allocate() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {
-            let events: &[MidiEvent] = match i % 32 {
+            let events: &[UmpAt] = match i % 32 {
                 0 => &on_event,
                 16 => &off_event,
                 _ => &[],
@@ -364,10 +377,7 @@ fn process_with_every_message_kind_does_not_allocate() {
         };
         assert_eq!(kind, *claimed, "{words:08x?}");
     }
-    let packets: Vec<MidiEvent> = table
-        .iter()
-        .map(|(_, words)| MidiEvent::from_ump(2, words))
-        .collect();
+    let packets: Vec<UmpAt> = table.iter().map(|(_, words)| packet(2, words)).collect();
 
     let ctx = ClapProcessContext {
         midi: &packets,
@@ -725,7 +735,7 @@ fn drive_and_read_param_output(
 fn drive_and_read_output(
     inst: &mut Active<f32>,
     bufs: &mut StereoBufs,
-    midi: &[MidiEvent],
+    midi: &[UmpAt],
 ) -> (Vec<(u32, usize, f64)>, usize) {
     let transport = TransportInfo::default();
     let ctx = ClapProcessContext {
@@ -752,7 +762,11 @@ fn drive_and_read_output(
             (id, q.points.len(), last.value.get())
         })
         .collect();
-    let note_offs = out.midi_events.iter().filter(|e| e.is_note_off()).count();
+    let note_offs = out
+        .midi_events
+        .iter()
+        .filter(|e| e.ump.is_note_off())
+        .count();
     (queues, note_offs)
 }
 
@@ -999,8 +1013,14 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
     let notes = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+        (
+            at(0),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(0),
+            fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+        ),
     ];
     let ctx = ClapProcessContext {
         midi: &notes,

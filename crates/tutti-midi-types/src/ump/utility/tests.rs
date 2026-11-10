@@ -1,10 +1,11 @@
 use super::*;
 use midi2::{UmpMessage, utility};
+use tutti_fixtures::midi;
 
 #[test]
 fn noop_is_utility_zero_word() {
-    let ev = MidiEvent::noop();
-    let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+    let ev = midi::noop();
+    let msg = UmpMessage::try_from(ev.words()).unwrap();
     assert!(matches!(
         msg,
         UmpMessage::Utility(utility::Utility::NoOp(_))
@@ -13,8 +14,8 @@ fn noop_is_utility_zero_word() {
 
 #[test]
 fn jr_timestamp_decodes_via_midi2() {
-    let ev = MidiEvent::jr_timestamp(0x1234);
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = midi::jr_timestamp(0x1234);
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::Utility(utility::Utility::Timestamp(m)) => {
             assert_eq!(m.time_data(), 0x1234);
         }
@@ -24,14 +25,14 @@ fn jr_timestamp_decodes_via_midi2() {
 
 #[test]
 fn jr_clock_decodes_via_midi2() {
-    let ev = MidiEvent::jr_clock(0x89AB);
-    match UmpMessage::try_from(ev.data_words()).unwrap() {
+    let ev = midi::jr_clock(0x89AB);
+    match UmpMessage::try_from(ev.words()).unwrap() {
         UmpMessage::Utility(utility::Utility::Clock(m)) => {
             assert_eq!(m.time_data(), 0x89AB);
         }
         other => panic!("expected JR Clock, got {other:?}"),
     }
-    assert_eq!(ev.jr_clock_value(), Some(0x89AB));
+    assert_eq!(jr_clock_value(&ev), Some(0x89AB));
 }
 
 #[test]
@@ -41,13 +42,13 @@ fn jr_clock_and_timestamp_do_not_alias() {
     // message after it (§7.2.2.1 / §7.2.2.2). Each accessor must reject the
     // other message, or a receiver would treat a clock announcement as
     // timing for the next event.
-    let clock = MidiEvent::jr_clock(0x1234);
-    let stamp = MidiEvent::jr_timestamp(0x1234);
-    assert_ne!(clock.data_words()[0], stamp.data_words()[0]);
-    assert_eq!(clock.jr_clock_value(), Some(0x1234));
-    assert_eq!(clock.jr_timestamp_value(), None, "a Clock is not a stamp");
-    assert_eq!(stamp.jr_timestamp_value(), Some(0x1234));
-    assert_eq!(stamp.jr_clock_value(), None, "a stamp is not a Clock");
+    let clock = midi::jr_clock(0x1234);
+    let stamp = midi::jr_timestamp(0x1234);
+    assert_ne!(clock.words()[0], stamp.words()[0]);
+    assert_eq!(jr_clock_value(&clock), Some(0x1234));
+    assert_eq!(jr_timestamp_value(&clock), None, "a Clock is not a stamp");
+    assert_eq!(jr_timestamp_value(&stamp), Some(0x1234));
+    assert_eq!(jr_clock_value(&stamp), None, "a stamp is not a Clock");
 }
 
 #[test]
@@ -56,11 +57,11 @@ fn utility_messages_leave_the_reserved_nibble_zero() {
     // fields "shall be set to zero". Bits 24-27 are where a group would sit
     // on a group-bearing type — on MT 0x0 they must stay clear.
     for ev in [
-        MidiEvent::jr_timestamp(0xFFFF),
-        MidiEvent::jr_clock(0xFFFF),
-        MidiEvent::noop(),
+        midi::jr_timestamp(0xFFFF),
+        midi::jr_clock(0xFFFF),
+        midi::noop(),
     ] {
-        let w0 = ev.data_words()[0];
+        let w0 = ev.words()[0];
         assert_eq!(w0 >> 28, 0x0, "utility message type");
         assert_eq!(
             (w0 >> 24) & 0x0F,

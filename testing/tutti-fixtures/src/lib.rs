@@ -34,6 +34,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod midi;
 mod range_contract;
 pub mod sf2;
 

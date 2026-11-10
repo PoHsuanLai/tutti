@@ -65,7 +65,7 @@ pub mod test_support {
     /// integration test cannot reach `MidiOutRes`'s crate-private receiver.
     pub fn drain_midi_out(
         out: &super::hardware::track_out::MidiOutRes,
-    ) -> Vec<tutti_midi_types::ump::MidiEvent> {
+    ) -> Vec<(u32, tutti_ump::Ump)> {
         out.drain_for_test()
     }
 

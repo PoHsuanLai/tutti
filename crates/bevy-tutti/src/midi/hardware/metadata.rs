@@ -20,10 +20,13 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::ump::{BarAccents, ChordName, FlexTextKind, KeySharpsFlats, Tonic};
+use tutti_midi_types::{
+    BarAccents, ChordName, FlexTextKind, KeySharpsFlats, Tonic, flex_set_chord_name,
+    flex_set_key_signature, flex_set_metronome, flex_set_tempo, flex_set_time_signature,
+};
 use tutti_types::Bpm;
 use tutti_ump::MidiGroup;
+use tutti_ump::Ump;
 
 /// The group Flex Data metadata is broadcast on (function-block-wide).
 const FLEX_GROUP: MidiGroup = MidiGroup::FIRST;
@@ -107,32 +110,28 @@ pub fn flex_metadata_broadcast_system(
         return;
     };
     let sender = out.sender();
-    let mut packets: Vec<MidiEvent> = Vec::new();
+    let mut packets: Vec<Ump> = Vec::new();
     for request in requests.read() {
         packets.clear();
         match request {
             BroadcastFlexMetadata::ChordName(chord) => {
-                packets.push(MidiEvent::flex_set_chord_name(FLEX_GROUP, chord));
+                packets.push(flex_set_chord_name(FLEX_GROUP, chord));
             }
             BroadcastFlexMetadata::KeySignature {
                 tonic,
                 sharps_flats,
             } => {
-                packets.push(MidiEvent::flex_set_key_signature(
-                    FLEX_GROUP,
-                    *tonic,
-                    *sharps_flats,
-                ));
+                packets.push(flex_set_key_signature(FLEX_GROUP, *tonic, *sharps_flats));
             }
             BroadcastFlexMetadata::Tempo(bpm) => {
-                packets.push(MidiEvent::flex_set_tempo(FLEX_GROUP, *bpm));
+                packets.push(flex_set_tempo(FLEX_GROUP, *bpm));
             }
             BroadcastFlexMetadata::TimeSignature {
                 numerator,
                 denominator,
                 num_32nd_notes,
             } => {
-                packets.push(MidiEvent::flex_set_time_signature(
+                packets.push(flex_set_time_signature(
                     FLEX_GROUP,
                     *numerator,
                     *denominator,
@@ -143,17 +142,15 @@ pub fn flex_metadata_broadcast_system(
                 clocks_per_click,
                 accents,
             } => {
-                packets.push(MidiEvent::flex_set_metronome(
-                    FLEX_GROUP,
-                    *clocks_per_click,
-                    *accents,
-                ));
+                packets.push(flex_set_metronome(FLEX_GROUP, *clocks_per_click, *accents));
             }
             BroadcastFlexMetadata::Text { kind, text } => {
                 tutti_midi_types::ump::push_flex_text(*kind, text, FLEX_GROUP, &mut packets);
             }
         }
-        sender.queue(&packets);
+        // Stamp 0: metadata is not placed in a block (as the old offset 0).
+        let stamped: Vec<(u32, Ump)> = packets.iter().map(|&p| (0, p)).collect();
+        sender.queue_stamped(&stamped);
     }
 }
 

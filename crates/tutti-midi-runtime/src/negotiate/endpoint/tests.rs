@@ -1,5 +1,9 @@
 use super::*;
 use tutti_midi_types::midi2::flex_data::FlexData;
+use tutti_midi_types::{
+    device_identity, endpoint_discovery, flex_set_tempo, function_block_discovery,
+    function_block_info,
+};
 use tutti_ump::MidiChannel;
 
 fn negotiator() -> EndpointNegotiator {
@@ -28,27 +32,27 @@ fn responds_to_full_discovery_with_all_notifications() {
     // info + identity + name + product-id + stream-config + one function block.
     assert_eq!(replies.len(), 6);
     assert!(matches!(
-        UmpMessage::try_from(replies[0].data_words()).unwrap(),
+        UmpMessage::try_from(replies[0].words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::EndpointInfo(_))
     ));
     assert!(matches!(
-        UmpMessage::try_from(replies[1].data_words()).unwrap(),
+        UmpMessage::try_from(replies[1].words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::DeviceIdentity(_))
     ));
     assert!(matches!(
-        UmpMessage::try_from(replies[2].data_words()).unwrap(),
+        UmpMessage::try_from(replies[2].words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::EndpointName(_))
     ));
     assert!(matches!(
-        UmpMessage::try_from(replies[3].data_words()).unwrap(),
+        UmpMessage::try_from(replies[3].words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::ProductInstanceId(_))
     ));
     assert!(matches!(
-        UmpMessage::try_from(replies[4].data_words()).unwrap(),
+        UmpMessage::try_from(replies[4].words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::StreamConfigurationNotification(_))
     ));
     assert!(matches!(
-        UmpMessage::try_from(replies[5].data_words()).unwrap(),
+        UmpMessage::try_from(replies[5].words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(_))
     ));
 }
@@ -69,7 +73,7 @@ fn empty_name_omits_its_notification() {
     // info + identity + stream-config, no name/product-id, no blocks.
     assert_eq!(replies.len(), 3);
     assert!(replies.iter().all(|e| !matches!(
-        UmpMessage::try_from(e.data_words()).unwrap(),
+        UmpMessage::try_from(e.words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::EndpointName(_))
             | UmpMessage::UmpStream(UmpStream::ProductInstanceId(_))
     )));
@@ -80,7 +84,7 @@ fn endpoint_info_reports_block_count_and_capabilities() {
     let n = negotiator();
     let info = n.endpoint_info();
     let UmpMessage::UmpStream(UmpStream::EndpointInfo(m)) =
-        UmpMessage::try_from(info.data_words()).unwrap()
+        UmpMessage::try_from(info.words()).unwrap()
     else {
         panic!("expected EndpointInfo");
     };
@@ -93,12 +97,12 @@ fn endpoint_info_reports_block_count_and_capabilities() {
 fn partial_discovery_only_returns_requested_plus_blocks() {
     let n = negotiator();
     // Ask for identity only.
-    let req = MidiEvent::endpoint_discovery(1, 1, EndpointDiscoveryRequest::DEVICE_IDENTITY);
+    let req = endpoint_discovery(1, 1, EndpointDiscoveryRequest::DEVICE_IDENTITY);
     let replies = n.respond_to(&req);
     // identity + the (always-announced) function block.
     assert_eq!(replies.len(), 2);
     assert!(matches!(
-        UmpMessage::try_from(replies[0].data_words()).unwrap(),
+        UmpMessage::try_from(replies[0].words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::DeviceIdentity(_))
     ));
 }
@@ -123,16 +127,16 @@ fn multi_block_negotiator() -> EndpointNegotiator {
     )
 }
 
-fn is_info(e: &MidiEvent) -> bool {
+fn is_info(e: &Ump) -> bool {
     matches!(
-        UmpMessage::try_from(e.data_words()).unwrap(),
+        UmpMessage::try_from(e.words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(_))
     )
 }
 
-fn is_name(e: &MidiEvent) -> bool {
+fn is_name(e: &Ump) -> bool {
     matches!(
-        UmpMessage::try_from(e.data_words()).unwrap(),
+        UmpMessage::try_from(e.words()).unwrap(),
         UmpMessage::UmpStream(UmpStream::FunctionBlockName(_))
     )
 }
@@ -140,12 +144,12 @@ fn is_name(e: &MidiEvent) -> bool {
 #[test]
 fn function_block_discovery_replies_for_one_block() {
     let n = multi_block_negotiator();
-    let req = MidiEvent::function_block_discovery(1, FunctionBlockDiscoveryRequest::INFO);
+    let req = function_block_discovery(1, FunctionBlockDiscoveryRequest::INFO);
     let replies = n.respond_to_function_block_discovery(&req);
     assert_eq!(replies.len(), 1);
     assert!(is_info(&replies[0]));
     let UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(m)) =
-        UmpMessage::try_from(replies[0].data_words()).unwrap()
+        UmpMessage::try_from(replies[0].words()).unwrap()
     else {
         panic!("expected FunctionBlockInfo");
     };
@@ -161,10 +165,7 @@ fn function_block_discovery_all_blocks_replies_per_block() {
     // §7.1.8: with the number set to 0xFF "the reply shall be one Function
     // Block Info Notification message per Function Block".
     let n = multi_block_negotiator();
-    let req = MidiEvent::function_block_discovery(
-        ALL_FUNCTION_BLOCKS,
-        FunctionBlockDiscoveryRequest::INFO,
-    );
+    let req = function_block_discovery(ALL_FUNCTION_BLOCKS, FunctionBlockDiscoveryRequest::INFO);
     let replies = n.respond_to_function_block_discovery(&req);
     assert_eq!(replies.len(), 3, "one Info per block");
     assert!(replies.iter().all(is_info));
@@ -176,7 +177,7 @@ fn each_filter_bit_produces_its_own_reply() {
     // on the two named blocks → Info+Name each; block 2 is unnamed, so it
     // contributes Info only.
     let n = multi_block_negotiator();
-    let req = MidiEvent::function_block_discovery(
+    let req = function_block_discovery(
         ALL_FUNCTION_BLOCKS,
         FunctionBlockDiscoveryRequest::INFO | FunctionBlockDiscoveryRequest::NAME,
     );
@@ -192,7 +193,7 @@ fn each_filter_bit_produces_its_own_reply() {
 #[test]
 fn name_only_request_returns_no_info() {
     let n = multi_block_negotiator();
-    let req = MidiEvent::function_block_discovery(0, FunctionBlockDiscoveryRequest::NAME);
+    let req = function_block_discovery(0, FunctionBlockDiscoveryRequest::NAME);
     let replies = n.respond_to_function_block_discovery(&req);
     assert_eq!(replies.len(), 1);
     assert!(is_name(&replies[0]), "the 'i' bit was clear");
@@ -201,7 +202,7 @@ fn name_only_request_returns_no_info() {
 #[test]
 fn unknown_block_number_replies_with_nothing() {
     let n = multi_block_negotiator();
-    let req = MidiEvent::function_block_discovery(9, FunctionBlockDiscoveryRequest::INFO);
+    let req = function_block_discovery(9, FunctionBlockDiscoveryRequest::INFO);
     assert!(n.respond_to_function_block_discovery(&req).is_empty());
 }
 
@@ -219,7 +220,7 @@ fn discovered_block_names_reach_the_inquiry() {
     // discoverer, yields blocks that carry their labels — the whole point of
     // the Name notification.
     let n = multi_block_negotiator();
-    let req = MidiEvent::function_block_discovery(
+    let req = function_block_discovery(
         ALL_FUNCTION_BLOCKS,
         FunctionBlockDiscoveryRequest::INFO | FunctionBlockDiscoveryRequest::NAME,
     );
@@ -246,7 +247,7 @@ fn a_name_arriving_before_its_info_is_not_lost() {
     }
     assert_eq!(inq.discovered.function_blocks[0].name, "Drums");
 
-    inq.ingest(&MidiEvent::function_block_info(
+    inq.ingest(&function_block_info(
         true,
         1,
         MidiGroup::of(3),
@@ -269,14 +270,14 @@ fn re_queried_block_info_replaces_rather_than_duplicates() {
     // §7.1.8: a non-static endpoint re-sends Info when a property changes.
     // Ingesting the same block twice must update it, not grow the list.
     let mut inq = EndpointInquiry::new();
-    inq.ingest(&MidiEvent::function_block_info(
+    inq.ingest(&function_block_info(
         true,
         0,
         MidiGroup::FIRST,
         1,
         FunctionBlockDirection::Input,
     ));
-    inq.ingest(&MidiEvent::function_block_info(
+    inq.ingest(&function_block_info(
         true,
         0,
         MidiGroup::of(5),
@@ -337,10 +338,10 @@ fn inquiry_reconstructs_responder_from_its_reply_stream() {
 fn inquiry_has_no_result_until_endpoint_info_seen() {
     let mut inquiry = EndpointInquiry::new();
     // A device-identity reply alone isn't enough.
-    inquiry.ingest(&MidiEvent::device_identity([1, 2, 3], 4, 5, [6, 7, 8, 9]));
+    inquiry.ingest(&device_identity([1, 2, 3], 4, 5, [6, 7, 8, 9]));
     assert!(inquiry.result().is_none());
     // A non-UMP-Stream event is ignored.
-    assert!(!inquiry.ingest(&MidiEvent::note_on(
+    assert!(!inquiry.ingest(&tutti_fixtures::midi::note_on(
         MidiGroup::FIRST,
         MidiChannel::FIRST,
         60,
@@ -352,7 +353,7 @@ fn inquiry_has_no_result_until_endpoint_info_seen() {
 fn non_discovery_event_yields_no_reply() {
     let n = negotiator();
     assert!(
-        n.respond_to(&MidiEvent::note_on(
+        n.respond_to(&tutti_fixtures::midi::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             60,
@@ -361,9 +362,9 @@ fn non_discovery_event_yields_no_reply() {
         .is_empty()
     );
     // A Flex message isn't UMP Stream either.
-    let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, tutti_types::Bpm::of(120.0));
+    let ev = flex_set_tempo(MidiGroup::FIRST, tutti_types::Bpm::of(120.0));
     assert!(matches!(
-        UmpMessage::try_from(ev.data_words()).unwrap(),
+        UmpMessage::try_from(ev.words()).unwrap(),
         UmpMessage::FlexData(FlexData::SetTempo(_))
     ));
     assert!(n.respond_to(&ev).is_empty());

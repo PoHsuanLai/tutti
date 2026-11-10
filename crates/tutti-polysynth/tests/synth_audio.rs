@@ -18,18 +18,18 @@
 mod support;
 
 use support::{BLOCK, Hand};
+use tutti_fixtures::midi;
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
 use tutti_types::{Amplitude, Seconds};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
 
-fn note_on(note: u8, vel: u8) -> MidiEvent {
-    MidiEvent::note_on(
+fn note_on(note: u8, vel: u8) -> Ump {
+    midi::note_on(
         MidiGroup::FIRST,
         MidiChannel::FIRST,
         note,
@@ -37,8 +37,8 @@ fn note_on(note: u8, vel: u8) -> MidiEvent {
     )
 }
 
-fn note_off(note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
+fn note_off(note: u8) -> Ump {
+    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
 }
 
 /// An organ-like envelope: instant attack, full sustain, no decay. Keeps the
@@ -488,10 +488,10 @@ fn a_non_finite_master_volume_write_leaves_the_synth_at_its_volume() {
 fn a_key_struck_twice_then_released_once_goes_silent() {
     let group_one = MidiGroup::new(1).expect("a second group");
     let on = |group: MidiGroup| {
-        MidiEvent::note_on(group, MidiChannel::FIRST, 69, midi1_velocity_to_midi2(100))
+        midi::note_on(group, MidiChannel::FIRST, 69, midi1_velocity_to_midi2(100))
     };
-    let off = |group: MidiGroup| MidiEvent::note_off(group, MidiChannel::FIRST, 69, 0);
-    let cases: [(&str, Vec<MidiEvent>, Vec<MidiEvent>); 2] = [
+    let off = |group: MidiGroup| midi::note_off(group, MidiChannel::FIRST, 69, 0);
+    let cases: [(&str, Vec<Ump>, Vec<Ump>); 2] = [
         (
             "one group twice",
             vec![on(MidiGroup::FIRST), on(MidiGroup::FIRST)],

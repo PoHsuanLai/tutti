@@ -12,10 +12,12 @@
 //! decode-via-midi2 round-trip of a constructor would be circular. These tests
 //! assert [`MidiMessage`] field values and the raw UMP words against M2-104.
 
+use tutti_fixtures::midi;
 use tutti_midi_types::cc;
 use tutti_midi_types::convert::{midi1_pitch_bend_to_midi2, midi2_pitch_bend_to_midi1};
-use tutti_midi_types::{ControllerNamespace, Midi1ToMidi2Translator, MidiEvent, MidiMessage};
-use tutti_ump::CCNumber;
+use tutti_midi_types::from_midi1_bytes;
+use tutti_midi_types::{ControllerNamespace, Midi1ToMidi2Translator, MidiMessage};
+use tutti_ump::{CCNumber, Ump};
 
 /// MIDI 2.0 Channel Voice message type (M2-104 §2.1.4).
 const UMP_MT_CV2: u32 = 0x4;
@@ -29,9 +31,8 @@ const UMP_STATUS_ASSIGNABLE: u8 = 0x3;
 const CC_LSB_OFFSET: u8 = 32;
 
 /// A MIDI 1.0 wire CC (status 0xB0 | channel) — the translator's input.
-fn cc_ev(channel: u8, control: CCNumber, value: u8) -> MidiEvent {
-    MidiEvent::from_midi1_bytes(0, &[0xB0 | (channel & 0x0F), control.get(), value])
-        .expect("valid MIDI-1 CC")
+fn cc_ev(channel: u8, control: CCNumber, value: u8) -> Ump {
+    from_midi1_bytes(&[0xB0 | (channel & 0x0F), control.get(), value]).expect("valid MIDI-1 CC")
 }
 
 /// Pack a MIDI 2.0 Channel Voice controller from spec fields (M2-104 §7.4.6–7.4.8).
@@ -52,12 +53,12 @@ fn spec_controller_words(status: u8, channel: u8, bank: u8, index: u8, data: u32
 
 /// The 14-bit Data Entry the translator assembled, recovered by inverting the
 /// MCM promotion that follows the pack. The crate has no public 14-bit getter.
-fn assembled_14(ev: &MidiEvent) -> u16 {
+fn assembled_14(ev: &Ump) -> u16 {
     midi2_pitch_bend_to_midi1(controller_data(ev))
 }
 
-fn controller_data(ev: &MidiEvent) -> u32 {
-    match ev.message() {
+fn controller_data(ev: &Ump) -> u32 {
+    match MidiMessage::from_ump(*ev) {
         MidiMessage::RegisteredController { data, .. } => data,
         other => panic!("expected Registered/Assignable Controller, got {other:?}"),
     }
@@ -123,11 +124,11 @@ fn bank_select_is_latched_for_the_next_program_change_and_mod_wheel_promotes() {
     assert!(t.translate(&cc_ev(0, cc::BANK_SELECT, 0x7F)).is_none());
     assert!(t.translate(&cc_ev(0, CCNumber::of(32), 0x01)).is_none());
     let pc = t
-        .translate(&MidiEvent::from_midi1_bytes(0, &[0xC0, 9]).unwrap())
+        .translate(&from_midi1_bytes(&[0xC0, 9]).unwrap())
         .expect("program change promotes");
     assert_eq!(
         pc,
-        MidiEvent::program_change(
+        midi::program_change(
             tutti_ump::MidiGroup::FIRST,
             tutti_ump::MidiChannel::FIRST,
             9,
@@ -138,7 +139,7 @@ fn bank_select_is_latched_for_the_next_program_change_and_mod_wheel_promotes() {
     let mod_wheel = t
         .translate(&cc_ev(0, cc::MOD_WHEEL, 0x40))
         .expect("plain CC promotes");
-    match mod_wheel.message() {
+    match MidiMessage::from_ump(mod_wheel) {
         MidiMessage::ControlChange { index, .. } => {
             assert_eq!(index, cc::MOD_WHEEL.get());
         }
@@ -180,7 +181,7 @@ fn data_entry_assembles_msb_shift7_or_lsb() {
         "crate implements Min-Center-Max, not a zero-padded shift"
     );
     assert_eq!(
-        data14_hi.data_words(),
+        data14_hi.words(),
         spec_controller_words(UMP_STATUS_REGISTERED, 0, 0, 0, MCM_16257)
     );
 
@@ -228,7 +229,7 @@ fn msb_only_assumes_lsb_zero_and_a_later_lsb_refines() {
         .translate(&cc_ev(1, cc::DATA_ENTRY_LSB, 0x01))
         .expect("LSB refines without a second MSB");
     assert_eq!(assembled_14(&refined), 16257);
-    match refined.message() {
+    match MidiMessage::from_ump(refined) {
         MidiMessage::RegisteredController {
             namespace,
             bank,
@@ -288,7 +289,7 @@ fn rpn_pitch_bend_sensitivity_two_semitones_scales_by_mcm() {
 
     for ev in [&after_msb, &after_lsb] {
         assert_eq!(assembled_14(ev), 256);
-        match ev.message() {
+        match MidiMessage::from_ump(*ev) {
             MidiMessage::RegisteredController {
                 namespace,
                 bank,
@@ -303,7 +304,7 @@ fn rpn_pitch_bend_sensitivity_two_semitones_scales_by_mcm() {
             other => panic!("expected RegisteredController for RPN 0, got {other:?}"),
         }
         assert_eq!(
-            ev.data_words(),
+            ev.words(),
             spec_controller_words(UMP_STATUS_REGISTERED, 0, 0, 0, expected32)
         );
     }
@@ -324,7 +325,7 @@ fn nrpn_emits_an_assignable_controller_not_registered() {
         .translate(&cc_ev(2, cc::DATA_ENTRY, 64))
         .expect("NRPN Data Entry emits");
 
-    match out.message() {
+    match MidiMessage::from_ump(out) {
         MidiMessage::RegisteredController {
             namespace,
             bank,
@@ -345,11 +346,11 @@ fn nrpn_emits_an_assignable_controller_not_registered() {
 
     let data32 = midi1_pitch_bend_to_midi2(64u16 << 7);
     assert_eq!(
-        out.data_words(),
+        out.words(),
         spec_controller_words(UMP_STATUS_ASSIGNABLE, 2, 0x12, 0x34, data32)
     );
     assert_ne!(
-        out.data_words()[0] & 0x00F0_0000,
+        out.words()[0] & 0x00F0_0000,
         spec_cv2_word0(UMP_STATUS_REGISTERED, 2, 0x12, 0x34) & 0x00F0_0000,
         "status nibble must be assignable (0x3), not registered (0x2)"
     );
@@ -367,7 +368,7 @@ fn rpn_null_after_data_entry_drops_subsequent_cc6() {
     let written = t
         .translate(&cc_ev(0, cc::DATA_ENTRY, 2))
         .expect("data entry before Null writes RPN 0");
-    match written.message() {
+    match MidiMessage::from_ump(written) {
         MidiMessage::RegisteredController {
             namespace,
             bank,
@@ -384,7 +385,7 @@ fn rpn_null_after_data_entry_drops_subsequent_cc6() {
     // RPN 0 write; neither half may itself be a write of parameter 127/127.
     for (cc_num, value) in [(cc::RPN_MSB, 0x7F), (cc::RPN_LSB, 0x7F)] {
         if let Some(ev) = t.translate(&cc_ev(0, cc_num, value)) {
-            match ev.message() {
+            match MidiMessage::from_ump(ev) {
                 MidiMessage::RegisteredController { bank, index, .. } => {
                     assert_ne!(
                         (bank, index),

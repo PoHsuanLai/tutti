@@ -7,7 +7,7 @@
 //! `tutti-midi-hardware` (the dependency runs the other way).
 //!
 //! What the real path does that the fake does not: drain N port rings,
-//! converting arrival `Instant`s to per-block `frame_offset`s, into a
+//! converting arrival `Instant`s to per-block `Offset`s, into a
 //! fixed-capacity scratch buffer, then hand each event to the node. A buffer
 //! that grew there would `realloc` inside the callback, and a port set or ring
 //! released there would free inside it.
@@ -19,12 +19,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use assert_no_alloc::AllocDisabler;
+use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Transport};
 use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_types::{NodeKey, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -35,7 +35,8 @@ struct Rig {
     _editor: Editor,
     exec: Executor,
     out: MidiOutControls,
-    drain: Vec<MidiEvent>,
+    // The out node's raw stamps (`poll_into`'s element), not block offsets.
+    drain: Vec<(u32, Ump)>,
     /// Events that reached the out node.
     carried: usize,
 }
@@ -64,7 +65,7 @@ impl Rig {
             _editor: editor,
             exec,
             out,
-            drain: vec![MidiEvent::noop(); 2048],
+            drain: vec![(0, noop()); 2048],
             carried: 0,
         }
     }
@@ -77,8 +78,8 @@ impl Rig {
     }
 }
 
-fn note() -> MidiEvent {
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+fn note() -> Ump {
+    note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
 }
 
 /// Feed `count` events through a port's producer, as a driver callback
@@ -153,7 +154,7 @@ fn hardware_poll_over_capacity_is_allocation_free() {
     });
 }
 
-/// A block size sweep, since `frame_offset` conversion is driven by `nframes`.
+/// A block size sweep, since `Offset` conversion is driven by `nframes`.
 #[test]
 fn hardware_poll_across_block_sizes_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256, 48_000.0));
@@ -179,7 +180,7 @@ fn hardware_poll_across_block_sizes_is_allocation_free() {
 
 /// Events whose arrival predates the block must not allocate on the clamp path.
 ///
-/// `read_inputs` converts an arrival `Instant` into a `frame_offset` and clamps
+/// `read_inputs` converts an arrival `Instant` into a `Offset` and clamps
 /// anything that lands past the block. A stale timestamp drives that branch,
 /// which the steady-state test above never reaches.
 #[test]

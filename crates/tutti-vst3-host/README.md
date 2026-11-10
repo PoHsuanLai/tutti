@@ -37,10 +37,11 @@ metadata read at load) and [`Vst3Error`] (with [`LoadStage`] for load failures).
 [`ProcessOutput`], [`WindowHandle`], [`EditorSize`] and the `Features` bitset are
 [`tutti-plugin-types`](../tutti-plugin-types)' — this crate re-exports them so
 a caller can stay format-agnostic, but does not define them. MIDI is the
-workspace-wide UMP [`tutti_midi_types::MidiEvent`], re-exported here as
-[`MidiEvent`]; there is **no VST3-specific MIDI event trait to implement**. To
-send something that is not already a `MidiEvent`, convert it. The crate root
-exposes the typed VST3 events and the translation: [`MidiEncoder`] encodes a `MidiEvent`
+workspace-wide UMP: an event into the plugin is `(Offset, Ump)` (a
+[`tutti_graph::Offset`] into the block and a `tutti_ump::Ump`), and an event out
+of it is a [`WireMidi`] (the offset the plugin reported, unclamped); there is
+**no VST3-specific MIDI event trait to implement**. The crate root
+exposes the typed VST3 events and the translation: [`MidiEncoder`] encodes a `(Offset, Ump)`
 stream into them, following each channel's per-note bend range (RPN #00/07)
 across blocks, and [`EventExt::to_midi`] decodes one back.
 
@@ -64,8 +65,10 @@ bundle on disk.
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
 use tutti_vst3_host::{
-    AudioBuffer, InputEvents, LoadOptions, MidiEvent, TransportInfo, Vst3Loaded,
+    AudioBuffer, InputEvents, LoadOptions, TransportInfo, Vst3Loaded,
 };
+use tutti_graph::Offset;
+use tutti_ump::Ump;
 
 // Initialized. Parameters and the editor are reachable here, with no
 // activation cost paid. The rate and the block length are not load
@@ -91,7 +94,10 @@ let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 48_000.0);
 
 // The sample rate stays a raw `f64` here: this is a C ABI, which is where
 // the engine's unit newtypes deliberately stop.
-let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000)];
+let midi: [(Offset, Ump); 1] = [(
+    Offset::ZERO,
+    tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
+)];
 let events = InputEvents {
     midi: &midi,
     ..Default::default()
@@ -288,6 +294,7 @@ MIT OR Apache-2.0
 [`ProcessOutput`]: crate::ProcessOutput
 [`WindowHandle`]: crate::WindowHandle
 [`EditorSize`]: crate::EditorSize
-[`MidiEvent`]: crate::MidiEvent
+[`WireMidi`]: crate::WireMidi
+[`tutti_graph::Offset`]: tutti_graph::Offset
 [`MidiEncoder`]: crate::MidiEncoder
 [`EventExt::to_midi`]: crate::EventExt::to_midi

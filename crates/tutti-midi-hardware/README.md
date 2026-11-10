@@ -78,6 +78,8 @@ accumulate rings.
 use std::sync::Arc;
 use tutti_midi_hardware::prelude::*;
 use tutti_midi_hardware::HardwareMidiInputs;
+use tutti_fixtures::midi::note_on;
+use tutti_graph::Offset;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 // The rings inbound events land in, then a session over this platform's backend.
@@ -98,8 +100,8 @@ if let Some(first) = session.inputs().first() {
 // Outbound: `send` returns how many events were accepted, 0 when nothing is
 // connected.
 session.connect_output_by_name("iac")?;
-let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-assert_eq!(session.send(&[note]), 1);
+let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 # Ok::<(), tutti_midi_hardware::Error>(())
 ```
 

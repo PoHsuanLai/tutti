@@ -6,15 +6,16 @@
 //! never by the name. The two containers keep their own shapes (an SMF's named
 //! tracks with 7-bit velocities, a Clip File's one stream with 16-bit ones);
 //! [`MidiFile::iter`] is where they meet, as the engine's MIDI 2.0
-//! [`MidiEvent`]s in [`Beat`]s.
+//! [`Ump`]s in [`Beat`]s.
 
 use std::path::Path;
 
 use midly::Smf;
 use midly::live::LiveEvent;
 use tutti_midi_types::ump::flex_tempo_bpm;
-use tutti_midi_types::{MidiEvent, ParsedClipFile, normalize};
+use tutti_midi_types::{ParsedClipFile, from_midi1_bytes, normalize};
 use tutti_types::{Beat, Bpm, Seconds};
+use tutti_ump::Ump;
 
 use crate::smf::{ParsedMidiFile, SmfTrack, tracks_of};
 use crate::{Error, MidiFileKind, Result};
@@ -29,6 +30,7 @@ use crate::{Error, MidiFileKind, Result};
 /// ```
 /// use tutti_types::Beat;
 /// use tutti_ump::MidiChannel;
+/// use tutti_midi_types::MidiMessage;
 /// use tutti_midi_file::{smf, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 ///
 /// let bytes = smf::to_bytes(
@@ -44,7 +46,7 @@ use crate::{Error, MidiFileKind, Result};
 /// let (beat, note) = file.iter().next().expect("one note");
 /// assert_eq!(beat, Beat(2.0));
 /// // Widened to MIDI 2.0: full-scale 7-bit velocity is full-scale 16-bit.
-/// assert_eq!(note.velocity_u16(), Some(0xFFFF));
+/// assert_eq!(MidiMessage::from_ump(note).velocity(), Some(0xFFFF));
 /// assert_eq!(file.end_beat(), Beat(2.0));
 /// # Ok::<(), tutti_midi_file::Error>(())
 /// ```
@@ -180,7 +182,7 @@ impl MidiFile {
     /// track's name is in its tracks); a Clip File every UMP in its sequence,
     /// Flex Data (a Set Tempo, a time signature) included. The tempo map is not
     /// applied.
-    pub fn iter(&self) -> impl Iterator<Item = (Beat, MidiEvent)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (Beat, Ump)> + '_ {
         let (smf, clip) = match self {
             Self::Smf(smf) => (Some(smf), None),
             Self::Clip(clip) => (None, Some(clip)),
@@ -198,7 +200,7 @@ impl MidiFile {
                 }
                 .write(&mut wire)
                 .ok()?;
-                let event = MidiEvent::from_midi1_bytes(0, &wire)?;
+                let event = from_midi1_bytes(&wire)?;
                 Some((e.time_beats, normalize(&event)))
             })
         });

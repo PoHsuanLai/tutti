@@ -639,7 +639,7 @@ mod tests {
         rendered: &mut u64,
     ) -> Vec<(u32, u64)> {
         let mut out = Vec::new();
-        let mut buf = [tutti_midi_types::ump::MidiEvent::noop(); 64];
+        let mut buf = [(0_u32, tutti_ump::Ump([0; 4])); 64];
         for _ in 0..blocks {
             stream.render_block(frames).expect("the stream is open");
             let n = app
@@ -653,7 +653,7 @@ mod tests {
             out.extend(
                 buf[..n]
                     .iter()
-                    .map(|e| ((e.data[0] >> 16) & 0xFF, u64::from(e.frame_offset))),
+                    .map(|(stamp, ump)| ((ump.0[0] >> 16) & 0xFF, u64::from(*stamp))),
             );
             *rendered += frames as u64;
             app.update();

@@ -264,7 +264,7 @@ impl MidiEndpoints for Refuses {
     ) -> Result<Box<dyn InputConnection>> {
         Err(Error::MidiDevice("refused".into()))
     }
-    fn open_output(&self, _: EndpointId) -> Result<Box<dyn tutti_midi_types::MidiOut>> {
+    fn open_output(&self, _: EndpointId) -> Result<Box<dyn tutti_midi_runtime::MidiOut>> {
         Err(Error::MidiDevice("refused".into()))
     }
 }

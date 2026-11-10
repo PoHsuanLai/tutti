@@ -74,11 +74,11 @@ impl SoundFontUnit {
 mod tests {
     use std::sync::Arc;
 
+    use tutti_fixtures::midi;
     use tutti_graph::contract::drive_input;
     use tutti_graph::{
         Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, Transport, TransportChanges,
     };
-    use tutti_midi_types::ump::MidiEvent;
     use tutti_types::{SampleRate, Samples};
     use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
 
@@ -114,9 +114,9 @@ mod tests {
     /// at frame 0.
     fn render(mut node: Box<dyn Node>, rate: SampleRate, frames: usize) -> Vec<f32> {
         node.prepare(&Prepare::new(rate, Samples(64)));
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+        let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
         let at = Offset::new(0, Samples(64)).expect("inside");
-        let first = [Event::midi(at, note.data)];
+        let first = [Event::midi(at, note.0)];
         let mut out = Vec::with_capacity(frames);
         let mut frame = 0u64;
         while out.len() < frames {

@@ -12,7 +12,7 @@ use tutti_graph::{
     Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, MissingSource,
     Node, NodeParts, Op, TapReader, Transport,
 };
-use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId};
+use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
 use tutti_types::{Beat, Bpm, ChannelLayout, Samples};
 
 #[global_allocator]
@@ -757,7 +757,7 @@ fn opening_an_id_again_replaces_the_tap() {
     );
 }
 
-/// A tap's lanes are fixed by how it was opened: editing `TapSpec::sources` to
+/// A tap's lanes are fixed by how it was opened: editing `TapSpec::Ports`' sources to
 /// another length through the spec is refused at the commit (the writer the
 /// executor holds has that many rings), and opening the id again at another
 /// width replaces the tap at the new one, lanes and all.
@@ -771,13 +771,11 @@ fn a_tap_cannot_change_its_width_under_its_writer() {
         r.ed.open_tap(TapId(1), r.gains[..3].to_vec(), TapAlign::Raw, Samples(64))
             .expect("the sources exist");
     commit(&mut r);
-    r.ed.spec_mut()
-        .topology
-        .taps
-        .get_mut(&TapId(1))
-        .expect("open")
-        .sources
-        .push(Source::Zero);
+    let Some(TapSpec::Ports { sources, .. }) = r.ed.spec_mut().topology.taps.get_mut(&TapId(1))
+    else {
+        panic!("a ports tap")
+    };
+    sources.push(Source::Zero);
     assert_eq!(
         r.ed.commit(),
         Err(tutti_graph::CommitError::TapWidth {

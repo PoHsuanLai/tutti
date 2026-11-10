@@ -148,7 +148,7 @@ pub enum CommitError {
     Fade(VerifyError),
     /// A tap's lanes in the spec no longer match the width it was opened
     /// with ([`Editor::open_tap`] fixed the reader's and the writer's width
-    /// there): the spec's `TapSpec::sources` was edited. Nothing was sent.
+    /// there): the spec's `TapSpec::Ports` sources were edited. Nothing was sent.
     /// Close the tap and open another to change its width.
     TapWidth {
         /// The tap.
@@ -596,7 +596,48 @@ impl Editor {
         self.spec_mut()
             .topology
             .taps
-            .insert(id, TapSpec { sources, align });
+            .insert(id, TapSpec::Ports { sources, align });
+        Ok(reader)
+    }
+
+    /// Declares a tap on the graph's global outputs, `width` lanes, and
+    /// returns its reader: lane `c` is output channel `c` **post-sum and
+    /// aligned** ([`TapSpec::Outputs`]), so a channel several sources feed is
+    /// heard whole, at the output's time. The tap follows the outputs when
+    /// they are re-wired; its width is fixed here, a lane past the output
+    /// count reads silence. Otherwise as [`open_tap`](Self::open_tap): taken
+    /// at the next commit, opening an id again replaces it, and it sees the
+    /// signal before the engine's declick fader. Only the open is checked:
+    /// every source an output names must exist now, as for a ports tap.
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] naming the first output source that is not in the
+    /// spec now.
+    pub fn open_output_tap(
+        &mut self,
+        id: TapId,
+        width: usize,
+        capacity: Samples,
+    ) -> Result<TapReader, MissingSource> {
+        let named: Vec<Source> = self
+            .spec
+            .topology
+            .outputs
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        self.check_sources(&named)?;
+        let (reader, writer) = TapReader::pair(id, width, capacity);
+        self.pending_taps.retain(|(k, _)| *k != id);
+        self.pending_taps.push((id, writer));
+        self.tap_readers
+            .insert(id, (reader.width(), reader.watch()));
+        self.spec_mut()
+            .topology
+            .taps
+            .insert(id, TapSpec::Outputs { width });
         Ok(reader)
     }
 
@@ -645,10 +686,10 @@ impl Editor {
     fn check_tap_widths(&self) -> Result<(), CommitError> {
         for (&tap, spec) in &self.spec.topology.taps {
             match self.tap_readers.get(&tap) {
-                Some(&(opened, _)) if opened != spec.sources.len() => {
+                Some(&(opened, _)) if opened != spec.lanes() => {
                     return Err(CommitError::TapWidth {
                         tap,
-                        sources: spec.sources.len(),
+                        sources: spec.lanes(),
                         opened,
                     });
                 }
@@ -1514,9 +1555,11 @@ impl Editor {
         // A key is the author's and can be inserted again after a removal, so
         // a tap left naming it would read the new node.
         for spec in t.taps.values_mut() {
-            for s in &mut spec.sources {
-                if matches!(s, Source::Node(p) if p.node == key) {
-                    *s = Source::Zero;
+            if let TapSpec::Ports { sources, .. } = spec {
+                for s in sources {
+                    if matches!(s, Source::Node(p) if p.node == key) {
+                        *s = Source::Zero;
+                    }
                 }
             }
         }

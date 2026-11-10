@@ -110,9 +110,9 @@ those are doctests, so they are checked on every build.
 ## Two rules worth knowing before you read further
 
 **Wiring is declared, not called.** A node is spawned unwired; a resource names
-what feeds each input port. The graph holds exactly one source per input, and
-so does the declaration — which is what makes accidental fan-in unrepresentable.
-Summing is a node's job.
+what feeds each input port. The graph holds a set of sources per input and
+sums them (doc 013, "Audio fan-in sums"); the parked Bevy adapter's declaration
+still names one source per port.
 
 **Quantities carry their units.** `Hz`, `Db`, `Beat`, `Samples` and the rest are
 newtypes, not `f32` aliases, and the conversions between them are named methods

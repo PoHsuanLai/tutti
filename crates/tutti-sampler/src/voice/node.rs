@@ -178,7 +178,14 @@ impl VoiceNode {
         }
         // Both halves of the gain: `Playback` is what the memory tier's read
         // scales by, the source's own cell what the disk tier's does.
+        // A cell holding a NaN or an infinity (a host can write anything into
+        // it) is the gain the voice already has.
         let gain = driven.map_or_else(|| self.gain.load(), |v| Amplitude(v.max(0.0)));
+        let gain = if gain.get().is_finite() {
+            gain
+        } else {
+            self.slot.voice.play.gain
+        };
         if gain != self.slot.voice.play.gain {
             self.slot.voice.play.gain = gain;
             self.slot.voice.source.apply_gain(gain);

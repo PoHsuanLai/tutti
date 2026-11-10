@@ -3,17 +3,13 @@
 
 use tutti_types::{MaxBlock, SampleRate, Samples};
 
-use super::Channels;
-
-/// What a realization is prepared for: the rate, the longest block and the widths.
+/// What a realization is prepared for: the rate, and the longest block.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Setup {
     /// The rate every block runs at.
     pub rate: SampleRate,
     /// The longest block [`Effect::process`] is handed.
     pub max_block: MaxBlock,
-    /// The input and output widths.
-    pub channels: Channels,
 }
 
 /// How costly a realization is to run, in the three classes a graph schedules by.

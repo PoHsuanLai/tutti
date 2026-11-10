@@ -924,10 +924,6 @@ mod realization_tests {
             &Setup {
                 rate,
                 max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
-                channels: Channels {
-                    input: tutti_types::ChannelLayout::MONO,
-                    output: tutti_types::ChannelLayout::STEREO,
-                },
             },
         );
         assert_eq!(realization.figures().comb, want);

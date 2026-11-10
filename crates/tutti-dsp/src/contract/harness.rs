@@ -19,11 +19,10 @@ pub const WINDOW: usize = 1024;
 /// What a realization of `d` is prepared for at `rate`: its widths and the
 /// longest block of the cases.
 #[must_use]
-pub fn setup<D: Design>(d: &D, rate: SampleRate) -> Setup {
+pub fn setup(rate: SampleRate) -> Setup {
     Setup {
         rate,
         max_block: MaxBlock::of(Samples(MAX_BLOCK)),
-        channels: d.channels(),
     }
 }
 
@@ -34,7 +33,7 @@ pub fn built<D: DesignCase>(
     rate: SampleRate,
 ) -> (D::Realization, D::Model) {
     let mut k = d.realization();
-    k.prepare(&d.bounds(&d.ceiling(rate)), &setup(d, rate));
+    k.prepare(&d.bounds(&d.ceiling(rate)), &setup(rate));
     let model = d.design(controls, rate);
     k.retarget(&model);
     (k, model)

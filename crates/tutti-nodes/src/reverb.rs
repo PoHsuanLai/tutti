@@ -323,7 +323,6 @@ impl<D: NodeDesign> DesignNode<D> {
             &Setup {
                 rate: self.rate,
                 max_block,
-                channels: self.channels,
             },
         );
         self.applied = None;

@@ -978,10 +978,6 @@ mod tests {
             &Setup {
                 rate,
                 max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
-                channels: Channels {
-                    input: ChannelLayout::MONO,
-                    output: ChannelLayout::STEREO,
-                },
             },
         );
         let net = d.design(
@@ -1045,10 +1041,6 @@ mod tests {
             &Setup {
                 rate,
                 max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
-                channels: Channels {
-                    input: ChannelLayout::MONO,
-                    output: ChannelLayout::STEREO,
-                },
             },
         );
         let at = |diffusion: f32, freeze: bool| {

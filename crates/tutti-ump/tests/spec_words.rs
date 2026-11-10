@@ -404,6 +404,32 @@ fn midi2_per_note_and_controllers() {
     );
 }
 
+// M2-104 section 7.4: the messages that address a note (statuses 0x0, 0x1, 0x6,
+// 0x8, 0x9, 0xA and 0xF) carry it in byte 3 of the first word, here 60; the
+// channel-wide ones (statuses 0x2 to 0x5, 0xB to 0xE) have no note, whatever
+// their byte 3 holds.
+//
+// Mutation record: a note-addressed arm of `Voice2::note` moved to `None` (the
+// Per-Note Management one, the Per-Note Pitch Bend one) -> the packet at that
+// status fails; a channel-wide arm answering `Some` -> likewise.
+#[test]
+fn the_note_a_message_addresses() {
+    let words = |status: u32| [0x4100_0000 | status << 20 | 0x2_0000 | 60 << 8, 0, 0, 0];
+    // Status 0x7 is undefined (Table 30).
+    for status in (0x0..=0xF).filter(|&status| status != 0x7) {
+        let voice = match decode(Ump(words(status))) {
+            Ok(Message::Midi2(_, voice)) => voice,
+            other => panic!("status {status:#x}: {other:?}"),
+        };
+        let addresses_a_note = matches!(status, 0x0 | 0x1 | 0x6 | 0x8 | 0x9 | 0xA | 0xF);
+        assert_eq!(
+            voice.note(),
+            addresses_a_note.then(|| note(60)),
+            "status {status:#x}: {voice:?}"
+        );
+    }
+}
+
 // Figure 64: word 1 option flags in 7-0 with the Bank Valid bit B at bit 0;
 // word 2 is program (30-24), bank MSB (14-8), bank LSB (6-0).
 #[test]
@@ -817,8 +843,8 @@ fn stream_function_blocks() {
     );
 }
 
-// Findings of the `midi2` oracle that are about the specification, not about
-// the oracle: each is pinned here with words from the figures and tables.
+// Cases the former `midi2` oracle found that are about the specification, not
+// about that crate: each is pinned here with words from the figures and tables.
 #[test]
 fn what_the_oracle_found() {
     let f = |f| Message::Flex(g(6), f);

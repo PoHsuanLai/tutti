@@ -15,9 +15,25 @@ use tutti_midi_file::{
     ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage,
     SmfTimedEvent, smf, write_clip_file_from_beats, write_clip_file_with_header,
 };
-use tutti_midi_types::MidiMessage;
+use tutti_midi_protocol::channel_voice;
 use tutti_types::{Beat, Bpm, Seconds};
-use tutti_ump::{Flex, Message, MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Flex, KeyEvent, Message, MidiChannel, MidiGroup, Ump, Voice2};
+
+/// The note a packet starts or ends, either protocol.
+fn note_of(ump: Ump) -> Option<u8> {
+    match ump.key_event()? {
+        KeyEvent::On(key) | KeyEvent::Off(key) => Some(key.note()),
+        KeyEvent::Sustain { .. } => None,
+    }
+}
+
+/// The velocity of a note-on or note-off, as MIDI 2.0.
+fn velocity_of(ump: Ump) -> Option<u16> {
+    match channel_voice(ump)?.1 {
+        Voice2::NoteOn { velocity, .. } | Voice2::NoteOff { velocity, .. } => Some(velocity),
+        _ => None,
+    }
+}
 
 /// A Set Tempo (M2-104 section 7.5.3) of `bpm`, written as its field: 10 ns
 /// units per quarter note, 6e9 / bpm.
@@ -71,7 +87,7 @@ fn smf_bytes() -> Vec<u8> {
 /// `0xFFFF` and `0x8000`.
 ///
 /// Mutation (run): `iter`'s SMF arm returning the parsed event without
-/// `normalize` (MIDI 1.0 Channel Voice, 7-bit) → the lists differ → fails.
+/// `as_midi2` (MIDI 1.0 Channel Voice, 7-bit) → the lists differ → fails.
 /// Mutation (run): the SMF arm dropping the second track's channel-3 events
 /// (a `filter` on channel 0 before the conversion) → fails.
 #[test]
@@ -108,7 +124,7 @@ fn an_smf_and_a_clip_file_of_the_same_notes_yield_the_same_events() {
     assert_eq!(from_smf.len(), 4, "every channel message of both tracks");
     assert_eq!(from_smf, from_clip);
     assert_eq!(
-        MidiMessage::from_ump(from_smf[0].1).velocity(),
+        velocity_of(from_smf[0].1),
         Some(0xFFFF),
         "7-bit 127 widens to full-scale 16-bit"
     );
@@ -128,7 +144,7 @@ fn a_note_on_at_tick_480_of_a_480_ppq_file_lands_at_beat_one() {
     .expect("decodes");
     let timed: Vec<(Beat, Ump)> = file.iter().collect();
     assert_eq!(timed[0].0, Beat(1.0));
-    assert_eq!(MidiMessage::from_ump(timed[0].1).note(), Some(60));
+    assert_eq!(note_of(timed[0].1), Some(60));
     assert_eq!(timed[1].0, Beat(2.0));
     assert_eq!(file.end_beat(), Beat(2.0), "the last event, the note-off");
 }
@@ -405,14 +421,13 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
     assert_eq!(program.words()[1] >> 24, 5);
 
     let (_, on) = timed[3];
-    let on_msg = MidiMessage::from_ump(on);
-    assert!(on_msg.is_note_on());
-    assert_eq!(on_msg.velocity(), Some(512));
+    assert!(matches!(on.key_event(), Some(KeyEvent::On(_))));
+    assert_eq!(velocity_of(on), Some(512));
 
     let (at, off) = timed[4];
     assert_eq!(at, Beat(1.75));
     assert!(
-        off.is_note_off() && !MidiMessage::from_ump(off).is_note_on(),
+        off.is_note_off() && !matches!(off.key_event(), Some(KeyEvent::On(_))),
         "{off:?}"
     );
     assert_eq!(op(&off), (0x4, 0x8), "an explicit MIDI 2.0 note-off");
@@ -473,10 +488,7 @@ fn a_non_finite_beat_sorts_without_moving_a_clip() {
         ],
     );
     let clip = MidiFile::from_bytes(&bytes).expect("the clip decodes");
-    let got: Vec<(Beat, Option<u8>)> = clip
-        .iter()
-        .map(|(b, e)| (b, MidiMessage::from_ump(e).note()))
-        .collect();
+    let got: Vec<(Beat, Option<u8>)> = clip.iter().map(|(b, e)| (b, note_of(e))).collect();
     assert_eq!(
         got,
         vec![
@@ -488,4 +500,42 @@ fn a_non_finite_beat_sorts_without_moving_a_clip() {
         ],
         "finite beats in order, each non-finite one at a zero delta"
     );
+}
+
+/// **A Note On at velocity 0 is a Note Off** (MIDI 1.0 Detailed Specification,
+/// Channel Voice Messages: "a Note On with a velocity of 0 is a Note Off"; the
+/// running-status idiom of an SMF ends its notes this way). `MidiFile::iter`
+/// yields it as the MIDI 2.0 Note Off of the same key, release velocity 0 (as
+/// a Clip File's own Note Off at zero), and a Note On at the lowest nonzero
+/// velocity stays a Note On.
+///
+/// Mutation (run): drop the velocity-0 arm of `as_midi2` in `file.rs`
+/// (`widen_message` alone) -> the Note Off is released at `0x8000` -> fails.
+#[test]
+fn an_smf_note_on_at_velocity_zero_is_a_note_off() {
+    let smf = MidiFile::from_bytes(&metrical(&[vec![
+        RawEvent::note_on(0, 0, 60, 1),
+        RawEvent::note_on(BEAT, 0, 60, 0),
+    ]]))
+    .expect("decodes");
+    let events: Vec<Ump> = smf.iter().map(|(_, e)| e).collect();
+    let (g, c) = (MidiGroup::FIRST, MidiChannel::FIRST);
+    assert_eq!(events, [note_on(g, c, 60, 512), note_off(g, c, 60, 0)]);
+    assert!(events[1].is_note_off());
+}
+
+/// A Clip File's MIDI 2.0 Note On at velocity 0 is yielded as a Note Off at 0:
+/// what `iter` did before the fold was spelled in the reader. M2-104 section
+/// 7.4.2 reads such a Note On as a note, so this pins a choice of this reader,
+/// not the specification; it changes only on purpose.
+///
+/// Mutation (run): drop the `Voice2::NoteOn` arm of `as_midi2` -> the Note On
+/// comes through as it was written -> fails.
+#[test]
+fn a_clip_note_on_at_velocity_zero_is_yielded_as_a_note_off() {
+    let (g, c) = (MidiGroup::FIRST, MidiChannel::FIRST);
+    let clip = write_clip_file_from_beats(TPQ, [(Beat(0.0), note_on(g, c, 60, 0))]);
+    let clip = MidiFile::from_bytes(&clip).expect("the clip decodes");
+    let events: Vec<Ump> = clip.iter().map(|(_, e)| e).collect();
+    assert_eq!(events, [note_off(g, c, 60, 0)]);
 }

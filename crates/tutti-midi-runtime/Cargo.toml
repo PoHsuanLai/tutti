@@ -18,7 +18,6 @@ workspace = true
 default = []
 
 [dependencies]
-tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types" }
 # The graph's node contract and event ports: `MidiClipNode` is an event
 # source node. No cycle: tutti-graph names no MIDI crate.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }

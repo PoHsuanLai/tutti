@@ -126,8 +126,8 @@ Depends on `tutti-types` ([`Samples`], [`ChannelLayout`], [`ChannelTopology`], t
 meter vocabulary), `tutti-graph` (`Offset`), `tutti-rt`, `tutti-ump` and
 `tutti-midi-protocol`, re-exporting the parts format crates need so none of them takes its
 own dependency for the type names. It holds `PerNoteBendRanges`, the per-note pitch-bend
-ranges the CLAP and VST3 hosts track (moved from `tutti-midi-types`, whose one users they
-were); no plugin crate depends on `tutti-midi-types`.
+ranges the CLAP and VST3 hosts track (the one type the deleted `tutti-midi-types` held
+that they used).
 All four format hosts and `tutti-plugin` depend on it.
 
 ## Features

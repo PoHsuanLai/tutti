@@ -1,8 +1,7 @@
 use super::*;
 use tutti_fixtures::midi::note_on;
 use tutti_graph::UmpAt;
-use tutti_midi_types::MidiMessage;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{KeyEvent, MidiChannel, MidiGroup};
 
 /// An event at `offset`, which may lie past the 64-frame block the placement
 /// test uses: it is built against a longer one.
@@ -31,7 +30,15 @@ fn sorts_stably_and_places_late_offsets_last() {
     in_offset_order(&mut v);
     let got: Vec<(u8, u32)> = v
         .iter()
-        .map(|e| (MidiMessage::from_ump(e.1).note().unwrap(), e.0.get()))
+        .map(|e| {
+            (
+                match e.1.key_event() {
+                    Some(KeyEvent::On(key) | KeyEvent::Off(key)) => key.note(),
+                    other => panic!("a note, got {other:?}"),
+                },
+                e.0.get(),
+            )
+        })
         .collect();
     assert_eq!(got, vec![(3, 0), (0, 5), (1, 10), (2, 10), (4, 900)]);
     assert_eq!(offset_of(&v[4], Samples(64)).get(), 63);

@@ -360,9 +360,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
-                 `frame` and `Midi1Parser`, the status bytes the hosts use
-                 (`tutti-midi-types`' `wire.rs` holds its own until the MIDI
-                 lane deletes it), `NoteId` (`channel * 128 + note`),
+                 `frame` and `Midi1Parser` (the one reader of MIDI 1.0 bytes, framing and
+                 completing them into `Message`s), the status bytes the hosts use,
+                 `NoteId` (`channel * 128 + note`),
                  `split_stream` (a buffer of concatenated packets into `Ump`s by
                  Table 4, the one walker), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
@@ -430,14 +430,15 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-soundfont (the SoundFont player: the node, the voices, the patch that
                  turns a note into voices; it executes `tutti-voicing`'s
                  commands), tutti-sf2 (the SoundFont 2 file as data)
-  tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
+  tutti-midi-{runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only). The Clip File codec
                  (both halves) is `tutti-midi-file`'s; the inbound sync decoders
                  (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`) are
-                 `tutti-midi-runtime`'s, beside `ClockMaster`; `tutti-midi-types` is
-                 shrinking away (design 017 stage 5b: it holds `MidiMessage` and
-                 `translation/` until part (c), and no re-export of `midi2`, `midly`,
-                 `ArcLend` or the units)
+                 `tutti-midi-runtime`'s, beside `ClockMaster`. `tutti-midi-types` and the
+                 `midi2` dependency are gone (design 017 stage 5b): the decoded message
+                 is `tutti_ump::Message`, MIDI 1.0 bytes in are `Midi1Parser`, bytes out
+                 are `tutti_midi_protocol::midi1`, and no crate re-exports `midi2`,
+                 `midly`, `ArcLend` or the units
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
                  control socket, the plugin-server's launch, and the
@@ -467,7 +468,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 
 0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
-2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-midi-types`, `tutti-metering`,
+2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
 4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,

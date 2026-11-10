@@ -101,8 +101,6 @@ tutti-sf2 = { path = "../tutti-sf2" }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
-# `MidiMessage`, the decoded view the MIDI tests read events with.
-tutti-midi-types = { path = "../tutti-midi-types" }
 # `ArcLend` for the tests that publish into a graph.
 tutti-rt = { path = "../tutti-rt" }
 # The tempo map a sampler test publishes through the transport.

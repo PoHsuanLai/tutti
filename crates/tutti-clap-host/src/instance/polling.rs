@@ -14,8 +14,6 @@ use crate::types::{
 };
 use std::sync::Arc;
 use tutti_clap_ffi::GuiError;
-#[cfg(feature = "clap-extras")]
-use tutti_clap_ffi::chars_to_string;
 #[cfg(unix)]
 use tutti_clap_ffi::{Extension, FdPoller};
 use tutti_plugin_types::MainThread;
@@ -267,7 +265,6 @@ impl ClapLoaded {
     /// acknowledge the gui destruction", and the spec's own lifecycle pairs
     /// `destroy` (step 14) with `create` (step 2), so it releases the gui
     /// resources `create` allocated rather than the window that just closed.
-    /// Skipping it leaked those resources for the instance's lifetime.
     pub fn close_editor(&mut self, main: &MainThread) {
         self.destroy_editor(main);
     }
@@ -507,9 +504,9 @@ impl ClapLoaded {
             .plugin
             .remote_controls_page(main, u32::try_from(index).ok()?)?;
         Some(RemoteControlsPage {
-            section_name: chars_to_string(&page.section_name),
+            section_name: page.section_name,
             page_id: page.page_id,
-            page_name: chars_to_string(&page.page_name),
+            page_name: page.page_name,
             param_ids: page.param_ids,
             is_for_preset: page.is_for_preset,
         })
@@ -554,8 +551,8 @@ impl ClapLoaded {
         Some(TriggerInfo {
             id: info.id,
             flags: info.flags,
-            name: chars_to_string(&info.name),
-            module: chars_to_string(&info.module),
+            name: info.name,
+            module: info.module,
         })
     }
 

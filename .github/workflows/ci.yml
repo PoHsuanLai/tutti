@@ -104,7 +104,7 @@ jobs:
       # And `tutti-plugin-db`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-dsp`: its modules are private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_dsp allpass buffer control convolver delay dither dynamics error fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
+      - run: scripts/check-canonical-paths.sh tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
       # And `tutti-measure`, which keeps its modules private too.
       - run: scripts/check-canonical-paths.sh tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
@@ -217,6 +217,7 @@ jobs:
         run: |
           cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
       # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
@@ -390,6 +391,7 @@ jobs:
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings

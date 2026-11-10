@@ -24,7 +24,7 @@ workspace = true
 # lean. Consumed extensions (audio/note ports, params, state, gui, latency,
 # voice-info, render-mode, note-names) are always on.
 default = []
-clap-extras = []
+clap-extras = ["tutti-clap-ffi/clap-extras"]
 
 [dependencies]
 bitflags = "2"

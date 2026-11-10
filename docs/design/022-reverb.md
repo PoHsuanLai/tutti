@@ -762,6 +762,186 @@ the network's -60 dB figure, the old one).
   and `Ceiling::max_decay` is not yet a node build parameter (the node uses the
   default 8 s).
 
+### Step 1c as built
+
+The FDN, `UnitParam::Freeze` (id 27) and `ReverbKind`. Where the code made a
+decision the text leaves open, or overrode it; the last two lists are what the
+FDN teaches about the trait shape, for doc 024's step 1.
+
+**API.** `tutti-dsp`: `FdnDesign` (`new(lines, max_decay, freezable)`, `lines`
+even from 2 to 16, `Default` is 8 lines, 8 s, not freezable), `FdnControls`
+(`decay: [mid, low, high]`, `size`, `diffusion`, `pre_delay`, `modulation`,
+`rate`, `width`, `wet`, `freeze`; `DEFAULT`), `FdnKernel`, and
+`Matrix::Reflection`. `tutti-nodes`: `FdnNode = ReverbNode<FdnDesign>`,
+`FdnParams`, `ReverbKind { Freeverb, Fdn(FdnDesign) }` with `spawn()` giving a
+`SpawnedReverb`, and the designs and controls that sit in a node's signature
+re-exported (`FdnDesign`, `FdnControls`, `FreeverbDesign`, `FreeverbControls`).
+`ReverbParams::addrs` is a method and `ReverbParams::new` moved to
+`ReverbDesign::params(&self, initial)`, because the FDN's ports depend on the
+design (the freeze is a port only where the design can freeze). The session
+registers `FdnNode` (`tutti-session` `param_session_node!`).
+
+**Deviations from the text.**
+
+- **Diffusion is a reflection vector, not a Hadamard switch; Hadamard is not
+  shipped.** `A = I - 2 v v^T` with `v` a unit vector that leans from one axis
+  (`diffusion` 0: no line feeds another, the network says `Diagonal`) to the flat
+  `1/sqrt(N)` (`diffusion` 1: `Householder`), `Matrix::Reflection(v)` between.
+  It is orthogonal at every setting, so a loop never gains and a freeze is
+  lossless anywhere, and it is continuous, so a diffusion step ramps (a Hadamard
+  has no path from the identity that stays orthogonal). The model gained one
+  variant: orthogonality is measured (`4 ||v|^2 - 1| max v_i v_j`) and the norm
+  is exact (`max(1, |1 - 2|v|^2|)`), not the generic `sqrt(1 + n e)`, which at
+  `e` = a rounded `f32` entry's error made a unit `v` look 5% slower to decay.
+  `echo_density` still jumps between `Diagonal` and any mixing matrix; the
+  contract orders it (0 against 0.5 and 1), as 1a's does.
+- **The crossovers are fixed (300 Hz, 4 kHz), not `Cutoff` controls.** They
+  are in the network (`Absorption::Bands.crossover`) and the kernel reads them
+  from it, so a design that sets them is one line; none does yet.
+- **Mono in, stereo out; even lines to the left, odd to the right.** The width
+  is the kernel's mid/side on the two outputs, so `0` is exact mono and `1` is
+  the unwidened sum.
+- **Freeze is opt-in (`freezable`).** A design that can freeze has an unbounded
+  tail ceiling (`Bounds::tail` is `Unbounded`), so every export of its node
+  spends the whole cap (§12.4: export spends the ceiling). A reverb that cannot
+  freeze keeps a finite ceiling, and its freeze control is not a port.
+  `Bounds::tail` carries a margin for the rounding of the reflection vector:
+  its entries are rounded twice (stored, then divided by the norm), 2^-23
+  relative, so `|v|^2` is 1 to within 2^-22 and `|A| <= 1 + 2^-21`; `rt60_bound` applies the norm every frame (its
+  proof's step), against a decay of `3 / (RT60 fs)` decades a frame, so the
+  bound reads a decay slower by `x = 2 e / ln 10 * RT60 fs / 3` and the tail
+  grows by `1 / (1 - x)`: 0.5% at 8 s and 44.1 kHz, 11% at 192 kHz
+  (`FdnDesign::rounding_margin`, computed, not a flat figure).
+- **Line lengths are whole frames** (rounded from a table of values near primes,
+  scaled by `0.5 + size` and the rate), so a settled network delays by whole
+  frames and a frozen one reads no fraction. Freezing turns the modulation off
+  for the same reason.
+- **The node's tail follows a thaw.** An unbounded ring that stops being
+  unbounded rings out from that block (`ring = current`, `since = 0`), where 1b's
+  rule would have kept `u64::MAX - elapsed` for good and never parked.
+
+**The kernel.** `N` delay lines read with linear interpolation, a three-band
+absorption in each loop (`y = g_high x + (g_mid - g_high) L2(x) + (g_low - g_mid)
+L1(x)`, `L1` and `L2` two cascaded one-poles at the crossovers: linear in the
+gains, so a ramp of the gains is a ramp of the filter, and the identity when
+every gain is 1), the reflection, and the pre-delay, width and wet gain read
+from the network. The wet signal is the lines' own outputs before their
+absorption, so nothing sounds before the shortest line has gone round.
+`effort` is `Moderate`: 2.8 us for 64 frames in release (22 ns a frame and
+channel), against Freeverb's 2.4 us.
+
+**Retargeting ramps (`retarget` only sets targets).** Every sounding parameter
+(each line's three loop gains, the reflection vector, the input and output
+gains, the wet gain, the width, the modulation depth) is a `Slew` that moves to
+its target in 20 ms of whole 32-frame chunks and lands on it exactly (so a freeze
+is exactly lossless once it has arrived). The reflection vector is renormalised to
+its length every chunk (a straight line between two unit vectors dips to
+`|v|^2` of 0.68 at 8 lines, and `I - 2 v v^T` of it is a contraction), so the
+matrix is orthogonal at every step of a ramp and a frozen tail keeps its energy
+through a diffusion move (`a_diffusion_ramp_keeps_a_frozen_tails_energy`); a
+diagonal network is the reflection along line 0, a sign on one line, so the
+ramp from it is a ramp of unit vectors. A size move lands over seconds by
+design: half a frame per chunk, about 6 s for the longest line going 0 to 1,
+to keep a sweep free of pitch artefacts; a line's length moves at most half a
+frame a chunk (a pitch bend of 27 cents), the pre-delay two. The chunk counter
+runs from the last reset, not from a block's edge, so blocks of 1, 17, 64 and
+512 render bit for bit alike. The first `retarget` after `prepare` (and a
+`reset` or `fresh`) lands at once, so a kernel built at a network is at it.
+
+**The kernel contract on the FDN, no vacuous hook.** 19 cases run on
+`FdnDesign` (freezable, 8 lines): 1b's twelve, `line_lengths` and six new; `FdnDesign` runs the design
+contract twice (freezable and not). New cases, each with the defect it must fail
+(`a_defective_fdn_fails_its_case`): `line_lengths` (every line's first echo at
+`pre_delay + length`; the last line 5% long, inside the RT60 tolerance),
+`pre_delay` (the first sound moves by exactly its frames, `latency()` unchanged;
+pre-delay dropped), `size` (a bigger room sounds later; all lines one length),
+`diffusion` (more diffusion fills at least 0.15 more of the frames of the
+0.15 to 0.3 s window; no mixing), `freeze` (neither growth nor loss beyond 0.25
+dB in 8 s, and no input reaches it; a loop gain of 0.998, an open input),
+`width` (natural: correlation under 0.3; none: over 0.999; width ignored),
+`wet_gain` (the level ratio to 2%, an exact zero for -inf; wet gain ignored).
+`no_hook_of_the_fdn_is_vacuous` fails if a hook returns nothing. Freeverb still
+leaves those hooks empty (it has none of those controls).
+
+What changed in the harness, and why:
+
+- **Tolerance 15%.** The band decays measure within 0.3% (low), 3 to 6% over
+  (high) and 4 to 12% under (mid), the mid because the first-order skirts of the crossovers leak
+  the neighbouring bands' gains into a tone at 1.1 kHz. A second-order split
+  would halve it.
+- **The fit is deep and the windows long.** A comb bank decays in steps (a line
+  at a time), and a 1024-frame window measures where the steps fall: parallel
+  combs (`diffusion` 0) measured 40% slow. Windows are twice the longest line,
+  stepping by 1024, fitted from 20 to 100 dB down (`KernelCase::fit_depth`;
+  Freeverb keeps 40 to 65, where its flush of values under 1e-6 starts).
+- **`arrival`, `wet_only`, `latency` and `line_lengths` run on `static_probes`**
+  (no modulation): a modulated line sounds off its centre figure. 1b's `arrival`
+  summed `pre_delay` and `min_delay`, which already includes it (the pre-delay
+  was 0 until now).
+- **`click_free` plays a 150 Hz tone and allows 3 times the steady jump.** Noise
+  hid a jump in a delay line (its steady jumps are as large as any click); the
+  tone made a gain taken whole and a length taken whole fail (checked by hand:
+  `ramp_chunks = 1`, `LENGTH_STEP = 1e6`, `PRE_STEP = 1e6`). The factor went from
+  1.5 to 3 because Freeverb's tone reaches 2 times the steady jump at a step of
+  its loop gain; the 4-times gain defect still fails it by a wide margin, and so does a
+  modest unslewed 1.5 times (both kernels' tests run it). Measured steady-jump
+  multiples of the clean kernels: Freeverb 1.98, the FDN 1.51, so 3 leaves each
+  clean kernel a margin of 1.5 (Freeverb) and 2 (the FDN) over what it measures.
+- **The stability case's bound** is `|B| m / (1 - g)` times `|C|`, the width and
+  the wet gain (loose, but a runaway gain is infinite); the grid peak scan in
+  `retarget` is what keeps a non-monotone set of band gains from exceeding 1
+  (checked: removing the scaling fails `kernel_contract_stability`).
+
+**What the FDN found in the modulation design (§10 against the code).**
+
+- **Linear interpolation takes the top band when a line is modulated.** The
+  decay at Nyquist, measured with the modulation at a depth of 0.5, was 0.46 s
+  for a requested 1.2 s: a fractional delay of one half cancels a tone at
+  Nyquist, and the modulation visits every fraction. §3.1's "a fraction of a
+  percent" is true of the low and mid bands and false of the highest. The band
+  cases measure unmodulated; `tail_covers` keeps the modulation (a shorter ring is
+  covered). A better read (all-pass or Hermite) is the remedy.
+- **Design cost is small; `retarget` can be large.** In release, `design_into`
+  288 ns, `Network::tail` 423 ns, `retarget` 71 ns. The first `retarget` measured
+  15.6 us, because it scanned the response of every line for a peak above 1; it
+  now scans only when the triangle bound `|g_high| + |g_mid - g_high| +
+  |g_low - g_mid|` exceeds 1 (a non-monotone set of gains). A modulated FDN
+  redesigns once a block, about 0.8 us against 2.8 us to render 64 frames.
+- **The lane's grid and the kernel's chunk are two grids, and one is enough.**
+  The lane sends a point every 32 frames and the node reads the last frame of the
+  block; the kernel ramps on its own 32-frame chunks from there. Nothing needed
+  `retarget` more often than a block.
+
+**What the FDN says about the trait shape (for doc 024).**
+
+- **Ramping lives in the kernel, between `retarget`s.** `retarget` samples
+  `theta` once a block and the kernel interpolates to it over its own chunks, as
+  doc 024 section 4.5 says. The chunk (32 frames) is an internal grid, not a
+  retarget cadence: a `Cadence::Every(32)` would design (288 ns) and `tail` (423
+  ns) every chunk for nothing the kernel needs. `Cadence::Block` covers the FDN.
+- **The ramp's clock must be the stream's, not the block's.** Chunks counted
+  from a block's edge make the output depend on the block length;
+  `block_independent` (blocks of 1, 17, 64, 512) is what found it, and any kernel
+  that ramps needs the same counter.
+- **"Landed" is part of the contract.** A kernel built and retargeted once must
+  equal one that settled (`reset`, `fresh`), and a ramp must arrive exactly (a
+  freeze is lossless only if the gains are exactly 1): the first `retarget` after
+  `prepare` lands, later ones ramp. The trait says neither today.
+- **Some of the harness is the model's `response`.** `fit_depth`, `tone`,
+  `static_probes` and the 15% tolerance are the contract working around the
+  difference between the model's response and the kernel's (the skirts, the
+  interpolation's droop). A `response` query on the model, compared with the
+  kernel's frozen response, would find each directly and make the tolerance a
+  figure of merit.
+- **The node's tail logic is not the reverb's.** The silence scan, the cut at
+  `tail + latency`, the reset-and-park and the high-water rule are generic over
+  any kernel with a ring-out; the FDN's freeze (unbounded, then thawed) used the
+  same code as Freeverb's once the thaw was handled.
+- **Vacuity is checkable.** A hook that returns nothing makes its case pass
+  without running; `no_hook_of_the_fdn_is_vacuous` asserts non-vacuity per
+  design, which a shared contract could ask of each design that declares a
+  control.
+
 Step 1 is three PRs. The old plan's two were ~2,200 lines together; the model
 adds the `Network` and its queries (~1,000 lines with their tests), which is
 reviewable on its own and needs no audio, so it comes first and can start in

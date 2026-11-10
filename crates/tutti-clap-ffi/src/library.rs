@@ -2,7 +2,7 @@
 //! initialisation, the factory and its descriptors.
 
 use std::collections::HashMap;
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{CString, c_char};
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -12,6 +12,7 @@ use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_fact
 use clap_sys::plugin::clap_plugin_descriptor;
 use clap_sys::version::{CLAP_VERSION_MAJOR, clap_version, clap_version_is_compatible};
 
+use crate::guard::lossy;
 use crate::host::Host;
 use crate::plugin::Plugin;
 use crate::roles::ThreadRoles;
@@ -29,29 +30,124 @@ pub enum Stage {
     Initialization,
 }
 
-/// A load that failed, and where.
+/// A load that failed: which step, and what went wrong at it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoadError {
+#[non_exhaustive]
+pub enum LoadError {
+    /// The library could not be opened; the loader's message.
+    Library(String),
+    /// The library has no `clap_entry` symbol; the loader's message.
+    NoEntrySymbol(String),
+    /// The path is not a C string; the reason.
+    InvalidPath(String),
+    /// The entry's `init` answered `false`.
+    EntryInit,
+    /// An entry the CLAP structs define is absent (a null function pointer).
+    MissingFunction {
+        /// The step that needed it.
+        stage: Stage,
+        /// Its name, as `clap.h` spells it.
+        name: &'static str,
+    },
+    /// The entry or a descriptor declares a CLAP version this host cannot read.
+    Version {
+        /// What declared it.
+        what: &'static str,
+        /// The step that read it.
+        stage: Stage,
+        /// Its major version.
+        major: u32,
+        /// Its minor version.
+        minor: u32,
+        /// Its revision.
+        revision: u32,
+    },
+    /// The entry returned no plugin factory.
+    NoFactory,
+    /// The factory advertises no plugins.
+    EmptyFactory,
+    /// The factory advertises plugins but returned no descriptor for any.
+    NoDescriptors {
+        /// How many it advertised.
+        count: u32,
+    },
+    /// No descriptor has the id asked for.
+    UnknownId {
+        /// The id asked for.
+        wanted: String,
+        /// The ids the bundle holds (`<null id>` for a descriptor without one).
+        available: Vec<String>,
+    },
+    /// The plugin id is not a C string; the reason.
+    InvalidPluginId(String),
+    /// The factory returned no instance.
+    CreateFailed,
+    /// The plugin's own `init` answered `false`.
+    PluginInitFailed,
+}
+
+impl LoadError {
     /// The step that failed.
-    pub stage: Stage,
-    /// Why.
-    pub reason: String,
+    #[must_use]
+    pub fn stage(&self) -> Stage {
+        match self {
+            Self::Library(_) | Self::NoEntrySymbol(_) | Self::InvalidPath(_) | Self::EntryInit => {
+                Stage::Opening
+            }
+            Self::MissingFunction { stage, .. } | Self::Version { stage, .. } => *stage,
+            Self::NoFactory
+            | Self::EmptyFactory
+            | Self::NoDescriptors { .. }
+            | Self::UnknownId { .. } => Stage::Factory,
+            Self::InvalidPluginId(_) | Self::CreateFailed => Stage::Instantiation,
+            Self::PluginInitFailed => Stage::Initialization,
+        }
+    }
+
+    /// Why, without the step.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Library(e) => format!("Failed to load library: {e}"),
+            Self::NoEntrySymbol(e) => format!("No clap_entry symbol: {e}"),
+            Self::InvalidPath(e) => format!("Invalid path: {e}"),
+            Self::EntryInit => "Entry init failed".to_string(),
+            Self::MissingFunction { name, .. } => format!("No {name} function"),
+            Self::Version {
+                what,
+                major,
+                minor,
+                revision,
+                ..
+            } => format!(
+                "{what} declares CLAP {major}.{minor}.{revision}, which this host cannot read \
+                 its structs against: it is built for major {CLAP_VERSION_MAJOR} \
+                 (version.h sets the floor at major >= 1 — 0.x is the development \
+                 stage, with no stable ABI)"
+            ),
+            Self::NoFactory => "No plugin factory".to_string(),
+            Self::EmptyFactory => "No plugins in factory".to_string(),
+            Self::NoDescriptors { count } => {
+                format!("Factory advertises {count} plugins but returned no descriptor")
+            }
+            Self::UnknownId { wanted, available } => format!(
+                "No plugin with id '{wanted}' in this bundle; it contains: {}",
+                available.join(", ")
+            ),
+            Self::InvalidPluginId(e) => format!("Invalid plugin ID: {e}"),
+            Self::CreateFailed => "Failed to create plugin instance".to_string(),
+            Self::PluginInitFailed => "Plugin init failed".to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.stage, self.reason)
+        write!(f, "{:?}: {}", self.stage(), self.reason())
     }
 }
 
 impl std::error::Error for LoadError {}
-
-fn fail(stage: Stage, reason: impl Into<String>) -> LoadError {
-    LoadError {
-        stage,
-        reason: reason.into(),
-    }
-}
 
 /// What a descriptor declares, as owned strings.
 #[derive(Debug, Clone)]
@@ -71,21 +167,6 @@ pub struct DescriptorInfo {
     /// Feature tags.
     pub features: Vec<String>,
     version_of_clap: clap_version,
-}
-
-/// Copies a nul-terminated C string, lossily; empty for null.
-///
-/// # Safety
-/// `ptr` must be null or point to a nul-terminated string.
-unsafe fn lossy(ptr: *const c_char) -> String {
-    if ptr.is_null() {
-        String::new()
-    } else {
-        // SAFETY: the caller's contract.
-        unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned()
-    }
 }
 
 /// Copies a fixed C char field up to its first nul (or its end), lossily.
@@ -168,7 +249,7 @@ fn acquire_in(
     // SAFETY: `init_fn` is the loaded image's `clap_entry.init`, called with a
     // nul-terminated path that outlives the call, once per image (above).
     if !unsafe { init_fn(path_cstr.as_ptr()) } {
-        return Err(fail(Stage::Opening, "Entry init failed"));
+        return Err(LoadError::EntryInit);
     }
     let live = Arc::new(LiveEntry);
     map.insert(path.to_path_buf(), Arc::downgrade(&live));
@@ -217,20 +298,17 @@ impl Drop for Bundle {
     }
 }
 
-fn check_version(version: clap_version, what: &str, stage: Stage) -> Result<(), LoadError> {
+fn check_version(version: clap_version, what: &'static str, stage: Stage) -> Result<(), LoadError> {
     if clap_version_is_compatible(version) && version.major <= CLAP_VERSION_MAJOR {
         return Ok(());
     }
-    Err(fail(
+    Err(LoadError::Version {
+        what,
         stage,
-        format!(
-            "{what} declares CLAP {}.{}.{}, which this host cannot read its \
-             structs against: it is built for major {CLAP_VERSION_MAJOR} \
-             (version.h sets the floor at major >= 1 — 0.x is the development \
-             stage, with no stable ABI)",
-            version.major, version.minor, version.revision,
-        ),
-    ))
+        major: version.major,
+        minor: version.minor,
+        revision: version.revision,
+    })
 }
 
 impl Bundle {
@@ -247,48 +325,56 @@ impl Bundle {
         // SAFETY: loading a plugin library runs its initialisers, which the
         // host accepts by loading plugins at all; the caller named the path.
         let library = unsafe { libloading::Library::new(load_path) }
-            .map_err(|e| fail(Stage::Opening, format!("Failed to load library: {e}")))?;
+            .map_err(|e| LoadError::Library(e.to_string()))?;
 
         // SAFETY: `clap_entry` is the symbol CLAP defines, a `clap_plugin_entry`
         // static of the image, valid while `library` is mapped.
         let entry: &clap_plugin_entry = unsafe {
             let sym = library
                 .get::<*const clap_plugin_entry>(b"clap_entry\0")
-                .map_err(|e| fail(Stage::Opening, format!("No clap_entry symbol: {e}")))?;
+                .map_err(|e| LoadError::NoEntrySymbol(e.to_string()))?;
             &**sym
         };
         check_version(entry.clap_version, "clap_entry", Stage::Opening)?;
 
-        let init_fn = entry
-            .init
-            .ok_or_else(|| fail(Stage::Opening, "No init function"))?;
+        let init_fn = entry.init.ok_or(LoadError::MissingFunction {
+            stage: Stage::Opening,
+            name: "init",
+        })?;
         let path_cstr = CString::new(bundle_path.to_string_lossy().as_ref())
-            .map_err(|e| fail(Stage::Opening, format!("Invalid path: {e}")))?;
+            .map_err(|e| LoadError::InvalidPath(e.to_string()))?;
         let entry_guard = acquire_in(&mut registry, bundle_path, init_fn, &path_cstr)?;
 
-        let get_factory = entry
-            .get_factory
-            .ok_or_else(|| fail(Stage::Factory, "No get_factory function"))?;
+        let get_factory = entry.get_factory.ok_or(LoadError::MissingFunction {
+            stage: Stage::Factory,
+            name: "get_factory",
+        })?;
         // SAFETY: `get_factory` is the entry's, called after `init` with the
         // factory id CLAP defines.
         let factory =
             unsafe { get_factory(CLAP_PLUGIN_FACTORY_ID.as_ptr()) }.cast::<clap_plugin_factory>();
         if factory.is_null() {
-            return Err(fail(Stage::Factory, "No plugin factory"));
+            return Err(LoadError::NoFactory);
         }
         // SAFETY: non-null factory the image returned, valid while mapped.
         let factory_ref = unsafe { &*factory };
         let count_fn = factory_ref
             .get_plugin_count
-            .ok_or_else(|| fail(Stage::Factory, "No get_plugin_count function"))?;
+            .ok_or(LoadError::MissingFunction {
+                stage: Stage::Factory,
+                name: "get_plugin_count",
+            })?;
         // SAFETY: the factory's own entry, called with the factory.
         let count = unsafe { count_fn(factory) };
         if count == 0 {
-            return Err(fail(Stage::Factory, "No plugins in factory"));
+            return Err(LoadError::EmptyFactory);
         }
         let get_desc = factory_ref
             .get_plugin_descriptor
-            .ok_or_else(|| fail(Stage::Factory, "No get_plugin_descriptor function"))?;
+            .ok_or(LoadError::MissingFunction {
+                stage: Stage::Factory,
+                name: "get_plugin_descriptor",
+            })?;
 
         let mut descriptors = Vec::new();
         for index in 0..count {
@@ -307,10 +393,7 @@ impl Bundle {
             descriptors.push(info);
         }
         if descriptors.is_empty() {
-            return Err(fail(
-                Stage::Factory,
-                format!("Factory advertises {count} plugins but returned no descriptor"),
-            ));
+            return Err(LoadError::NoDescriptors { count });
         }
         Ok(Self {
             _entry: ManuallyDrop::new(entry_guard),
@@ -357,22 +440,20 @@ impl Bundle {
         roles: Arc<ThreadRoles>,
     ) -> Result<Plugin, LoadError> {
         let id = &self.descriptors[index].id;
-        let id_cstr = CString::new(id.as_str())
-            .map_err(|e| fail(Stage::Instantiation, format!("Invalid plugin ID: {e}")))?;
+        let id_cstr =
+            CString::new(id.as_str()).map_err(|e| LoadError::InvalidPluginId(e.to_string()))?;
         // SAFETY: `factory` is the live factory read in `open`.
         let factory = unsafe { &*self.factory };
-        let create = factory
-            .create_plugin
-            .ok_or_else(|| fail(Stage::Instantiation, "No create_plugin function"))?;
+        let create = factory.create_plugin.ok_or(LoadError::MissingFunction {
+            stage: Stage::Instantiation,
+            name: "create_plugin",
+        })?;
         // SAFETY: the factory's own entry, with the factory, a vtable that
         // outlives the plugin (`Plugin` owns `host` and destroys the plugin
         // first) and a nul-terminated id.
         let plugin = unsafe { create(self.factory, host.as_raw(), id_cstr.as_ptr()) };
         if plugin.is_null() {
-            return Err(fail(
-                Stage::Instantiation,
-                "Failed to create plugin instance",
-            ));
+            return Err(LoadError::CreateFailed);
         }
         Plugin::from_created(plugin, self, host, roles)
     }
@@ -390,23 +471,20 @@ fn select_index(descriptors: &[DescriptorInfo], wanted: Option<&str>) -> Result<
         .iter()
         .position(|d| !d.id.is_empty() && d.id == wanted)
         .ok_or_else(|| {
-            let available: Vec<&str> = descriptors
+            let available = descriptors
                 .iter()
                 .map(|d| {
                     if d.id.is_empty() {
-                        "<null id>"
+                        "<null id>".to_string()
                     } else {
-                        d.id.as_str()
+                        d.id.clone()
                     }
                 })
                 .collect();
-            fail(
-                Stage::Factory,
-                format!(
-                    "No plugin with id '{wanted}' in this bundle; it contains: {}",
-                    available.join(", ")
-                ),
-            )
+            LoadError::UnknownId {
+                wanted: wanted.to_string(),
+                available,
+            }
         })
 }
 

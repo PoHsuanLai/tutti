@@ -61,6 +61,8 @@ mod swept_delay;
 mod waveshape;
 mod window;
 
+mod fdn;
+mod fdn_design;
 mod network;
 mod resample;
 mod reverb;
@@ -81,6 +83,8 @@ pub use dynamics::{
     fold_peak, gate_gain_at, ramp_db, ramp_is_at_end, smooth_envelope,
 };
 pub use error::{Error, Result};
+pub use fdn::FdnKernel;
+pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
     Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,

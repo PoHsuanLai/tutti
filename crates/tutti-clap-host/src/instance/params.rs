@@ -9,13 +9,6 @@ use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{ClapParamFlags, ClapParamInfo};
 #[cfg(feature = "clap-extras")]
 use crate::types::{Color, ParamAutomationState};
-#[cfg(feature = "clap-extras")]
-use clap_sys::ext::param_indication::{
-    CLAP_PARAM_INDICATION_AUTOMATION_NONE, CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
-    CLAP_PARAM_INDICATION_AUTOMATION_PLAYING, CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
-    CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
-};
-use tutti_clap_ffi::chars_to_string;
 use tutti_plugin_types::MainThread;
 
 /// How a host surface control (e.g. a hardware knob) is bound to a plugin
@@ -108,8 +101,8 @@ impl ClapLoaded {
         let info = self.plugin.param_info(main, index)?;
         Some(ClapParamInfo {
             id: info.id,
-            name: chars_to_string(&info.name),
-            module: chars_to_string(&info.module),
+            name: info.name,
+            module: info.module,
             min_value: info.min_value,
             max_value: info.max_value,
             default_value: info.default_value,
@@ -314,19 +307,8 @@ impl ClapLoaded {
         state: ParamAutomationState,
         color: Option<Color>,
     ) {
-        let automation_state = match state {
-            ParamAutomationState::None => CLAP_PARAM_INDICATION_AUTOMATION_NONE,
-            ParamAutomationState::Present => CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
-            ParamAutomationState::Playing => CLAP_PARAM_INDICATION_AUTOMATION_PLAYING,
-            ParamAutomationState::Recording => CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
-            ParamAutomationState::Overriding => CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
-        };
-        self.plugin.set_param_automation(
-            main,
-            param_id,
-            automation_state,
-            color.map(color_to_clap),
-        );
+        self.plugin
+            .set_param_automation(main, param_id, state, color.map(color_to_clap));
     }
 }
 

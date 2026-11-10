@@ -105,9 +105,13 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
                 })
                 .expect("the streamer is alive");
             // The streamer opens the stream on its own thread.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let voice = loop {
                 match streamer.status().take_disk_voice(0, Beat(1.0), None) {
                     Ok(voice) => break voice,
+                    Err(e) if std::time::Instant::now() > deadline => {
+                        panic!("the stream did not open in 10 s: {e:?}")
+                    }
                     Err(_) => std::thread::sleep(Duration::from_millis(5)),
                 }
             };
@@ -143,9 +147,12 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
         "the limiter's lookahead is the compensation, or this tests nothing"
     );
 
-    // The streamer fills the ring on its own thread: the clip starts half a
-    // second into the render, and the file is 0.1 s long.
-    std::thread::sleep(Duration::from_millis(500));
+    // The streamer fills the ring on its own thread, and an offline render
+    // does not wait for it, so give it time to hold the whole 0.1 s file. A
+    // ring that is not yet filled reads silence, which fails the assertions
+    // below: a slow machine can fail this test, never pass it wrongly.
+    // Stage 5 cut 5's stream status replaces this sleep with a readiness wait.
+    std::thread::sleep(Duration::from_secs(2));
 
     s.transport()
         .motion

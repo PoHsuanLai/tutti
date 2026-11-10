@@ -1,0 +1,522 @@
+//! The `Translator` against M2-104 Appendix D.3 and M2-115, with figures
+//! written here from the spec, never read from the code under test.
+//!
+//! Mutation record (each planted in `src/translator.rs`, seen to fail at the
+//! named tests, restored):
+//! - a CC 6 sends at once, as the old translator did -> `a_cc_6_alone_waits_for_a_trigger`,
+//!   `cc_6_then_cc_38_is_one_controller`, `a_later_cc_6_ends_the_run_before_it`,
+//!   `a_new_cc_6_never_reuses_an_old_lsb` and the group tests;
+//! - a CC 38 before any CC 6 dropped -> `cc_38_then_cc_6_is_one_controller`,
+//!   `the_null_function_ends_a_run_and_drops_data_entry_after_it`;
+//! - a select resets the other half of the number to 0 -> `a_select_of_one_half_keeps_the_other`
+//!   and three more;
+//! - RPN and NRPN share one number -> `rpn_and_nrpn_keep_their_own_numbers`,
+//!   `a_select_of_one_half_keeps_the_other`;
+//! - the flush at a select removed -> `a_cc_6_alone_waits_for_a_trigger`,
+//!   `a_later_cc_6_ends_the_run_before_it`, `a_new_cc_6_never_reuses_an_old_lsb`,
+//!   `the_null_function_ends_a_run_and_drops_data_entry_after_it`;
+//! - registered data always scaled -> `bank_0_registered_controllers_0_to_31_are_zero_extended`;
+//! - registered data always zero-extended -> `other_controllers_are_scaled_min_center_max`;
+//! - state keyed by channel only -> `groups_keep_their_own_runs`;
+//! - every output on group 1, as the old translator did -> `the_group_and_channel_are_kept`,
+//!   `groups_keep_their_own_runs`;
+//! - a Program Change leaves `bank_set` -> `bank_select_rides_on_the_next_program_change_only`;
+//! - Data Entry with nothing selected sent as a Control Change ->
+//!   `data_entry_with_nothing_selected_is_dropped`;
+//! - the Reset All Controllers arm removed -> `reset_all_controllers_nulls_the_selection`.
+//!
+//! `midi_2_packets_pass_through_unchanged` has no line here: the translator
+//! has no MIDI 2.0 path to break (it decodes a MIDI 1.0 voice message or
+//! returns the packet), so the test pins that a fold is never added.
+
+use tutti_midi_protocol::Translator;
+use tutti_ump::{
+    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump,
+    Voice1, Voice2, decode,
+};
+
+fn u7(v: u8) -> U7 {
+    U7::new(v).unwrap()
+}
+
+fn at(group: u8, channel: u8) -> Address {
+    Address {
+        group: MidiGroup::new(group).unwrap(),
+        channel: MidiChannel::new(channel).unwrap(),
+    }
+}
+
+const A: (u8, u8) = (0, 0);
+
+fn cc_on(address: Address, controller: u8, value: u8) -> Ump {
+    Message::Midi1(
+        address,
+        Voice1::ControlChange {
+            controller: CCNumber::new(controller).unwrap(),
+            value: u7(value),
+        },
+    )
+    .into()
+}
+
+fn cc(controller: u8, value: u8) -> Ump {
+    cc_on(at(A.0, A.1), controller, value)
+}
+
+/// What each input became, one entry per input: a run's controller is sent
+/// on the trigger that ends it, so the position says which input sent it.
+fn run(t: &mut Translator, input: &[Ump]) -> Vec<Vec<Message>> {
+    input
+        .iter()
+        .map(|&ump| {
+            let mut out = Vec::new();
+            t.feed(ump, |u| {
+                out.push(decode(u).expect("the translator sends defined packets"))
+            });
+            out
+        })
+        .collect()
+}
+
+fn registered(bank: u8, index: u8, value: u32) -> Message {
+    Message::Midi2(
+        at(A.0, A.1),
+        Voice2::Registered {
+            bank: u7(bank),
+            index: u7(index),
+            value,
+        },
+    )
+}
+
+fn assignable(bank: u8, index: u8, value: u32) -> Message {
+    Message::Midi2(
+        at(A.0, A.1),
+        Voice2::Assignable {
+            bank: u7(bank),
+            index: u7(index),
+            value,
+        },
+    )
+}
+
+/// RPN 0/0 data zero-extended: `MSB << 7 | LSB` in the top 14 bits.
+fn zx(msb: u8, lsb: u8) -> u32 {
+    ((u32::from(msb) << 7) | u32::from(lsb)) << 18
+}
+
+// D.3.3: a run is sent on a CC 38, a later CC 6, or a new parameter select.
+
+#[test]
+fn cc_6_then_cc_38_is_one_controller() {
+    let mut t = Translator::new();
+    let out = run(&mut t, &[cc(101, 0), cc(100, 0), cc(6, 12), cc(38, 50)]);
+    assert_eq!(
+        out,
+        vec![vec![], vec![], vec![], vec![registered(0, 0, zx(12, 50))]]
+    );
+}
+
+#[test]
+fn a_cc_6_alone_waits_for_a_trigger() {
+    let mut t = Translator::new();
+    // Nothing at the CC 6; the Null Function's first byte is a select, which
+    // ends the run with an LSB of 0.
+    let out = run(
+        &mut t,
+        &[
+            cc(101, 0),
+            cc(100, 0),
+            cc(6, 12),
+            cc(101, 127),
+            cc(100, 127),
+        ],
+    );
+    assert_eq!(
+        out,
+        vec![
+            vec![],
+            vec![],
+            vec![],
+            vec![registered(0, 0, zx(12, 0))],
+            vec![]
+        ]
+    );
+}
+
+#[test]
+fn cc_38_then_cc_6_is_one_controller() {
+    let mut t = Translator::new();
+    let out = run(&mut t, &[cc(101, 0), cc(100, 0), cc(38, 50), cc(6, 12)]);
+    assert_eq!(
+        out,
+        vec![vec![], vec![], vec![], vec![registered(0, 0, zx(12, 50))]]
+    );
+}
+
+#[test]
+fn a_later_cc_6_ends_the_run_before_it() {
+    let mut t = Translator::new();
+    let out = run(&mut t, &[cc(101, 0), cc(100, 0), cc(6, 12), cc(6, 24)]);
+    assert_eq!(out[3], vec![registered(0, 0, zx(12, 0))]);
+    // And the second is pending: the next select sends it.
+    assert_eq!(
+        run(&mut t, &[cc(100, 1)]),
+        vec![vec![registered(0, 0, zx(24, 0))]]
+    );
+}
+
+#[test]
+fn a_new_cc_6_never_reuses_an_old_lsb() {
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[
+            cc(101, 0),
+            cc(100, 0),
+            cc(6, 12),
+            cc(38, 50),
+            cc(6, 3),
+            cc(100, 1),
+        ],
+    );
+    assert_eq!(out[3], vec![registered(0, 0, zx(12, 50))]);
+    assert!(out[4].is_empty(), "a CC 6 waits for its own LSB");
+    assert_eq!(out[5], vec![registered(0, 0, zx(3, 0))]);
+}
+
+#[test]
+fn a_cc_38_after_a_sent_run_refines_it() {
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[cc(101, 0), cc(100, 0), cc(6, 12), cc(38, 50), cc(38, 51)],
+    );
+    assert_eq!(out[4], vec![registered(0, 0, zx(12, 51))]);
+}
+
+#[test]
+fn the_null_function_ends_a_run_and_drops_data_entry_after_it() {
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[
+            cc(101, 0),
+            cc(100, 0),
+            cc(38, 9),
+            cc(101, 127),
+            cc(100, 127),
+            cc(6, 1),
+            cc(38, 2),
+        ],
+    );
+    // A CC 38 with no CC 6 is sent at the select that ends it, MSB 0.
+    assert_eq!(out[3], vec![registered(0, 0, zx(0, 9))]);
+    assert!(out[4..].iter().all(Vec::is_empty), "{out:?}");
+}
+
+#[test]
+fn data_entry_with_nothing_selected_is_dropped() {
+    let mut t = Translator::new();
+    assert_eq!(run(&mut t, &[cc(6, 1), cc(38, 2)]), vec![vec![], vec![]]);
+}
+
+#[test]
+fn a_select_of_one_half_keeps_the_other() {
+    let mut t = Translator::new();
+    // A full select of RPN 1/2, then of the LSB alone: the number is 1/5.
+    let out = run(
+        &mut t,
+        &[
+            cc(101, 1),
+            cc(100, 2),
+            cc(6, 0),
+            cc(38, 0),
+            cc(100, 5),
+            cc(6, 7),
+            cc(38, 0),
+        ],
+    );
+    let scaled = |msb: u32| msb << 25;
+    assert_eq!(out[3], vec![registered(1, 2, scaled(0))]);
+    assert_eq!(out[6], vec![registered(1, 5, scaled(7))]);
+    // The same for NRPN, MSB alone this time.
+    let out = run(
+        &mut t,
+        &[
+            cc(99, 3),
+            cc(98, 4),
+            cc(6, 0),
+            cc(38, 0),
+            cc(99, 6),
+            cc(6, 7),
+            cc(38, 0),
+        ],
+    );
+    assert_eq!(out[3], vec![assignable(3, 4, 0)]);
+    assert_eq!(out[6], vec![assignable(6, 4, 7 << 25)]);
+}
+
+#[test]
+fn rpn_and_nrpn_keep_their_own_numbers() {
+    let mut t = Translator::new();
+    // RPN 3/4, then an NRPN select of its LSB alone: the NRPN's MSB is its
+    // own (never selected: 0), not the RPN's 3.
+    let out = run(
+        &mut t,
+        &[cc(101, 3), cc(100, 4), cc(98, 9), cc(6, 0), cc(38, 0)],
+    );
+    assert_eq!(out[4], vec![assignable(0, 9, 0)]);
+}
+
+// M2-115 section 4.1: bank 0 registered controllers 0 to 31 carry two 7-bit
+// fields and are zero-extended; every other is a 14-bit number, scaled
+// Min-Center-Max (section 3: maximum to maximum, centre to centre).
+
+#[test]
+fn bank_0_registered_controllers_0_to_31_are_zero_extended() {
+    for index in [0, 1, 6, 31] {
+        let mut t = Translator::new();
+        let out = run(
+            &mut t,
+            &[cc(101, 0), cc(100, index), cc(6, 127), cc(38, 127)],
+        );
+        assert_eq!(
+            out[3],
+            vec![registered(0, index, 0xFFFC_0000)],
+            "index {index}"
+        );
+    }
+}
+
+#[test]
+fn other_controllers_are_scaled_min_center_max() {
+    // Registered bank 0 index 32, registered bank 1, and every NRPN.
+    for (selects, make) in [
+        (
+            [cc(101, 0), cc(100, 32)],
+            registered as fn(u8, u8, u32) -> Message,
+        ),
+        ([cc(101, 1), cc(100, 0)], registered),
+        ([cc(99, 0), cc(98, 0)], assignable),
+    ] {
+        let number = |t: &mut Translator| {
+            let mut n = (0, 0);
+            for &s in &selects {
+                t.feed(s, |_| {});
+                let Ok(Message::Midi1(_, Voice1::ControlChange { controller, value })) = decode(s)
+                else {
+                    unreachable!()
+                };
+                if matches!(controller.get(), 101 | 99) {
+                    n.0 = value.get();
+                } else {
+                    n.1 = value.get();
+                }
+            }
+            n
+        };
+        for (msb, lsb, want) in [(127, 127, 0xFFFF_FFFF), (64, 0, 0x8000_0000), (0, 0, 0)] {
+            let mut t = Translator::new();
+            let (bank, index) = number(&mut t);
+            let out = run(&mut t, &[cc(6, msb), cc(38, lsb)]);
+            assert_eq!(out[1], vec![make(bank, index, want)], "{msb}/{lsb}");
+        }
+    }
+}
+
+#[test]
+fn the_group_and_channel_are_kept() {
+    let mut t = Translator::new();
+    let a = at(5, 3);
+    let mut out = Vec::new();
+    for ump in [
+        cc_on(a, 101, 0),
+        cc_on(a, 100, 0),
+        cc_on(a, 6, 2),
+        cc_on(a, 38, 0),
+    ] {
+        t.feed(ump, |u| out.push(decode(u).unwrap()));
+    }
+    assert_eq!(
+        out,
+        vec![Message::Midi2(
+            a,
+            Voice2::Registered {
+                bank: u7(0),
+                index: u7(0),
+                value: zx(2, 0),
+            }
+        )]
+    );
+}
+
+#[test]
+fn groups_keep_their_own_runs() {
+    let mut t = Translator::new();
+    let (g0, g1) = (at(0, 0), at(1, 0));
+    let mut out = Vec::new();
+    // Interleaved runs on the same channel of two groups.
+    for ump in [
+        cc_on(g0, 101, 0),
+        cc_on(g1, 99, 1),
+        cc_on(g0, 100, 0),
+        cc_on(g1, 98, 2),
+        cc_on(g0, 6, 4),
+        cc_on(g1, 6, 0),
+        cc_on(g0, 38, 0),
+        cc_on(g1, 38, 0),
+    ] {
+        t.feed(ump, |u| out.push(decode(u).unwrap()));
+    }
+    assert_eq!(
+        out,
+        vec![
+            Message::Midi2(
+                g0,
+                Voice2::Registered {
+                    bank: u7(0),
+                    index: u7(0),
+                    value: zx(4, 0),
+                }
+            ),
+            Message::Midi2(
+                g1,
+                Voice2::Assignable {
+                    bank: u7(1),
+                    index: u7(2),
+                    value: 0,
+                }
+            ),
+        ]
+    );
+}
+
+#[test]
+fn bank_select_rides_on_the_next_program_change_only() {
+    let mut t = Translator::new();
+    let pc = |p: u8| -> Ump { Message::Midi1(at(A.0, A.1), Voice1::ProgramChange(u7(p))).into() };
+    let program = |p: u8, bank: Option<(u8, u8)>| {
+        Message::Midi2(
+            at(A.0, A.1),
+            Voice2::ProgramChange {
+                program: u7(p),
+                bank: bank.map(|(msb, lsb)| Bank {
+                    msb: u7(msb),
+                    lsb: u7(lsb),
+                }),
+            },
+        )
+    };
+    let out = run(
+        &mut t,
+        &[cc(0, 1), cc(32, 2), pc(5), pc(6), cc(32, 3), pc(7)],
+    );
+    assert_eq!(
+        out,
+        vec![
+            vec![],
+            vec![],
+            vec![program(5, Some((1, 2)))],
+            vec![program(6, None)],
+            vec![],
+            // A lone CC 32 pairs with the CC 0 last sent.
+            vec![program(7, Some((1, 3)))],
+        ]
+    );
+}
+
+#[test]
+fn stateless_messages_are_widened() {
+    let mut t = Translator::new();
+    let note = NoteNumber::new(60).unwrap();
+    let on0: Ump = Message::Midi1(
+        at(A.0, A.1),
+        Voice1::NoteOn {
+            note,
+            velocity: u7(0),
+        },
+    )
+    .into();
+    // D.3.1: a Note On at velocity 0 is a Note Off at release velocity 0x8000.
+    assert_eq!(
+        run(&mut t, &[on0]),
+        vec![vec![Message::Midi2(
+            at(A.0, A.1),
+            Voice2::NoteOff {
+                note,
+                velocity: 0x8000,
+                attribute: Attribute::None,
+            }
+        )]]
+    );
+    // Data Increment stays a Control Change, widened (M2-115: 127 to max).
+    assert_eq!(
+        run(&mut t, &[cc(96, 127)]),
+        vec![vec![Message::Midi2(
+            at(A.0, A.1),
+            Voice2::ControlChange {
+                controller: CCNumber::new(96).unwrap(),
+                value: 0xFFFF_FFFF,
+            }
+        )]]
+    );
+}
+
+#[test]
+fn midi_2_packets_pass_through_unchanged() {
+    let mut t = Translator::new();
+    let note = NoteNumber::new(60).unwrap();
+    // M2-104 7.4.2: a MIDI 2.0 Note On at velocity 0 is a Note On.
+    let on0: Ump = Message::Midi2(
+        at(2, 4),
+        Voice2::NoteOn {
+            note,
+            velocity: 0,
+            attribute: Attribute::None,
+        },
+    )
+    .into();
+    // A reserved message type (0xE) no definition covers.
+    let reserved = Ump([0xE000_0000, 1, 2, 3]);
+    for ump in [on0, reserved] {
+        let mut out = Vec::new();
+        t.feed(ump, |u| out.push(u));
+        assert_eq!(out, vec![ump]);
+    }
+}
+
+#[test]
+fn reset_all_controllers_nulls_the_selection() {
+    let mut t = Translator::new();
+    // RP-015: CC 121 sets the RPN to null; it passes on, and Data Entry after
+    // it is dropped. The CC 6 before it was never sent, and is dropped too.
+    let out = run(
+        &mut t,
+        &[
+            cc(101, 0),
+            cc(100, 0),
+            cc(6, 12),
+            cc(121, 0),
+            cc(6, 3),
+            cc(38, 0),
+        ],
+    );
+    assert_eq!(
+        out,
+        vec![
+            vec![],
+            vec![],
+            vec![],
+            vec![Message::Midi2(
+                at(A.0, A.1),
+                Voice2::ControlChange {
+                    controller: CCNumber::new(121).unwrap(),
+                    value: 0,
+                }
+            )],
+            vec![],
+            vec![],
+        ]
+    );
+}

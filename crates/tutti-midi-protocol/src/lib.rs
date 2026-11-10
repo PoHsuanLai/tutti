@@ -6,11 +6,13 @@
 //! belong to the packet's [`Address`](tutti_ump::Address), which the caller
 //! keeps unchanged.
 //!
-//! This is transitional for a consumer. Design 017 puts translation at the
-//! input edge, where one `Translator` runs once and the graph carries MIDI 2.0
-//! only; until that exists, a consumer widens with [`widen`] and matches
-//! `Voice2`. When the edge translator lands it calls `widen`, and a consumer
-//! drops its call and its `Voice1` arm.
+//! [`Translator`] is the stateful rest of the translation (M2-104 Appendix
+//! D.3): RPN and NRPN runs into Registered and Assignable Controllers, and
+//! Bank Select onto the next Program Change, per group and channel. An input
+//! edge runs it once (`tutti-midi-runtime`'s `MidiInputNode`, and a clip as it
+//! is loaded), so what follows carries MIDI 2.0 channel voice messages. It
+//! calls `widen` for every message that needs no state. A consumer's own call
+//! to `widen` is transitional: stage 3b of design 017 moves it into `dispatch`.
 //!
 //! ```
 //! use tutti_midi_protocol::widen;
@@ -55,7 +57,7 @@
 //!   RPN or NRPN run (CC 101/100, 99/98, 6, 38) into one Registered or
 //!   Assignable Controller message, and Bank Select (CC 0 and 32) into a
 //!   Program Change bank. Both need per-group, per-channel assembly, which is
-//!   stage 3's translator. Here those controllers widen by value like any
+//!   the [`Translator`]'s. Here those controllers widen by value like any
 //!   other, so a consumer that wants RPN or NRPN data must not rely on this
 //!   function for it. The 14-bit pairs (CC 1 to 31 with 33 to 63) stay two
 //!   independent messages, as D.3.3 says.
@@ -67,8 +69,10 @@
 mod midi1;
 mod narrow;
 mod scale;
+mod translator;
 mod voice;
 
 pub use midi1::{midi1, narrow};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
+pub use translator::Translator;
 pub use voice::widen;

@@ -111,18 +111,19 @@ use tutti_ump::{MidiChannel, MidiGroup};
 let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
 
 // A note-on claims member channel 1; the map now resolves that channel.
+// Each event becomes none, one, or (a bend range) one per member channel,
+// each handed to the closure.
 let member = MidiChannel::of(1);
-ingest
-    .translate(&(Offset::ZERO, note_on(MidiGroup::FIRST, member, 60, midi1_velocity_to_midi2(100))))
-    .next()
-    .expect("a note-on passes through");
+let mut sent = Vec::new();
+let on = note_on(MidiGroup::FIRST, member, 60, midi1_velocity_to_midi2(100));
+ingest.translate(&(Offset::ZERO, on), |e| sent.push(e));
+assert_eq!(sent.len(), 1, "a note-on passes through");
 
 // A channel-wide bend on that member becomes a per-note bend on note 60.
 let bend = pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
-let (_, folded) = ingest
-    .translate(&(Offset::ZERO, bend))
-    .next()
-    .expect("the channel holds a note");
+sent.clear();
+ingest.translate(&(Offset::ZERO, bend), |e| sent.push(e));
+let [(_, folded)] = sent[..] else { panic!("the channel holds a note") };
 assert_eq!(MidiMessage::from_ump(folded).note(), Some(60));
 ```
 

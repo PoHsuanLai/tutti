@@ -35,8 +35,9 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
+use tutti_graph::TapId;
 use tutti_graph::{TapReader, TapWriter};
-use tutti_types::{ChannelLayout, Samples, TapId};
+use tutti_types::{ChannelLayout, Samples};
 
 /// Opens that can be in flight at once. The install queue holds one more: a
 /// slot kept for a close, so closing a tap never fails for want of room while

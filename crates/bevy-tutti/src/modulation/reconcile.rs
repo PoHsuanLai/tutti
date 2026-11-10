@@ -24,7 +24,7 @@ use tutti_modulation::{
 use tutti_nodes::automation::LaneControls;
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{ModInput, ModRefusal, Phase, SessionEvent};
-use tutti_types::NodeKey;
+use tutti_graph::NodeKey;
 
 use super::declare::{
     Automation, AutomationTake, ModFeed, ModRange, ModRoute, ModSource, ParamRef,

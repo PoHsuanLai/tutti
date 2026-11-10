@@ -33,7 +33,8 @@ mod graph_wire {
     use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::GraphSource;
     use tutti_nodes::testing::{Osc, Through};
-    use tutti_types::{ChannelLayout, Hz, NodeKey};
+    use tutti_types::{ChannelLayout, Hz};
+use tutti_graph::NodeKey;
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     fn app() -> App {
@@ -855,7 +856,7 @@ mod graph_wire {
         // same fold over it gives the same figures.
         let live = app.world().resource::<bevy_tutti::graph::LiveGraph>();
         assert_eq!(live.topology().outputs.len(), 2);
-        assert_eq!(tutti_types::latency::plan(live.topology()), plan);
+        assert_eq!(tutti_graph::latency_plan(live.topology()), plan);
     }
 
     /// Channels past `MAX_ROOT_CHANNELS` are refused at the clamp, not silently
@@ -947,7 +948,7 @@ mod param_mod_wire {
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{DistortionNode, ShapeKind};
     use tutti_types::Hz;
-    use tutti_types::NodeKey;
+    use tutti_graph::NodeKey;
     use tutti_types::UnitParam;
 
     fn app() -> App {

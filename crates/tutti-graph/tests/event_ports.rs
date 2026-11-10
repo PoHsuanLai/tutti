@@ -24,13 +24,14 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use tutti_graph::NodeSpec;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, EventSlotCapacity, GraphSpec, Io,
     Node, Op, Prepare, Reference, Shape, Shapes, Status, Transport, Unforkable, ValidGraph,
     compile,
 };
-use tutti_types::graph::NodeSpec;
-use tutti_types::{At, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Topology};
+use tutti_graph::{NodeKey, Topology};
+use tutti_types::{At, ChannelLayout, Frame, Latency, SampleRate, Samples};
 use tutti_ump::Ump;
 
 /// What a sink saw: `(block start frame, offset, port, tag)`.

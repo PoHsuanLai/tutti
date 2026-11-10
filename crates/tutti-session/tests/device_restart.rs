@@ -13,12 +13,13 @@
 //! `plugin_latency.rs`'s, the MIDI clock's is `device_midi_clock.rs`'s.
 
 use tutti_cpal::{ManualStream, ManualStreamDriver, OutputSpec};
+use tutti_graph::NodeKey;
 use tutti_graph::{CrossfadeCurve, ForkByClone};
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::{Osc, Through};
 use tutti_session::{Crossfade, Error, GraphSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{At, ChannelLayout, Db, Frame, Hz, NodeKey, SampleRate, Samples, Seconds};
+use tutti_types::{At, ChannelLayout, Db, Frame, Hz, SampleRate, Samples, Seconds};
 
 const OLD: f64 = 44_100.0;
 const NEW: f64 = 48_000.0;

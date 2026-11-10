@@ -46,11 +46,12 @@ use std::sync::Arc;
 use cpal::traits::{DeviceTrait, StreamTrait};
 
 use tutti_codec::{FileOut, Format, Spec};
+use tutti_graph::TapId;
 use tutti_graph::{TapReader, TapWriter};
 use tutti_rt::Drained;
 use tutti_types::SampleRate;
 use tutti_types::Samples;
-use tutti_types::{ChannelLayout, ChannelTopology, Fold, TapId};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold};
 use tutti_types::{Pull, Source};
 
 use crate::driver::DeviceInfo;

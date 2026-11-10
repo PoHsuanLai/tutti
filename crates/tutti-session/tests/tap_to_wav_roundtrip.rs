@@ -36,11 +36,10 @@ use tutti_codec::{FileOut, Format, Pcm, Spec};
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
 };
+use tutti_graph::{NodeKey, TapAlign, TapId};
+use tutti_graph::{OutPort, Source as Origin};
 use tutti_session::{PumpLoop, PumpPass};
-use tutti_types::graph::{OutPort, Source as Origin};
-use tutti_types::{
-    Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, Sink, Source, TapAlign, TapId,
-};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, Sink, Source};
 
 /// Frames rendered into the tap, as the audio callback would.
 const FRAMES: usize = 4096;

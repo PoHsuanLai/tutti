@@ -26,8 +26,9 @@ use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, GraphSpec, Io, Node,
     Prepare, Reference, Shape, Shapes, Status, Transport, compile,
 };
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
-use tutti_types::{At, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail, Topology};
+use tutti_graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
+use tutti_graph::{NodeKey, Topology};
+use tutti_types::{At, ChannelLayout, Frame, Latency, Samples, Tail};
 use tutti_ump::Ump;
 
 type Ledger = Arc<Mutex<Vec<(u32, u64)>>>;

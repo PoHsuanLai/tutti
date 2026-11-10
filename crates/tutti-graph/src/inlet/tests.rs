@@ -136,9 +136,9 @@ fn the_declared_shape_matches_what_the_graph_is_told() {
 /// whose fork fails) -> the fork is not refused as `NotForkable` -> fails.
 #[test]
 fn the_inlet_refuses_to_fork() {
+    use crate::NodeKey;
     use crate::{Editor, ForkError, ForkMode, ForkTarget};
-    use tutti_types::NodeKey;
-    use tutti_types::graph::{OutPort, Source};
+    use crate::{OutPort, Source};
 
     let (node, _prod) = ring_with(&[[1.0, 2.0]]);
     let prepare = Prepare::new(RATE, Samples(64));

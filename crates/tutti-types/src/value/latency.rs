@@ -19,9 +19,9 @@
 //! declare(echo_time); // a delay time is not a latency
 //! ```
 //!
-//! A node declares its latency as a `Latency`. The graph-value folds in this
-//! crate ([`NodeSpec::latency`](crate::graph::NodeSpec::latency)
-//! and [`LatencyGraph::latency`](crate::LatencyGraph::latency)) carry the same
+//! A node declares its latency as a `Latency`. The graph-value folds in `tutti-graph`
+//! crate (`tutti_graph::NodeSpec::latency`
+//! and `tutti_graph::LatencyGraph::latency`) carry the same
 //! quantity as a plain [`Samples`].
 //!
 //! # Algebra

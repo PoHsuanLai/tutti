@@ -82,7 +82,8 @@ pub fn input_ports(channel: Option<MidiChannel>) -> impl Iterator<Item = usize> 
 /// See the module docs.
 ///
 /// ```
-/// use tutti_types::{NodeKey, SampleRate, Samples};
+/// use tutti_types::{SampleRate, Samples};
+/// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiInputNode;
 ///

@@ -43,12 +43,12 @@
 mod clap_probe;
 use clap_probe::{ProbeEnv, exclusive, load_probe, render};
 
+use tutti_graph::NodeKey;
 use tutti_graph::{GraphBuilder, Prepare, Renderer};
+use tutti_graph::{OutPort, Source};
 use tutti_nodes::ChannelSumNode;
 use tutti_nodes::testing::Through;
 use tutti_plugin::handles::{Bound, PluginClient, PluginControls};
-use tutti_types::NodeKey;
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;

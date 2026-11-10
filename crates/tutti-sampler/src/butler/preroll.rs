@@ -3,7 +3,7 @@
 //! A source outside the audio graph cannot be delayed by a node inside it —
 //! instead it reads earlier, so its audio arrives already aligned.
 //!
-//! Named `preroll`, not `pdc`, to keep the split with `tutti_types::latency`
+//! Named `preroll`, not `pdc`, to keep the split with `tutti_graph`
 //! visible: that computes *how much* compensation each channel needs; this
 //! consumes the answer. Not `io/` either — it moves no frames.
 //!

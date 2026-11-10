@@ -117,7 +117,7 @@ truncation is provably prevented.** The gap is real and the loader already docum
 (`loaders/vst2.rs:80-92`). But the same comment explains the deliberate choice:
 *"`Unknown`, not `None`: nothing here has asked. Claiming `None` would tell a bounce to add
 nothing, which is wrong for every VST2 reverb."* The tail algebra honours that —
-`tutti-types/src/tail.rs:209-212` counts `Unknown` nodes separately and `GraphTail::samples`
+`tutti-graph/src/tail.rs:209-212` counts `Unknown` nodes separately and `GraphTail::samples`
 (`:101-102`) **refuses to return a frame count** when any node is unknown, forcing an explicit
 caller decision. CLAP reports `Unknown` too (`loaders/clap.rs:188`), so this is not
 VST2-specific. **Trap for whoever wires it:** VST2 inverts the encoding — `0` = unknown,

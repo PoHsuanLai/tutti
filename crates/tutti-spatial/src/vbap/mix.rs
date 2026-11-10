@@ -8,8 +8,9 @@
 //! need it too.
 
 use tutti_graph::GraphBuilder;
+use tutti_graph::NodeKey;
 use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};
-use tutti_types::{Azimuth, ChannelLayout, Elevation, Hz, NodeKey, Q};
+use tutti_types::{Azimuth, ChannelLayout, Elevation, Hz, Q};
 
 use super::error::Result;
 use super::node::VbapPannerNode;

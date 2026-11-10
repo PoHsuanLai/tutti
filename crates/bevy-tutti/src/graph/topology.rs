@@ -55,10 +55,7 @@ use bevy_ecs::prelude::*;
 
 use crate::graph::AudioNode;
 use tutti_types::ChannelLayout;
-use tutti_types::{
-    NodeKey, Topology,
-    graph::{Edge, InPort, NodeSpec, OutPort, Source},
-};
+use tutti_graph::{NodeKey, Topology, Edge, InPort, NodeSpec, OutPort, Source};
 
 use super::wire::{MasterSources, PortSource, PortSources};
 use super::{AudioGraphRes, GraphSource};
@@ -82,12 +79,12 @@ pub const ENTITY_NODE_KIND: &str = "bevy-tutti:entity";
 /// schedules between `Spawn` and `Compensate` — after [`apply`] has brought the
 /// engine into line with it, and by nothing else. Read by tests, and by
 /// anything wanting to ask a question about the graph without a runtime in
-/// hand: [`Topology::validate`](tutti_types::Topology::validate)
+/// hand: [`Topology::validate`](tutti_graph::Topology::validate)
 /// reports every structural fault at once.
 ///
 /// It holds only the audio edges and outputs the ECS declares: no port a host
 /// wired by hand, and no event or param-modulation sources. So
-/// [`tutti_types::latency::plan`] over it is only an approximation of the
+/// [`tutti_graph::latency_plan`] over it is only an approximation of the
 /// graph's compensation; for the figure the graph's plans compensate by, use
 /// [`Graph::latency_plan`](crate::graph::Graph::latency_plan), which folds over the whole graph spec.
 ///

@@ -34,9 +34,10 @@ This needs a `.sf2` on disk, so it is `no_run`.
 
 ```rust,no_run
 use std::fs::File;
-use tutti_types::graph::{OutPort, Source};
+use tutti_graph::{OutPort, Source};
 use std::sync::Arc;
-use tutti_types::{NodeKey, SampleRate, Samples};
+use tutti_types::{SampleRate, Samples};
+use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Prepare};
 use tutti_ump::{MidiChannel, U7};
 use tutti_sf2::SoundFont;

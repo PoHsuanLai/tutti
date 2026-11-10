@@ -35,8 +35,8 @@ which re-exports this crate as `tutti::engine`, or `bevy-tutti` for a Bevy app.
 - **The device.** Opening a stream and driving the real-time callback is
   `tutti-cpal`'s job. This crate only knows how to render a block.
 - **The value vocabulary.** The unit newtypes, the `Source`/`Sink` traits
-  and the PDC and meter math are `tutti-types`'. Delay compensation (`latency`)
-  is `tutti-types`' pure pass, applied by the graph compiler.
+  and the meter math are `tutti-types`'. Delay compensation (`latency_plan`,
+  `delays`) is `tutti-graph`'s pure pass, applied by the graph compiler.
 - **The ECS binding.** The node component, the reconcile pipeline and the
   declarative wiring live in the host adapter, `bevy_tutti::graph`.
 - **The worker pool and the pre-roll table.** `tutti-graph`'s.
@@ -52,8 +52,9 @@ does exactly this around a real device; here the block is pulled by hand, so
 the whole thing runs headless.
 
 ```rust
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples, Tail};
+use tutti_graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples, Tail};
+use tutti_graph::NodeKey;
 use tutti_engine::Engine;
 use tutti_transport::{MotionEvent, Timeline, Transport};
 use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status};

@@ -2,7 +2,7 @@
 //! past, so a node behind a latent path reads the transport its input audio
 //! was rendered at ([`Cx::transport_at`](crate::Cx::transport_at)).
 
-use tutti_types::latency::MAX_NODE_LATENCY;
+use crate::MAX_NODE_LATENCY;
 use tutti_types::{Frame, Latency, SampleRate, Samples};
 
 use crate::node::{Env, MAX_TRANSPORT_CHANGES, Transport};

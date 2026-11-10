@@ -15,12 +15,13 @@ use tutti_export::{
     RenderConfig, RenderGraph, render_normalized_to_file, render_to_buffers_with, render_to_file,
     render_to_file_with,
 };
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget, Forked,
     IntoNode, Io, Node, NodeParts, Prepare, Shape, Status,
 };
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{ChannelLayout, Db, NodeKey, SampleRate};
+use tutti_graph::{OutPort, Source};
+use tutti_types::{ChannelLayout, Db, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCKS: usize = 4;

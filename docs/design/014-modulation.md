@@ -1407,7 +1407,7 @@ differences from it:
   `ParamPortOp` names its one `from` and `slot`. `set_authored` went
   with the adapter and `ParamSet::authored` with this (§8.2): a fork's template shares the
   node's cells, so a fork starts from the knob. The compiler's arrival and
-  `tutti_types::latency::plan` both count a param port's source as a
+  `tutti_graph::latency_plan` both count a param port's source as a
   predecessor (`a_param_source_counts_toward_arrival_in_both_solves`).
 - **`tutti-modulation`:** its runtime copies of `Lfo`, `Modulator`,
   `RandomState` and `SampleHold` went too (not in the table): `tutti-nodes`

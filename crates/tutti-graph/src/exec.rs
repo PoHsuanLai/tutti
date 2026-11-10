@@ -164,10 +164,11 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use crate::NodeKey;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_rt::{RtScope, with_no_denormals};
-use tutti_types::{Frame, MaxBlock, NodeKey, Samples, Tail};
+use tutti_types::{Frame, MaxBlock, Samples, Tail};
 
 use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};
@@ -192,7 +193,8 @@ use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
 use crate::tap::TapWriter;
-use tutti_types::{MeterId, PlayReading, TapId};
+use crate::{MeterId, TapId};
+use tutti_types::PlayReading;
 
 /// Events per block an event output port holds when its node declares no
 /// [`Shape::event_capacity`](crate::Shape::event_capacity), unless

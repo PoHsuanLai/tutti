@@ -19,13 +19,14 @@
 mod common;
 
 use common::prepare;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventOut, ForkMode, ForkTarget, IntoNode, Io, MAX_PARAM_PORTS, Node,
     NodeParts, ParamIn, ParamInput, ParamNode, ParamPorts, ParamPortsError, ParamSegment, ParamSet,
     Prepare, SegmentShape, Shape, Status, Transport, param_parts,
 };
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{ChannelLayout, Db, NodeKey, Param, Samples, UnitAddr, UnitParam};
+use tutti_graph::{OutPort, Source};
+use tutti_types::{ChannelLayout, Db, Param, Samples, UnitAddr, UnitParam};
 
 /// `Threshold` of band 0 and of band 1: the same kind, two indices.
 const BAND0: UnitAddr = UnitAddr::new(UnitParam::Threshold, 0);

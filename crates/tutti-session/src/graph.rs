@@ -11,7 +11,7 @@
 //! | `set_param` | the node's [`ParamSet`], when it has one |
 //! | `replace`, `crossfade` | `Editor::replace_or_swap` with a [`Fade`]: a plain swap when there is nothing to fade from |
 //! | `node_latency`, `node_tail`, `node_inputs`, `node_outputs` | the editor's [`Shapes`](tutti_graph::Shapes) |
-//! | `latency_plan` | `tutti_types::latency::plan` over the whole spec: audio edges plus event and param-modulation sources |
+//! | `latency_plan` | `tutti_graph::latency_plan` over the whole spec: audio edges plus event and param-modulation sources |
 //! | `set_feed`, `move_feeds` | the union of every feeder's sources, written as a sink's event edges beside the host's own |
 //! | `refresh_node_latency` | `Editor::set_latency` |
 //! | `insert_plugin`, `replace_plugin` | the bound `PluginClient` itself, a node with its own fork source |
@@ -39,22 +39,19 @@ use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
+use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, InletNode,
     IntoNode, MeterReader, MissingSource, ParamIn, ParamMod, ParamRange, ParamSet, Prepare,
     TapReader, TapWriter, Transport,
 };
+use tutti_graph::{Edge, InPort, NodeKey, OutPort, Source};
+use tutti_graph::{MeterId, MeterSpec, TapAlign, TapId};
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::{
-    ChannelLayout, MeterId, MeterSpec, SampleRate, Seconds, TapAlign, TapId, UnitAddr,
-};
-use tutti_types::{Compensation, Samples, Tail};
-use tutti_types::{
-    NodeKey,
-    graph::{Edge, InPort, OutPort, Source},
-};
+use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
+use tutti_types::{Samples, Tail};
 
 use crate::{InletError, SessionNode};
 
@@ -452,11 +449,7 @@ pub(crate) fn prepare_for(
 /// it probes at insert.
 #[cfg(feature = "plugin")]
 fn clamp_latency(latency: Latency) -> Latency {
-    Latency::new(
-        latency
-            .samples()
-            .min(tutti_types::latency::MAX_NODE_LATENCY),
-    )
+    Latency::new(latency.samples().min(tutti_graph::MAX_NODE_LATENCY))
 }
 
 impl Graph {
@@ -2118,7 +2111,7 @@ impl Graph {
     /// (committed or not): audio edges plus each node's event and
     /// param-modulation sources. Mutates nothing.
     pub fn latency_plan(&self) -> Compensation {
-        tutti_types::latency::plan(self.editor.spec())
+        tutti_graph::latency_plan(self.editor.spec())
     }
 
     /// The compensation the next commit's plan carries: the spec compiled

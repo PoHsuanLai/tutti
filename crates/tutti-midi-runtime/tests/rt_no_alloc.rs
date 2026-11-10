@@ -8,6 +8,7 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{note_off, registered_controller};
+use tutti_graph::NodeKey;
 use tutti_graph::UmpAt;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Harmony, LoopRange, Offset, Prepare, Transport,
@@ -16,7 +17,7 @@ use tutti_midi_runtime::{
     ClockNode, HarmonyNode, MidiClipNode, MidiIn, MidiInputNode, MidiMailbox, MidiOutNode,
     MidiQueueNode, TimedHarmony, TimedMidiEvent, TimedQueueNode,
 };
-use tutti_types::{At, Beat, Bpm, Frame, FrameClock, NodeKey, SampleRate, Samples};
+use tutti_types::{At, Beat, Bpm, Frame, FrameClock, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
 #[global_allocator]

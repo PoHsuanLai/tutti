@@ -29,7 +29,8 @@ use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::MidiMessage;
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_transport::Transport;
-use tutti_types::{Beat, BeatDuration, Bpm, NodeKey, SampleRate};
+use tutti_types::{Beat, BeatDuration, Bpm, SampleRate};
+use tutti_graph::NodeKey;
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 

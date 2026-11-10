@@ -81,10 +81,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_plugin::MainThread;
 
+use tutti_graph::NodeKey;
 use tutti_plugin::catalog::{AudioConfig, Plugin, PluginId};
 use tutti_plugin::handles::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
 use tutti_plugin::{BridgeError, Liveness, Verdict};
-use tutti_types::NodeKey;
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{

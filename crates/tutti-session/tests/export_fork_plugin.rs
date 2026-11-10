@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use support::{clap_probe, plugin_server};
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
 use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_nodes::testing::Const;
@@ -27,7 +28,7 @@ use tutti_session::{
     PluginLoadRequest, Session,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate};
+use tutti_types::{Beat, Bpm, SampleRate};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const RATE: f64 = 48_000.0;

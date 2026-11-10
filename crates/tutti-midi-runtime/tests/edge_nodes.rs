@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi::{note_off, note_on, pitch_bend, registered_controller, timing_clock};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Io, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges,
@@ -20,7 +21,7 @@ use tutti_midi_runtime::{
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
 use tutti_midi_types::{MidiMessage, cc, from_midi1_bytes};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
@@ -91,12 +92,10 @@ fn rig<N: tutti_graph::IntoNode>(
             }),
         );
     }
-    ed.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
-        tutti_types::graph::OutPort {
-            node: NodeKey(2),
-            port: 0,
-        },
-    )];
+    ed.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
+        node: NodeKey(2),
+        port: 0,
+    })];
     ed.commit().expect("commits");
     (ed, exec, controls, seen)
 }

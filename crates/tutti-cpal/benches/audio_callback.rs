@@ -20,11 +20,12 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_cpal::{AudioCallbackState, OutputBlock, process_audio};
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare, TapReader};
+use tutti_graph::{NodeKey, TapAlign, TapId};
+use tutti_graph::{OutPort, Source};
 use tutti_nodes::testing::Osc;
 use tutti_transport::Transport;
 use tutti_types::SampleRate;
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{ChannelLayout, Hz, InterleavedMut, NodeKey, Samples, TapAlign, TapId};
+use tutti_types::{ChannelLayout, Hz, InterleavedMut, Samples};
 
 const SR: f64 = 48_000.0;
 

@@ -9,13 +9,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use common::{Kind, TestNode, prepare};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node, Prepare,
     Shape, Status, Transport, Unforkable, compile,
 };
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_rt::RtScope;
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{At, ChannelLayout, NodeKey, Samples};
+use tutti_types::{At, ChannelLayout, Samples};
 use tutti_ump::Ump;
 
 const NODE: NodeKey = NodeKey(1);
@@ -393,7 +394,7 @@ fn a_shape_mismatch_is_refused() {
     let shape = TestNode::new(later.clone()).shape();
     spec.topology.nodes.insert(
         lagged,
-        tutti_types::graph::NodeSpec::new("lag", shape.audio_in, shape.audio_out)
+        tutti_graph::NodeSpec::new("lag", shape.audio_in, shape.audio_out)
             .with_latency(shape.latency.samples())
             .with_tail(shape.tail),
     );
@@ -675,9 +676,9 @@ fn set_latency_cuts_a_fade() {
 /// `Reference::set_graph_with_fades` → the fade runs on → fails.
 #[test]
 fn the_reference_cuts_a_fade_on_a_latency_change() {
+    use tutti_graph::NodeSpec;
+    use tutti_graph::Topology;
     use tutti_graph::{GraphSpec, Reference};
-    use tutti_types::Topology;
-    use tutti_types::graph::NodeSpec;
 
     let spec_at = |generation: u32, latency: usize| {
         let mut t = Topology {

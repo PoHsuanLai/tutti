@@ -7,16 +7,17 @@
 use std::sync::Arc;
 
 use tutti_fixtures::midi;
+use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, EventEdge, EventIn, EventOut, Executor, Io, Node, Prepare, Schedule, Shape,
     Status, Transport, Unforkable,
 };
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_nodes::ChannelSumNode;
 use tutti_polysynth::{OscillatorType, PolySynth, SynthConfig, UnisonConfig};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const SR: f64 = 48_000.0;

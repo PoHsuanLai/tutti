@@ -46,8 +46,9 @@
 
 use std::num::NonZeroU32;
 
-use tutti_types::graph::{InPort, OutPort, Source};
-use tutti_types::{Latency, NodeKey, Samples, Tail, UnitAddr};
+use crate::NodeKey;
+use crate::{InPort, OutPort, Source};
+use tutti_types::{Latency, Samples, Tail, UnitAddr};
 
 use crate::arena::Role;
 use crate::compile::VerifyError;
@@ -131,7 +132,7 @@ pub enum DelayKey {
     /// One lane of an aligned meter, delayed like an output channel.
     Meter {
         /// The meter.
-        meter: tutti_types::MeterId,
+        meter: crate::MeterId,
         /// The lane within it.
         lane: usize,
         /// What feeds it.
@@ -140,7 +141,7 @@ pub enum DelayKey {
     /// One lane of an aligned tap, delayed like an output channel.
     Tap {
         /// The tap.
-        tap: tutti_types::TapId,
+        tap: crate::TapId,
         /// The lane within it.
         lane: usize,
         /// What feeds it.
@@ -875,9 +876,9 @@ pub struct Plan {
     pub(crate) audio_feedback: Vec<FeedbackSpec>,
     pub(crate) event_feedback: Vec<FeedbackSpec>,
     pub(crate) delays: Vec<DelaySpec>,
-    pub(crate) taps: Vec<tutti_types::TapId>,
+    pub(crate) taps: Vec<crate::TapId>,
     /// The meters the plan measures, with their lane counts.
-    pub(crate) meters: Vec<(tutti_types::MeterId, usize)>,
+    pub(crate) meters: Vec<(crate::MeterId, usize)>,
     pub(crate) units: Vec<PlanUnit>,
     pub(crate) store_len: u32,
     pub(crate) order: Vec<NodeKey>,
@@ -1088,7 +1089,7 @@ impl Plan {
 
     /// Per output channel, how far a source *outside* the graph must pre-roll
     /// to stay aligned with the slowest channel — the same figure
-    /// `tutti_types::Compensation::for_channel` reports.
+    /// `crate::Compensation::for_channel` reports.
     pub fn compensation(&self) -> &[Samples] {
         &self.compensation
     }

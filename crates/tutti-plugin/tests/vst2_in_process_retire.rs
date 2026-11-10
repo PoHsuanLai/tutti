@@ -22,10 +22,11 @@
 use std::path::PathBuf;
 
 use assert_no_alloc::AllocDisabler;
+use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Prepare, Transport, Unforkable};
+use tutti_graph::{OutPort, Source};
 use tutti_plugin::in_process_vst2_client;
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{NodeKey, SampleRate, Samples};
+use tutti_types::{SampleRate, Samples};
 
 #[path = "support/probe_path.rs"]
 mod probe_path;

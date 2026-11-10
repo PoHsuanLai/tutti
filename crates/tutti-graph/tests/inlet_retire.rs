@@ -4,8 +4,9 @@
 //! a tap's lanes are.
 
 use tutti_graph::{CrossfadeCurve, Editor, Fade, InletNode, Prepare, TapReader, Transport};
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapId};
+use tutti_graph::{NodeKey, TapId};
+use tutti_graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
 const KEY: NodeKey = NodeKey(7);
 

@@ -6,10 +6,11 @@
 //! `tutti-session`'s `tests/engine.rs`.
 
 use tutti_engine::{Engine, HeardTapError};
+use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, TapReader, Unforkable};
+use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 

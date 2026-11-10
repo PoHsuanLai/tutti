@@ -162,6 +162,14 @@ impl Editor for AuGuiInstance {
         })
     }
 
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        self.inner.get_state(main).map_err(|e| {
+            PluginError::Editor(EditorError::PluginError(format!(
+                "AU get_state failed: {e}"
+            )))
+        })
+    }
+
     fn poll_edits(&mut self, _main: &MainThread) -> Vec<(ParamId, f32)> {
         // AUv2 doesn't have a built-in parameter change notification from GUI.
         // Parameter changes from Cocoa views go through AudioUnitSetParameter directly.

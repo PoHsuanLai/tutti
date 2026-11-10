@@ -83,6 +83,49 @@ impl Absorption {
             .fold(0.0, f64::max)
     }
 
+    /// A bound on the largest `|G(e^jw)|`: the gain of a [`Gain`](Self::Gain), the
+    /// exact peak of a one-pole (at DC or at Nyquist), and for bands the largest
+    /// of a grid of 4096 frequencies plus what the response can move between two
+    /// of them (its slope is at most `2 p / (1 - p)` times each term's weight, for
+    /// each pole `p`). Tighter than the `majorant` at `r = 1` when the bands
+    /// rise with frequency, where the sum of the magnitudes of the three weights
+    /// exceeds the peak.
+    fn sup(&self, rate: f64) -> f64 {
+        let Absorption::Bands {
+            low,
+            mid,
+            high,
+            crossover,
+        } = *self
+        else {
+            return self.majorant(1.0, rate);
+        };
+        const POINTS: usize = 4096;
+        let (low, mid, high) = (
+            f64::from(low.get()),
+            f64::from(mid.get()),
+            f64::from(high.get()),
+        );
+        let pole = |fc: Hz| libm::exp(-std::f64::consts::TAU * f64::from(fc.get()) / rate);
+        let (p1, p2) = (pole(crossover[0]), pole(crossover[1]));
+        if [low, mid, high].iter().any(|g| !g.is_finite() || *g < 0.0)
+            || ![p1, p2]
+                .iter()
+                .all(|p| p.is_finite() && *p > 0.0 && *p < 1.0)
+        {
+            return f64::INFINITY;
+        }
+        let slope =
+            (mid - high).abs() * 2.0 * p2 / (1.0 - p2) + (low - mid).abs() * 2.0 * p1 / (1.0 - p1);
+        let peak = (0..=POINTS)
+            .map(|k| {
+                self.response(std::f64::consts::PI * k as f64 / POINTS as f64, rate)
+                    .norm()
+            })
+            .fold(0.0, f64::max);
+        peak + slope * std::f64::consts::PI / POINTS as f64 / 2.0
+    }
+
     /// `sum |g_k| r^-k` over the impulse response of one trip, for `r` in
     /// `(0, 1]`: the l1 norm at `r = 1`, and a bound on `|G|` on the circle
     /// `|z| = r` (a delay of `D` frames there has magnitude `r^-D`). Infinite when
@@ -520,7 +563,11 @@ impl Fdn {
     /// `|z| = r`: the absorption's and the nested all-pass's majorants, and the
     /// delay's `r^-m`.
     fn trip_gain(&self, line: &Line, r: f64, rate: f64) -> f64 {
-        let mut g = line.absorption.majorant(r, rate);
+        let mut g = if r == 1.0 {
+            line.absorption.sup(rate)
+        } else {
+            line.absorption.majorant(r, rate)
+        };
         if let Some(d) = line.diffuser {
             // On the unit circle an all-pass has modulus 1; inside it, the
             // majorant of its impulse response bounds it.

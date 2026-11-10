@@ -413,6 +413,8 @@ jobs:
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-dsp --lib -- -D warnings
+          cargo clippy --locked -p tutti-dsp --lib --features contract -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
@@ -738,6 +740,11 @@ jobs:
       # — and rustdoc builds none, so the line above never documents it. The
       # tests and clippy (`--all-targets`) do reach it.
       - run: cargo doc --locked -p tutti-graph --no-deps --features contract
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # `tutti_dsp::contract` (doc 024 section 6) is behind the same kind of
+      # feature, for the same reason.
+      - run: cargo doc --locked -p tutti-dsp --no-deps --features contract
         env:
           RUSTDOCFLAGS: -D warnings
       # Each feature of the feature-gated crates alone. The union above cannot

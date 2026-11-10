@@ -3668,6 +3668,7 @@ dependencies = [
  "rustfft",
  "serde",
  "thiserror 2.0.21",
+ "tutti-dsp",
  "tutti-fixtures",
  "tutti-types",
 ]

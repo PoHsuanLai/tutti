@@ -4,7 +4,7 @@
 //! rather than boxed: a [`Design`] has a `Controls` type and a [`Realization`] of its
 //! own, and erasing them would bring back a settings bag. The node holds the
 //! design, its realization and the algorithm's [`Param`] cells ([`ControlParams`]),
-//! and per block it reads the cells once, designs a [`Network`] when the
+//! and per block it reads the cells once, designs a [`Model`](Design::Model) when the
 //! controls changed, moves the realization to it ([`Realization::retarget`]), renders, and
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
 //!
@@ -196,7 +196,7 @@ enum Mode<C> {
 /// # Controls
 ///
 /// Per block the node reads its cells once ([`ControlParams::read`]), and when
-/// the controls differ from the last block's it designs the [`Network`] **in
+/// the controls differ from the last block's it designs the [`Model`](Design::Model) **in
 /// place** into one it owns ([`Design::design_into`]: a network is about 56 KB,
 /// too large to build on an audio thread) and calls [`Realization::retarget`], which
 /// moves the realization toward it. An unmodulated, unchanged reverb designs once.

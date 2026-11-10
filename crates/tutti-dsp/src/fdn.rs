@@ -97,9 +97,26 @@ impl Slew {
     }
 }
 
+/// A deliberate flaw the contract's mutation records plant in a kernel (design
+/// 024 section 6.1): test-only.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Flaw {
+    #[default]
+    None,
+    /// `reset` empties the lines and leaves every ramp where it was.
+    ResetKeepsRamps,
+    /// `process` restarts its chunk count at every call, so a ramp's clock is
+    /// the block's, not the stream's.
+    RestartClock,
+}
+
 /// The realization of a feedback delay network.
 #[derive(Clone, Debug)]
 pub struct FdnKernel {
+    #[cfg(test)]
+    flaw: Flaw,
+
     rate: f64,
     ramp_chunks: u32,
     max_lines: usize,
@@ -151,6 +168,8 @@ pub struct FdnKernel {
 impl FdnKernel {
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(test)]
+            flaw: Flaw::None,
             rate: 48_000.0,
             ramp_chunks: 1,
             max_lines: 0,
@@ -209,6 +228,12 @@ impl FdnKernel {
             .sum()
     }
 
+    /// Plants `flaw` (for the contract's mutation records).
+    #[cfg(test)]
+    pub(crate) fn flawed(&mut self, flaw: Flaw) {
+        self.flaw = flaw;
+    }
+
     fn start_phase(&self, j: usize) -> f64 {
         std::f64::consts::TAU * j as f64 / self.max_lines.max(1) as f64
     }
@@ -216,28 +241,36 @@ impl FdnKernel {
     /// Back to silence with every ramp landed: what a fresh realization is after its
     /// first retarget.
     fn settle(&mut self) {
+        self.settle_with(true);
+    }
+
+    /// [`settle`](Self::settle), with the ramps landed only if `land` (a test-only
+    /// flaw leaves them where they were).
+    fn settle_with(&mut self, land: bool) {
         self.buf.fill(0.0);
         self.pre.fill(0.0);
         self.w = 0;
         self.pre_w = 0;
         self.pos = 0;
         self.state.fill([0.0; 4]);
-        for s in &mut self.len {
-            s.snap();
-        }
-        self.pre_len.snap();
-        self.v_len.snap();
-        self.depth.snap();
-        self.wet.snap();
-        self.width.snap();
-        for g in &mut self.gain {
-            g.iter_mut().for_each(Slew::snap);
-        }
-        for s in self.v.iter_mut().chain(&mut self.input) {
-            s.snap();
-        }
-        for o in &mut self.out {
-            o.iter_mut().for_each(Slew::snap);
+        if land {
+            for s in &mut self.len {
+                s.snap();
+            }
+            self.pre_len.snap();
+            self.v_len.snap();
+            self.depth.snap();
+            self.wet.snap();
+            self.width.snap();
+            for g in &mut self.gain {
+                g.iter_mut().for_each(Slew::snap);
+            }
+            for s in self.v.iter_mut().chain(&mut self.input) {
+                s.snap();
+            }
+            for o in &mut self.out {
+                o.iter_mut().for_each(Slew::snap);
+            }
         }
         for j in 0..self.max_lines {
             self.phase[j] = self.start_phase(j);
@@ -498,6 +531,12 @@ impl Realization<Network> for FdnKernel {
     }
 
     fn reset(&mut self) {
+        #[cfg(test)]
+        if self.flaw == Flaw::ResetKeepsRamps {
+            // Everything goes but the ramps, which stay where they were.
+            self.settle_with(false);
+            return;
+        }
         self.settle();
     }
 
@@ -528,6 +567,10 @@ impl Effect<Network> for FdnKernel {
             return;
         }
         let n = self.n;
+        #[cfg(test)]
+        if self.flaw == Flaw::RestartClock {
+            self.pos = 0;
+        }
         let scale = 1.0 / input.len().max(1) as f32;
         let p = self.pole.map(|x| 1.0 - x);
         let mut d = [0.0f32; 16];

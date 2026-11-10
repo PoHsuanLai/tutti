@@ -205,9 +205,9 @@ mod tests {
     use tutti_types::{Db, Seconds};
 
     use super::*;
-    use crate::contract::design::{
-        DesignCase, Mutant, cases, design_contract, map_absorption, map_fdn,
-    };
+    use crate::contract::cases::design as cases;
+    use crate::contract::flaws::{Mutant, map_absorption, map_fdn};
+    use crate::contract::{Anchor, DesignCase, Hook, LtiCase, ReverbCase};
     use crate::network::Band;
     use crate::{Lti as _, System as _};
 
@@ -238,6 +238,35 @@ mod tests {
                 .iter()
                 .flat_map(|&v| [controls(v, 0.5), controls(0.5, v), controls(v, v)])
                 .collect()
+        }
+
+        fn musical_delay(&self, n: &Network) -> usize {
+            n.min_delay() as usize
+        }
+
+        /// Freeverb has no size, diffusion, pre-delay, freeze, width or wet
+        /// control, so those hooks are empty, and its network never sets a
+        /// pre-delay, a width or a wet gain.
+        fn vacant(&self) -> &'static [(Hook, &'static str)] {
+            &[
+                (Hook::SizePairs, "Freeverb has no size control"),
+                (Hook::DiffusionPairs, "Freeverb has no diffusion control"),
+                (Hook::PreDelayPairs, "Freeverb has no pre-delay"),
+                (Hook::FreezePairs, "Freeverb cannot freeze"),
+                (Hook::WidthPairs, "Freeverb has no width control"),
+                (Hook::WetPairs, "Freeverb has no wet gain"),
+            ]
+        }
+    }
+
+    impl ReverbCase for FreeverbDesign {
+        /// 15%. The measured figure is the energy slope 40 to 65 dB down, where
+        /// a bank of combs of 1116 to 1640 frames (a 1.47 ratio in rate) has
+        /// not yet settled on the slowest: it lands 5 to 11% under the network's
+        /// `rt60`, which is the slowest comb's (design 022 asked for 10%; the
+        /// bank's own spread needs more).
+        fn tolerance(&self) -> f32 {
+            0.15
         }
 
         /// The RT60 of the slowest comb (1617 + 23 = 1640 frames at 44.1 kHz,
@@ -273,16 +302,47 @@ mod tests {
         }
         // Freeverb has no size, diffusion, pre-delay or freeze control, so the
         // size, diffusion and pre-delay pairs are empty and `frozen` is false:
-        // those directions of the cases are vacuous for it. The freeze case
-        // still asserts that no control reaches a lossless loop.
+        // those directions of the cases are vacuous for it (`vacant` says so).
+        // The freeze case still asserts that no control reaches a lossless loop.
     }
 
-    design_contract!(FreeverbDesign);
+    impl LtiCase for FreeverbDesign {
+        /// `|H_L(0)| = 0.015 sum_left 1 / (1 - g_loop)`: at DC each comb is
+        /// `0.015 z^-D / (1 - g_loop z^-D)` with the one-pole at its DC gain (the
+        /// loop gain `g_loop = room * 0.28 + 0.7`), the eight left combs add, and
+        /// the four all-passes have unit gain at DC for a feedback of 0.5. The right
+        /// channel is the same sum over its eight combs.
+        fn anchors(&self) -> Vec<Anchor<FreeverbControls>> {
+            let rate = SampleRate(48_000.0);
+            [(0.5, 0.5), (0.0, 0.5), (1.0, 0.2), (0.9, 1.0)]
+                .into_iter()
+                .flat_map(|(room, damp)| {
+                    let loop_gain = f64::from(room * 0.28 + 0.7);
+                    let dc = 8.0 * f64::from(Freeverb::FIXED_GAIN) / (1.0 - loop_gain);
+                    (0..2).map(move |output| Anchor {
+                        controls: controls(room, damp),
+                        rate,
+                        output,
+                        freq: tutti_types::Hz(0.0),
+                        gain: dc,
+                        tolerance: 1e-4,
+                    })
+                })
+                .collect()
+        }
+
+        fn fill(&self, rate: SampleRate, trips: f32) -> usize {
+            (trips * self.bounds(&self.ceiling(rate)).line) as usize
+        }
+    }
+
+    crate::design_contract!(FreeverbDesign, Lti, reverb);
 
     fn mutant(f: fn(&mut Network)) -> Mutant<FreeverbDesign> {
         Mutant::new(FreeverbDesign, f)
     }
 
+    #[track_caller]
     fn fails(result: Result<(), String>, why: &str) {
         let e = result.expect_err("the case should fail on the defective design");
         assert!(e.contains(why), "{e}");
@@ -364,6 +424,71 @@ mod tests {
         // pre-delay: a frame where there is none.
         let m = mutant(|n| n.pre_delay = tutti_types::Samples(n.pre_delay.get() + 1));
         fails(cases::pre_delay(&m), "pre-delay");
+    }
+
+    /// The cases the `Lti` group and the vacuity case added fail on a Freeverb with
+    /// the defect their mutation names.
+    #[test]
+    fn a_defective_freeverb_fails_the_lti_design_cases() {
+        use crate::contract::flaws::Lying;
+        use crate::network::{Tap, Taps};
+        let louder = |n: &mut Network| {
+            map_absorption(n, |a| match a {
+                Absorption::OnePole { gain, damp } => Absorption::OnePole {
+                    gain: gain * 1.1,
+                    damp,
+                },
+                a => a,
+            })
+        };
+        // radius and no rescale: every comb gain 10% high takes the loudest room
+        // over 1, and its absorption peak with it.
+        fails(cases::radius(&mutant(louder)), "spectral radius");
+        fails(cases::no_rescale(&mutant(louder)), "rescale");
+        // anchors: the input gain (Freeverb's FIXED_GAIN) 10% high moves the DC gain.
+        let m = mutant(|n| {
+            map_fdn(n, |f| {
+                f.input.as_mut_slice().iter_mut().for_each(|g| *g *= 1.1)
+            })
+        });
+        fails(cases::anchors(&m), "|H| is");
+        // ports: a third output channel the design does not declare.
+        let m = mutant(|n| {
+            let mut taps = Taps::default();
+            taps.taps
+                .push(Tap {
+                    delay: 0.0,
+                    gain: 0.0,
+                    channel: 2,
+                })
+                .unwrap();
+            let _ = n.stages.push(Stage::Taps(taps));
+        });
+        fails(cases::ports(&m), "outputs");
+        // norms: a model whose hinf_norm is a tenth of its own bound is under the
+        // peak (the bound is 2 to 4 times the peak, so a half would not be), and
+        // one 50 times it is far over (checked where the grid resolves the poles).
+        let low = Lying {
+            inner: FreeverbDesign,
+            tail: 1.0,
+            hinf: 0.1,
+            l1: 1.0,
+        };
+        fails(cases::norms(&low), "over hinf_norm");
+        let high = Lying {
+            inner: FreeverbDesign,
+            tail: 1.0,
+            hinf: 50.0,
+            l1: 50.0,
+        };
+        fails(cases::norms(&high), "times the peak");
+        // vacuity: a hook that returns nothing and is not listed, a hook that is
+        // listed and returns something.
+        let mut m = mutant(|_| {});
+        m.vacant = Some(&[]);
+        fails(cases::reverb_vacuity(&m), "returns nothing");
+        m.vacant = Some(&[(Hook::Hostile, "it is not")]);
+        fails(cases::vacuity(&m), "is listed as vacant");
     }
 
     /// At the General MIDI controls the network carries `Freeverb`'s own
@@ -583,10 +708,9 @@ mod tests {
 #[cfg(test)]
 mod realization_tests {
     use super::*;
-    use crate::contract::realization::{
-        Defect, Defective, RealizationCase, cases, realization_contract,
-    };
-    use crate::network::Band;
+    use crate::contract::RealizationCase;
+    use crate::contract::cases::realization as cases;
+    use crate::contract::flaws::{Defect, Defective};
     use crate::{Realization, Setup};
 
     fn controls(room: f32, damp: f32) -> FreeverbControls {
@@ -597,15 +721,6 @@ mod realization_tests {
     }
 
     impl RealizationCase for FreeverbDesign {
-        /// 15%. The measured figure is the energy slope 40 to 65 dB down, where
-        /// a bank of combs of 1116 to 1640 frames (a 1.47 ratio in rate) has
-        /// not yet settled on the slowest: it lands 5 to 11% under the network's
-        /// `rt60`, which is the slowest comb's (design 022 asked for 10%; the
-        /// bank's own spread needs more).
-        fn tolerance(&self) -> f32 {
-            0.15
-        }
-
         fn probes(&self) -> Vec<FreeverbControls> {
             vec![
                 controls(0.5, 0.5),
@@ -625,21 +740,9 @@ mod realization_tests {
                 (controls(0.9, 0.0), controls(0.2, 1.0)),
             ]
         }
-
-        /// Eight combs of `0.015 / (1 - g)` (the one-pole's response is
-        /// non-negative with unit sum, so a comb's impulse response sums to at
-        /// most `1 / (1 - g)` with `g` the loop gain at DC), through four
-        /// all-passes of `1 + 1 / (1 - 0.5) = 3` each.
-        fn peak_bound(&self, _c: &FreeverbControls, network: &Network) -> f32 {
-            let Stage::Fdn(fdn) = &network.stages[0] else {
-                unreachable!("combs first")
-            };
-            let g = fdn.lines[0].absorption.gain(Band::Low).get();
-            8.0 * Freeverb::FIXED_GAIN / (1.0 - g) * 3.0f32.powi(4)
-        }
     }
 
-    realization_contract!(FreeverbDesign);
+    crate::realization_contract!(FreeverbDesign, Lti, reverb);
 
     fn defective(defect: Defect) -> Defective<FreeverbDesign> {
         Defective {
@@ -720,6 +823,44 @@ mod realization_tests {
         );
     }
 
+    /// The `Lti` realization cases fail on a Freeverb with the defect their
+    /// mutation names (and the measured figures of the clean one, with the
+    /// margins, are in the cases' own docs).
+    #[test]
+    fn a_defective_freeverb_fails_the_lti_realization_cases() {
+        use crate::contract::flaws::Lying;
+        // linear: a saturation breaks additivity; a gain that moves with the
+        // frame is linear and breaks shift invariance.
+        fails(cases::linear(&defective(Defect::Tanh)), "additivity");
+        fails(
+            cases::linear(&defective(Defect::PeriodicGain)),
+            "shift invariance",
+        );
+        // response: the output 10% high from the second retarget on, and every
+        // comb gain 5% high.
+        fails(
+            cases::response(&defective(Defect::UnslewedGain(1.1))),
+            "impulse response's spectrum",
+        );
+        fails(
+            cases::response(&defective(Defect::LoopGain(1.05))),
+            "impulse response's spectrum",
+        );
+        // decay: every comb gain 5% high decays at 72% of the radius's rate.
+        fails(
+            cases::decay(&defective(Defect::LoopGain(1.05))),
+            "spectral radius",
+        );
+        // tail tightness: a model whose tail is twice the truth.
+        let lying = Lying {
+            inner: FreeverbDesign,
+            tail: 2.0,
+            hinf: 1.0,
+            l1: 1.0,
+        };
+        fails(cases::tail_tight(&lying), "the tail to");
+    }
+
     /// At the General MIDI controls `retarget` leaves the combs on exactly the
     /// coefficients a freshly built `Freeverb` starts with, bit for bit, so the
     /// realization of the General MIDI send renders what the reverb always did: the
@@ -759,10 +900,10 @@ mod realization_tests {
         let before = realization.figures().comb;
         realization.retarget(&Network::new(rate));
         let mut flat = FreeverbDesign.design(&controls(0.9, 0.9), rate);
-        crate::contract::design::map_absorption(&mut flat, |_| Absorption::Gain(Amplitude(0.5)));
+        crate::contract::flaws::map_absorption(&mut flat, |_| Absorption::Gain(Amplitude(0.5)));
         realization.retarget(&flat);
         let mut unstable = FreeverbDesign.design(&controls(0.9, 0.9), rate);
-        crate::contract::design::map_absorption(&mut unstable, |_| Absorption::OnePole {
+        crate::contract::flaws::map_absorption(&mut unstable, |_| Absorption::OnePole {
             gain: Amplitude(1.5),
             damp: 0.2,
         });

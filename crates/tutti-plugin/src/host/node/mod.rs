@@ -13,8 +13,9 @@
 //! use tutti_graph::Editor;
 //! use tutti_plugin::handles::{PluginClient, PluginControls};
 //! use tutti_graph::NodeKey;
-//! fn insert(client: PluginClient, editor: &mut Editor) -> PluginControls {
-//!     editor.insert(NodeKey(1), "plugin", client.bind())
+//! use tutti_transport::TempoReader;
+//! fn insert(client: PluginClient, tempo: TempoReader, editor: &mut Editor) -> PluginControls {
+//!     editor.insert(NodeKey(1), "plugin", client.bind(tempo))
 //! }
 //! ```
 //!
@@ -178,6 +179,14 @@ pub struct Bound {
     /// block. Installing or clearing a meter publishes into it; nothing
     /// swaps it.
     meter: tutti_transport::MeterSlotReader,
+    /// The project's tempo map, read through the reader `bind` was given and
+    /// lent once per block: the tempo and slope every chunk's transport
+    /// reports. A fork clones it on the control side (its own registration on
+    /// the same cell).
+    tempo: tutti_transport::TempoReader,
+    /// The node's cursor into the map, kept across blocks so the lookups
+    /// start where the last one ended.
+    tempo_cursor: tutti_tempo::Cursor,
     /// The meter the transport snapshot reads when none is installed on the
     /// controls: built once here, on the control thread, because building a
     /// `MeterMap` allocates.
@@ -230,8 +239,9 @@ impl std::fmt::Debug for Bound {
 /// use tutti_graph::Editor;
 /// use tutti_plugin::handles::{PluginClient, PluginControls};
 /// use tutti_graph::NodeKey;
-/// fn insert(client: PluginClient, editor: &mut Editor) -> PluginControls {
-///     editor.insert(NodeKey(1), "plugin", client.bind())
+/// use tutti_transport::TempoReader;
+/// fn insert(client: PluginClient, tempo: TempoReader, editor: &mut Editor) -> PluginControls {
+///     editor.insert(NodeKey(1), "plugin", client.bind(tempo))
 /// }
 /// ```
 pub struct PluginClient<S = Unbound> {
@@ -469,8 +479,15 @@ impl PluginClient<Unbound> {
     /// Install per-block sources before or after — they live on shared cells
     /// ([`controls`](Self::controls)), so an install through a handle reaches
     /// the running node.
+    ///
+    /// `tempo` is the reader of the project's tempo map the node lends once
+    /// per block to tell the plugin the tempo (and CLAP its slope):
+    /// `Session` hands every plugin it inserts one of its own
+    /// (`TransportSettings::tempo_reader`); a host with no session builds one
+    /// over a fixed map ([`TempoReader::fixed`](tutti_transport::TempoReader::fixed)).
+    /// A fork of the node clones it.
     #[must_use]
-    pub fn bind(self) -> PluginClient<Bound> {
+    pub fn bind(self, tempo: tutti_transport::TempoReader) -> PluginClient<Bound> {
         let chunks = self.controls.chunk_counters();
         chunks.attach(self.bridge.audio_buffer());
         self.controls
@@ -530,6 +547,8 @@ impl PluginClient<Unbound> {
                 host_clock: Some(transport_source::HostClock),
                 meter,
                 default_meter: MeterMap::default(),
+                tempo,
+                tempo_cursor: tutti_tempo::Cursor::default(),
                 segments: segment_points::SegmentPoints::default(),
                 params,
                 intake: MidiIntake::default(),

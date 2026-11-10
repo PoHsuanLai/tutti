@@ -889,6 +889,7 @@ copied into a ring a thread of your own drains.
 | Which events | `EventKind::Midi` only. Ramps, segments, harmony and resync are graph control, and are neither copied nor counted | They mean nothing outside the graph, and an `Event` is not what a thread wants to hold. If a consumer needs them, that is a second kind of tap |
 | Time | `TapAlign` as it is: `ToOutput` delays the source by the compiler's `Op::EventDelay` to the outputs' time, `Raw` reads the port as it leaves its node. `ToOutput` is the default | The same compensation an audio tap gets. A MIDI out to hardware should line up with the audio the graph outputs; a reader that wants the node's own time asks for `Raw`. A source that departs later than every output reads as `Raw`, as for audio. `DelayKey::EventTap { tap, from }` names the delay |
 | What the reader gets | `TapEvent { frame: Frame, ump: Ump }`, 24 bytes, `Copy`. `frame` is `Env::frame_at(offset)` of the block the op ran in, after any alignment delay | An offset is relative to a block the reader never sees. An absolute frame on the graph's clock keeps the spacing between events whatever the block sizes were, orders events across taps and against the transport's `At::Frame`, and is what `ClockMap` converts to an OS time for output scheduling (§5, "Timing at the edge"). `u64`, so it does not wrap the way `MidiOutNode`'s `u32` stamp does |
+| A bypassed or muted node | Doc 013's `NodeMode`: a `Bypassed` or `Muted` node's event outputs are empty, so a tap on one reads nothing for those blocks (no loss is counted). An `EventInletNode` is not bypassed in practice; if it is, its waiting list holds and late events land at offset 0 when it runs again | Keeps M1 and E1 in agreement: `NodeMode` decides what a port carries, and the tap copies what it carries |
 | Capacity | An event count named at open (a count of events, a bare `usize` as `Shape::with_event_capacity` takes one: no unit covers it). The ring holds `note_off_room(capacity)`; an event that is not a note-off is refused once `capacity` are held | The ring that decides what a slow reader loses should keep what a hung note needs: the same rule the ports follow (§8). The check is the producer's own occupancy, which can only be an underestimate, as in `TapWriter` |
 | Loss | A refused event is counted once in an `Arc<AtomicU64>` shared with the reader: `EventTapReader::take_lost() -> u64`, events, cleared by the read. A block with no reader writes nothing and counts nothing | As `TapReader::take_lost`. The count is also the session's drop report (`MidiOutDropped`) |
 | Reader | One consumer: `&mut self`, not `Clone`. `pop_into(&mut self, &mut [TapEvent]) -> usize`, `available()`, `id()`, `watch()` | A second consumer is a second tap. Reading advances the read index |
@@ -939,6 +940,7 @@ impl EventTapReader {
     pub fn available(&self) -> usize;
     pub fn take_lost(&self) -> u64;
     pub fn id(&self) -> EventTapId;
+    pub fn rate(&self) -> SampleRate;   // the scale of every frame it pops
     pub fn watch(&self) -> Weak<()>;
 }
 impl Editor {
@@ -1115,11 +1117,14 @@ Each with the recommendation to take unless the owner says otherwise.
    audio thread), and a hardware callback gets an inlet of its own. The
    alternative is an MPSC ring in `tutti-rt` with a loom model, which is a
    larger change for a case a lock on the control side already covers.
-4. **Re-prepare at another rate and the tap.** A tap's frames follow the
-   engine's clock, which moves at a re-prepare (the stream shifts, with no marker,
-   as an audio tap's does under a latency change). Recommended: document it, and
-   have the session reopen its event taps when it re-prepares. The alternative is
-   a rate field per `TapEvent`, which costs every element for a rare event.
+4. **Re-prepare at another rate and the tap. Decided (review of #458).** A
+   tap's frames are on the graph clock at the rate prepared when they were
+   written, so frames from before and after a re-prepare at another rate are on
+   different scales. The session reopens its event taps when it re-prepares, so
+   one reader's frames are always on one scale, the rate it was opened at
+   (`EventTapReader::rate() -> SampleRate`), which is what a reader converts
+   with. A rate field per `TapEvent` was rejected: it costs every element for a
+   rare event.
 5. **`At::Beat` on the inlet.** Recommended: refused, as `TimedSender` refuses it:
    a beat waits on the transport and may wait forever, which makes the waiting
    list's bound unclear. Revisit if a producer needs it.

@@ -65,8 +65,10 @@ pub trait Design: Clone + Send {
     /// What runs this design's models.
     type Realization: Realization<Self::Model, Bounds = Self::Bounds>;
 
-    /// How often a node designs and retargets.
-    const CADENCE: Cadence = Cadence::Block;
+    /// The grid on which `theta` is sampled, and so whether a render depends
+    /// on how audio is split into blocks ([`Cadence::block_independent`]). The
+    /// contract's block-independence cases run iff it is.
+    const CADENCE: Cadence = Cadence::BLOCK;
 
     /// The widths of the signal this design takes and gives.
     fn channels(&self) -> Channels;

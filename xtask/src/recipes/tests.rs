@@ -7,6 +7,7 @@
 //! - the stub moved back to `/tmp`: `check_windows_stubs_under_the_target_dir`;
 //! - the `-E` filter dropped from `test`: `test_builds_the_plugins_then_runs_nextest`;
 //! - `deny` without its probe: `deny_probes_cargo_deny_first`.
+//! - `check-hosting` dropped from `ci`: `check_hosting_runs_its_script_and_ci_runs_it`.
 
 use super::*;
 
@@ -33,9 +34,20 @@ fn every_recipe_plans_with_no_arguments() {
     }
 }
 
+/// The justfile's 37, and `check-hosting` (design 021 step 1) since.
 #[test]
-fn the_justfile_had_37_recipes() {
-    assert_eq!(RECIPES.len(), 37);
+fn the_justfiles_37_recipes_and_check_hosting() {
+    assert_eq!(RECIPES.len(), 38);
+}
+
+#[test]
+fn check_hosting_runs_its_script_and_ci_runs_it() {
+    assert_eq!(dry("check-hosting", &[]), ["scripts/check-hosting.sh"]);
+    assert!(
+        dry("ci", &[])
+            .iter()
+            .any(|l| l == "scripts/check-hosting.sh")
+    );
 }
 
 #[test]

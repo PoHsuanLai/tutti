@@ -9,11 +9,12 @@
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
 use crate::note_id::PerNoteMap;
+use tutti_midi_protocol::{MpeZones, u16_to_unit_f32, unit_f32_to_u16};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 use tutti_voicing::{
-    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing, Zones,
+    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing,
 };
 
 pub use tutti_voicing::VoiceId;
@@ -451,7 +452,7 @@ impl VoiceAllocator {
             Some((id, v)) if id.channel_note().is_some_and(|(_, note)| note == key) => (id, v),
             _ => (
                 NoteId::from_channel_note(channel, key),
-                f32::from(velocity16) / 65535.0,
+                u16_to_unit_f32(velocity16),
             ),
         }
     }
@@ -495,7 +496,7 @@ impl VoiceAllocator {
         velocity: f32,
     ) -> AllocationResult {
         // 16 bits, never 0 (a zero velocity is a note-off).
-        let v16 = ((velocity.clamp(0.0, 1.0) * 65535.0) as u16).max(1);
+        let v16 = unit_f32_to_u16(velocity).max(1);
         let on = Voice2::NoteOn {
             note,
             velocity: v16,
@@ -573,7 +574,7 @@ impl VoiceAllocator {
 
     /// Which channels are MPE zones: a master's pitch bend adds to each of
     /// its members' own.
-    pub fn set_zones(&mut self, zones: Zones) {
+    pub fn set_zones(&mut self, zones: Option<MpeZones>) {
         self.core.set_zones(zones);
     }
 

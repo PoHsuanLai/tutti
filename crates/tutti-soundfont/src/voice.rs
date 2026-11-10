@@ -6,7 +6,8 @@ use std::f32::consts;
 
 use tutti_dsp::{Biquad, DirectForm1, SOLVE_CEILING, SvfControls, SvfModel, SvfType};
 use tutti_sf2::Side;
-use tutti_types::{Db, Hz, Q, SampleRate};
+use tutti_types::{Db, Hz, Q, SampleRate, Semitones};
+use tutti_ump::MidiChannel;
 
 /// The longest an exclusive class's quick release takes, in seconds, to fall
 /// 100 dB as every release time does (section 8.1.2, generator 38): the floor
@@ -259,7 +260,12 @@ impl Voice {
         self.vol_env.value()
     }
 
-    pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel]) -> bool {
+    pub(crate) fn process(
+        &mut self,
+        data: &[i16],
+        channels: &[Channel],
+        bends: &[Semitones; MidiChannel::COUNT as usize],
+    ) -> bool {
         if self.note_gain < SoundFontMath::NON_AUDIBLE {
             return false;
         }
@@ -278,7 +284,7 @@ impl Voice {
             (0.01_f32 * channel_info.modulation() + self.vib_lfo_to_pitch) * self.vib_lfo.value();
         let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.value()
             + self.mod_env_to_pitch * self.mod_env.value();
-        let channel_pitch_change = channel_info.tune() + channel_info.pitch_bend();
+        let channel_pitch_change = channel_info.tune() + bends[self.channel as usize].0;
         let pitch = self.key as f32 + vib_pitch_change + mod_pitch_change + channel_pitch_change;
         if !self.oscillator.process(data, &mut self.block[..], pitch) {
             return false;

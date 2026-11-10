@@ -6,7 +6,8 @@
 
 use tutti_midi_protocol::narrow_velocity;
 use tutti_sf2::SoundFont;
-use tutti_types::Amplitude;
+use tutti_types::{Amplitude, Semitones};
+use tutti_ump::MidiChannel;
 use tutti_voicing::{Command, VoiceId, VoiceView};
 
 use crate::channel::Channel;
@@ -123,8 +124,10 @@ impl Voices {
                     }
                 }
                 // `Rules::mode` is `Poly`, which never moves a voice to a new
-                // key; and the pitch the voices sound is read from the channel
-                // each chunk, so a `Retune` has nothing to tell them.
+                // key; and a `Retune` is the core's answer to a bend, which
+                // `process` reads back from the core each chunk
+                // (`Voicing::channel_pitch`): it is the one place the bend
+                // lives, so there is nothing to mirror here.
                 Command::Retarget { .. } | Command::Retune { .. } => {}
             }
         }
@@ -142,10 +145,15 @@ impl Voices {
     }
 
     /// Renders one chunk of every voice, and drops the ones that have ended.
-    pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel]) {
+    pub(crate) fn process(
+        &mut self,
+        data: &[i16],
+        channels: &[Channel],
+        bends: &[Semitones; MidiChannel::COUNT as usize],
+    ) {
         let mut i = 0;
         while i < self.active.len() {
-            if self.active[i].voice.process(data, channels) {
+            if self.active[i].voice.process(data, channels, bends) {
                 i += 1;
             } else {
                 let slot = self.active.remove(i);

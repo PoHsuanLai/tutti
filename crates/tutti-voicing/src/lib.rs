@@ -30,5 +30,4 @@ pub use holds::Holds;
 pub use phase::Phase;
 pub use voicing::{
     Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, VoiceView, Voicing,
-    Zones, ZonesError,
 };

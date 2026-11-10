@@ -17,6 +17,7 @@
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph};
 use tutti_graph::GraphBuilder;
 use tutti_graph::NodeKey;
+use tutti_types::Azimuth;
 use tutti_types::Seconds;
 
 /// The rate [`export`] renders at, and so the rate every graph is built for.
@@ -74,8 +75,8 @@ fn quad_surround_graph() -> GraphBuilder {
         &mut g,
         ChannelLayout::QUAD,
         &[
-            VbapSource::at(src_front, 45.0), // FL (ch0)
-            VbapSource::at(src_rear, 135.0), // RL (ch2)
+            VbapSource::at(src_front, Azimuth::new(45.0)), // FL (ch0)
+            VbapSource::at(src_rear, Azimuth::new(135.0)), // RL (ch2)
         ],
     )
     .expect("build quad surround mix");
@@ -145,8 +146,8 @@ fn stereo_net_widened_then_exports_four_channels() {
         &mut g,
         ChannelLayout::QUAD,
         &[
-            VbapSource::at(src_front, 45.0),
-            VbapSource::at(src_rear, 135.0),
+            VbapSource::at(src_front, Azimuth::new(45.0)),
+            VbapSource::at(src_rear, Azimuth::new(135.0)),
         ],
     )
     .expect("build quad mix");
@@ -209,7 +210,7 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
-        &[VbapSource::at(src, 0.0)],
+        &[VbapSource::at(src, Azimuth::new(0.0))],
     )
     .expect("build 5.1 mix");
     g.pipe_output(mix);
@@ -279,7 +280,7 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
-        &[VbapSource::at(src, 0.0)], // dead center → C channel
+        &[VbapSource::at(src, Azimuth::new(0.0))], // dead center → C channel
     )
     .expect("build 5.1 mix");
     g.pipe_output(mix);
@@ -361,7 +362,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
-        &[VbapSource::at(src, 0.0)], // dead center → C channel (2)
+        &[VbapSource::at(src, Azimuth::new(0.0))], // dead center → C channel (2)
     )
     .expect("build 5.1 mix");
     g.pipe_output(mix);
@@ -401,7 +402,7 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),
-        &[VbapSource::at(src, 150.0)], // hard rear-left
+        &[VbapSource::at(src, Azimuth::new(150.0))], // hard rear-left
     )
     .expect("build 7.1.4 mix");
     g.pipe_output(mix);
@@ -444,7 +445,7 @@ fn atmos_7_1_4_downmixes_surround_into_front() {
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),
-        &[VbapSource::at(src, 150.0)], // hard rear-left → Lrs (discrete ch 6)
+        &[VbapSource::at(src, Azimuth::new(150.0))], // hard rear-left → Lrs (discrete ch 6)
     )
     .expect("build 7.1.4 mix");
     g.pipe_output(mix);

@@ -139,6 +139,13 @@ impl Restore {
     fn set() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
+            // SAFETY: `stmxcsr`/`ldmxcsr` read and write only this thread's
+            // MXCSR register through a pointer to a live local `u32` (4 bytes,
+            // as `stmxcsr` stores and `ldmxcsr` loads); SSE is part of the
+            // x86_64 baseline, and `nostack` holds because neither touches the
+            // stack. Setting FTZ|DAZ changes no memory, only how denormals
+            // round in float code (see `# Soundness` on the caller: no memory
+            // safety depends on an exact float result).
             unsafe {
                 let mut prev: u32 = 0;
                 core::arch::asm!("stmxcsr [{}]", in(reg) &mut prev, options(nostack));
@@ -152,6 +159,11 @@ impl Restore {
         }
         #[cfg(target_arch = "aarch64")]
         {
+            // SAFETY: `mrs`/`msr` on FPCR read and write only this thread's
+            // floating-point control register and touch no memory; FPCR is
+            // available at EL0 on aarch64. Setting FZ changes only how
+            // denormals are handled in float code, and no memory safety
+            // depends on an exact float result (see `# Soundness` above).
             unsafe {
                 let prev: u64;
                 core::arch::asm!("mrs {}, fpcr", out(reg) prev);
@@ -175,10 +187,16 @@ impl Drop for Restore {
     #[inline]
     fn drop(&mut self) {
         #[cfg(target_arch = "x86_64")]
+        // SAFETY: restores the MXCSR value `set` read from this same thread
+        // (`Restore` is `!Send`, so drop runs on it) through a pointer to the
+        // live `u32` field; the value came from `stmxcsr`, so it has no
+        // reserved bit set that `ldmxcsr` would fault on.
         unsafe {
             core::arch::asm!("ldmxcsr [{}]", in(reg) &self.prev_mxcsr, options(nostack));
         }
         #[cfg(target_arch = "aarch64")]
+        // SAFETY: writes back the FPCR value `set` read from this same thread
+        // (`Restore` is `!Send`, so drop runs on it); no memory is touched.
         unsafe {
             core::arch::asm!("msr fpcr, {}", in(reg) self.prev_fpcr);
         }

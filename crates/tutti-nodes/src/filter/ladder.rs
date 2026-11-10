@@ -542,15 +542,15 @@ mod tests {
         assert_param_fork(LadderFilterNode::<f64>::with_channels(
             ChannelLayout::STEREO,
             LadderType::LP24,
-            800.0,
-            0.3,
+            Hz::new(800.0),
+            Resonance::new(0.3),
         ));
     }
 
     #[test]
     fn test_ladder_lp24_attenuates_high_freq() {
         let mut filter = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 500.0, 0.0),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(500.0), Resonance::new(0.0)),
             RATE_44K,
         );
 
@@ -573,7 +573,10 @@ mod tests {
     /// Gain (dB) of a 0.01-amplitude sine at `f` through the node, projected
     /// on the last second of two.
     fn gain_db(ty: LadderType, fc: f32, res: f32, f: f64) -> f64 {
-        let mut node = prepared_at(LadderFilterNode::<f64>::new(ty, fc, res), RATE_44K);
+        let mut node = prepared_at(
+            LadderFilterNode::<f64>::new(ty, Hz::new(fc), Resonance::new(res)),
+            RATE_44K,
+        );
         let n = 44100;
         let amp = 0.01;
         let x: Vec<f32> = (0..2 * n)
@@ -616,7 +619,7 @@ mod tests {
     #[test]
     fn test_ladder_hp24_attenuates_low_freq() {
         let mut filter = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::HP24, 2000.0, 0.0),
+            LadderFilterNode::<f64>::new(LadderType::HP24, Hz::new(2000.0), Resonance::new(0.0)),
             RATE_44K,
         );
 
@@ -639,12 +642,12 @@ mod tests {
     #[test]
     fn test_ladder_resonance_boosts_cutoff() {
         let mut no_res = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.0),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1000.0), Resonance::new(0.0)),
             RATE_44K,
         );
 
         let mut with_res = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.8),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1000.0), Resonance::new(0.8)),
             RATE_44K,
         );
 
@@ -665,15 +668,15 @@ mod tests {
     #[test]
     fn test_ladder_drive_adds_saturation() {
         let mut clean = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 5000.0, 0.0),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(5000.0), Resonance::new(0.0)),
             RATE_44K,
         );
 
         let mut driven = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 5000.0, 0.0),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(5000.0), Resonance::new(0.0)),
             RATE_44K,
         );
-        driven.set_drive(10.0);
+        driven.set_drive(Drive::new(10.0));
 
         let sine = generate_sine(440.0, 44100.0, 4096);
 
@@ -692,7 +695,7 @@ mod tests {
     #[test]
     fn test_ladder_reset() {
         let mut filter = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.5),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1000.0), Resonance::new(0.5)),
             RATE_44K,
         );
 
@@ -712,12 +715,12 @@ mod tests {
     #[test]
     fn test_ladder_lp12_less_steep_than_lp24() {
         let mut lp12 = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP12, 1000.0, 0.0),
+            LadderFilterNode::<f64>::new(LadderType::LP12, Hz::new(1000.0), Resonance::new(0.0)),
             RATE_44K,
         );
 
         let mut lp24 = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.0),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1000.0), Resonance::new(0.0)),
             RATE_44K,
         );
 
@@ -738,11 +741,11 @@ mod tests {
     #[test]
     fn test_ladder_f32_state_agrees_with_f64_for_mid_cutoff() {
         let mut ladder_f64 = prepared_at(
-            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.3),
+            LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1000.0), Resonance::new(0.3)),
             RATE_44K,
         );
         let mut ladder_f32 = prepared_at(
-            LadderFilterNode::<f32>::new(LadderType::LP24, 1000.0, 0.3),
+            LadderFilterNode::<f32>::new(LadderType::LP24, Hz::new(1000.0), Resonance::new(0.3)),
             RATE_44K,
         );
 
@@ -783,7 +786,12 @@ mod tests {
     #[test]
     fn ladder_with_channels_reports_arity_and_is_independent() {
         let mut wide = prepared_at(
-            LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP24, 1000.0, 0.3),
+            LadderFilterNode::<f64>::with_channels(
+                6u16,
+                LadderType::LP24,
+                Hz::new(1000.0),
+                Resonance::new(0.3),
+            ),
             RATE_44K,
         );
         assert_eq!(wide.shape().audio_in.count(), 6);
@@ -820,7 +828,12 @@ mod tests {
     /// the shape's default `Tail::None` → the tail assertion fails.
     #[test]
     fn the_shape_declares_cutoff_q_then_drive() {
-        let f = LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP24, 1000.0, 0.3);
+        let f = LadderFilterNode::<f64>::with_channels(
+            6u16,
+            LadderType::LP24,
+            Hz::new(1000.0),
+            Resonance::new(0.3),
+        );
         assert_eq!(
             f.shape().params.as_slice(),
             &[UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive][..]
@@ -845,8 +858,8 @@ mod tests {
                 LadderFilterNode::<f64>::with_channels(
                     ChannelLayout::STEREO,
                     LadderType::LP24,
-                    200.0,
-                    0.3,
+                    Hz::new(200.0),
+                    Resonance::new(0.3),
                 ),
                 RATE_44K,
             );
@@ -872,8 +885,8 @@ mod tests {
             LadderFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
                 LadderType::LP24,
-                1000.0,
-                0.3,
+                Hz::new(1000.0),
+                Resonance::new(0.3),
             ),
             RATE_44K,
         );
@@ -883,8 +896,8 @@ mod tests {
             LadderFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
                 LadderType::LP24,
-                1000.0,
-                0.3,
+                Hz::new(1000.0),
+                Resonance::new(0.3),
             ),
             RATE_44K,
         );
@@ -905,7 +918,12 @@ mod tests {
 
     /// Unprepared: `change_between_node_blocks` prepares each copy at 48 kHz.
     fn ladder_48k() -> LadderFilterNode<f64> {
-        LadderFilterNode::<f64>::with_channels(ChannelLayout::STEREO, LadderType::LP24, 500.0, 0.4)
+        LadderFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            LadderType::LP24,
+            Hz::new(500.0),
+            Resonance::new(0.4),
+        )
     }
 
     /// A cutoff change made between blocks is read by the next block, ramped
@@ -919,7 +937,7 @@ mod tests {
         let x = noise(5, 128);
         let run = change_between_node_blocks(
             ladder_48k,
-            |n| n.set_frequency(7_000.0),
+            |n| n.set_frequency(Hz::new(7_000.0)),
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
         );
@@ -943,11 +961,11 @@ mod tests {
                 LadderFilterNode::<f64>::with_channels(
                     ChannelLayout::STEREO,
                     LadderType::HP24,
-                    500.0,
-                    0.4,
+                    Hz::new(500.0),
+                    Resonance::new(0.4),
                 )
             },
-            |n| n.set_drive(9.0),
+            |n| n.set_drive(Drive::new(9.0)),
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
         );
@@ -967,12 +985,16 @@ mod tests {
         let mut wide = prepared(LadderFilterNode::<f64>::with_channels(
             6u16,
             LadderType::HP12,
-            800.0,
-            0.7,
+            Hz::new(800.0),
+            Resonance::new(0.7),
         ));
         let out = drive_block(&mut wide, &refs);
         for (c, input) in inputs.iter().enumerate() {
-            let mut mono = prepared(LadderFilterNode::<f64>::new(LadderType::HP12, 800.0, 0.7));
+            let mut mono = prepared(LadderFilterNode::<f64>::new(
+                LadderType::HP12,
+                Hz::new(800.0),
+                Resonance::new(0.7),
+            ));
             assert_eq!(
                 drive_block(&mut mono, &[&input[..]])[0],
                 out[c],

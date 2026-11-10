@@ -8,9 +8,10 @@
 //! Production code builds the `Message` itself: these exist so a test reads
 //! as the message it sends, not as the struct literal.
 
+use tutti_midi_protocol::widen;
 use tutti_ump::{
-    Address, Bank, Message, MidiChannel, MidiGroup, NoteNumber, RegisteredPerNoteController,
-    System, U7, U14, Ump, Utility, Voice2,
+    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
+    RegisteredPerNoteController, System, U7, U14, Ump, Utility, Voice1, Voice2,
 };
 
 fn voice(group: MidiGroup, channel: MidiChannel, v: Voice2) -> Ump {
@@ -19,6 +20,39 @@ fn voice(group: MidiGroup, channel: MidiChannel, v: Voice2) -> Ump {
 
 fn system(group: MidiGroup, s: System) -> Ump {
     Message::System(group, s).into()
+}
+
+/// A 7-bit velocity as the 16-bit value M2-115 section 3 gives it (a Note
+/// Off's release velocity widens the same way, so `0` stays `0`).
+pub fn wide_velocity(v: u8) -> u16 {
+    let off = Voice1::NoteOff {
+        note: NoteNumber::of(60),
+        velocity: U7::of(v),
+    };
+    let Voice2::NoteOff { velocity, .. } = widen(off) else {
+        unreachable!("a Note Off widens to a Note Off")
+    };
+    velocity
+}
+
+/// A 7-bit Control Change value as the 32-bit value M2-115 section 3 gives it.
+pub fn wide_value(v: u8) -> u32 {
+    let cc = Voice1::ControlChange {
+        controller: CCNumber::of(1),
+        value: U7::of(v),
+    };
+    let Voice2::ControlChange { value, .. } = widen(cc) else {
+        unreachable!("a Control Change widens to a Control Change")
+    };
+    value
+}
+
+/// A 14-bit Pitch Bend as the 32-bit value M2-115 section 3 gives it.
+pub fn wide_bend(v: u16) -> u32 {
+    let Voice2::PitchBend(bend) = widen(Voice1::PitchBend(U14::of(v))) else {
+        unreachable!("a Pitch Bend widens to a Pitch Bend")
+    };
+    bend
 }
 
 /// A MIDI 2.0 Note On, no attribute.

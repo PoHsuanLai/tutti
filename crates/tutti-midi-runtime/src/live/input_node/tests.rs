@@ -73,7 +73,7 @@ fn events_leave_on_their_channels_port() {
         tutti_ump::MidiGroup::FIRST,
         MidiChannel::of(9),
         60,
-        tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        tutti_fixtures::midi::wide_velocity(100),
     );
     assert_eq!(input_port_of(&on), 9);
     let clock = tutti_fixtures::midi::timing_clock(tutti_ump::MidiGroup::FIRST);

@@ -130,12 +130,12 @@ impl Clock {
 
     /// Move by `samples`, the way a host's transport moves after a block.
     fn advance(&self, samples: usize) {
-        self.0.advance(samples as i64, SR);
+        self.0.advance(samples as i64, SampleRate::new(SR));
     }
 
     /// The next block's `Env`: where the playhead stands.
     fn env(&self) -> tutti_graph::Env {
-        self.0.env(BLOCK, SR)
+        self.0.env(BLOCK, SampleRate::new(SR))
     }
 }
 
@@ -233,7 +233,7 @@ fn write_chirp_wav(path: &Path, frames: usize) {
 /// the two tiers are provably fed identical bytes.
 fn load_wave(path: &Path) -> Arc<Wave> {
     let mut r = hound::WavReader::open(path).expect("open test wav");
-    let mut wave = Wave::new(2, SR);
+    let mut wave = Wave::new(2, SampleRate::new(SR));
     let samples: Vec<f32> = r.samples::<f32>().map(|s| s.unwrap()).collect();
     for frame in samples.as_chunks::<2>().0 {
         wave.push_frame(&[frame[0], frame[1]]);
@@ -391,8 +391,8 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     let mut mem = contract::prepared(mem, SampleRate(SR), BLOCK);
 
     // ---- disk tier -------------------------------------------------------
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let (mut disk, disk_clock, _stream) = stream_at(&mut streamer, &path, 0.0);
 
     // Both tiers start at the playhead's origin, so no warm-up realignment is
@@ -466,8 +466,8 @@ fn a_disk_voice_produces_audio_from_a_real_file() {
     let path = d.path().join("stream.wav");
     write_test_wav(&path, (SR * 4.0) as usize);
 
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let (mut voice, clock, _stream) = stream_at(&mut streamer, &path, 0.0);
 
     let out = render_streamed(&mut voice, &mut streamer, &clock, 100);
@@ -523,8 +523,8 @@ fn streaming_from_an_offset_delivers_that_part_of_the_file() {
     let path = d.path().join("seek.wav");
     write_chirp_wav(&path, (SR * OFFSET_FILE_SECS) as usize);
 
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
 
     // Spread across the file. Each case is a stream of its own, started cleanly
     // from its offset: an open never reuses another's region (when the streamer
@@ -580,8 +580,8 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
     let path = d.path().join("live_seek.wav");
     write_chirp_wav(&path, (SR * SEEK_FILE_SECS) as usize);
 
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
 
     // Start at 20 s so both a forward (to 28 s) and a backward (to 5 s) seek are
     // real moves, and neither is reachable by simply playing on. Each case is a
@@ -648,8 +648,8 @@ fn a_seek_transition_does_not_clip() {
     let path = d.path().join("xfade.wav");
     write_chirp_wav(&path, (SR * SEEK_FILE_SECS) as usize);
 
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let (mut voice, clock, _stream) = stream_at(&mut streamer, &path, 10.0);
 
     // Capture the whole transition, including the crossfade. One streamer cycle
@@ -704,8 +704,8 @@ fn disk_varispeed_transposes_by_its_factor() {
     // the clock forward.
     write_tone_wav(&path, (SR * 8.0) as usize, 440.0);
 
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let (mut voice, clock, _stream) = stream_at(&mut streamer, &path, 0.0);
 
     // The control, at unity. Everything below is measured against this, so a
@@ -777,8 +777,8 @@ fn the_tiers_agree_under_varispeed() {
     // transposed partials of a two-tone file collide across the measurement bands.
     write_tone_wav(&path, (SR * 8.0) as usize, 440.0);
 
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let (mut disk, disk_clock, _stream) = stream_at(&mut streamer, &path, 0.0);
 
     for factor in [2.0f32, 0.5] {

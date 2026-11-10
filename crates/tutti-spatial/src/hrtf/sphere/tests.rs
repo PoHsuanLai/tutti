@@ -94,3 +94,70 @@ fn resampling_in_batches_matches_one_batch() {
         );
     }
 }
+
+/// Resample one response of `len` taps from `from` to `to` Hz into `out_len`.
+fn resample_one(response: &[f32], from: u32, to: u32, out_len: usize) -> Vec<f32> {
+    let mut got = Vec::new();
+    resample_into(response, response.len(), from, to, out_len, |_, r| {
+        got = r.to_vec();
+    });
+    got
+}
+
+/// A constant response keeps its level through the kernel's unity DC gain,
+/// then takes the `from / to` weight: interior taps (the kernel fully inside
+/// the response) of a response of 1.0 are `from / to`, 0.5 doubling the rate
+/// and 2.0 halving it. Within 1e-3: the kernel's truncation to 32 crossings.
+///
+/// Mutations (run): dropping the `* step` on the emitted sum gives 1.0 and
+/// 1.0 (fails both); scaling the kernel by 1.01 gives 0.505 and 2.02.
+#[test]
+fn a_constant_response_keeps_its_level_scaled_by_the_rate_ratio() {
+    for (from, to, len, out_len, interior, want) in [
+        (8_000, 16_000, 200, 400, 100..300, 0.5f32),
+        (16_000, 8_000, 400, 200, 60..140, 2.0),
+    ] {
+        let got = resample_one(&vec![1.0; len], from, to, out_len);
+        for n in interior {
+            assert!(
+                (got[n] - want).abs() < 1e-3,
+                "{from}->{to}, tap {n}: {} vs {want}",
+                got[n]
+            );
+        }
+    }
+}
+
+/// An impulse on tap `m` comes out as the kernel itself, sampled at the
+/// output taps: `step * cutoff * sinc(pi * cutoff * (n * step - m)) *
+/// blackman`, written out here from the formulas (cutoff `0.95` of Nyquist,
+/// 32 crossings, so the half-width is `32 / 0.95`), 8 to 16 kHz. The
+/// Blackman is `0.42 + 0.5 cos u + 0.08 cos 2u`, `u = pi t / half`.
+///
+/// Mutations (run): cutoff `0.95` -> `0.9` in `resample_batched` moves every
+/// tap off its analytic value; swapping the window for Hann (`0.5 + 0.5 cos u`)
+/// in the formula's counterpart, `CosineWindow::BLACKMAN` -> `HANN` in
+/// `resample_batched`, fails the taps away from the centre.
+#[test]
+fn an_impulse_resamples_to_the_analytic_kernel() {
+    const LEN: usize = 200;
+    const M: usize = 100;
+    let mut response = vec![0.0f32; LEN];
+    response[M] = 1.0;
+    let got = resample_one(&response, 8_000, 16_000, 400);
+    let (step, cutoff) = (0.5f64, 0.95f64);
+    let half = 32.0 / cutoff;
+    for (n, &g) in got.iter().enumerate() {
+        let t = n as f64 * step - M as f64;
+        let x = std::f64::consts::PI * cutoff * t;
+        let sinc = if x == 0.0 { 1.0 } else { x.sin() / x };
+        let u = std::f64::consts::PI * t / half;
+        let blackman = if t.abs() > half {
+            0.0
+        } else {
+            0.42 + 0.5 * u.cos() + 0.08 * (2.0 * u).cos()
+        };
+        let want = step * cutoff * sinc * blackman;
+        assert!((f64::from(g) - want).abs() < 1e-6, "tap {n}: {g} vs {want}");
+    }
+}

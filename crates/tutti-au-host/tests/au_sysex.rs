@@ -63,11 +63,15 @@ use tutti_graph::UmpAt;
 
 use support::corpus::{AuRef, SAMPLER};
 use tutti_graph::Offset;
-use tutti_midi_types::ump::{
-    SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
-};
-use tutti_midi_types::{from_midi1_bytes, sysex7_payload};
-use tutti_ump::Ump;
+use tutti_midi_types::from_midi1_bytes;
+use tutti_ump::{Message, SysexStatus, Ump, decode};
+
+// The status nibbles of a SysEx7 packet (M2-104 Table 18), written out so the
+// builder below states the wire layout it depends on.
+const SYSEX7_STATUS_SINGLE: u8 = 0x0;
+const SYSEX7_STATUS_START: u8 = 0x1;
+const SYSEX7_STATUS_CONTINUE: u8 = 0x2;
+const SYSEX7_STATUS_END: u8 = 0x3;
 
 const RATE: f64 = 48_000.0;
 const BLOCK: u32 = 512;
@@ -109,7 +113,7 @@ fn sysex7_packet(status: u8, bytes: &[u8]) -> UmpAt {
 ///
 /// Body only: UMP carries SysEx7 payload *without* the 0xF0/0xF7 framing, which
 /// the transport supplies.
-const IDENTITY_REQUEST: [u8; 6] = [0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7];
+const IDENTITY_REQUEST: [u8; 4] = [0x7E, 0x00, 0x06, 0x01];
 
 /// A real instrument accepts a single-packet SysEx without failing the block.
 ///
@@ -187,15 +191,18 @@ fn an_orphaned_continuation_is_not_sent() {
 #[test]
 fn the_test_packet_builder_matches_the_ump_layout() {
     let ev = sysex7_packet(SYSEX7_STATUS_START, &[0x7E, 0x00, 0x06, 0x01, 0x02, 0x03]);
-    let (status, bytes, n) =
-        sysex7_payload(&ev.1).expect("the builder must produce a packet the decoder recognises");
+    let Ok(Message::Sysex7(_, packet)) = decode(ev.1) else {
+        panic!("the builder must produce a packet the decoder recognises");
+    };
 
-    assert_eq!(status, SYSEX7_STATUS_START, "status nibble");
-    assert_eq!(n, 6, "byte count");
-    assert_eq!(&bytes[..6], &[0x7E, 0x00, 0x06, 0x01, 0x02, 0x03]);
+    assert_eq!(packet.status(), SysexStatus::Start, "status nibble");
+    assert_eq!(packet.data().len(), 6, "byte count");
+    assert_eq!(packet.data(), &[0x7E, 0x00, 0x06, 0x01, 0x02, 0x03]);
 
     // And a short packet reports its real length rather than padding to 6.
-    let short = sysex7_packet(SYSEX7_STATUS_END, &[0xF7]);
-    let (_, _, n) = sysex7_payload(&short.1).expect("short packet decodes");
-    assert_eq!(n, 1, "a 1-byte packet must not report 6");
+    let short = sysex7_packet(SYSEX7_STATUS_END, &[0x44]);
+    let Ok(Message::Sysex7(_, short)) = decode(short.1) else {
+        panic!("short packet decodes");
+    };
+    assert_eq!(short.data().len(), 1, "a 1-byte packet must not report 6");
 }

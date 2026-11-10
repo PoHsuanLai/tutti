@@ -11,7 +11,7 @@ use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
 use crate::ramp::block_driven;
-use tutti_dsp::{Ramp, allpass_chain, allpass_coeff, segments};
+use tutti_dsp::{Ramp, allpass_chain, allpass_coeff, segments, sweep_hz};
 use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;
@@ -171,10 +171,10 @@ impl PhaserNode {
             coeffs: Vec::new(),
             phases: Vec::new(),
             lane: vec![0.0; width],
-            lfo: LfoDrive::new(0.3),
-            mix: LinearModMix::new(0.5, 0.5, 0.5),
+            lfo: LfoDrive::new(Hz::new(0.3)),
+            mix: LinearModMix::new(Depth::new(0.5), Feedback::new(0.5), Mix::new(0.5)),
             sample_rate: SampleRate::DEFAULT,
-            range: FrequencyRange::new(200.0, 4000.0),
+            range: FrequencyRange::new(Hz::new(200.0), Hz::new(4000.0)),
             authored_max_hz: Hz(4000.0),
             last: None,
         }
@@ -314,12 +314,11 @@ impl PhaserNode {
 
         // Narrowed once for the all-pass coefficients below.
         let sr = self.sample_rate.get() as f32;
-        let (min_hz, max_hz) = (self.range.min_hz.get(), self.range.max_hz.get());
+        let (min_hz, max_hz) = (self.range.min_hz, self.range.max_hz);
         let coeff_at = |i: usize, offset: PhaseIncrement| -> f32 {
             let lfo_raw = phases[i].offset_by(offset).to_radians().get().sin();
-            let lfo = lfo_raw * 0.5 + 0.5;
-            let sweep = min_hz + (max_hz - min_hz) * lfo * depth_r.at(i);
-            allpass_coeff(sweep, sr)
+            let sweep = sweep_hz(min_hz, max_hz, lfo_raw, Depth(depth_r.at(i)));
+            allpass_coeff(sweep.get(), sr)
         };
 
         // The coefficient table, solved at the control points and interpolated
@@ -535,7 +534,7 @@ mod tests {
     #[test]
     fn test_phaser_passthrough_dry() {
         let mut phaser = at(PhaserNode::new(6), 44_100.0);
-        phaser.set_mix(0.0);
+        phaser.set_mix(Mix::new(0.0));
         let out = drive_frames(&mut phaser, &[&[0.5]]);
         assert!((out[0][0] - 0.5).abs() < 0.001);
     }
@@ -544,10 +543,10 @@ mod tests {
     fn test_phaser_stages_affect_sound() {
         let sr = 44100.0;
         let mut phaser_4 = at(PhaserNode::new(4), sr);
-        phaser_4.set_mix(1.0);
+        phaser_4.set_mix(Mix::new(1.0));
 
         let mut phaser_12 = at(PhaserNode::new(12), sr);
-        phaser_12.set_mix(1.0);
+        phaser_12.set_mix(Mix::new(1.0));
 
         let input: Vec<f32> = (0..4410)
             .map(|i| (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin())
@@ -577,8 +576,8 @@ mod tests {
     #[test]
     fn test_phaser_feedback_resonance() {
         let mut phaser = at(PhaserNode::new(6), 44_100.0);
-        phaser.set_feedback(0.9);
-        phaser.set_mix(1.0);
+        phaser.set_feedback(Feedback::new(0.9));
+        phaser.set_mix(Mix::new(1.0));
 
         let mut x = [0.0f32; 501];
         x[0] = 1.0;
@@ -620,7 +619,7 @@ mod tests {
         let x = noise(13, 128);
         let run = change_between_node_blocks(
             || PhaserNode::with_channels(2u16, 6),
-            |n| n.set_mix(1.0),
+            |n| n.set_mix(Mix::new(1.0)),
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
         );
@@ -669,7 +668,7 @@ mod tests {
             ]),
             48_000.0,
         );
-        node.set_rate(5.0);
+        node.set_rate(Hz::new(5.0));
         let mut out = Vec::new();
         for _ in 0..8 {
             out = drive_block(&mut node, &[&x, &x, &x]);
@@ -691,7 +690,7 @@ mod tests {
         assert_eq!(phaser.range.max_hz, Hz(3_600.0), "0.90 of a 4 kHz Nyquist");
         phaser.prepare(&prep(48_000.0));
         assert_eq!(phaser.range.max_hz, Hz(4_000.0));
-        phaser.set_frequency_range(300.0, 30_000.0);
+        phaser.set_frequency_range(Hz::new(300.0), Hz::new(30_000.0));
         assert_eq!(phaser.range.max_hz, Hz(21_600.0));
         phaser.prepare(&prep(96_000.0));
         assert_eq!(phaser.range.max_hz, Hz(30_000.0));

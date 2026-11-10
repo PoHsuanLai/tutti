@@ -268,7 +268,13 @@ mod tests {
 
     #[test]
     fn test_svf_coeffs_lowpass_m_values() {
-        let c = SvfCoeffs::new(SvfType::LowPass, 1000.0, 0.707, 0.0, 44100.0);
+        let c = SvfCoeffs::new(
+            SvfType::LowPass,
+            Hz::new(1000.0),
+            Q::new(0.707),
+            Db::new(0.0),
+            SampleRate::new(44100.0),
+        );
         assert!((c.m0 - 0.0).abs() < 1e-10);
         assert!((c.m1 - 0.0).abs() < 1e-10);
         assert!((c.m2 - 1.0).abs() < 1e-10);
@@ -277,7 +283,13 @@ mod tests {
 
     #[test]
     fn test_svf_coeffs_highpass_m_values() {
-        let c = SvfCoeffs::new(SvfType::HighPass, 1000.0, 0.707, 0.0, 44100.0);
+        let c = SvfCoeffs::new(
+            SvfType::HighPass,
+            Hz::new(1000.0),
+            Q::new(0.707),
+            Db::new(0.0),
+            SampleRate::new(44100.0),
+        );
         assert!((c.m0 - 1.0).abs() < 1e-10);
         assert!((c.m2 - (-1.0)).abs() < 1e-10);
     }
@@ -391,23 +403,59 @@ mod tests {
     fn an_absurd_gain_solves_finite_and_saturates() {
         for ty in [SvfType::Bell, SvfType::LowShelf, SvfType::HighShelf] {
             for db in [f32::NAN, -1e30, 1e30, f32::NEG_INFINITY, f32::INFINITY] {
-                let c = SvfCoeffs::new(ty, 1000.0, 1.0, db, 48_000.0);
+                let c = SvfCoeffs::new(
+                    ty,
+                    Hz::new(1000.0),
+                    Q::new(1.0),
+                    Db::new(db),
+                    SampleRate::new(48_000.0),
+                );
                 for v in [c.a1, c.a2, c.a3, c.m0, c.m1, c.m2] {
                     assert!(v.is_finite(), "{ty:?} at {db} dB: {c:?}");
                 }
             }
-            let cap = SvfCoeffs::new(ty, 1000.0, 1.0, SvfCoeffs::MAX_GAIN_DB, 48_000.0);
-            let past = SvfCoeffs::new(ty, 1000.0, 1.0, 1e30, 48_000.0);
+            let cap = SvfCoeffs::new(
+                ty,
+                Hz::new(1000.0),
+                Q::new(1.0),
+                Db::new(SvfCoeffs::MAX_GAIN_DB),
+                SampleRate::new(48_000.0),
+            );
+            let past = SvfCoeffs::new(
+                ty,
+                Hz::new(1000.0),
+                Q::new(1.0),
+                Db::new(1e30),
+                SampleRate::new(48_000.0),
+            );
             assert_eq!((cap.m0, cap.m1, cap.m2), (past.m0, past.m1, past.m2));
         }
-        let nan = SvfCoeffs::new(SvfType::Bell, 1000.0, 1.0, f32::NAN, 48_000.0);
-        let flat = SvfCoeffs::new(SvfType::Bell, 1000.0, 1.0, 0.0, 48_000.0);
+        let nan = SvfCoeffs::new(
+            SvfType::Bell,
+            Hz::new(1000.0),
+            Q::new(1.0),
+            Db::new(f32::NAN),
+            SampleRate::new(48_000.0),
+        );
+        let flat = SvfCoeffs::new(
+            SvfType::Bell,
+            Hz::new(1000.0),
+            Q::new(1.0),
+            Db::new(0.0),
+            SampleRate::new(48_000.0),
+        );
         assert_eq!(nan.m1, flat.m1);
     }
 
     #[test]
     fn test_svf_coeffs_bell_zero_gain_is_unity() {
-        let c = SvfCoeffs::new(SvfType::Bell, 1000.0, 1.0, 0.0, 44100.0);
+        let c = SvfCoeffs::new(
+            SvfType::Bell,
+            Hz::new(1000.0),
+            Q::new(1.0),
+            Db::new(0.0),
+            SampleRate::new(44100.0),
+        );
         assert!(
             (c.m1).abs() < 1e-10,
             "Bell with 0dB gain should have m1≈0, got {}",
@@ -423,9 +471,21 @@ mod tests {
     /// make, so the two are never quietly given one type again.
     #[test]
     fn cutoff_and_q_are_not_interchangeable() {
-        let right = SvfCoeffs::new(SvfType::LowPass, Hz(1000.0), Q(0.707), Db(0.0), 44100.0);
+        let right = SvfCoeffs::new(
+            SvfType::LowPass,
+            Hz(1000.0),
+            Q(0.707),
+            Db(0.0),
+            SampleRate::new(44100.0),
+        );
         // What the transposed call computes: a 0.707 Hz cutoff at Q 1000.
-        let swapped = SvfCoeffs::new(SvfType::LowPass, Hz(0.707), Q(1000.0), Db(0.0), 44100.0);
+        let swapped = SvfCoeffs::new(
+            SvfType::LowPass,
+            Hz(0.707),
+            Q(1000.0),
+            Db(0.0),
+            SampleRate::new(44100.0),
+        );
         assert!(
             (right.a2 - swapped.a2).abs() > 1e-6,
             "the swap has to be observable, or this test proves nothing"
@@ -434,8 +494,20 @@ mod tests {
 
     #[test]
     fn test_svf_coeffs_deterministic() {
-        let c1 = SvfCoeffs::new(SvfType::LowPass, 500.0, 0.707, 0.0, 44100.0);
-        let c2 = SvfCoeffs::new(SvfType::LowPass, 500.0, 0.707, 0.0, 44100.0);
+        let c1 = SvfCoeffs::new(
+            SvfType::LowPass,
+            Hz::new(500.0),
+            Q::new(0.707),
+            Db::new(0.0),
+            SampleRate::new(44100.0),
+        );
+        let c2 = SvfCoeffs::new(
+            SvfType::LowPass,
+            Hz::new(500.0),
+            Q::new(0.707),
+            Db::new(0.0),
+            SampleRate::new(44100.0),
+        );
         assert_eq!(c1.a1, c2.a1);
         assert_eq!(c1.a2, c2.a2);
         assert_eq!(c1.m0, c2.m0);

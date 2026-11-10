@@ -59,7 +59,7 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::{Const, Osc, assert_golden};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::{Amplitude, Beat, Bpm, Hz, SampleRate};
+use tutti_types::{Amplitude, Azimuth, Beat, Bpm, Hz, SampleRate};
 use tutti_types::{Db, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -238,7 +238,7 @@ fn quad_vbap() -> GraphBuilder {
         );
         let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
         pan.controls()
-            .set_position(az, tutti_types::Elevation::LEVEL);
+            .set_position(Azimuth::new(az), tutti_types::Elevation::LEVEL);
         let (pan, _) = g.add_with_controls(pan);
         g.pipe(src, pan);
         for c in 0..4 {
@@ -795,7 +795,7 @@ impl Node for BeatPorts {
 /// A 440 Hz sine at the render's rate, one second long: a plain wave table,
 /// so a voice reading it at unit rate reproduces it sample for sample.
 fn tone() -> Arc<tutti_codec::Wave> {
-    let mut w = tutti_codec::Wave::new(1, RATE.get());
+    let mut w = tutti_codec::Wave::new(1, SampleRate::new(RATE.get()));
     for i in 0..RATE.get() as usize {
         w.push_frame(&[tone_at(i)]);
     }

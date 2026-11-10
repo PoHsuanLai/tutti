@@ -196,6 +196,10 @@ pub(crate) struct RegionOut {
     /// The file decoded whole, for a format that cannot seek. Held here, not
     /// only in the LRU cache, so a file too large to cache still streams.
     resident: Option<Arc<Wave>>,
+    /// Test seam: runs where the stream reads its file, and may block or
+    /// panic (a decode that panics, B5).
+    #[cfg(test)]
+    read_hook: Option<super::decode::ReadHook>,
 }
 
 impl RegionOut {
@@ -217,6 +221,12 @@ impl RegionOut {
     #[cfg(codec)]
     pub(crate) fn set_decoder(&mut self, decoder: FileIn) {
         self.decoder = Some(decoder);
+    }
+
+    /// Run `hook` where this region reads its file (tests).
+    #[cfg(test)]
+    pub(crate) fn set_read_hook(&mut self, hook: super::decode::ReadHook) {
+        self.read_hook = Some(hook);
     }
 
     /// Hold the file resident whole (a format that cannot seek).
@@ -292,6 +302,10 @@ impl RegionOut {
     /// file could not be read there: a decode fault is logged once and the
     /// frames read before it are kept.
     pub(crate) fn read_file(&mut self, at: usize, out: &mut [f32]) -> bool {
+        #[cfg(test)]
+        if let Some(hook) = &self.read_hook {
+            hook(self.ring.region_id, at);
+        }
         let channels = self.ring.channels;
         #[cfg(codec)]
         if let Some(decoder) = self.decoder.as_mut() {
@@ -331,12 +345,15 @@ impl RegionOut {
     }
 
     /// Fill `out` with what straight positions `pos..` hold under `mapping`,
-    /// reading the file.
-    pub(crate) fn fill_with(&mut self, mapping: &Mapping, pos: u64, out: &mut [f32]) {
+    /// reading the file. `false` when any read of the file failed (a decode
+    /// fault: the frames before it are kept, the rest is silence).
+    pub(crate) fn fill_with(&mut self, mapping: &Mapping, pos: u64, out: &mut [f32]) -> bool {
         let ch = self.writer.stride();
+        let mut read_ok = true;
         mapping.fill(pos, out, ch, &mut |at, run| {
-            let _ = self.read_file(at, run);
+            read_ok &= self.read_file(at, run);
         });
+        read_ok
     }
 
     /// Append frames at the window's end, returning how many frames
@@ -402,6 +419,8 @@ impl RegionBuffer {
             #[cfg(codec)]
             fault_logged: false,
             resident: None,
+            #[cfg(test)]
+            read_hook: None,
         };
         (writer, ring, reader)
     }

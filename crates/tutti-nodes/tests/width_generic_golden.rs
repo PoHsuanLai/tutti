@@ -26,7 +26,10 @@ use tutti_nodes::{
     DelayLineNode, InterpolationMode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode,
     SvfFilterNode, SvfType,
 };
-use tutti_types::{AtomicF32, ChannelLayout, PhaseIncrement, SampleRate, Samples};
+use tutti_types::{
+    AtomicF32, ChannelLayout, Db, Depth, Drive, Feedback, Hz, Mix, PhaseIncrement, Q, Resonance,
+    SampleRate, Samples, Seconds,
+};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const LEN: usize = 2_048;
@@ -133,23 +136,34 @@ fn cases() -> Vec<Case> {
     // ── SVF ──
     v.push(node_case(
         "svf_mono_lowpass",
-        SvfFilterNode::<f64>::new(SvfType::LowPass, 1_200.0, 0.9),
+        SvfFilterNode::<f64>::new(SvfType::LowPass, Hz::new(1_200.0), Q::new(0.9)),
         noise_channels(1),
     ));
     v.push(node_case(
         "svf_mono_bell",
-        SvfFilterNode::<f64>::new(SvfType::Bell, 900.0, 1.4).with_gain_db(6.0),
+        SvfFilterNode::<f64>::new(SvfType::Bell, Hz::new(900.0), Q::new(1.4))
+            .with_gain_db(Db::new(6.0)),
         noise_channels(1),
     ));
     v.push(node_case(
         "svf_stereo_f32_bandpass",
-        SvfFilterNode::<f32>::with_channels(ChannelLayout::STEREO, SvfType::BandPass, 300.0, 2.0),
+        SvfFilterNode::<f32>::with_channels(
+            ChannelLayout::STEREO,
+            SvfType::BandPass,
+            Hz::new(300.0),
+            Q::new(2.0),
+        ),
         noise_channels(2),
     ));
     v.push(node_case(
         "svf_wide6_highshelf",
-        SvfFilterNode::<f64>::with_channels(6u16, SvfType::HighShelf, 2_000.0, 0.7)
-            .with_gain_db(-4.0),
+        SvfFilterNode::<f64>::with_channels(
+            6u16,
+            SvfType::HighShelf,
+            Hz::new(2_000.0),
+            Q::new(0.7),
+        )
+        .with_gain_db(Db::new(-4.0)),
         noise_channels(6),
     ));
     v.push(Case {
@@ -159,14 +173,18 @@ fn cases() -> Vec<Case> {
             SvfFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
                 SvfType::LowPass,
-                1_000.0,
-                0.707,
+                Hz::new(1_000.0),
+                Q::new(0.707),
             ),
             noise_channels(2),
         )
     });
-    let node =
-        SvfFilterNode::<f64>::with_channels(ChannelLayout::STEREO, SvfType::LowPass, 500.0, 0.8);
+    let node = SvfFilterNode::<f64>::with_channels(
+        ChannelLayout::STEREO,
+        SvfType::LowPass,
+        Hz::new(500.0),
+        Q::new(0.8),
+    );
     let automation = automate(node.frequency(), |k| 300.0 + 700.0 * (k % 5) as f32);
     v.push(Case {
         automation,
@@ -174,8 +192,9 @@ fn cases() -> Vec<Case> {
     });
 
     // ── Ladder ──
-    let node = LadderFilterNode::<f64>::new(LadderType::LP24, 1_100.0, 0.7);
-    node.set_drive(2.5);
+    let node =
+        LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1_100.0), Resonance::new(0.7));
+    node.set_drive(Drive::new(2.5));
     v.push(node_case(
         "ladder_mono_lp24_driven",
         node,
@@ -183,12 +202,22 @@ fn cases() -> Vec<Case> {
     ));
     v.push(node_case(
         "ladder_stereo_f32_hp12",
-        LadderFilterNode::<f32>::with_channels(ChannelLayout::STEREO, LadderType::HP12, 700.0, 0.5),
+        LadderFilterNode::<f32>::with_channels(
+            ChannelLayout::STEREO,
+            LadderType::HP12,
+            Hz::new(700.0),
+            Resonance::new(0.5),
+        ),
         noise_channels(2),
     ));
     v.push(node_case(
         "ladder_wide6_lp12",
-        LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP12, 1_500.0, 0.3),
+        LadderFilterNode::<f64>::with_channels(
+            6u16,
+            LadderType::LP12,
+            Hz::new(1_500.0),
+            Resonance::new(0.3),
+        ),
         noise_channels(6),
     ));
     v.push(Case {
@@ -198,14 +227,18 @@ fn cases() -> Vec<Case> {
             LadderFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
                 LadderType::LP24,
-                1_000.0,
-                0.6,
+                Hz::new(1_000.0),
+                Resonance::new(0.6),
             ),
             noise_channels(2),
         )
     });
-    let node =
-        LadderFilterNode::<f64>::with_channels(ChannelLayout::STEREO, LadderType::LP24, 800.0, 0.5);
+    let node = LadderFilterNode::<f64>::with_channels(
+        ChannelLayout::STEREO,
+        LadderType::LP24,
+        Hz::new(800.0),
+        Resonance::new(0.5),
+    );
     let automation = automate(node.drive(), |k| 1.0 + (k % 4) as f32);
     v.push(Case {
         automation,
@@ -213,23 +246,42 @@ fn cases() -> Vec<Case> {
     });
 
     // ── Delay ──
-    let node =
-        DelayLineNode::new(0.5, 0.012_34, 0.6).with_interpolation(InterpolationMode::CubicHermite);
-    node.set_mix(0.4);
+    let node = DelayLineNode::new(
+        Seconds::new(0.5),
+        Seconds::new(0.012_34),
+        Feedback::new(0.6),
+    )
+    .with_interpolation(InterpolationMode::CubicHermite);
+    node.set_mix(Mix::new(0.4));
     v.push(node_case("delay_mono_cubic", node, noise_channels(1)));
-    let node = DelayLineNode::stereo(0.5, 0.010, 0.017, 0.5);
-    node.set_cross_feedback(0.3);
-    node.set_mix(0.7);
+    let node = DelayLineNode::stereo(
+        Seconds::new(0.5),
+        Seconds::new(0.010),
+        Seconds::new(0.017),
+        Feedback::new(0.5),
+    );
+    node.set_cross_feedback(Feedback::new(0.3));
+    node.set_mix(Mix::new(0.7));
     v.push(node_case("delay_stereo_cross_fed", node, noise_channels(2)));
-    let node = DelayLineNode::with_channels(6u16, 0.5, 0.011, 0.45);
-    node.set_mix(0.6);
+    let node = DelayLineNode::with_channels(
+        6u16,
+        Seconds::new(0.5),
+        Seconds::new(0.011),
+        Feedback::new(0.45),
+    );
+    node.set_mix(Mix::new(0.6));
     v.push(node_case("delay_wide6", node, noise_channels(6)));
     let feedback = (0..LEN).map(|i| 0.9 * (i as f32 / LEN as f32)).collect();
     let time = (0..LEN)
         .map(|i| 0.002 + 0.01 * (i as f32 / LEN as f32))
         .collect();
-    let node = DelayLineNode::with_channels(ChannelLayout::STEREO, 0.5, 0.01, 0.4);
-    node.set_cross_feedback(0.2);
+    let node = DelayLineNode::with_channels(
+        ChannelLayout::STEREO,
+        Seconds::new(0.5),
+        Seconds::new(0.01),
+        Feedback::new(0.4),
+    );
+    node.set_cross_feedback(Feedback::new(0.2));
     v.push(Case {
         params: vec![Some(feedback), Some(time)],
         ..node_case("delay_stereo_ports", node, noise_channels(2))
@@ -241,14 +293,19 @@ fn cases() -> Vec<Case> {
     }
     let node = DelayLineNode::with_channels(
         ChannelLayout::try_from(n).expect("a test width is small"),
-        0.1,
-        0.004,
-        0.3,
+        Seconds::new(0.1),
+        Seconds::new(0.004),
+        Feedback::new(0.3),
     )
     .with_cross_feedback_matrix(&ring);
-    node.set_cross_feedback(0.5);
+    node.set_cross_feedback(Feedback::new(0.5));
     v.push(node_case("delay_wide6_ring", node, noise_channels(6)));
-    let node = DelayLineNode::stereo(0.5, 0.01, 0.013, 0.3);
+    let node = DelayLineNode::stereo(
+        Seconds::new(0.5),
+        Seconds::new(0.01),
+        Seconds::new(0.013),
+        Feedback::new(0.3),
+    );
     let automation = automate(node.feedback(), |k| 0.1 * (k % 8) as f32);
     let times = node.delay_time();
     let automation = {
@@ -265,10 +322,10 @@ fn cases() -> Vec<Case> {
 
     // ── Chorus / flanger ──
     let node = ModDelayNode::chorus(ChannelLayout::STEREO);
-    node.set_rate(1.7);
-    node.set_depth(0.007);
-    node.set_feedback(0.45);
-    node.set_mix(0.6);
+    node.set_rate(Hz::new(1.7));
+    node.set_depth(Seconds::new(0.007));
+    node.set_feedback(Feedback::new(0.45));
+    node.set_mix(Mix::new(0.6));
     v.push(node_case("chorus_stereo", node, noise_channels(2)));
     v.push(node_case(
         "flanger_stereo",
@@ -284,12 +341,12 @@ fn cases() -> Vec<Case> {
 
     // ── Phaser ──
     let node = PhaserNode::new(6);
-    node.set_rate(0.3);
-    node.set_depth(0.8);
-    node.set_feedback(0.6);
+    node.set_rate(Hz::new(0.3));
+    node.set_depth(Depth::new(0.8));
+    node.set_feedback(Feedback::new(0.6));
     v.push(node_case("phaser_mono", node, noise_channels(1)));
     let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
-    node.set_rate(2.0);
+    node.set_rate(Hz::new(2.0));
     v.push(node_case("phaser_stereo", node, noise_channels(2)));
     let node = PhaserNode::with_channels(6u16, 8).with_phase_offsets(&[
         PhaseIncrement(0.0),
@@ -299,7 +356,7 @@ fn cases() -> Vec<Case> {
         PhaseIncrement(0.4),
         PhaseIncrement(0.5),
     ]);
-    node.set_rate(3.0);
+    node.set_rate(Hz::new(3.0));
     v.push(node_case("phaser_wide6_staggered", node, noise_channels(6)));
 
     v

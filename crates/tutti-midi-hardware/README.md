@@ -83,7 +83,7 @@ use tutti_graph::Offset;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 // The rings inbound events land in, then a session over this platform's backend.
-let ports = Arc::new(HardwareMidiInputs::new(1024, 44_100.0));
+let ports = Arc::new(HardwareMidiInputs::new(1024, tutti_types::SampleRate::new(44_100.0)));
 let session = MidiSession::open(Arc::clone(&ports))?;
 
 // The devices present now; capability (protocol, function blocks) is read from

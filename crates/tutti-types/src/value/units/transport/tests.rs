@@ -19,6 +19,11 @@ use super::*;
 ///   exists to be multiplied by exactly one thing, so a bare `*` would let
 ///   it be multiplied by anything — including the `PlaybackRate` and
 ///   `SrcRatio` it is already the product of, which would apply a ratio twice.
+/// - `From<raw> for Unit`, `From<Unit> for raw`, so `.into()` between a unit and
+///   its bare number — a bare float must not become a unit unnamed at the call
+///   site, and a unit must not leave as a float by an `.into()` that hides which
+///   quantity it was. Build with `new`, read with `get` (generic code: the
+///   `Unit` trait's `from_raw` / `to_raw`).
 ///
 /// And a beat-synced rate is a [`BeatDuration`] (beats per cycle), never an
 /// [`Hz`]: the two are *inverse*. Doubling
@@ -202,14 +207,20 @@ fn src_ratio_derives_from_typed_rates() {
 fn src_ratio_is_exactly_unity_for_matched_rates() {
     // Bit-exact, not 1.0000001 — the matched case is the common one and must
     // not accumulate resampling error.
-    assert_eq!(SrcRatio::for_rates(44_100.0, 44_100.0), SrcRatio::UNITY);
+    assert_eq!(
+        SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(44_100.0)),
+        SrcRatio::UNITY
+    );
     // Within the 0.01 Hz tolerance.
-    assert_eq!(SrcRatio::for_rates(44_100.005, 44_100.0), SrcRatio::UNITY);
+    assert_eq!(
+        SrcRatio::for_rates(SampleRate::new(44_100.005), SampleRate::new(44_100.0)),
+        SrcRatio::UNITY
+    );
 }
 
 #[test]
 fn src_ratio_converts_mismatched_rates() {
-    let r = SrcRatio::for_rates(48_000.0, 44_100.0);
+    let r = SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0));
     assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-12);
     assert!(
         r > SrcRatio::UNITY,
@@ -220,8 +231,14 @@ fn src_ratio_converts_mismatched_rates() {
 #[test]
 fn src_ratio_survives_a_nonpositive_session_rate() {
     // Would otherwise divide by zero and poison every downstream sample.
-    assert_eq!(SrcRatio::for_rates(44_100.0, 0.0), SrcRatio::UNITY);
-    assert_eq!(SrcRatio::for_rates(44_100.0, -1.0), SrcRatio::UNITY);
+    assert_eq!(
+        SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(0.0)),
+        SrcRatio::UNITY
+    );
+    assert_eq!(
+        SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(-1.0)),
+        SrcRatio::UNITY
+    );
 }
 
 #[test]
@@ -252,7 +269,7 @@ fn read_rate_composes_varispeed_with_conversion() {
     // off by ~1e-8 here). Mutation: `for_rates` casting the quotient through
     // `f32` leaves ~3e-8 of error and fails the 1e-12 bound.
     let rate = PlaybackRate::new(0.5);
-    let src = SrcRatio::for_rates(48_000.0, 44_100.0);
+    let src = SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0));
     let expected = 0.5 * (48_000.0 / 44_100.0);
     assert!((rate.read_rate(src).get() - expected).abs() < 1e-12);
 
@@ -342,7 +359,10 @@ fn a_converted_read_position_does_not_drift_over_an_hour() {
         (44_100.0, 96_000.0),
         (96_000.0, 44_100.0),
     ] {
-        let rate = PlaybackRate::UNITY.read_rate(SrcRatio::for_rates(file, session));
+        let rate = PlaybackRate::UNITY.read_rate(SrcRatio::for_rates(
+            SampleRate::new(file),
+            SampleRate::new(session),
+        ));
         let n = (session * 3600.0) as i64;
         // Block-wise accumulation, as a stream does.
         let block = 512;

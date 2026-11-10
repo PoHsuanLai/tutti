@@ -232,8 +232,8 @@ impl SampleRate {
     }
 }
 
-// `Unit` generates `From<f64>` only. File headers and device configs
-// hand out `u32`, which widens exactly, so that one stays implicit — it is what
+// `Unit` generates no `From` (a bare `f64` is built with `new`). File headers
+// and device configs hand out `u32`, which widens exactly, so that one stays implicit — it is what
 // lets a migrated signature take `impl Into<SampleRate>` and still accept what
 // its callers already hold. No `From<f32>`; see the type's doc for why.
 impl From<u32> for SampleRate {

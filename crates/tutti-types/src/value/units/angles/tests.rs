@@ -18,6 +18,11 @@ use super::*;
 ///   type was introduced to eliminate. `wrapped` is the only wrap.
 /// - `Phase + PhaseIncrement` — `advance`, which wraps; the operator would
 ///   not.
+/// - `From<raw> for Unit`, `From<Unit> for raw`, so `.into()` between a unit and
+///   its bare number — a bare float must not become a unit unnamed at the call
+///   site, and a unit must not leave as a float by an `.into()` that hides which
+///   quantity it was. Build with `new`, read with `get` (generic code: the
+///   `Unit` trait's `from_raw` / `to_raw`).
 ///
 /// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
 #[test]
@@ -170,12 +175,12 @@ fn phase_advances_backwards_without_escaping_the_cycle() {
 fn phase_increment_derives_from_frequency_and_rate() {
     // One cycle per second at 100 Hz sampling = 1/100 turn per sample.
     assert_eq!(
-        PhaseIncrement::per_sample(Hz(1.0), 100.0),
+        PhaseIncrement::per_sample(Hz(1.0), SampleRate::new(100.0)),
         PhaseIncrement(0.01)
     );
     // A degenerate rate yields a standing phase rather than inf/NaN.
     assert_eq!(
-        PhaseIncrement::per_sample(Hz(440.0), 0.0),
+        PhaseIncrement::per_sample(Hz(440.0), SampleRate::new(0.0)),
         PhaseIncrement(0.0)
     );
 }

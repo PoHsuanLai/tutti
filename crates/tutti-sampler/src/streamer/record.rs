@@ -7,30 +7,41 @@
 //! `Drop for Record` is the one place a stream ends: the region (the ring's
 //! writer and decoder), the pin on the cache and the fork's record all go in
 //! the step that removes the record, so "link gone but region kept" cannot be
-//! written.
+//! written. The record also holds the stream's [`StatusCell`]: what the
+//! control side reads of it is written here, the level (`Opening`, `Live`,
+//! `Ended`) and a decode fault by the refill, and `StreamerGone` by the drop.
+//!
+//! Work on one record runs under [`Record::contained`]: a panic faults that
+//! stream and no other (doc 025 decision 20, B5).
 //!
 //! [`step`] is the Voicing mould: no thread, no clock, no file, no channel. A
 //! command arrives as a [`Cmd`], the table changes, and what the driver has to
 //! do about it comes back as [`Effect`]s. What touches a file (building the
 //! record of an open, capturing a loop) is the driver's, before and after.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use super::cache::StreamPin;
 use super::command::StreamId;
 use super::control::StreamRecord;
+use super::decode::panic_message;
+use super::io::refill::Refilled;
 use super::prefetch::RegionOut;
 use super::rt_state::RtState;
+use super::status::{Served, StatusCell, StreamFault};
 use crate::voice::LoopSetting;
 
 /// Where a stream is in its life. A closed stream has no record, so there is
 /// no `Closing`: the step that closes it removes the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
-    /// Built, its reader not yet delivered: nothing about it is refilled and
-    /// only a close reaches it.
+    /// Built and in the table, not yet answered to its caller: nothing about
+    /// it is refilled and only a close reaches it. Within one handler call,
+    /// in production; a step table holds it as long as it likes.
     Opening,
-    /// Its reader has been delivered: refilled, and commands apply.
+    /// Answered (the reader is on its way to the caller): refilled, and
+    /// commands apply.
     Live,
 }
 
@@ -53,6 +64,11 @@ pub(super) struct Record {
     /// life, so a fully-buffered (hence cold) stream is never evicted
     /// mid-read.
     _pin: StreamPin,
+    /// What the control side reads of this stream ([`Stream::status`](crate::Stream::status)).
+    status: Arc<StatusCell>,
+    /// Its work panicked: faulted, and removed at the end of the cycle
+    /// ([`Streams::reap`]).
+    dead: bool,
 }
 
 impl Record {
@@ -62,6 +78,7 @@ impl Record {
         file_frames: u64,
         shared: Arc<StreamRecord>,
         pin: StreamPin,
+        status: Arc<StatusCell>,
     ) -> Self {
         Self {
             phase: Phase::Opening,
@@ -70,6 +87,49 @@ impl Record {
             file_frames,
             shared,
             _pin: pin,
+            status,
+            dead: false,
+        }
+    }
+
+    /// Runs `work` on this stream under `catch_unwind`. A panic is this stream's
+    /// fault, not the streamer's: the stream is faulted
+    /// ([`StreamFault::Panicked`]) and marked for removal, and `None` comes
+    /// back; every other stream goes on.
+    pub(super) fn contained<R>(&mut self, work: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        match catch_unwind(AssertUnwindSafe(|| work(self))) {
+            Ok(done) => Some(done),
+            Err(payload) => {
+                tracing::error!(
+                    "{}: the streamer's work panicked ({}); this stream is faulted, the others go on",
+                    self.id(),
+                    panic_message(payload.as_ref())
+                );
+                self.status.fault(StreamFault::Panicked);
+                self.dead = true;
+                None
+            }
+        }
+    }
+
+    /// Publishes where a refill left the stream: a failed read is a decode
+    /// fault (it stays); the file's end in the ring is `Ended`; a primed ring
+    /// is `Live`. A ring not yet primed leaves the status as it was, so a
+    /// stream is `Opening` until its first primed refill and `Live` after it.
+    pub(super) fn settle(&self, refilled: &Refilled) {
+        if !refilled.read_ok {
+            self.status.fault(StreamFault::Decode);
+        }
+        let ended = self
+            .out
+            .content()
+            .current
+            .end()
+            .is_some_and(|end| self.out.window().1 >= end);
+        if ended {
+            self.status.set(Served::Ended);
+        } else if refilled.primed {
+            self.status.set(Served::Live);
         }
     }
 
@@ -84,7 +144,7 @@ impl Record {
 
     /// Whether the refill follows this stream's reader.
     pub(super) fn is_live(&self) -> bool {
-        self.phase == Phase::Live
+        self.phase == Phase::Live && !self.dead
     }
 
     /// Records the loop the stream now runs, as applied, for a fork to read.
@@ -97,9 +157,13 @@ impl Record {
 
 /// The stream is over the moment its record goes, so a voice still holding the
 /// fork's record, on a ring the streamer no longer feeds, forks to silence as
-/// it plays live.
+/// it plays live, and a handle that outlives the streamer reads
+/// `Faulted(StreamerGone)` (a fault already there stays). This is also how a
+/// panic that escapes the per-stream containment tells every stream: it drops
+/// the whole table.
 impl Drop for Record {
     fn drop(&mut self) {
+        self.status.fault(StreamFault::StreamerGone);
         self.shared.end();
     }
 }
@@ -183,6 +247,12 @@ impl Streams {
 
     pub(super) fn records_mut(&mut self) -> &mut [Record] {
         &mut self.records
+    }
+
+    /// Removes every stream whose work panicked: dropping its record frees its
+    /// region, and its fault (already published) is what its handle reads.
+    pub(super) fn reap(&mut self) {
+        self.records.retain(|record| !record.dead);
     }
 }
 

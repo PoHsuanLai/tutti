@@ -12,7 +12,6 @@ use support::{BLOCK, Hand};
 use tutti_fixtures::midi;
 use tutti_graph::Node;
 use tutti_midi_types::mpe::PitchBendSensitivity;
-use tutti_midi_types::translation::scaling::{midi1_cc_to_midi2, midi1_velocity_to_midi2};
 use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
@@ -30,7 +29,7 @@ fn blocks(seconds: f64) -> usize {
 
 fn config() -> SynthConfig {
     SynthConfig {
-        sample_rate: SampleRate::from(SR),
+        sample_rate: SampleRate::new(SR),
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
             attack: Seconds(0.001),
@@ -52,7 +51,7 @@ fn on(channel: u8, note: u8) -> Ump {
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
-        midi1_velocity_to_midi2(100),
+        tutti_fixtures::midi::wide_velocity(100),
     )
 }
 
@@ -65,7 +64,7 @@ fn cc(channel: u8, number: CCNumber, value: u8) -> Ump {
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         number,
-        midi1_cc_to_midi2(value),
+        tutti_fixtures::midi::wide_value(value),
     )
 }
 

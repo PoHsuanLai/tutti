@@ -34,13 +34,14 @@ use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, SysExAssembler,
-    SysExStep, WireMidi, note_id_for, note_id_to_channel_note, push_sysex, unframed,
+    SysExStep, WireMidi, note_id_for, note_id_to_channel_note, push_sysex, sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;
-use tutti_midi_protocol::{midi1, narrow, widen, widen_message};
-use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
-use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity, sysex7_packets};
+use tutti_midi_protocol::{
+    bend_u32_to_signed_f32, midi1, narrow, u16_to_unit_f32, u32_to_unit_f32, widen, widen_message,
+};
+use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
 use tutti_ump::{
     Address, Attribute, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Ump, Unknown, Voice1, Voice2, decode,
@@ -758,7 +759,7 @@ impl ClapEvent {
     )]
     #[must_use]
     pub fn to_midi(&self) -> Option<WireMidi> {
-        use tutti_midi_types::convert::unit_f32_to_u16;
+        use tutti_midi_protocol::unit_f32_to_u16;
         match self {
             ClapEvent::NoteOn(e) => {
                 let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
@@ -816,7 +817,7 @@ impl ClapEvent {
         reason = "CLAP expression values are f64; the MIDI-2 helpers take f32"
     )]
     fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<WireMidi> {
-        use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
+        use tutti_midi_protocol::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
         let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
         let time = e.header.time;
@@ -1632,8 +1633,11 @@ impl OutputEventList {
         let mut out = Vec::new();
         for e in &self.events {
             match e.sysex_bytes() {
+                // A message with a payload byte of 128 or more is malformed: dropped.
                 Some((bytes, time)) => out.extend(
-                    sysex7_packets(MidiGroup::FIRST, unframed(bytes))
+                    sysex_packets(bytes)
+                        .into_iter()
+                        .flatten()
                         .map(|ump| WireMidi { offset: time, ump }),
                 ),
                 None => out.extend(e.to_midi()),
@@ -2014,7 +2018,7 @@ mod tests {
     }
 
     // (`use super::*` is already in scope from the top of this module.)
-    use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
+    use tutti_midi_protocol::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
     // --- Param-change denormalization (host 0..1 → CLAP plain) ---
 
@@ -2784,7 +2788,7 @@ mod tests {
 
     #[test]
     fn clap_volume_round_trips_and_saturates_boost_l6() {
-        use tutti_midi_types::convert::u32_to_unit_f32;
+        use tutti_midi_protocol::u32_to_unit_f32;
 
         let unit_of = |gain: f64| -> f32 {
             let clap = ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain)
@@ -2895,7 +2899,7 @@ mod tests {
 
     #[test]
     fn tuning_note_expression_round_trips_to_per_note_pitch_bend() {
-        use tutti_midi_types::convert::bend_u32_to_signed_f32;
+        use tutti_midi_protocol::bend_u32_to_signed_f32;
 
         let value_semitones = 0.5 * emitted_bend_range_semitones();
         let clap =
@@ -3087,7 +3091,7 @@ mod tests {
     fn note_off_release_velocity_is_threaded_through() {
         // A MIDI-2 NoteOff carries a release velocity; it must reach the
         // CLAP NoteOff's `velocity`, and round-trip back.
-        use tutti_midi_types::convert::u16_to_unit_f32;
+        use tutti_midi_protocol::u16_to_unit_f32;
         let rel = 0x6000u16; // ~0.375 of full scale
         let midi = (
             at(9),
@@ -3112,7 +3116,7 @@ mod tests {
     #[test]
     fn note_off_release_velocity_round_trips() {
         // The CLAP → MIDI-2 direction must preserve release velocity too.
-        use tutti_midi_types::convert::u16_to_unit_f32;
+        use tutti_midi_protocol::u16_to_unit_f32;
 
         let clap = ClapEvent::note_off(2, 1, 48, 0.5);
         let midi = clap.to_midi().expect("note off -> midi");
@@ -3163,7 +3167,6 @@ mod tests {
         // A plugin-emitted generic MIDI-1 CC must decode to MIDI-2 Channel Voice
         // 2, not CV1 — the engine sees one vocabulary regardless of source
         // (mirrors the hardware input path's promotion).
-        use tutti_midi_types::convert::midi1_cc_to_midi2;
 
         // A generic CLAP Midi event carrying raw MIDI-1 CC bytes (0xB1, 74, 100).
         let clap = ClapEvent::midi(0, 0, [0xB1, 74, 100]);
@@ -3172,7 +3175,7 @@ mod tests {
             Message::Midi2(address, Voice2::ControlChange { controller, value }) => {
                 assert_eq!(address.channel.get(), 1);
                 assert_eq!(controller.get(), 74);
-                assert_eq!(value, midi1_cc_to_midi2(100));
+                assert_eq!(value, tutti_fixtures::midi::wide_value(100));
             }
             other => panic!("expected CV2 ControlChange, got {other:?}"),
         }
@@ -3194,7 +3197,7 @@ mod tests {
     fn note_event_round_trips_to_full_width_cv2() {
         // ClapEvent::NoteOn -> WireMidi builds a native MIDI-2 NoteOn preserving
         // the note and full-width velocity (no 7-bit squash).
-        use tutti_midi_types::convert::u16_to_unit_f32;
+        use tutti_midi_protocol::u16_to_unit_f32;
 
         let clap = ClapEvent::note_on(3, 2, 64, 0.75);
         let midi = clap.to_midi().expect("note on -> midi");
@@ -3285,7 +3288,7 @@ mod tests {
                 MidiGroup::FIRST,
                 ch,
                 62,
-                tutti_midi_types::convert::midi1_velocity_to_midi2(64),
+                tutti_fixtures::midi::wide_velocity(64),
             ),
         );
         let quiet = (at(0), fx::note_on(MidiGroup::FIRST, ch, 61, 1));
@@ -3504,7 +3507,9 @@ mod tests {
 
     fn sysex_packets(payload: &[u8], time: u32) -> Vec<UmpAt> {
         let mut out = Vec::new();
-        tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out.extend(
+            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
+        );
         out.into_iter().map(|ump| (at(time), ump)).collect()
     }
 

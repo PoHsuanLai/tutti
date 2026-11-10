@@ -3,15 +3,15 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_types::convert::{
-    bend_u32_to_signed_f32, midi2_velocity_to_midi1, u16_to_unit_f32, u32_to_unit_f32,
+use tutti_midi_protocol::{
+    bend_u32_to_signed_f32, narrow_velocity, u16_to_unit_f32, u32_to_unit_f32,
 };
-use tutti_midi_types::{MidiMessage, sysex7_fragments, sysex7_payload, sysex7_single};
+use tutti_midi_types::MidiMessage;
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
 use tutti_types::Samples;
 use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, System, Ump, Voice2,
-    decode as decode_ump,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, Sysex7Packets, SysexStatus,
+    System, Ump, Voice2, decode as decode_ump,
 };
 use tutti_vst3_ffi::EventList;
 
@@ -42,7 +42,6 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
     // (3-byte MIDI-1) event. Decoding that must yield MIDI-2 Channel Voice
     // 2, not CV1 — the engine sees one vocabulary regardless of source
     // (the same widening the hardware input path makes).
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
 
     let event = (
         Offset::ZERO,
@@ -50,7 +49,7 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
             MidiGroup::FIRST,
             MidiChannel::of(1),
             CCNumber::BRIGHTNESS,
-            midi1_cc_to_midi2(100),
+            tutti_fixtures::midi::wide_value(100),
         ),
     );
     let vst3 = encode(&event).expect("CC -> Data");
@@ -136,7 +135,7 @@ fn note_off_lands_in_note_off_variant() {
     assert!(
         message
             .velocity()
-            .is_some_and(|v| midi2_velocity_to_midi1(v) > 0),
+            .is_some_and(|v| narrow_velocity(v).get() > 0),
         "release velocity was dropped on the way back from the plugin"
     );
 }
@@ -165,14 +164,13 @@ fn a_huge_frame_offset_saturates_rather_than_going_negative() {
 
 #[test]
 fn poly_pressure_lands_in_poly_pressure_variant() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let event = (
         at(0),
         midi::poly_pressure(
             MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
-            midi1_cc_to_midi2(100),
+            tutti_fixtures::midi::wide_value(100),
         ),
     );
     let vst3 = encode(&event).expect("PolyPressure should convert");
@@ -183,14 +181,13 @@ fn poly_pressure_lands_in_poly_pressure_variant() {
 
 #[test]
 fn cc_falls_through_to_data_event() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let event = (
         Offset::ZERO,
         midi::cc(
             MidiGroup::FIRST,
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
-            midi1_cc_to_midi2(100),
+            tutti_fixtures::midi::wide_value(100),
         ),
     );
     let vst3 = encode(&event).expect("CC should convert");
@@ -207,13 +204,12 @@ fn cc_falls_through_to_data_event() {
 
 #[test]
 fn pitch_bend_falls_through_to_data_event() {
-    use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     let event = (
         Offset::ZERO,
         midi::pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            midi1_pitch_bend_to_midi2(8192),
+            tutti_fixtures::midi::wide_bend(8192),
         ),
     );
     let vst3 = encode(&event).expect("PitchBend should convert");
@@ -516,7 +512,6 @@ fn note_on_and_off_share_a_derived_note_id() {
 
 #[test]
 fn per_note_pitch_bend_becomes_tuning_expression() {
-    use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     // Center bend on note 67, channel 5 → Tuning expression at value 0.5,
     // bound to the same noteId the note-on for (5, 67) would carry.
     let event = (
@@ -525,7 +520,7 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
             MidiGroup::FIRST,
             MidiChannel::of(5),
             67,
-            midi1_pitch_bend_to_midi2(8192),
+            tutti_fixtures::midi::wide_bend(8192),
         ),
     );
     let vst3 = encode(&event).expect("per-note bend should map");
@@ -550,8 +545,8 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
 /// fails.
 #[test]
 fn a_per_note_bend_is_tuned_over_its_channels_range() {
+    use tutti_midi_protocol::signed_f32_to_bend_u32;
     use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::convert::signed_f32_to_bend_u32;
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let bend = |channel: u8, amount: f32| {
@@ -613,7 +608,6 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
 
 #[test]
 fn per_note_controller_maps_known_indices_only() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     // CC 74 (brightness) is a known dimension → Brightness expression.
     let known = (
         Offset::ZERO,
@@ -622,7 +616,7 @@ fn per_note_controller_maps_known_indices_only() {
             MidiChannel::FIRST,
             60,
             74,
-            midi1_cc_to_midi2(100),
+            tutti_fixtures::midi::wide_value(100),
             false,
         ),
     );
@@ -647,7 +641,7 @@ fn per_note_controller_maps_known_indices_only() {
             MidiChannel::FIRST,
             60,
             33,
-            midi1_cc_to_midi2(100),
+            tutti_fixtures::midi::wide_value(100),
             false,
         ),
     );
@@ -659,7 +653,11 @@ fn single_packet_sysex_round_trips_through_data_event() {
     // A short SysEx (identity request) → VST3 Data event with the SysEx
     // subtype and 0xF0 … 0xF7 framing, then back to the same UMP payload.
     let payload = [0x7E, 0x7F, 0x06, 0x01];
-    let event = (at(7), sysex7_single(MidiGroup::FIRST, &payload).unwrap());
+    let single = Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+        .unwrap()
+        .next()
+        .unwrap();
+    let event = (at(7), single);
     let vst3 = encode(&event).expect("SysEx should map to Data");
     match &vst3.payload {
         Payload::Data(e) => {
@@ -674,9 +672,11 @@ fn single_packet_sysex_round_trips_through_data_event() {
     }
 
     let back = vst3.to_midi().expect("SysEx Data round-trips");
-    let (status, bytes, n) = sysex7_payload(&back.ump).expect("decodes as SysEx7");
-    assert_eq!(status, tutti_midi_types::ump::SYSEX7_STATUS_SINGLE);
-    assert_eq!(&bytes[..n], &payload);
+    let Ok(Message::Sysex7(_, packet)) = decode_ump(back.ump) else {
+        panic!("decodes as SysEx7");
+    };
+    assert_eq!(packet.status(), SysexStatus::Complete);
+    assert_eq!(packet.data(), &payload);
     assert_eq!(back.offset, 7);
 }
 
@@ -689,7 +689,10 @@ fn single_packet_sysex_round_trips_through_data_event() {
 #[test]
 fn a_sysex_fragment_does_not_convert_alone() {
     let mut frags = Vec::new();
-    sysex7_fragments(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8], &mut frags);
+    frags.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .expect("a 7-bit payload"),
+    );
     assert!(frags.len() > 1);
     for frag in &frags {
         assert!(

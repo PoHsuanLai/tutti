@@ -880,9 +880,18 @@ activate, measure.**
     differently from program material. The probe uses 0.1, and the result is
     a lower bound.
 - **The verdict**: `Honest`, `TailLonger { reported, measured }`,
-  `LatencyDiffers { reported, measured }` or `NotChecked { why }` (an unbounded
-  or unknown claim, or an instrument that never reached the floor within the
-  budget). `Processing::ceiling` (5.3) uses a longer measurement; the verdict is
+  `LatencyDiffers { reported, measured }`, `NeverSettles { level }` or
+  `NotChecked { why }` (an unbounded or unknown claim, or an instrument that
+  never reached the floor within the budget).
+  - **`NeverSettles`** is a plugin whose output stays above the floor with
+    silence in: modelled hiss, a noise generator, a free-running oscillator.
+    The probe renders the same configuration with no stimulus first. If that
+    output is above the floor, the verdict is `NeverSettles` with the level it
+    held, and the tail is not judged.
+    Without this, such a plugin reads as `TailLonger`, or runs the probe to its
+    budget, and a plugin that adds noise looks like one that lies about its
+    tail. The floor stays fixed (Q3); this verdict is how a plugin that cannot
+    meet it is told apart from a dishonest one. `Processing::ceiling` (5.3) uses a longer measurement; the verdict is
   shown to the user, and nothing is rewritten.
 - **Where it is recorded**: `PluginDescriptor` gains `measured:
   Option<Measured>` (`serde(default)`) in the row `PluginDb` already keeps
@@ -940,7 +949,7 @@ dependency: step 3 needs only 021's step 4c (the probe binary), step 2 needs
 |---|---|---|---|
 | 1 | **Parameter unit and kind.** `ParamUnit`, `ParameterInfo::measures` and `role` (`serde(default)`), the pure mapping per format host, the plausibility check, `typed::<U>`; the AU host decodes all 27 codes | nothing | every code, every accepted string, every near-miss (`kHz`, `Db`, empty), a range that does not fit. Mutation: break one table row, its test fails |
 | 2 | **The tail into the graph.** `Processing::ceiling`, `Measured` (empty until step 3), CLAP's process status to `report_tail` and `Status::Idle` in the plugin node, a tail setter on the editor if none exists | PR #359 | a fake CLAP processor that sleeps. Mutation: report `Sleep` while sounding, the honest-tail contract fails |
-| 3 | **Tail and latency probes.** `--measure` in `tutti-plugin-probe`, `Measured` in `PluginDescriptor`, the verdict; the shared test plugin's mode word sets its tail | 021 step 4c | the plugin reports N and rings M: `Honest` when N = M, `TailLonger` when N < M. Mutation: report M - 1, the verdict changes |
+| 3 | **Tail and latency probes.** `--measure` in `tutti-plugin-probe`, `Measured` in `PluginDescriptor`, the verdict; the shared test plugin's mode word sets its tail | 021 step 4c | the plugin reports N and rings M: `Honest` when N = M, `TailLonger` when N < M; a plugin that adds noise above the floor with silence in is `NeverSettles`, not `TailLonger`. Mutations: report M - 1, the verdict changes; skip the silence-in render, the noisy plugin reads `TailLonger` |
 | 4 | **The voice description.** `DeclaredVoices`, `rules`, the CLAP fill, `NoteTracker` over `OneVoice`, the note-end event, hanging-note cleanup on stop and seek | step 2 | the tracker is tested against `tutti-voicing`'s own spec tests, no other implementation; a hanging-note case per format. Mutation: drop the note-end handler, a voice stays |
 | 5 | **`Capabilities` and `Reported`.** Assemble it in `Loaded`, carry it with `LoadedPlugin`, replace it on a restart notice; `Dialects` | step 4 | a re-read test through the 016 `step` core. Mutation: clear the flag-to-field mapping, the test fails |
 | 6 | **`LayoutOptions` and `Ambisonic`** (G1, G11). A native node declares a set first; then the four plugin sources | step 5 | a `Fold` property test over every `LayoutChoice` pair; a refused proposal changes nothing in the graph |
@@ -953,17 +962,20 @@ Steps 1 to 3 are the commitment. Step 4 follows because the voicing core is
 merged and CLAP's declaration is already read. Steps 6 to 10 are the oracle's
 output, each worth doing only with a native producer in the same PR.
 
-## 10. Open questions
+## 10. Decisions
 
-| # | Question | Recommendation |
+Decided by the owner on 2026-11-10, as recommended. Q3 gained the
+`NeverSettles` verdict (§6) and Q7 is scoped to a first reader.
+
+| # | Question | Decision |
 |---|---|---|
 | Q1 | Where does a native node declare G1, G2, G3, G4, G6, G8, G9: on `Node`, in `Shape`, elsewhere? | Neither. `Shape` stays the minimum the compiler needs and `Node` is unchanged. An optional `Describe` trait, implemented by a node and read by `tutti-session` beside `SessionNode::params`, returns the values of 5.8. It is not on the audio path |
 | Q2 | Is the closed unit-string list (5.2) acceptable, or should VST3 and VST2 strings never be typed? | Keep the list short and exact, and grow it from the corpus run of section 6. The cost of a wrong accept is a mislabelled parameter; the cost of never accepting is the status quo |
-| Q3 | The probe floor: `Db(-100)` fixed, or per plugin? | Fixed, named, recorded in `ProbeConfig`. A per-plugin floor is a knob that hides a dishonest tail |
+| Q3 | The probe floor: `Db(-100)` fixed, or per plugin? | Fixed, named, recorded in `ProbeConfig`. A per-plugin floor is a knob that hides a dishonest tail. A plugin that stays above the floor with silence in is `NeverSettles` (§6), not `TailLonger` |
 | Q4 | Should the host enforce `voice_capacity` by stealing (5.5)? | Yes for CLAP, whose spec makes it a hard bound; no for a format that does not declare it. Ship the data (step 4) before the stealing |
 | Q5 | CLAP's hard-realtime flag: pin such a plugin's node to the audio thread? | Not now. `Shape` has no placement, and adding one for one flag is the indirection the project rules warn against. Record and show the flag; revisit when a plugin sets it |
 | Q6 | Does `Capabilities` replace `Features` and `LoadedPlugin`? | `Features` stays: it is the per-block gate. `LoadedPlugin` folds in at step 10, after its readers have moved |
-| Q7 | Are `ParamPages` and `TrackContext` worth a type, given no tutti node declares them? | Yes, as plain data in `tutti-plugin-types`, so an application does not parse three formats. Not in `tutti-types` |
+| Q7 | Are `ParamPages` and `TrackContext` worth a type, given no tutti node declares them? | Yes, as plain data in `tutti-plugin-types`, so an application does not parse three formats. Not in `tutti-types`. Each is built in the PR that has its first reader (§9 step 10), never ahead of one |
 | Q8 | Do `Tuning` and `KeyTuning` belong in `tutti-types`? | `KeyTuning` (cents per key) yes; `Tuning` (the scale) stays in `tutti-polysynth` and converts |
 | Q9 | Is `ParamUnit` a hosting tag in `tutti-plugin-types`, or a runtime tag in `tutti-types` beside the unit types? | `tutti-plugin-types`. The unit types are compile-time; a runtime tag is a hosting concern, and adding one to `tutti-types` risks two names for one behaviour |
 | Q10 | Host the AUv3 surface (A39)? | Not in this design. The v2 properties cover what `tutti-au-host` does; AUv3 is a separate hosting decision |

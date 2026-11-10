@@ -10,7 +10,7 @@
 // `RelativeAssignable`): there is no constructor here. Decoding goes through
 // `MidiMessage::from_ump` and `MidiMessage::RelativeController`, which also
 // carries the channel and re-encodes: one decode of this wire format, not two
-// that can drift apart, the same single-homing rule `translation::scaling`
+// that can drift apart, the same single-homing rule `tutti_midi_protocol`
 // keeps for the spec's scalers.
 
 /// RPN bank for the MPE Configuration Message and Pitch-Bend Sensitivity: `0x00`.

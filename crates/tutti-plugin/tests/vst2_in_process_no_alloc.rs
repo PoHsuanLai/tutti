@@ -21,7 +21,6 @@ use tutti_fixtures::main_thread;
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
@@ -41,7 +40,7 @@ fn process_steady_state_does_not_allocate() {
     let (unit, handle) = tutti_plugin::in_process_vst2_client(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
-        48_000.0,
+        SampleRate::new(48_000.0),
     )
     .expect("load failed");
     // Prepared (outside the gate) as a graph prepares a node, then driven by
@@ -81,7 +80,7 @@ fn process_with_a_meter_does_not_allocate() {
     let (unit, handle) = tutti_plugin::in_process_vst2_client(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
-        48_000.0,
+        SampleRate::new(48_000.0),
     )
     .expect("load failed");
     unit.set_meter(ProjectMeter::new(MeterMap::new([MeterChange::new(
@@ -106,7 +105,7 @@ fn process_with_midi_does_not_allocate() {
     let (unit, handle) = tutti_plugin::in_process_vst2_client(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
-        48_000.0,
+        SampleRate::new(48_000.0),
     )
     .expect("load failed");
     let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
@@ -122,7 +121,7 @@ fn process_with_midi_does_not_allocate() {
         MidiGroup::FIRST,
         MidiChannel::of(1),
         60,
-        midi1_velocity_to_midi2(100),
+        tutti_fixtures::midi::wide_velocity(100),
     );
     unit.events(0, &[at_start(warm_event)]);
     unit.block();
@@ -138,7 +137,7 @@ fn process_with_midi_does_not_allocate() {
                     MidiGroup::FIRST,
                     MidiChannel::of(1),
                     60 + (i as u8 % 12),
-                    midi1_velocity_to_midi2(100),
+                    tutti_fixtures::midi::wide_velocity(100),
                 );
                 unit.events(0, &[at_start(ev)]);
             }
@@ -180,7 +179,7 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     let loaded = tutti_plugin::in_process_vst2_client(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
-        48_000.0,
+        SampleRate::new(48_000.0),
     );
     // SAFETY: as above.
     unsafe { std::env::remove_var("TUTTI_VST2_PROBE_PARAMS") };

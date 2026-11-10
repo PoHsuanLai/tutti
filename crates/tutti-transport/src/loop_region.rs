@@ -68,7 +68,7 @@ impl LoopRegion {
 impl Default for LoopRegion {
     /// Beats 0 to 16, disarmed.
     fn default() -> Self {
-        let bounds = LoopRange::new(0.0, 16.0).expect("0 < 16");
+        let bounds = LoopRange::new(Beat::new(0.0), Beat::new(16.0)).expect("0 < 16");
         Self::new(bounds, false)
     }
 }
@@ -210,7 +210,10 @@ mod tests {
     /// round trip fails.
     #[test]
     fn the_wire_round_trips_a_region() {
-        let region = LoopRegion::new(LoopRange::new(1.5, 9.25).expect("ordered"), true);
+        let region = LoopRegion::new(
+            LoopRange::new(Beat::new(1.5), Beat::new(9.25)).expect("ordered"),
+            true,
+        );
         assert_eq!(decode(encode(region)), Some(region));
         assert_eq!(decode([0; 3]), None);
     }

@@ -473,7 +473,12 @@ mod tests {
     /// "a live write reached the fork" for `Attack` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
-        assert_param_fork(GateNode::stereo(-30.0, 0.001, 0.01, 0.1));
+        assert_param_fork(GateNode::stereo(
+            Db::new(-30.0),
+            Seconds::new(0.001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        ));
     }
 
     /// A block longer than 64 frames renders whole: the
@@ -483,7 +488,15 @@ mod tests {
     /// 1024-frame block panics indexing past it → fails.
     #[test]
     fn a_block_up_to_the_prepared_maximum_renders() {
-        let mut gate = prepared_at(GateNode::mono(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut gate = prepared_at(
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
         let audio = vec![0.5f32; 1024];
         let sc = vec![0.9f32; 1024];
         let out = drive(&mut gate, RATE_44K, &[&audio, &sc], &[]).remove(0);
@@ -492,14 +505,27 @@ mod tests {
 
     #[test]
     fn test_gate_starts_closed() {
-        let gate = GateNode::mono(-30.0, 0.001, 0.01, 0.1);
+        let gate = GateNode::mono(
+            Db::new(-30.0),
+            Seconds::new(0.001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        );
         assert!(!gate.is_open());
         assert_eq!(gate.gate_level(), 0.0);
     }
 
     #[test]
     fn test_gate_opens_on_loud_sidechain() {
-        let mut gate = prepared_at(GateNode::mono(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut gate = prepared_at(
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32];
 
@@ -514,7 +540,13 @@ mod tests {
     #[test]
     fn test_gate_closes_on_quiet_sidechain() {
         let mut gate = prepared_at(
-            GateNode::mono(-20.0, 0.001, 0.001, 0.001).with_range(-60.0),
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.001),
+                Seconds::new(0.001),
+                Seconds::new(0.001),
+            )
+            .with_range(Db::new(-60.0)),
             RATE_44K,
         );
 
@@ -535,14 +567,26 @@ mod tests {
 
     #[test]
     fn test_gate_range_clamps_to_non_positive() {
-        let gate = GateNode::mono(-20.0, 0.001, 0.01, 0.1).with_range(10.0);
+        let gate = GateNode::mono(
+            Db::new(-20.0),
+            Seconds::new(0.001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        )
+        .with_range(Db::new(10.0));
         assert_eq!(gate.range().load(Ordering::Acquire), 0.0);
     }
 
     #[test]
     fn test_gate_range_attenuates_rather_than_mutes() {
         let mut gate = prepared_at(
-            GateNode::mono(-20.0, 0.001, 0.001, 0.001).with_range(-12.0),
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.001),
+                Seconds::new(0.001),
+                Seconds::new(0.001),
+            )
+            .with_range(Db::new(-12.0)),
             RATE_44K,
         );
 
@@ -563,7 +607,15 @@ mod tests {
 
     #[test]
     fn test_gate_reset() {
-        let mut gate = prepared_at(GateNode::mono(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut gate = prepared_at(
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32];
         for _ in 0..500 {
@@ -578,7 +630,15 @@ mod tests {
 
     #[test]
     fn test_gate_stereo_opens_on_loud_sidechain() {
-        let mut gate = prepared_at(GateNode::stereo(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut gate = prepared_at(
+            GateNode::stereo(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32; 2];
 
@@ -593,12 +653,22 @@ mod tests {
 
     #[test]
     fn test_gate_stereo_channel_count() {
-        let mono = GateNode::mono(-20.0, 0.001, 0.01, 0.1);
+        let mono = GateNode::mono(
+            Db::new(-20.0),
+            Seconds::new(0.001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        );
         assert_eq!(mono.channels(), 1);
         assert_eq!(mono.shape().audio_in.count(), 2);
         assert_eq!(mono.shape().audio_out.count(), 1);
 
-        let stereo = GateNode::stereo(-20.0, 0.001, 0.01, 0.1);
+        let stereo = GateNode::stereo(
+            Db::new(-20.0),
+            Seconds::new(0.001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        );
         assert_eq!(stereo.channels(), 2);
         assert_eq!(stereo.shape().audio_in.count(), 4);
         assert_eq!(stereo.shape().audio_out.count(), 2);
@@ -606,7 +676,15 @@ mod tests {
 
     #[test]
     fn test_gate_stereo_linking() {
-        let mut gate = prepared_at(GateNode::stereo(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut gate = prepared_at(
+            GateNode::stereo(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32; 2];
 
@@ -634,7 +712,12 @@ mod tests {
     /// cell → fails.
     #[test]
     fn gate_declares_its_params() {
-        let m = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
+        let m = GateNode::mono(
+            Db::new(-20.0),
+            Seconds::new(0.0001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        );
         assert_eq!(
             m.shape().params.as_slice(),
             &[UnitParam::Threshold, UnitParam::Attack, UnitParam::Release][..]
@@ -647,7 +730,12 @@ mod tests {
         );
         assert_eq!(m.param_base(1), Some(0.0001), "the attack's base");
         assert_eq!(m.param_base(2), Some(0.1), "the release's base");
-        let s = GateNode::stereo(-20.0, 0.0001, 0.01, 0.1);
+        let s = GateNode::stereo(
+            Db::new(-20.0),
+            Seconds::new(0.0001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        );
         assert_eq!(s.shape().audio_in.count(), 4);
     }
 
@@ -656,7 +744,15 @@ mod tests {
     /// A mono gate at `-20 dB` (0.1 linear), 44.1 kHz, fast attack, no range
     /// floor beyond the default.
     fn gate_at_minus_20() -> GateNode {
-        prepared_at(GateNode::mono(-20.0, 0.0001, 0.0102, 0.001), RATE_44K)
+        prepared_at(
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.0102),
+                Seconds::new(0.001),
+            ),
+            RATE_44K,
+        )
     }
 
     /// Renders `frames` of a steady sidechain `sc` (audio 1.0) in one block.
@@ -699,7 +795,17 @@ mod tests {
     #[test]
     fn a_threshold_above_zero_db_opens_above_and_stays_closed_below() {
         let thr = 10f32.powf(6.0 / 20.0);
-        let at_plus_6 = || prepared_at(GateNode::mono(6.0, 0.0001, 0.0102, 0.001), RATE_44K);
+        let at_plus_6 = || {
+            prepared_at(
+                GateNode::mono(
+                    Db::new(6.0),
+                    Seconds::new(0.0001),
+                    Seconds::new(0.0102),
+                    Seconds::new(0.001),
+                ),
+                RATE_44K,
+            )
+        };
 
         let mut above = at_plus_6();
         run_steady(&mut above, thr * 1.001, 1024);
@@ -746,7 +852,13 @@ mod tests {
             (-6.0, 0.501_187_2),
         ] {
             let mut gate = prepared_at(
-                GateNode::mono(-20.0, 0.001, 0.001, 0.001).with_range(range_db),
+                GateNode::mono(
+                    Db::new(-20.0),
+                    Seconds::new(0.001),
+                    Seconds::new(0.001),
+                    Seconds::new(0.001),
+                )
+                .with_range(Db::new(range_db)),
                 RATE_44K,
             );
             // Silent sidechain: closed from the first frame; a second block
@@ -772,13 +884,29 @@ mod tests {
     #[test]
     fn a_threshold_at_or_under_the_floor_opens_on_silence() {
         for (threshold, opens) in [(-200.0f32, true), (-144.0, true), (-143.0, false)] {
-            let mut gate = prepared_at(GateNode::mono(threshold, 0.0001, 0.01, 0.1), RATE_44K);
+            let mut gate = prepared_at(
+                GateNode::mono(
+                    Db::new(threshold),
+                    Seconds::new(0.0001),
+                    Seconds::new(0.01),
+                    Seconds::new(0.1),
+                ),
+                RATE_44K,
+            );
             run_steady(&mut gate, 0.0, 1024);
             assert_eq!(gate.is_open(), opens, "threshold {threshold} dB on silence");
         }
         // A level well above a floor-pinned threshold still decides on its
         // own: -150 dB is 3.2e-8, so 1e-10 (-200 dB) is below it.
-        let mut gate = prepared_at(GateNode::mono(-150.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut gate = prepared_at(
+            GateNode::mono(
+                Db::new(-150.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
         run_steady(&mut gate, 1.0e-10, 1024);
         assert!(!gate.is_open(), "-200 dB is under a -150 dB threshold");
         run_steady(&mut gate, 1.0e-7, 1024);
@@ -796,10 +924,10 @@ mod tests {
         let mut gate = gate_at_minus_20();
         run_steady(&mut gate, 0.05, 512); // -26 dB
         assert!(!gate.is_open());
-        gate.set_threshold(-30.0);
+        gate.set_threshold(Db::new(-30.0));
         run_steady(&mut gate, 0.05, 512);
         assert!(gate.is_open());
-        gate.set_threshold(-20.0);
+        gate.set_threshold(Db::new(-20.0));
         run_steady(&mut gate, 0.05, 1024);
         assert!(!gate.is_open(), "raising it closes the gate again");
     }
@@ -813,7 +941,12 @@ mod tests {
     /// `gate_level() == 0.0` assertion fails.
     #[test]
     fn a_nan_detector_level_leaves_the_state_finite_and_closed() {
-        let mut core = GateCore::new(-20.0, 0.0001, 0.01, 0.1);
+        let mut core = GateCore::new(
+            Db::new(-20.0),
+            Seconds::new(0.0001),
+            Seconds::new(0.01),
+            Seconds::new(0.1),
+        );
         core.set_sample_rate(RATE_44K);
         core.update_coefficients([None, None]);
         let block = core.begin_block();
@@ -850,9 +983,25 @@ mod tests {
     fn gate_unmodulated_matches_held_constant() {
         // A modulated mono gate whose fed threshold is held at the same value
         // as a plain gate's atomic must produce identical output.
-        let mut plain = prepared_at(GateNode::mono(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut plain = prepared_at(
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
-        let mut modn = prepared_at(GateNode::mono(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut modn = prepared_at(
+            GateNode::mono(
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut plain_out = [0.0f32];
         let mut mod_out = [0.0f32];

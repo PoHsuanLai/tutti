@@ -84,9 +84,8 @@ impl DelayLine {
         // `max_delay` must hold *at least* that long, and rounding to nearest
         // under-allocates for half of all inputs. The multiply stays in f64 —
         // narrowing the sample rate to f32 first loses precision.
-        let samples = max_delay_secs
-            .into()
-            .to_samples_ceil(sample_rate.into().get());
+        let max_delay_secs: Seconds = max_delay_secs.into();
+        let samples = max_delay_secs.to_samples_ceil(sample_rate);
         Self::new(samples.get())
     }
 

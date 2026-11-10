@@ -6,6 +6,7 @@
 
 use std::fs::File;
 use std::path::Path;
+use tutti_types::SampleRate;
 
 use symphonia::core::audio::{AudioBuffer, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
@@ -193,7 +194,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
 
     // Pre-allocate using the metadata frame count when available (WAV, FLAC).
     let mut wave: Option<Wave> = total_frames.map(|total| {
-        let mut wave = Wave::with_topology(topology, sample_rate);
+        let mut wave = Wave::with_topology(topology, SampleRate::new(sample_rate));
         for ch in 0..wave.channels() {
             wave.channel_vec_mut(ch).reserve_exact(total as usize);
         }
@@ -221,7 +222,10 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
             decode_packet_into(&mut *decoder, &packet, &mut dest).map_err(convert)?;
         let wave_output = wave.get_or_insert_with(|| {
             let spec = *buf.spec();
-            Wave::with_topology(topology_of(spec.channels), spec.rate as f64)
+            Wave::with_topology(
+                topology_of(spec.channels),
+                SampleRate::new(spec.rate as f64),
+            )
         });
 
         // Batch-append all channels at once.

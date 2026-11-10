@@ -46,7 +46,7 @@ use tutti_plugin_types::{Request, RescanScope};
 #[path = "support/active.rs"]
 mod active;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 512;

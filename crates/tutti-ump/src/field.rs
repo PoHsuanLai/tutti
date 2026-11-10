@@ -34,9 +34,10 @@ impl std::error::Error for OutOfRange {}
 macro_rules! bits {
     ($(#[$doc:meta])* $name:ident, $repr:ty, $repr_name:literal, $width:expr) => {
         $(#[$doc])*
-        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, bytemuck::NoUninit)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         #[cfg_attr(feature = "serde", serde(try_from = $repr_name, into = $repr_name))]
+        #[repr(transparent)]
         pub struct $name($repr);
 
         impl $name {

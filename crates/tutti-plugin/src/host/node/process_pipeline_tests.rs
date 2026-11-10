@@ -1700,7 +1700,10 @@ fn a_stale_block_holding_only_a_start_cuts_its_message() {
 fn sysex_fragments(len: usize) -> Vec<tutti_plugin_types::WireMidi> {
     let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
     let mut out = Vec::new();
-    tutti_midi_types::sysex7_fragments(tutti_ump::MidiGroup::FIRST, &payload, &mut out);
+    out.extend(
+        tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, &payload)
+            .expect("a 7-bit payload"),
+    );
     out.into_iter()
         .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
         .collect()

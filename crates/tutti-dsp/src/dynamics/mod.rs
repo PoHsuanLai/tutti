@@ -1,11 +1,12 @@
 //! Dynamics algorithms: the envelope followers, the gain curves, the
-//! compressor and gate kernels, and the limiter's lookahead ring.
+//! compressor, gate and limiter kernels, and the limiter's lookahead ring.
 
 mod compressor;
 mod curves;
 mod envelope;
 mod gate;
 mod limiter;
+mod limiter_kernel;
 
 pub use compressor::{CompressorBlock, CompressorKernel};
 pub use curves::{
@@ -15,3 +16,4 @@ pub use curves::{
 pub use envelope::{EnvelopeFollower, GateEnvelopeFollower};
 pub use gate::{GateBlock, GateKernel};
 pub use limiter::{LookaheadRing, brickwall_clip, fold_peak};
+pub use limiter_kernel::{LimiterBlock, LimiterKernel};

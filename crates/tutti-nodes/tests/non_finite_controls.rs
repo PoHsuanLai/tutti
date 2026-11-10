@@ -20,7 +20,10 @@ use tutti_nodes::{
     CompressorNode, DelayLineNode, GateNode, LadderFilterNode, LadderType, ModDelayNode,
     PhaserNode, SvfFilterNode, SvfType,
 };
-use tutti_types::{ChannelLayout, ParamCell, SampleRate, Samples};
+use tutti_types::{
+    ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, Mix, ParamCell, Q, Resonance,
+    SampleRate, Samples, Seconds,
+};
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
 
@@ -111,7 +114,14 @@ fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
 fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls() {
     survives_node(
         "svf",
-        || SvfFilterNode::<f64>::with_channels(ChannelLayout::STEREO, SvfType::Bell, 900.0, 1.0),
+        || {
+            SvfFilterNode::<f64>::with_channels(
+                ChannelLayout::STEREO,
+                SvfType::Bell,
+                Hz::new(900.0),
+                Q::new(1.0),
+            )
+        },
         |n| {
             vec![
                 ("cutoff", n.frequency().into(), 2_000.0),
@@ -126,8 +136,8 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             LadderFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
                 LadderType::LP24,
-                900.0,
-                0.5,
+                Hz::new(900.0),
+                Resonance::new(0.5),
             )
         },
         |n| {
@@ -141,9 +151,14 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     survives_node(
         "delay",
         || {
-            let n = DelayLineNode::stereo(0.1, 0.01, 0.013, 0.5);
-            n.set_cross_feedback(0.2);
-            n.set_mix(0.5);
+            let n = DelayLineNode::stereo(
+                Seconds::new(0.1),
+                Seconds::new(0.01),
+                Seconds::new(0.013),
+                Feedback::new(0.5),
+            );
+            n.set_cross_feedback(Feedback::new(0.2));
+            n.set_mix(Mix::new(0.5));
             n
         },
         |n| {
@@ -181,7 +196,15 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     );
     survives_node(
         "compressor",
-        || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.05).with_soft_knee(6.0),
+        || {
+            CompressorNode::stereo(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.001),
+                Seconds::new(0.05),
+            )
+            .with_soft_knee(Db::new(6.0))
+        },
         |n| {
             vec![
                 ("threshold", n.threshold().into(), -30.0),
@@ -195,7 +218,14 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     );
     survives_node(
         "gate",
-        || GateNode::stereo(-30.0, 0.001, 0.01, 0.05),
+        || {
+            GateNode::stereo(
+                Db::new(-30.0),
+                Seconds::new(0.001),
+                Seconds::new(0.01),
+                Seconds::new(0.05),
+            )
+        },
         |n| {
             vec![
                 ("threshold", n.threshold().into(), -20.0),
@@ -217,7 +247,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
 #[test]
 fn the_convolver_holds_off_non_finite_controls() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
-    let ir = generate_test_ir(128, 0.1, 48_000.0);
+    let ir = generate_test_ir(128, Seconds::new(0.1), SampleRate::new(48_000.0));
     survives_node(
         "convolver",
         || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64),
@@ -244,7 +274,7 @@ fn the_distortion_holds_off_non_finite_controls() {
     ] {
         survives_node(
             "distortion",
-            || DistortionNode::new(kind, 2.0),
+            || DistortionNode::new(kind, Drive::new(2.0)),
             |n| vec![("drive", n.drive().into(), 5.0)],
         );
     }
@@ -258,7 +288,7 @@ fn the_distortion_holds_off_non_finite_controls() {
 fn a_distortion_built_with_a_non_finite_drive_renders_finite() {
     use tutti_nodes::{DistortionNode, ShapeKind};
     for bad in BAD {
-        let mut node = DistortionNode::new(ShapeKind::Tanh, bad);
+        let mut node = DistortionNode::new(ShapeKind::Tanh, Drive::new(bad));
         node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
         assert!(
             render_node_finite(&mut node, SampleRate(48_000.0), 4, 1),

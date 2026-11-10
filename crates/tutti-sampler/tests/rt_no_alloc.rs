@@ -34,7 +34,7 @@ use tutti_sampler::{
 };
 use tutti_types::{
     Beat, BeatDuration, Bpm, Cents, ChannelLayout, PlaybackRate, SamplePosition, SampleRate,
-    StretchFactor,
+    Seconds, StretchFactor,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -76,7 +76,7 @@ static A: AllocDisabler = AllocDisabler;
 
 /// Build a stereo `Wave` of `duration_secs` filled with a 440 Hz sine.
 fn sine_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
-    let mut wave = Wave::zero(2, sample_rate, duration_secs);
+    let mut wave = Wave::zero(2, SampleRate::new(sample_rate), Seconds::new(duration_secs));
     let len = wave.len();
     for i in 0..len {
         let t = i as f64 / sample_rate;
@@ -138,7 +138,7 @@ fn time_stretch_process_is_allocation_free() {
     // The stretcher is now a pure filter: it owns no source and reads the stereo
     // frames the caller feeds in. Feed a 2-channel input (matching its two
     // vocoders) primed with a constant source signal.
-    let mut node = TimeStretchUnit::new(48_000.0);
+    let mut node = TimeStretchUnit::new(SampleRate::new(48_000.0));
     node.set_sample_rate(SampleRate(48_000.0));
     node.set_stretch_factor(StretchFactor::new(1.5));
     assert!(node.is_processing());
@@ -168,7 +168,7 @@ fn time_stretch_process_is_allocation_free() {
 #[test]
 fn time_stretch_process_past_the_scratch_is_allocation_free() {
     const FRAMES: usize = 8192 + 300;
-    let mut node = TimeStretchUnit::new(48_000.0);
+    let mut node = TimeStretchUnit::new(SampleRate::new(48_000.0));
     node.set_sample_rate(SampleRate(48_000.0));
     node.set_stretch_factor(StretchFactor::new(1.5));
     assert!(
@@ -209,7 +209,7 @@ fn time_stretch_process_past_the_scratch_is_allocation_free() {
 /// clone arrives sized.)
 #[test]
 fn cloned_time_stretch_process_is_allocation_free() {
-    let mut original = TimeStretchUnit::new(48_000.0);
+    let mut original = TimeStretchUnit::new(SampleRate::new(48_000.0));
     original.set_sample_rate(SampleRate(48_000.0));
     original.set_stretch_factor(StretchFactor::new(1.5));
 
@@ -486,7 +486,7 @@ fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
 fn wraps_without_allocating<N: Node>(node: N) {
     use tutti_graph::{LoopRange, Transport};
     const WRAPS: usize = 4;
-    let region = tutti_types::LoopRange::new(0.125, 0.376).expect("a loop");
+    let region = tutti_types::LoopRange::new(Beat::new(0.125), Beat::new(0.376)).expect("a loop");
     let looping = LoopRange {
         start: Beat::new(0.125),
         end: Beat::new(0.376),
@@ -658,7 +658,7 @@ fn run_stretch_drain_under_guard() {
 /// A 6-channel wave whose channel `c` carries a distinct amplitude, so a
 /// wrong-channel read is a wrong value rather than a plausible one.
 fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
-    let mut wave = Wave::zero(6, sample_rate, duration_secs);
+    let mut wave = Wave::zero(6, SampleRate::new(sample_rate), Seconds::new(duration_secs));
     let len = wave.len();
     for i in 0..len {
         let t = i as f64 / sample_rate;

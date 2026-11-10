@@ -296,7 +296,7 @@ impl EventInletWriter {
 /// use tutti_types::At;
 /// use tutti_ump::Ump;
 ///
-/// let (node, mut writer) = EventInletNode::standalone(256);
+/// let (node, mut writer) = EventInletNode::new(256);
 /// let note_on = Ump([0x2090_3c64, 0, 0, 0]);
 /// writer.push(At::NextBlock, note_on).unwrap(); // from any one thread
 /// assert_eq!(node.capacity(), 256);
@@ -334,7 +334,7 @@ impl EventInletNode {
     ///
     /// If `capacity` is 0 or does not fit a `u32` (a port's capacity is one).
     #[must_use = "the writer is the only way to fill the ring"]
-    pub fn standalone(capacity: usize) -> (Self, EventInletWriter) {
+    pub fn new(capacity: usize) -> (Self, EventInletWriter) {
         assert!(
             capacity > 0 && u32::try_from(capacity).is_ok(),
             "an event inlet holds 1 to u32::MAX events, not {capacity}"
@@ -420,7 +420,7 @@ impl Node for EventInletNode {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, 1)
-            // `standalone` checked that it fits.
+            // `new` checked that it fits.
             .with_event_capacity(self.capacity as u32)
             // Event-only: a ring drain, work per event, nothing per frame.
             .with_cost(Cost::Light)
@@ -518,14 +518,12 @@ struct SilentInlet {
 
 impl ForkSource for SilentInlet {
     fn fork(&self, _: ForkMode) -> Result<Forked, ForkCause> {
-        Ok(Forked::new(Box::new(
-            EventInletNode::standalone(self.capacity).0,
-        )))
+        Ok(Forked::new(Box::new(EventInletNode::new(self.capacity).0)))
     }
 }
 
 /// Inserted with a **silent** fork (see the module docs). No controls: the
-/// writer came out of [`EventInletNode::standalone`].
+/// writer came out of [`EventInletNode::new`].
 impl IntoNode for EventInletNode {
     type Controls = ();
 

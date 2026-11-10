@@ -802,12 +802,12 @@ impl Graph {
     ///
     /// If `capacity` is 0 or does not fit a `u32`.
     pub fn open_event_inlet(&mut self, capacity: usize) -> (NodeKey, EventInletWriter) {
-        let (node, writer) = EventInletNode::standalone(capacity);
+        let (node, writer) = EventInletNode::new(capacity);
         (self.add_event_inlet(node), writer)
     }
 
     /// [`open_event_inlet`](Self::open_event_inlet) over a node the producer's
-    /// layer already built ([`EventInletNode::standalone`]), for a producer
+    /// layer already built ([`EventInletNode::new`]), for a producer
     /// that must hold its writer before the graph sees the node.
     pub fn add_event_inlet(&mut self, node: EventInletNode) -> NodeKey {
         self.insert(node).0

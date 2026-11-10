@@ -63,7 +63,7 @@ fn pushed_events_come_out_at_their_frames() {
     assert!(!s.graph().is_edited());
     let (key, mut writer) = s.graph().open_event_inlet(64);
     assert!(s.graph().is_edited(), "the open inserted a node");
-    let (node, mut prebuilt) = EventInletNode::standalone(64);
+    let (node, mut prebuilt) = EventInletNode::new(64);
     let key2 = s.graph().add_event_inlet(node);
     assert_ne!(key, key2);
     let mut tap = s

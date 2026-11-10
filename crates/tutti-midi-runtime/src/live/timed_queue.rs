@@ -114,7 +114,7 @@ impl TimedQueueNode {
     /// A node and the sender into it.
     #[must_use]
     pub fn new() -> (Self, TimedSender) {
-        let (node, writer) = EventInletNode::standalone(TIMED_QUEUE_CAPACITY);
+        let (node, writer) = EventInletNode::new(TIMED_QUEUE_CAPACITY);
         let sender = TimedSender {
             writer: Arc::new(Mutex::new(writer)),
         };

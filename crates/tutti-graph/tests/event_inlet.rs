@@ -45,7 +45,7 @@ fn cc(controller: u32) -> Ump {
 type Rig = (Direct<EventInletNode>, EventInletWriter);
 
 fn rig(capacity: usize) -> Rig {
-    let (node, tx) = EventInletNode::standalone(capacity);
+    let (node, tx) = EventInletNode::new(capacity);
     (Direct::new(node, R48, 64), tx)
 }
 
@@ -113,7 +113,7 @@ fn an_event_lands_on_its_frame_across_block_sizes() {
         frames.sort_unstable();
         frames.dedup();
         frames.retain(|&f| f < 1_100);
-        let (node, mut tx) = EventInletNode::standalone(64);
+        let (node, mut tx) = EventInletNode::new(64);
         let mut d = Direct::new(node, R48, size);
         for (k, &f) in frames.iter().enumerate().rev() {
             tx.push(At::Frame(Frame(f)), note(k as u32)).unwrap();
@@ -538,7 +538,7 @@ fn graph(
     }
     let mut writers = Vec::new();
     for k in 1..=u64::from(n) {
-        let (node, writer) = EventInletNode::standalone(256);
+        let (node, writer) = EventInletNode::new(256);
         ed.insert(NodeKey(k), "inlet", node);
         writers.push(writer);
     }

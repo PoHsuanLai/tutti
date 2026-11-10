@@ -8159,9 +8159,11 @@ Decided 2026-11-08 (SoundFont stage 3b). The reverb and chorus left
   ceiling, now reads as the nearest legal value). With no recirculation an output frame is input at most `max_delay`
   old, so such a config declares `Tail::Finite(max_delay)`; any other config is
   `Tail::Unknown`, as before.
-- **Reverb** is `ReverbNode` over `tutti_dsp::Freeverb` (the Freeverb
-  of rustysynth, MIT header kept in `tutti-dsp`): mono in, stereo wet out, no
-  controls, a tail that is its ring-out to -60 dB, `Moderate` at about 18 ns
+- **Reverb** is `ReverbNode::general_midi()`, a `ReverbNode<FreeverbDesign>`
+  (doc 022 step 1b) over `tutti_dsp::Freeverb` (the Freeverb of rustysynth, MIT
+  header kept in `tutti-dsp`, the `Kernel` of its design): mono in, stereo wet
+  out, its controls fixed at room 0.5 and damping 0.5, a tail that is the
+  network's own to -60 dB (it parks and cuts there), `Moderate` at about 18 ns
   per frame and output channel (`node_kernels` bench, `reverb`).
 - **Tails**: the unit declares the longest voice release only; each effect its
   own; an export keeps the sum along the path.

@@ -28,14 +28,18 @@
 mod design;
 mod gain;
 mod inline;
+mod kernel;
 mod queries;
 
 #[cfg(test)]
 pub(crate) mod contract;
+#[cfg(test)]
+pub(crate) mod kernel_contract;
 
-pub use design::{Bounds, Ceiling, Design};
+pub use design::{Bounds, Ceiling, Channels, Design};
 pub use gain::{loop_gain, rt60_from_gain};
 pub use inline::{Full, Inline};
+pub use kernel::{Effort, Kernel, Setup};
 pub use queries::Ring;
 
 use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
@@ -113,6 +117,17 @@ impl Network {
             width: StereoWidth::NATURAL,
             wet: Db(0.0),
         }
+    }
+
+    /// Makes this an empty network at `rate`, in place: what
+    /// [`Design::design_into`] starts from. Unlike [`new`](Self::new) it builds
+    /// no value of the network's size.
+    pub fn clear(&mut self, rate: SampleRate) {
+        self.rate = rate;
+        self.pre_delay = Samples::ZERO;
+        self.stages.clear();
+        self.width = StereoWidth::NATURAL;
+        self.wet = Db(0.0);
     }
 }
 

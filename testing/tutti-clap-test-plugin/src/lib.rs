@@ -65,7 +65,8 @@ pub mod threading;
 
 pub use threading::{
     CMD_LOG_ALL_SEVERITIES, CMD_NONE, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
-    CMD_UNREGISTER_TIMER, SITE_COUNT, Site, ThreadAnswer, ThreadCapture,
+    CMD_UNREGISTER_TIMER, CMD_UNREGISTER_TIMER_IN_DEACTIVATE, SITE_COUNT, Site, ThreadAnswer,
+    ThreadCapture,
 };
 
 /// PARAMS + STATE probe: `clap.params`, `clap.state`, `clap.state-context/2`,
@@ -388,6 +389,8 @@ unsafe extern "C" fn plugin_deactivate(plugin: *const clap_plugin) {
         if !state.active.swap(false, Ordering::SeqCst) {
             refusal::note_inactive_deactivation();
         }
+        // SAFETY: the host this plugin was created with, live until `destroy`.
+        unsafe { threading::run_pending_command(threading::Site::Deactivate, plugin_host(plugin)) };
     }
 }
 

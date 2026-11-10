@@ -55,8 +55,8 @@ impl ClapLoaded {
     /// [`open_editor`](Self::open_editor)'s error. An absent `is_api_supported`
     /// is not a refusal — the same reading `embed_editor_sequence` uses.
     #[must_use]
-    pub fn has_editor(&self) -> bool {
-        self.plugin.has_editor()
+    pub fn has_editor(&self, main: &MainThread) -> bool {
+        self.plugin.has_editor(main)
     }
 
     /// Creates the plugin editor and embed it into the given native `parent`
@@ -73,7 +73,7 @@ impl ClapLoaded {
     /// embedded window API is unsupported, or if `create`/`set_parent` fails.
     pub fn open_editor(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<EditorSize> {
@@ -84,7 +84,7 @@ impl ClapLoaded {
 
         let outcome = self
             .plugin
-            .open_embedded(&parent, scale.get())
+            .open_embedded(main, &parent, scale.get())
             .map_err(gui_error)?;
 
         // Only an editor that was `create`d needs `destroy` later.
@@ -119,7 +119,7 @@ impl ClapLoaded {
     /// support a floating window, or if `create` fails.
     pub fn open_floating_editor(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         transient: Option<WindowHandle>,
         title: &std::ffi::CStr,
     ) -> Result<()> {
@@ -130,7 +130,7 @@ impl ClapLoaded {
 
         let did_create = self
             .plugin
-            .open_floating(transient.as_ref(), title)
+            .open_floating(main, transient.as_ref(), title)
             .map_err(gui_error)?;
 
         if did_create {
@@ -150,8 +150,8 @@ impl ClapLoaded {
     /// Side-effect-free, like its embedded sibling: `is_api_supported` is a
     /// predicate, `create` is what allocates.
     #[must_use]
-    pub fn has_floating_editor(&self) -> bool {
-        self.plugin.has_floating_editor()
+    pub fn has_floating_editor(&self, main: &MainThread) -> bool {
+        self.plugin.has_floating_editor(main)
     }
 
     /// The plugin's preferred windowing api and mode, if it states one.
@@ -166,8 +166,8 @@ impl ClapLoaded {
     /// `None` means the plugin expressed no preference, which is distinct from
     /// preferring embedded — a caller that conflates them would override a
     /// plugin that deliberately said nothing.
-    pub fn prefers_floating(&self) -> Option<bool> {
-        self.plugin.prefers_floating()
+    pub fn prefers_floating(&self, main: &MainThread) -> Option<bool> {
+        self.plugin.prefers_floating(main)
     }
 
     /// Queries the plugin's resize/aspect capabilities.
@@ -186,11 +186,11 @@ impl ClapLoaded {
     /// Defaults are the honest answer before create: nothing has been asked, so
     /// nothing is claimed. A caller wanting real hints must create the editor first,
     /// which is the same order the spec requires of it.
-    pub fn editor_capabilities(&self) -> EditorCapabilities {
+    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
         if !self.flags.gui_created {
             return EditorCapabilities::default();
         }
-        let Some(hints) = self.plugin.gui_hints() else {
+        let Some(hints) = self.plugin.gui_hints(main) else {
             return EditorCapabilities::default();
         };
         let mut caps = EditorCapabilities {
@@ -218,10 +218,14 @@ impl ClapLoaded {
     /// Returns [`ClapError::EditorError`] if the plugin has no GUI extension,
     /// cannot adjust the request to a usable size, lacks `set_size`, or refuses
     /// the adjusted size.
-    pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
+    pub fn resize_editor(
+        &mut self,
+        main: &MainThread,
+        requested: EditorSize,
+    ) -> Result<EditorSize> {
         let (width, height) = self
             .plugin
-            .resize_gui(requested.width, requested.height)
+            .resize_gui(main, requested.width, requested.height)
             .map_err(gui_error)?;
         Ok(EditorSize { width, height })
     }
@@ -264,19 +268,15 @@ impl ClapLoaded {
     /// `destroy` (step 14) with `create` (step 2), so it releases the gui
     /// resources `create` allocated rather than the window that just closed.
     /// Skipping it leaked those resources for the instance's lifetime.
-    pub fn close_editor(&mut self, _main: &MainThread) {
-        self.destroy_editor();
+    pub fn close_editor(&mut self, main: &MainThread) {
+        self.destroy_editor(main);
     }
 
     /// [`close_editor`](Self::close_editor) without a token, for `Drop`, which
     /// has none: the thread a drop runs on is the owner's. The per-format lane
     /// that gives the plugin a main-thread handle makes this unreachable off the
     /// main thread.
-    pub(crate) fn destroy_editor(&mut self) {
-        debug_assert!(
-            !tutti_plugin_types::MainThread::claimed_elsewhere(),
-            "CLAP main-thread call made off the main thread"
-        );
+    pub(crate) fn destroy_editor(&mut self, main: &MainThread) {
         if !self.flags.gui_created {
             return;
         }
@@ -288,7 +288,7 @@ impl ClapLoaded {
             .gui
             .window_destroyed
             .swap(false, std::sync::atomic::Ordering::AcqRel);
-        self.plugin.close_gui(window_destroyed);
+        self.plugin.close_gui(main, window_destroyed);
         self.flags.gui_created = false;
     }
 
@@ -381,7 +381,7 @@ impl ClapLoaded {
     /// period restarts from the fire instant. An instant earlier than a timer's
     /// last fire is treated as not due. Useful for driving timers
     /// deterministically in tests; production code calls `poll_timers`.
-    pub fn poll_timers_at(&mut self, _main: &MainThread, now: std::time::Instant) -> usize {
+    pub fn poll_timers_at(&mut self, main: &MainThread, now: std::time::Instant) -> usize {
         if !self.plugin.has_on_timer() {
             // Nothing can fire, so nothing is due: the per-block pass need not
             // come back for these timers.
@@ -391,7 +391,7 @@ impl ClapLoaded {
 
         let plugin = &mut self.plugin;
         fire_due_timers(&self.host_state.timer, now, |id| {
-            plugin.fire_timer(id);
+            plugin.fire_timer(main, id);
         })
     }
 
@@ -469,8 +469,8 @@ impl ClapLoaded {
     /// [`Self::poll_timers`]. A plugin reached here off-thread runs whatever
     /// deferred work it queued on the wrong thread, which tends to show up as a
     /// crash somewhere else entirely.
-    pub fn on_main_thread(&mut self, _main: &MainThread) -> &mut Self {
-        self.plugin.on_main_thread();
+    pub fn on_main_thread(&mut self, main: &MainThread) -> &mut Self {
+        self.plugin.on_main_thread(main);
         self
     }
 
@@ -486,22 +486,26 @@ impl ClapLoaded {
 
     /// Tells the plugin its track info has changed. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn notify_track_info_changed(&self) {
-        self.plugin.notify_track_info_changed();
+    pub fn notify_track_info_changed(&self, main: &MainThread) {
+        self.plugin.notify_track_info_changed(main);
     }
 
     /// Number of remote-control pages the plugin exposes. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn remote_controls_page_count(&self) -> usize {
-        self.plugin.remote_controls_count() as usize
+    pub fn remote_controls_page_count(&self, main: &MainThread) -> usize {
+        self.plugin.remote_controls_count(main) as usize
     }
 
     /// Describes the remote-controls page at `index`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
+    pub fn remote_controls_page(
+        &self,
+        main: &MainThread,
+        index: usize,
+    ) -> Option<RemoteControlsPage> {
         let page = self
             .plugin
-            .remote_controls_page(u32::try_from(index).ok()?)?;
+            .remote_controls_page(main, u32::try_from(index).ok()?)?;
         Some(RemoteControlsPage {
             section_name: chars_to_string(&page.section_name),
             page_id: page.page_id,
@@ -515,29 +519,38 @@ impl ClapLoaded {
     /// Returns `None` if the plugin does not implement context menus.
     /// Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn context_menu_populate(&self, target: ContextMenuTarget) -> Option<Vec<ContextMenuItem>> {
-        self.plugin.context_menu_populate(menu_target(target))
+    pub fn context_menu_populate(
+        &self,
+        main: &MainThread,
+        target: ContextMenuTarget,
+    ) -> Option<Vec<ContextMenuItem>> {
+        self.plugin.context_menu_populate(main, menu_target(target))
     }
 
     /// Invokes a context-menu action the plugin previously reported via
     /// [`Self::context_menu_populate`]. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn context_menu_perform(&self, target: ContextMenuTarget, action_id: u32) -> bool {
+    pub fn context_menu_perform(
+        &self,
+        main: &MainThread,
+        target: ContextMenuTarget,
+        action_id: u32,
+    ) -> bool {
         self.plugin
-            .context_menu_perform(menu_target(target), action_id)
+            .context_menu_perform(main, menu_target(target), action_id)
     }
 
     /// Number of trigger "parameters" (stateless momentary actions) the
     /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn trigger_count(&self) -> usize {
-        self.plugin.trigger_count() as usize
+    pub fn trigger_count(&self, main: &MainThread) -> usize {
+        self.plugin.trigger_count(main) as usize
     }
 
     /// Describes the trigger at `index`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn trigger_info(&self, index: usize) -> Option<TriggerInfo> {
-        let info = self.plugin.trigger_info(u32::try_from(index).ok()?)?;
+    pub fn trigger_info(&self, main: &MainThread, index: usize) -> Option<TriggerInfo> {
+        let info = self.plugin.trigger_info(main, u32::try_from(index).ok()?)?;
         Some(TriggerInfo {
             id: info.id,
             flags: info.flags,
@@ -548,8 +561,8 @@ impl ClapLoaded {
 
     /// Tells the plugin its tuning table set has changed. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn notify_tuning_changed(&self) {
-        self.plugin.notify_tuning_changed();
+    pub fn notify_tuning_changed(&self, main: &MainThread) {
+        self.plugin.notify_tuning_changed(main);
     }
 
     /// Calls `on_fd` for each POSIX descriptor the plugin registered that is
@@ -595,7 +608,7 @@ impl ClapLoaded {
     /// is still registered (an earlier callback may have unregistered it).
     /// Returns whether the plugin was called.
     #[cfg(unix)]
-    pub(crate) fn fire_fd(&mut self, _main: &MainThread, fd: i32) -> bool {
+    pub(crate) fn fire_fd(&mut self, main: &MainThread, fd: i32) -> bool {
         if !self.plugin.has_on_fd() {
             return false;
         }
@@ -610,7 +623,7 @@ impl ClapLoaded {
             .lock()
             .is_ok_and(|fds| fds.iter().any(|e| e.fd == fd));
         if registered {
-            self.plugin.fire_fd(fd, ready);
+            self.plugin.fire_fd(main, fd, ready);
         }
         registered
     }
@@ -618,7 +631,7 @@ impl ClapLoaded {
     /// Calls the plugin's `on_timer` for timer `id` if it is still registered
     /// (an earlier callback may have unregistered it), and caches the next
     /// deadline. Returns whether the plugin was called.
-    pub(crate) fn fire_timer(&mut self, _main: &MainThread, id: u32) -> bool {
+    pub(crate) fn fire_timer(&mut self, main: &MainThread, id: u32) -> bool {
         let on_timer = self.plugin.has_on_timer();
         let state = &self.host_state.timer;
         let registered = state
@@ -626,7 +639,7 @@ impl ClapLoaded {
             .lock()
             .is_ok_and(|timers| timers.iter().any(|t| t.id == id));
         if registered && on_timer {
-            self.plugin.fire_timer(id);
+            self.plugin.fire_timer(main, id);
         }
         cache_next_deadline(state);
         registered && on_timer

@@ -14,6 +14,7 @@ use clap_sys::ext::context_menu::{
 
 use crate::guard::guard;
 use crate::plugin::Plugin;
+use tutti_plugin_types::MainThread;
 
 /// What a context menu is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,7 +217,11 @@ impl Plugin {
     /// `context-menu.populate`: the plugin's items for `target`, `None` when
     /// it has none to offer.
     #[must_use]
-    pub fn context_menu_populate(&self, target: MenuTarget) -> Option<Vec<MenuItem>> {
+    pub fn context_menu_populate(
+        &self,
+        _main: &MainThread,
+        target: MenuTarget,
+    ) -> Option<Vec<MenuItem>> {
         let populate = self.context_menu_ext()?.populate?;
         let target = target.raw();
         let mut items = Vec::new();
@@ -233,7 +238,12 @@ impl Plugin {
     }
 
     /// `context-menu.perform`.
-    pub fn context_menu_perform(&self, target: MenuTarget, action_id: u32) -> bool {
+    pub fn context_menu_perform(
+        &self,
+        _main: &MainThread,
+        target: MenuTarget,
+        action_id: u32,
+    ) -> bool {
         let Some(perform) = self.context_menu_ext().and_then(|e| e.perform) else {
             return false;
         };

@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::ThreadId;
 
+use tutti_plugin_types::MainThread;
+
 /// The thread roles of one plugin instance.
 #[derive(Debug)]
 pub struct ThreadRoles {
@@ -59,10 +61,55 @@ impl Drop for AudioClaim<'_> {
     }
 }
 
+/// The roles lock held for `deactivate` and `destroy`, which are
+/// `[main-thread]` entries: no audio-side entry can run beside them, but the
+/// holder stays the main thread, so the callbacks a plugin makes from them
+/// (`unregister_timer`, `latency.changed`, `params.rescan`, ...) are legal and
+/// answered as such. The one audio-side entry in the sequence, `stop_processing`,
+/// runs inside [`audio`](Self::audio).
+#[derive(Debug)]
+pub struct LifecycleClaim<'a> {
+    roles: &'a ThreadRoles,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl LifecycleClaim<'_> {
+    /// Runs `f` as the audio thread: the claim's thread answers
+    /// `is_audio_thread` (and not `is_main_thread`) for its span.
+    pub fn audio<R>(&self, f: impl FnOnce() -> R) -> R {
+        struct Clear<'r>(&'r ThreadRoles);
+        impl Drop for Clear<'_> {
+            fn drop(&mut self) {
+                self.0.audio.store(NO_AUDIO_THREAD, Ordering::Release);
+            }
+        }
+        self.roles.audio.store(
+            thread_id_hash(std::thread::current().id()),
+            Ordering::Release,
+        );
+        let _clear = Clear(self.roles);
+        f()
+    }
+}
+
 impl ThreadRoles {
+    /// Takes the roles lock without becoming the audio thread: for the
+    /// `[main-thread]` entries that must not overlap audio-side ones.
+    pub fn claim_lifecycle(&self) -> LifecycleClaim<'_> {
+        let guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        LifecycleClaim {
+            roles: self,
+            _guard: guard,
+        }
+    }
+
     /// Roles with the calling thread as the main thread and no audio claim.
+    /// The token proves the caller is on the process's main thread, so the
+    /// thread recorded here is the one every `&MainThread` entry runs on: this
+    /// is the one place the main thread is named, and the `thread-check`
+    /// answer, the host shims and `Plugin`'s drop all read it.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(_main: &MainThread) -> Self {
         Self {
             main: std::thread::current().id(),
             audio: AtomicU64::new(NO_AUDIO_THREAD),
@@ -105,11 +152,5 @@ impl ThreadRoles {
     #[must_use]
     pub fn is_main_thread(&self) -> bool {
         std::thread::current().id() == self.main && !self.is_audio_thread()
-    }
-}
-
-impl Default for ThreadRoles {
-    fn default() -> Self {
-        Self::new()
     }
 }

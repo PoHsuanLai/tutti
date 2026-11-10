@@ -51,9 +51,3 @@ impl ClapHost {
         self.inner
     }
 }
-
-impl Default for ClapHost {
-    fn default() -> Self {
-        Self::new(Arc::new(HostState::new()))
-    }
-}

@@ -71,6 +71,7 @@ fn probe_still_answers_for_the_first_plugin() {
 #[test]
 fn a_plugin_past_index_zero_can_be_loaded() {
     let loaded = ClapLoaded::load(
+        &main_thread(),
         bundle(),
         LoadOptions::new().plugin_id(SECOND_PLUGIN_ID.to_str().unwrap()),
     )
@@ -89,7 +90,8 @@ fn a_plugin_past_index_zero_can_be_loaded() {
 /// getting exactly what it got before ids were selectable.
 #[test]
 fn loading_without_an_id_gets_the_first_plugin() {
-    let loaded = ClapLoaded::load(bundle(), LoadOptions::default()).expect("default load");
+    let loaded =
+        ClapLoaded::load(&main_thread(), bundle(), LoadOptions::default()).expect("default load");
     assert_eq!(loaded.info().id, PLUGIN_ID.to_str().unwrap());
 }
 
@@ -104,6 +106,7 @@ fn an_unknown_id_fails_rather_than_falling_back() {
     // Matched rather than `expect_err`, because `ClapLoaded` is not `Debug` —
     // and a loaded plugin is exactly what must not come back here.
     let msg = match ClapLoaded::load(
+        &main_thread(),
         bundle(),
         LoadOptions::new().plugin_id("tutti.no-such-plugin"),
     ) {
@@ -117,4 +120,10 @@ fn an_unknown_id_fails_rather_than_falling_back() {
         msg.contains("tutti.no-such-plugin"),
         "the error should name the id that was asked for: {msg}"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -1788,6 +1788,9 @@ pub struct Driven {
     pub events: Vec<Vec<Event>>,
     /// What the node passed to [`Io::report_tail`] in the call, if anything.
     pub reported_tail: Option<Tail>,
+    /// What the call returned (`None` only in a `Driven::default()`), for a test
+    /// of a node's silence claims: [`Status::Idle`] is the one that parks it.
+    pub status: Option<Status>,
 }
 
 /// The most events [`drive_input`] and [`Direct`] accept on each event output
@@ -1868,11 +1871,12 @@ pub fn drive_input(
     )
     .with_params(&params)
     .with_tail(&reported);
-    node.process(&cx, io);
+    let status = node.process(&cx, io);
     Driven {
         audio: out,
         events: out_events,
         reported_tail: reported.get(),
+        status: Some(status),
     }
 }
 

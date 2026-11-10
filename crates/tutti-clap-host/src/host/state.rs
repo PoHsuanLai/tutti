@@ -12,10 +12,9 @@ use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::ThreadId;
 use std::time::Instant;
 use tutti_clap_ffi::{AudioClaim, ThreadRoles};
-use tutti_plugin_types::RequestWord;
+use tutti_plugin_types::{MainThread, RequestWord};
 
 pub(crate) struct TimerEntry {
     pub id: u32,
@@ -496,11 +495,6 @@ impl ResourceState {
 /// Shared state for host↔plugin communication via atomic flags.
 #[derive(Debug)]
 pub struct HostState {
-    /// The thread that constructed this `HostState`, taken as the
-    /// `[main-thread]` role for the instance's whole life. Fixed at
-    /// construction, so a `HostState` must be built on the thread that will
-    /// drive the plugin's main-thread calls.
-    pub main_thread_id: ThreadId,
     /// Which thread plays which role, and the audio claim: shared with the
     /// FFI crate's plugin handle, which takes the claim around every
     /// audio-side entry.
@@ -543,13 +537,13 @@ pub struct HostState {
 pub type AudioThreadClaim<'a> = AudioClaim<'a>;
 
 impl HostState {
-    /// Builds an unclaimed `HostState`, taking the calling thread as the
-    /// `[main-thread]` role for the instance's whole life.
+    /// Builds an unclaimed `HostState`. The thread `main` proves is taken as
+    /// the `[main-thread]` role for the instance's whole life; it is recorded
+    /// once, in the instance's [`ThreadRoles`], which every answer reads.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(main: &MainThread) -> Self {
         Self {
-            main_thread_id: std::thread::current().id(),
-            roles: Arc::new(ThreadRoles::new()),
+            roles: Arc::new(ThreadRoles::new(main)),
             requests: RequestWord::new(),
             lifecycle: LifecycleFlags::new(),
             processing: ProcessingState::new(),
@@ -621,13 +615,7 @@ impl HostState {
     /// changes through the next `process` block avoids it entirely, which is
     /// what `flush_params`' own docs already recommend.
     pub fn is_main_thread(&self) -> bool {
-        std::thread::current().id() == self.main_thread_id && !self.is_audio_thread()
-    }
-}
-
-impl Default for HostState {
-    fn default() -> Self {
-        Self::new()
+        self.roles.is_main_thread()
     }
 }
 

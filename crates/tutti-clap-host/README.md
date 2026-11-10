@@ -71,7 +71,7 @@ use tutti_plugin_types::{AudioBufferMut, Loaded, MaxBlock, Prepare, SampleRate, 
 
 // `ClapLoaded` is the GUI / parameter / state stage. The rate and the block
 // length are not load parameters: they are the activation's.
-let loaded = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+let loaded = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 println!("{} by {}", loaded.info().name, loaded.info().vendor);
 
 // A refusal hands the plugin back in the error, so a plugin that declines f64
@@ -114,7 +114,7 @@ above.
 use tutti_plugin_types::{Control, Normalized, ParamId};
 # fn ex() -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 
 // CLAP addresses parameters by an opaque, plugin-chosen `clap_id`, never by
 // position. `parameters` projects them into the shared `ParameterInfo`, so a
@@ -149,8 +149,8 @@ println!("{} bytes of preset state", preset.len());
 # use tutti_clap_host::{ClapLoaded, ContentScale, LoadOptions, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_clap_host::Result<()> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-# let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
-if plugin.has_editor() {
+# let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+if plugin.has_editor(&main) {
     // The only unsafe boundary in the public API.
     let handle = unsafe { WindowHandle::from_raw(native_view_ptr) };
     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;

@@ -484,6 +484,21 @@ fn guarded<R: Copy>(
     })
 }
 
+/// [`guarded`] for a callback CLAP marks `[main-thread]`: off the instance's
+/// main thread (or on it while it holds the audio claim) the call is refused,
+/// answering `fallback`, and the embedding crate sees nothing. A plugin that
+/// calls one from `process` or a pool task would otherwise have the host take
+/// locks and allocate there, or race the main thread's own state.
+fn main_only<R: Copy>(
+    host: *const clap_host,
+    fallback: R,
+    f: impl FnOnce(&dyn HostCallbacks) -> R,
+) -> R {
+    guarded(host, fallback, |cb| {
+        if cb.is_main_thread() { f(cb) } else { fallback }
+    })
+}
+
 macro_rules! dispatch_extension {
     ($id:expr, $( $(#[$meta:meta])* $ext:expr => $vtable:expr ),+ $(,)?) => {
         $(
@@ -603,7 +618,7 @@ static HOST_PARAMS: clap_host_params = clap_host_params {
 };
 
 extern "C" fn host_params_rescan(host: *const clap_host, flags: u32) {
-    guarded(host, (), |cb| cb.params_rescan(flags))
+    main_only(host, (), |cb| cb.params_rescan(flags))
 }
 
 extern "C" fn host_params_clear(_host: *const clap_host, _param_id: u32, _flags: u32) {}
@@ -617,7 +632,7 @@ static HOST_STATE: clap_host_state = clap_host_state {
 };
 
 extern "C" fn host_state_mark_dirty(host: *const clap_host) {
-    guarded(host, (), |cb| cb.state_mark_dirty())
+    main_only(host, (), |cb| cb.state_mark_dirty())
 }
 
 static HOST_LATENCY: clap_host_latency = clap_host_latency {
@@ -625,7 +640,7 @@ static HOST_LATENCY: clap_host_latency = clap_host_latency {
 };
 
 extern "C" fn host_latency_changed(host: *const clap_host) {
-    guarded(host, (), |cb| cb.latency_changed())
+    main_only(host, (), |cb| cb.latency_changed())
 }
 
 static HOST_TAIL: clap_host_tail = clap_host_tail {
@@ -697,7 +712,7 @@ extern "C" fn host_audio_ports_is_rescan_flag_supported(
 }
 
 extern "C" fn host_audio_ports_rescan(host: *const clap_host, flags: u32) {
-    guarded(host, (), |cb| cb.audio_ports_rescan(flags))
+    main_only(host, (), |cb| cb.audio_ports_rescan(flags))
 }
 
 static HOST_NOTE_PORTS: clap_host_note_ports = clap_host_note_ports {
@@ -710,7 +725,7 @@ extern "C" fn host_note_ports_supported_dialects(_host: *const clap_host) -> u32
 }
 
 extern "C" fn host_note_ports_rescan(host: *const clap_host, _flags: u32) {
-    guarded(host, (), |cb| cb.note_ports_rescan())
+    main_only(host, (), |cb| cb.note_ports_rescan())
 }
 
 static HOST_TIMER_SUPPORT: clap_host_timer_support = clap_host_timer_support {
@@ -723,7 +738,7 @@ extern "C" fn host_timer_register(
     period_ms: u32,
     timer_id: *mut u32,
 ) -> bool {
-    guarded(host, false, |cb| {
+    main_only(host, false, |cb| {
         if timer_id.is_null() {
             return false;
         }
@@ -740,7 +755,7 @@ extern "C" fn host_timer_register(
 }
 
 extern "C" fn host_timer_unregister(host: *const clap_host, timer_id: u32) -> bool {
-    guarded(host, false, |cb| cb.timer_unregister(timer_id))
+    main_only(host, false, |cb| cb.timer_unregister(timer_id))
 }
 
 static HOST_NOTE_NAME: clap_host_note_name = clap_host_note_name {
@@ -748,7 +763,7 @@ static HOST_NOTE_NAME: clap_host_note_name = clap_host_note_name {
 };
 
 extern "C" fn host_note_name_changed(host: *const clap_host) {
-    guarded(host, (), |cb| cb.note_names_changed())
+    main_only(host, (), |cb| cb.note_names_changed())
 }
 
 static HOST_VOICE_INFO: clap_host_voice_info = clap_host_voice_info {
@@ -756,7 +771,7 @@ static HOST_VOICE_INFO: clap_host_voice_info = clap_host_voice_info {
 };
 
 extern "C" fn host_voice_info_changed(host: *const clap_host) {
-    guarded(host, (), |cb| cb.voice_info_changed())
+    main_only(host, (), |cb| cb.voice_info_changed())
 }
 
 static HOST_PRESET_LOAD: clap_host_preset_load = clap_host_preset_load {
@@ -780,7 +795,7 @@ extern "C" fn host_preset_load_loaded(
     _location: *const c_char,
     _load_key: *const c_char,
 ) {
-    guarded(host, (), |cb| cb.preset_loaded())
+    main_only(host, (), |cb| cb.preset_loaded())
 }
 
 static HOST_AUDIO_PORTS_CONFIG: clap_host_audio_ports_config = clap_host_audio_ports_config {
@@ -788,7 +803,7 @@ static HOST_AUDIO_PORTS_CONFIG: clap_host_audio_ports_config = clap_host_audio_p
 };
 
 extern "C" fn host_audio_ports_config_rescan(host: *const clap_host) {
-    guarded(host, (), |cb| cb.audio_ports_config_rescan())
+    main_only(host, (), |cb| cb.audio_ports_config_rescan())
 }
 
 static HOST_REMOTE_CONTROLS: clap_host_remote_controls = clap_host_remote_controls {
@@ -797,11 +812,11 @@ static HOST_REMOTE_CONTROLS: clap_host_remote_controls = clap_host_remote_contro
 };
 
 extern "C" fn host_remote_controls_changed(host: *const clap_host) {
-    guarded(host, (), |cb| cb.remote_controls_changed())
+    main_only(host, (), |cb| cb.remote_controls_changed())
 }
 
 extern "C" fn host_remote_controls_suggest_page(host: *const clap_host, page_id: u32) {
-    guarded(host, (), |cb| cb.remote_controls_suggest_page(page_id))
+    main_only(host, (), |cb| cb.remote_controls_suggest_page(page_id))
 }
 
 static HOST_TRACK_INFO: clap_host_track_info = clap_host_track_info {
@@ -816,7 +831,7 @@ extern "C" fn host_track_info_get(host: *const clap_host, info: *mut clap_track_
     // call (`track-info.h`); checked non-null. Cleared before the guard so a
     // panic in the callback still leaves a defined `flags`.
     unsafe { (*info).flags = 0 };
-    guarded(host, false, |cb| {
+    main_only(host, false, |cb| {
         // SAFETY: as above; `out` is the only reference to the struct for the
         // callback's duration.
         let mut writer = TrackInfoWriter {
@@ -865,31 +880,31 @@ fn beats(time: clap_beattime) -> f64 {
 }
 
 extern "C" fn host_transport_request_start(host: *const clap_host) {
-    guarded(host, (), |cb| cb.transport_request(TransportCommand::Start))
+    main_only(host, (), |cb| cb.transport_request(TransportCommand::Start))
 }
 
 extern "C" fn host_transport_request_stop(host: *const clap_host) {
-    guarded(host, (), |cb| cb.transport_request(TransportCommand::Stop))
+    main_only(host, (), |cb| cb.transport_request(TransportCommand::Stop))
 }
 
 extern "C" fn host_transport_request_continue(host: *const clap_host) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::Continue)
     })
 }
 
 extern "C" fn host_transport_request_pause(host: *const clap_host) {
-    guarded(host, (), |cb| cb.transport_request(TransportCommand::Pause))
+    main_only(host, (), |cb| cb.transport_request(TransportCommand::Pause))
 }
 
 extern "C" fn host_transport_request_toggle_play(host: *const clap_host) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::TogglePlay)
     })
 }
 
 extern "C" fn host_transport_request_jump(host: *const clap_host, position: clap_beattime) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::Jump {
             position_beats: beats(position),
         })
@@ -901,7 +916,7 @@ extern "C" fn host_transport_request_loop_region(
     start: clap_beattime,
     duration: clap_beattime,
 ) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::LoopRegion {
             start_beats: beats(start),
             duration_beats: beats(duration),
@@ -910,25 +925,25 @@ extern "C" fn host_transport_request_loop_region(
 }
 
 extern "C" fn host_transport_request_toggle_loop(host: *const clap_host) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::ToggleLoop)
     })
 }
 
 extern "C" fn host_transport_request_enable_loop(host: *const clap_host, is_enabled: bool) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::EnableLoop(is_enabled))
     })
 }
 
 extern "C" fn host_transport_request_record(host: *const clap_host, is_recording: bool) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::Record(is_recording))
     })
 }
 
 extern "C" fn host_transport_request_toggle_record(host: *const clap_host) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         cb.transport_request(TransportCommand::ToggleRecord)
     })
 }
@@ -975,7 +990,7 @@ static HOST_AMBISONIC: clap_host_ambisonic = clap_host_ambisonic {
 };
 
 extern "C" fn host_ambisonic_changed(host: *const clap_host) {
-    guarded(host, (), |cb| cb.ambisonic_changed())
+    main_only(host, (), |cb| cb.ambisonic_changed())
 }
 
 static HOST_SURROUND: clap_host_surround = clap_host_surround {
@@ -983,7 +998,7 @@ static HOST_SURROUND: clap_host_surround = clap_host_surround {
 };
 
 extern "C" fn host_surround_changed(host: *const clap_host) {
-    guarded(host, (), |cb| cb.surround_changed())
+    main_only(host, (), |cb| cb.surround_changed())
 }
 
 static HOST_THREAD_POOL: clap_host_thread_pool = clap_host_thread_pool {
@@ -1008,7 +1023,7 @@ static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {
 };
 
 extern "C" fn host_triggers_rescan(host: *const clap_host, _flags: u32) {
-    guarded(host, (), |cb| cb.triggers_rescan())
+    main_only(host, (), |cb| cb.triggers_rescan())
 }
 
 extern "C" fn host_triggers_clear(_host: *const clap_host, _trigger_id: u32, _flags: u32) {}
@@ -1040,7 +1055,7 @@ extern "C" fn host_tuning_should_play(
 }
 
 extern "C" fn host_tuning_get_count(host: *const clap_host) -> u32 {
-    guarded(host, 0, |cb| cb.tuning_count())
+    main_only(host, 0, |cb| cb.tuning_count())
 }
 
 extern "C" fn host_tuning_get_info(
@@ -1058,7 +1073,7 @@ extern "C" fn host_tuning_get_info(
         (*info).name[0] = 0;
         (*info).is_dynamic = false;
     }
-    guarded(host, false, |cb| {
+    main_only(host, false, |cb| {
         // SAFETY: as above; the only reference to the struct for this call.
         let mut writer = TuningInfoWriter {
             // SAFETY: as above for the tuning struct.
@@ -1074,11 +1089,11 @@ static HOST_RESOURCE_DIRECTORY: clap_host_resource_directory = clap_host_resourc
 };
 
 extern "C" fn host_resource_request_directory(host: *const clap_host, is_shared: bool) -> bool {
-    guarded(host, false, |cb| cb.resource_directory_request(is_shared))
+    main_only(host, false, |cb| cb.resource_directory_request(is_shared))
 }
 
 extern "C" fn host_resource_release_directory(host: *const clap_host, is_shared: bool) {
-    guarded(host, (), |cb| cb.resource_directory_release(is_shared))
+    main_only(host, (), |cb| cb.resource_directory_release(is_shared))
 }
 
 static HOST_UNDO: clap_host_undo = clap_host_undo {
@@ -1091,12 +1106,15 @@ static HOST_UNDO: clap_host_undo = clap_host_undo {
 };
 
 extern "C" fn host_undo_begin_change(host: *const clap_host) {
-    guarded(host, (), |cb| cb.undo_begin_change())
+    main_only(host, (), |cb| cb.undo_begin_change())
 }
 
 extern "C" fn host_undo_cancel_change(host: *const clap_host) {
-    guarded(host, (), |cb| cb.undo_cancel_change())
+    main_only(host, (), |cb| cb.undo_cancel_change())
 }
+
+/// The largest undo delta a plugin may record in one change.
+const MAX_UNDO_DELTA_BYTES: usize = 64 << 20;
 
 extern "C" fn host_undo_change_made(
     host: *const clap_host,
@@ -1105,7 +1123,7 @@ extern "C" fn host_undo_change_made(
     delta_size: usize,
     delta_can_undo: bool,
 ) {
-    guarded(host, (), |cb| {
+    main_only(host, (), |cb| {
         let name = if name.is_null() {
             String::new()
         } else {
@@ -1115,11 +1133,17 @@ extern "C" fn host_undo_change_made(
                 .to_string_lossy()
                 .into_owned()
         };
+        // A size no slice can have, or past the cap, is a plugin that broke
+        // `undo.h`: the change is refused, not read.
+        if delta_size > MAX_UNDO_DELTA_BYTES {
+            return;
+        }
         let delta: &[u8] = if delta.is_null() || delta_size == 0 {
             &[]
         } else {
             // SAFETY: the plugin guarantees `delta` addresses `delta_size`
-            // readable bytes for the call (`undo.h`); checked non-null.
+            // readable bytes for the call (`undo.h`); checked non-null, and
+            // at most `MAX_UNDO_DELTA_BYTES`, below `isize::MAX`.
             unsafe { std::slice::from_raw_parts(delta.cast::<u8>(), delta_size) }
         };
         cb.undo_change_made(&name, delta, delta_can_undo)
@@ -1127,15 +1151,15 @@ extern "C" fn host_undo_change_made(
 }
 
 extern "C" fn host_undo_request_undo(host: *const clap_host) {
-    guarded(host, (), |cb| cb.undo_request_undo())
+    main_only(host, (), |cb| cb.undo_request_undo())
 }
 
 extern "C" fn host_undo_request_redo(host: *const clap_host) {
-    guarded(host, (), |cb| cb.undo_request_redo())
+    main_only(host, (), |cb| cb.undo_request_redo())
 }
 
 extern "C" fn host_undo_set_wants_context(host: *const clap_host, is_subscribed: bool) {
-    guarded(host, (), |cb| cb.undo_wants_context_updates(is_subscribed))
+    main_only(host, (), |cb| cb.undo_wants_context_updates(is_subscribed))
 }
 
 #[cfg(unix)]
@@ -1147,17 +1171,17 @@ static HOST_POSIX_FD_SUPPORT: clap_host_posix_fd_support = clap_host_posix_fd_su
 
 #[cfg(unix)]
 extern "C" fn host_posix_fd_register(host: *const clap_host, fd: i32, flags: u32) -> bool {
-    guarded(host, false, |cb| cb.posix_fd_register(fd, flags))
+    main_only(host, false, |cb| cb.posix_fd_register(fd, flags))
 }
 
 #[cfg(unix)]
 extern "C" fn host_posix_fd_modify(host: *const clap_host, fd: i32, flags: u32) -> bool {
-    guarded(host, false, |cb| cb.posix_fd_modify(fd, flags))
+    main_only(host, false, |cb| cb.posix_fd_modify(fd, flags))
 }
 
 #[cfg(unix)]
 extern "C" fn host_posix_fd_unregister(host: *const clap_host, fd: i32) -> bool {
-    guarded(host, false, |cb| cb.posix_fd_unregister(fd))
+    main_only(host, false, |cb| cb.posix_fd_unregister(fd))
 }
 
 #[cfg(test)]
@@ -1270,5 +1294,142 @@ mod tests {
             !host_audio_ports_is_rescan_flag_supported(std::ptr::null(), 0),
             "an empty flag set names no rescan kind to support"
         );
+    }
+
+    /// A host that answers `thread-check` as told and counts the
+    /// `[main-thread]` calls (and one `[thread-safe]` call) that reach it.
+    #[derive(Default)]
+    struct Spy {
+        main: std::sync::atomic::AtomicBool,
+        reached: AtomicU32,
+    }
+
+    impl HostCallbacks for Spy {
+        fn is_main_thread(&self) -> bool {
+            self.main.load(Ordering::SeqCst)
+        }
+
+        fn is_audio_thread(&self) -> bool {
+            false
+        }
+
+        fn request_callback(&self) {
+            self.reached.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn state_mark_dirty(&self) {
+            self.reached.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn timer_register(&self, _period_ms: u32) -> Option<u32> {
+            self.reached.fetch_add(1, Ordering::SeqCst);
+            Some(1)
+        }
+
+        fn undo_change_made(&self, _name: &str, delta: &[u8], _delta_can_undo: bool) {
+            self.reached
+                .fetch_add(1 + delta.len() as u32, Ordering::SeqCst);
+        }
+
+        #[cfg(unix)]
+        fn posix_fd_register(&self, _fd: i32, _flags: u32) -> bool {
+            self.reached.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
+
+    /// A plugin's call to a host entry CLAP marks `[main-thread]` reaches the
+    /// embedder only on the thread `thread-check` calls main; elsewhere it is
+    /// refused (`false`, or nothing for a void entry), so a plugin that
+    /// registers a timer or a descriptor from `process` makes the host take no
+    /// lock and allocate nothing. A `[thread-safe]` entry is never gated.
+    ///
+    /// Mutation: dispatch `host_timer_register` (or `host_state_mark_dirty`, or
+    /// `host_posix_fd_register`) through `guarded` instead of `main_only`: the
+    /// off-thread call reaches the embedder and its assertion fails; gate
+    /// `host_request_callback` with `main_only`: the thread-safe assertion
+    /// fails.
+    #[test]
+    fn main_thread_entries_reach_the_embedder_only_on_the_main_thread() {
+        use clap_sys::ext::posix_fd_support::{
+            CLAP_EXT_POSIX_FD_SUPPORT, clap_host_posix_fd_support,
+        };
+        use clap_sys::ext::state::{CLAP_EXT_STATE, clap_host_state};
+        use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
+
+        let spy = Arc::new(Spy::default());
+        let host = Host::new(spy.clone());
+        let raw = host.as_raw();
+        // SAFETY: `raw` is the live vtable `host` built; each extension
+        // pointer is the static table `get_extension` answers for its id.
+        unsafe {
+            let get_ext = (*raw).get_extension.unwrap();
+            let timers =
+                &*get_ext(raw, CLAP_EXT_TIMER_SUPPORT.as_ptr()).cast::<clap_host_timer_support>();
+            let state = &*get_ext(raw, CLAP_EXT_STATE.as_ptr()).cast::<clap_host_state>();
+            let fds = &*get_ext(raw, CLAP_EXT_POSIX_FD_SUPPORT.as_ptr())
+                .cast::<clap_host_posix_fd_support>();
+            let mut id = 0u32;
+
+            spy.main.store(false, Ordering::SeqCst);
+            assert!(!(timers.register_timer.unwrap())(raw, 10, &mut id));
+            (state.mark_dirty.unwrap())(raw);
+            assert!(!(fds.register_fd.unwrap())(raw, 3, 1));
+            assert_eq!(
+                spy.reached.load(Ordering::SeqCst),
+                0,
+                "refused off the main thread"
+            );
+            ((*raw).request_callback.unwrap())(raw);
+            assert_eq!(
+                spy.reached.load(Ordering::SeqCst),
+                1,
+                "thread-safe entries are not gated"
+            );
+
+            spy.main.store(true, Ordering::SeqCst);
+            assert!((timers.register_timer.unwrap())(raw, 10, &mut id));
+            (state.mark_dirty.unwrap())(raw);
+            assert!((fds.register_fd.unwrap())(raw, 3, 1));
+            assert_eq!(spy.reached.load(Ordering::SeqCst), 4);
+        }
+    }
+
+    /// An undo delta past the cap is refused unread: a plugin that claims a
+    /// size no allocation has gets no slice made of it. The delta pointer here
+    /// is dangling, so the refusal must come before it is used.
+    ///
+    /// Mutation: drop the `MAX_UNDO_DELTA_BYTES` comparison in
+    /// `host_undo_change_made`: the call reaches the embedder with a slice over
+    /// the dangling pointer and the count is not 0.
+    #[test]
+    fn an_undo_delta_past_the_cap_is_refused_unread() {
+        use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
+
+        let spy = Arc::new(Spy::default());
+        spy.main.store(true, Ordering::SeqCst);
+        let host = Host::new(spy.clone());
+        let raw = host.as_raw();
+        let dangling = std::ptr::NonNull::<u8>::dangling()
+            .as_ptr()
+            .cast::<c_void>();
+        // SAFETY: `raw` is the live vtable `host` built; the undo table is the
+        // static `get_extension` answers for its id. The delta is only read
+        // when its size is within the cap, and then is empty.
+        unsafe {
+            let get_ext = (*raw).get_extension.unwrap();
+            let undo = &*get_ext(raw, CLAP_EXT_UNDO.as_ptr()).cast::<clap_host_undo>();
+            let change_made = undo.change_made.unwrap();
+            change_made(
+                raw,
+                c"edit".as_ptr(),
+                dangling,
+                MAX_UNDO_DELTA_BYTES + 1,
+                true,
+            );
+            assert_eq!(spy.reached.load(Ordering::SeqCst), 0);
+            change_made(raw, c"edit".as_ptr(), std::ptr::null(), 0, true);
+            assert_eq!(spy.reached.load(Ordering::SeqCst), 1);
+        }
     }
 }

@@ -1127,6 +1127,32 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
      `sysex.rs` and `midi1_decoder.rs`, `tutti-clap-host`'s `events.rs`,
      `tutti-vst2-ffi`'s `midi.rs`, `tutti-vst3-ffi`'s `event_list` tests). They
      go to `tutti_ump::frame`.
+   - **One note identity.** There are two encodings of `(channel, note)` as an id:
+     `tutti-midi-types`' `NoteId::from_channel_note` (`channel << 8 | note`, a
+     `u32`, typed `MidiChannel`) and `tutti-plugin-types`' `note_id_for` /
+     `note_id_to_channel_note` (`channel * 128 + note`, an `i32`, raw `u8`s, with
+     `MAX_HOST_NOTE_ID`), which the CLAP and VST3 hosts use. The plugin id is
+     the formats' wire value, so it stays an `i32` at the FFI edge. It is
+     derived from the one `NoteId` (which moves to its owner in 5b), not
+     minted by a second formula, and it takes `MidiChannel` and a 7-bit
+     note, not `u8`s. Oracle: the round trip for every channel and note, and
+     a host-minted id never decoding a plugin's own id space (the existing
+     `None` rule).
+   - **Per-note expression as MIDI 2.0 per-note controllers.**
+     `tutti-plugin-types`' `NoteExpressionType` (volume, pan, tuning, vibrato,
+     brightness, pressure, expression, custom) is a second per-note vocabulary
+     beside the `Ump` the graph carries. Doc 023 G2 records that no graph event
+     carries it. The CLAP host drops every per-note registered controller but
+     Volume, Pan and Brightness (stage 2's residue). Decision (recommended): the graph carries per-note
+     expression only as `Ump` (per-note pitch bend, poly pressure, and the
+     per-note registered and assignable controllers M2-104 defines), and each
+     host maps that to its format's note expression at the edge, one table per
+     format. `NoteExpressionType` then stays only as the format-side
+     description, if a host still needs one, and the plugin's own
+     `ExpressionInfo` (023 G2) describes what a plugin accepts. Oracle: M2-104
+     for the per-note messages, and per format, a mapping test in each
+     direction. Settle with doc 023 G2, which owns the plugin-side
+     description.
 - **Stage 4. `tutti-midi-device` and the `-ffi` crates.** Device detection comes first
    (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1:
    done, except the flush (§5, "Built").

@@ -33,6 +33,12 @@ fn editor_error(reason: String) -> PluginError {
 #[derive(Debug)]
 pub struct Vst3Editor {
     inner: Vst3Loaded,
+    /// `PerformEdit`s drained but not yet polled: one notification drain
+    /// serves both [`Editor::poll_edits`] and [`Editor::take_dirty`].
+    edits: Vec<(ParamId, f32)>,
+    /// The plugin called `setDirty(true)` since the last
+    /// [`take_dirty`](Editor::take_dirty).
+    dirty: bool,
 }
 
 impl Vst3Editor {
@@ -41,7 +47,30 @@ impl Vst3Editor {
     pub(crate) fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
         Ok(Self {
             inner: Vst3Loaded::load_in_process(main, path, load)?,
+            edits: Vec::new(),
+            dirty: false,
         })
+    }
+
+    /// Drains the editor instance's notifications into `edits` and `dirty`.
+    ///
+    /// NOT HANDLED: the returned `RestartOutcome`. In particular a
+    /// `kParamValuesChanged` (or `notifications_overflowed`) from this editor
+    /// instance is dropped, so a preset loaded inside the plugin's own UI does
+    /// not refresh the host's parameter values (its state still reaches the
+    /// audio instance on close, design 021 Q8). Progress / unit notifications
+    /// are not surfaced either.
+    fn drain(&mut self, main: &MainThread) {
+        use crate::{ParameterEditEvent, PluginNotification};
+        let (edits, dirty) = (&mut self.edits, &mut self.dirty);
+        let _restart = self.inner.poll_plugin_notifications(main, |n| match n {
+            // The plugin's editor reported one of its own `ParamID`s.
+            PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id, value }) => {
+                edits.push((param_id.into(), value as f32));
+            }
+            PluginNotification::Edit(ParameterEditEvent::SetDirty(true)) => *dirty = true,
+            _ => {}
+        });
     }
 
     /// The loaded plugin behind the editor.
@@ -101,25 +130,17 @@ impl Editor for Vst3Editor {
     }
 
     fn poll_edits(&mut self, main: &MainThread) -> Vec<(ParamId, f32)> {
-        // Drain through the unified notification poll, which also forwards
-        // pending MIDI-learn CCs. The GUI path forwards `PerformEdit`s up.
-        //
-        // NOT HANDLED: the returned `RestartOutcome`. In particular a
-        // `kParamValuesChanged` (or `notifications_overflowed`) from this
-        // editor instance is dropped, so a preset loaded inside the plugin's
-        // own UI does not refresh the host's parameter values. Known gap,
-        // older than the bounded queue. Progress / unit notifications are not
-        // surfaced through the GUI param path either.
-        use crate::{ParameterEditEvent, PluginNotification};
-        let mut edits = Vec::new();
-        let _restart = self.inner.poll_plugin_notifications(main, |n| {
-            if let PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id, value }) = n
-            {
-                // The plugin's editor reported one of its own `ParamID`s.
-                edits.push((param_id.into(), value as f32));
-            }
-        });
-        edits
+        self.drain(main);
+        std::mem::take(&mut self.edits)
+    }
+
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        Control::save_state(&mut self.inner, main)
+    }
+
+    fn take_dirty(&mut self, main: &MainThread) -> bool {
+        self.drain(main);
+        std::mem::take(&mut self.dirty)
     }
 
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {

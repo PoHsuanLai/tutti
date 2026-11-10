@@ -680,10 +680,23 @@ a `Loaded`.
   format's own `ModuleKind` (the GUI loader used `Vst3`'s for CLAP), and an
   editor's error text says "plugin editor error" where it said "IPC protocol
   error".
-- **Step 2 is what remains:** the state-back direction on close (Q8) and the
-  `cfg(unix)` revisit (§5). The CLAP editor's timer test moved with its
-  instance, to `tutti-clap-host/tests/clap_editor_instance.rs` (it reaches the
-  probe through `libloading`, which the crate's `src/` forbids).
+- The CLAP editor's timer test moved with its instance, to
+  `tutti-clap-host/tests/clap_editor_instance.rs` (it reaches the probe through
+  `libloading`, which the crate's `src/` forbids).
+- **Step 2 built the state-back (Q8).** `Editor` gains `save_state` and
+  `take_dirty` (CLAP `state.mark_dirty`, VST3 `setDirty(true)`; AU has none
+  yet and answers `false`). The bridge reads the editor's state when the editor
+  closes, and on an idle where the plugin marked it dirty, and loads it into the
+  audio instance when the two differ (`pull_editor_state` in `composite.rs`; an
+  unreadable audio state is not taken for agreement, an unreadable editor state
+  loads nothing). VST3's two polls share one notification drain, so a `setDirty`
+  is not lost to `poll_edits` or an edit to `take_dirty`. Not covered by a test
+  here: VST3's `take_dirty` (no test plugin calls `setDirty`).
+- **The `cfg(unix)` revisit stays open.** The CLAP and VST3 editors now
+  compile for Windows (they are in the host crates, linted by `clippy
+  (windows)`), but `load_gui_instance` stays `cfg(unix)`: turning Windows
+  editors on is a behaviour no CI job runs (no test runs on Windows), so it
+  waits for a Windows run.
 
 Steps 1, 2, 4a, 4b, 4c, 5 and 6 (without the AU rows) can start before AU is ready;
 3 should wait only for the AU lane's merge to avoid conflicts; 7 is the only

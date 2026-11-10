@@ -168,6 +168,24 @@ pub trait Editor: Send {
     /// normalized, for the host to send to the audio instance.
     fn poll_edits(&mut self, main: &MainThread) -> Vec<(ParamId, f32)>;
 
+    /// The editor instance's whole state, for the host to give the audio
+    /// instance what the user changed in the editor that is not a parameter
+    /// (design 021 Q8).
+    ///
+    /// # Errors
+    ///
+    /// The plugin cannot save its state.
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
+
+    /// Whether the plugin said its state changed since the last call (CLAP
+    /// `state.mark_dirty`, VST3 `setDirty`). Consumes the signal. `false` for a
+    /// format without one; the host still reads the state when the editor
+    /// closes.
+    fn take_dirty(&mut self, main: &MainThread) -> bool {
+        let _ = main;
+        false
+    }
+
     /// Shows the host's automation mode in the editor. No-op for a format
     /// without the concept.
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {

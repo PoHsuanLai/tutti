@@ -205,9 +205,8 @@ fn group_bit(event: &Ump) -> u16 {
 mod tests {
     use super::*;
     use tutti_fixtures::midi;
-    use tutti_plugin_types::MIDI_STACK_CAPACITY;
-    use tutti_plugin_types::{SysExAssembler, SysExStep};
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_plugin_types::{MIDI_STACK_CAPACITY, sysex_assembler};
+    use tutti_ump::{MidiChannel, MidiGroup, SysexAssembler, SysexStep};
 
     fn wire(ump: Ump) -> WireMidi {
         WireMidi { offset: 0, ump }
@@ -288,12 +287,12 @@ mod tests {
     /// The plugin's host at the far end of the chunks: a reassembler, fed
     /// each chunk that arrives as one block. Returns the complete messages'
     /// byte lengths.
-    fn deliver(asm: &mut SysExAssembler, chunk: &[WireMidi]) -> Vec<usize> {
+    fn deliver(asm: &mut SysexAssembler<Box<[u8]>>, chunk: &[WireMidi]) -> Vec<usize> {
         asm.begin_block();
         chunk
             .iter()
-            .filter_map(|e| match asm.push(&e.ump) {
-                SysExStep::Complete(m) => Some(m.len()),
+            .filter_map(|e| match asm.push(e.ump) {
+                SysexStep::Complete(m) => Some(m.len()),
                 _ => None,
             })
             .collect()
@@ -315,7 +314,7 @@ mod tests {
         let dump = packets(MidiGroup::FIRST, 120);
         let next = packets(MidiGroup::FIRST, 30);
         let mut intake = MidiIntake::default();
-        let mut asm = SysExAssembler::reserved();
+        let mut asm = sysex_assembler();
         let mut dropped = 0u64;
 
         let mut chunk = MidiEventVec::new();
@@ -355,7 +354,7 @@ mod tests {
         let cut = packets(MidiGroup::FIRST, 60);
         let next = packets(MidiGroup::FIRST, 12);
         let mut intake = MidiIntake::default();
-        let mut asm = SysExAssembler::reserved();
+        let mut asm = sysex_assembler();
 
         let mut chunk = MidiEventVec::new();
         for &p in whole.iter().chain(&cut[..3]) {
@@ -395,7 +394,7 @@ mod tests {
         let next = packets(MidiGroup::FIRST, 20);
         assert_eq!(lost.len(), 2, "a START and an END");
         let mut intake = MidiIntake::default();
-        let mut asm = SysExAssembler::reserved();
+        let mut asm = sysex_assembler();
 
         let mut chunk = MidiEventVec::new();
         for &p in &unended[..2] {

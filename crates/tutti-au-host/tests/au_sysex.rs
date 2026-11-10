@@ -63,7 +63,6 @@ use tutti_graph::UmpAt;
 
 use support::corpus::{AuRef, SAMPLER};
 use tutti_graph::Offset;
-use tutti_midi_types::from_midi1_bytes;
 use tutti_ump::{Message, SysexStatus, Ump, decode};
 
 // The status nibbles of a SysEx7 packet (M2-104 Table 18), written out so the
@@ -150,14 +149,16 @@ fn a_multi_packet_sysex_does_not_disturb_the_notes_around_it() {
 
         let mut events = vec![(
             Offset::ZERO,
-            from_midi1_bytes(&[0x90, 60, 100]).expect("a note-on is a valid 3-byte message"),
+            // MIDI 1.0 Channel Voice, group 0: Note On, channel 0, note 60, velocity 100.
+            Ump([0x2090_3C64, 0, 0, 0]),
         )];
         events.push(sysex7_packet(SYSEX7_STATUS_START, &body[0..6]));
         events.push(sysex7_packet(SYSEX7_STATUS_CONTINUE, &body[6..12]));
         events.push(sysex7_packet(SYSEX7_STATUS_END, &body[12..14]));
         events.push((
             Offset::ZERO,
-            from_midi1_bytes(&[0x80, 60, 0]).expect("a note-off is a valid 3-byte message"),
+            // Note Off, channel 0, note 60, velocity 0.
+            Ump([0x2080_3C00, 0, 0, 0]),
         ));
 
         au.send_midi(&events);

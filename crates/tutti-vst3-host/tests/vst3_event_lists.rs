@@ -8,11 +8,9 @@
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_plugin_types::{
-    MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, SysExStep, WireMidi,
-};
+use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 use tutti_types::Samples;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, SysexStep};
 use tutti_vst3_ffi::{
     EVENT_CAPACITY, EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena,
 };
@@ -60,11 +58,11 @@ fn data_sysex(sample_offset: i32, bytes: &[u8]) -> Event {
 
 /// Reassembles `events` into the complete messages they carry.
 fn reassembled(events: &[WireMidi]) -> Vec<Vec<u8>> {
-    let mut asm = tutti_plugin_types::SysExAssembler::reserved();
+    let mut asm = tutti_plugin_types::sysex_assembler();
     let mut done = Vec::new();
     for e in events {
-        if let SysExStep::Complete(r) = asm.push(&e.ump) {
-            done.push(asm.message(r).to_vec());
+        if let SysexStep::Complete(r) = asm.push(e.ump) {
+            done.push(asm.message(r).bytes().to_vec());
         }
     }
     done

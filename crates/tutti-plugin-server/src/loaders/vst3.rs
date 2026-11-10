@@ -369,6 +369,14 @@ impl PluginMeta for Vst3Instance {
 }
 
 impl PluginAudio for Vst3Instance {
+    fn reset(&mut self) -> PluginResult<()> {
+        // No processor (a refused activation) has nothing to forget.
+        if let Some(processor) = self.lifecycle.processor() {
+            tutti_plugin_types::Processor::reset(processor);
+        }
+        Ok(())
+    }
+
     fn process(
         &mut self,
         mut buffer: AudioBufferMut<'_, '_>,

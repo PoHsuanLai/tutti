@@ -48,6 +48,7 @@ macro_rules! contract {
             reconfigure_keeps_rendering,
             latency_reported,
             latency_applied,
+            reset_clears_the_delay_line,
             tail_reported,
             parameters_listed,
             parameter_round_trip,

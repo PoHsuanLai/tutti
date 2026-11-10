@@ -20,7 +20,8 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, load_probe_with, render};
+use clap_probe::{ProbeEnv, Rig, load_probe, load_probe_with, render};
+use tutti_fixtures::machine_lock;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -126,7 +127,7 @@ fn env() -> ProbeEnv {
 /// overlapped.)
 #[test]
 fn a_fork_renders_like_the_live_instance_from_its_state() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     probe.client.set_parameter(GAIN, gain_at(-6.0));
@@ -179,7 +180,7 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
 /// starts → the fork renders nothing while it runs → the overlap check fails.
 #[test]
 fn a_fork_and_the_live_instance_do_not_reach_each_other() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     let handle: PluginHandle = probe.handle.clone();
@@ -262,7 +263,7 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
 /// both forks succeed → fails.
 #[test]
 fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     let _refuse = ProbeEnv::new().refuse_state_load(true);
@@ -303,7 +304,7 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
 /// the fork loads at the plugin's defaults and succeeds → fails.
 #[test]
 fn a_plugin_that_cannot_save_its_state_is_a_named_fork_error() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env().refuse_state_save(true);
     let probe = load_probe(SAMPLE_RATE);
     let err = probe
@@ -325,7 +326,7 @@ fn a_plugin_that_cannot_save_its_state_is_a_named_fork_error() {
 /// (`fork: None`) → `ForkError::NotForkable` → fails.
 #[test]
 fn a_graph_holding_a_plugin_forks_and_renders_offline() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     probe.client.set_parameter(GAIN, gain_at(-6.0));
@@ -388,7 +389,7 @@ fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
 /// dropped before `fork_health` asks → `Ok` → fails.
 #[test]
 fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     let _crash = ProbeEnv::new().crash_on_block(8);
@@ -417,7 +418,7 @@ fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
 /// Mutation: never latch `gave_up` → the same, and `fork_health` is `Ok`.
 #[test]
 fn a_fork_whose_server_hangs_is_a_timed_out_fault_after_one_budget() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let config = BridgeConfig {
         timeout_ms: 1_000,
@@ -448,7 +449,7 @@ fn a_fork_whose_server_hangs_is_a_timed_out_fault_after_one_budget() {
 /// fails.
 #[test]
 fn a_fork_of_a_dropped_plugin_is_live_gone() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     let parts = probe.client.bind().into_parts();
@@ -500,7 +501,7 @@ fn children() -> std::collections::BTreeSet<u32> {
 /// zombie answers `kill(pid, 0)` → fails (Unix).
 #[test]
 fn a_dropped_forks_server_is_reaped() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     let live_pid = probe.handle.server_pid().expect("a subprocess plugin");
@@ -536,7 +537,7 @@ fn a_dropped_forks_server_is_reaped() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_forks_server_is_reaped() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     let baseline = children();
@@ -592,7 +593,7 @@ fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Re
 /// both failing exports return `Ok` → fails.
 #[test]
 fn an_export_through_a_failing_fork_fails_by_name() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let config = BridgeConfig {
         timeout_ms: 1_000,
@@ -642,7 +643,7 @@ fn an_export_through_a_failing_fork_fails_by_name() {
 /// ends inside a block is `a_clip_note_in_a_chunk_that_begins_…`.)
 #[test]
 fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
     let probe = load_probe(SAMPLE_RATE);
     // 120 BPM at 48 kHz: a beat is 24 000 frames, so beat 0.25 is frame 6000.
@@ -741,7 +742,7 @@ fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) 
 /// is `Ok` → fails.
 #[test]
 fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
     let render = |policy: tutti_export::EventLossPolicy| {
         let probe = load_probe(SAMPLE_RATE);
@@ -840,7 +841,7 @@ fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
 #[test]
 fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
     for passes in [false, true] {
-        let _lock = exclusive();
+        let _lock = machine_lock();
         let _env = ProbeEnv::new().render_mode(render::NOTES);
         let probe = load_probe(SAMPLE_RATE);
         const CHUNK: usize = 480;
@@ -903,7 +904,7 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
     use tutti_types::Beat;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
     let probe = load_probe(SAMPLE_RATE);
     const CHUNK: usize = 480;
@@ -1007,7 +1008,7 @@ fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
     use tutti_types::Beat;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
     const CHUNK: usize = 480;
     const BLOCK: usize = 400;
@@ -1134,7 +1135,7 @@ impl tutti_graph::Node for RampSource {
 /// `Failed` with `PluginRenderFault::LatencyChanged` → fails.
 #[test]
 fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::LATENCY)
         .offline_extra_latency(24);
@@ -1208,7 +1209,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
 /// differs → fails.
 #[test]
 fn an_export_of_plugins_is_bit_identical_on_a_pool() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let a = load_probe(SAMPLE_RATE);
     let b = load_probe(SAMPLE_RATE);
@@ -1290,7 +1291,7 @@ fn midi_past_the_chunks_capacity_is_counted() {
     use tutti_plugin_types::MIDI_STACK_CAPACITY;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
     let probe = load_probe(SAMPLE_RATE);
     let controls = probe.client.controls();
@@ -1334,7 +1335,7 @@ fn midi_past_the_chunks_capacity_is_counted() {
 /// fork is reported healthy → fails.
 #[test]
 fn a_fork_of_a_refused_rate_is_silent_at_once_and_a_failed_fault() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
     let _refuse = ProbeEnv::new().refuse_rate(96_000.0);

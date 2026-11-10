@@ -44,7 +44,8 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, Rig, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use std::time::{Duration, Instant};
 
@@ -181,7 +182,7 @@ fn wait_for_death(handle: &tutti_plugin::handles::PluginHandle) -> PluginStatus 
 /// then death, then silence, in that order, from one plugin.
 #[test]
 fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
         .crash_on_block(CRASH_AT_BLOCK);
@@ -309,7 +310,7 @@ fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
 /// spend its full reply budget per block on top of that.
 #[test]
 fn rendering_through_a_dead_plugin_does_not_block() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
         .crash_on_block(1);
@@ -352,7 +353,7 @@ fn rendering_through_a_dead_plugin_does_not_block() {
 /// after it.
 #[test]
 fn dropping_a_crashed_plugin_is_clean() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
         .crash_on_block(1);

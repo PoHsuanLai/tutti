@@ -19,8 +19,6 @@ use tutti_vst2_test_plugin::{PROBE_UNIQUE_ID, ProcessCapture, ProcessEntry, chan
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use active::Active;
 
@@ -37,7 +35,7 @@ fn lock_probe() -> MutexGuard<'static, ()> {
 
 /// Load the probe through the real host, capture and switches reset.
 fn load_probe() -> (Active, PathBuf) {
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));

@@ -45,8 +45,6 @@ use tutti_plugin_types::{Request, RescanScope};
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use active::Active;
 
@@ -61,7 +59,7 @@ static PROBE_LOCK: Mutex<()> = Mutex::new(());
 /// The probe is a cdylib the host `dlopen`s at run time rather than something
 /// this binary links, so its exports are resolved by re-opening the same file.
 fn set_fire_update_display(enable: bool) {
-    let path = Path::new(probe_path::probe_path());
+    let path = Path::new(tutti_fixtures::vst2_probe());
     // SAFETY: the path is the cdylib this crate's dev-dependency built.
     let lib = unsafe { libloading::Library::new(path) }
         .unwrap_or_else(|e| panic!("re-open reference plugin at {path:?}: {e}"));
@@ -103,7 +101,7 @@ impl Probe {
     }
 
     fn load(&self) -> Active {
-        Active::load(probe_path::probe_path(), SAMPLE_RATE, BLOCK).expect("the probe must load")
+        Active::load(tutti_fixtures::vst2_probe(), SAMPLE_RATE, BLOCK).expect("the probe must load")
     }
 }
 

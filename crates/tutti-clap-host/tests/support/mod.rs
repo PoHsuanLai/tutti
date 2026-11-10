@@ -10,5 +10,4 @@
 pub use tutti_fixtures::main_thread;
 
 pub mod active;
-pub mod probe_path;
 pub mod raw;

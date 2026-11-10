@@ -607,15 +607,12 @@ mod tests {
             timeout_ms,
             ..Default::default()
         };
-        let plugin = tutti_fixtures::publish_with_extension(
-            &tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin"),
-            "clap",
-        );
+        let plugin = tutti_fixtures::clap_probe();
         let started = Instant::now();
         let launched = launch_with_state(
             &Locator::at(tutti_fixtures::plugin_server()),
             &config,
-            &plugin,
+            plugin,
             SampleRate(48_000.0),
             Some(&[0u8; 16]),
             restore_timeout,

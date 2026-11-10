@@ -16,17 +16,13 @@
 use std::path::Path;
 use tutti_fixtures::main_thread;
 
-#[path = "support/probe_path.rs"]
-mod probe_path;
-use probe_path::probe_path;
-
 use tutti_clap_host::{ClapLoaded, LoadOptions};
 use tutti_clap_test_plugin::{PLUGIN_ID, SECOND_PLUGIN_ID};
 
 fn bundle() -> &'static Path {
     // Bare dylib: passed as both bundle and library so the host dlopens it
     // directly, no `.clap` bundle structure needed.
-    Path::new(probe_path())
+    Path::new(tutti_fixtures::clap_probe())
 }
 
 /// `probe_all` reports every plugin the factory advertises.

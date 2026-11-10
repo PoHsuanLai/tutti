@@ -26,9 +26,6 @@ use tutti_fixtures::main_thread;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{FeatureReport, Features, PresetId, in_process_vst2_client};
 
-#[path = "support/probe_path.rs"]
-mod probe_path;
-
 const SAMPLE_RATE: f64 = 48_000.0;
 
 /// Serializes against the probe's process-global switches and environment.
@@ -56,7 +53,7 @@ fn clear_probe_env() {
 /// Load the probe through the in-process VST2 path and keep only the handle,
 /// which is what a real host is left holding.
 fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
-    let path: PathBuf = probe_path::probe_path().clone();
+    let path: PathBuf = tutti_fixtures::vst2_probe().to_path_buf();
     clear_probe_env();
     for (k, v) in env {
         // SAFETY: as above.

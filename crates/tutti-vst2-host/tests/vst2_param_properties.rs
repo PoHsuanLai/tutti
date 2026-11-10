@@ -36,8 +36,6 @@ use tutti_plugin_types::{Control, Normalized, ParamFlags, ParamId, ParamSteps};
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use active::Active;
 
@@ -129,7 +127,7 @@ fn set_answer_midi_metadata(path: &Path, enable: bool, serviced_programs: i32) {
 
 /// Load the probe with every switch at its default (declining) state.
 fn load_probe() -> (Active, std::path::PathBuf) {
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));

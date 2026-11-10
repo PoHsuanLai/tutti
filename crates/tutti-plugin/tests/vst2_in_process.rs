@@ -20,9 +20,6 @@ use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::server::EditorPresence;
 use tutti_plugin_types::{Normalized, ParamId};
 
-#[path = "support/probe_path.rs"]
-mod probe_path;
-
 const SAMPLE_RATE: f64 = 48_000.0;
 
 /// VST2 addresses parameters by position, so every id here is an `Index`.
@@ -65,7 +62,7 @@ fn clear_probe_env() {
 /// Load the probe through the in-process VST2 path, keeping only the handle —
 /// which is what a real host is left holding once the node is in a graph.
 fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
-    let path: PathBuf = probe_path::probe_path().clone();
+    let path: PathBuf = tutti_fixtures::vst2_probe().to_path_buf();
     clear_probe_env();
     for (k, v) in env {
         // SAFETY: as above.
@@ -250,7 +247,7 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     // `.vst` bundles. So copy the image to a `.vst` name: that is the shape a
     // host actually meets, and it is what makes this test exercise the routing
     // rather than the naming.
-    let src = probe_path::probe_path().clone();
+    let src = tutti_fixtures::vst2_probe().to_path_buf();
     let staged = std::env::temp_dir().join("tutti-probe-open-routing.vst");
     std::fs::copy(&src, &staged)
         .unwrap_or_else(|e| panic!("staging {src:?} -> {staged:?} failed: {e}"));
@@ -339,7 +336,7 @@ fn the_node_carries_midi_on_its_event_ports() {
     // `Plugin::open` routes on the extension and the probe is built as a plain
     // `.dylib`, so stage it under a `.vst` name — same reason as
     // `open_routes_a_vst2_to_the_in_process_backend`.
-    let src = probe_path::probe_path().clone();
+    let src = tutti_fixtures::vst2_probe().to_path_buf();
     let staged = std::env::temp_dir().join("tutti-probe-midi-ports.vst");
     std::fs::copy(&src, &staged)
         .unwrap_or_else(|e| panic!("staging {src:?} -> {staged:?} failed: {e}"));
@@ -410,7 +407,7 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         ("48000", PluginTail::Finite(Samples(48_000))),
     ] {
         let _lock = lock_probe();
-        let path: PathBuf = probe_path::probe_path().clone();
+        let path: PathBuf = tutti_fixtures::vst2_probe().to_path_buf();
         clear_probe_env();
         // SAFETY: the probe lock is held, so no other test thread is touching
         // the environment.
@@ -447,9 +444,12 @@ fn midi_past_the_blocks_capacity_is_counted() {
 
     let _lock = lock_probe();
     clear_probe_env();
-    let (unit, _handle) =
-        tutti_plugin::in_process_vst2_client(&main_thread(), probe_path::probe_path(), SAMPLE_RATE)
-            .expect("load the probe");
+    let (unit, _handle) = tutti_plugin::in_process_vst2_client(
+        &main_thread(),
+        tutti_fixtures::vst2_probe(),
+        SAMPLE_RATE,
+    )
+    .expect("load the probe");
     let controls = unit.controls();
     let mut unit = Direct::new(unit, SampleRate(SAMPLE_RATE), 512);
     let notes = |n: usize| -> Vec<Event> {

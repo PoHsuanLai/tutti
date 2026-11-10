@@ -34,18 +34,13 @@ use tutti_graph::contract::Direct;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 use tutti_types::SampleRate;
 
-// The bench target gets dev-dependencies, and its binary sits in `deps/` like a
-// test's, so the test suites' resolver works here unchanged.
-#[path = "../tests/support/probe_path.rs"]
-mod probe_path;
-
 const SR: f64 = 48_000.0;
 /// The block every case renders (the figures `engine_render`'s header
 /// reads against are per 64-frame block).
 const BLOCK: usize = 64;
 
 fn unit() -> Direct<InProcessVst2Client> {
-    let (unit, _handle) = in_process_vst2_client(&main_thread(), probe_path::probe_path(), SR)
+    let (unit, _handle) = in_process_vst2_client(&main_thread(), tutti_fixtures::vst2_probe(), SR)
         .expect("the reference VST2 plugin must be built — see tutti-fixtures");
     Direct::new(unit, SampleRate(SR), BLOCK)
 }

@@ -20,7 +20,6 @@
 
 #![cfg(feature = "vst2")]
 
-use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 
@@ -38,9 +37,6 @@ use tutti_types::{
     Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,
 };
 use tutti_vst2_test_plugin::ProcessCapture;
-
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -67,7 +63,7 @@ fn lock_probe() -> MutexGuard<'static, ()> {
 /// handle (see `vst2_in_process_rt_lifecycle.rs`'s `probe_call`: dropping it
 /// can unmap the image and lose the write).
 fn probe_call<R>(symbol: &[u8], f: impl FnOnce(*mut std::ffi::c_void) -> R) -> R {
-    let path: &PathBuf = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     // SAFETY: the path is the cdylib this crate's dev-dependency built.
     let lib = unsafe { libloading::Library::new(path) }
         .unwrap_or_else(|e| panic!("re-open reference plugin at {path:?}: {e}"));
@@ -150,7 +146,7 @@ impl Drop for ProbeEnv {
 }
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
-    let path = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
@@ -430,7 +426,7 @@ fn a_plugin_handed_back_by_into_client_forks() {
     let _env = ProbeEnv::new(true);
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
-        probe_path::probe_path(),
+        tutti_fixtures::vst2_probe(),
         SAMPLE_RATE,
     )
     .expect("the probe opens");

@@ -35,9 +35,6 @@ use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
-#[path = "support/probe_path.rs"]
-mod probe_path;
-
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
 
@@ -86,7 +83,7 @@ impl Drop for ProbeEnv {
 }
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
-    let path = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }

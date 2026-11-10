@@ -27,3 +27,7 @@ tutti-plugin-types = { path = "../../crates/tutti-plugin-types", optional = true
 
 [features]
 plugin = ["dep:tutti-plugin-types"]
+
+[dev-dependencies]
+# The lock test's private directory.
+tempfile = "3"

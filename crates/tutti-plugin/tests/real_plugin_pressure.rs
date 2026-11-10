@@ -85,10 +85,8 @@
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
 
-#[cfg(not(feature = "clap"))]
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tutti_fixtures::main_thread;
+use tutti_fixtures::{machine_lock, main_thread};
 
 /// Planar scratch, `channels` × [`BLOCK`] frames: what this harness fills and
 /// measures.
@@ -233,33 +231,6 @@ impl GraphUnit {
             }
         }
     }
-}
-
-/// Take the machine, **across processes**.
-///
-/// Under `cargo nextest` a `static Mutex` serializes nothing: nextest gives
-/// every test its own *process*, so a process-local lock is uncontended in
-/// each one. This uses `clap_probe.rs`'s lock directory instead — `create_dir`
-/// is atomic and fails with `AlreadyExists` on every OS this builds for.
-///
-/// What needs serializing is wall clock, which is process-global: each test
-/// paces itself to a real block period, so neighbours halve the time each
-/// subprocess gets. The process count does not: the leak test probes only the
-/// pids it launched itself, so a neighbour's servers are invisible to it.
-#[cfg(feature = "clap")]
-fn exclusive() -> clap_probe::cross_process_lock::Guard {
-    clap_probe::exclusive()
-}
-
-/// Without `clap` there is no probe to fall back to, so every test here skips
-/// unless third-party plugins are installed — which happens only when someone
-/// runs this deliberately, on one machine, usually alone. The `Mutex` is kept
-/// for that build rather than duplicating the lock directory into a second
-/// place for a case that does not race in practice.
-#[cfg(not(feature = "clap"))]
-fn exclusive() -> MutexGuard<'static, ()> {
-    static EXCLUSIVE: Mutex<()> = Mutex::new(());
-    EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -1152,7 +1123,7 @@ fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) 
 #[cfg(feature = "clap")]
 #[test]
 fn eight_real_plugins_half_stalled_never_wait_for_replies() {
-    let _machine = exclusive();
+    let _machine = machine_lock();
     let label = "8 plugins, 4 stalled";
     let (mut units, _handles) = load_half_stalled(4);
 
@@ -1194,7 +1165,7 @@ fn eight_real_plugins_half_stalled_never_wait_for_replies() {
 #[cfg(feature = "clap")]
 #[test]
 fn stalled_plugins_cost_no_waiting_at_any_count() {
-    let _machine = exclusive();
+    let _machine = machine_lock();
 
     for count in [1usize, 2, 4, 8] {
         let label = format!("{count} stalled plugin(s)");
@@ -1243,7 +1214,7 @@ fn stalled_plugins_cost_no_waiting_at_any_count() {
 #[cfg(feature = "clap")]
 #[test]
 fn working_plugins_cost_under_the_old_ceiling() {
-    let _machine = exclusive();
+    let _machine = machine_lock();
 
     for pairs in [1usize, 2, 4] {
         let label = format!("{pairs} answering after {pairs} stalled");
@@ -1304,7 +1275,7 @@ fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
         (field(41), field(40), field(19))
     }
 
-    let _machine = exclusive();
+    let _machine = machine_lock();
     let (raised, expected) = std::thread::spawn(|| {
         let raised = tutti_rt::request_priority(tutti_rt::PriorityRequest::Highest).is_granted();
         (raised, sched("/proc/thread-self/stat"))
@@ -1355,7 +1326,7 @@ fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 fn starving_the_subprocesses_yields_silence_not_input_echo() {
-    let _machine = exclusive();
+    let _machine = machine_lock();
     let Some((mut units, _handles)) = load_n(4) else {
         return;
     };
@@ -1427,7 +1398,7 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 fn repeated_load_and_drop_leaves_no_subprocesses() {
-    let _machine = exclusive();
+    let _machine = machine_lock();
     // No `available_effects()` guard: subprocess teardown is the same code
     // whatever is loaded into it, so the reference probe exercises this
     // exactly as a third-party plugin does — and `load_n` falls back to it.
@@ -1522,7 +1493,7 @@ const PASSTHROUGH_AU: &str = "/Library/Audio/Plug-Ins/Components/TDR Nova.compon
 #[ignore]
 #[cfg(feature = "vst3")]
 fn vst3_output_nulls_against_the_input_delayed_by_the_declared_latency() {
-    let _guard = exclusive();
+    let _guard = machine_lock();
     let Some((unit, _handle)) = load_passthrough(PASSTHROUGH_VST3) else {
         return;
     };
@@ -1537,7 +1508,7 @@ fn vst3_output_nulls_against_the_input_delayed_by_the_declared_latency() {
 #[ignore]
 #[cfg(feature = "au")]
 fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
-    let _guard = exclusive();
+    let _guard = machine_lock();
     let Some((unit, _handle)) = load_passthrough(PASSTHROUGH_AU) else {
         return;
     };

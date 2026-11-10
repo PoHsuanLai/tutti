@@ -21,9 +21,6 @@ use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Vst2Controller, Vst2Loaded, Vst2Processor};
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 
-#[path = "support/probe_path.rs"]
-mod probe_path;
-
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
@@ -67,8 +64,8 @@ impl Probe {
     }
 
     fn load(&self) -> Vst2Loaded {
-        let loaded =
-            Vst2Loaded::load(&main_thread(), probe_path::probe_path()).expect("the plugin loads");
+        let loaded = Vst2Loaded::load(&main_thread(), tutti_fixtures::vst2_probe())
+            .expect("the plugin loads");
         // The plugin is built; clearing keeps the variable from outliving it.
         // SAFETY: as in `acquire`.
         unsafe { std::env::remove_var("TUTTI_VST2_PROBE_F64") };
@@ -88,7 +85,7 @@ impl Probe {
 /// image stays mapped and the write survives.
 fn with_symbol<R>(symbol: &str, f: impl FnOnce(*mut std::ffi::c_void) -> R) -> R {
     let name = format!("{symbol}\0");
-    let path = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     // SAFETY: the path is the cdylib this crate's dev-dependency built.
     let lib = unsafe { libloading::Library::new(path) }.expect("re-open reference plugin");
     // SAFETY: the symbol names are the probe's `#[no_mangle]` exports.

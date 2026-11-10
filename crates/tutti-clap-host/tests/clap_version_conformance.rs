@@ -26,7 +26,6 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::{ClapLoaded, LoadOptions};
 use tutti_clap_test_plugin::{CLAP_VERSION_TARGET_DESCRIPTOR, CLAP_VERSION_TARGET_ENTRY};
@@ -58,7 +57,7 @@ impl Probe {
 
     /// Attempt a load through the real host.
     fn load(&self) -> tutti_clap_host::Result<ClapLoaded> {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
@@ -68,7 +67,7 @@ impl Probe {
     /// not share `load`'s code past `load_descriptor`, and a scan is where an
     /// unreadable plugin is met first.
     fn probe_info(&self) -> tutti_clap_host::Result<tutti_clap_host::PluginInfo> {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::probe(path, Some(path))
     }
 }
@@ -91,7 +90,7 @@ impl Drop for Probe {
 fn probe_lib() -> &'static libloading::Library {
     static LIB: std::sync::OnceLock<libloading::Library> = std::sync::OnceLock::new();
     LIB.get_or_init(|| unsafe {
-        libloading::Library::new(probe_path()).expect("re-open reference plugin")
+        libloading::Library::new(tutti_fixtures::clap_probe()).expect("re-open reference plugin")
     })
 }
 

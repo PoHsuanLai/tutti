@@ -34,12 +34,14 @@
 
 #![forbid(unsafe_code)]
 
+mod machine_lock;
 pub mod midi;
 #[cfg(feature = "plugin")]
 mod plugin;
 mod range_contract;
 pub mod sf2;
 
+pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
 pub use plugin::main_thread;
 pub use range_contract::{RangeContract, check_range_contract};
@@ -227,6 +229,32 @@ fn workspace_binary(bin: &str, package: &str) -> PathBuf {
             searched(&tried)
         )
     })
+}
+
+/// The CLAP test plugin (`tutti-clap-test-plugin`), published under a `.clap`
+/// extension ([`publish_with_extension`]): the plugin-server dispatches a format
+/// by its file extension, and cargo's `libtutti_clap_test_plugin.so` reads as
+/// VST2 there. A host loading it directly takes the same path.
+///
+/// # Panics
+///
+/// If the cdylib has not been built ([`cdylib`]).
+pub fn clap_probe() -> &'static Path {
+    static PUBLISHED: OnceLock<PathBuf> = OnceLock::new();
+    PUBLISHED.get_or_init(|| {
+        let real = cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+        publish_with_extension(&real, "clap")
+    })
+}
+
+/// The VST2 test plugin (`tutti-vst2-test-plugin`).
+///
+/// # Panics
+///
+/// If the cdylib has not been built ([`cdylib`]).
+pub fn vst2_probe() -> &'static Path {
+    static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
+    RESOLVED.get_or_init(|| cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin"))
 }
 
 /// Publish `real` under its own name with `extension` (`.clap`, say) beside

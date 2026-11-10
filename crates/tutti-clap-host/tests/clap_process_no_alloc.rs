@@ -31,7 +31,6 @@ use tutti_types::Samples;
 mod support;
 use support::active::{Activate, Active};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -91,7 +90,7 @@ fn probe_lib() -> &'static libloading::Library {
     use std::sync::OnceLock;
     static LIB: OnceLock<libloading::Library> = OnceLock::new();
     LIB.get_or_init(|| unsafe {
-        libloading::Library::new(probe_path()).expect("re-open reference plugin")
+        libloading::Library::new(tutti_fixtures::clap_probe()).expect("re-open reference plugin")
     })
 }
 
@@ -151,10 +150,10 @@ fn reset_probe() {
 
 /// Load + activate the reference plugin.
 ///
-/// Panics if it was not built — see [`support::probe_path`] for why that is the
+/// Panics if it was not built — see `tutti_fixtures::cdylib` for why that is the
 /// only correct response.
 fn load_probe() -> Active<f32> {
-    let path = Path::new(probe_path());
+    let path = Path::new(tutti_fixtures::clap_probe());
     // The artifact is a bare dylib, so it serves as both bundle and library —
     // the host dlopens it directly, no `.clap` bundle structure needed.
     let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))

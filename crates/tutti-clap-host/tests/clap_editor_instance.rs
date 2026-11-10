@@ -16,16 +16,15 @@ use tutti_plugin_types::{Editor, Load, OutOfProcess};
 /// the timer never ticks → fails.
 #[test]
 fn a_timer_the_editor_registers_ticks_on_idle() {
-    let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-    let path = tutti_fixtures::publish_with_extension(&real, "clap");
+    let path = tutti_fixtures::clap_probe();
     let main = main_thread();
-    let mut editor = ClapLoaded::load_editor(&main, &path, &Load::new()).expect("loads");
+    let mut editor = ClapLoaded::load_editor(&main, path, &Load::new()).expect("loads");
 
     // The probe's switches are `extern "C"` symbols in the image this
     // instance loaded: re-open the same path, not the linked rlib.
     // SAFETY: the reference plugin's library, already loaded by the editor; its
     // initialisers have run.
-    let lib = unsafe { libloading::Library::new(&path) }.expect("re-opens");
+    let lib = unsafe { libloading::Library::new(path) }.expect("re-opens");
     // SAFETY: the reference plugin exports both symbols with these signatures.
     let command: libloading::Symbol<unsafe extern "C" fn(u32) -> u32> =
         unsafe { lib.get(b"tutti_test_plugin_thread_command\0") }.expect("symbol");
@@ -67,10 +66,9 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
 fn an_editors_state_is_the_plugins_state() {
     use tutti_plugin_types::Control;
 
-    let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-    let path = tutti_fixtures::publish_with_extension(&real, "clap");
+    let path = tutti_fixtures::clap_probe();
     let main = main_thread();
-    let mut editor = ClapLoaded::load_editor(&main, &path, &Load::new()).expect("loads");
+    let mut editor = ClapLoaded::load_editor(&main, path, &Load::new()).expect("loads");
 
     let through_editor = editor.save_state(&main).expect("saves");
     let plugin = Control::save_state(editor.loaded_mut(), &main).expect("saves");

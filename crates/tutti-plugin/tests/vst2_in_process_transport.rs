@@ -31,9 +31,6 @@ use tutti_types::{
 };
 use tutti_vst2_test_plugin::ProcessCapture;
 
-#[path = "support/probe_path.rs"]
-mod probe_path;
-
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
 /// The latent path's latency: the node's compiled arrival.
@@ -60,7 +57,7 @@ fn lock_probe() -> MutexGuard<'static, ()> {
 /// Call one of the probe's exports on the image the host loaded, leaking the
 /// handle (see `vst2_in_process_fork.rs`'s `probe_call`).
 fn probe_call<R>(symbol: &[u8], f: impl FnOnce(*mut std::ffi::c_void) -> R) -> R {
-    let path = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     // SAFETY: the path is the cdylib this crate's dev-dependency built.
     let lib = unsafe { libloading::Library::new(path) }
         .unwrap_or_else(|e| panic!("re-open reference plugin at {path:?}: {e}"));
@@ -98,7 +95,7 @@ fn read_capture() -> ProcessCapture {
 }
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
-    let path = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
@@ -372,7 +369,7 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     reset_probe();
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
-        probe_path::probe_path(),
+        tutti_fixtures::vst2_probe(),
         SAMPLE_RATE,
     )
     .expect("the probe opens");

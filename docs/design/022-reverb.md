@@ -17,6 +17,11 @@ noun of the API, not of the engine: the API compiles, a node evaluates". Here
 the model is the *noun* (a value, with analytic queries), and the kernel is what
 evaluates. Nothing in the model forces a runtime shape on a kernel.
 
+The general shape here (design, model, kernel, the generic node and the contract
+suites) is generalised in [024](024-design-model-realization.md), whose traits
+replace this doc's reverb-only ones; the general traits are doc 024's, and this
+doc keeps the reverb specifics.
+
 Numbering: 021 (plugin hosting) and 023 (plugin capabilities) are on `main`
 beside this doc; 019 (bounce), 020 (tempo map) and 024 (the design model) are
 drafts on other branches until they merge.
@@ -254,6 +259,8 @@ is what makes "no allocation after `prepare`" a checked fact.
 
 ## 4. `Design` and `Kernel`
 
+> The general traits are doc 024's; from here, reverb specifics.
+
 ```rust
 // tutti-dsp. Pure: no Arc-published state, no atomics, no graph types.
 pub trait Design: Clone + Send {
@@ -381,6 +388,8 @@ modulatable ones. `Shape::tail` is the ceiling from `design.bounds(..).tail`.
 
 ### 5.1 Generic, not boxed
 
+> The general traits are doc 024's; from here, reverb specifics.
+
 `ReverbNode<D>` and not a box: `type Controls` and `type Kernel` make `Design`
 not object-safe by design, and erasing them would reintroduce a settings bag. The
 per-sample loops are monomorphic. The cost is a registration line per algorithm
@@ -451,6 +460,8 @@ Not planned: Schroeder (a one-line network, superseded by Freeverb), spring
 `tutti-dsp` paragraph names `Design`, `Kernel` and `Network` when 1a lands.
 
 ## 8. The contract suites
+
+> The general traits are doc 024's; from here, reverb specifics.
 
 Two suites, so the model and the runtime are each tested against physics and the
 spec, and against each other through the model's own queries. Every figure is

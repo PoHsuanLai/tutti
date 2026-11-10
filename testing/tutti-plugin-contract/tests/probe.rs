@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use tutti_plugin::BridgeError;
 use tutti_plugin::catalog::{
-    DEFAULT_PROBE_TIMEOUT, PluginDescriptor, ProbeLocator, probe_failure, probe_record_with,
+    DEFAULT_PROBE_TIMEOUT, Locator, PluginDescriptor, probe_failure, probe_record_with,
 };
 use tutti_plugin_contract::{bundle_of, clap_path, library, vst3_cpp_module, vst3_module};
 use tutti_plugin_db::PluginDb;
@@ -26,10 +26,10 @@ fn probe(path: &Path) -> Result<PluginDescriptor, BridgeError> {
 }
 
 /// [`probe`] under a deadline of the test's choosing. The probe is the one built
-/// in this profile, named through [`ProbeLocator::at`], so nothing writes the
+/// in this profile, named through [`Locator::at`], so nothing writes the
 /// process-global environment.
 fn probe_with_timeout(path: &Path, timeout: Duration) -> Result<PluginDescriptor, BridgeError> {
-    let locator = ProbeLocator::at(tutti_fixtures::plugin_probe());
+    let locator = Locator::at(tutti_fixtures::plugin_probe());
     let delta = probe_record_with(path, &locator, timeout)?;
     let mut db = PluginDb::new();
     db.apply(delta);

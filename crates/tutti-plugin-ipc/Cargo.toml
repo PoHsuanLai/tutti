@@ -24,9 +24,6 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
 
-# The probe's private result directory (pure Rust; removed on drop, panic included).
-tempfile = "3"
-
 # The wire.
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
@@ -56,6 +53,7 @@ windows = { version = "0.52", features = [
 ] }
 
 [dev-dependencies]
+tempfile = "3"
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 tutti-midi-types = { path = "../tutti-midi-types" }
 assert_no_alloc = { version = "1", default-features = false }

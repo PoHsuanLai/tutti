@@ -397,7 +397,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
-                 control socket, the plugin-server's launch and probe, and the
+                 control socket, the plugin-server's launch, and the
                  client of a served plugin, `PluginBridge`; no plugin format,
                  design 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor

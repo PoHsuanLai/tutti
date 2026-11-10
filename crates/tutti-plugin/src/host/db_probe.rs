@@ -1,5 +1,7 @@
 //! The subprocess probe, as the probe `tutti-plugin-db` scans with.
 
+pub use super::probe::DEFAULT_PROBE_TIMEOUT;
+use super::probe::probe_metadata_with;
 use std::path::Path;
 use std::time::Duration;
 use tracing::debug;
@@ -7,8 +9,8 @@ use tutti_plugin_db::{
     Delta, FileFacts, FileRow, PluginFormat, ProbeFailure, probe_plugin_fallback,
 };
 use tutti_plugin_ipc::BridgeError;
-use tutti_plugin_ipc::{DEFAULT_PROBE_TIMEOUT, ProbeLocator, probe_metadata_with};
 use tutti_plugin_types::LoadStage;
+use tutti_plugin_types::Locator;
 use tutti_plugin_types::PluginDescriptor;
 
 /// The blacklist decision for a failed probe: whether the scan may blacklist
@@ -55,7 +57,7 @@ pub(crate) fn probe_plugin(
     format: PluginFormat,
 ) -> Result<PluginDescriptor, ProbeFailure> {
     interpret_probe(
-        probe_metadata_with(&ProbeLocator::Search, path, DEFAULT_PROBE_TIMEOUT),
+        probe_metadata_with(&Locator::Search, path, DEFAULT_PROBE_TIMEOUT),
         path,
         format,
     )
@@ -101,7 +103,7 @@ fn interpret_probe(
 /// the plugin brought the probe down, and an I/O variant when it cannot be
 /// spawned.
 pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
-    probe_record_with(path, &ProbeLocator::Search, DEFAULT_PROBE_TIMEOUT)
+    probe_record_with(path, &Locator::Search, DEFAULT_PROBE_TIMEOUT)
 }
 
 /// [`probe_record`] with the `plugin-probe` binary named by `locator` and the
@@ -113,7 +115,7 @@ pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
 /// As [`probe_record`].
 pub fn probe_record_with(
     path: impl AsRef<Path>,
-    locator: &ProbeLocator,
+    locator: &Locator,
     timeout: Duration,
 ) -> Result<Delta, BridgeError> {
     let path = path.as_ref();

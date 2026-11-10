@@ -25,5 +25,6 @@ pub mod node;
 pub mod param_values;
 pub mod plugin;
 pub mod plugins;
+pub(crate) mod probe;
 pub mod render_mode;
 pub(crate) mod subprocess_backend;

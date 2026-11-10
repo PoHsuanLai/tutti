@@ -1,19 +1,14 @@
-//! Subprocess lifecycle — locate, spawn and hand-shake the `plugin-server` child
-//! process, and probe a plugin in a `plugin-probe` one.
+//! Subprocess lifecycle: locate, spawn and hand-shake the `plugin-server` child
+//! process.
 
 pub mod bundle;
 mod launch;
-mod locate;
-mod probe;
 
 pub use bundle::resolve_bundle;
 pub use launch::{LaunchedServer, launch};
-pub use locate::ProbeLocator;
-pub use probe::{DEFAULT_PROBE_TIMEOUT, probe_metadata_with};
 
-// The `*_with` entry points and `locate::ServerLocator` are deliberately NOT
-// re-exported here. They exist so a test can name the server binary as an
-// argument instead of through the `TUTTI_PLUGIN_SERVER` process-global; no
-// production caller chooses a binary, so exporting them would add public API
-// with no consumer. `launch` and `probe_metadata_with` remain the whole shipped
-// surface, and both keep the environment-and-`PATH` search as their default.
+// The `*_with` entry points are deliberately NOT re-exported. They exist so a
+// test can name the server binary with a `tutti_plugin_types::Locator` instead
+// of through the `TUTTI_PLUGIN_SERVER` process-global; no production caller
+// chooses a binary. `launch` is the shipped surface, and it keeps the
+// environment-and-`PATH` search.

@@ -89,7 +89,11 @@ tutti-clap-host = { path = "../tutti-clap-host", optional = true }
 tutti-au-host = { path = "../tutti-au-host", optional = true }
 tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
 
-# Platform-specific (shared memory)
+# The probe's private result directory (pure Rust; removed on drop, panic included).
+tempfile = "3"
+
+# Platform-specific
+
 [target.'cfg(unix)'.dependencies]
 # `clock_gettime`: the OS monotonic clock a hosted plugin's `systemTime` /
 # `nanoSeconds` is on (`transport_source::HostClock`).
@@ -105,8 +109,7 @@ windows = { version = "0.52", features = [
 # The node tests' mock plugin-server speaks the wire by hand.
 interprocess = { version = "2" }
 bincode = "1"
-# The catalog tests' scratch directories and their scan hand-off.
-tempfile = "3"
+# The catalog tests' scan hand-off.
 crossbeam-channel = "0.5"
 # The client's test-only knobs (`set_rate_timeout`, `settled_replies`).
 tutti-plugin-ipc = { path = "../tutti-plugin-ipc", features = ["test-support"] }

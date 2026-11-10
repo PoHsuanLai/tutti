@@ -363,7 +363,8 @@ impl BridgeError {
     /// Turn a server-reported error message into a `LoadFailed` at the
     /// `Opening` stage. The stage is coarse because the server's own
     /// error-message protocol doesn't carry a stage tag.
-    pub(crate) fn load_from_server(path: &std::path::Path, message: String) -> Self {
+    #[must_use]
+    pub fn load_from_server(path: &std::path::Path, message: String) -> Self {
         Self::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Opening,

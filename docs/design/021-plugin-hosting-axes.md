@@ -292,15 +292,15 @@ and to the set of served formats (which excludes VST2).
 - **The redirect is the host's.** The probe cannot null its own stdout and
   stderr without `unsafe`, so `tutti-plugin` spawns it with both on the null
   device. Nothing a plugin prints can reach a result, or fill a pipe.
-- **The probe side** is `host/subprocess/probe.rs` (about 120 lines of code, tests aside):
-  `ProbeLocator` (`TUTTI_PLUGIN_PROBE`, beside the executable, `PATH`; `at` for
+- **The probe side** is `tutti-plugin`'s `host/probe.rs` (about 120 lines of code, tests aside):
+  a `Locator` for `Helper::Probe` (`TUTTI_PLUGIN_PROBE`, beside the executable, `PATH`; `at` for
   a test), spawn, poll `try_wait` to the caller's deadline (`DEFAULT_PROBE_TIMEOUT`, fifteen
   seconds, spawn and the plugin's load included; the old socket probe allowed
   about twelve), kill and reap on timeout, then read the file. The child sits in a
   `Reaped` guard that kills and waits on drop, so a panic cannot orphan it, and
   the result lives in a private `tempfile` directory (`create_new` for the
   staging file), not a name in the shared temp directory. `catalog::probe_record_with`
-  takes the `ProbeLocator` and the deadline; `probe_record` is the defaults. The file is read after any exit, so a probe that
+  takes the `Locator` and the deadline; `probe_record` is the defaults. The file is read after any exit, so a probe that
   finished at the deadline counts. No file and an exit is
   `BridgeError::ProcessCrashed`; no file at the deadline is `Timeout`; a file that
   is not whole is `IpcError` (not blacklistable: it is a fault of ours, not
@@ -702,11 +702,22 @@ a `Loaded`.
 
 `tutti-plugin-ipc` (layer 4) holds `protocol/`, `transport/` (was
 `util/transport/`), `config/` (was `util/config/`), `subprocess/`, `client/`
-(was `host/ipc_client/`), `error.rs`, the `MidiIntake`, the slab's chunk ceiling `MAX_CHUNK` and the
+(was `host/ipc_client/`; `subprocess/` is the server's launch alone), `error.rs`, the `MidiIntake`, the slab's chunk ceiling `MAX_CHUNK` and the
 client's `BlockCounts`. Its modules are private but
 `state_chunk`; `tutti-plugin` re-exports what its public API named
-(`tutti_plugin::error`, `server`, `catalog`) from it, so no consumer moved. Five
-departures from the plan, each because a piece named something above layer 4:
+(`tutti_plugin::error`, `server`, `catalog`) from it, so no consumer moved. Six
+departures from the plan, each because a piece named something above layer 4
+or did not belong to the process edge:
+
+- **The probe is not here.** `plugin-probe` is a helper of the catalog, not of
+  the wire: it speaks a result file, not the protocol. Its spawner is
+  `tutti-plugin`'s `host/probe.rs`, beside the `db_probe` that calls it. The
+  search both helpers share (the environment variable, beside the executable,
+  `PATH`; an explicit path for a test) is one value, `tutti_plugin_types::Locator`,
+  asked for a `Helper` (`Server` or `Probe`); it was two identical types,
+  `ServerLocator` and `ProbeLocator`. The one search checks `is_file`, not
+  `exists`, and skips an empty `PATH` entry rather than reading it as the
+  working directory.
 
 - **The batcher stays in `tutti-plugin`.** It reads the fork's `ForkWatch` and
   the node's `BlockPayload`, which are `-host` material. It moves when it

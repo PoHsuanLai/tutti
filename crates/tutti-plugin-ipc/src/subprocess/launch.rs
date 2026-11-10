@@ -2,7 +2,6 @@
 //! spawn → handshake → load plugin → setup shared memory → return
 //! a [`LaunchedServer`] ready for the RT bridge thread to connect.
 
-use super::locate::ServerLocator;
 use crate::MAX_CHUNK;
 use crate::config::BridgeConfig;
 use crate::error::{BridgeError, Result};
@@ -17,6 +16,7 @@ use std::process::{Child, Command};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use tutti_plugin_types::{Helper, Locator};
 use tutti_types::SampleRate;
 
 /// How long to keep retrying the connect while the plugin-server binds.
@@ -105,7 +105,7 @@ pub fn launch(
     state: Option<&[u8]>,
 ) -> Result<LaunchedServer> {
     launch_with_state(
-        &ServerLocator::from_env(),
+        &Locator::Search,
         config,
         plugin_path,
         sample_rate,
@@ -125,7 +125,7 @@ pub fn launch(
 /// the window.
 #[cfg(all(test, unix))]
 pub(super) fn launch_with(
-    locator: &ServerLocator,
+    locator: &Locator,
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: SampleRate,
@@ -145,7 +145,7 @@ pub(super) fn launch_with(
 /// server between opening the plugin and activating it, so the activation, and
 /// the reply's buses and latency, are the state's.
 pub(super) fn launch_with_state(
-    locator: &ServerLocator,
+    locator: &Locator,
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: SampleRate,
@@ -229,8 +229,10 @@ pub(super) fn launch_with_state(
 /// as the socket-path argument beside it.
 const HOST_PID_ENV: &str = "TUTTI_PLUGIN_HOST_PID";
 
-fn spawn_process(locator: &ServerLocator, config: &BridgeConfig) -> Result<Child> {
-    let server_path = locator.resolve()?;
+fn spawn_process(locator: &Locator, config: &BridgeConfig) -> Result<Child> {
+    let server_path = locator
+        .resolve(Helper::Server)
+        .ok_or(BridgeError::ServerNotFound)?;
     tracing::debug!("spawning plugin-server: {}", server_path.display());
     Command::new(server_path)
         .arg(&config.socket_path)
@@ -494,7 +496,7 @@ mod tests {
     ///
     /// # Keeping it deterministic under parallel load
     ///
-    /// **The stand-in is chosen with a [`ServerLocator`]** passed to
+    /// **The stand-in is chosen with a [`Locator`]** passed to
     /// `launch_with`, not through `TUTTI_PLUGIN_SERVER`: an env var is
     /// process-global, so every other thread in this binary would see it.
     ///
@@ -545,7 +547,7 @@ mod tests {
         };
 
         let err = match launch_with(
-            &ServerLocator::at(&stand_in),
+            &Locator::at(&stand_in),
             &config,
             Path::new("/nonexistent.vst3"),
             SampleRate(48_000.0),
@@ -614,7 +616,7 @@ mod tests {
         );
         let started = Instant::now();
         let launched = launch_with_state(
-            &ServerLocator::at(tutti_fixtures::plugin_server()),
+            &Locator::at(tutti_fixtures::plugin_server()),
             &config,
             &plugin,
             SampleRate(48_000.0),
@@ -721,8 +723,11 @@ mod tests {
     /// reason. The server answers the load; it does not exit, which the host
     /// would report as `ProcessCrashed`.
     ///
-    /// The reference CLAP plugin's cdylib under a `.vst` name is a real library
-    /// the server reads as VST2 and the VST2 loader refuses.
+    /// The reference CLAP plugin's cdylib, copied under a `.so` name, is a real
+    /// library the server reads as VST2 and the VST2 loader refuses. The copy is
+    /// what makes it VST2 on every unix: the cdylib is `.so` on Linux but
+    /// `.dylib` on macOS, an extension the server refuses before any loader runs
+    /// (`Unsupported plugin format`), which is the failure this test excludes.
     ///
     /// Needs `cargo build -p tutti-plugin-server` first (`CLAUDE.md`).
     ///
@@ -736,11 +741,18 @@ mod tests {
             socket_path: dir.path().join("s.sock"),
             ..Default::default()
         };
-        let not_a_plugin =
-            tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+        // A copy in this test's own directory, not `publish_with_extension`:
+        // that names the link `real.with_extension(..)`, which on Linux is the
+        // cdylib's own path.
+        let not_a_plugin = dir.path().join("not_a_plugin.so");
+        std::fs::copy(
+            tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin"),
+            &not_a_plugin,
+        )
+        .expect("copy the cdylib under a VST2 name");
 
         let err = match launch_with(
-            &ServerLocator::at(tutti_fixtures::plugin_server()),
+            &Locator::at(tutti_fixtures::plugin_server()),
             &config,
             &not_a_plugin,
             SampleRate(48_000.0),

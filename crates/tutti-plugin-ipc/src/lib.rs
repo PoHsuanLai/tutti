@@ -1,6 +1,6 @@
 //! The plugin host's process edge: the wire both ends speak, the
 //! shared-memory slab and control socket it travels on, the plugin-server's
-//! launch and probe, and the client that drives a served plugin.
+//! launch, and the client that drives a served plugin.
 //!
 //! `tutti-plugin` builds its out-of-process node on this crate and
 //! `tutti-plugin-server` builds the other end of the same wire, so neither
@@ -37,10 +37,7 @@ pub use protocol::{
     BridgeMessage, HostMessage, MAX_FRAME_BYTES, MAX_STATE_BYTES, PROTOCOL_VERSION,
     ProcessAudioData, STATE_CHUNK_BYTES, SlabLayout, StagedState, check_protocol_version,
 };
-pub use subprocess::{
-    DEFAULT_PROBE_TIMEOUT, LaunchedServer, ProbeLocator, launch, probe_metadata_with,
-    resolve_bundle,
-};
+pub use subprocess::{LaunchedServer, launch, resolve_bundle};
 pub use transport::control::socket_name;
 pub use transport::shm::{AudioSlab, RING_SLOTS};
 // Splitting and reassembling plugin state across frames: both ends must chunk

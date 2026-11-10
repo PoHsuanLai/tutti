@@ -8,14 +8,12 @@
 //! loader's own failure; no file and a signal or a non-zero exit means it
 //! crashed; no file at the deadline means it hung.
 
-use super::locate::ProbeLocator;
-use crate::error::{BridgeError, Result};
-use crate::protocol::PluginDescriptor;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tutti_plugin_types::{ProbeOutcome, read_result};
+use tutti_plugin_ipc::{BridgeError, Result};
+use tutti_plugin_types::{Helper, Locator, PluginDescriptor, ProbeOutcome, read_result};
 
 /// How long a probe may take, spawn and the plugin's load included, unless the
 /// caller says otherwise. A cold plugin can take seconds to `dlopen`; the old
@@ -25,7 +23,7 @@ const POLL: Duration = Duration::from_millis(5);
 
 /// Reads a plugin's descriptor in a `plugin-probe` subprocess, so a plugin that
 /// crashes or hangs in its init does not take the caller down. `locator` names
-/// the binary (a test passes [`ProbeLocator::at`], so none writes the
+/// the binary (a test passes [`Locator::at`], so none writes the
 /// process-global environment) and `timeout` is the deadline.
 ///
 /// # Errors
@@ -35,11 +33,13 @@ const POLL: Duration = Duration::from_millis(5);
 /// not be read; [`BridgeError::ProcessCrashed`] if it died without a result;
 /// [`BridgeError::Timeout`] if it did not finish within `timeout` (it is killed).
 pub fn probe_metadata_with(
-    locator: &ProbeLocator,
+    locator: &Locator,
     plugin_path: &Path,
     timeout: Duration,
 ) -> Result<PluginDescriptor> {
-    let probe = locator.resolve()?;
+    let probe = locator
+        .resolve(Helper::Probe)
+        .ok_or(BridgeError::ProbeNotFound)?;
     // A directory of the probe's own (mode 0700), removed when it drops, on a
     // panic as well: the result path is not a name in a shared directory.
     let dir = tempfile::Builder::new()
@@ -132,14 +132,14 @@ mod tests {
 
     /// A `plugin-probe` stand-in: a shell script given the plugin path as `$1`
     /// and the result file as `$2`, as the real one is.
-    fn stand_in(dir: &TempDir, body: &str) -> ProbeLocator {
+    fn stand_in(dir: &TempDir, body: &str) -> Locator {
         let path = dir.path().join("plugin-probe");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        ProbeLocator::at(path)
+        Locator::at(path)
     }
 
-    fn probe(locator: &ProbeLocator, timeout: Duration) -> Result<PluginDescriptor> {
+    fn probe(locator: &Locator, timeout: Duration) -> Result<PluginDescriptor> {
         probe_metadata_with(locator, Path::new("/plugins/Some.clap"), timeout)
     }
 
@@ -230,7 +230,7 @@ mod tests {
     /// scan answers with filename metadata.
     #[test]
     fn a_missing_probe_binary_is_probe_not_found() {
-        let missing = ProbeLocator::at("/definitely/not/plugin-probe");
+        let missing = Locator::at("/definitely/not/plugin-probe");
         assert!(matches!(
             probe(&missing, Duration::from_secs(1)),
             Err(BridgeError::ProbeNotFound)

@@ -182,7 +182,7 @@ impl Plugin {
     pub fn can_process_f64(&self, main: &MainThread) -> bool {
         let _scope = self.scoped(main);
         // SAFETY: a plain query on a live processor.
-        unsafe { self.processor.canProcessSampleSize(K_SAMPLE_64_INT) == kResultOk }
+        is_ok(unsafe { self.processor.canProcessSampleSize(K_SAMPLE_64_INT) })
     }
 
     /// `IAudioProcessor::setupProcessing`. `Ok(false)` is `kResultFalse`, which

@@ -25,7 +25,6 @@ use vst3::Steinberg::{
         IXmlRepresentationControllerTrait, PhysicalUIMap, PhysicalUIMapList, ProcessSetup,
         RepresentationInfo, SpeakerArrangement, String128,
     },
-    kResultOk,
 };
 use vst3::{ComPtr, ComWrapper};
 
@@ -36,7 +35,7 @@ use tutti_types::ChannelLayout;
 
 use crate::audio::{Arrangement, AudioSide, Setup, Shared};
 use crate::com::{BStream, ComponentHandler, HostApplication, HostPlugFrame};
-use crate::error::{Vst3Error, check, check_bool};
+use crate::error::{Vst3Error, check, check_bool, is_ok};
 use crate::module::{CreateError, Module};
 use crate::sdk::{sdk_enum_i32, utf16_to_string, zeroed};
 use crate::types::{

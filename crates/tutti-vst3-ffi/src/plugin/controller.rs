@@ -232,7 +232,7 @@ impl Plugin {
         for i in 0..count {
             let mut raw = zeroed::<vst3::Steinberg::Vst::ProgramListInfo>();
             // SAFETY: `raw` is a valid out-parameter.
-            if unsafe { ctrl.getProgramListInfo(i, &mut raw) } == kResultOk {
+            if is_ok(unsafe { ctrl.getProgramListInfo(i, &mut raw) }) {
                 lists.push(Vst3ProgramListInfo::from_c(&raw));
             }
         }
@@ -254,7 +254,7 @@ impl Plugin {
         for i in 0..count {
             let mut raw = zeroed::<vst3::Steinberg::Vst::UnitInfo>();
             // SAFETY: `raw` is a valid out-parameter.
-            if unsafe { ctrl.getUnitInfo(i, &mut raw) } == kResultOk {
+            if is_ok(unsafe { ctrl.getUnitInfo(i, &mut raw) }) {
                 let mut unit = Vst3UnitInfo::from_c(&raw);
                 unit.resolve_program_list(&known);
                 units.push(unit);
@@ -299,7 +299,7 @@ impl Plugin {
             return false;
         };
         // SAFETY: a plain call on a live interface.
-        unsafe { ctrl.selectUnit(unit_id) == kResultOk }
+        is_ok(unsafe { ctrl.selectUnit(unit_id) })
     }
 
     /// The unit a bus channel belongs to. The ints are the ABI's, passed as
@@ -350,7 +350,7 @@ impl Plugin {
         };
         // SAFETY: `list.map` points at `list.count` entries that outlive the
         // call.
-        if unsafe { ctrl.getPhysicalUIMapping(bus_index, channel, &mut list) } != kResultOk {
+        if !is_ok(unsafe { ctrl.getPhysicalUIMapping(bus_index, channel, &mut list) }) {
             return Vec::new();
         }
         entries

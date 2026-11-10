@@ -1,4 +1,5 @@
 use super::*;
+use vst3::Steinberg::kResultOk;
 
 /// A string longer than the field is cut to 63 bytes and still terminated;
 /// a short one is copied whole.

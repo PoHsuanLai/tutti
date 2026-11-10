@@ -4,12 +4,12 @@
 //!
 //! 120 BPM at 48 kHz: a beat is 24 000 frames.
 
+use tutti_fixtures::midi;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
     Transport,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples, Seconds};
@@ -34,7 +34,7 @@ fn saw() -> PolySynth {
 fn note_on_at(frame: u64) -> TimedMidiEvent {
     TimedMidiEvent::new(
         Beat(frame as f64 / 24_000.0),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
     )
 }
 

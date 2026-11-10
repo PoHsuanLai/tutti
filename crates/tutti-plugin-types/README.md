@@ -123,7 +123,7 @@ assert!(ranks[0] < ranks[1] && ranks[1] < ranks[2]);
 ## Where it sits
 
 Depends on `tutti-types` ([`Samples`], [`ChannelLayout`], [`ChannelTopology`], the
-meter vocabulary) and `tutti-midi-types` ([`MidiEvent`]), re-exporting the parts
+meter vocabulary), `tutti-graph` (`Offset`) and `tutti-midi-types`, re-exporting the parts
 format crates need so none of them takes its own dependency for the type names.
 All four format hosts and `tutti-plugin` depend on it.
 
@@ -169,7 +169,6 @@ MIT OR Apache-2.0
 [`Samples`]: crate::Samples
 [`ChannelLayout`]: crate::ChannelLayout
 [`ChannelTopology`]: crate::ChannelTopology
-[`MidiEvent`]: crate::MidiEvent
 [`bounds`]: crate::ParameterInfo::bounds
 [`default_value`]: crate::ParameterInfo::default_value
 [`step_count`]: crate::ParameterInfo::step_count

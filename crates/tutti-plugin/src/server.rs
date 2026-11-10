@@ -34,14 +34,14 @@ pub use crate::protocol::frame::{FrameTooLarge, read_frame, write_frame};
 pub use crate::protocol::{
     AuComponentType, AutomationMode, BridgeMessage, BusChannels, BusTopologies, ChannelLayout,
     ChordChanges, ChordValue, ClapFeature, EditorPresence, Features, HostMessage, LoadedPlugin,
-    MAX_FRAME_BYTES, MAX_STATE_BYTES, MIDI_STACK_CAPACITY, MidiEvent, MidiEventVec, Normalized,
+    MAX_FRAME_BYTES, MAX_STATE_BYTES, MIDI_STACK_CAPACITY, MidiEventVec, Normalized,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     PROTOCOL_VERSION, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
     ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor, PluginTail, PointBuf, Preset,
     PresetId, ProcessAudioData, STATE_CHUNK_BYTES, SampleFormat, Samples, ScaleChanges, ScaleValue,
     SlabLayout, StagedState, TimeSignature, TransportInfo, Vst2Category, Vst3PlugType,
-    Vst3SubCategories,
+    Vst3SubCategories, WireMidi,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};

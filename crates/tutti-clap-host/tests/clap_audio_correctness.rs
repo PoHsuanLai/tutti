@@ -26,6 +26,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
 mod support;
 use support::active::{Activate, Active};
@@ -34,6 +35,8 @@ use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, probe_tag};
+use tutti_graph::Offset;
+use tutti_types::Samples;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const MAX_FRAMES: u32 = 512;
@@ -918,8 +921,20 @@ fn take_sysex_input(controls: &ProbeControls) -> (u32, u32, Vec<u8>) {
     (count, time, buf)
 }
 
+/// The offset `k` frames into `drive_midi_block`'s 64-frame block.
+fn at(k: usize) -> Offset {
+    Offset::new(k, Samples(64)).expect("inside the block")
+}
+
+/// The SysEx7 packets of `payload`, each `k` frames into the block.
+fn sysex_packets(payload: &[u8], k: usize) -> Vec<UmpAt> {
+    let mut packets = Vec::new();
+    tutti_midi_types::sysex7_fragments(tutti_ump::MidiGroup::FIRST, payload, &mut packets);
+    packets.into_iter().map(|ump| (at(k), ump)).collect()
+}
+
 /// Run one block carrying `midi`.
-fn drive_midi_block(inst: &mut Active<f32>, midi: &[tutti_clap_host::MidiEvent]) {
+fn drive_midi_block(inst: &mut Active<f32>, midi: &[UmpAt]) {
     let frames = 64;
     let ins: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();
     let mut outs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();
@@ -949,19 +964,13 @@ fn drive_midi_block(inst: &mut Active<f32>, midi: &[tutti_clap_host::MidiEvent])
 /// are spliced and delivered → fails.
 #[test]
 fn a_multi_packet_sysex_reaches_the_plugin_whole() {
-    use tutti_ump::MidiGroup;
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     let mut inst = session.activate();
     let _ = take_sysex_input(&session.controls);
 
     let payload: Vec<u8> = (0..100u8).map(|i| i % 0x7F).collect();
-    let mut packets = Vec::new();
-    tutti_clap_host::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
+    let packets = sysex_packets(&payload, 5);
     assert!(packets.len() > 3);
-    let packets: Vec<_> = packets
-        .into_iter()
-        .map(|p| p.with_frame_offset(5))
-        .collect();
     let (first, second) = packets.split_at(2);
 
     drive_midi_block(&mut inst, first);
@@ -977,13 +986,7 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
 
     // A START left open by the next START: only the second arrives.
     let mut midi = packets[..2].to_vec();
-    let mut short = Vec::new();
-    tutti_clap_host::MidiEvent::sysex7_fragments(
-        MidiGroup::FIRST,
-        &[1, 2, 3, 4, 5, 6, 7],
-        &mut short,
-    );
-    midi.extend(short);
+    midi.extend(sysex_packets(&[1, 2, 3, 4, 5, 6, 7], 0));
     drive_midi_block(&mut inst, &midi);
     assert_eq!(
         take_sysex_input(&session.controls),
@@ -1006,14 +1009,12 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
 /// nothing is counted) and cannot catch a regression that is not expressible.
 #[test]
 fn a_sysex_open_across_a_reset_is_dropped() {
-    use tutti_ump::MidiGroup;
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     let mut inst = session.activate();
     let _ = take_sysex_input(&session.controls);
 
     let payload: Vec<u8> = (0..60u8).collect();
-    let mut packets = Vec::new();
-    tutti_clap_host::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
+    let packets = sysex_packets(&payload, 0);
     let (first, rest) = packets.split_at(3);
     let framed: Vec<u8> = tutti_ump::frame(&payload).collect();
 

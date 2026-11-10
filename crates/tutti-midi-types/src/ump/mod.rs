@@ -1,23 +1,28 @@
-//! UMP-based [`MidiEvent`] with sample-accurate timing.
+//! The UMP surface: multi-packet builders and readers over [`Ump`], and the
+//! classifiers a router needs.
 //!
-//! A [`MidiEvent`] is a 20-byte packed struct — a 32-bit frame offset plus
-//! four UMP words — carrying any MIDI message type. Construction goes through
-//! [`midi2`] (spec-compliant encoding).
+//! There is no event type here: an event in a block is `(Offset, Ump)` (the
+//! caller pairs the offset), and a single message is built with
+//! `tutti_ump::Message` and `From<Message> for Ump`. What stays in this module
+//! is what a `Message` does not carry: SysEx7/SysEx8 fragmentation, Flex Data,
+//! UMP Stream, and the readers that go with them.
 //!
-//! **To decode, prefer [`MidiEvent::message`](crate::MidiMessage) → a
-//! [`MidiMessage`](crate::MidiMessage)** — the app-facing "just tell me what it
-//! is" view with `.note()` / `.channel()` / `.velocity()` accessors, already
-//! normalized so a MIDI 1.0 event arrives as its MIDI 2.0 form. Only reach for
-//! the raw `midi2` layer below when you need a message family `MidiMessage`
-//! doesn't model:
+//! **To decode, prefer [`MidiMessage::from_ump`](crate::MidiMessage::from_ump)**,
+//! the app-facing "just tell me what it is" view with `.note()` /
+//! `.channel()` / `.velocity()` accessors, already normalized so a MIDI 1.0
+//! event arrives as its MIDI 2.0 form. Only reach for `tutti_ump::decode` or
+//! the raw `midi2` layer when you need a message family `MidiMessage` doesn't
+//! model:
 //!
 //! ```
 //! use tutti_midi_types::midi2::{channel_voice2::ChannelVoice2, UmpMessage};
-//! use tutti_midi_types::MidiEvent;
-//! use tutti_ump::{MidiChannel, MidiGroup};
+//! use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 //!
-//! let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-//! match UmpMessage::try_from(ev.data_words()) {
+//! let ump = Ump::from(Message::Midi2(
+//!     Address { group: MidiGroup::FIRST, channel: MidiChannel::FIRST },
+//!     Voice2::NoteOn { note: NoteNumber::new(60).unwrap(), velocity: 0x8000, attribute: Attribute::None },
+//! ));
+//! match UmpMessage::try_from(ump.words()) {
 //!     Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m))) => {
 //!         assert_eq!(m.velocity(), 0x8000);
 //!     }
@@ -25,68 +30,23 @@
 //! }
 //! ```
 
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::Ump;
 
-/// Packed UMP event with sample-accurate timing.
-///
-/// The `data` field is a midi2-compatible `[u32; 4]` buffer — callers with a
-/// `midi2::UmpMessage` in hand can simply copy its `.data()` into the first
-/// N words.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C)]
-pub struct MidiEvent {
-    /// Offset within the current audio buffer, in samples.
-    pub frame_offset: u32,
-    /// Raw UMP words. [`Self::data_words`] returns the meaningful prefix.
-    pub data: [u32; 4],
+/// The UMP Message Type — the top nibble of word 0 (MIDI 2.0 spec §2.1.4). A
+/// cheap classifier for routing a raw packet without a full decode (e.g. "is
+/// this a SysEx7 packet I should reassemble?").
+#[inline]
+#[must_use]
+pub fn message_type(ump: &Ump) -> UmpMessageType {
+    UmpMessageType::from_nibble((ump.0[0] >> 28) as u8)
 }
 
-impl MidiEvent {
-    /// Constructs with pre-built UMP words and a frame offset.
-    ///
-    /// `words` must be 1, 2, or 4 entries long matching the UMP message type
-    /// in the first word's top nibble. Extra slots in `data` are zero-padded.
-    #[inline]
-    #[must_use]
-    pub fn from_ump(frame_offset: u32, words: &[u32]) -> Self {
-        let mut data = [0u32; 4];
-        let n = words.len().min(4);
-        data[..n].copy_from_slice(&words[..n]);
-        Self { frame_offset, data }
-    }
-
-    /// Builder-style setter used in chain form, e.g.
-    /// `MidiEvent::note_on(MidiGroup::masked(...)).with_frame_offset(128)`.
-    #[inline]
-    #[must_use]
-    pub fn with_frame_offset(mut self, frame_offset: u32) -> Self {
-        self.frame_offset = frame_offset;
-        self
-    }
-
-    /// Returns the meaningful prefix of [`Self::data`] (1, 2, or 4 words)
-    /// per the UMP spec. Hand directly to `midi2::UmpMessage::try_from`.
-    #[inline]
-    pub fn data_words(&self) -> &[u32] {
-        let n = ump_word_count((self.data[0] >> 28) as u8);
-        &self.data[..n]
-    }
-
-    /// The UMP Message Type — the top nibble of word 0 (MIDI 2.0 spec §2.1.4).
-    /// A cheap classifier for routing a raw event without a full `midi2` decode
-    /// (e.g. "is this a SysEx7 packet I should reassemble?").
-    #[inline]
-    pub fn message_type(&self) -> UmpMessageType {
-        UmpMessageType::from_nibble((self.data[0] >> 28) as u8)
-    }
-
-    /// The UMP group — bits 24–27 of word 0. Meaningful for the group-scoped
-    /// message types (channel voice, SysEx, Flex Data); the group-less types
-    /// (Utility, UMP Stream) ignore it.
-    #[inline]
-    pub fn group(&self) -> MidiGroup {
-        MidiGroup::masked(((self.data[0] >> 24) & 0x0F) as u8)
-    }
+/// A packet from the meaningful words of one message, zero-padded to four.
+pub(crate) fn packet_from(words: &[u32]) -> Ump {
+    let mut packet = [0u32; 4];
+    let n = words.len().min(4);
+    packet[..n].copy_from_slice(&words[..n]);
+    Ump(packet)
 }
 
 /// A UMP Message Type (the top nibble of word 0), as a named classifier
@@ -129,128 +89,6 @@ impl UmpMessageType {
 }
 
 // -----------------------------------------------------------------------------
-// Quick accessors — thin passthroughs over midi2 for fast note/CC lookup
-// -----------------------------------------------------------------------------
-//
-// Callers that need more than these (per-note pitch bend, program change bank,
-// sysex, etc.) match `UmpMessage::try_from(ev.data_words())` directly. These
-// cover the note-on/off + velocity lookup that MPE, voice allocators, and
-// tests repeatedly need.
-
-impl MidiEvent {
-    /// `true` if this is a Channel Voice 1 or 2 Note On with non-zero velocity.
-    #[must_use]
-    pub fn is_note_on(&self) -> bool {
-        use midi2::UmpMessage;
-        use midi2::channel_voice1::ChannelVoice1;
-        use midi2::channel_voice2::ChannelVoice2;
-        match UmpMessage::try_from(self.data_words()) {
-            Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m))) => m.velocity() > 0,
-            Ok(UmpMessage::ChannelVoice1(ChannelVoice1::NoteOn(m))) => u8::from(m.velocity()) > 0,
-            _ => false,
-        }
-    }
-
-    /// `true` if this is a Note Off (or MIDI 1.0 velocity-0 NoteOn).
-    #[must_use]
-    pub fn is_note_off(&self) -> bool {
-        use midi2::UmpMessage;
-        use midi2::channel_voice1::ChannelVoice1;
-        use midi2::channel_voice2::ChannelVoice2;
-        match UmpMessage::try_from(self.data_words()) {
-            Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(_))) => true,
-            Ok(UmpMessage::ChannelVoice1(ChannelVoice1::NoteOff(_))) => true,
-            Ok(UmpMessage::ChannelVoice1(ChannelVoice1::NoteOn(m))) => u8::from(m.velocity()) == 0,
-            _ => false,
-        }
-    }
-
-    /// Note number for note-on/off/poly-pressure/per-note events.
-    pub fn note(&self) -> Option<u8> {
-        use midi2::UmpMessage;
-        use midi2::channel_voice1::ChannelVoice1;
-        use midi2::channel_voice2::ChannelVoice2;
-        match UmpMessage::try_from(self.data_words()).ok()? {
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => Some(u8::from(m.note_number())),
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(u8::from(m.note_number())),
-            UmpMessage::ChannelVoice2(ChannelVoice2::KeyPressure(m)) => {
-                Some(u8::from(m.note_number()))
-            }
-            UmpMessage::ChannelVoice2(ChannelVoice2::PerNotePitchBend(m)) => {
-                Some(u8::from(m.note_number()))
-            }
-            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOn(m)) => Some(u8::from(m.note_number())),
-            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOff(m)) => Some(u8::from(m.note_number())),
-            UmpMessage::ChannelVoice1(ChannelVoice1::KeyPressure(m)) => {
-                Some(u8::from(m.note_number()))
-            }
-            _ => None,
-        }
-    }
-
-    /// Velocity at full MIDI 2.0 resolution — 16 bits.
-    ///
-    /// A MIDI 1.0 note is upscaled via the spec's Min-Center-Max algorithm, so
-    /// this is the lossless accessor: prefer it over
-    /// [`velocity_u7`](Self::velocity_u7), which narrows a MIDI-2 velocity to
-    /// 7 bits and is only for a MIDI 1.0 destination.
-    pub fn velocity_u16(&self) -> Option<u16> {
-        use crate::convert::midi1_velocity_to_midi2;
-        use midi2::UmpMessage;
-        use midi2::channel_voice1::ChannelVoice1;
-        use midi2::channel_voice2::ChannelVoice2;
-        match UmpMessage::try_from(self.data_words()).ok()? {
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => Some(m.velocity()),
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(m.velocity()),
-            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOn(m)) => {
-                Some(midi1_velocity_to_midi2(u8::from(m.velocity())))
-            }
-            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOff(m)) => {
-                Some(midi1_velocity_to_midi2(u8::from(m.velocity())))
-            }
-            _ => None,
-        }
-    }
-
-    /// Velocity as a 7-bit value (downconverted from MIDI 2.0's 16-bit form
-    /// via spec Min-Center-Max).
-    pub fn velocity_u7(&self) -> Option<u8> {
-        use crate::convert::midi2_velocity_to_midi1;
-        use midi2::UmpMessage;
-        use midi2::channel_voice1::ChannelVoice1;
-        use midi2::channel_voice2::ChannelVoice2;
-        match UmpMessage::try_from(self.data_words()).ok()? {
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => {
-                Some(midi2_velocity_to_midi1(m.velocity()))
-            }
-            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => {
-                Some(midi2_velocity_to_midi1(m.velocity()))
-            }
-            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOn(m)) => Some(u8::from(m.velocity())),
-            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOff(m)) => Some(u8::from(m.velocity())),
-            _ => None,
-        }
-    }
-
-    /// Channel nibble for a channel-voice event, read directly from the UMP
-    /// word without a full decode. `None` for system, SysEx, and utility
-    /// messages, which carry no channel. Covers both MIDI 1.0 (UMP type 0x2)
-    /// and MIDI 2.0 (type 0x4) channel voice — the channel sits in the same
-    /// bit position in both, so the hot path (e.g. MIDI routing by channel)
-    /// avoids paying for a `midi2::UmpMessage::try_from` dispatch.
-    #[inline]
-    pub fn channel(&self) -> Option<MidiChannel> {
-        let type_nibble = (self.data[0] >> 28) & 0x0F;
-        // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
-        if type_nibble == 0x2 || type_nibble == 0x4 {
-            Some(MidiChannel::masked(((self.data[0] >> 16) & 0x0F) as u8))
-        } else {
-            None
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
 
@@ -276,12 +114,12 @@ pub(crate) const fn ump_word_count(type_nibble: u8) -> usize {
 /// A native-UMP transport (CoreMIDI's `MIDIEventPacket`, a MIDI-2.0 USB packet)
 /// delivers *several* concatenated messages in one buffer, with no separators —
 /// each message's length is implied by its type nibble (§2.1.3). This walks the
-/// stream by that length and yields one [`MidiEvent`] per message.
+/// stream by that length and yields one [`Ump`] per message.
 ///
 /// A trailing run too short for its declared type is dropped: it is a truncated
-/// message, not a decodable one. Every yielded event carries `frame_offset` 0;
-/// the caller stamps timing from its own transport if it needs to.
-pub fn split_ump_stream(words: &[u32]) -> impl Iterator<Item = MidiEvent> + '_ {
+/// message, not a decodable one. The packets carry no timing; the caller pairs
+/// each with an offset from its own transport if it needs one.
+pub fn split_ump_stream(words: &[u32]) -> impl Iterator<Item = Ump> + '_ {
     let mut idx = 0usize;
     core::iter::from_fn(move || {
         if idx >= words.len() {
@@ -293,15 +131,16 @@ pub fn split_ump_stream(words: &[u32]) -> impl Iterator<Item = MidiEvent> + '_ {
             idx = words.len();
             return None;
         }
-        let event = MidiEvent::from_ump(0, &words[idx..idx + n]);
+        let mut packet = [0u32; 4];
+        packet[..n].copy_from_slice(&words[idx..idx + n]);
         idx += n;
-        Some(event)
+        Some(Ump(packet))
     })
 }
 
-// UMP message families — each extends `MidiEvent` in its own module. The MIDI
-// 1.0 wire codec (`from/to_midi1_bytes`) is a `MidiEvent` family too, but it
-// lives in `crate::midi1` alongside the rest of the MIDI-1 boundary.
+// UMP message families, each a module of free functions over `Ump`. The MIDI
+// 1.0 wire codec (`from/to_midi1_bytes`) lives in `crate::translation::wire`
+// alongside the rest of the MIDI-1 boundary.
 mod channel_voice;
 mod controllers;
 mod flex_data;
@@ -311,6 +150,7 @@ mod sysex8;
 mod system;
 mod utility;
 
+pub(crate) use channel_voice::program_change_bank_of;
 pub use controllers::{
     RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY, RPN_INDEX_MCM,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
@@ -318,22 +158,28 @@ pub use controllers::{
 pub use flex_data::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType, FlexTextKind,
     FlexTextReassembler, KeySharpsFlats, Tonic, bpm_to_ten_ns_per_quarter, flex_chord_name,
-    flex_key_signature, flex_tempo_bpm, flex_text, flex_time_signature, push_flex_text,
-    ten_ns_per_quarter_to_bpm,
+    flex_key_signature, flex_set_chord_name, flex_set_key_signature, flex_set_metronome,
+    flex_set_tempo, flex_set_time_signature, flex_tempo_bpm, flex_text, flex_time_signature,
+    push_flex_text, ten_ns_per_quarter_to_bpm,
 };
 pub use stream::{
     ALL_FUNCTION_BLOCKS, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, Protocol, UmpVersion,
-    endpoint_name, function_block_name, product_instance_id,
+    device_identity, endpoint_discovery, endpoint_info, endpoint_name, function_block_discovery,
+    function_block_info, function_block_name, product_instance_id,
+    stream_configuration_notification, stream_configuration_request,
 };
 pub use sysex::{
     SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
-    SYSEX7_STATUS_START,
+    SYSEX7_STATUS_START, sysex7_fragments, sysex7_packet_count, sysex7_packets, sysex7_payload,
+    sysex7_single,
 };
 pub use sysex8::{
     SYSEX8_BYTES_ABORT, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,
-    SYSEX8_STATUS_START, sysex8_message,
+    SYSEX8_STATUS_START, is_sysex8_abort, sysex8_fragments, sysex8_header, sysex8_message,
+    sysex8_status,
 };
+pub use utility::{jr_clock_value, jr_timestamp_value};
 
 #[cfg(test)]
 mod tests;

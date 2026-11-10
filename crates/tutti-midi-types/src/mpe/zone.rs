@@ -189,17 +189,22 @@ impl MpeZoneConfig {
     /// The 7-bit member count sits in the top 7 bits of the 32-bit data field
     /// (MSB-aligned, the spec's 7→32 convention) so it round-trips exactly.
     #[must_use]
-    pub fn to_mcm(&self) -> crate::ump::MidiEvent {
-        crate::ump::MidiEvent::registered_controller(
-            MidiGroup::FIRST,
-            MidiChannel::masked(self.master_channel),
-            crate::ump::RPN_BANK_MPE,
-            crate::ump::RPN_INDEX_MCM,
-            (self.member_count as u32) << 25,
+    pub fn to_mcm(&self) -> tutti_ump::Ump {
+        tutti_ump::Message::Midi2(
+            tutti_ump::Address {
+                group: MidiGroup::FIRST,
+                channel: MidiChannel::masked(self.master_channel),
+            },
+            tutti_ump::Voice2::Registered {
+                bank: tutti_ump::U7::new(crate::ump::RPN_BANK_MPE & 0x7F).unwrap_or_default(),
+                index: tutti_ump::U7::new(crate::ump::RPN_INDEX_MCM & 0x7F).unwrap_or_default(),
+                value: (self.member_count as u32) << 25,
+            },
         )
+        .into()
     }
 
-    /// Decodes an MCM back into `(master_channel, member_count)`, if `event` is an
+    /// Decodes an MCM back into `(master_channel, member_count)`, if `ump` is an
     /// MPE Configuration Message (RPN bank `0x00`, index `0x06`). Returns `None`
     /// for any other message. The zone side (lower vs upper) is inferred from the
     /// master channel by the caller (Ch0 → lower, Ch15 → upper).
@@ -210,11 +215,11 @@ impl MpeZoneConfig {
     /// the sender never asked for; `None` lets the caller ignore the message and
     /// keep the zone it had.
     #[must_use]
-    pub fn from_mcm(event: &crate::ump::MidiEvent) -> Option<(u8, u8)> {
+    pub fn from_mcm(ump: &tutti_ump::Ump) -> Option<(u8, u8)> {
         use midi2::channel_voice2::ChannelVoice2;
         use midi2::{Channeled, UmpMessage};
         let UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) =
-            UmpMessage::try_from(event.data_words()).ok()?
+            UmpMessage::try_from(ump.words()).ok()?
         else {
             return None;
         };

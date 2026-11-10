@@ -19,7 +19,7 @@
 //! * the info read reports what was measured, over the whole registry;
 //! * the callback installs and uninstalls without crashing, and stops delivering
 //!   after removal;
-//! * the packet→`MidiEvent` decode is driven **directly**, against hand-built
+//! * the packet→`WireMidi` decode is driven **directly**, against hand-built
 //!   `MIDIPacketList`s including the edge cases a plugin can produce — an empty
 //!   list, running status, and a packet claiming more bytes than it holds.
 //!
@@ -56,6 +56,8 @@ use support::corpus::{DELAY, DLS_SYNTH, LOWPASS, SAMPLER, every_component};
 use tutti_au_ffi::{decode_packet_list_for_test, split_packet_list_for_test};
 use tutti_au_host::AuType;
 use tutti_au_host::types::MIDIPacketList;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_midi_types::MidiMessage;
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -181,8 +183,8 @@ impl PacketListBuf {
         self.bytes.as_ptr() as *const MIDIPacketList
     }
 
-    /// Decode to `MidiEvent`s through the host's real path.
-    fn decode(&self) -> Vec<tutti_midi_types::MidiEvent> {
+    /// Decode to `WireMidi`s through the host's real path.
+    fn decode(&self) -> Vec<tutti_plugin_types::WireMidi> {
         // SAFETY: both constructors produce a well-formed `MIDIPacketList` header
         // over a live allocation. `from_raw` may produce a packet whose *declared*
         // length exceeds its data, which is the case under test; the trailing slack
@@ -387,8 +389,14 @@ fn no_delivery_arrives_after_the_callback_is_withdrawn() {
     // Drive some MIDI *in* so the unit is actually generating, then render. If the
     // unit did emit MIDI this is where it would arrive.
     let notes = [
-        tutti_midi_types::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-        tutti_midi_types::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+        (
+            Offset::ZERO,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            Offset::ZERO,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+        ),
     ];
     au.send_midi(&notes);
     for _ in 0..8 {
@@ -540,57 +548,57 @@ fn a_framework_built_packet_list_decodes_to_its_events() {
 
     // Note-on: note and the frame offset taken from the packet timestamp, which
     // Apple documents as a *sample offset* from the render timestamp — so it is
-    // already the value `MidiEvent::frame_offset` wants, with no clock conversion.
+    // already the value `WireMidi::offset` wants, with no clock conversion.
     assert!(matches!(
-        events[0].message(),
+        MidiMessage::from_ump(events[0].ump),
         MidiMessage::NoteOn {
             note: 60,
             channel: MidiChannel::FIRST,
             ..
         }
     ));
-    assert_eq!(events[0].frame_offset, 0);
+    assert_eq!(events[0].offset, 0);
 
     assert!(matches!(
-        events[1].message(),
+        MidiMessage::from_ump(events[1].ump),
         MidiMessage::NoteOff {
             note: 60,
             channel: MidiChannel::FIRST,
             ..
         }
     ));
-    assert_eq!(events[1].frame_offset, 64);
+    assert_eq!(events[1].offset, 64);
 
     assert!(matches!(
-        events[2].message(),
+        MidiMessage::from_ump(events[2].ump),
         MidiMessage::ControlChange {
             index: 7,
             channel: MidiChannel::FIRST,
             ..
         }
     ));
-    assert_eq!(events[2].frame_offset, 128);
+    assert_eq!(events[2].offset, 128);
 
     // Program change is a TWO-byte message. A decoder that assumed three would
     // consume the next packet's status byte as data.
     assert!(matches!(
-        events[3].message(),
+        MidiMessage::from_ump(events[3].ump),
         MidiMessage::ProgramChange {
             program: 5,
             channel: MidiChannel::FIRST,
             ..
         }
     ));
-    assert_eq!(events[3].frame_offset, 192);
+    assert_eq!(events[3].offset, 192);
 
     assert!(matches!(
-        events[4].message(),
+        MidiMessage::from_ump(events[4].ump),
         MidiMessage::PitchBend {
             channel: MidiChannel::FIRST,
             ..
         }
     ));
-    assert_eq!(events[4].frame_offset, 256);
+    assert_eq!(events[4].offset, 256);
 }
 
 /// Every message family `send_midi` can *emit* must decode when it comes *back*.
@@ -623,7 +631,7 @@ fn the_decode_covers_exactly_what_send_midi_encodes() {
         // a decoder that masked it off would still produce the right message *type*.
         let expected_channel = MidiChannel::of(bytes[0] & 0x0F);
         assert_eq!(
-            events[0].channel(),
+            MidiMessage::from_ump(events[0].ump).channel(),
             Some(expected_channel),
             "{what}: channel must round-trip"
         );
@@ -658,7 +666,10 @@ fn one_packet_can_carry_several_messages() {
     let events = list.decode();
     assert_eq!(events.len(), 3);
     assert_eq!(
-        events.iter().filter_map(|e| e.note()).collect::<Vec<_>>(),
+        events
+            .iter()
+            .filter_map(|e| MidiMessage::from_ump(e.ump).note())
+            .collect::<Vec<_>>(),
         vec![62, 64, 67]
     );
 }
@@ -740,7 +751,10 @@ fn running_status_is_expanded() {
     }
     let events = list.decode();
     assert_eq!(
-        events.iter().filter_map(|e| e.note()).collect::<Vec<_>>(),
+        events
+            .iter()
+            .filter_map(|e| MidiMessage::from_ump(e.ump).note())
+            .collect::<Vec<_>>(),
         vec![60, 62, 64],
         "all three notes must be recovered"
     );
@@ -941,10 +955,10 @@ fn sysex_is_delivered_whole_between_its_neighbours() {
         PacketListBuf::from_raw(&[(0, &[0x90, 60, 100, 0xF0, 0x7E, 0x00, 0xF7, 0x80, 60, 0])]);
     let events = list.decode();
     assert_eq!(events.len(), 3, "note-on, one SysEx7 packet, note-off");
-    assert!(events[0].is_note_on());
-    assert!(events[2].is_note_off());
+    assert!(MidiMessage::from_ump(events[0].ump).is_note_on());
+    assert!(events[2].ump.is_note_off());
     let mut assembler = SysExAssembler::reserved();
-    let SysExStep::Complete(done) = assembler.push(&events[1]) else {
+    let SysExStep::Complete(done) = assembler.push(&events[1].ump) else {
         panic!("a SINGLE packet completes");
     };
     assert_eq!(assembler.message(done), [0xF0, 0x7E, 0x00, 0xF7]);
@@ -967,11 +981,11 @@ fn a_sysex_spanning_packets_is_delivered_once() {
     let (b, c) = rest.split_at(20);
     let list = PacketListBuf::from_raw(&[(7, a), (8, b), (9, c)]);
     let events = list.decode();
-    assert!(events.iter().all(|e| e.frame_offset == 7));
+    assert!(events.iter().all(|e| e.offset == 7));
     let mut assembler = SysExAssembler::reserved();
     let mut done = Vec::new();
     for e in &events {
-        if let SysExStep::Complete(r) = assembler.push(e) {
+        if let SysExStep::Complete(r) = assembler.push(&e.ump) {
             done.push(assembler.message(r).to_vec());
         }
     }
@@ -1011,12 +1025,18 @@ fn a_list_longer_than_the_batch_is_delivered_in_full() {
     // boundaries — the 256 crossing is where a refill bug would show.
     for (i, ev) in events.iter().enumerate() {
         assert_eq!(
-            ev.frame_offset, i as u32,
+            ev.offset, i as u32,
             "event {i} carries the wrong frame offset; batching must not reorder"
         );
     }
-    assert_eq!(events.iter().filter(|e| e.is_note_on()).count(), 150);
-    assert_eq!(events.iter().filter(|e| e.is_note_off()).count(), 150);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| MidiMessage::from_ump(e.ump).is_note_on())
+            .count(),
+        150
+    );
+    assert_eq!(events.iter().filter(|e| e.ump.is_note_off()).count(), 150);
 }
 
 /// A packet timestamp is a sample offset and is carried through verbatim.
@@ -1024,7 +1044,7 @@ fn a_list_longer_than_the_batch_is_delivered_in_full() {
 /// Apple's header: "The time stamp values contained within the MIDIPackets in this
 /// list are **sample offsets** from the AudioTimeStamp provided." So there is no
 /// host-time conversion to get wrong — but there *is* a width narrowing (`u64` at
-/// the ABI, `u32` in `MidiEvent`), and it must saturate rather than wrap. A wrapped
+/// the ABI, `u32` in `WireMidi`), and it must saturate rather than wrap. A wrapped
 /// offset places a late event at the *start* of the block, which is audibly wrong
 /// in a way a clamped one is not.
 #[test]
@@ -1070,7 +1090,10 @@ fn the_sink_sees_exactly_the_events_it_was_handed() {
     ])
     .expect("fits");
     let events = list.decode();
-    let notes: Vec<u8> = events.iter().filter_map(|e| e.note()).collect();
+    let notes: Vec<u8> = events
+        .iter()
+        .filter_map(|e| MidiMessage::from_ump(e.ump).note())
+        .collect();
     assert_eq!(
         notes,
         vec![60, 61, 62],

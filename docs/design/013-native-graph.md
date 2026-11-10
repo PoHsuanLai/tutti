@@ -5582,8 +5582,8 @@ the one place that says what a ported node can rely on:
 - **The payload.** `Event { offset: Offset, kind: EventKind }` with
   `EventKind::{Midi(Ump), Ramp(ParamRamp)}`: `Copy`, at most 32 bytes
   (asserted at compile time). Four UMP words carry every MIDI 2.0 message
-  (`tutti_midi_types::MidiEvent` converts at a node's edge by copying 16
-  bytes); `ParamRamp` carries typed or foreign automation.
+  (an edge's `(Offset, Ump)` is the same pair, so nothing converts);
+  `ParamRamp` carries typed or foreign automation.
 - **Tests.** `tests/event_ports.rs` (same-block delivery, fan-in ties by
   source key, PDC across blocks under ragged blocks, feedback latency,
   overflow, declarations sizing merges and delays with a default of 1),

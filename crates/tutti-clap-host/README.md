@@ -41,8 +41,9 @@ The other types you will meet first:
 [`WindowHandle`], [`EditorSize`] and the `ParameterInfo` that
 [`parameter_list`][`ClapLoaded::parameter_list`] hands back are
 [`tutti-plugin-types`](../tutti-plugin-types)' — re-exported here so a caller
-can stay format-agnostic, not defined here. MIDI is the workspace-wide UMP
-[`tutti_midi_types::MidiEvent`], re-exported as [`MidiEvent`]; there is **no
+can stay format-agnostic, not defined here. MIDI is the workspace-wide UMP: an event in is a
+`(tutti_graph::Offset, tutti_ump::Ump)`, an event out is a [`WireMidi`] (the
+packet and the raw time the plugin reported); there is **no
 CLAP-specific MIDI event trait to implement**. What *is* CLAP-native is
 [`ClapNoteExpression`], the per-voice expression type, which keeps its own name
 precisely so it does not shadow the shared one.
@@ -63,9 +64,10 @@ on disk.
 
 ```rust,no_run
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+use tutti_graph::Offset;
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_clap_host::{
-    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, TransportInfo,
+    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, TransportInfo,
 };
 use tutti_plugin_types::{AudioBufferMut, Loaded, MaxBlock, Prepare, SampleRate, Samples};
 
@@ -90,7 +92,7 @@ let mut outputs: [&mut [f32]; 2] = [&mut left, &mut right];
 let mut buffer = AudioBuffer32::new(&inputs, &mut outputs, 48_000.0);
 
 let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
-let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+let midi = [(Offset::ZERO, tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384))];
 processor.process(&mut AudioBufferMut::F32(buffer), &ClapProcessContext {
     midi: &midi,
     transport: Some(&transport),
@@ -274,6 +276,5 @@ MIT OR Apache-2.0
 [`TransportInfo`]: crate::TransportInfo
 [`WindowHandle`]: crate::WindowHandle
 [`EditorSize`]: crate::EditorSize
-[`MidiEvent`]: crate::MidiEvent
+[`WireMidi`]: crate::WireMidi
 [`host::AudioThreadClaim`]: crate::host::AudioThreadClaim
-[`tutti_midi_types::MidiEvent`]: tutti_midi_types::MidiEvent

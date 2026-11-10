@@ -11,7 +11,7 @@
 //!
 //! **JR-out:** with an output connected and [`JrStamperRes`] enabled, each
 //! event is JR-stamped (a JR Timestamp prefix derived from its
-//! `frame_offset`) and sent as UMP words. With the stamper disabled the
+//! offset in its block) and sent as UMP words. With the stamper disabled the
 //! events still go out, unstamped: `JrStamperRes` gates timestamps, not
 //! delivery. The pumps mirror it into the session each frame.
 
@@ -64,13 +64,14 @@ mod tests {
     use bevy_ecs::system::RunSystemOnce;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tutti_midi_types::ump::MidiEvent;
+    use tutti_fixtures::midi::note_on;
+    use tutti_graph::{Offset, UmpAt};
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// Counts what reached the wire.
     struct CountingSink(Arc<AtomicUsize>);
-    impl tutti_midi_types::MidiOut for CountingSink {
-        fn queue(&self, events: &[MidiEvent]) -> usize {
+    impl tutti_midi_runtime::MidiOut for CountingSink {
+        fn queue(&self, events: &[UmpAt]) -> usize {
             self.0.fetch_add(events.len(), Ordering::SeqCst);
             events.len()
         }
@@ -80,15 +81,10 @@ mod tests {
     /// the wire.
     fn pump_one(world: &mut World, count: &AtomicUsize) -> usize {
         let before = count.load(Ordering::SeqCst);
-        world
-            .resource::<MidiOutRes>()
-            .sender()
-            .queue(&[MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                0x8000,
-            )]);
+        world.resource::<MidiOutRes>().sender().queue(&[(
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        )]);
         world
             .run_system_once(super::super::track_out::pump_midi_out_system)
             .expect("the pump runs");

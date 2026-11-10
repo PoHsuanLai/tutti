@@ -17,12 +17,12 @@
 use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
 
+use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_types::{SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -33,8 +33,8 @@ mod probe_path;
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
 /// `event` on frame 0 of a 64-frame block.
-fn at_start(event: MidiEvent) -> Event {
-    Event::midi(Offset::new(0, Samples(64)).expect("inside"), event.data)
+fn at_start(event: Ump) -> Event {
+    Event::midi(Offset::new(0, Samples(64)).expect("inside"), event.0)
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn process_with_midi_does_not_allocate() {
 
     // Pre-warm MIDI codec — first event triggers any one-shot
     // allocations inside vst2-host's MidiSendBuffer.
-    let warm_event = MidiEvent::note_on(
+    let warm_event = midi::note_on(
         MidiGroup::FIRST,
         MidiChannel::of(1),
         60,
@@ -119,7 +119,7 @@ fn process_with_midi_does_not_allocate() {
     );
     unit.events(0, &[at_start(warm_event)]);
     unit.block();
-    let warm_off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0);
+    let warm_off = midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0);
     unit.events(0, &[at_start(warm_off)]);
     unit.block();
 
@@ -127,7 +127,7 @@ fn process_with_midi_does_not_allocate() {
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128 {
             if i % 16 == 0 {
-                let ev = MidiEvent::note_on(
+                let ev = midi::note_on(
                     MidiGroup::FIRST,
                     MidiChannel::of(1),
                     60 + (i as u8 % 12),
@@ -136,12 +136,8 @@ fn process_with_midi_does_not_allocate() {
                 unit.events(0, &[at_start(ev)]);
             }
             if i % 16 == 8 {
-                let ev = MidiEvent::note_off(
-                    MidiGroup::FIRST,
-                    MidiChannel::of(1),
-                    60 + (i as u8 % 12),
-                    0,
-                );
+                let ev =
+                    midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60 + (i as u8 % 12), 0);
                 unit.events(0, &[at_start(ev)]);
             }
             unit.block();

@@ -9,13 +9,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Event, Hand, HostOp, Lifecycle, Loaded,
     MaxBlock, Normalized, Notice, ParamId, ParameterChanges, PluginError, PluginIo, Prepare,
     ProcessContext, ProcessOutput, Processor, RenderMode, SampleFormat, SampleRate, Samples, Stage,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst2_host::{MidiEvent, Vst2Controller, Vst2Loaded, Vst2Processor};
+use tutti_vst2_host::{Vst2Controller, Vst2Loaded, Vst2Processor};
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 
 #[path = "support/probe_path.rs"]
@@ -386,11 +388,9 @@ fn a_block_does_not_allocate_and_a_short_channel_is_an_error() {
     let mut changes = ParameterChanges::reserved(2, 4);
     changes.add_change(ParamId::new(0), 0, 0.25);
     changes.add_change(ParamId::new(1), 16, 0.75);
-    let midi = [MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(1),
-        60,
-        100,
+    let midi = [(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 100),
     )];
     let ctx = ProcessContext::new().params(&changes).midi(&midi);
 

@@ -3,6 +3,7 @@
 //! type at activation.
 
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 use vst3::Steinberg::Vst::ProcessSetup;
 
@@ -15,8 +16,8 @@ use tutti_types::ChannelLayout;
 
 use crate::events::{InputEvents, Stager, drain_midi};
 use crate::types::{
-    AudioBuffer, MidiEvent, ParameterChanges, ProcessContextRequirements, ProcessMode,
-    ProcessOutputRef, TransportInfo, Vst3Sample, to_process_context,
+    AudioBuffer, ParameterChanges, ProcessContextRequirements, ProcessMode, ProcessOutputRef,
+    TransportInfo, Vst3Sample, to_process_context,
 };
 use tutti_vst3_ffi::{AudioSide, BusBuffers, EventList, ParameterChangesImpl, ProcessIo};
 
@@ -468,13 +469,13 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// pitch-bend) is decoded to its VST3 `(channel, controller)` and captured
     /// allocation-free; the value is irrelevant to learning and dropped.
     #[inline]
-    fn capture_midi_learn(&self, midi_events: &[MidiEvent]) {
+    fn capture_midi_learn(&self, midi_events: &[UmpAt]) {
         // Cheap bail when disarmed (the norm): avoid even decoding the MIDI.
         if !self.audio.midi_learn.is_armed() {
             return;
         }
         for event in midi_events {
-            if let Some((channel, controller, _value)) = midi_to_mapped_controller(event) {
+            if let Some((channel, controller, _value)) = midi_to_mapped_controller(&event.1) {
                 self.audio.midi_learn.capture(channel, controller);
             }
         }

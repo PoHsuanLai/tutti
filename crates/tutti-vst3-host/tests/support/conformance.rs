@@ -64,10 +64,11 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_int, c_longlong, c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use tutti_plugin_types::ParamId;
 use tutti_vst3_host::{
-    AudioBuffer, InputEvents, LoadOptions, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
+    AudioBuffer, InputEvents, LoadOptions, ParameterChanges, ProcessMode, TransportInfo,
     Vst3Loaded, Vst3Sample, host::conformance,
 };
 #[path = "active.rs"]
@@ -389,7 +390,7 @@ pub fn require_sample(bundle: &str) -> Vst3Loaded {
 #[derive(Default, Clone, Copy)]
 pub struct Block<'a> {
     pub frames: usize,
-    pub midi: &'a [MidiEvent],
+    pub midi: &'a [UmpAt],
     pub params: Option<&'a ParameterChanges>,
     pub transport: Option<&'a TransportInfo>,
 }
@@ -401,7 +402,7 @@ impl<'a> Block<'a> {
             ..Default::default()
         }
     }
-    pub fn midi(mut self, midi: &'a [MidiEvent]) -> Self {
+    pub fn midi(mut self, midi: &'a [UmpAt]) -> Self {
         self.midi = midi;
         self
     }
@@ -418,7 +419,7 @@ pub fn drive_block<T: Vst3Sample + Default + Copy>(
     frames: usize,
     sample_rate: f64,
     block_size: usize,
-    midi: &[MidiEvent],
+    midi: &[UmpAt],
     params: Option<&ParameterChanges>,
 ) -> Result<Vec<Finding>, String> {
     drive_blocks_in_mode::<T>(

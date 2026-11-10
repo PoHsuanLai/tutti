@@ -1,6 +1,9 @@
 use super::*;
+use tutti_fixtures::midi::{jr_timestamp, note_on, timing_clock};
 use tutti_midi_types::ci::{CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION, CiCategories, Muid};
 use tutti_midi_types::ci::{CiHeader, CiMessage, DiscoveryData, ci_to_sysex7, sysex7_to_ci};
+use tutti_midi_types::sysex7_fragments;
+use tutti_ump::{Message, System, U7};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 fn discovery(mfr: [u8; 3]) -> CiMessage {
@@ -27,7 +30,7 @@ fn discovery(mfr: [u8; 3]) -> CiMessage {
 fn single_packet_completes_immediately() {
     // A tiny payload fragments to one SINGLE packet.
     let mut packets = Vec::new();
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[0x01, 0x02, 0x03], &mut packets);
+    sysex7_fragments(MidiGroup::FIRST, &[0x01, 0x02, 0x03], &mut packets);
     assert_eq!(packets.len(), 1, "small payload is a single packet");
 
     let mut r = Sysex7PacketReassembler::new();
@@ -90,7 +93,7 @@ fn interleaved_groups_do_not_corrupt() {
 // dropped — the consequence that actually matters.
 
 /// A multi-packet run on `group`, for termination tests.
-fn multi_packet_run(group: MidiGroup) -> Vec<MidiEvent> {
+fn multi_packet_run(group: MidiGroup) -> Vec<Ump> {
     let mut packets = Vec::new();
     ci_to_sysex7(group, &discovery([1, 2, 3]), &mut packets);
     assert!(packets.len() > 2, "need START + CONTINUE + END");
@@ -108,13 +111,8 @@ fn same_group_traffic_terminates_the_run() {
 
     // A note-on on the same group terminates it.
     assert!(
-        r.push(&MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        ))
-        .is_none()
+        r.push(&note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))
+            .is_none()
     );
     assert_eq!(r.in_flight_count(), 0, "run terminated");
 
@@ -133,16 +131,11 @@ fn real_time_and_groupless_and_other_groups_do_not_terminate() {
     // §7.7.1's explicit carve-outs: System Real Time "may be inserted…in
     // order to maintain timing synchronization", and Groupless messages
     // (MT 0x0 / 0xF) plus other-group traffic "may be interspersed".
-    assert!(r.push(&MidiEvent::timing_clock(MidiGroup::FIRST)).is_none());
-    assert!(r.push(&MidiEvent::jr_timestamp(0x1234)).is_none()); // MT 0x0
+    assert!(r.push(&timing_clock(MidiGroup::FIRST)).is_none());
+    assert!(r.push(&jr_timestamp(0x1234)).is_none()); // MT 0x0
     assert!(
-        r.push(&MidiEvent::note_on(
-            MidiGroup::of(3),
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        ))
-        .is_none()
+        r.push(&note_on(MidiGroup::of(3), MidiChannel::FIRST, 60, 0x8000))
+            .is_none()
     ); // group 3
     assert_eq!(r.in_flight_count(), 1, "run survives all three");
 
@@ -159,8 +152,11 @@ fn system_common_terminates_but_real_time_does_not() {
     let mut r = Sysex7PacketReassembler::new();
     r.push(&packets[0]);
     assert!(
-        r.push(&MidiEvent::song_select(MidiGroup::FIRST, 3))
-            .is_none()
+        r.push(&Ump::from(Message::System(
+            MidiGroup::FIRST,
+            System::SongSelect(U7::new(3).unwrap()),
+        )))
+        .is_none()
     );
     assert_eq!(r.in_flight_count(), 0, "System Common terminates");
 }

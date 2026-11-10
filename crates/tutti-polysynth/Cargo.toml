@@ -56,6 +56,7 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false }
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 criterion.workspace = true
 approx = "0.5"
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }

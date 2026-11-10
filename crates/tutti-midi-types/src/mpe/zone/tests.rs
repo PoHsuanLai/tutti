@@ -1,10 +1,11 @@
 use super::*;
+use tutti_fixtures::midi;
 
 #[test]
 fn from_mcm_rejects_non_mcm() {
     // A plain note-on is not an MCM.
     assert!(
-        MpeZoneConfig::from_mcm(&crate::ump::MidiEvent::note_on(
+        MpeZoneConfig::from_mcm(&midi::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             60,
@@ -13,13 +14,8 @@ fn from_mcm_rejects_non_mcm() {
         .is_none()
     );
     // An RPN with a different index is not an MCM.
-    let other_rpn = crate::ump::MidiEvent::registered_controller(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        0x00,
-        0x00,
-        0,
-    );
+    let other_rpn =
+        midi::registered_controller(MidiGroup::FIRST, MidiChannel::FIRST, 0x00, 0x00, 0);
     assert!(MpeZoneConfig::from_mcm(&other_rpn).is_none());
 }
 
@@ -173,10 +169,9 @@ fn zones_default_to_rp053_ranges_per_role() {
 
 #[test]
 fn from_mcm_rejects_out_of_range_configurations() {
-    use crate::ump::MidiEvent;
     // RP-053 puts the MCM on Ch1 or Ch16 only; RPN 0x00/0x06 elsewhere is
     // ordinary parameter traffic and must not be read as configuration.
-    let on_ch5 = MidiEvent::registered_controller(
+    let on_ch5 = midi::registered_controller(
         MidiGroup::FIRST,
         MidiChannel::of(5),
         crate::ump::RPN_BANK_MPE,
@@ -187,7 +182,7 @@ fn from_mcm_rejects_out_of_range_configurations() {
 
     // A zone has at most 15 member channels — reject rather than clamp, so a
     // bogus count leaves the existing zone alone.
-    let too_many = MidiEvent::registered_controller(
+    let too_many = midi::registered_controller(
         MidiGroup::FIRST,
         MidiChannel::FIRST,
         crate::ump::RPN_BANK_MPE,

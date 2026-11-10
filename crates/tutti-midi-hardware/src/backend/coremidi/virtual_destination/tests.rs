@@ -22,37 +22,38 @@ fn create_ump_destination() {
 /// it has no MIDI-1.0 encoding, so it can only arrive this way.
 #[test]
 fn packet_words_decode_to_ump_stream_and_channel_voice() {
-    use tutti_midi_types::EndpointDiscoveryRequest;
+    use tutti_fixtures::midi::note_on;
     use tutti_midi_types::ump::UmpMessageType;
+    use tutti_midi_types::{EndpointDiscoveryRequest, endpoint_discovery, message_type};
 
-    let discovery = MidiEvent::endpoint_discovery(1, 1, EndpointDiscoveryRequest::all());
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
+    let discovery = endpoint_discovery(1, 1, EndpointDiscoveryRequest::all());
+    let note = note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
 
     // One packet carrying both, concatenated exactly as CoreMIDI delivers.
     let mut packet_words = Vec::new();
-    packet_words.extend_from_slice(discovery.data_words());
-    packet_words.extend_from_slice(note.data_words());
+    packet_words.extend_from_slice(discovery.words());
+    packet_words.extend_from_slice(note.words());
 
     let decoded: Vec<_> = split_ump_stream(&packet_words).collect();
     assert_eq!(decoded, vec![discovery, note]);
-    assert_eq!(decoded[0].message_type(), UmpMessageType::UmpStream);
-    assert_eq!(decoded[1].message_type(), UmpMessageType::ChannelVoice2);
+    assert_eq!(message_type(&decoded[0]), UmpMessageType::UmpStream);
+    assert_eq!(message_type(&decoded[1]), UmpMessageType::ChannelVoice2);
 }
 
 /// The callback wiring: whatever the decode yields must reach the caller's
-/// closure. Exercises the `FnMut(MidiEvent)` seam `new` installs.
+/// closure. Exercises the `FnMut(Ump)` seam `new` installs.
 #[test]
 fn callback_receives_each_decoded_event() {
     let (tx, rx) = mpsc::channel();
-    let sink = move |event: MidiEvent| {
+    let sink = move |event: Ump| {
         let _ = tx.send(event);
     };
 
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-    let clock = MidiEvent::timing_clock(MidiGroup::FIRST);
+    let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let clock = tutti_fixtures::midi::timing_clock(MidiGroup::FIRST);
     let mut words = Vec::new();
-    words.extend_from_slice(note.data_words());
-    words.extend_from_slice(clock.data_words());
+    words.extend_from_slice(note.words());
+    words.extend_from_slice(clock.words());
 
     // The body of the receive callback, verbatim.
     for event in split_ump_stream(&words) {

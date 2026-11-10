@@ -59,12 +59,15 @@
 mod support;
 
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
 use support::corpus::{AuRef, SAMPLER};
-use tutti_midi_types::MidiEvent;
+use tutti_graph::Offset;
 use tutti_midi_types::ump::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
 };
+use tutti_midi_types::{from_midi1_bytes, sysex7_payload};
+use tutti_ump::Ump;
 
 const RATE: f64 = 48_000.0;
 const BLOCK: u32 = 512;
@@ -92,14 +95,14 @@ const SYSEX_SAFE_INSTRUMENTS: &[AuRef] = &[SAMPLER];
 ///
 /// Hand-rolled rather than taken from a helper, so the test states the wire
 /// layout it depends on instead of agreeing with whatever the encoder does.
-fn sysex7_packet(status: u8, bytes: &[u8]) -> MidiEvent {
+fn sysex7_packet(status: u8, bytes: &[u8]) -> UmpAt {
     assert!(bytes.len() <= 6, "a SysEx7 packet carries at most 6 bytes");
     let n = bytes.len() as u32;
     let b = |i: usize| -> u32 { bytes.get(i).copied().unwrap_or(0) as u32 };
 
     let w0 = (0x3 << 28) | ((status as u32) << 20) | (n << 16) | (b(0) << 8) | b(1);
     let w1 = (b(2) << 24) | (b(3) << 16) | (b(4) << 8) | b(5);
-    MidiEvent::from_ump(0, &[w0, w1])
+    (Offset::ZERO, Ump([w0, w1, 0, 0]))
 }
 
 /// A universal non-realtime identity request, the shortest realistic SysEx.
@@ -141,17 +144,17 @@ fn a_multi_packet_sysex_does_not_disturb_the_notes_around_it() {
     for unit in SYSEX_SAFE_INSTRUMENTS {
         let au = unit.open(RATE, BLOCK);
 
-        let mut events = vec![
-            MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100])
-                .expect("a note-on is a valid 3-byte message"),
-        ];
+        let mut events = vec![(
+            Offset::ZERO,
+            from_midi1_bytes(&[0x90, 60, 100]).expect("a note-on is a valid 3-byte message"),
+        )];
         events.push(sysex7_packet(SYSEX7_STATUS_START, &body[0..6]));
         events.push(sysex7_packet(SYSEX7_STATUS_CONTINUE, &body[6..12]));
         events.push(sysex7_packet(SYSEX7_STATUS_END, &body[12..14]));
-        events.push(
-            MidiEvent::from_midi1_bytes(0, &[0x80, 60, 0])
-                .expect("a note-off is a valid 3-byte message"),
-        );
+        events.push((
+            Offset::ZERO,
+            from_midi1_bytes(&[0x80, 60, 0]).expect("a note-off is a valid 3-byte message"),
+        ));
 
         au.send_midi(&events);
     }
@@ -184,9 +187,8 @@ fn an_orphaned_continuation_is_not_sent() {
 #[test]
 fn the_test_packet_builder_matches_the_ump_layout() {
     let ev = sysex7_packet(SYSEX7_STATUS_START, &[0x7E, 0x00, 0x06, 0x01, 0x02, 0x03]);
-    let (status, bytes, n) = ev
-        .sysex7_payload()
-        .expect("the builder must produce a packet the decoder recognises");
+    let (status, bytes, n) =
+        sysex7_payload(&ev.1).expect("the builder must produce a packet the decoder recognises");
 
     assert_eq!(status, SYSEX7_STATUS_START, "status nibble");
     assert_eq!(n, 6, "byte count");
@@ -194,6 +196,6 @@ fn the_test_packet_builder_matches_the_ump_layout() {
 
     // And a short packet reports its real length rather than padding to 6.
     let short = sysex7_packet(SYSEX7_STATUS_END, &[0xF7]);
-    let (_, _, n) = short.sysex7_payload().expect("short packet decodes");
+    let (_, _, n) = sysex7_payload(&short.1).expect("short packet decodes");
     assert_eq!(n, 1, "a 1-byte packet must not report 6");
 }

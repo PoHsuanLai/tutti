@@ -50,6 +50,8 @@ pub struct ProcessAudioData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_plugin_types::WireMidi;
+    use tutti_ump::Ump;
 
     /// The block behind [`GOLDEN_BLOCK`]: every list populated, MIDI,
     /// automation on two parameters, note expression (a named and a custom
@@ -57,8 +59,8 @@ mod tests {
     /// expression.
     fn golden_block() -> ProcessAudioData {
         use crate::protocol::{
-            ChordValue, MidiEvent, NoteExpressionIntValue, NoteExpressionTextValue,
-            NoteExpressionType, NoteExpressionValue, ParamId, ScaleValue,
+            ChordValue, NoteExpressionIntValue, NoteExpressionTextValue, NoteExpressionType,
+            NoteExpressionValue, ParamId, ScaleValue,
         };
         let mut param_changes = ParameterChanges::reserved(2, 2);
         param_changes.add_change(ParamId::new(3), 0, 0.25);
@@ -113,13 +115,13 @@ mod tests {
             seq: 42,
             num_samples: 64,
             midi_events: [
-                MidiEvent {
-                    frame_offset: 0,
-                    data: [0x2090_3C40, 0, 0, 0],
+                WireMidi {
+                    offset: 0,
+                    ump: Ump([0x2090_3C40, 0, 0, 0]),
                 },
-                MidiEvent {
-                    frame_offset: 63,
-                    data: [0x2080_3C00, 0, 0, 0],
+                WireMidi {
+                    offset: 63,
+                    ump: Ump([0x2080_3C00, 0, 0, 0]),
                 },
             ]
             .into_iter()
@@ -201,7 +203,7 @@ mod tests {
         let back: ProcessAudioData = bincode::deserialize(&GOLDEN_BLOCK).unwrap();
         assert_eq!(bincode::serialize(&back).unwrap(), GOLDEN_BLOCK);
         assert_eq!(back.midi_events.len(), 2);
-        assert_eq!(back.midi_events[1].frame_offset, 63);
+        assert_eq!(back.midi_events[1].offset, 63);
         assert_eq!(back.param_changes.queues.len(), 2);
         assert_eq!(back.param_changes.queues[0].points.len(), 2);
         assert_eq!(back.note_expression.changes.len(), 2);

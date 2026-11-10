@@ -30,8 +30,8 @@ use std::time::Instant;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_rt::AudioThreadCell;
+use tutti_ump::Ump;
 
 use super::PortId;
 
@@ -58,7 +58,9 @@ use super::PortId;
 /// and the manager hands one out only from
 /// [`open_input_port`](super::HardwareMidiInputs::open_input_port).
 pub struct InputProducerHandle {
-    producer: HeapProd<(Instant, MidiEvent)>,
+    // An arrival `Instant` and the packet: the offset is made by the drain,
+    // which knows the block (the ring crosses threads ahead of any block).
+    producer: HeapProd<(Instant, Ump)>,
     port: PortId,
     /// Events [`push`](Self::push) found no room for, shared with the port.
     dropped: Arc<AtomicU64>,
@@ -74,7 +76,9 @@ impl core::fmt::Debug for InputProducerHandle {
 
 impl InputProducerHandle {
     /// Pushes one event with its arrival `timestamp`, which the drain converts
-    /// into a `frame_offset` within the block that reads it.
+    /// into an [`Offset`](tutti_graph::Offset) within the block that reads it.
+    /// The ring holds the bare [`Ump`] beside its `Instant`: no block exists
+    /// when a driver pushes, so there is no offset to hold yet.
     ///
     /// Returns `false` when the ring is full; the event is then dropped, not
     /// queued, and counted
@@ -82,7 +86,7 @@ impl InputProducerHandle {
     /// Lock-free and allocation-free, so it is safe to call from a driver
     /// callback.
     #[inline]
-    pub fn push(&mut self, event: MidiEvent, timestamp: Instant) -> bool {
+    pub fn push(&mut self, event: Ump, timestamp: Instant) -> bool {
         let taken = self.producer.try_push((timestamp, event)).is_ok();
         if !taken {
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -106,13 +110,13 @@ impl InputProducerHandle {
 /// engine-internal [`MidiMailbox`](tutti_midi_runtime::MidiMailbox) mailbox
 /// (the single MIDI-*out* ring) does not model. There is no output counterpart
 /// here: outbound MIDI rides the mailbox to a
-/// [`MidiOut`](tutti_midi_types::MidiOut) sink instead.
+/// [`MidiOut`](tutti_midi_runtime::MidiOut) sink instead.
 pub(crate) struct HardwareMidiInput {
     id: PortId,
     name: String,
     active: std::sync::atomic::AtomicBool,
     /// Reached only by the audio thread's drain, one borrow at a time.
-    input: AudioThreadCell<HeapCons<(Instant, MidiEvent)>>,
+    input: AudioThreadCell<HeapCons<(Instant, Ump)>>,
     /// Events the producer found the ring full for.
     dropped: Arc<AtomicU64>,
 }
@@ -175,11 +179,7 @@ impl HardwareMidiInput {
     /// thread passes its remaining headroom. Audio thread only: this is the
     /// consumer's single reader.
     #[inline]
-    pub(crate) fn drain_limited(
-        &self,
-        limit: usize,
-        mut f: impl FnMut(Instant, MidiEvent),
-    ) -> usize {
+    pub(crate) fn drain_limited(&self, limit: usize, mut f: impl FnMut(Instant, Ump)) -> usize {
         let mut consumer = self.input.borrow_mut();
         let mut taken = 0;
         while taken < limit {

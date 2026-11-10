@@ -803,8 +803,43 @@ jobs:
   # (about a minute), and every recorded mutation fails at a bound of 3. That
   # model at 5 (about 6 minutes) is `cargo xtask loom-full`, for a change to `arc-lend`'s
   # protocol code itself; at 6 it did not finish in 25 minutes.
+  # Whether this change can affect a loom model. The models run the shipped
+  # code of `arc-lend` and `tutti-rt` (and `tutti-shm-model`'s mirror of the
+  # plugin slab header), so a PR that touches none of those, nor the lock, the
+  # toolchain or this file, cannot change their result. `loom` is the slowest
+  # job (about 12 minutes) and set CI's wall time on every PR; it now runs on
+  # the PRs that can change it, and on every push to main and manual run.
+  # A skipped job reports success; no check is required by branch protection.
+  loom-changes:
+    name: loom needed?
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE"...HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(crates/arc-lend/|crates/tutti-rt/|testing/tutti-shm-model/|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   loom:
     name: loom
+    needs: loom-changes
+    if: needs.loom-changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     # About 12 minutes with the `PosRing` models: a model that stops
     # terminating fails here.
@@ -859,6 +894,8 @@ jobs:
   # mutation in the three files fails at this bound.
   loom-parallel:
     name: loom (parallel executor)
+    needs: loom-changes
+    if: needs.loom-changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

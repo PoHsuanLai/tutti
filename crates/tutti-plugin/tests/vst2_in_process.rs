@@ -437,9 +437,9 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
 /// walk's refusals removed from `process`) → the count stays 0 → fails.
 #[test]
 fn midi_past_the_blocks_capacity_is_counted() {
+    use tutti_fixtures::midi;
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset};
-    use tutti_midi_types::MidiEvent;
     use tutti_plugin_types::MIDI_STACK_CAPACITY;
     use tutti_types::{SampleRate, Samples};
     use tutti_ump::{MidiChannel, MidiGroup};
@@ -454,13 +454,13 @@ fn midi_past_the_blocks_capacity_is_counted() {
     let notes = |n: usize| -> Vec<Event> {
         (0..n)
             .map(|i| {
-                let on = MidiEvent::note_on(
+                let on = midi::note_on(
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     (i % 128) as u8,
                     0xFFFF,
                 );
-                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on.data)
+                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on.0)
             })
             .collect()
     };

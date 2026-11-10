@@ -10,16 +10,16 @@
 //! block. The executor is built outside the timed region.
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{Editor, Executor, Prepare, Transport};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const FRAMES_PER_BEAT: f64 = 24_000.0;
 const BLOCK: usize = 512;
 
-fn at(frame: u64, e: MidiEvent) -> TimedMidiEvent {
+fn at(frame: u64, e: Ump) -> TimedMidiEvent {
     TimedMidiEvent::new(Beat(frame as f64 / FRAMES_PER_BEAT), e)
 }
 
@@ -27,14 +27,14 @@ fn key(i: u32) -> (MidiChannel, u8) {
     (MidiChannel::of(((i / 128) % 16) as u8), (i % 128) as u8)
 }
 
-fn on(i: u32) -> MidiEvent {
+fn on(i: u32) -> Ump {
     let (c, n) = key(i);
-    MidiEvent::note_on(MidiGroup::FIRST, c, n, 0xFFFF)
+    note_on(MidiGroup::FIRST, c, n, 0xFFFF)
 }
 
-fn off(i: u32) -> MidiEvent {
+fn off(i: u32) -> Ump {
     let (c, n) = key(i);
-    MidiEvent::note_off(MidiGroup::FIRST, c, n, 0)
+    note_off(MidiGroup::FIRST, c, n, 0)
 }
 
 fn dense() -> Vec<TimedMidiEvent> {

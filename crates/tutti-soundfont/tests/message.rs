@@ -25,7 +25,6 @@ use std::sync::Arc;
 mod support;
 
 use support::Hand;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
@@ -67,11 +66,8 @@ fn u7(v: u8) -> U7 {
     U7::new(v).unwrap()
 }
 
-fn event(message: Message) -> MidiEvent {
-    MidiEvent {
-        frame_offset: 0,
-        data: Ump::from(message).0,
-    }
+fn event(message: Message) -> Ump {
+    Ump::from(message)
 }
 fn address() -> Address {
     Address {
@@ -79,20 +75,20 @@ fn address() -> Address {
         channel: MidiChannel::FIRST,
     }
 }
-fn m1(voice: Voice1) -> MidiEvent {
+fn m1(voice: Voice1) -> Ump {
     event(Message::Midi1(address(), voice))
 }
-fn m2(voice: Voice2) -> MidiEvent {
+fn m2(voice: Voice2) -> Ump {
     event(Message::Midi2(address(), voice))
 }
-fn note_on_2(n: u8, velocity: u16) -> MidiEvent {
+fn note_on_2(n: u8, velocity: u16) -> Ump {
     m2(Voice2::NoteOn {
         note: note(n),
         velocity,
         attribute: Attribute::None,
     })
 }
-fn cc7_2(value: u32) -> MidiEvent {
+fn cc7_2(value: u32) -> Ump {
     m2(Voice2::ControlChange {
         controller: CCNumber::of(7),
         value,
@@ -101,7 +97,7 @@ fn cc7_2(value: u32) -> MidiEvent {
 
 /// Plays `events` in the first block, then renders `frames` frames in all, as
 /// the left channel.
-fn render(unit: &mut Hand, events: &[MidiEvent], frames: usize) -> Vec<f32> {
+fn render(unit: &mut Hand, events: &[Ump], frames: usize) -> Vec<f32> {
     unit.queue_midi(events);
     let mut out = Vec::with_capacity(frames);
     while out.len() < frames {
@@ -116,7 +112,7 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 /// RMS of the organ note after `events`, from 0.25 s to 0.5 s.
-fn held_rms(events: &[MidiEvent]) -> f32 {
+fn held_rms(events: &[Ump]) -> f32 {
     let out = render(&mut organ(), events, 22_050);
     rms(&out[11_025..])
 }
@@ -242,7 +238,7 @@ fn period(x: &[f32], lo: usize, hi: usize) -> f64 {
 /// differ from a centre or an edge only there.
 #[test]
 fn a_bend_reaches_the_synth_at_its_value() {
-    let sustained = |events: &[MidiEvent]| {
+    let sustained = |events: &[Ump]| {
         let out = render(&mut organ(), events, 40_000);
         out[8_000..].to_vec()
     };
@@ -350,17 +346,14 @@ fn messages_with_no_synthesizer_setter_change_nothing() {
 /// A Note On or Note Off packet with a chosen attribute type, group 0 and
 /// channel 0: `decode` keeps an undefined type (M2-104 Table 8, 0x04 to 0xFF,
 /// "Reserved") as `Attribute::Reserved`.
-fn raw_note(on: bool, n: u8, attribute_type: u8, velocity: u16) -> MidiEvent {
+fn raw_note(on: bool, n: u8, attribute_type: u8, velocity: u16) -> Ump {
     let status: u32 = if on { 0x9 } else { 0x8 };
-    MidiEvent {
-        frame_offset: 0,
-        data: [
-            0x4000_0000 | status << 20 | u32::from(n) << 8 | u32::from(attribute_type),
-            u32::from(velocity) << 16 | 0x1234,
-            0,
-            0,
-        ],
-    }
+    Ump([
+        0x4000_0000 | status << 20 | u32::from(n) << 8 | u32::from(attribute_type),
+        u32::from(velocity) << 16 | 0x1234,
+        0,
+        0,
+    ])
 }
 
 /// M2-104 7.4.14 Table 8 marks attribute types 0x04 to 0xFF reserved for

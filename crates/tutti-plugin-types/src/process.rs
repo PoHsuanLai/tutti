@@ -7,9 +7,11 @@
 //! [`PluginAudio`](crate::PluginAudio) trait and the four format host
 //! crates speak the same vocabulary.
 
+use tutti_graph::UmpAt;
+
 use crate::{
-    ChordChanges, MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionTextChanges,
-    ParamId, ParameterChanges, ScaleChanges, TransportInfo,
+    ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionTextChanges, ParamId,
+    ParameterChanges, ScaleChanges, TransportInfo, WireMidi,
 };
 
 /// Sequencer-context inputs for one block: chords, scales, per-note text and
@@ -45,7 +47,7 @@ pub struct ProcessContext<'a> {
     /// MIDI for this block, in ascending time order. An empty slice rather than
     /// an `Option` — every format takes MIDI, so there is no "did not send"
     /// state to distinguish from "sent nothing".
-    pub midi_events: &'a [MidiEvent],
+    pub midi_events: &'a [UmpAt],
     /// Sent only when the plugin advertised [`Features::PARAM_AUTOMATION`](crate::Features).
     pub param_changes: Option<&'a ParameterChanges>,
     /// Sent only when the plugin advertised [`Features::NOTE_EXPRESSION`](crate::Features).
@@ -65,7 +67,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches this block's MIDI (builder).
     #[must_use]
-    pub fn midi(mut self, events: &'a [MidiEvent]) -> Self {
+    pub fn midi(mut self, events: &'a [UmpAt]) -> Self {
         self.midi_events = events;
         self
     }
@@ -160,7 +162,7 @@ impl ProcessOutput {
     /// full, and drops the rest. Returns how many were dropped, which also
     /// adds to [`midi_dropped`](Self::midi_dropped). Allocation-free: the
     /// list is inline and capped.
-    pub fn emit_midi(&mut self, events: impl IntoIterator<Item = MidiEvent>) -> usize {
+    pub fn emit_midi(&mut self, events: impl IntoIterator<Item = WireMidi>) -> usize {
         let mut dropped = 0;
         for e in events {
             if self.midi_events.try_push(e).is_err() {
@@ -196,6 +198,7 @@ impl ProcessOutput {
 mod tests {
     use super::*;
     use crate::MIDI_STACK_CAPACITY;
+    use tutti_ump::Ump;
 
     /// **`emit_midi` fills to the cap, drops and counts the rest, and never
     /// panics**; `clear` resets the count with the list. What lets a loader
@@ -207,16 +210,24 @@ mod tests {
     #[test]
     fn emit_midi_caps_and_counts() {
         let mut out = ProcessOutput::default();
-        let events =
-            (0..MIDI_STACK_CAPACITY as u32 + 44).map(|i| MidiEvent::from_ump(i, &[0x2090_3C40]));
+        let events = (0..MIDI_STACK_CAPACITY as u32 + 44).map(|i| WireMidi {
+            offset: i,
+            ump: Ump([0x2090_3C40, 0, 0, 0]),
+        });
         assert_eq!(out.emit_midi(events), 44);
         assert_eq!(out.midi_events.len(), MIDI_STACK_CAPACITY);
         assert_eq!(
-            out.midi_events[MIDI_STACK_CAPACITY - 1].frame_offset,
+            out.midi_events[MIDI_STACK_CAPACITY - 1].offset,
             255,
             "the first kept"
         );
-        assert_eq!(out.emit_midi([MidiEvent::from_ump(0, &[0x2090_3C40])]), 1);
+        assert_eq!(
+            out.emit_midi([WireMidi {
+                offset: 0,
+                ump: Ump([0x2090_3C40, 0, 0, 0])
+            }]),
+            1
+        );
         assert_eq!(out.midi_dropped(), 45);
         out.clear();
         assert_eq!(out.midi_dropped(), 0);

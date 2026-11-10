@@ -9,15 +9,16 @@
 mod support;
 
 use support::{BLOCK, Hand};
+use tutti_fixtures::midi;
 use tutti_graph::Node;
 use tutti_midi_types::mpe::PitchBendSensitivity;
 use tutti_midi_types::translation::scaling::{midi1_cc_to_midi2, midi1_velocity_to_midi2};
-use tutti_midi_types::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
+use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
 use tutti_types::{Amplitude, SampleRate, Seconds, Semitones};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
 /// The envelope's release, seconds.
@@ -50,8 +51,8 @@ fn ch(channel: u8) -> MidiChannel {
     MidiChannel::of(channel)
 }
 
-fn on(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_on(
+fn on(channel: u8, note: u8) -> Ump {
+    midi::note_on(
         MidiGroup::FIRST,
         ch(channel),
         note,
@@ -59,12 +60,12 @@ fn on(channel: u8, note: u8) -> MidiEvent {
     )
 }
 
-fn off(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, ch(channel), note, 0)
+fn off(channel: u8, note: u8) -> Ump {
+    midi::note_off(MidiGroup::FIRST, ch(channel), note, 0)
 }
 
-fn cc(channel: u8, number: CCNumber, value: u8) -> MidiEvent {
-    MidiEvent::cc(
+fn cc(channel: u8, number: CCNumber, value: u8) -> Ump {
+    midi::cc(
         MidiGroup::FIRST,
         ch(channel),
         number,
@@ -73,13 +74,13 @@ fn cc(channel: u8, number: CCNumber, value: u8) -> MidiEvent {
 }
 
 /// Full wheel up.
-fn bend_up(channel: u8) -> MidiEvent {
-    MidiEvent::pitch_bend(MidiGroup::FIRST, ch(channel), u32::MAX)
+fn bend_up(channel: u8) -> Ump {
+    midi::pitch_bend(MidiGroup::FIRST, ch(channel), u32::MAX)
 }
 
 /// Pitch Bend Sensitivity (RPN 0) of whole `semitones`.
-fn sensitivity(channel: u8, semitones: u8) -> MidiEvent {
-    MidiEvent::registered_controller(
+fn sensitivity(channel: u8, semitones: u8) -> Ump {
+    midi::registered_controller(
         MidiGroup::FIRST,
         ch(channel),
         RPN_BANK_MPE,
@@ -89,7 +90,7 @@ fn sensitivity(channel: u8, semitones: u8) -> MidiEvent {
 }
 
 /// Plays `events` in the next block, then `seconds` more; the left channel.
-fn play(hand: &mut Hand, events: &[MidiEvent], seconds: f64) -> Vec<f32> {
+fn play(hand: &mut Hand, events: &[Ump], seconds: f64) -> Vec<f32> {
     hand.queue_midi(events);
     let mut out = Vec::new();
     for _ in 0..blocks(seconds).max(1) {
@@ -337,7 +338,7 @@ fn under_mpe_the_master_bend_and_the_per_note_bend_add() {
         ..config()
     });
     // Per-note bend of a quarter of the wheel's travel: 12 of 48 semitones.
-    let per_note = MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
+    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
     play(&mut h, &[on(1, 69), bend_up(0), per_note], 0.2);
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(14.0));
 }
@@ -395,7 +396,7 @@ fn reset_returns_the_per_note_range_to_its_default() {
         mpe_pitch_bend_range: Semitones(48.0),
         ..config()
     });
-    let rpn7 = MidiEvent::registered_controller(
+    let rpn7 = midi::registered_controller(
         MidiGroup::FIRST,
         ch(1),
         RPN_BANK_MPE,
@@ -405,7 +406,7 @@ fn reset_returns_the_per_note_range_to_its_default() {
     play(&mut h, &[rpn7], 0.01);
     Node::reset(&mut *h);
     // A quarter of the travel: 12 of 48 semitones.
-    let per_note = MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
+    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
     play(&mut h, &[on(1, 69), per_note], 0.2);
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(12.0));
 }

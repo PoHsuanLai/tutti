@@ -33,7 +33,10 @@ tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-au-ffi = { path = "../tutti-au-ffi" }
 # Structured errors (`AuError`), matching the sibling format hosts.
 thiserror.workspace = true
-# UMP MidiEvent decode (message view + MIDI 2.0→1.0 value scaling) for
+# `Offset`: where an event sits in the block `send_midi` is given; `Ump`: the packet.
+tutti-graph = { path = "../tutti-graph" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
+# UMP decode (message view + MIDI 2.0→1.0 value scaling) for
 # MusicDeviceMIDIEvent delivery to instrument / music-effect AUs.
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # The engine's unit newtypes: `Bpm`/`Beat` on `TransportState` and `Seconds` on
@@ -49,7 +52,8 @@ coreaudio-sys = "0.2"
 # The tests that build their own raw calls beside the safe API.
 tutti-au-host = { path = ".", features = ["test-support"] }
 tutti-au-ffi = { path = "../tutti-au-ffi", features = ["test-support"] }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-graph = { path = "../tutti-graph" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]

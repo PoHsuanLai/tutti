@@ -14,16 +14,15 @@
 //! block's start → the paths that see a non-zero offset fail; the row without its
 //! lead → every path fails one frame late.
 
+use tutti_fixtures::midi;
 use tutti_graph::EventKind;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
-use tutti_midi_types::MidiEvent;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::Samples;
-use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 fn synth_row() -> Row {
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 69, 0xFFFF);
+    let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 69, 0xFFFF);
     Row::new(
         "PolySynth",
         || {
@@ -42,7 +41,7 @@ fn synth_row() -> Row {
         },
         Excite::Event {
             port: 0,
-            kind: EventKind::Midi(Ump(note.data)),
+            kind: EventKind::Midi(note),
         },
         Detect::Threshold(1e-6),
     )

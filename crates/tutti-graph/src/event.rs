@@ -709,6 +709,17 @@ impl Harmony {
     }
 }
 
+/// A MIDI packet at its position in the current block: what a MIDI edge
+/// (`MidiIn`, `MidiOut`, a plugin's input) carries.
+///
+/// An alias, not a type: both halves are already checked ([`Offset`] against
+/// a block, [`Ump`] as the packet), so the pair adds no rule of its own, and a
+/// site destructures it (`for &(at, ump) in events`). Inside the graph the same
+/// pair is an [`Event`] with [`EventKind::Midi`]. A position not yet checked
+/// against a block (a plugin's report, a ring crossing threads) is a raw `u32`,
+/// not an `Offset`, and so not an `UmpAt`.
+pub type UmpAt = (Offset, Ump);
+
 /// One event on an event port: an offset into the current block, and what
 /// happens there.
 ///

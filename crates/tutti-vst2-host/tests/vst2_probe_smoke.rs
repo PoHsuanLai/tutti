@@ -8,9 +8,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use tutti_plugin_types::Control;
-use tutti_vst2_host::{MidiEvent, Samples, TransportInfo, Vst2ProcessContext};
+use tutti_vst2_host::{Samples, TransportInfo, Vst2ProcessContext};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_test_plugin::{PROBE_UNIQUE_ID, ProcessCapture, ProcessEntry, channel_tag};
 
@@ -143,8 +145,14 @@ fn capture_round_trips_what_the_host_sent() {
     // to the current block, and only comparing the values catches a host that
     // forwards an absolute timestamp.
     let midi = vec![
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100).with_frame_offset(7),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(64),
+        (
+            Offset::new(7, Samples(BLOCK)).unwrap(),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
+        ),
+        (
+            Offset::new(64, Samples(BLOCK)).unwrap(),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+        ),
     ];
 
     let ctx = Vst2ProcessContext::new(SAMPLE_RATE).midi(&midi);

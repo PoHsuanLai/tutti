@@ -3,7 +3,7 @@
 //! VST3's event list is richer than MIDI 1: typed note-on/off and poly-pressure
 //! structs with `f32` velocity, per-note expression, chords and scales, and
 //! generic `Data` events for everything else. [`MidiEncoder`] turns a UMP
-//! [`MidiEvent`] into an [`Event`] at the stream's per-note bend ranges;
+//! event (`(Offset, Ump)`) into an [`Event`] at the stream's per-note bend ranges;
 //! [`EventExt::to_midi`] reads one back. [`Stager`] fills a plugin's input
 //! list from a block's sources, and [`drain_midi`] reads the MIDI a plugin
 //! wrote to its output list.
@@ -14,7 +14,7 @@
 //! velocity). Where a cast is sound, its `#[allow]` says why.
 #![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
-use tutti_plugin_types::NoteExpressionValue;
+use tutti_plugin_types::{NoteExpressionValue, WireMidi};
 
 mod harmony;
 mod legacy_cc;
@@ -31,16 +31,16 @@ pub use tutti_vst3_ffi::{
     K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, NoteOff, NoteOn, Payload, PolyPressure, Scale, TextRef,
 };
 
-use crate::types::{MidiEvent, NoteExpressionIntValue};
+use crate::types::NoteExpressionIntValue;
 
 /// Reads an [`Event`] as the engine's types.
 pub trait EventExt {
-    /// The event as a UMP [`MidiEvent`], promoting a MIDI-1 payload to Channel
+    /// The event as a UMP [`WireMidi`] (the offset the event carries, unclamped), promoting a MIDI-1 payload to Channel
     /// Voice 2. `None` for the non-MIDI events and for a reassembled
     /// [`Payload::SysEx`] (input-only; the list's buffer holds its bytes). The
     /// other direction is [`MidiEncoder`], which keeps the per-note bend ranges
     /// one event cannot carry.
-    fn to_midi(&self) -> Option<MidiEvent>;
+    fn to_midi(&self) -> Option<WireMidi>;
 
     /// The per-note expression value, or `None` for another payload or a
     /// `typeId` that is not an `f64` expression (see
@@ -67,7 +67,7 @@ pub trait ToEvent {
 }
 
 impl EventExt for Event {
-    fn to_midi(&self) -> Option<MidiEvent> {
+    fn to_midi(&self) -> Option<WireMidi> {
         midi::decode(self)
     }
 
@@ -92,7 +92,7 @@ impl EventExt for Event {
     }
 }
 
-/// The frame offset a [`MidiEvent`] stages at: `sampleOffset` is an `i32`, and a
+/// The frame offset a UMP event stages at: `sampleOffset` is an `i32`, and a
 /// `u32` past `i32::MAX` would wrap negative and index the plugin's buffers
 /// out of bounds.
 fn sample_offset(frame_offset: u32) -> i32 {

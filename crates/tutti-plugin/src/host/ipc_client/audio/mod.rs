@@ -332,7 +332,7 @@ impl AudioBridge {
                     answered |= s == seq;
                     for mut e in events {
                         if s != seq {
-                            e.frame_offset = 0;
+                            e.offset = 0;
                         }
                         if midi_out.try_push(e).is_err() {
                             break;

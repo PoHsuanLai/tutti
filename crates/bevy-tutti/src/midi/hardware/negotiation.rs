@@ -126,9 +126,11 @@ pub fn ci_discovery_system(
 /// Fragments a CI message into SysEx7 UMP packets and pushes them at the
 /// hardware-out mailbox.
 fn send_ci(sender: &tutti_midi_runtime::MidiSender, message: &CiMessage) {
-    let mut packets = Vec::new();
+    let mut packets: Vec<tutti_ump::Ump> = Vec::new();
     tutti_midi_types::ci::ci_to_sysex7(CI_GROUP, message, &mut packets);
-    sender.queue(&packets);
+    // Stamp 0: negotiation traffic is not placed in a block (as the old offset 0).
+    let stamped: Vec<(u32, tutti_ump::Ump)> = packets.iter().map(|&p| (0, p)).collect();
+    sender.queue_stamped(&stamped);
 }
 
 /// Feeds decoded inbound CI messages into both negotiator halves: the responder
@@ -190,7 +192,7 @@ pub struct StartEndpointDiscovery;
 #[derive(Message, Debug, Clone)]
 pub struct InboundEndpointReply(
     /// One UMP-Stream reply packet; an endpoint takes several to assemble.
-    pub tutti_midi_types::ump::MidiEvent,
+    pub tutti_ump::Ump,
 );
 
 /// Raised once the discoverer assembles a peer endpoint (Endpoint Info seen).
@@ -213,10 +215,9 @@ pub fn endpoint_discovery_system(
     };
     let sender = out.sender();
     for _ in requests.read() {
-        sender.queue(&[tutti_midi_types::ump::MidiEvent::endpoint_discovery(
-            1,
-            1,
-            EndpointDiscoveryRequest::all(),
+        sender.queue_stamped(&[(
+            0,
+            tutti_midi_types::endpoint_discovery(1, 1, EndpointDiscoveryRequest::all()),
         )]);
     }
 }
@@ -358,7 +359,7 @@ mod tests {
         // Drain the outbound mailbox the way `pump_midi_out_system` does.
         let out = world.resource::<MidiOutRes>();
         let (_, receiver) = (out.sender(), out.receiver_for_test());
-        let mut buf = [tutti_midi_types::ump::MidiEvent::noop(); 64];
+        let mut buf = [(0_u32, tutti_ump::Ump([0; 4])); 64];
         let n = receiver.poll_into(&mut buf);
         assert!(
             n > 0,

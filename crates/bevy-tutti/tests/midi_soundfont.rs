@@ -270,8 +270,9 @@ mod midi_soundfont_audio {
     use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::midi::{LiveMidi, LiveMidiInput, MidiSourceInstall, TuttiMidiPlugin};
+    use tutti_fixtures::midi::{note_off, note_on};
+    use tutti_graph::Offset;
     use tutti_midi_runtime::TimedMidiEvent;
-    use tutti_midi_types::ump::MidiEvent;
     use tutti_sf2::SoundFont;
     use tutti_soundfont::{Settings, SoundFontUnit};
     use tutti_transport::Transport;
@@ -288,13 +289,13 @@ mod midi_soundfont_audio {
         vec![
             TimedMidiEvent::new(
                 start,
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, u16::MAX),
+                note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, u16::MAX),
             ),
             // `Beat + BeatDuration` is the affine operator: a position plus a span
             // is a position. `Beat + Beat` deliberately does not compile.
             TimedMidiEvent::new(
                 start + duration,
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+                note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
             ),
         ]
     }
@@ -497,11 +498,9 @@ mod midi_soundfont_audio {
         app.world()
             .get::<LiveMidi>(synth)
             .expect("the keyboard is attached")
-            .queue(&[tutti_midi_types::ump::MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                67,
-                0xFFFF,
+            .queue(&[(
+                Offset::ZERO,
+                note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
             )]);
         app.update();
 
@@ -524,6 +523,7 @@ mod midi_soundfont_audio {
 /// - A rule for another channel (the check below) → silent.
 mod midi_route {
     use std::sync::{Arc, Mutex};
+    use tutti_graph::UmpAt;
 
     use bevy_app::prelude::*;
 
@@ -531,13 +531,15 @@ mod midi_route {
     use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::midi::{MidiEngineNodes, MidiRouteRule, TuttiMidiPlugin};
+    use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
+    use tutti_midi_runtime::MidiIn;
     use tutti_midi_runtime::MidiInputNode;
-    use tutti_midi_types::MidiIn;
-    use tutti_midi_types::ump::MidiEvent;
     use tutti_sf2::SoundFont;
     use tutti_soundfont::{Settings, SoundFontUnit};
     use tutti_transport::Transport;
     use tutti_types::SampleRate;
+
     use tutti_ump::{MidiChannel, MidiGroup};
 
     const SAMPLE_RATE: f64 = 48_000.0;
@@ -557,10 +559,10 @@ mod midi_route {
     /// clone is another handle on the same wire: the node owns one, the test
     /// pushes through another.
     #[derive(Default, Clone)]
-    struct Wire(Arc<Mutex<Vec<MidiEvent>>>);
+    struct Wire(Arc<Mutex<Vec<UmpAt>>>);
 
     impl MidiIn for Wire {
-        fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+        fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
             let mut pending = self.0.lock().unwrap();
             let n = pending.len().min(buffer.len());
             buffer[..n].copy_from_slice(&pending[..n]);
@@ -625,11 +627,9 @@ mod midi_route {
             .spawn(MidiRouteRule::for_channel(channel).to(synth));
         app.update();
 
-        wire.0.lock().unwrap().push(MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            u16::MAX,
+        wire.0.lock().unwrap().push((
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, u16::MAX),
         ));
         rms(&render(&mut app, 12_000))
     }

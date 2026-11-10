@@ -53,7 +53,6 @@ use tutti_graph::{
 };
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::ChannelLayout;
-use tutti_ump::Ump;
 
 use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
 
@@ -151,7 +150,7 @@ impl Shared {
 }
 
 fn class_of(timed: &TimedMidiEvent) -> Class {
-    Class::of(Ump(timed.event.data))
+    Class::of(timed.event)
 }
 
 /// `events` with each note-off paired to its note-on (see the module docs),
@@ -282,11 +281,11 @@ impl MidiClipControls {
 /// use tutti_types::{Beat, NodeKey, SampleRate, Samples};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-/// use tutti_midi_types::MidiEvent;
+/// use tutti_fixtures::midi::note_on;
 /// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-/// let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+/// let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
 /// let clip = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on)]);
 /// let controls = editor.insert(NodeKey(1), "clip", clip);
 /// assert_eq!(controls.event_count(), 1);
@@ -371,7 +370,7 @@ impl Visit<ClipEvent> for Playing<'_, '_> {
     }
 
     fn event(&mut self, at: Offset, e: &ClipEvent) {
-        self.sending.send(at, Ump(e.timed.event.data), e.note);
+        self.sending.send(at, e.timed.event, e.note);
     }
 }
 

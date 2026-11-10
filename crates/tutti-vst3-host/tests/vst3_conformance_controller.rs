@@ -8,9 +8,20 @@
 #[path = "support/conformance.rs"]
 mod conformance_support;
 
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_types::Samples;
 use tutti_types::{BarNumber, TimeSignature};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
-use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, PrefetchSupport, TransportInfo};
+use tutti_vst3_host::{AudioBuffer, InputEvents, PrefetchSupport, TransportInfo};
+
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
 
 use conformance_support::*;
 
@@ -274,20 +285,24 @@ fn midi_learn_forwards_from_the_main_thread() {
     let info = inst.loaded().plugin_info().clone();
     // MIDI 2.0 CC values are 32-bit; 0x8000_0000 is mid-scale.
     let cc = [
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::VOLUME,
-            0x8000_0000,
-        )
-        .with_frame_offset(0),
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::PAN,
-            0x4000_0000,
-        )
-        .with_frame_offset(64),
+        (
+            at(0),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::VOLUME,
+                0x8000_0000,
+            ),
+        ),
+        (
+            at(64),
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::PAN,
+                0x4000_0000,
+            ),
+        ),
     ];
     let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
         .map(|_| vec![0.0; 512])

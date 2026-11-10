@@ -3,13 +3,13 @@
 //!
 //! Feed the relevant inbound System Real-Time events (Timing Clock 0xF8, Start
 //! 0xFA, Continue 0xFB, Stop 0xFC) via [`MidiClockDecoder::feed`] — the
-//! [`MidiEvent`]-taking entry that mirrors
+//! [`Ump`]-taking entry that mirrors
 //! [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed) — or, if you've already
 //! demultiplexed the stream, call [`tick`](MidiClockDecoder::tick) /
 //! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
 
-use crate::ump::MidiEvent;
 use tutti_types::Bpm;
+use tutti_ump::Ump;
 
 const PPQN: u32 = 24;
 const TEMPO_WINDOW: usize = 24;
@@ -58,18 +58,18 @@ impl MidiClockDecoder {
         }
     }
 
-    /// Feeds one inbound [`MidiEvent`], dispatching System Real-Time transport
+    /// Feeds one inbound [`Ump`], dispatching System Real-Time transport
     /// messages to the right handler — the ergonomic entry that mirrors
     /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), so you can route raw
-    /// input events straight in without demultiplexing the stream yourself.
+    /// input packets straight in without demultiplexing the stream yourself.
     ///
     /// Recognises Timing Clock (0xF8, uses `timestamp_us` for tempo), Song
     /// Position Pointer (0xF2), Start (0xFA), Continue (0xFB), and Stop (0xFC).
-    /// Any other event is ignored.
-    /// Returns `true` if the event was a recognised transport message.
-    pub fn feed(&mut self, event: &MidiEvent, timestamp_us: u64) -> bool {
+    /// Any other packet is ignored.
+    /// Returns `true` if the packet was a recognised transport message.
+    pub fn feed(&mut self, ump: &Ump, timestamp_us: u64) -> bool {
         // System Real-Time is UMP type 0x1; the status byte is in bits 16..24.
-        let w0 = event.data[0];
+        let w0 = ump.0[0];
         if (w0 >> 28) & 0x0F != 0x1 {
             return false;
         }

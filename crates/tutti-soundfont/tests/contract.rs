@@ -16,13 +16,12 @@
 
 use std::sync::Arc;
 
+use tutti_fixtures::midi;
 use tutti_graph::EventKind;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
-use tutti_midi_types::MidiEvent;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::Samples;
-use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// Frames from a note's onset to its first non-zero sample on the fixture's
@@ -48,7 +47,7 @@ fn font() -> Arc<SoundFont> {
 
 fn soundfont_row() -> Row {
     let font = font();
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+    let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
     Row::new(
         "SoundFontUnit",
         move || {
@@ -57,7 +56,7 @@ fn soundfont_row() -> Row {
         },
         Excite::Event {
             port: 0,
-            kind: EventKind::Midi(Ump(note.data)),
+            kind: EventKind::Midi(note),
         },
         Detect::Threshold(0.0),
     )

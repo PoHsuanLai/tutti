@@ -31,6 +31,7 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 # its own process, so a fixed name under `std::env::temp_dir()` is a shared
 # mutable path that two concurrent runs of the same binary race on.
 tempfile = "3.8"
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 [package.metadata.docs.rs]
 all-features = true

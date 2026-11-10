@@ -72,7 +72,7 @@ use crate::tap::{TapReader, TapWriter};
 /// unheard.
 ///
 /// It does not resample and has no clock of its own: see the
-/// [module docs](self). Real-time safe: `process` does not allocate or lock.
+/// module docs. Real-time safe: `process` does not allocate or lock.
 /// It reports an unbounded tail, so the executor never skips it as silent (a
 /// skipped block would leave its frames to pile up in the ring).
 ///

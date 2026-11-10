@@ -1,4 +1,4 @@
-//! [`FileOut`]: an [`AudioOut`] that writes a file of any [`Format`].
+//! [`FileOut`]: an [`AudioOut`] that writes a file of any [`Format`](crate::Format).
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -12,7 +12,7 @@ use crate::spec::Spec;
 /// A file sink: the [`AudioOut`] a recording writes into, as a file of any
 /// [`Format`](crate::Format) this build can write.
 ///
-/// The write edge, the mirror of [`FileIn`](crate::FileIn): `FileIn` is the
+/// The write edge, the mirror of `FileIn` (with a `decode-*` feature): `FileIn` is the
 /// codec's [`AudioIn`](tutti_types::AudioIn) and this is its
 /// [`AudioOut`]. It is an [`Encoder`] behind that contract, the same writer
 /// an export bounces through, so a recorded and an exported file agree

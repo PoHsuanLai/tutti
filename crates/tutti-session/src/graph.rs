@@ -705,7 +705,7 @@ impl Graph {
 
     /// Opens an inlet: audio a thread of your own pushes into the graph. A
     /// ring of `capacity` frames and `width` channels is read by an
-    /// [`InletNode`](tutti_graph::InletNode) (unwired; declare what it feeds like any node), and the
+    /// [`InletNode`] (unwired; declare what it feeds like any node), and the
     /// writer is the producer's end: push whole frames with
     /// [`push_interleaved`](TapWriter::push_interleaved) from any one thread. The
     /// mirror of [`open_tap`](Self::open_tap), which copies the other way.

@@ -182,3 +182,39 @@ fn a_failed_restart_keeps_the_opened_name() {
         Some("Card")
     );
 }
+
+/// **Starting an engine whose stream runs is an error, and the running
+/// stream is untouched.** Through `start_with` over a `ManualStreamDriver`
+/// (`start` resolves a real device first, so it needs hardware; its guard is
+/// the same `is_running` check, ahead of any device call). After `stop` a
+/// start succeeds again.
+///
+/// Mutation (run): `start_with` returning `Ok(())` for a running engine →
+/// the `expect_err` fails; dropping the guard → the second driver opens
+/// (`second.is_open()`) and replaces the first.
+#[test]
+fn starting_a_running_engine_is_an_error() {
+    let (_transport, state) = build_callback_state(44_100.0);
+    let state = Arc::new(state);
+    let mut engine = AudioEngine::from_spec(OutputSpec::new(
+        SampleRate(44_100.0),
+        tutti_types::ChannelLayout::STEREO,
+        cpal::SampleFormat::F32,
+    ));
+    let (first, first_stream) = crate::ManualStreamDriver::new();
+    engine.start_with(Arc::clone(&state), first).expect("starts");
+    assert!(engine.is_running() && first_stream.is_open());
+
+    let (second, second_stream) = crate::ManualStreamDriver::new();
+    let err = engine
+        .start_with(Arc::clone(&state), second)
+        .expect_err("a running engine refuses a second start");
+    assert!(matches!(err, Error::AlreadyRunning), "{err}");
+    assert!(first_stream.is_open(), "the running stream is untouched");
+    assert!(!second_stream.is_open(), "the refused driver never opened");
+
+    engine.stop();
+    let (third, third_stream) = crate::ManualStreamDriver::new();
+    engine.start_with(state, third).expect("starts after stop");
+    assert!(third_stream.is_open());
+}

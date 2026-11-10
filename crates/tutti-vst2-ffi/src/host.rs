@@ -1848,10 +1848,13 @@ unsafe impl Send for RenderHandle {}
 impl Drop for RenderHandle {
     /// If this is the last holder of the core (the instance closed and went first), the core
     /// frees the host box and may free the host state it keeps alive. That must not happen on
-    /// the audio thread, which is where a Processor could be dropped; the graph retires its
-    /// units to the control side, so it does not in practice, and this makes the rule hold
-    /// without relying on that: off the instance's thread, the last holder's share goes to the
-    /// main thread to be freed there.
+    /// the audio thread, which is where a Processor could be dropped. The graph keeps it off
+    /// that thread (it retires a plugin node's unit, and so its `Processor`, to the control
+    /// side: see `tutti_plugin_types::defer_to_main`, "Never from an audio thread", and
+    /// `tutti-plugin/tests/vst2_in_process_retire.rs`), so this branch runs on a control or
+    /// pool thread. **It must not run on an audio thread:** it takes a lock and allocates.
+    /// Off the instance's thread, the last holder's share goes to the main thread to be freed
+    /// there.
     fn drop(&mut self) {
         if Arc::strong_count(&self.core) == 1
             && std::thread::current().id() != self.core.main_thread

@@ -145,10 +145,23 @@ static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::ne
 /// Hands `work` to the main thread, to run at its next [`run_deferred`].
 ///
 /// For a `Drop` that finds itself off the claimed thread and owns something that must be
-/// released there: it cannot be handed a token, so it hands over the release. Callable from
-/// any thread but **not from the audio thread** (it takes a lock and allocates); the owners
-/// of plugin instances are dropped on the control side (a unit leaves the graph through the
-/// control-side collect), so this is the rare path, not the steady state.
+/// released there: it cannot be handed a token, so it hands over the release.
+///
+/// # Never from an audio thread
+///
+/// This takes a `std::sync::Mutex` (it can block) and boxes the work (it allocates). Callable
+/// from any control-side or pool thread, **not from the audio callback**. The callers keep to
+/// that by an invariant of the graph, not by a check here: a unit leaves the plan on the
+/// control side. The executor moves a retired, replaced or crossfaded-out unit into the commit
+/// box it sends back (`tutti-graph`'s `exec.rs`: `c.retired.push` in `apply_pending`, the
+/// `faded` ring for a crossfade's outgoing unit), `Editor::collect` drops it on the control
+/// thread, and a `NodeBox`, `Crossfade` or `Commit` dropped inside the audio scope panics in a
+/// debug build (`RtScope::check_outside`). When a session ends, the stream's owner thread is
+/// joined before the driver releases the last `Arc` of the callback state (`tutti-cpal`'s
+/// `TuttiDriver` field order, `owner.rs`'s join), so the executor and its units drop on the
+/// control thread. So the `RenderHandle` of a plugin node (in its `Processor`) is never dropped
+/// on the audio thread, and its deferral here never runs there. The in-process VST2 suite pins
+/// it: `tutti-plugin/tests/vst2_in_process_retire.rs`.
 pub fn defer_to_main(work: impl FnOnce(&MainThread) + Send + 'static) {
     DEFERRED
         .lock()

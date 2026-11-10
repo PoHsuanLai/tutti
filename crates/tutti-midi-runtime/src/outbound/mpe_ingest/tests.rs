@@ -5,8 +5,11 @@ use tutti_midi_types::MidiMessage;
 use tutti_midi_types::convert::{
     midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
 };
+use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
+use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::MpeZoneConfig;
 use tutti_types::Samples;
+use tutti_ump::CCNumber;
 
 /// What the ingest sends, collected: the tests read it as a list.
 trait Collected {

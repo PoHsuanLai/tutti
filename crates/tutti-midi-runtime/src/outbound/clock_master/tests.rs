@@ -979,3 +979,19 @@ fn a_wrap_on_the_block_edge_and_a_locate_are_one_song_position() {
     assert_eq!(offsets(&second, 0xF2), [0], "the wrap that ended block one");
     assert_eq!(offsets(&second, 0xF8), [0, 1_000, 2_000]);
 }
+
+/// A song position is the beat in sixteenths, floored at 0 (NaN and negatives
+/// included) and stuck at the largest 14-bit value past the range.
+/// Mutation: drop the `unwrap_or(U14::MAX)` for `U14::of(0)` and the huge
+/// inputs fail.
+#[test]
+fn a_song_position_is_in_sixteenths_and_saturates() {
+    let at = |beat: f64| beats_to_midi_beats(Beat(beat)).get();
+    assert_eq!(at(2.0), 8);
+    assert_eq!(at(0.0), 0);
+    assert_eq!(at(-3.0), 0);
+    assert_eq!(at(f64::NAN), 0);
+    assert_eq!(at(0x3FFF as f64 / 4.0), 0x3FFF);
+    assert_eq!(at(1e9), 0x3FFF);
+    assert_eq!(at(f64::INFINITY), 0x3FFF);
+}

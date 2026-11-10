@@ -519,9 +519,8 @@ impl ClockMaster {
             let nibble = (piece << 4) | ((cycle >> (4 * u32::from(piece))) & 0x0F) as u8;
             emit((
                 frame_offset(sample_offset, block_size),
-                self.system(System::TimeCode(
-                    U7::new(nibble).expect("a piece below 8 and a nibble fit 7 bits"),
-                )),
+                // Framed wire bits: the piece is below 8 and the nibble 4 bits.
+                self.system(System::TimeCode(U7::masked(nibble))),
             ));
             next += 1;
         }
@@ -549,7 +548,9 @@ fn frame_offset(frames: usize, block_size: usize) -> Offset {
 #[inline]
 fn beats_to_midi_beats(beat: Beat) -> U14 {
     let sixteenths = (beat.get().max(0.0) * 4.0).round();
-    U14::new(sixteenths.min(0x3FFF as f64) as u16).expect("clamped to 14 bits")
+    // `as u16` saturates, and `max(0.0)` above turned NaN and negatives into 0;
+    // a song position past the 14-bit range sticks at the largest.
+    U14::new(sixteenths as u16).unwrap_or(U14::MAX)
 }
 
 /// The timecode at `position` samples from transport beat 0 at `rate` Hz: the

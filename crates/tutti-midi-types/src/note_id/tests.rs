@@ -4,7 +4,7 @@ use super::*;
 fn channel_note_roundtrip() {
     let id = NoteId::from_channel_note(MidiChannel::of(9), 60);
     assert_eq!(id.channel(), MidiChannel::of(9));
-    assert_eq!(id.note_number(), 60);
+    assert_eq!(id.note_number(), NoteNumber::of(60));
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn an_over_wide_note_is_masked_rather_than_aliased() {
         );
         assert_eq!(
             id.note_number(),
-            note & 0x7f,
+            NoteNumber::masked(note),
             "note {note} read back changed"
         );
         assert_ne!(
@@ -71,6 +71,6 @@ fn ord_makes_it_a_btree_key() {
     m.insert(NoteId::from_channel_note(MidiChannel::of(0), 64), "b");
     m.insert(NoteId::from_channel_note(MidiChannel::of(0), 60), "a");
     // BTreeMap requires Ord; keys come back sorted.
-    let notes: Vec<u8> = m.keys().map(|k| k.note_number()).collect();
-    assert_eq!(notes, [60, 64]);
+    let notes: Vec<NoteNumber> = m.keys().map(|k| k.note_number()).collect();
+    assert_eq!(notes, [NoteNumber::of(60), NoteNumber::of(64)]);
 }

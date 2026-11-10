@@ -54,8 +54,6 @@
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_types::PitchBendSensitivity;
-use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
-use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
@@ -63,17 +61,22 @@ use tutti_midi_types::ump::{
     RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
-use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
+use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2, decode};
 
-use crate::group::group_of;
+/// The MPE registered-parameter bank (RPN MSB).
+const MPE_BANK: U7 = U7::of(RPN_BANK_MPE);
+/// RPN #00/00, the channel pitch-bend sensitivity.
+const CHANNEL_BEND_RANGE: U7 = U7::of(RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY);
+/// RPN #00/07, the per-note pitch-bend sensitivity.
+const PER_NOTE_BEND_RANGE: U7 = U7::of(RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY);
 
 /// A channel voice message on group 1 and `channel`: the group the per-note
 /// forms this ingest makes have always gone out on.
-fn first_group_voice(channel: u8, voice: Voice2) -> Ump {
+fn first_group_voice(channel: MidiChannel, voice: Voice2) -> Ump {
     Message::Midi2(
         Address {
             group: MidiGroup::FIRST,
-            channel: MidiChannel::masked(channel),
+            channel,
         },
         voice,
     )
@@ -86,21 +89,18 @@ fn send_rpns(
     group: MidiGroup,
     offset: Offset,
     channels: core::ops::RangeInclusive<u8>,
-    index: u8,
+    index: U7,
     data: u32,
     out: &mut impl FnMut(UmpAt),
 ) {
-    for channel in channels {
+    for channel in channels.filter_map(MidiChannel::new) {
         out((
             offset,
             Message::Midi2(
-                Address {
-                    group,
-                    channel: MidiChannel::masked(channel),
-                },
+                Address { group, channel },
                 Voice2::Registered {
-                    bank: U7::of(RPN_BANK_MPE),
-                    index: U7::new(index).expect("an RPN index is 7-bit"),
+                    bank: MPE_BANK,
+                    index,
                     value: data,
                 },
             )
@@ -126,7 +126,7 @@ fn send_zone_defaults(
         group,
         offset,
         master..=master,
-        RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+        CHANNEL_BEND_RANGE,
         PitchBendSensitivity::of(2).to_rpn_bits(),
         out,
     );
@@ -134,7 +134,7 @@ fn send_zone_defaults(
         group,
         offset,
         config.member_channel_range(),
-        RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+        PER_NOTE_BEND_RANGE,
         PitchBendSensitivity::MPE_DEFAULT.to_rpn_bits(),
         out,
     );
@@ -257,7 +257,10 @@ impl MpeIngest {
         // `from_mcm` requires the master channel be Ch1 or Ch16 per RP-053, so
         // RPN 0x00/0x06 on any other channel is ordinary parameter traffic and
         // passes through rather than being swallowed as configuration.
-        if let Some((master, members)) = MpeZoneConfig::from_mcm(&event.1) {
+        let decoded = decode(event.1).ok();
+        if let (Some((master, members)), Some(Message::Midi2(address, _))) =
+            (MpeZoneConfig::from_mcm(&event.1), decoded)
+        {
             self.reconfigure_from_mcm(master, members);
             let configured = match (&self.mode, master) {
                 (MpeMode::LowerZone(c) | MpeMode::DualZone { lower: c, .. }, 0)
@@ -265,7 +268,7 @@ impl MpeIngest {
                 // A zone disabled: no ranges to reset.
                 _ => return None,
             };
-            send_zone_defaults(configured, group_of(&event.1), event.0, out);
+            send_zone_defaults(configured, address.group, event.0, out);
             return None;
         }
 
@@ -273,18 +276,18 @@ impl MpeIngest {
             return Some(*event);
         }
 
-        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(event.1.words()) else {
+        let Some(Message::Midi2(address, voice)) = decoded else {
             // Not a channel-voice-2 message (System, SysEx, …) — pass through.
             return Some(*event);
         };
 
         if let MpeMode::SingleChannelRotation { channel } = self.mode {
-            return self.translate_rotation(channel, event, cv2);
+            return self.translate_rotation(channel, event, address, voice);
         }
-        if self.member_bend_range(event, &cv2, out) {
+        if self.member_bend_range(event, address, voice, out) {
             return None;
         }
-        self.translate_zoned(event, cv2)
+        self.translate_zoned(event, address, voice)
     }
 
     /// A bend sensitivity (RPN #00/00) on a member channel, as a per-note
@@ -294,18 +297,17 @@ impl MpeIngest {
     fn member_bend_range(
         &self,
         event: &UmpAt,
-        cv2: &ChannelVoice2<&[u32]>,
+        address: Address,
+        voice: Voice2,
         out: &mut impl FnMut(UmpAt),
     ) -> bool {
-        let ChannelVoice2::RegisteredController(m) = cv2 else {
+        let Voice2::Registered { bank, index, value } = voice else {
             return false;
         };
-        if u8::from(m.bank()) != RPN_BANK_MPE
-            || u8::from(m.index()) != RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY
-        {
+        if bank != MPE_BANK || index != CHANNEL_BEND_RANGE {
             return false;
         }
-        let Some(zone) = self.get_zone_info(u8::from(m.channel())) else {
+        let Some(zone) = self.get_zone_info(address.channel) else {
             return false;
         };
         if !zone.is_member {
@@ -317,11 +319,11 @@ impl MpeIngest {
             _ => return false,
         };
         send_rpns(
-            group_of(&event.1),
+            address.group,
             event.0,
             config.member_channel_range(),
-            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-            m.controller_data(),
+            PER_NOTE_BEND_RANGE,
+            value,
             out,
         );
         true
@@ -360,13 +362,13 @@ impl MpeIngest {
 
     /// Zone (lower/upper/dual) mode: member-channel channel-messages fold onto the
     /// note that member channel holds; master-channel and native per-note pass.
-    fn translate_zoned(&mut self, event: &UmpAt, cv2: ChannelVoice2<&[u32]>) -> Option<UmpAt> {
-        match cv2 {
+    fn translate_zoned(&mut self, event: &UmpAt, address: Address, voice: Voice2) -> Option<UmpAt> {
+        let ch = address.channel;
+        match voice {
             // M2-104 7.4.2: a MIDI 2.0 Note On at velocity 0 is a Note On, and
             // binds its channel like any other (the translator before this
             // turns a MIDI 1.0 one into a Note Off).
-            ChannelVoice2::NoteOn(m) => {
-                let (ch, note) = (u8::from(m.channel()), u8::from(m.note_number()));
+            Voice2::NoteOn { note, .. } => {
                 let zone = self.get_zone_info(ch)?;
                 if zone.is_member
                     && let Some(map) = self.voice_map_mut(zone.is_lower_zone)
@@ -376,8 +378,7 @@ impl MpeIngest {
                 // The note itself always flows through unchanged.
                 Some(*event)
             }
-            ChannelVoice2::NoteOff(m) => {
-                let (ch, note) = (u8::from(m.channel()), u8::from(m.note_number()));
+            Voice2::NoteOff { note, .. } => {
                 if let Some(zone) = self.get_zone_info(ch)
                     && zone.is_member
                     && let Some(map) = self.voice_map_mut(zone.is_lower_zone)
@@ -386,8 +387,7 @@ impl MpeIngest {
                 }
                 Some(*event)
             }
-            ChannelVoice2::ChannelPitchBend(m) => {
-                let ch = u8::from(m.channel());
+            Voice2::PitchBend(value) => {
                 let zone = self.get_zone_info(ch)?;
                 if zone.is_master {
                     // Master-channel bend is global — spec keeps it channel-wide.
@@ -396,20 +396,13 @@ impl MpeIngest {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
                     Some((
                         event.0,
-                        first_group_voice(
-                            ch,
-                            Voice2::PerNotePitchBend {
-                                note: NoteNumber::new(note)?,
-                                value: m.pitch_bend_data(),
-                            },
-                        ),
+                        first_group_voice(ch, Voice2::PerNotePitchBend { note, value }),
                     ))
                 } else {
                     Some(*event)
                 }
             }
-            ChannelVoice2::ChannelPressure(m) => {
-                let ch = u8::from(m.channel());
+            Voice2::ChannelPressure(value) => {
                 let zone = self.get_zone_info(ch)?;
                 if zone.is_master {
                     Some(*event)
@@ -417,22 +410,15 @@ impl MpeIngest {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
                     Some((
                         event.0,
-                        first_group_voice(
-                            ch,
-                            Voice2::PolyPressure {
-                                note: NoteNumber::new(note)?,
-                                value: m.channel_pressure_data(),
-                            },
-                        ),
+                        first_group_voice(ch, Voice2::PolyPressure { note, value }),
                     ))
                 } else {
                     Some(*event)
                 }
             }
-            ChannelVoice2::ControlChange(m)
-                if CCNumber::masked(u8::from(m.control())) == tutti_midi_types::cc::BRIGHTNESS =>
+            Voice2::ControlChange { controller, value }
+                if controller == tutti_midi_types::cc::BRIGHTNESS =>
             {
-                let ch = u8::from(m.channel());
                 let zone = self.get_zone_info(ch)?;
                 if zone.is_member {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
@@ -442,9 +428,9 @@ impl MpeIngest {
                         first_group_voice(
                             ch,
                             Voice2::AssignablePerNote {
-                                note: NoteNumber::new(note)?,
+                                note,
                                 controller: 74,
-                                value: m.control_change_data(),
+                                value,
                             },
                         ),
                     ))
@@ -465,20 +451,21 @@ impl MpeIngest {
         &mut self,
         channel: u8,
         event: &UmpAt,
-        cv2: ChannelVoice2<&[u32]>,
+        address: Address,
+        voice: Voice2,
     ) -> Option<UmpAt> {
         // Messages off the rotation channel are ignored (this mode owns one).
-        if u8::from(cv2.channel()) != channel {
+        if address.channel.get() != channel {
             return None;
         }
         let rotation = self.rotation.as_mut()?;
-        match cv2 {
-            ChannelVoice2::NoteOn(m) => {
-                rotation.note_on(u8::from(m.note_number()));
+        match voice {
+            Voice2::NoteOn { note, .. } => {
+                rotation.note_on(note);
                 Some(*event)
             }
-            ChannelVoice2::NoteOff(m) => {
-                rotation.note_off(u8::from(m.note_number()));
+            Voice2::NoteOff { note, .. } => {
+                rotation.note_off(note);
                 Some(*event)
             }
             // Native per-note (and everything else) on the rotation channel passes
@@ -487,13 +474,14 @@ impl MpeIngest {
         }
     }
 
-    fn held_note(&self, channel: u8, is_lower_zone: bool) -> Option<u8> {
+    fn held_note(&self, channel: MidiChannel, is_lower_zone: bool) -> Option<NoteNumber> {
         self.voice_map(is_lower_zone)
             .as_ref()
             .and_then(|map| map.note_for_channel(channel))
     }
 
-    fn get_zone_info(&self, channel: u8) -> Option<ZoneInfo> {
+    fn get_zone_info(&self, channel: MidiChannel) -> Option<ZoneInfo> {
+        let channel = channel.get();
         match &self.mode {
             MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => None,
             MpeMode::LowerZone(config) => config.handles_channel(channel).then(|| ZoneInfo {

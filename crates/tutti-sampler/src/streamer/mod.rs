@@ -559,6 +559,46 @@ mod tests {
         assert_eq!(ratio(1), SrcRatio::for_rates(44_100.0, 48_000.0));
     }
 
+    /// A stream that a new `Stream` on the same channel replaces is freed:
+    /// its ring (and with it the writer's decoder and any resident wave) goes
+    /// with the old link, as it does on `StopStreaming`.
+    ///
+    /// Mutation (run): `handle_stream_file` not removing the replaced
+    /// stream's region from `local.regions` -> the old ring is still held by
+    /// its writer -> fails.
+    #[test]
+    fn a_replaced_stream_is_freed() {
+        use crate::ports::Command;
+        use tutti_types::SamplePosition;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
+        write_tone(&a, 48_000, 1.0);
+        write_tone(&b, 48_000, 1.0);
+
+        let mut sampler = DiskStreamer::manual(48_000.0, Default::default()).unwrap();
+        let plans = sampler.streamer.plans();
+        let mut stream = |path: &std::path::Path| {
+            sampler
+                .commands()
+                .send(Command::Stream {
+                    channel_index: 0,
+                    file_path: path.to_path_buf(),
+                    offset: SamplePosition(0.0),
+                })
+                .expect("the streamer is alive in this test");
+            let _ = sampler.step_until_settled(1_000);
+        };
+
+        stream(&a);
+        let old = Arc::downgrade(&plans.get(&0).unwrap().link.as_ref().unwrap().consumer);
+        stream(&b);
+        assert!(
+            old.upgrade().is_none(),
+            "the replaced stream's ring is still alive: its region leaked"
+        );
+    }
+
     /// Stepping and threading are exclusive owners of the streamer's local state.
     ///
     /// This is the one thing the hand driver can get wrong that the thread

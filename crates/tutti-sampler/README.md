@@ -58,7 +58,7 @@ use tutti_graph::{Prepare, Solo};
 use tutti_sampler::{MemorySource, Wave};
 
 // 100 stereo frames; `push_frame` takes one frame, not one sample.
-let mut wave = Wave::new(2, 44_100.0);
+let mut wave = Wave::new(2, SampleRate::new(44_100.0));
 for _ in 0..100 {
     wave.push_frame(&[0.5, 0.5]);
 }

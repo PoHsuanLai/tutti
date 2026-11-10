@@ -652,9 +652,10 @@ pub fn chroma(samples: &[f32], cfg: &ChromaConfig, fft: &mut FftScratch) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::SampleRate;
 
     fn geometry(window: usize, hop: usize) -> StftGeometry {
-        StftGeometry::new(22_050.0, Samples(window), Samples(hop)).unwrap()
+        StftGeometry::new(SampleRate::new(22_050.0), Samples(window), Samples(hop)).unwrap()
     }
 
     fn sine(freq: f64, len: usize, amp: f64) -> Vec<f32> {
@@ -921,7 +922,7 @@ mod tests {
             Err(Error::AboveNyquist { .. })
         ));
         // A low rate clamps the default band to Nyquist instead of failing.
-        let low = StftGeometry::new(8_000.0, Samples(1024), Samples(256)).unwrap();
+        let low = StftGeometry::new(SampleRate::new(8_000.0), Samples(1024), Samples(256)).unwrap();
         assert_eq!(ChromaConfig::new(low).unwrap().max_freq(), Hz(4000.0));
     }
 

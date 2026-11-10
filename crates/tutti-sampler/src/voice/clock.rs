@@ -800,7 +800,8 @@ mod tests {
     #[test]
     fn the_crossfade_is_the_fade_or_half_a_pass() {
         let rate = SampleRate(48_000.0);
-        let loop_of = |beats: f64| LoopRange::new(0.0, beats).expect("a loop");
+        let loop_of =
+            |beats: f64| LoopRange::new(Beat::new(0.0), Beat::new(beats)).expect("a loop");
         let len = |beats| Wrap::new(loop_of(beats), Bpm::of(120.0), rate).map(|w| w.len);
         assert_eq!(len(1.0), Some(240));
         assert_eq!(len(0.005), Some(60), "a pass of 120 frames");

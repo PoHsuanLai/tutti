@@ -1472,7 +1472,7 @@ impl MemorySource {
     /// from it. What [`Node::prepare`] does; allocation-free.
     pub(crate) fn set_render_rate(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
-        self.set_session_sample_rate(sample_rate.get());
+        self.set_session_sample_rate(SampleRate::new(sample_rate.get()));
     }
 
     /// A block longer than its positions, through a stack array in pieces

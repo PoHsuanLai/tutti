@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use tutti_types::SampleRate;
 
 use super::*;
 use crate::HardwareMidiInputs;
@@ -51,7 +52,7 @@ fn id_of(devices: &Devices, name: &str) -> DeviceId {
 }
 
 fn ports() -> Arc<HardwareMidiInputs> {
-    Arc::new(HardwareMidiInputs::new(16, 44_100.0))
+    Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)))
 }
 
 #[test]

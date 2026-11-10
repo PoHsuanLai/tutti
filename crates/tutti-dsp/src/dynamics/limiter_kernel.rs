@@ -4,7 +4,7 @@
 use super::curves::{LimiterCurve, amplitude_to_db, compute_limiter_gain};
 use super::envelope::EnvelopeFollower;
 use crate::Smoother;
-use tutti_types::{Db, SampleRate, Seconds};
+use tutti_types::{Amplitude, Db, SampleRate, Seconds};
 
 /// The controls one block of a limiter runs on, read once at the top of the
 /// block.
@@ -61,7 +61,7 @@ impl LimiterKernel {
     pub fn new(release: Seconds, sample_rate: SampleRate) -> Self {
         Self {
             envelope: 0.0,
-            follower: EnvelopeFollower::new(0.0, release, sample_rate),
+            follower: EnvelopeFollower::new(Seconds::new(0.0), release, sample_rate),
         }
     }
 
@@ -96,7 +96,7 @@ impl LimiterKernel {
         let target_gain = match &block.curve {
             Some(curve) => curve.gain(peak),
             None => {
-                let peak_db = amplitude_to_db(peak);
+                let peak_db = amplitude_to_db(Amplitude::new(peak));
                 let threshold = block.threshold_lane.map_or(block.threshold, |v| Db(v[i]));
                 let ceiling = block.ceiling_lane.map_or(block.ceiling, |v| Db(v[i]));
                 compute_limiter_gain(peak_db, threshold, ceiling).get()

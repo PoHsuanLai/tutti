@@ -1177,7 +1177,7 @@ mod tests {
     /// `TransportAudio::fire` → the change carries 200 BPM → fails.
     #[test]
     fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         transport
@@ -1224,7 +1224,7 @@ mod tests {
     #[test]
     fn a_block_refused_the_graph_is_silent_and_retries() {
         use tutti_types::ChannelLayout;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
@@ -1252,7 +1252,7 @@ mod tests {
     #[test]
     fn a_refused_block_is_silence_in_the_heard_tap() {
         use tutti_types::ChannelLayout;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let mut tap = engine
@@ -1283,7 +1283,7 @@ mod tests {
     #[test]
     fn a_later_engine_resumes_the_motion_machine() {
         use tutti_types::ChannelLayout;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let mut buf = vec![0.0f32; 64 * 2];
         {
             let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
@@ -1310,8 +1310,8 @@ mod tests {
     /// of popping the home → the second engine is built → fails.
     #[test]
     fn a_shared_motion_handle_is_refused_as_held() {
-        let first = Transport::new(48_000.0);
-        let mut second = Transport::new(48_000.0);
+        let first = Transport::new(SampleRate::new(48_000.0));
+        let mut second = Transport::new(SampleRate::new(48_000.0));
         second.motion = first.motion.clone();
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let _running = Engine::new(&first, &mut ed, exec).expect("empty graph");
@@ -1332,7 +1332,7 @@ mod tests {
     fn try_send_and_a_next_block_command_apply_in_send_order() {
         use tutti_types::ChannelLayout;
         let run = |first_is_play: bool| {
-            let transport = Transport::new(48_000.0);
+            let transport = Transport::new(SampleRate::new(48_000.0));
             let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
             let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
             let stop = MotionEvent::stop_unfaded();
@@ -1376,7 +1376,7 @@ mod tests {
             Engine::new(transport, &mut ed, exec).expect("empty graph")
         };
 
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let engine = engine_for(&transport);
         transport
             .motion
@@ -1391,13 +1391,13 @@ mod tests {
         assert!((second - (8.0 + 128.0 / 24_000.0)).abs() < 1e-9, "{second}");
 
         // Into a loop's last frames: one wrap, counted once.
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let engine = engine_for(&transport);
         transport
             .motion
             .schedule(
                 At::NextBlock,
-                LoopEdit::over(LoopRange::new(0.0, 4.0).expect("ordered")),
+                LoopEdit::over(LoopRange::new(Beat::new(0.0), Beat::new(4.0)).expect("ordered")),
             )
             .expect("room");
         transport
@@ -1420,7 +1420,7 @@ mod tests {
     /// fails.
     #[test]
     fn a_quiet_block_plans_no_gain_event() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
@@ -1476,7 +1476,7 @@ mod tests {
     #[test]
     fn a_block_refused_the_graph_counts_as_silenced() {
         use tutti_types::ChannelLayout;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let mut buf = vec![0.0f32; 64 * 2];
@@ -1626,7 +1626,7 @@ mod tests {
     /// release-only branch).
     #[test]
     fn a_wider_device_is_added_and_an_unsupported_width_is_silent() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 2);
@@ -1663,7 +1663,7 @@ mod tests {
     /// count is 0.
     #[test]
     fn a_root_the_device_cannot_take_is_silent_and_counted() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 5);
@@ -1700,7 +1700,7 @@ mod tests {
     /// last row.
     #[test]
     fn a_declared_discrete_root_keeps_its_channels_by_index() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 4);
@@ -1731,7 +1731,7 @@ mod tests {
     #[test]
     fn a_declared_surround_root_folds_by_its_speakers() {
         use tutti_types::Speaker::*;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 6);
@@ -1774,7 +1774,7 @@ mod tests {
     /// declaration the plan reads as quad and the rears land on the back pair (6 and 7).
     #[test]
     fn declarations_at_other_widths_leave_the_plan_in_flight_its_fold() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 4);
@@ -1809,7 +1809,7 @@ mod tests {
     /// Mutation (run): `reclaim` returning 0 → the pinned count is not 1.
     #[test]
     fn a_replaced_fold_set_is_reclaimed_after_the_block() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let control = engine.output_control();
@@ -1835,7 +1835,7 @@ mod tests {
     /// call is `Ok` and the engine renders silence into stereo.
     #[test]
     fn an_unplaceable_declaration_is_refused() {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 4);
@@ -1876,7 +1876,7 @@ mod tests {
     #[test]
     fn a_commit_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let ed = RefCell::new(ed);
         let engine = Engine::new(&transport, &mut ed.borrow_mut(), exec).expect("empty graph");
@@ -1907,7 +1907,7 @@ mod tests {
     #[test]
     fn a_narrowing_commit_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         rewire(&mut ed, 4);
         let ed = RefCell::new(ed);
@@ -1929,7 +1929,7 @@ mod tests {
     #[test]
     fn a_resume_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         rewire(&mut ed, 2);
         let ed = RefCell::new(ed);

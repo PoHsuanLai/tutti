@@ -153,7 +153,7 @@ fn sweep() {
             Box::new(LadderFilterNode::<f64>::new(
                 tutti_nodes::LadderType::LP24,
                 Hz(b),
-                0.5,
+                Resonance::new(0.5),
             ))
         }));
         add(probe("crossover", b, || {
@@ -171,13 +171,18 @@ fn sweep() {
             )
         }));
         add(probe("delay max", b, || {
-            Box::new(DelayLineNode::new(s(b), s(0.1), 0.3))
+            Box::new(DelayLineNode::new(s(b), s(0.1), Feedback::new(0.3)))
         }));
         add(probe("delay time", b, || {
-            Box::new(DelayLineNode::new(s(0.5), s(b), 0.3))
+            Box::new(DelayLineNode::new(s(0.5), s(b), Feedback::new(0.3)))
         }));
         add(probe("delay stereo", b, || {
-            Box::new(DelayLineNode::stereo(s(b), s(b), s(0.1), 0.3))
+            Box::new(DelayLineNode::stereo(
+                s(b),
+                s(b),
+                s(0.1),
+                Feedback::new(0.3),
+            ))
         }));
     }
     assert!(bad_cases.is_empty(), "{}", bad_cases.join("\n"));

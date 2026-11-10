@@ -50,7 +50,7 @@ pub fn fan(ed: &mut Editor, node: NodeKey, outputs: usize) {
 /// The graph has to actually render: a graph with nothing wired renders
 /// silence, and any assertion over it is vacuous.
 pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
-    let transport = Transport::new(SAMPLE_RATE);
+    let transport = Transport::new(SampleRate::new(SAMPLE_RATE));
     let engine = graph_engine(&transport, |ed| {
         let (source, filter) = (NodeKey(1), NodeKey(2));
         ed.insert(source, "sine", Osc::sine(Hz(220.0)));
@@ -86,7 +86,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
 /// in closed form instead of sampled. That is what makes the sample-format
 /// matrix assertable.
 pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
-    let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
+    let engine = graph_engine(&Transport::new(SampleRate::new(SAMPLE_RATE)), |ed| {
         ed.insert(NodeKey(1), "dc", Const::mono(level));
         fan(ed, NodeKey(1), outputs);
     });

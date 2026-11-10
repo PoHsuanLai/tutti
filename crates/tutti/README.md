@@ -39,7 +39,7 @@ let (mut editor, executor) = g
     .build(Prepare::new(SampleRate(48_000.0), Samples(256)))
     .expect("the graph compiles");
 
-let transport = Transport::new(48_000.0);
+let transport = Transport::new(SampleRate(48_000.0));
 let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
 // One interleaved stereo block, rendered on "the audio thread".

@@ -234,9 +234,9 @@ mod tests {
     fn advance_moves_forward_and_rewinds() {
         let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         // 120 BPM = 2 beats/s, so one second of samples is two beats.
-        t.advance(44_100, 44_100.0);
+        t.advance(44_100, SampleRate::new(44_100.0));
         assert!((t.beat().get() - 2.0).abs() < 1e-9);
-        t.advance(-44_100, 44_100.0);
+        t.advance(-44_100, SampleRate::new(44_100.0));
         assert!(t.beat().get().abs() < 1e-9);
     }
 
@@ -253,7 +253,7 @@ mod tests {
         assert!(!t.is_rolling());
         assert_eq!(t.beat(), Beat::new(8.0));
         assert_eq!(t.tempo(), Bpm::of(90.0));
-        let env = t.env(4, 48_000.0);
+        let env = t.env(4, SampleRate::new(48_000.0));
         assert!(!env.transport.playing);
         assert_eq!(env.transport.beat(), Beat::new(8.0));
     }

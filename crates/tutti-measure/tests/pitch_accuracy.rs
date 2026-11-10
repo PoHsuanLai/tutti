@@ -19,7 +19,7 @@
 //! the first local one below threshold) before being committed.
 
 use tutti_measure::{YinConfig, yin, yin_track};
-use tutti_types::{Hz, Samples};
+use tutti_types::{Hz, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 
@@ -47,7 +47,7 @@ fn sine(freq: f64, secs: f64, amp: f64) -> Vec<f32> {
 
 /// Detected frequency, or `None` if unvoiced.
 fn detect(samples: &[f32]) -> Option<f32> {
-    let cfg = YinConfig::standard(SR).expect("standard range");
+    let cfg = YinConfig::standard(SampleRate::new(SR)).expect("standard range");
     yin(&cfg, samples)
         .expect("buffer long enough")
         .pitch()
@@ -158,7 +158,7 @@ fn noise_is_not_confidently_pitched() {
         })
         .collect();
 
-    let cfg = YinConfig::standard(SR).unwrap();
+    let cfg = YinConfig::standard(SampleRate::new(SR)).unwrap();
     let est = yin(&cfg, &samples).expect("long enough");
     assert!(
         !est.is_voiced(),
@@ -177,7 +177,7 @@ fn noise_is_not_confidently_pitched() {
 /// falls inside a percentage tolerance.
 #[test]
 fn a_rising_sweep_reads_as_rising() {
-    let cfg = YinConfig::standard(SR).unwrap();
+    let cfg = YinConfig::standard(SampleRate::new(SR)).unwrap();
     let frame = cfg.buffer_size().get();
     let n = frame * 8;
 
@@ -235,7 +235,7 @@ fn the_note_name_agrees_with_the_frequency() {
         (440.0, "A4"),
         (880.0, "A5"),
     ] {
-        let cfg = YinConfig::standard(SR).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(SR)).unwrap();
         let est = yin(&cfg, &sine(f, 0.5, 0.5)).expect("long enough");
         let p = est.pitch().unwrap_or_else(|| panic!("{f} Hz unvoiced"));
 
@@ -268,7 +268,7 @@ fn a_tone_below_the_configured_range_is_not_reported_as_in_range() {
     // Search 400-2000 Hz, present a 100 Hz tone. The correct answers are
     // "unvoiced" or a harmonic inside the band — never 100 Hz, which the
     // configuration excludes.
-    let cfg = YinConfig::new(SR, Hz(400.0), Hz(2000.0)).expect("valid range");
+    let cfg = YinConfig::new(SampleRate::new(SR), Hz(400.0), Hz(2000.0)).expect("valid range");
     let est = yin(&cfg, &sine(100.0, 0.5, 0.5)).expect("long enough");
 
     if let Some(p) = est.pitch() {

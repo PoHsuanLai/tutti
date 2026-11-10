@@ -216,10 +216,10 @@ mod tests {
 
     #[test]
     fn test_amplitude_db_conversion() {
-        assert!((amplitude_to_db(1.0).get() - 0.0).abs() < 0.001);
-        assert!((amplitude_to_db(0.5).get() - (-6.02)).abs() < 0.1);
-        assert!((db_to_amplitude(0.0).get() - 1.0).abs() < 0.001);
-        assert!((db_to_amplitude(-6.0).get() - 0.501).abs() < 0.01);
+        assert!((amplitude_to_db(Amplitude::new(1.0)).get() - 0.0).abs() < 0.001);
+        assert!((amplitude_to_db(Amplitude::new(0.5)).get() - (-6.02)).abs() < 0.1);
+        assert!((db_to_amplitude(Db::new(0.0)).get() - 1.0).abs() < 0.001);
+        assert!((db_to_amplitude(Db::new(-6.0)).get() - 0.501).abs() < 0.01);
     }
 
     /// The floor lives here, not in `Db::from_amplitude`. The shared converter
@@ -231,11 +231,11 @@ mod tests {
         // above is doing the work rather than duplicating something upstream.
         assert!(Db::from_amplitude(Amplitude::SILENT).get().is_infinite());
 
-        assert_eq!(amplitude_to_db(0.0), Db::FLOOR);
-        assert!(amplitude_to_db(0.0).get().is_finite());
+        assert_eq!(amplitude_to_db(Amplitude::new(0.0)), Db::FLOOR);
+        assert!(amplitude_to_db(Amplitude::new(0.0)).get().is_finite());
         // Negative amplitude is not physical, but a detector fed one must not
         // produce NaN either.
-        assert_eq!(amplitude_to_db(-1.0), Db::FLOOR);
+        assert_eq!(amplitude_to_db(Amplitude::new(-1.0)), Db::FLOOR);
     }
 
     /// The floor's payoff: a detected *level* stays finite and comparable.
@@ -246,7 +246,7 @@ mod tests {
     /// cover nothing.
     #[test]
     fn the_floor_keeps_a_detected_level_usable() {
-        let level = amplitude_to_db(0.0);
+        let level = amplitude_to_db(Amplitude::new(0.0));
 
         // Arithmetic a detector does on its own level. `-inf - -inf` is NaN,
         // which is what an unfloored level turns a difference into.
@@ -263,11 +263,23 @@ mod tests {
     fn test_compressor_gain_reduction_hard_knee() {
         // Below threshold: no reduction
         assert_eq!(
-            compute_compressor_gain_reduction(-30.0, -20.0, 4.0, 0.0).get(),
+            compute_compressor_gain_reduction(
+                Db::new(-30.0),
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Db::new(0.0)
+            )
+            .get(),
             0.0
         );
         // Above threshold: ratio compression
-        let gr = compute_compressor_gain_reduction(-10.0, -20.0, 4.0, 0.0).get();
+        let gr = compute_compressor_gain_reduction(
+            Db::new(-10.0),
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Db::new(0.0),
+        )
+        .get();
         assert!((gr - 7.5).abs() < 0.01); // 10dB over * (1 - 1/4) = 7.5
     }
 
@@ -275,15 +287,39 @@ mod tests {
     fn test_compressor_gain_reduction_soft_knee() {
         // Well below: no reduction
         assert_eq!(
-            compute_compressor_gain_reduction(-40.0, -20.0, 4.0, 6.0).get(),
+            compute_compressor_gain_reduction(
+                Db::new(-40.0),
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Db::new(6.0)
+            )
+            .get(),
             0.0
         );
         // Well above: same as hard knee
-        let gr_hard = compute_compressor_gain_reduction(0.0, -20.0, 4.0, 0.0).get();
-        let gr_soft = compute_compressor_gain_reduction(0.0, -20.0, 4.0, 6.0).get();
+        let gr_hard = compute_compressor_gain_reduction(
+            Db::new(0.0),
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Db::new(0.0),
+        )
+        .get();
+        let gr_soft = compute_compressor_gain_reduction(
+            Db::new(0.0),
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Db::new(6.0),
+        )
+        .get();
         assert!((gr_hard - gr_soft).abs() < 0.01);
         // In knee region: quadratic transition (non-zero, less than hard)
-        let gr_knee = compute_compressor_gain_reduction(-20.0, -20.0, 4.0, 6.0).get();
+        let gr_knee = compute_compressor_gain_reduction(
+            Db::new(-20.0),
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Db::new(6.0),
+        )
+        .get();
         assert!(gr_knee > 0.0);
         assert!(gr_knee < gr_hard);
     }
@@ -291,22 +327,22 @@ mod tests {
     #[test]
     fn test_compute_gate_gain() {
         // Fully open (gate_level=1): gain=1.0 regardless of range
-        assert!((compute_gate_gain(1.0, -80.0).get() - 1.0).abs() < 0.001);
+        assert!((compute_gate_gain(1.0, Db::new(-80.0)).get() - 1.0).abs() < 0.001);
         // Fully closed (gate_level=0): gain = range_linear
-        let closed = compute_gate_gain(0.0, -80.0).get();
+        let closed = compute_gate_gain(0.0, Db::new(-80.0)).get();
         assert!(closed < 0.001); // -80dB is very quiet
         // -12dB range, closed gate
-        let closed_12 = compute_gate_gain(0.0, -12.0).get();
-        assert!((closed_12 - db_to_amplitude(-12.0).get()).abs() < 0.001);
+        let closed_12 = compute_gate_gain(0.0, Db::new(-12.0)).get();
+        assert!((closed_12 - db_to_amplitude(Db::new(-12.0)).get()).abs() < 0.001);
     }
 
     #[test]
     fn test_compute_limiter_gain() {
         // Below threshold: gain = ceiling - threshold offset
-        let gain = compute_limiter_gain(-20.0, -6.0, -0.3).get();
+        let gain = compute_limiter_gain(Db::new(-20.0), Db::new(-6.0), Db::new(-0.3)).get();
         assert!((gain - db_to_amplitude(Db(-0.3 - (-6.0))).get()).abs() < 0.001);
         // Above threshold: reduces gain
-        let gain = compute_limiter_gain(0.0, -6.0, -0.3).get();
+        let gain = compute_limiter_gain(Db::new(0.0), Db::new(-6.0), Db::new(-0.3)).get();
         assert!(gain < 1.0);
     }
 
@@ -333,9 +369,15 @@ mod tests {
             (12.0, -0.3),
         ] {
             let peak = db_to_amplitude(Db(input)).get();
-            let block = amplitude_to_db(peak * curve.gain(peak)).get();
+            let block = amplitude_to_db(Amplitude::new(peak) * curve.gain(peak)).get();
             let fed = amplitude_to_db(
-                peak * compute_limiter_gain(amplitude_to_db(peak), threshold, ceiling).get(),
+                Amplitude::new(peak)
+                    * compute_limiter_gain(
+                        amplitude_to_db(Amplitude::new(peak)),
+                        threshold,
+                        ceiling,
+                    )
+                    .get(),
             )
             .get();
             assert!((block - want).abs() < 1e-3, "block: {input} -> {block}");
@@ -363,7 +405,8 @@ mod tests {
             while peak_db <= 12.0 {
                 let peak = db_to_amplitude(Db(peak_db)).get();
                 let block = curve.gain(peak);
-                let fed = compute_limiter_gain(amplitude_to_db(peak), Db(t), Db(c)).get();
+                let fed =
+                    compute_limiter_gain(amplitude_to_db(Amplitude::new(peak)), Db(t), Db(c)).get();
                 assert!(
                     (block - fed).abs() <= 1e-5 * fed,
                     "({t}, {c}) at {peak_db}: {block} against {fed}"

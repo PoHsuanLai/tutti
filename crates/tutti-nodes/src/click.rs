@@ -653,6 +653,7 @@ mod tests {
     use tutti_graph::contract::{drive_input, prepared};
     use tutti_graph::{Offset, TransportChanges};
     use tutti_types::Frame;
+    use tutti_types::SampleRate;
     use tutti_types::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_types::{Bpm, FrameClock};
 
@@ -708,7 +709,7 @@ mod tests {
     }
 
     fn make_click() -> (Transport, Arc<ClickSettings>, ClickNode) {
-        let transport = Transport::new(SR);
+        let transport = Transport::new(SampleRate::new(SR));
         let settings = Arc::new(ClickSettings::new());
         let node = prepared(
             ClickNode::new(&transport, Arc::clone(&settings)),
@@ -740,7 +741,7 @@ mod tests {
     fn test_click_node_plays_on_beat() {
         let (_, settings, mut node) = make_click();
         settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
 
         assert!(
             sounds_within(&mut node, ROLLING, 0.0, 100),
@@ -756,7 +757,7 @@ mod tests {
     fn test_click_plays_after_loop_wrap() {
         let (_, settings, mut node) = make_click();
         settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
 
         let _ = frame(&mut node, ROLLING, 7.0);
         assert_eq!(node.last_click_onset, Some(Beat(7.0)));
@@ -909,7 +910,7 @@ mod tests {
     fn a_mid_beat_meter_change_clicks_its_downbeat() {
         let (_, settings, mut node) = make_click();
         settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
         settings.set_meter(Arc::new(MeterMap::new([
             MeterChange::new(Beat(0.0), TimeSignature::default()),
             MeterChange::new(
@@ -998,7 +999,7 @@ mod tests {
     fn a_block_matches_its_frames_one_by_one() {
         let (_, settings, mut block_node) = make_click();
         settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
 
         // 44.1 kHz at 120 BPM is 1/22050 beat per frame, so starting 20 frames
         // before beat 2 puts that onset at frame 20 of the block.
@@ -1059,10 +1060,10 @@ mod tests {
         const ONSET: f64 = 1.0;
 
         for len in [64usize, 40] {
-            let transport = Transport::new(RATE);
+            let transport = Transport::new(SampleRate::new(RATE));
             let settings = Arc::new(ClickSettings::new());
             settings.set_mode(MetronomeMode::Always);
-            settings.set_volume(1.0);
+            settings.set_volume(Amplitude::new(1.0));
             let mut node = prepared(
                 ClickNode::new(&transport, settings),
                 tutti_types::SampleRate(RATE),
@@ -1078,7 +1079,7 @@ mod tests {
             node.last_click_onset = Some(Beat(0.0));
             node.click_pos = node.click_normal.len();
 
-            let bps = tutti_types::beats_per_sample(Bpm::of(BPM), RATE).get();
+            let bps = tutti_types::beats_per_sample(Bpm::of(BPM), SampleRate::new(RATE)).get();
             let expected = ((ONSET - START) / bps).ceil() as usize;
             assert_ne!(
                 expected % len,
@@ -1124,7 +1125,7 @@ mod tests {
     fn a_start_or_stop_inside_a_block_gates_on_its_frame() {
         let (_, settings, mut node) = make_click();
         settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
 
         // Rolling on beat 3 (its click sounding), stopped at frame 30.
         let mut changes = TransportChanges::NONE;
@@ -1197,10 +1198,10 @@ mod tests {
             h
         }
 
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let settings = Arc::new(ClickSettings::new());
         settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
         let mut node = prepared(
             ClickNode::new(&transport, Arc::clone(&settings)),
             tutti_types::SampleRate(48_000.0),
@@ -1253,7 +1254,7 @@ mod tests {
     fn test_preroll_only_mode() {
         let (transport, settings, mut node) = make_click();
         settings.set_mode(MetronomeMode::PrerollOnly);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
 
         // Should be silent when not in preroll
         let output = frame(&mut node, ROLLING, 0.0);
@@ -1272,7 +1273,7 @@ mod tests {
     fn test_recording_only_mode() {
         let (transport, settings, mut node) = make_click();
         settings.set_mode(MetronomeMode::RecordingOnly);
-        settings.set_volume(1.0);
+        settings.set_volume(Amplitude::new(1.0));
         let recording = Deck {
             playing: true,
             recording: true,
@@ -1314,7 +1315,7 @@ mod tests {
     fn a_fork_snapshots_settings_and_the_count_in() {
         type Move = fn(&Transport, &ClickSettings);
         let moves: [(&str, Move); 4] = [
-            ("volume", |_, s| s.set_volume(1.0)),
+            ("volume", |_, s| s.set_volume(Amplitude::new(1.0))),
             ("mode", |_, s| s.set_mode(MetronomeMode::Off)),
             ("meter", |_, s| {
                 s.set_meter(Arc::new(MeterMap::new([MeterChange::new(
@@ -1325,9 +1326,9 @@ mod tests {
             ("count-in", |t, _| t.settings.set_in_preroll(true)),
         ];
         let fresh = || {
-            let transport = Transport::new(48_000.0);
+            let transport = Transport::new(SampleRate::new(48_000.0));
             let settings = Arc::new(ClickSettings::new());
-            settings.set_volume(0.5);
+            settings.set_volume(Amplitude::new(0.5));
             // Recording-only, so the count-in gates it (the render records).
             settings.set_mode(MetronomeMode::RecordingOnly);
             let node = ClickNode::new(&transport, Arc::clone(&settings));

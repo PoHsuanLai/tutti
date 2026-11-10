@@ -53,6 +53,8 @@ env:
 jobs:
   fmt:
     name: rustfmt
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +68,8 @@ jobs:
   # `licenses` are not checked (see `deny.toml`).
   deny:
     name: cargo deny (advisories)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -167,6 +171,8 @@ jobs:
 
   clippy:
     name: clippy
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -211,6 +217,8 @@ jobs:
   # MSVC, so no clang/stub workaround is needed.
   clippy-windows:
     name: clippy (windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -241,6 +249,8 @@ jobs:
   # Lints only; the AU suites need installed audio units and run locally.
   clippy-macos:
     name: clippy (macos)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -261,6 +271,8 @@ jobs:
   # this finds out. Linux and macOS run the same suite in `test`.
   contract-windows:
     name: plugin contract (windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     continue-on-error: true
     steps:
@@ -276,6 +288,8 @@ jobs:
 
   features:
     name: dark features
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     # Suites run here may assert golden digests; see the `test` job.
     env:
@@ -528,6 +542,8 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -641,6 +657,8 @@ jobs:
 
   bevy-free:
     name: Bevy-free floor
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -688,6 +706,8 @@ jobs:
 
   doc:
     name: rustdoc
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -753,6 +773,8 @@ jobs:
   # is the first thing to run it. A check nobody has run is not a check.
   miri:
     name: miri
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     # About 10 minutes on main: a hang (a test miri cannot finish) fails here,
     # not at GitHub's six-hour cap. A test that is slow only because it is a
@@ -808,18 +830,28 @@ jobs:
   # (about a minute), and every recorded mutation fails at a bound of 3. That
   # model at 5 (about 6 minutes) is `cargo xtask loom-full`, for a change to `arc-lend`'s
   # protocol code itself; at 6 it did not finish in 25 minutes.
-  # Whether this change can affect a loom model. The models run the shipped
-  # code of `arc-lend` and `tutti-rt` (and `tutti-shm-model`'s mirror of the
-  # plugin slab header), so a PR that touches none of those, nor the lock, the
-  # toolchain or this file, cannot change their result. `loom` is the slowest
-  # job (about 12 minutes) and set CI's wall time on every PR; it now runs on
-  # the PRs that can change it, and on every push to main and manual run.
-  # A skipped job reports success; no check is required by branch protection.
-  loom-changes:
-    name: loom needed?
+  # What a pull request changed, read once for the jobs that can skip it. A
+  # skipped job reports success; no check is required by branch protection.
+  # A push to main and a manual run always run everything.
+  #
+  # `code`: false when every changed file is prose that nothing compiles: under
+  # top-level `docs/`, or a `*.md` at the repository root. A crate's README
+  # and `arc-lend`'s `src/docs/design.md` are pulled into rustdoc by
+  # `include_str!`, so they live under `crates/` and count as code. A prose PR
+  # still runs `canonical paths`, which scans `*.md`. Before this, a doc-only
+  # PR ran the whole matrix (about 17 minutes) for nothing it could change.
+  #
+  # `loom`: whether the change can affect a loom model. The models run the
+  # shipped code of `arc-lend` and `tutti-rt` (and `tutti-shm-model`'s mirror
+  # of the plugin slab header), so a PR that touches none of those, nor the
+  # lock, the toolchain or this file, cannot change their result. `loom` is the
+  # slowest job (about 12 minutes); it runs on the PRs that can change it.
+  changes:
+    name: what changed?
     runs-on: ubuntu-24.04
     outputs:
-      run: ${{ steps.diff.outputs.run }}
+      code: ${{ steps.diff.outputs.code }}
+      loom: ${{ steps.diff.outputs.loom }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -830,21 +862,27 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           if [ "$EVENT" != "pull_request" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "loom=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$BASE"...HEAD)
           echo "$changed"
-          if echo "$changed" | grep -qE '^(crates/arc-lend/|crates/tutti-rt/|testing/tutti-shm-model/|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          if echo "$changed" | grep -qvE '^(docs/.*|[^/]+\.md)$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(crates/arc-lend/|crates/tutti-rt/|testing/tutti-shm-model/|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+            echo "loom=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "loom=false" >> "$GITHUB_OUTPUT"
           fi
 
   loom:
     name: loom
-    needs: loom-changes
-    if: needs.loom-changes.outputs.run == 'true'
+    needs: changes
+    if: needs.changes.outputs.loom == 'true'
     runs-on: ubuntu-24.04
     # About 12 minutes with the `PosRing` models: a model that stops
     # terminating fails here.
@@ -899,8 +937,8 @@ jobs:
   # mutation in the three files fails at this bound.
   loom-parallel:
     name: loom (parallel executor)
-    needs: loom-changes
-    if: needs.loom-changes.outputs.run == 'true'
+    needs: changes
+    if: needs.changes.outputs.loom == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

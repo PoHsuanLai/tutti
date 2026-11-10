@@ -38,7 +38,7 @@ impl Node for Ramp {
 }
 
 fn engine(width: u16) -> Engine {
-    let transport = Transport::new(RATE);
+    let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     ed.insert(NodeKey(1), "ramp", Unforkable(Ramp { width, at: 0 }));
     ed.spec_mut().topology.outputs = (0..width)

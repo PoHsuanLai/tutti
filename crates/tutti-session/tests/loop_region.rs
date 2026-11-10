@@ -12,15 +12,17 @@
 //! fail.
 
 use tutti_transport::{LoopEdit, LoopRegion};
+use tutti_types::Beat;
 use tutti_types::LoopRange;
 
 #[test]
 fn the_loop_region_round_trips() {
-    let range: LoopRange = LoopRange::new(4.0, 8.0).expect("4..8 is a usable region");
+    let range: LoopRange =
+        LoopRange::new(Beat::new(4.0), Beat::new(8.0)).expect("4..8 is a usable region");
     assert_eq!(range.start().get(), 4.0);
     assert_eq!(range.end().get(), 8.0);
     assert!(
-        LoopRange::new(8.0, 4.0).is_none(),
+        LoopRange::new(Beat::new(8.0), Beat::new(4.0)).is_none(),
         "an inverted brace is not a loop"
     );
 

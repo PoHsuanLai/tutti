@@ -32,7 +32,7 @@ use tutti_engine::Engine;
 use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_transport::{LoopEdit, Transport};
 use tutti_types::LoopRange;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -91,7 +91,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_ump::Ump;
 
     let sample_rate = 48_000.0;
-    let transport = Transport::new(sample_rate);
+    let transport = Transport::new(SampleRate::new(sample_rate));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
         tutti_types::Samples(512),
@@ -139,7 +139,9 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
             .expect("room");
             m.schedule(
                 At::Frame(Frame(base + 2100)),
-                TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.0, 4.0).expect("ordered"))),
+                TransportCommand::Loop(LoopEdit::over(
+                    LoopRange::new(Beat::new(0.0), Beat::new(4.0)).expect("ordered"),
+                )),
             )
             .expect("room");
             m.schedule(At::Beat(Beat(0.5)), MotionEvent::locate(Beat(0.0)))
@@ -154,7 +156,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
             // The snapshot publish: a bounds edit and a re-arm.
             m.schedule(
                 At::Frame(Frame(base + 7500)),
-                LoopEdit::bounds(LoopRange::new(1.0, 3.0).expect("ordered")),
+                LoopEdit::bounds(LoopRange::new(Beat::new(1.0), Beat::new(3.0)).expect("ordered")),
             )
             .expect("room");
             m.schedule(At::Frame(Frame(base + 7600)), LoopEdit::armed(true))
@@ -186,7 +188,7 @@ fn a_published_tempo_map_is_taken_without_allocating() {
     use tutti_graph::{OutPort, Source};
     use tutti_types::Bpm;
 
-    let transport = Transport::new(48_000.0);
+    let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
         tutti_types::Samples(512),
@@ -265,7 +267,7 @@ fn a_step_map_is_followed_without_allocating() {
         });
         Arc::new(TempoMap::new(points).expect("a map"))
     };
-    let transport = Transport::new(48_000.0);
+    let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
         tutti_types::Samples(512),
@@ -298,7 +300,7 @@ fn a_step_map_is_followed_without_allocating() {
         let m = &transport.motion;
         m.schedule(
             At::NextBlock,
-            LoopEdit::over(LoopRange::new(0.0, 0.02).expect("ordered")),
+            LoopEdit::over(LoopRange::new(Beat::new(0.0), Beat::new(0.02)).expect("ordered")),
         )
         .expect("room");
         m.try_send(MotionEvent::play_from(Beat(0.0))).expect("room");
@@ -331,7 +333,7 @@ fn a_step_map_is_followed_without_allocating() {
             .expect("a map"),
         )
     };
-    let transport = Transport::new(48_000.0);
+    let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
         tutti_types::Samples(4_096),
@@ -373,7 +375,7 @@ fn a_step_map_is_followed_without_allocating() {
         let m = &transport.motion;
         m.schedule(
             At::NextBlock,
-            LoopEdit::over(LoopRange::new(0.1, 0.3).expect("ordered")),
+            LoopEdit::over(LoopRange::new(Beat::new(0.1), Beat::new(0.3)).expect("ordered")),
         )
         .expect("room");
         m.try_send(MotionEvent::play_from(Beat(0.2))).expect("room");
@@ -404,7 +406,7 @@ fn the_master_meter_is_allocation_free() {
     use tutti_transport::MotionEvent;
 
     for width in [2usize, 6] {
-        let transport = Transport::new(48_000.0);
+        let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(
             SampleRate(48_000.0),
             tutti_types::Samples(512),
@@ -459,7 +461,7 @@ fn the_heard_tap_is_allocation_free() {
     use tutti_graph::{OutPort, Source};
     use tutti_transport::MotionEvent;
 
-    let transport = Transport::new(48_000.0);
+    let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
         tutti_types::Samples(512),
@@ -560,10 +562,10 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     }
 
     let sample_rate = 48_000.0;
-    let transport = Transport::new(sample_rate);
+    let transport = Transport::new(SampleRate::new(sample_rate));
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
-    settings.set_volume(1.0);
+    settings.set_volume(Amplitude::new(1.0));
     let click = ClickNode::new(&transport, Arc::clone(&settings));
 
     let (mut ed, exec) = Editor::new(Prepare::new(
@@ -600,7 +602,9 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
             .expect("room");
             m.schedule(
                 At::Frame(Frame(base + 1500)),
-                TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.0, 2.0).expect("ordered"))),
+                TransportCommand::Loop(LoopEdit::over(
+                    LoopRange::new(Beat::new(0.0), Beat::new(2.0)).expect("ordered"),
+                )),
             )
             .expect("room");
             m.schedule(At::Beat(Beat(1.75)), MotionEvent::locate(Beat(0.9)))
@@ -657,7 +661,7 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
     use tutti_graph::{Editor, ForkByClone, Prepare};
 
     let sample_rate = 48_000.0;
-    let transport = Transport::new(sample_rate);
+    let transport = Transport::new(SampleRate::new(sample_rate));
     let (mut ed, mut exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
         tutti_types::Samples(512),

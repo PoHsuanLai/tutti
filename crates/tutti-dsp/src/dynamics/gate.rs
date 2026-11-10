@@ -5,7 +5,7 @@ use super::curves::{
     amplitude_to_db, compute_gate_gain, db_to_amplitude, gate_gain_at, ramp_db, ramp_is_at_end,
 };
 use super::envelope::GateEnvelopeFollower;
-use tutti_types::{Db, SampleRate, Seconds};
+use tutti_types::{Amplitude, Db, SampleRate, Seconds};
 
 /// The controls one block of a gate runs on, read once at the top of the
 /// block.
@@ -121,7 +121,7 @@ impl GateKernel {
         // override changes every frame, so converting it costs what the
         // detector's `log10` does; it stays in dB.
         let open = match threshold_override.filter(|t| t.get().is_finite()) {
-            Some(t) => amplitude_to_db(sc_level) >= t,
+            Some(t) => amplitude_to_db(Amplitude::new(sc_level)) >= t,
             // Exact equality is unreachable: `10^(t/20)` rounds, so no level a
             // test can name sits on the threshold, and `>=` versus `>` cannot
             // be pinned by a test.
@@ -148,7 +148,12 @@ mod tests {
     const RATE: f64 = 48_000.0;
 
     fn instant() -> GateKernel {
-        GateKernel::new(Seconds(0.0), Seconds(0.0), Seconds(0.0), RATE)
+        GateKernel::new(
+            Seconds(0.0),
+            Seconds(0.0),
+            Seconds(0.0),
+            SampleRate::new(RATE),
+        )
     }
 
     fn range(db: f32) -> f32 {

@@ -77,7 +77,7 @@ impl Tuning {
         reference_note: u8,
     ) -> Self {
         let degrees: Vec<ScaleDegree> = (0..12)
-            .map(|i| ScaleDegree::from_cents(i as f32 * 100.0))
+            .map(|i| ScaleDegree::from_cents(Cents::new(i as f32 * 100.0)))
             .collect();
 
         let mut tuning = Self {
@@ -191,7 +191,7 @@ impl Tuning {
                 11 => 1083.0,
                 _ => 0.0,
             };
-            cents.push(ScaleDegree::from_cents(c));
+            cents.push(ScaleDegree::from_cents(Cents::new(c)));
         }
 
         let mut tuning = Self {
@@ -212,7 +212,10 @@ impl Tuning {
     /// A4 = 440 [`Hz`]. An empty slice falls back to 12-tone equal temperament.
     #[must_use]
     pub fn from_cents(cents: &[f32]) -> Self {
-        let degrees: Vec<ScaleDegree> = cents.iter().map(|c| ScaleDegree::from_cents(*c)).collect();
+        let degrees: Vec<ScaleDegree> = cents
+            .iter()
+            .map(|c| ScaleDegree::from_cents(Cents::new(*c)))
+            .collect();
 
         let mut tuning = Self {
             degrees,

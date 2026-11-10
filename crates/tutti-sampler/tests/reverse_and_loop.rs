@@ -41,7 +41,7 @@ const BLOCK: usize = 64;
 /// value: `index = value * len`. That is what turns "the output sounds right"
 /// into "the output came from sample N".
 fn ramp(len: usize) -> Arc<Wave> {
-    let mut w = Wave::new(2, SR);
+    let mut w = Wave::new(2, SampleRate::new(SR));
     for i in 0..len {
         let v = i as f32 / len as f32;
         w.push_frame(&[v, v]);
@@ -274,7 +274,7 @@ fn reverse_does_not_read_outside_the_source() {
 #[test]
 fn reverse_past_the_first_frame_is_silent() {
     const LEN: usize = 512;
-    let mut w = Wave::new(2, SR);
+    let mut w = Wave::new(2, SampleRate::new(SR));
     for i in 0..LEN {
         let v = (i + 1) as f32 / LEN as f32;
         w.push_frame(&[v, v]);
@@ -301,7 +301,7 @@ fn reverse_past_the_first_frame_is_silent() {
 
 /// A sine of period [`PERIOD`] frames, `len` long, on both channels.
 fn sine(len: usize) -> Arc<Wave> {
-    let mut w = Wave::new(2, SR);
+    let mut w = Wave::new(2, SampleRate::new(SR));
     for i in 0..len {
         let v = (std::f64::consts::TAU * i as f64 / PERIOD as f64).sin() as f32;
         w.push_frame(&[v, v]);
@@ -530,7 +530,7 @@ fn a_crossfaded_loop_holds_its_level_across_the_seam() {
 
     // Constant 0.5 everywhere: the pre-loop tail and the loop start carry the
     // same value, so a correct linear crossfade between them is flat at 0.5.
-    let mut w = Wave::new(2, SR);
+    let mut w = Wave::new(2, SampleRate::new(SR));
     for _ in 0..LEN {
         w.push_frame(&[0.5f32, 0.5f32]);
     }
@@ -684,7 +684,7 @@ fn a_one_shot_source_stops_at_the_end() {
 #[test]
 fn reverse_and_loop_work_at_mono_width() {
     const LEN: usize = 2048;
-    let mut w = Wave::new(1, SR);
+    let mut w = Wave::new(1, SampleRate::new(SR));
     for i in 0..LEN {
         w.push_frame(&[i as f32 / LEN as f32]);
     }

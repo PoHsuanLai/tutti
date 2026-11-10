@@ -84,7 +84,7 @@ const SCHEDULES: &[(usize, &[usize])] = &[(64, &[64]), (512, &[512]), (512, RAGG
 /// A stereo tone with an overtone, `secs` long: a waveform whose every
 /// sample differs, so a frame read at the wrong position shows.
 fn tone(secs: f64) -> Arc<Wave> {
-    let mut w = Wave::new(2, SR);
+    let mut w = Wave::new(2, SampleRate::new(SR));
     for i in 0..(secs * SR) as usize {
         w.push_frame(&frame_at(i));
     }
@@ -339,7 +339,8 @@ fn write_wav(path: &Path, frames: usize) {
 /// hand-driven streamer, its ring primed (a file this short is prefilled
 /// whole, so the render never waits on the streamer).
 fn disk_voice(path: &Path) -> (DiskStreamer<ByHand>, Stream, tutti_sampler::DiskVoice) {
-    let mut s = DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut s = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let opening = s.open(path, tutti_sampler::Placement::HEAD);
     let (stream, reader) = tutti_sampler::testing::settle(&mut s, opening).expect("the file opens");
     for _ in 0..4096 {

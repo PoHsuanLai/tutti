@@ -33,7 +33,7 @@ use tutti_nodes::{
     CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterNode, ModDelayNode, PhaserNode,
     SvfFilterNode, SvfType,
 };
-use tutti_types::{BeatDuration, Depth, Hz, PhaseIncrement, SampleRate, Samples};
+use tutti_types::{BeatDuration, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples};
 use tutti_types::{ChannelLayout, UnitParam};
 
 /// Writes `value` to `p` through `node`'s set, as a host does; `false` for
@@ -48,7 +48,12 @@ fn addresses<N: ParamNode>(node: &N, p: UnitParam) -> bool {
 }
 
 fn svf() -> SvfFilterNode<f32> {
-    SvfFilterNode::<f32>::with_channels(ChannelLayout::STEREO, SvfType::LowPass, 1000.0, 0.7)
+    SvfFilterNode::<f32>::with_channels(
+        ChannelLayout::STEREO,
+        SvfType::LowPass,
+        Hz::new(1000.0),
+        Q::new(0.7),
+    )
 }
 
 #[test]
@@ -71,8 +76,12 @@ fn a_param_the_set_lacks_has_no_address() {
 
 #[test]
 fn ladder_addresses_q_and_drive_but_not_feedback() {
-    let node =
-        LadderFilterNode::<f32>::with_channels(ChannelLayout::STEREO, LadderType::LP24, 800.0, 0.5);
+    let node = LadderFilterNode::<f32>::with_channels(
+        ChannelLayout::STEREO,
+        LadderType::LP24,
+        Hz::new(800.0),
+        Resonance::new(0.5),
+    );
     assert!(addresses(&node, UnitParam::Cutoff));
     assert!(addresses(&node, UnitParam::Q));
     assert!(addresses(&node, UnitParam::Drive));
@@ -275,7 +284,7 @@ fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
     let (driven, params) = render_chorus(chorus(), Some(0.2), FRAMES);
     let at_3hz = {
         let n = chorus();
-        n.set_rate(3.0);
+        n.set_rate(Hz::new(3.0));
         render_chorus(n, None, FRAMES).0
     };
     let at_1hz = render_chorus(chorus(), None, FRAMES).0;
@@ -545,7 +554,7 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
     let mut input = tone(1.0, BURST);
     input.extend(tone(0.05, 36_000));
     let out = render_driven(
-        LimiterNode::with_channels(ChannelLayout::MONO, -12.0, -12.0),
+        LimiterNode::with_channels(ChannelLayout::MONO, Db::new(-12.0), Db::new(-12.0)),
         UnitParam::Release,
         ParamRange::new(-1.0, 1.0),
         -0.25,
@@ -615,7 +624,7 @@ fn a_phaser_driven_past_its_depth_range_stays_stable() {
     }
     let phaser_at = |knob: f32, depth: f32| {
         let n = PhaserNode::with_channels(ChannelLayout::MONO, 4);
-        n.set_depth(knob);
+        n.set_depth(Depth::new(knob));
         render_driven(
             n,
             UnitParam::Depth,
@@ -656,7 +665,7 @@ fn a_chorus_driven_past_its_depth_and_rate_gets_the_setters_clamps() {
     let chorus = |depth: f32, rate: f32| {
         let n = ModDelayNode::chorus(ChannelLayout::MONO);
         n.set_depth(tutti_types::Seconds::from_f32(depth));
-        n.set_rate(rate);
+        n.set_rate(Hz::new(rate));
         n
     };
     let close = |a: &[f32], b: &[f32], what: &str| {

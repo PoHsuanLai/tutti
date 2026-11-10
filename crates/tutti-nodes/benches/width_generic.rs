@@ -24,7 +24,7 @@ use tutti_graph::contract::Direct;
 use tutti_nodes::{
     DelayLineNode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{ChannelLayout, Feedback, Hz, Q, Resonance, SampleRate, Seconds};
 
 const BLOCK: usize = 64;
 const SR: SampleRate = SampleRate(48_000.0);
@@ -83,8 +83,8 @@ fn svf(c: &mut Criterion) {
             SvfFilterNode::<f64>::with_channels(
                 ChannelLayout::try_from(w).expect("a test width is small"),
                 SvfType::LowPass,
-                1_000.0,
-                0.707,
+                Hz::new(1_000.0),
+                Q::new(0.707),
             )
         };
         run_node(c, "svf", w, make(), None);
@@ -97,8 +97,8 @@ fn ladder(c: &mut Criterion) {
         let node = LadderFilterNode::<f64>::with_channels(
             ChannelLayout::try_from(w).expect("a test width is small"),
             LadderType::LP24,
-            1_000.0,
-            0.5,
+            Hz::new(1_000.0),
+            Resonance::new(0.5),
         );
         run_node(c, "ladder", w, node, None);
     }
@@ -108,9 +108,9 @@ fn delay(c: &mut Criterion) {
     for w in [2usize, 6] {
         let node = DelayLineNode::with_channels(
             ChannelLayout::try_from(w).expect("a test width is small"),
-            1.0,
-            0.25,
-            0.4,
+            Seconds::new(1.0),
+            Seconds::new(0.25),
+            Feedback::new(0.4),
         );
         run_node(c, "delay", w, node, None);
     }

@@ -41,7 +41,7 @@ fn engine(
     outputs: usize,
     capacity: Samples,
 ) -> (Engine, MeterReader) {
-    let transport = Transport::new(RATE);
+    let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     ed.insert(NodeKey(1), "dc", tutti_graph::Unforkable(Dc(level)));
     ed.spec_mut().topology.outputs = (0..outputs)
@@ -190,7 +190,7 @@ fn the_pure_render_feeds_the_meter() {
 #[test]
 fn the_master_reads_before_the_declick() {
     use tutti_transport::MotionEvent;
-    let transport = Transport::new(RATE);
+    let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     ed.insert(NodeKey(1), "dc", tutti_graph::Unforkable(Dc(0.5)));
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
@@ -259,7 +259,7 @@ impl tutti_graph::Node for Step {
 /// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_block_longer_than_the_capacity_is_measured_whole() {
-    let transport = Transport::new(RATE);
+    let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     ed.insert(
         NodeKey(1),

@@ -1125,6 +1125,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    Compare `tutti_graph::Io::sub_blocks` with `tutti_midi_runtime::BlockSplitter`
    here: both cut a block at its event offsets, and `dispatch` should call one.
    Keep the one with the tests, and delete the other with its callers moved.
+   The survivor takes its block length as `Samples`, not the `usize` `BlockSplitter::new` takes now.
 - **Stage 3c. The MIDI dedup.** The AU host reads its bytes with
    `tutti_ump::Midi1Parser`, and `Midi1Decoder` and `Midi1Splitter` go. One SysEx7
    reassembler stays, in the layer that uses it, and the other goes
@@ -1196,6 +1197,12 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
      `backend/alsa/enumerate.rs` decodes any `EndpointId` without checking it
      was minted by the backend, and the input thread's drop joins without a
      bound. (d) There is no benchmark of the hardware callback to the drain.
+   - **Bare frame counts at the edge.** `MidiIn::poll_block(block_size: usize, ..)` and
+     `ClockMaster::tick(.., block_size: usize, ..)` take a block length as `usize`, where
+     CLAUDE.md wants `Samples` for every count at an edge. In `outbound/jr_timestamp.rs`,
+     `origin_samples` and `sample_offset` are absolute frames carried as `u64` (they
+     should be `Frame`), and `block_samples`, `interval_samples()` and `block_span()` are
+     counts (they should be `Samples`). Type them as timing and output scheduling are rebuilt.
 - **Stage 5b. Shrink `tutti-midi-types` away:** what 5a, 3a, 3c and 4 leave
    (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
    to its owner (§6) or is deleted, then the crate, and `midi2` from the workspace

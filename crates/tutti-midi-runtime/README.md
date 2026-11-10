@@ -83,10 +83,10 @@ allocates or locks, which is what lets either half sit on the audio thread.
 ```rust
 use tutti_midi_runtime::MidiMailbox;
 use tutti_midi_types::MidiMessage;
-use tutti_ump::{MidiChannel, Ump};
+use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 let (tx, rx) = MidiMailbox::pair();
-assert!(tx.note_on(MidiChannel::FIRST, 60, 100));
+assert!(tx.note_on(MidiChannel::FIRST, NoteNumber::new(60).unwrap(), U7::new(100).unwrap()));
 
 let mut block = [(0, Ump([0; 4])); 8];
 assert_eq!(rx.poll_into(&mut block), 1);

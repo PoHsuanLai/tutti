@@ -12,7 +12,7 @@ use tutti_graph::UmpAt;
 
 use crossbeam_queue::ArrayQueue;
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
+use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
 
 use crate::traits::MidiOut;
 
@@ -102,7 +102,7 @@ impl MidiSender {
 
     /// Pushes a MIDI 1.0 note-on (7-bit velocity) on group 1. Returns `false`
     /// if the ring was full.
-    pub fn note_on(&self, channel: MidiChannel, note: u8, velocity: u8) -> bool {
+    pub fn note_on(&self, channel: MidiChannel, note: NoteNumber, velocity: U7) -> bool {
         self.slot
             .events
             .push((
@@ -111,8 +111,8 @@ impl MidiSender {
                     channel,
                     // 7-bit velocity, widened (M2-115).
                     Voice2::NoteOn {
-                        note: note_number(note),
-                        velocity: midi1_velocity_to_midi2(velocity),
+                        note,
+                        velocity: midi1_velocity_to_midi2(velocity.get()),
                         attribute: Attribute::None,
                     },
                 ),
@@ -122,7 +122,7 @@ impl MidiSender {
 
     /// Pushes a MIDI 1.0 note-off on group 1. Returns `false` if the ring was
     /// full (which would leave the note stuck).
-    pub fn note_off(&self, channel: MidiChannel, note: u8) -> bool {
+    pub fn note_off(&self, channel: MidiChannel, note: NoteNumber) -> bool {
         self.slot
             .events
             .push((
@@ -130,7 +130,7 @@ impl MidiSender {
                 voice(
                     channel,
                     Voice2::NoteOff {
-                        note: note_number(note),
+                        note,
                         velocity: 0,
                         attribute: Attribute::None,
                     },
@@ -156,13 +156,6 @@ fn voice(channel: MidiChannel, v: Voice2) -> Ump {
         v,
     )
     .into()
-}
-
-/// A note number, its high bit masked off as the wire does (a note past 127 is
-/// the caller's bug; a release build never carried it past 7 bits).
-// A note above 127 is masked to 7 bits.
-fn note_number(note: u8) -> NoteNumber {
-    NoteNumber::new(note & 0x7F).expect("masked to 7 bits")
 }
 
 /// The pop half of a [`MidiMailbox`]. One reader at a time: two polling the

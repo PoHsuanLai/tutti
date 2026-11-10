@@ -28,13 +28,13 @@ pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
 ///
 /// ```
 /// use tutti_types::{NodeKey, SampleRate, Samples};
-/// use tutti_ump::MidiChannel;
+/// use tutti_ump::{MidiChannel, NoteNumber, U7};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiQueueNode;
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
 /// let keys = editor.insert(NodeKey(1), "keyboard", MidiQueueNode::new());
-/// assert!(keys.note_on(MidiChannel::FIRST, 60, 100));
+/// assert!(keys.note_on(MidiChannel::FIRST, NoteNumber::new(60).unwrap(), U7::new(100).unwrap()));
 /// ```
 pub struct MidiQueueNode {
     rx: MidiReceiver,

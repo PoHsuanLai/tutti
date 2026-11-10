@@ -33,12 +33,10 @@ use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
-use tutti_graph::Offset;
 use tutti_midi_device::{EndpointId, Identity, OsDevice};
 use tutti_midi_runtime::MidiOut;
 use tutti_midi_types::Protocol;
 use tutti_midi_types::ump::split_ump_stream;
-use tutti_ump::Ump;
 
 pub mod virtual_destination;
 pub mod virtual_source;

@@ -75,9 +75,11 @@ assert!(out[0].iter().all(|&s| s != 0.0));
 ```
 
 Streaming needs a real file. Build a `DiskStreamer` once with
-`DiskStreamer::new`, start a stream through its `commands()` port, and take
-the `DiskVoice` for it from its `status()` port; `DiskStreamer`'s own
-documentation has that example.
+`DiskStreamer::new` (it fails if the OS refuses the streamer's thread), open a
+stream with `open`, and build the `DiskVoice` from the reader the open answers
+with. The `Stream` it answers with is the control side: `Stream::status` reports
+whether the ring is primed, ended or faulted, and how many frames the voice
+missed. `DiskStreamer`'s own documentation has that example.
 
 ## Channel ceiling
 

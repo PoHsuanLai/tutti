@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::Control;
 use tutti_vst2_host::{Samples, TransportInfo, Vst2ProcessContext};
@@ -18,10 +19,8 @@ use tutti_vst2_test_plugin::{PROBE_UNIQUE_ID, ProcessCapture, ProcessEntry, chan
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 128;
@@ -36,7 +35,7 @@ fn lock_probe() -> MutexGuard<'static, ()> {
 
 /// Load the probe through the real host, capture and switches reset.
 fn load_probe() -> (Active, PathBuf) {
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
@@ -279,10 +278,4 @@ fn tag_passthrough_oracle_produces_exact_samples() {
         channel_tag(1),
         "the routing oracle depends on per-channel tags being distinct"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

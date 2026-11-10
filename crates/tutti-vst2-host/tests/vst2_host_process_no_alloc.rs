@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
@@ -30,10 +31,8 @@ use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 // Not redundant with `src/lib.rs`: that declaration is `#[cfg(test)]`, which
 // covers unit tests only, not integration-test binaries. Without this the
@@ -65,7 +64,7 @@ fn load_probe_f64() -> (Active, PathBuf) {
 }
 
 fn load_probe_inner(declares_f64: bool) -> (Active, PathBuf) {
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     // SAFETY: callers hold `PROBE_LOCK`, so no other test thread is reading or
     // writing the environment concurrently.
@@ -368,7 +367,7 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
 
     // A second activation, at another rate, is a single, real transition.
     let loaded =
-        Vst2Loaded::load(&main_thread(), probe_path::probe_path()).expect("the probe loads");
+        Vst2Loaded::load(&main_thread(), tutti_fixtures::vst2_probe()).expect("the probe loads");
     assert_eq!(
         read_capture(&path).resume_count,
         1,
@@ -394,7 +393,7 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
 #[test]
 fn a_prepare_that_is_no_rate_cannot_be_built() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     let loaded = Vst2Loaded::load(&main_thread(), &path).expect("the probe loads");
 
@@ -473,10 +472,4 @@ fn plugin_still_renders_after_repeated_reconfigure() {
         cap.sample_rate, SAMPLE_RATE as f32,
         "the last configured rate must be the one in effect"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

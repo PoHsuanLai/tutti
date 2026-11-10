@@ -55,7 +55,7 @@ tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-au-host = { path = ".", features = ["test-support"] }
 tutti-au-ffi = { path = "../tutti-au-ffi", features = ["test-support"] }
 tutti-graph = { path = "../tutti-graph" }
-tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]

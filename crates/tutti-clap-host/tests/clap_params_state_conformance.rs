@@ -25,14 +25,11 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt, drive_block};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::types::StateContext;
-use tutti_clap_host::{
-    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, ParameterChanges,
-};
+use tutti_clap_host::{ClapLoaded, ClapProcessContext, LoadOptions, ParameterChanges};
 use tutti_clap_test_plugin::params_state::{ProbeParam, probe_params};
 use tutti_clap_test_plugin::{
     PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture,
@@ -85,7 +82,7 @@ impl Probe {
     /// instance, and that is the state a host is in when it restores a saved
     /// project — so several tests here deliberately stay loaded-but-inactive.
     fn load(&self) -> ClapLoaded {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
@@ -128,23 +125,6 @@ fn param(index: usize) -> &'static ProbeParam {
     &probe_params()[index]
 }
 
-/// Drive one silent stereo block through the host with the given context.
-fn drive_block(inst: &mut Active<f32>, frames: usize, ctx: &ClapProcessContext<'_>) {
-    let mut out_l = vec![0.0f32; frames];
-    let mut out_r = vec![0.0f32; frames];
-    let in_l = vec![0.0f32; frames];
-    let in_r = vec![0.0f32; frames];
-    let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
-    let ins: &[&[f32]] = &[&in_l[..], &in_r[..]];
-    let mut buffer = AudioBuffer32 {
-        inputs: ins,
-        outputs: outs,
-        num_samples: frames,
-        sample_rate: 48_000.0,
-    };
-    inst.process(&mut buffer, ctx).expect("process succeeds");
-}
-
 // --- exported C symbols, reached across the dlopen seam ---------------------
 //
 // Opening the same path a second time shares the already-loaded image, so these
@@ -154,7 +134,8 @@ fn read_param_capture() -> ParamStateCapture {
     type F = unsafe extern "C" fn(*mut ParamStateCapture) -> bool;
     let mut cap = ParamStateCapture::default();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_param_capture\0")
             .expect("param capture symbol present");
@@ -166,7 +147,8 @@ fn read_param_capture() -> ParamStateCapture {
 fn param_reset() {
     type F = unsafe extern "C" fn();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_param_reset\0")
             .expect("param reset symbol present");
@@ -178,7 +160,8 @@ fn peek_param(id: u32) -> Option<f64> {
     type F = unsafe extern "C" fn(u32, *mut f64) -> bool;
     let mut v = 0.0f64;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_param_peek\0")
             .expect("param peek symbol present");
@@ -189,7 +172,8 @@ fn peek_param(id: u32) -> Option<f64> {
 fn queue_output(kind: u32, param_id: u32, value: f64) {
     type F = unsafe extern "C" fn(u32, u32, f64);
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_queue_output\0")
             .expect("queue output symbol present");
@@ -200,7 +184,8 @@ fn queue_output(kind: u32, param_id: u32, value: f64) {
 fn set_param_command(cmd: u32) {
     type F = unsafe extern "C" fn(u32) -> u32;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_param_command\0")
             .expect("param command symbol present");
@@ -214,7 +199,8 @@ fn read_process_capture() -> ProcessCapture {
     type F = unsafe extern "C" fn(*mut ProcessCapture) -> bool;
     let mut cap = ProcessCapture::default();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_capture\0")
             .expect("capture symbol present");

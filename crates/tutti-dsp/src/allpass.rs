@@ -1,6 +1,23 @@
 //! The phaser's swept first-order all-pass chain: the coefficient for a sweep
 //! position and the per-sample stage loop.
 
+use tutti_types::{Depth, Hz};
+
+/// The all-pass centre frequency for one LFO value: the sweep range's `min`
+/// at the LFO's trough, its `max` at the peak, scaled toward `min` by `depth`.
+///
+/// `lfo` is the oscillator's raw value in `-1..=1`; it is mapped to `0..=1`
+/// (`lfo * 0.5 + 0.5`) first, and the sweep is `min + (max - min) * lfo01 *
+/// depth`. A `depth` of 0 parks the centre at `min`, 1 sweeps the whole range.
+/// The result is not held to any band: [`allpass_coeff`] clamps it.
+#[inline]
+#[must_use]
+pub fn sweep_hz(min: Hz, max: Hz, lfo: f32, depth: Depth) -> Hz {
+    let lfo = lfo * 0.5 + 0.5;
+    let (min, max) = (min.get(), max.get());
+    Hz::new(min + (max - min) * lfo * depth.get())
+}
+
 /// The lowest frequency an all-pass stage is tuned to (see [`allpass_coeff`]).
 const SWEEP_FLOOR_HZ: f32 = 1.0;
 
@@ -51,5 +68,42 @@ pub fn allpass_chain(
             y1[c] = out;
             lane[c] = out;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sweep at the LFO's trough, centre and peak, for depth 0, half and 1,
+    /// from the definition `min + (max - min) * (lfo + 1) / 2 * depth`.
+    ///
+    /// Mutation (run): `lfo * 0.5 + 0.5` -> `lfo * 0.5` fails the trough and
+    /// centre rows; `* depth` dropped fails the depth-0 row; `min` and `max`
+    /// swapped fails every row with `max != min`.
+    #[test]
+    fn the_sweep_runs_from_min_to_max_by_lfo_and_depth() {
+        let (lo, hi) = (Hz(200.0), Hz(4_000.0));
+        let at = |lfo: f32, depth: f32| sweep_hz(lo, hi, lfo, Depth(depth)).get();
+        // Depth 1: the whole range.
+        assert_eq!(at(-1.0, 1.0), 200.0);
+        assert_eq!(at(0.0, 1.0), 2_100.0);
+        assert_eq!(at(1.0, 1.0), 4_000.0);
+        // Depth 0: parked at the floor whatever the LFO does.
+        for lfo in [-1.0, 0.0, 1.0] {
+            assert_eq!(at(lfo, 0.0), 200.0);
+        }
+        // Half depth: half the excursion.
+        assert_eq!(at(1.0, 0.5), 2_100.0);
+        assert_eq!(at(0.0, 0.5), 1_150.0);
+    }
+
+    /// A zero-width range does not move whatever the LFO and depth.
+    ///
+    /// Mutation (run): `min +` dropped fails it.
+    #[test]
+    fn an_empty_range_is_a_fixed_frequency() {
+        let f = Hz(440.0);
+        assert_eq!(sweep_hz(f, f, 0.7, Depth(1.0)).get(), 440.0);
     }
 }

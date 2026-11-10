@@ -160,7 +160,7 @@ became one `tutti_plugin_types::Locator` with a `Helper`. What remains:
 | # | Item | Uses | When |
 |---|---|---|---|
 | M1 | `Midi1Decoder` and `Midi1Splitter` go to `tutti_ump::Midi1Parser` (one behaviour change: a status byte that cuts a SysEx short emits no End) | `tutti-ump` | P3, now |
-| M2 | `convert`'s integer scaling goes to `tutti_midi_protocol::widen` / `narrow_*`. The float helpers (`unit_f32_to_u32`, `u16_to_unit_f32`, `signed_f32_to_bend_u32`) stay until 017 stage 3b | `tutti-midi-protocol` | P3, now. **No production call site was left**: the plugin crates' only integer scaling is in test fixtures (`midi1_velocity_to_midi2(100)` building a MIDI 2.0 packet), which stay with `convert` until the MIDI lane retires it, and `midi1_decoder.rs`'s, which goes with M1 |
+| M2 | `convert`'s integer scaling goes to `tutti_midi_protocol::widen` / `narrow_*`. The float helpers (`unit_f32_to_u32`, `u16_to_unit_f32`, `signed_f32_to_bend_u32`) stay until 017 stage 3b | `tutti-midi-protocol` | P3, now. **No production call site was left**: the plugin crates' only integer scaling was in test fixtures (now `tutti_fixtures::midi::wide_velocity(100)`, since `convert` is deleted), and `midi1_decoder.rs`'s, which goes with M1 |
 | M3 | The `fn widened` copies in the CLAP and VST3 event code become direct `widen` calls | `tutti-midi-protocol` | P3, now. **Done**: `widen_message` |
 | M4 | VST2's `to_midi1_bytes` goes to `midi1()`, `Voice1::bytes` and `System::bytes`, with `tutti_ump::frame`; `sysex7_fragments` stays | `tutti-ump`, `tutti-midi-protocol` | P3, now. **Done**: `from_midi` and `stage_piece` read `midi1()`; `from_midi` is `None` for a banked Program Change (three messages), and a MIDI 2.0 Note On at velocity 0 goes out at velocity 1 (M2-104) |
 | M5 | AU's hand-built MIDI goes to `narrow`. This fixes D16. Tell the MIDI lane when it lands | `tutti-midi-protocol` | P3, now. **Done**: `send_midi` sends `midi1()`'s messages; the bank is CC 0, CC 32, then the program |
@@ -210,8 +210,8 @@ starting a second copy of anything that already has an owner:
 2. The neutral value stays on the host side. It is never an event-port, wire
    or stored type: the graph and IPC carry `Ump`.
 3. Value scaling comes from `tutti-midi-protocol` (`widen`, `narrow_*`, and
-   the float converters, which the MIDI lane moves there from
-   `tutti_midi_types::convert` before 017 stage 5b). Only a format's own
+   the float converters, which moved there from
+   `tutti_midi_types::convert`, since deleted). Only a format's own
    scaling stays in its host.
 4. The module mints no note id. It takes the one `NoteId` (M8), or the
    format's `i32` derived from it. **Decided:** the module owns
@@ -492,6 +492,25 @@ diff (new P4):
 - **The VST3 `#[ignore]`s** (18 VSTGUI plus the display ones, all in
   `tutti-vst3-host`) move to the shared test plugin and the contract, then
   each `#[ignore]` goes after a mutation check (task 5, plan item 6).
+
+P4 lands in five PRs: 4a the fixtures helpers, 4b one `Active<L>` and
+`drive_block`, 4c the capture readers (with the `PROBE_LOCK`/`AU_LOCK`
+removal and the test plugins' narrowing), 4d the contract's G2 and C4 and
+the per-crate deletions, 4e the VST3 `#[ignore]`s. Decided in 4a
+(2026-11-10):
+
+- `main_thread()`, `machine_lock()`, `clap_probe()` and `vst2_probe()` are in
+  `tutti-fixtures`, the first behind its `plugin` feature.
+- The environment guards stay where they are. `tutti-fixtures` is
+  `#![forbid(unsafe_code)]` and `set_var` is `unsafe`. They go in 4c, when
+  the test plugins are configured through their state instead.
+- `Latent` is `tutti_graph::contract::Latent`, one mono output fanned to every
+  input port.
+- The CLAP timing constants (`SAMPLE_RATE`, `BLOCK`, `PERIOD`, `PACE`) are in
+  `tutti-plugin`'s `tests/support/clap_probe.rs`, not in `tutti-fixtures`.
+  Only the suites that include that module use them.
+  `real_plugin_pressure` keeps its own, because it includes the module only
+  under `clap` or `vst3`.
 
 ## 11. Order
 

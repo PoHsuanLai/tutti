@@ -25,7 +25,8 @@
 # - `tutti-types` depends on no workspace crate, and `tutti-rt` on `arc-lend`
 #   alone;
 # - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
-#   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
+#   `tutti-midi-types` on `tutti-types`, `tutti-rt`, `tutti-ump` and
+#   `tutti-midi-protocol`, and
 #   `tutti-graph` on those three;
 # - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
@@ -447,9 +448,10 @@ for n in ("tutti-dsp", "tutti-modulation"):
         only(n, ["tutti-types"])
 if "tutti-measure" in pkgs:
     only("tutti-measure", ["tutti-types", "tutti-dsp"])
-for n in ("tutti-graph", "tutti-midi-types"):
-    if n in pkgs:
-        only(n, ["tutti-types", "tutti-rt", "tutti-ump"])
+if "tutti-graph" in pkgs:
+    only("tutti-graph", ["tutti-types", "tutti-rt", "tutti-ump"])
+if "tutti-midi-types" in pkgs:
+    only("tutti-midi-types", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-midi-protocol"])
 if "tutti-nodes" in pkgs and "tutti-spatial" in deps_of("tutti-nodes"):
     fail("tutti-nodes must not depend on tutti-spatial (spatial depends on nodes)")
 if "tutti-spatial" in pkgs and "tutti-nodes" not in deps_of("tutti-spatial"):

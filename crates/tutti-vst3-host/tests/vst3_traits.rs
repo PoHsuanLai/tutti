@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_plugin_types::{
@@ -823,10 +824,4 @@ fn a_processor_dropped_last_leaves_the_teardown_to_the_control_side() {
         "the plugin was waiting to be destroyed"
     );
     assert_eq!(Vst3Loaded::reap_retired(), 0);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

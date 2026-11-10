@@ -18,7 +18,7 @@ fn cv1_note_on_promotes_to_cv2_full_width() {
     expect_cv2!(norm, ChannelVoice2::NoteOn(m) => {
         assert_eq!(u8::from(m.channel()), 3);
         assert_eq!(u8::from(m.note_number()), 60);
-        assert_eq!(m.velocity(), midi1_velocity_to_midi2(100)); // widened, not <<9
+        assert_eq!(m.velocity(), midi::wide_velocity(100)); // widened, not <<9
     });
 }
 

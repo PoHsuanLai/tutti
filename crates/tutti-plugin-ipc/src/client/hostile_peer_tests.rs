@@ -33,6 +33,7 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tutti_fixtures::main_thread;
 use tutti_types::SampleRate;
 
 use interprocess::local_socket::{ListenerOptions, Stream, traits::Listener as _};
@@ -1721,15 +1722,20 @@ fn a_chatty_plugin_does_not_extend_the_budget() {
 /// frame start before the extended deadline and be caught part-way in turn,
 /// and the bridge crashed on a peer whose every frame completes in 400 ms.
 ///
-/// Mutation (run): the partial arm extending the read's deadline by
-/// `DRAIN_FINISH` (as it was) → the bridge crashes → fails. The peer is
-/// mid-frame about 97% of the time, so the mutation fails on almost every run,
+/// The peer's split is 200 ms against `DRAIN_FINISH`'s 500: a frame caught
+/// part-way finishes with 300 ms to spare, which a loaded runner's late wakeups
+/// do not use up. A 400 ms split left 100 ms and failed on a loaded macOS
+/// runner.
+///
+/// Mutation (run, at both splits): the partial arm extending the read's
+/// deadline once by `DRAIN_FINISH` and failing the next partial (as it was) →
+/// the bridge crashes → fails. The peer is mid-frame about 95% of the time, so the mutation fails on almost every run,
 /// not every one; the fixed code passes on every run.
 #[test]
 fn a_live_peer_mid_frame_at_the_budget_is_not_a_crash() {
     let mock = MockServer::start("split-events", |msg| match msg {
         HostMessage::GetParameter { .. } => Action::SplitEvents {
-            split: Duration::from_millis(400),
+            split: Duration::from_millis(200),
         },
         _ => Action::Silent,
     });
@@ -1784,11 +1790,4 @@ fn the_rest_of_a_stalled_state_is_not_the_next_answer() {
         "a late state chunk was read as the parameter list's answer"
     );
     assert!(!mock.bridge.is_crashed());
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-#[cfg(test)]
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -10,6 +10,7 @@ mod conformance_support;
 
 use std::os::raw::{c_int, c_uint, c_void};
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 use tutti_vst3_host::{
     AudioBuffer, InputEvents, LoadOptions, ProcessMode, TransportInfo, Vst3Loaded,
@@ -459,8 +460,4 @@ fn host_context_is_borrowed_not_consumed() {
         "host context is being leaked at initialize():\n{}",
         failures.join("\n")
     );
-}
-
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

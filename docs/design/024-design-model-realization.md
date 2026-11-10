@@ -1078,7 +1078,7 @@ realization_contract!(Tdf2Design: Lti, tolerance = ..);       // another realiza
    see every `impl`). `scripts/check-contract-coverage.sh` **(proposal)** greps
    every `impl Lti|Memoryless|SteadyState|Periodic|Piecewise|Noise for` in the workspace and
    fails unless the type appears in a `*_contract!` list, as
-   `check-range-types.sh` does for its rule. The plugin contract's `gaps = N`
+   `check-range-types` does for its rule. The plugin contract's `gaps = N`
    ratchet is the precedent for a count a reviewer must raise.
 4. Each case has a `Defect`/`Flawed` mutant run by a self-test in `tutti-dsp` (the
    `a_defective_realization_fails_its_case` pattern of #367), so a case that cannot fail
@@ -1433,7 +1433,7 @@ text is not rewritten.
 | Q2 | Name the shared concept `Model`? | Keep the word in prose (doc 022's and the owner's); in code the class traits are the names (`Lti`, `Memoryless`), and `Design::Model` is the associated type |
 | Q3 | Per-frame control lanes (the dynamics' threshold and ceiling): `Cadence::Frame`, a second realization shape `Driven<M>`, or leave those nodes hand-written? | Decide in step 4 against the code. Order of preference: `Driven<M>` (the node picks per block, `Frames` vs `Base`); else the three nodes keep their `process` and adopt `Design`, the class traits and the contract only. Not `Cadence::Frame`: it is the fixed shape the owner warned against |
 | Q4 | **Resolved by the composition algebra.** The curve of a series EQ chain | A parametric EQ is one design whose model is `SeriesN<SvfModel, N>`, with an exact product `frequency_response`. A chain of separate graph nodes is the application's product of each node's `Describe::curve`. No `Chain` model (section 4.9) |
-| Q5 | Class-coverage gate: a script or a macro? | A script (`check-contract-coverage.sh`), as `check-range-types.sh`. A macro cannot see every `impl` |
+| Q5 | Class-coverage gate: a script or a macro? | A script (`check-contract-coverage.sh`), as `check-range-types`. A macro cannot see every `impl` |
 | Q6 | Contract as a `tutti-dsp` feature or a `testing/` crate? | The feature (the owner's direction, and the dev-cycle argument of section 9) |
 | Q7 | `Quality`: four tiers or AU's 0 to 127? | Four tiers with `from_au`. A native algorithm has few real tiers, and 128 steps would be false precision |
 | Q8 | May an export render at a different `Quality` from the live graph? | Not yet. It changes `System::latency`, so PDC and the fork's plan differ from the live one. Revisit with `RenderMode::Offline` once a family has a tier where it pays |

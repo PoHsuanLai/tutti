@@ -29,7 +29,14 @@ pub(in crate::streamer) fn record(
         SampleRate(48_000.0),
         Arc::downgrade(&cache),
     ));
-    let record = Record::new(out, Arc::new(RtState::new()), 1_000, shared, pin);
+    let record = Record::new(
+        out,
+        Arc::new(RtState::new()),
+        1_000,
+        shared,
+        pin,
+        Arc::new(StatusCell::new()),
+    );
     (record, ring, pos)
 }
 

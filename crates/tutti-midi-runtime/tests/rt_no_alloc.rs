@@ -18,7 +18,7 @@ use tutti_midi_runtime::{
     MidiQueueNode, TimedHarmony, TimedMidiEvent, TimedQueueNode,
 };
 use tutti_types::{At, Beat, Bpm, Frame, FrameClock, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -76,7 +76,7 @@ fn the_border_nodes_process_without_allocating() {
     let (tx, rx) = MidiMailbox::pair();
     assert_no_alloc::assert_no_alloc(|| {
         for b in 1..200u32 {
-            keys.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
+            keys.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800);
             let at = Beat(f64::from(b) * 512.0 / 24_000.0);
             exec.process(
                 512,

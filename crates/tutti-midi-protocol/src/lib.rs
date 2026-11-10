@@ -45,6 +45,12 @@
 //! [`Message`](tutti_ump::Message), three messages for a Program Change with a
 //! bank.
 //!
+//! The float scaling is here too: [`u7_to_unit_f32`], [`u16_to_unit_f32`],
+//! [`u32_to_unit_f32`], [`bend_u14_to_signed_f32`], [`bend_u32_to_signed_f32`]
+//! and the inverses [`unit_f32_to_u16`], [`unit_f32_to_u32`] and
+//! [`signed_f32_to_bend_u32`], a native integer as the `[0, 1]` or `[-1, 1]`
+//! float a DSP node wants. Lossy by design; not the MIDI 1.0 to 2.0 path.
+//!
 //! What the widening does and does not do:
 //!
 //! - **Scaling** is Min-Center-Max (M2-115 section 3): minimum, centre and
@@ -75,9 +81,14 @@ mod midi1;
 mod narrow;
 mod scale;
 mod translator;
+mod unit;
 mod voice;
 
 pub use midi1::{midi1, narrow};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use translator::Translator;
+pub use unit::{
+    bend_u14_to_signed_f32, bend_u32_to_signed_f32, signed_f32_to_bend_u32, u7_to_unit_f32,
+    u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
+};
 pub use voice::{channel_voice, widen, widen_message};

@@ -36,7 +36,6 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
-use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, PortamentoConfig, PortamentoCurve, PortamentoMode,
     SvfMode, SynthConfig, UnisonConfig,
@@ -93,7 +92,7 @@ fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
                 // Spread across the keyboard: identical pitches would let a
                 // voice allocator collapse them.
                 36 + (i as u8 % 60),
-                midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             )
         })
         .map(|e: Ump| Event::midi(at, e.0))

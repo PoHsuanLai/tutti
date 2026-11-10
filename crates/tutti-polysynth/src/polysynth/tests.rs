@@ -5,10 +5,8 @@ use crate::{
     SynthConfig, UnisonConfig, VoiceMode,
 };
 use tutti_fixtures::midi;
+use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32};
 use tutti_midi_types::cc;
-use tutti_midi_types::convert::{
-    bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
-};
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump,
@@ -172,7 +170,7 @@ fn ev_note_on(channel: u8, note: u8, vel: u8) -> Ump {
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
-        midi1_velocity_to_midi2(vel),
+        tutti_fixtures::midi::wide_velocity(vel),
     )
 }
 
@@ -185,7 +183,7 @@ fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> Ump {
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         cc_num,
-        midi1_cc_to_midi2(value),
+        tutti_fixtures::midi::wide_value(value),
     )
 }
 
@@ -193,7 +191,7 @@ fn ev_bend(channel: u8, bend14: u16) -> Ump {
     midi::pitch_bend(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
-        midi1_pitch_bend_to_midi2(bend14),
+        tutti_fixtures::midi::wide_bend(bend14),
     )
 }
 
@@ -211,7 +209,7 @@ fn ev_aftertouch(channel: u8, pressure: u8) -> Ump {
     midi::channel_pressure(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
-        midi1_cc_to_midi2(pressure),
+        tutti_fixtures::midi::wide_value(pressure),
     )
 }
 
@@ -2545,7 +2543,7 @@ fn poly_synth() -> PolySynth {
 /// velocity as `velocity / 127.0`; ignoring `Midi1` messages.
 #[test]
 fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
-    let wide = midi1_velocity_to_midi2(100);
+    let wide = tutti_fixtures::midi::wide_velocity(100);
     let m1 = Message::Midi1(
         address(3),
         Voice1::NoteOn {
@@ -2658,7 +2656,7 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
 #[test]
 fn midi1_and_midi2_controllers_reach_the_same_state() {
     let bend14 = 12_288u16;
-    let wide_bend = midi1_pitch_bend_to_midi2(bend14);
+    let wide_bend = tutti_fixtures::midi::wide_bend(bend14);
     let expected = bend_u32_to_signed_f32(wide_bend);
     for message in [
         Message::Midi1(address(0), Voice1::PitchBend(U14::of(bend14))),
@@ -2706,7 +2704,7 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
         address(0),
         Voice2::ControlChange {
             controller: pedal,
-            value: midi1_cc_to_midi2(127)
+            value: tutti_fixtures::midi::wide_value(127)
         }
     )));
     assert!(!sustain(Message::Midi1(

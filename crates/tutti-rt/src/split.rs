@@ -659,10 +659,20 @@ impl<'v, T> RwView<'v, T> {
             // `is_write`, used for all three decisions.
             let p = unsafe { split.chunk_ptr(i as usize) };
             if write_it {
+                // SAFETY: `p` is chunk `i`'s base from `chunk_ptr` above, and a
+                // chunk is `split.stride` initialized elements inside one
+                // allocation. The write claim taken for `i` and the pairwise
+                // check argued there make this the only live reference to it;
+                // it ends when `write` returns, before the next iteration.
                 write(tag, unsafe {
                     std::slice::from_raw_parts_mut(p, split.stride)
                 });
             } else {
+                // SAFETY: as above for the extent of the chunk; the read claim
+                // taken for `i` keeps any writer of it out, and no request in
+                // this call writes it (the pairwise check refuses a chunk both
+                // written and borrowed again), so a shared reference is
+                // unaliased by any mutable one for its duration.
                 read(tag, unsafe { std::slice::from_raw_parts(p, split.stride) });
             }
         }

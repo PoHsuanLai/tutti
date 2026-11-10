@@ -1,27 +1,20 @@
-//! An activation's two halves held together, for the suites that drive one
-//! plugin from a single thread.
-//!
-//! The Processor and the Controller are separate values on purpose; most of
-//! these suites want "the active plugin", so [`Active`] holds the pair, derefs
-//! to the Controller, and forwards the Processor's calls. It does not deref to
-//! `ClapLoaded`: a call meant for the loaded plugin names [`Active::loaded`], so
-//! a name both have (`set_thread_pool`) cannot quietly skip what the Controller tells
-//! the Processor. [`Active::reconfigure`] is the deactivate/activate pair a
-//! rate or block-size change is.
+//! An activation's two halves held together: [`Active`] is
+//! `tutti_fixtures::Active`, and this file is what CLAP adds to it: the sample
+//! width a suite names with a type, the plugin's processor counters, and the
+//! rate-and-frames spellings of a reconfiguration.
 
 // The error carries the whole plugin back, which is the point of it.
 #![allow(clippy::result_large_err)]
 
-use std::ops::{Deref, DerefMut};
-
-use super::main_thread;
+use std::marker::PhantomData;
 
 use tutti_clap_host::{
     AudioBuffer, ClapController, ClapLoaded, ClapProcessContext, ClapProcessor,
     instance::ProcessOutputRef,
 };
+use tutti_fixtures::{Activation, Whole};
 use tutti_plugin_types::{
-    AudioBufferMut, Loaded, MaxBlock, PluginError, Prepare, Sample, SampleFormat, SampleRate,
+    AudioBufferMut, MainThread, MaxBlock, PluginError, Prepare, Sample, SampleFormat, SampleRate,
     Samples,
 };
 
@@ -50,13 +43,34 @@ impl Width for f64 {
     }
 }
 
-/// The two halves of one activation.
+/// CLAP's activation at the width `T`.
 #[derive(Debug)]
-pub struct Active<T: Width> {
-    pair: Option<(ClapProcessor, ClapController)>,
-    _width: std::marker::PhantomData<T>,
-    prepare: Prepare,
+pub struct Clap<T>(PhantomData<fn() -> T>);
+
+impl<T: Width> Activation for Clap<T> {
+    type Loaded = ClapLoaded;
+    type Processor = ClapProcessor;
+    type Controller = ClapController;
+
+    fn activate(
+        main: &MainThread,
+        loaded: ClapLoaded,
+        prepare: Prepare,
+    ) -> Result<(ClapProcessor, ClapController), (Option<ClapLoaded>, PluginError)> {
+        Whole::<ClapLoaded>::activate(main, loaded, prepare)
+    }
+
+    fn deactivate(
+        main: &MainThread,
+        processor: ClapProcessor,
+        controller: ClapController,
+    ) -> Result<ClapLoaded, PluginError> {
+        Whole::<ClapLoaded>::deactivate(main, processor, controller)
+    }
 }
+
+/// The two halves of one activation, at the width `T`.
+pub type Active<T> = tutti_fixtures::Active<Clap<T>>;
 
 fn prepare_for<T: Width>(rate: f64, frames: u32) -> Prepare {
     let block = MaxBlock::new(Samples(frames as usize)).expect("a block of at least one frame");
@@ -81,37 +95,62 @@ impl Activate for ClapLoaded {
         rate: f64,
         frames: u32,
     ) -> Result<Active<T>, (ClapLoaded, PluginError)> {
-        let prepare = prepare_for::<T>(rate, frames);
-        match <ClapLoaded as Loaded>::activate(self, &main_thread(), prepare) {
-            Ok(pair) => Ok(Active {
-                pair: Some(pair),
-                _width: std::marker::PhantomData,
-                prepare,
-            }),
-            Err(refused) => Err((
-                refused.plugin.expect("CLAP hands the plugin back"),
-                refused.reason,
-            )),
-        }
+        Active::activate(self, prepare_for::<T>(rate, frames))
+            .map_err(|(plugin, reason)| (plugin.expect("CLAP hands the plugin back"), reason))
     }
 }
 
-impl<T: Width> Active<T> {
-    fn pair(&self) -> &(ClapProcessor, ClapController) {
-        self.pair.as_ref().expect("an Active holds its pair")
-    }
-
-    fn pair_mut(&mut self) -> &mut (ClapProcessor, ClapController) {
-        self.pair.as_mut().expect("an Active holds its pair")
-    }
-
-    /// The realtime half.
-    pub fn processor(&mut self) -> &mut ClapProcessor {
-        &mut self.pair_mut().0
-    }
-
+/// What a suite calls on an [`Active`] besides the Controller: a block through
+/// the Processor at the width `T`, its counters, and the loaded plugin.
+pub trait ActiveExt<T: Width> {
     /// One block through the Processor.
-    pub fn process(
+    fn process(
+        &mut self,
+        buffer: &mut AudioBuffer<T>,
+        ctx: &ClapProcessContext<'_>,
+    ) -> tutti_clap_host::Result<ProcessOutputRef<'_>>;
+    /// [`ClapProcessor::reset`].
+    fn reset(&mut self);
+    /// [`ClapProcessor::stop`].
+    fn stop(&mut self);
+    /// [`ClapProcessor::is_processing`].
+    fn is_processing(&self) -> bool;
+    /// [`ClapProcessor::param_points_dropped`].
+    fn param_points_dropped(&self) -> u64;
+    /// [`ClapProcessor::sysex_dropped`].
+    fn sysex_dropped(&self) -> u64;
+    /// [`ClapProcessor::midi_dropped`].
+    fn midi_dropped(&self) -> u64;
+    /// [`ClapProcessor::output_param_points_dropped`].
+    fn output_param_points_dropped(&self) -> u64;
+    /// [`ClapProcessor::output_events_refused`].
+    fn output_events_refused(&self) -> u64;
+    /// [`ClapProcessor::last_process_status`].
+    fn last_process_status(&self) -> clap_sys::process::clap_process_status;
+    /// [`ClapProcessor::is_tailing`].
+    fn is_tailing(&self) -> bool;
+    /// [`ClapProcessor::is_sleeping`].
+    fn is_sleeping(&self) -> bool;
+    /// [`ClapProcessor::sends_midi_notes`].
+    fn sends_midi_notes(&self) -> bool;
+    /// Deactivates and activates at `rate` and `frames`, as a rate change does.
+    ///
+    /// # Panics
+    ///
+    /// If the plugin refuses: a test of a refusal deactivates and activates by
+    /// hand and looks at what the refusal hands back.
+    fn reconfigure_at(&mut self, rate: f64, frames: u32) -> Result<(), PluginError>;
+    /// Deactivates and activates at the configuration it has.
+    fn reactivate(&mut self) -> Result<(), PluginError>;
+    /// The loaded plugin under the Controller. A suite names it on purpose:
+    /// a call through it skips what the Controller tells the Processor.
+    fn loaded(&self) -> &ClapLoaded;
+    /// [`loaded`](Self::loaded), mutably.
+    fn loaded_mut(&mut self) -> &mut ClapLoaded;
+}
+
+impl<T: Width> ActiveExt<T> for Active<T> {
+    fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
         ctx: &ClapProcessContext<'_>,
@@ -122,130 +161,91 @@ impl<T: Width> Active<T> {
             num_samples: buffer.num_samples,
             sample_rate: buffer.sample_rate,
         });
-        self.pair_mut().0.process(&mut wrapped, ctx)
+        self.processor().process(&mut wrapped, ctx)
     }
 
-    /// [`ClapProcessor::reset`].
-    pub fn reset(&mut self) {
-        self.pair_mut().0.reset();
+    fn reset(&mut self) {
+        self.processor().reset();
     }
 
-    /// [`ClapProcessor::stop`].
-    pub fn stop(&mut self) {
-        self.pair_mut().0.stop();
+    fn stop(&mut self) {
+        self.processor().stop();
     }
 
-    /// [`ClapProcessor::is_processing`].
-    pub fn is_processing(&self) -> bool {
-        self.pair().0.is_processing()
+    fn is_processing(&self) -> bool {
+        self.processor_shared().is_processing()
     }
 
-    /// [`ClapProcessor::param_points_dropped`].
-    pub fn param_points_dropped(&self) -> u64 {
-        self.pair().0.param_points_dropped()
+    fn param_points_dropped(&self) -> u64 {
+        self.processor_shared().param_points_dropped()
     }
 
-    /// [`ClapProcessor::sysex_dropped`].
-    pub fn sysex_dropped(&self) -> u64 {
-        self.pair().0.sysex_dropped()
+    fn sysex_dropped(&self) -> u64 {
+        self.processor_shared().sysex_dropped()
     }
 
-    /// [`ClapProcessor::midi_dropped`].
-    pub fn midi_dropped(&self) -> u64 {
-        self.pair().0.midi_dropped()
+    fn midi_dropped(&self) -> u64 {
+        self.processor_shared().midi_dropped()
     }
 
-    /// [`ClapProcessor::output_param_points_dropped`].
-    pub fn output_param_points_dropped(&self) -> u64 {
-        self.pair().0.output_param_points_dropped()
+    fn output_param_points_dropped(&self) -> u64 {
+        self.processor_shared().output_param_points_dropped()
     }
 
-    /// [`ClapProcessor::output_events_refused`].
-    pub fn output_events_refused(&self) -> u64 {
-        self.pair().0.output_events_refused()
+    fn output_events_refused(&self) -> u64 {
+        self.processor_shared().output_events_refused()
     }
 
-    /// [`ClapProcessor::last_process_status`].
-    pub fn last_process_status(&self) -> clap_sys::process::clap_process_status {
-        self.pair().0.last_process_status()
+    fn last_process_status(&self) -> clap_sys::process::clap_process_status {
+        self.processor_shared().last_process_status()
     }
 
-    /// [`ClapProcessor::is_tailing`].
-    pub fn is_tailing(&self) -> bool {
-        self.pair().0.is_tailing()
+    fn is_tailing(&self) -> bool {
+        self.processor_shared().is_tailing()
     }
 
-    /// [`ClapProcessor::is_sleeping`].
-    pub fn is_sleeping(&self) -> bool {
-        self.pair().0.is_sleeping()
+    fn is_sleeping(&self) -> bool {
+        self.processor_shared().is_sleeping()
     }
 
-    /// [`ClapProcessor::sends_midi_notes`].
-    pub fn sends_midi_notes(&self) -> bool {
-        self.pair().0.sends_midi_notes()
+    fn sends_midi_notes(&self) -> bool {
+        self.processor_shared().sends_midi_notes()
     }
 
-    /// Ends the activation: the plugin comes back deactivated.
-    pub fn deactivate(mut self) -> ClapLoaded {
-        let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        <ClapLoaded as Loaded>::deactivate(&main_thread(), processor, controller)
-            .map_err(|stuck| stuck.reason)
-            .expect("the halves are a pair")
-    }
-
-    /// Deactivates and activates at `rate` and `frames`, as a rate change does.
-    ///
-    /// # Panics
-    ///
-    /// If the plugin refuses: a test of a refusal deactivates and activates by
-    /// hand and looks at what the refusal hands back. (The rollback to the
-    /// previous configuration is the server bridge's, tested there.)
-    pub fn reconfigure(&mut self, rate: f64, frames: u32) -> Result<(), PluginError> {
-        let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        let loaded = <ClapLoaded as Loaded>::deactivate(&main_thread(), processor, controller)
-            .map_err(|stuck| stuck.reason)
-            .expect("the halves are a pair");
+    fn reconfigure_at(&mut self, rate: f64, frames: u32) -> Result<(), PluginError> {
         let wanted = prepare_for::<T>(rate, frames);
-        match <ClapLoaded as Loaded>::activate(loaded, &main_thread(), wanted) {
-            Ok(pair) => {
-                self.pair = Some(pair);
-                self.prepare = wanted;
-                Ok(())
-            }
-            Err(refused) => panic!("the plugin refused {wanted:?}: {}", refused.reason),
-        }
+        self.reconfigure(wanted).inspect_err(|reason| {
+            panic!("the plugin refused {wanted:?}: {reason}");
+        })
     }
 
-    /// Deactivates and activates at the configuration it has.
-    pub fn reactivate(&mut self) -> Result<(), PluginError> {
-        let prepare = self.prepare;
-        self.reconfigure(prepare.rate().0, prepare.max_block().get() as u32)
-    }
-}
-
-impl<T: Width> Active<T> {
-    /// The loaded plugin under the Controller. A suite names it on purpose:
-    /// a call through it skips what the Controller tells the Processor.
-    pub fn loaded(&self) -> &ClapLoaded {
-        self.pair().1.loaded()
+    fn reactivate(&mut self) -> Result<(), PluginError> {
+        self.reconfigure(self.prepare())
     }
 
-    /// [`loaded`](Self::loaded), mutably.
-    pub fn loaded_mut(&mut self) -> &mut ClapLoaded {
-        self.pair_mut().1.loaded_mut()
+    fn loaded(&self) -> &ClapLoaded {
+        self.controller().loaded()
+    }
+
+    fn loaded_mut(&mut self) -> &mut ClapLoaded {
+        self.controller_mut().loaded_mut()
     }
 }
 
-impl<T: Width> Deref for Active<T> {
-    type Target = ClapController;
-
-    fn deref(&self) -> &ClapController {
-        &self.pair().1
-    }
-}
-
-impl<T: Width> DerefMut for Active<T> {
-    fn deref_mut(&mut self) -> &mut ClapController {
-        &mut self.pair_mut().1
-    }
+/// One silent stereo block of `frames` frames through `inst` at 48 kHz, which
+/// must process.
+pub fn drive_block(inst: &mut Active<f32>, frames: usize, ctx: &ClapProcessContext<'_>) {
+    let mut out_l = vec![0.0f32; frames];
+    let mut out_r = vec![0.0f32; frames];
+    let in_l = vec![0.0f32; frames];
+    let in_r = vec![0.0f32; frames];
+    let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
+    let ins: &[&[f32]] = &[&in_l[..], &in_r[..]];
+    let mut buffer = AudioBuffer {
+        inputs: ins,
+        outputs: outs,
+        num_samples: frames,
+        sample_rate: 48_000.0,
+    };
+    inst.process(&mut buffer, ctx).expect("process succeeds");
 }

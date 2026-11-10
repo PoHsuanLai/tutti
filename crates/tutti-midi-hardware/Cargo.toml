@@ -84,6 +84,7 @@ tutti-midi-hardware = { path = ".", features = ["test-support"] }
 # allocator.
 assert_no_alloc = { version = "1", default-features = false }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 [package.metadata.docs.rs]
 all-features = true

@@ -377,7 +377,7 @@ impl FlexTextReassembler {
     /// Feeds one inbound packet, returning the completed `(kind, text)` if this
     /// packet finishes a run.
     pub fn push(&mut self, ump: &Ump) -> Option<(FlexTextKind, String)> {
-        if super::message_type(ump) != super::UmpMessageType::FlexData {
+        if ump.message_type() != 0xD {
             return None;
         }
         self.words.extend_from_slice(ump.words());

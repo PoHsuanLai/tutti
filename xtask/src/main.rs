@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod cmd;
+mod gates;
 mod recipes;
 
 use cmd::Cmd;
@@ -152,6 +153,14 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
             eprintln!("FAIL: a bevy crate reached the Bevy-free facade.");
             Err(1)
         }
+        Step::Gate(g) => {
+            let report = g.run(&ctx.root);
+            for l in &report.out {
+                println!("{l}");
+            }
+            if report.passed() { Ok(()) } else { Err(1) }
+        }
+        Step::DocFeatures => doc_features(ctx),
         Step::RequireCargoDeny => {
             let ok = process::Command::new("cargo")
                 .args(["deny", "--version"])
@@ -169,6 +178,35 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
             }
         }
     }
+}
+
+/// `cargo doc` for each feature, every one attempted; the failures are named
+/// together at the end.
+fn doc_features(ctx: &Ctx) -> Result<(), u8> {
+    let tree = gates::RealTree {
+        root: ctx.root.clone(),
+    };
+    let (runs, moved) = gates::doc_runs(&tree);
+    let flags = std::env::var("RUSTDOCFLAGS").ok();
+    let mut failed = Vec::new();
+    for r in &runs {
+        println!("{}", r.heading());
+        let c = r.command(flags.as_deref());
+        match command(&c, ctx).status() {
+            Ok(s) if s.success() => {}
+            Ok(_) => failed.push(r.label()),
+            Err(e) => return Err(spawn_failed(&c, &e)),
+        }
+    }
+    if let Some(e) = moved {
+        eprintln!("{e}");
+        return Err(1);
+    }
+    if failed.is_empty() {
+        return Ok(());
+    }
+    eprintln!("FAIL: rustdoc failed for: {}", failed.join(" "));
+    Err(1)
 }
 
 fn command(c: &Cmd, ctx: &Ctx) -> process::Command {

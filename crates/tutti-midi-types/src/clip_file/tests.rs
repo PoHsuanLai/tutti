@@ -551,10 +551,7 @@ fn a_midi1_velocity_zero_note_on_closes_a_note() {
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].duration_beats, BeatDuration(1.5));
     // A MIDI 1.0 velocity upscales by Min-Center-Max rather than shifting.
-    assert_eq!(
-        notes[0].velocity,
-        crate::convert::midi1_velocity_to_midi2(100)
-    );
+    assert_eq!(notes[0].velocity, tutti_fixtures::midi::wide_velocity(100));
 }
 
 #[test]

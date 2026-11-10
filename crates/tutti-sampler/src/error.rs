@@ -19,6 +19,11 @@ pub enum Error {
     /// The underlying file could not be read or written.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// The OS refused to start the disk streamer's thread
+    /// ([`DiskStreamer::new`](crate::DiskStreamer::new)): there is no
+    /// streamer, and a stream command with no consumer would stall silently.
+    #[error("the disk streamer's thread could not be started: {0}")]
+    Spawn(#[source] std::io::Error),
 }
 
 /// `Result` specialized to this crate's [`Error`](enum@Error).

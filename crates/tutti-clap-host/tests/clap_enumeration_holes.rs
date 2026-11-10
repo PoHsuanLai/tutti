@@ -38,9 +38,8 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::{
     AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, ParameterChanges,
@@ -93,7 +92,8 @@ impl Probe {
     fn acquire() -> Self {
         let lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         unsafe {
-            let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+            let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+                .expect("re-open reference plugin");
             let set_port_hole = *lib
                 .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_port_hole\0")
                 .expect("set_port_hole symbol present");
@@ -145,7 +145,7 @@ impl Probe {
 
     /// Load the reference plugin through the real host, without activating.
     fn load(&self) -> ClapLoaded {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))

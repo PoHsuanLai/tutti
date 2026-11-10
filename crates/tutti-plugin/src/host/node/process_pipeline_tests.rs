@@ -24,6 +24,7 @@
 //! load-bearing rather than decorative.
 
 use crate::host::node::batcher::{Batcher, ChunkCounters};
+use tutti_fixtures::machine_lock;
 use tutti_plugin_ipc::BridgeThread;
 use tutti_plugin_ipc::PluginBridge;
 
@@ -291,7 +292,7 @@ fn bridge_with_server(
 /// `Batcher::process` → output 0 reads silence → fails.
 #[test]
 fn a_sidechain_port_reaches_the_plugin() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let layout = SlabLayout {
         inputs: vec![ChannelLayout::STEREO, ChannelLayout::MONO],
         ..stereo_layout()
@@ -456,34 +457,6 @@ fn wait_for_reply(bridge: &PluginBridge, seq: u64, budget: std::time::Duration) 
 /// produced the "block N was silent" reports this file's history records.
 const WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Serialises the tests that each stand up their own mock server.
-///
-/// `cargo test` runs test functions on parallel threads, and every test below
-/// spawns a socket listener, a bridge thread and a server thread. Running
-/// several at once is not *incorrect* — the socket paths and shm names are
-/// per-process unique — but it multiplies the scheduling pressure each one's
-/// reply has to get through.
-///
-/// [`WAIT_BUDGET`] is a deadlock guard rather than a deadline anything races,
-/// so this lock is not what keeps the tests honest — [`wait_for_reply`] is. It
-/// stays because there is no reason to pay the contention: these tests are
-/// milliseconds each, and running them in series costs nothing while keeping
-/// any future timing assertion safe from scheduling pressure.
-///
-/// A lock rather than a `--test-threads=1` note: a note is something a future
-/// runner has to know, and its absence shows up as a mystifying failure.
-///
-/// **It is the machine-wide lock ([`machine_lock`](super::machine_lock)), not
-/// a `static Mutex`.** It was a `Mutex`, which under `cargo nextest` (one
-/// process per test) serialized nothing — not these tests against each other,
-/// and not against the suites that spin a real `plugin-server` for seconds.
-/// The drain test's exact count of abandoned replies is only as good as the
-/// wall clock each block gets; see that module's docs for the failure it
-/// produced.
-fn exclusive() -> super::machine_lock::Guard {
-    super::machine_lock::acquire()
-}
-
 /// Classify what a block's output actually is, so a failure names the defect
 /// instead of just printing two numbers.
 ///
@@ -526,7 +499,7 @@ fn diagnose(block: usize, got: &[Vec<f32>]) -> String {
 /// while silently making PDC under-compensate by 1.33 ms.
 #[test]
 fn pipeline_output_lags_input_by_exactly_one_block() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let blocks = 5;
     let captured = drive_blocks_with_gap(blocks, WAIT_BUDGET);
 
@@ -560,7 +533,7 @@ fn pipeline_output_lags_input_by_exactly_one_block() {
 /// block behind — never this block's own input echoed back, never two behind.
 #[test]
 fn pipeline_steady_state_is_not_echoed_or_doubly_stale() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let blocks = 6;
     let captured = drive_blocks_with_gap(blocks, WAIT_BUDGET);
 
@@ -790,7 +763,7 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 /// looks like, and no wall-clock measurement here can tell the two apart.
 #[test]
 fn stalled_plugins_do_not_stall_the_audio_thread() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     use std::time::{Duration, Instant};
 
     const PLUGINS: usize = 3;
@@ -1221,7 +1194,7 @@ fn silence_on_a_crashed_bridge_does_not_allocate() {
 /// not depend on the machine, only on whether one timeout is fatal.
 #[test]
 fn a_late_reply_does_not_permanently_crash_the_bridge() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     // Well past `MAX_PROCESS_TIMEOUT`, so the first block's reply is guaranteed
     // to miss its budget however fast the machine is.
     let (bridge, _bridge_thread, _server, slab) =
@@ -1293,7 +1266,7 @@ fn a_late_reply_does_not_permanently_crash_the_bridge() {
 /// a distinct first data word, so an off-by-one pairing names itself.
 #[test]
 fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     // One stall, far past `MAX_PROCESS_TIMEOUT`, then full speed.
     let (bridge, _bridge_thread, _server, slab) =
         bridge_with_first_block_stalled(std::time::Duration::from_millis(120));
@@ -1591,7 +1564,7 @@ impl super::batcher::Chunks for LossProbe {
 /// reported → fails.
 #[test]
 fn an_unstaged_chunk_reports_its_midi_lost() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let (bridge, _thread, _server, slab) = bridge_with_doubling_server();
     let mut batcher = Batcher::new(3, CHANNELS, SampleFormat::Float32, BATCH_SIZE, slab);
     let silence = vec![0.0f32; BATCH_SIZE];
@@ -1621,7 +1594,7 @@ fn an_unstaged_chunk_reports_its_midi_lost() {
 /// nothing reported → fails.
 #[test]
 fn a_refused_chunk_reports_its_midi_lost() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let path = unique_socket_path("refused");
     let _ = std::fs::remove_file(&path);
     let slab = AudioSlab::create(unique_shm_name("refused"), stereo_layout()).unwrap();
@@ -1674,7 +1647,7 @@ fn a_refused_chunk_reports_its_midi_lost() {
 fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let cut = sysex_fragments(60); // 10 packets
     let next = sysex_fragments(12); // 2 packets
     let note = tutti_plugin_types::WireMidi {
@@ -1713,7 +1686,7 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
 fn a_stale_block_holding_only_a_start_cuts_its_message() {
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let lost = sysex_fragments(12); // a START and an END
     let other = sysex_fragments(20);
     let note = tutti_plugin_types::WireMidi {
@@ -1737,7 +1710,10 @@ fn a_stale_block_holding_only_a_start_cuts_its_message() {
 fn sysex_fragments(len: usize) -> Vec<tutti_plugin_types::WireMidi> {
     let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
     let mut out = Vec::new();
-    tutti_midi_types::sysex7_fragments(tutti_ump::MidiGroup::FIRST, &payload, &mut out);
+    out.extend(
+        tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, &payload)
+            .expect("a 7-bit payload"),
+    );
     out.into_iter()
         .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
         .collect()

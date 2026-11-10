@@ -2,7 +2,7 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_types::{MidiMessage, sysex7_fragments};
+use tutti_midi_types::MidiMessage;
 use tutti_types::Samples;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
@@ -57,7 +57,6 @@ fn mapped(event: &UmpAt) -> Option<(u8, usize, f64)> {
 
 #[test]
 fn cc_decodes_to_controller_and_normalized_value() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     // CC 74 (brightness) = 64 on channel 2.
     let (ch, ctrl, value) = mapped(&(
         Offset::ZERO,
@@ -65,7 +64,7 @@ fn cc_decodes_to_controller_and_normalized_value() {
             MidiGroup::FIRST,
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
-            midi1_cc_to_midi2(64),
+            tutti_fixtures::midi::wide_value(64),
         ),
     ))
     .unwrap();
@@ -76,10 +75,13 @@ fn cc_decodes_to_controller_and_normalized_value() {
 
 #[test]
 fn channel_pressure_decodes_to_aftertouch() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let (ch, ctrl, value) = mapped(&(
         Offset::ZERO,
-        midi::channel_pressure(MidiGroup::FIRST, MidiChannel::FIRST, midi1_cc_to_midi2(127)),
+        midi::channel_pressure(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            tutti_fixtures::midi::wide_value(127),
+        ),
     ))
     .unwrap();
     assert_eq!(ch, 0);
@@ -89,13 +91,12 @@ fn channel_pressure_decodes_to_aftertouch() {
 
 #[test]
 fn pitch_bend_center_is_half() {
-    use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     let (ch, ctrl, value) = mapped(&(
         Offset::ZERO,
         midi::pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::of(4),
-            midi1_pitch_bend_to_midi2(8192),
+            tutti_fixtures::midi::wide_bend(8192),
         ),
     ))
     .unwrap();
@@ -128,7 +129,6 @@ fn mod_wheel_mapping(param_id: ParamID) -> MidiCcMapping {
 
 #[test]
 fn route_cc_events_splits_mapped_cc_into_params() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let mapping = mod_wheel_mapping(500);
     // Mod wheel (mapped) + a note-on (passes through) + an unmapped CC.
     let events = [
@@ -138,7 +138,7 @@ fn route_cc_events_splits_mapped_cc_into_params() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(64),
+                tutti_fixtures::midi::wide_value(64),
             ),
         ),
         (
@@ -151,7 +151,7 @@ fn route_cc_events_splits_mapped_cc_into_params() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::BRIGHTNESS,
-                midi1_cc_to_midi2(100),
+                tutti_fixtures::midi::wide_value(100),
             ),
         ),
     ];
@@ -181,7 +181,6 @@ fn route_cc_events_splits_mapped_cc_into_params() {
 
 #[test]
 fn route_cc_events_preserves_host_params() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let mapping = mod_wheel_mapping(500);
     let events = [(
         at(0),
@@ -189,7 +188,7 @@ fn route_cc_events_preserves_host_params() {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(127),
+            tutti_fixtures::midi::wide_value(127),
         ),
     )];
 
@@ -210,7 +209,6 @@ fn route_cc_events_preserves_host_params() {
 /// requires — across BOTH sources merged into one param.
 #[test]
 fn sort_param_points_orders_merged_host_and_cc_points() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let mapping = mod_wheel_mapping(500);
     // Two mapped mod-wheel CCs arriving OUT of frame order (100 before 10).
     let events = [
@@ -220,7 +218,7 @@ fn sort_param_points_orders_merged_host_and_cc_points() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(100),
+                tutti_fixtures::midi::wide_value(100),
             ),
         ),
         (
@@ -229,7 +227,7 @@ fn sort_param_points_orders_merged_host_and_cc_points() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(10),
+                tutti_fixtures::midi::wide_value(10),
             ),
         ),
     ];
@@ -345,7 +343,6 @@ fn points_sharing_a_sample_offset_keep_their_insertion_order() {
 /// fails.
 #[test]
 fn cc_route_reserves_only_while_mapped() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     const QUEUES: usize = 1 << 14;
     let room = tutti_plugin_types::ParameterQueue::chunk_room(4096);
 
@@ -367,7 +364,7 @@ fn cc_route_reserves_only_while_mapped() {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(64),
+            tutti_fixtures::midi::wide_value(64),
         ),
     )];
     let mut host = ParameterChanges::reserved(1, 1);
@@ -393,7 +390,6 @@ fn cc_route_reserves_only_while_mapped() {
 /// assertion fails.
 #[test]
 fn a_following_route_uses_the_published_mapping() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     use tutti_rt::ArcLend;
 
     let cell = std::sync::Arc::new(ArcLend::new(MidiCcCell(MidiCcMapping::empty())));
@@ -404,7 +400,7 @@ fn a_following_route_uses_the_published_mapping() {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(64),
+            tutti_fixtures::midi::wide_value(64),
         ),
     )];
 
@@ -438,7 +434,6 @@ fn a_following_route_uses_the_published_mapping() {
 /// `PointBuf`: the seeded points allocated inside the gate before.)
 #[test]
 fn cc_route_first_block_is_allocation_free_without_warmup() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let events = [
         (
             at(16),
@@ -446,7 +441,7 @@ fn cc_route_first_block_is_allocation_free_without_warmup() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(64),
+                tutti_fixtures::midi::wide_value(64),
             ),
         ),
         (
@@ -486,7 +481,6 @@ fn cc_route_first_block_is_allocation_free_without_warmup() {
 /// third CC's value → fails.
 #[test]
 fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     const QUEUES: usize = 1_000;
     const MAPPED: u32 = 999;
     let room = tutti_plugin_types::ParameterQueue::chunk_room(512);
@@ -507,7 +501,7 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(value),
+                tutti_fixtures::midi::wide_value(value),
             ),
         )
     };
@@ -549,7 +543,6 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
 /// longer exists.)
 #[test]
 fn a_bridged_chunk_reaches_the_route_whole() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     const QUEUES: usize = 2_000;
     const MAPPED: u32 = QUEUES as u32 - 1;
     let moved = QUEUES - 1;
@@ -579,7 +572,7 @@ fn a_bridged_chunk_reaches_the_route_whole() {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(64),
+            tutti_fixtures::midi::wide_value(64),
         ),
     );
     for events in [&[][..], &[mapped][..]] {
@@ -654,7 +647,6 @@ fn the_seed_copies_the_host_chunk_and_counts_what_it_cannot_hold() {
 /// order; `push_or_replace_last_keeps_the_latest_value` kills it.)
 #[test]
 fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     const MAPPED: u32 = 7;
     // One queue, at the full carried room (`room + 1`), the host's chunk
     // filling it.
@@ -670,7 +662,7 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(value),
+                tutti_fixtures::midi::wide_value(value),
             ),
         )
     };
@@ -707,7 +699,6 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
 /// under std's 256-point stack buffer.)
 #[test]
 fn the_merge_sorts_a_full_room_queue_without_allocating() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     const MAPPED: u32 = 7;
     const CCS: usize = 8;
     let room = tutti_plugin_types::ParameterQueue::chunk_room(4096);
@@ -724,7 +715,7 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(value),
+                tutti_fixtures::midi::wide_value(value),
             ),
         )
     };
@@ -771,7 +762,6 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
 /// every block rebuilds its queues inside the gate → fails.
 #[test]
 fn route_cc_events_is_allocation_free_after_warmup() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let mapping = mod_wheel_mapping(500);
     let events = [
         (
@@ -780,7 +770,7 @@ fn route_cc_events_is_allocation_free_after_warmup() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                midi1_cc_to_midi2(64),
+                tutti_fixtures::midi::wide_value(64),
             ),
         ),
         (
@@ -797,7 +787,7 @@ fn route_cc_events_is_allocation_free_after_warmup() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::BRIGHTNESS,
-                midi1_cc_to_midi2(10),
+                tutti_fixtures::midi::wide_value(10),
             ),
         ),
     ];
@@ -826,7 +816,9 @@ fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
 
 fn sysex_packets(payload: &[u8]) -> Vec<UmpAt> {
     let mut out = Vec::new();
-    sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+    out.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
+    );
     out.into_iter().map(|ump| (Offset::ZERO, ump)).collect()
 }
 
@@ -840,7 +832,6 @@ fn sysex_packets(payload: &[u8]) -> Vec<UmpAt> {
 /// dropped → fails.
 #[test]
 fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     // 266 packets: 255 in the first block, 11 in the second.
     let payload: Vec<u8> = (0..1596).map(|i| (i % 0x7F) as u8).collect();
     let packets = sysex_packets(&payload);
@@ -851,7 +842,7 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            midi1_cc_to_midi2(64),
+            tutti_fixtures::midi::wide_value(64),
         ),
     );
     let first: Vec<UmpAt> = std::iter::once(cc)

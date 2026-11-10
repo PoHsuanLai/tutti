@@ -8,12 +8,8 @@
 //! never grown, so reassembly does not allocate and a pointer handed to the
 //! plugin is never moved during the block it was handed out in.
 
-use tutti_midi_types::ump::{
-    SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
-    SYSEX7_STATUS_START, UmpMessageType, message_type, sysex7_packet_count, sysex7_packets,
-    sysex7_payload,
-};
-use tutti_ump::{MidiGroup, Ump, frame};
+use tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD;
+use tutti_ump::{Message, MidiGroup, Sysex7Packets, SysexStatus, Ump, decode, frame};
 
 use crate::{MIDI_STACK_CAPACITY, MidiEventVec, RtMidiEvents, WireMidi};
 
@@ -42,6 +38,15 @@ pub fn unframed(message: &[u8]) -> &[u8] {
     payload.strip_suffix(&[0xF7]).unwrap_or(payload)
 }
 
+/// The SysEx7 packets (on the first group) of a plugin's `message`, with its
+/// `0xF0` and `0xF7` delimiters or without, or `None` if a payload byte is 128
+/// or more: a plugin emitted a malformed message, which the caller drops
+/// (nothing is masked into a different message).
+#[must_use]
+pub fn sysex_packets(message: &[u8]) -> Option<Sysex7Packets<'_>> {
+    Sysex7Packets::checked(MidiGroup::FIRST, unframed(message))
+}
+
 /// Whether `message` is a complete SysEx message as `MusicDeviceSysEx` wants it
 /// (`MusicDevice.h`: "including the F0 and F7 start and termination bytes").
 /// [`SysExAssembler`] hands over messages in this form; the AU host checks
@@ -61,15 +66,18 @@ pub fn is_framed(message: &[u8]) -> bool {
 /// fit in `out`'s room is dropped and latches `out`'s
 /// [`is_overflowed`](tutti_rt::RtVec::is_overflowed), because a `START` left
 /// without its `END` would corrupt the stream that follows it. Returns
-/// whether it was pushed.
+/// whether it was pushed. A message with a payload byte of 128 or more is
+/// malformed ([`sysex_packets`]): it is dropped, not pushed, and `out` does not
+/// latch (it did not overflow).
 pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> bool {
-    let payload = unframed(message);
-    let packets = sysex7_packet_count(payload.len());
-    if packets > out.remaining() {
+    let Some(packets) = sysex_packets(message) else {
+        return false;
+    };
+    if packets.len() > out.remaining() {
         out.mark_overflowed();
         return false;
     }
-    for packet in sysex7_packets(MidiGroup::FIRST, payload) {
+    for packet in packets {
         out.push(WireMidi {
             offset: frame_offset,
             ump: packet,
@@ -82,12 +90,13 @@ pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> 
 /// same whole-or-nothing rule: a message whose packets do not all fit in
 /// `out`'s remaining room is dropped and `false` is returned. Never allocates.
 pub fn push_sysex_stack(out: &mut MidiEventVec, frame_offset: u32, message: &[u8]) -> bool {
-    let payload = unframed(message);
-    let packets = sysex7_packet_count(payload.len());
-    if packets > out.remaining_capacity() {
+    let Some(packets) = sysex_packets(message) else {
+        return false;
+    };
+    if packets.len() > out.remaining_capacity() {
         return false;
     }
-    for packet in sysex7_packets(MidiGroup::FIRST, payload) {
+    for packet in packets {
         out.push(WireMidi {
             offset: frame_offset,
             ump: packet,
@@ -284,25 +293,26 @@ impl SysExAssembler {
 
     /// Take in one event. Never allocates.
     ///
-    /// A malformed SysEx7 packet (a length past six) is [`SysExStep::Held`]
-    /// and has no effect.
+    /// A malformed SysEx7 packet (a length past six, a data byte of
+    /// 128 or more) is [`SysExStep::Held`] and has no effect.
     pub fn push(&mut self, event: &Ump) -> SysExStep {
-        if message_type(event) != UmpMessageType::Sysex7 {
-            return SysExStep::NotSysEx;
-        }
-        let Some((status, payload, n)) = sysex7_payload(event) else {
-            return SysExStep::Held;
+        let (group, packet) = match decode(*event) {
+            Ok(Message::Sysex7(group, packet)) => (group, packet),
+            Ok(_) => return SysExStep::NotSysEx,
+            // A SysEx7 packet `decode` refuses (a length past six, a data byte
+            // of 128 or more) is held and has no effect.
+            Err(_) if event.message_type() == 0x3 => return SysExStep::Held,
+            Err(_) => return SysExStep::NotSysEx,
         };
-        let payload = &payload[..n];
-        let group = MidiGroup::masked(((event.0[0] >> 24) & 0x0F) as u8);
-        match status {
-            SYSEX7_STATUS_SINGLE => {
+        let payload = packet.data();
+        match packet.status() {
+            SysexStatus::Complete => {
                 if self.run_group() == Some(group) {
                     self.abandon();
                 }
                 self.single(payload)
             }
-            SYSEX7_STATUS_START => {
+            SysexStatus::Start => {
                 if matches!(self.run, Run::Assembling { .. }) {
                     self.abandon();
                 }
@@ -311,13 +321,13 @@ impl SysExAssembler {
                 self.append(&[0xF0], payload, &[]);
                 SysExStep::Held
             }
-            SYSEX7_STATUS_CONTINUE => {
+            SysexStatus::Continue => {
                 if self.assembling(group) {
                     self.append(&[], payload, &[]);
                 }
                 SysExStep::Held
             }
-            SYSEX7_STATUS_END => match self.run {
+            SysexStatus::End => match self.run {
                 Run::Assembling { start, group: g } if g == group => {
                     if !self.append(&[], payload, &[0xF7]) {
                         return SysExStep::Held;
@@ -331,7 +341,6 @@ impl SysExAssembler {
                 }
                 _ => SysExStep::Held,
             },
-            _ => SysExStep::Held,
         }
     }
 
@@ -456,12 +465,12 @@ fn sysex_ref(start: usize, len: usize) -> SysExRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::{from_midi1_bytes, sysex7_fragments};
+    use tutti_midi_types::from_midi1_bytes;
 
     fn packets(group: MidiGroup, payload: &[u8]) -> Vec<Ump> {
-        let mut out = Vec::new();
-        sysex7_fragments(group, payload, &mut out);
-        out
+        Sysex7Packets::checked(group, payload)
+            .expect("a 7-bit payload")
+            .collect()
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {

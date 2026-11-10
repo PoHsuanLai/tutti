@@ -701,12 +701,7 @@ impl PluginState for ClapInstance {
 #[cfg(feature = "clap")]
 mod tests {
     use super::*;
-
-    /// This process's main thread. Each test is its own process under nextest, so
-    /// the claim cannot be refused.
-    fn main_thread() -> tutti_plugin_types::MainThread {
-        tutti_plugin_types::MainThread::claim().expect("one test, one process")
-    }
+    use tutti_fixtures::main_thread;
 
     use std::path::Path;
     use std::sync::atomic::Ordering;
@@ -1805,7 +1800,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 60,
-                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
         )];
 
@@ -1998,7 +1993,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 60,
-                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
         )];
 
@@ -2656,7 +2651,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 60,
-                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
         )];
 

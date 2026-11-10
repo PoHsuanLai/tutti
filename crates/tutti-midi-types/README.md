@@ -11,7 +11,7 @@ SysEx / utility message fits one type. An event in a block is the pair
 `(Offset, Ump)`, the offset kept beside the packet, so no type here carries
 timing. Build a single message with `tutti_ump::Message` and `Ump::from`; build
 a multi-packet one (SysEx, Flex Data, UMP Stream) with the free functions here
-([`sysex7_fragments`], [`flex_set_tempo`], …); decode through
+(`tutti_ump::sysex7_packets`, [`flex_set_tempo`], …); decode through
 [`MidiMessage::from_ump`] (a [`MidiMessage`]) or `midi2::UmpMessage::try_from`.
 
 Around it, six public modules:
@@ -21,8 +21,7 @@ Around it, six public modules:
 - [`mpe`] — MIDI Polyphonic Expression (RP-053): zones, modes, note rotation.
 - [`sync`] — MIDI clock and MTC decoders.
 - [`cc`] — CC numbers and CC→target mapping ([`cc::mapping`]).
-- [`translation`] — the MIDI 1↔2 boundary and its bit-scaling, also reachable
-  at the root as [`convert`].
+- [`translation`] — the MIDI 1↔2 boundary (the widths are `tutti_midi_protocol`'s).
 
 The MIDI 2.0 Clip File codec ([`ParsedClipFile::from_bytes`] / [`write_clip_file`],
 M2-116), and [`MidiMessage`] are at the crate root. `midi2` and `midly` are re-exported whole, so a
@@ -65,16 +64,16 @@ downstream matches a single protocol and never needs a Channel-Voice-1 arm.
 
 ```rust
 use tutti_midi_types::prelude::*;
-use tutti_midi_types::{UmpMessageType, from_midi1_bytes, message_type};
+use tutti_midi_types::from_midi1_bytes;
 use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
 // From the wire: a MIDI 1.0 note-on, 7-bit velocity 100.
 let from_din = from_midi1_bytes(&[0x90, 60, 100])
     .expect("0x90 is a well-formed note-on");
-assert_eq!(message_type(&from_din), UmpMessageType::ChannelVoice1);
+assert_eq!(from_din.message_type(), 0x2); // Channel Voice 1
 
 let promoted = normalize(&from_din);
-assert_eq!(message_type(&promoted), UmpMessageType::ChannelVoice2);
+assert_eq!(promoted.message_type(), 0x4); // Channel Voice 2
 
 // Authored natively: 16 bits of velocity, no 7-bit original to be faithful to.
 let authored = Ump::from(Message::Midi2(
@@ -86,22 +85,27 @@ assert!(MidiMessage::from_ump(authored).is_note_on());
 
 ## Constraint: the resolution boundary, and why the loss hides
 
-Widening is the spec's Min-Center-Max scaler (`convert::midi1_velocity_to_midi2`),
+Widening is the spec's Min-Center-Max scaler (`tutti_midi_protocol::widen`),
 not a shift: `127` must reach full scale, and `127 << 9` is `65024`, which is not.
 Read a promoted note through `MidiMessage::velocity` and the 7-bit original is
 recovered exactly, in both directions:
 
 ```rust
-use tutti_midi_types::prelude::*;
-use tutti_midi_types::convert;
+use tutti_midi_protocol::{narrow_velocity, widen};
+use tutti_ump::{NoteNumber, U7, Voice1, Voice2};
 
-assert_eq!(convert::midi1_velocity_to_midi2(127), 65535);
-assert_eq!(convert::midi1_velocity_to_midi2(64), 0x8000);
+// A 7-bit release velocity as the 16-bit value `widen` gives it.
+let wide = |v: u8| {
+    let off = Voice1::NoteOff { note: NoteNumber::of(60), velocity: U7::of(v) };
+    let Voice2::NoteOff { velocity, .. } = widen(off) else { unreachable!() };
+    velocity
+};
+assert_eq!(wide(127), 65535);
+assert_eq!(wide(64), 0x8000);
 
 // Every 7-bit value round-trips exactly.
 for v in 0u8..128 {
-    let wide = convert::midi1_velocity_to_midi2(v);
-    assert_eq!(convert::midi2_velocity_to_midi1(wide), v);
+    assert_eq!(narrow_velocity(wide(v)).get(), v);
 }
 ```
 
@@ -111,10 +115,16 @@ round-trip test passes and the loss never shows. It is only visible on a value
 that did not start at 7 bits:
 
 ```rust
-use tutti_midi_types::convert;
+use tutti_midi_protocol::{narrow_velocity, widen};
+use tutti_ump::{NoteNumber, U7, Voice1, Voice2};
 
+let wide = |v: u8| {
+    let off = Voice1::NoteOff { note: NoteNumber::of(60), velocity: U7::of(v) };
+    let Voice2::NoteOff { velocity, .. } = widen(off) else { unreachable!() };
+    velocity
+};
 let authored = 0xABCD_u16;
-let via_7bit = convert::midi1_velocity_to_midi2(convert::midi2_velocity_to_midi1(authored));
+let via_7bit = wide(narrow_velocity(authored).get());
 assert_ne!(via_7bit, authored); // 43981 in, 43690 out — 128 codes survive of 65536
 ```
 
@@ -126,8 +136,7 @@ which is lossless from either protocol.
 
 It pulls in what building and decoding MIDI needs: the decoded view, per-note identity, the unit id, the `normalize` seam, and the Clip File
 codec. The advanced surfaces — UMP-Stream endpoint negotiation, Flex Data,
-RPN/NRPN translation state, MPE zone config, the sync decoders, the raw `convert`
-scaling module — stay explicit imports so a glob does not flood scope.
+RPN/NRPN translation state, MPE zone config, the sync decoders — stay explicit imports so a glob does not flood scope.
 
 ## Where it sits
 

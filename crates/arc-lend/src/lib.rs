@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod cell;
 mod current;

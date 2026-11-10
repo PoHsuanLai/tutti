@@ -16,11 +16,7 @@
 //!
 //! [`MIDI_STACK_CAPACITY`]: tutti_plugin_types::MIDI_STACK_CAPACITY
 
-use tutti_midi_types::ump::{
-    SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
-    UmpMessageType, message_type, sysex7_payload,
-};
-use tutti_ump::{Key, KeyEvent, Ump};
+use tutti_ump::{Key, KeyEvent, Message, SysexStatus, Ump, decode};
 
 use crate::protocol::{MidiEventVec, WireMidi};
 
@@ -53,9 +49,9 @@ impl MidiIntake {
         };
         let bit = group_bit(&event.ump);
         match status {
-            SYSEX7_STATUS_START | SYSEX7_STATUS_SINGLE => self.skipping &= !bit,
-            SYSEX7_STATUS_CONTINUE | SYSEX7_STATUS_END if self.skipping & bit != 0 => {
-                if status == SYSEX7_STATUS_END {
+            SysexStatus::Start | SysexStatus::Complete => self.skipping &= !bit,
+            SysexStatus::Continue | SysexStatus::End if self.skipping & bit != 0 => {
+                if status == SysexStatus::End {
                     self.skipping &= !bit;
                 }
                 return false;
@@ -63,7 +59,7 @@ impl MidiIntake {
             _ => {}
         }
         match status {
-            SYSEX7_STATUS_START | SYSEX7_STATUS_CONTINUE => self.open |= bit,
+            SysexStatus::Start | SysexStatus::Continue => self.open |= bit,
             _ => self.open &= !bit,
         }
         true
@@ -86,7 +82,7 @@ impl MidiIntake {
         // all went or none did.)
         if matches!(
             sysex7_status(&event.ump),
-            Some(SYSEX7_STATUS_START | SYSEX7_STATUS_CONTINUE)
+            Some(SysexStatus::Start | SysexStatus::Continue)
         ) {
             let bit = group_bit(&event.ump);
             self.skipping |= bit;
@@ -193,11 +189,11 @@ fn same_note(a: Key, b: Key) -> bool {
 }
 
 /// A SysEx7 packet's status, or `None` for any other message.
-fn sysex7_status(event: &Ump) -> Option<u8> {
-    if message_type(event) != UmpMessageType::Sysex7 {
-        return None;
+fn sysex7_status(event: &Ump) -> Option<SysexStatus> {
+    match decode(*event) {
+        Ok(Message::Sysex7(_, packet)) => Some(packet.status()),
+        _ => None,
     }
-    sysex7_payload(event).map(|(status, _, _)| status)
 }
 
 /// The bit of a SysEx7 packet's group in the intake's per-group masks.
@@ -218,10 +214,12 @@ mod tests {
     }
 
     fn packets(group: MidiGroup, len: usize) -> Vec<WireMidi> {
-        let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
-        let mut out = Vec::new();
-        tutti_midi_types::sysex7_fragments(group, &payload, &mut out);
-        out.into_iter().map(wire).collect()
+        let payload: Vec<tutti_ump::U7> = (0..len)
+            .map(|i| tutti_ump::U7::of((i % 0x7F) as u8))
+            .collect();
+        tutti_ump::sysex7_packets(group, &payload)
+            .map(wire)
+            .collect()
     }
 
     fn note() -> WireMidi {

@@ -16,19 +16,16 @@
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
-
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -40,9 +37,12 @@ fn at_start(event: Ump) -> Event {
 #[test]
 fn process_steady_state_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (unit, handle) =
-        tutti_plugin::in_process_vst2_client(&main_thread(), probe_path::probe_path(), 48_000.0)
-            .expect("load failed");
+    let (unit, handle) = tutti_plugin::in_process_vst2_client(
+        &main_thread(),
+        tutti_fixtures::vst2_probe(),
+        48_000.0,
+    )
+    .expect("load failed");
     // Prepared (outside the gate) as a graph prepares a node, then driven by
     // hand through `Node::process`.
     let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
@@ -77,9 +77,12 @@ fn process_with_a_meter_does_not_allocate() {
     use tutti_types::{Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (unit, handle) =
-        tutti_plugin::in_process_vst2_client(&main_thread(), probe_path::probe_path(), 48_000.0)
-            .expect("load failed");
+    let (unit, handle) = tutti_plugin::in_process_vst2_client(
+        &main_thread(),
+        tutti_fixtures::vst2_probe(),
+        48_000.0,
+    )
+    .expect("load failed");
     unit.set_meter(ProjectMeter::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
@@ -99,9 +102,12 @@ fn process_with_a_meter_does_not_allocate() {
 #[test]
 fn process_with_midi_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (unit, handle) =
-        tutti_plugin::in_process_vst2_client(&main_thread(), probe_path::probe_path(), 48_000.0)
-            .expect("load failed");
+    let (unit, handle) = tutti_plugin::in_process_vst2_client(
+        &main_thread(),
+        tutti_fixtures::vst2_probe(),
+        48_000.0,
+    )
+    .expect("load failed");
     let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
 
     // Warm up audio path.
@@ -115,7 +121,7 @@ fn process_with_midi_does_not_allocate() {
         MidiGroup::FIRST,
         MidiChannel::of(1),
         60,
-        midi1_velocity_to_midi2(100),
+        tutti_fixtures::midi::wide_velocity(100),
     );
     unit.events(0, &[at_start(warm_event)]);
     unit.block();
@@ -131,7 +137,7 @@ fn process_with_midi_does_not_allocate() {
                     MidiGroup::FIRST,
                     MidiChannel::of(1),
                     60 + (i as u8 % 12),
-                    midi1_velocity_to_midi2(100),
+                    tutti_fixtures::midi::wide_velocity(100),
                 );
                 unit.events(0, &[at_start(ev)]);
             }
@@ -170,8 +176,11 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     // SAFETY: the lock serializes the tests here, and nothing else in this
     // process touches the environment. The probe reads it in its constructor.
     unsafe { std::env::set_var("TUTTI_VST2_PROBE_PARAMS", PARAMS.to_string()) };
-    let loaded =
-        tutti_plugin::in_process_vst2_client(&main_thread(), probe_path::probe_path(), 48_000.0);
+    let loaded = tutti_plugin::in_process_vst2_client(
+        &main_thread(),
+        tutti_fixtures::vst2_probe(),
+        48_000.0,
+    );
     // SAFETY: as above.
     unsafe { std::env::remove_var("TUTTI_VST2_PROBE_PARAMS") };
     let (unit, handle) = loaded.expect("load failed");
@@ -217,10 +226,4 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     assert_eq!(stats.points_dropped, 0, "{stats:?}");
     assert_eq!(stats.points_merged, 0, "{stats:?}");
     drop(handle);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

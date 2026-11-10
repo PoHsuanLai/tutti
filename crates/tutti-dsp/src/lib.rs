@@ -13,7 +13,7 @@
 //!   [`Real`], the `f32` or `f64` their state runs in.
 //! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
 //!   curves [`compute_compressor_gain_reduction`], [`compute_gate_gain`],
-//!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`] and
+//!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`], [`LimiterKernel`] and
 //!   [`GateKernel`] with their [`CompressorBlock`] and [`GateBlock`]; the
 //!   limiter's [`LookaheadRing`]; and the ring buffers [`CircularBuffer`] and
 //!   [`MonotonicMinDeque`].
@@ -45,6 +45,7 @@
 //!   noise that decorrelates quantization, continuous across blocks.
 
 mod allpass;
+mod balance;
 mod buffer;
 mod control;
 mod convolver;
@@ -71,7 +72,8 @@ mod smoother;
 #[cfg(test)]
 mod test_support;
 
-pub use allpass::{allpass_chain, allpass_coeff};
+pub use allpass::{allpass_chain, allpass_coeff, sweep_hz};
+pub use balance::balance_gains;
 pub use buffer::{CircularBuffer, MonotonicMinDeque};
 pub use control::{COEFF_INTERVAL, LANES, Ramp, lane_group, segments};
 pub use convolver::{Convolver, IrSpectra};
@@ -79,9 +81,9 @@ pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
-    GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
-    compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain, db_to_amplitude,
-    fold_peak, gate_gain_at, ramp_db, ramp_is_at_end,
+    GateKernel, LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
+    brickwall_clip, compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain,
+    db_to_amplitude, fold_peak, gate_gain_at, ramp_db, ramp_is_at_end,
 };
 pub use error::{Error, Result};
 pub use fdn::FdnKernel;

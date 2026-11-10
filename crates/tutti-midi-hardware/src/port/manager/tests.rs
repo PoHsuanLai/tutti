@@ -2,7 +2,6 @@ use super::*;
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::convert::midi2_velocity_to_midi1;
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
@@ -111,7 +110,7 @@ fn manager_tags_drained_events_with_their_port_id() {
         MidiGroup::FIRST,
         MidiChannel::FIRST,
         0x3C,
-        tutti_midi_types::convert::midi1_velocity_to_midi2(0x7F),
+        tutti_fixtures::midi::wide_velocity(0x7F),
     );
     assert!(producer_handle.push(event, now()));
 
@@ -121,7 +120,12 @@ fn manager_tags_drained_events_with_their_port_id() {
     let message = MidiMessage::from_ump(events[0].1.1);
     assert!(message.is_note_on());
     assert_eq!(message.note(), Some(0x3C));
-    assert_eq!(message.velocity().map(midi2_velocity_to_midi1), Some(0x7F));
+    assert_eq!(
+        message
+            .velocity()
+            .map(|v| tutti_midi_protocol::narrow_velocity(v).get()),
+        Some(0x7F)
+    );
 }
 
 #[test]

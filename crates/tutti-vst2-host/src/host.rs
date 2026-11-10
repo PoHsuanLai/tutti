@@ -742,12 +742,12 @@ mod tests {
             let mut event = sysex_event(13, &mut wire);
             deliver(&host, &mut event);
 
-            let mut asm = tutti_plugin_types::SysExAssembler::reserved();
+            let mut asm = tutti_plugin_types::sysex_assembler();
             let mut done = Vec::new();
             while let Some(e) = host.midi_out_tx.pop() {
                 assert_eq!(e.offset, 13);
-                if let tutti_plugin_types::SysExStep::Complete(r) = asm.push(&e.ump) {
-                    done.push(asm.message(r).to_vec());
+                if let tutti_ump::SysexStep::Complete(r) = asm.push(e.ump) {
+                    done.push(asm.message(r).bytes().to_vec());
                 }
             }
             assert_eq!(done, vec![message], "{len} bytes");

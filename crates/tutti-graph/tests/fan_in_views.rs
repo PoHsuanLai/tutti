@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 
 use common::{Kind, TestNode, prepare};
 use tutti_graph::{
-    Edge, Feed, FeedbackFrom, InPort, Node, NodeKey, NodeSpec, OutPort, Reference, Source,
-    Topology, Transport, delays, graph_tail, latency_plan,
+    Edge, Feed, FeedbackFrom, InPort, InputDelay, Node, NodeKey, NodeSpec, OutPort, OutputDelay,
+    Reference, Source, Topology, Transport, delays, graph_tail, latency_plan,
 };
 use tutti_types::{ChannelLayout, Samples, Tail};
 
@@ -71,10 +71,23 @@ fn sources() -> Topology {
     t
 }
 
-fn sorted_inputs(t: &Topology) -> Vec<(NodeKey, u16, Feed<NodeKey>, Samples)> {
+fn sorted_inputs(t: &Topology) -> Vec<InputDelay<NodeKey>> {
     let mut v = delays(t).inputs().to_vec();
-    v.sort_by_key(|&(n, p, f, _)| (n, p, format!("{f:?}")));
+    v.sort();
     v
+}
+
+fn input(node: NodeKey, port: u16, feed: Feed<NodeKey>, by: Samples) -> InputDelay<NodeKey> {
+    InputDelay {
+        node,
+        port,
+        feed,
+        by,
+    }
+}
+
+fn output(channel: usize, feed: Feed<NodeKey>, by: Samples) -> OutputDelay<NodeKey> {
+    OutputDelay { channel, feed, by }
 }
 
 /// **A fan-in port aligns each source on its own.** Port 0 sums `SLOW`
@@ -101,9 +114,9 @@ fn each_source_of_a_fan_in_port_is_delayed_to_the_arrival() {
     assert_eq!(
         sorted_inputs(&t),
         vec![
-            (SINK, 0, Feed::Node(MID), Samples(200)),
-            (SINK, 0, Feed::Node(DRY), Samples(300)),
-            (SINK, 1, Feed::Node(MID), Samples(200)),
+            input(SINK, 0, Feed::Node(MID), Samples(200)),
+            input(SINK, 0, Feed::Node(DRY), Samples(300)),
+            input(SINK, 1, Feed::Node(MID), Samples(200)),
         ]
     );
     assert_eq!(latency_plan(&t).total(), Samples(300));
@@ -124,7 +137,7 @@ fn a_global_source_of_a_fan_in_waits_for_the_slowest() {
 
     assert_eq!(
         sorted_inputs(&t),
-        vec![(SINK, 0, Feed::Outside, Samples(100))]
+        vec![input(SINK, 0, Feed::Outside, Samples(100))]
     );
 }
 
@@ -142,7 +155,7 @@ fn two_ports_of_one_node_into_a_port_are_one_delay() {
 
     assert_eq!(
         sorted_inputs(&t),
-        vec![(SINK, 0, Feed::Node(MID), Samples(200))]
+        vec![input(SINK, 0, Feed::Node(MID), Samples(200))]
     );
 }
 
@@ -185,8 +198,8 @@ fn each_source_of_a_fan_in_output_is_delayed_to_the_output_time() {
     assert_eq!(
         d.outputs(),
         &[
-            (0, Feed::Node(DRY), Samples(300)),
-            (1, Feed::Node(MID), Samples(200)),
+            output(0, Feed::Node(DRY), Samples(300)),
+            output(1, Feed::Node(MID), Samples(200)),
         ]
     );
     let c = d.compensation();

@@ -870,8 +870,11 @@ its length every chunk (a straight line between two unit vectors dips to
 `|v|^2` of 0.68 at 8 lines, and `I - 2 v v^T` of it is a contraction), so the
 matrix is orthogonal at every step of a ramp and a frozen tail keeps its energy
 through a diffusion move (`a_diffusion_ramp_keeps_a_frozen_tails_energy`); a
-diagonal network is the reflection along line 0, a sign on one line, so the
-ramp from it is a ramp of unit vectors. A size move lands over seconds by
+diagonal network is the identity (`m = 0` of `I - 2 m v v^T`, with `v` aimed at
+line 0 so a ramp is one of unit vectors; `m` switches at the start of a ramp to a
+reflection and at the end of one from it, so no step is a contraction). The kernel's `Diagonal` now matches the model;
+before 2026-11-11 it was `I - 2 e0 e0^T`, a sign on line 0's loop, and the renders
+at diffusion 0 changed (owner-approved). A size move lands over seconds by
 design: half a frame per chunk, about 6 s for the longest line going 0 to 1,
 to keep a sweep free of pitch artefacts; a line's length moves at most half a
 frame a chunk (a pitch bend of 27 cents), the pre-delay two. The chunk counter

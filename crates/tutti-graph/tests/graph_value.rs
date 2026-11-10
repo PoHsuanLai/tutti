@@ -11,7 +11,8 @@ use std::hash::{Hash, Hasher};
 
 use tutti_graph::{
     Edge, Feed, FeedbackFrom, InPort, Invalid, LatencyGraph, NodeKey, NodeSpec, OutPort,
-    ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology, graph_tail, latency_plan,
+    ParamValue, PortFeed, Sink, Source, TapAlign, TapId, TapSpec, Topology, graph_tail,
+    latency_plan,
 };
 use tutti_types::{ChannelLayout, Samples, Tail};
 
@@ -102,8 +103,20 @@ fn latency_and_tail_are_folds_over_the_value() {
 
     // The trait view agrees with the structure: the mixer's port order is the
     // authored one, holes and all.
-    let preds: Vec<(u16, Feed<NodeKey>)> = t.inputs(C).collect();
-    assert_eq!(preds, vec![(0, Feed::Node(B)), (1, Feed::Node(D))]);
+    let preds: Vec<PortFeed<NodeKey>> = t.inputs(C).collect();
+    assert_eq!(
+        preds,
+        vec![
+            PortFeed {
+                port: 0,
+                feed: Feed::Node(B)
+            },
+            PortFeed {
+                port: 1,
+                feed: Feed::Node(D)
+            }
+        ]
+    );
 }
 
 /// A node whose tail was never declared is counted, not collapsed to zero —
@@ -387,8 +400,14 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     // path — and treating it as live puts the walk back in the cycle it was just
     // told to cut, which `plan` resolves by silently appending the cyclic nodes
     // in arbitrary order.
-    let preds: Vec<(u16, Feed<NodeKey>)> = valid.get().inputs(A).collect();
-    assert_eq!(preds, vec![(0, Feed::None)]);
+    let preds: Vec<PortFeed<NodeKey>> = valid.get().inputs(A).collect();
+    assert_eq!(
+        preds,
+        vec![PortFeed {
+            port: 0,
+            feed: Feed::None
+        }]
+    );
 
     // With a real latency inside the loop, the fold still terminates on the
     // acyclic reading and counts the node once.

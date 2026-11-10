@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{Feed, LatencyGraph};
+use crate::{ChannelFeed, LatencyGraph, PortFeed};
 use crate::{Invalid, Valid};
 use crate::{NodeKey, Topology};
 use tutti_types::Samples;
@@ -535,7 +535,7 @@ impl LatencyGraph for GraphSpec {
         LatencyGraph::latency(&self.topology, node)
     }
 
-    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = (u16, Feed<NodeKey>)> {
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = PortFeed<NodeKey>> {
         LatencyGraph::inputs(&self.topology, node)
     }
 
@@ -545,7 +545,7 @@ impl LatencyGraph for GraphSpec {
         driving_nodes(&self.events, &self.params, node)
     }
 
-    fn outputs(&self) -> impl Iterator<Item = (usize, Feed<NodeKey>)> {
+    fn outputs(&self) -> impl Iterator<Item = ChannelFeed<NodeKey>> {
         LatencyGraph::outputs(&self.topology)
     }
 }
@@ -562,7 +562,7 @@ impl LatencyGraph for ValidGraph {
         LatencyGraph::latency(self.topology(), node)
     }
 
-    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = (u16, Feed<NodeKey>)> {
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = PortFeed<NodeKey>> {
         LatencyGraph::inputs(self.topology(), node)
     }
 
@@ -570,7 +570,7 @@ impl LatencyGraph for ValidGraph {
         driving_nodes(&self.events, &self.params, node)
     }
 
-    fn outputs(&self) -> impl Iterator<Item = (usize, Feed<NodeKey>)> {
+    fn outputs(&self) -> impl Iterator<Item = ChannelFeed<NodeKey>> {
         LatencyGraph::outputs(self.topology())
     }
 }

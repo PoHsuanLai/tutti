@@ -40,7 +40,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::latency::{Feed, LatencyGraph};
+use crate::latency::{ChannelFeed, Feed, LatencyGraph, PortFeed};
 use crate::spec::EventOut;
 use crate::tail::TailGraph;
 use tutti_types::ChannelLayout;
@@ -877,17 +877,17 @@ impl LatencyGraph for Topology {
         self.nodes.get(&node).map_or(Samples::ZERO, |n| n.latency)
     }
 
-    /// In **port order**, one pair per source: a node's output is
+    /// In **port order**, one [`PortFeed`] per source: a node's output is
     /// [`Feed::Node`], a global input [`Feed::Outside`] (aligned at a merge
     /// point, as the compiler aligns it). A port with several sources yields
-    /// one pair per source, in sorted (compile) order; an unconnected port
-    /// yields one `(port, Feed::None)`.
+    /// one per source, in sorted (compile) order; an unconnected port yields
+    /// one whose feed is `Feed::None`.
     ///
     /// A feedback edge yields `Feed::None`: it carries last block's value, so
     /// it contributes no latency along this block's path, and reporting it as
     /// a live predecessor would put the walk back in the cycle the edge kind
     /// exists to cut.
-    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = (u16, Feed<NodeKey>)> {
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = PortFeed<NodeKey>> {
         let width = self.nodes.get(&node).map_or(0, |n| n.inputs.count());
         (0..width).flat_map(move |port| {
             let edges = self
@@ -899,26 +899,36 @@ impl LatencyGraph for Topology {
                 Edge::Direct(Source::Global(_)) => Feed::Outside,
                 _ => Feed::None,
             };
-            let empty = edges.is_empty().then_some((port, Feed::None));
-            empty
-                .into_iter()
-                .chain(edges.iter().map(move |e| (port, feed(e))))
+            let empty = edges.is_empty().then_some(PortFeed {
+                port,
+                feed: Feed::None,
+            });
+            empty.into_iter().chain(edges.iter().map(move |e| PortFeed {
+                port,
+                feed: feed(e),
+            }))
         })
     }
 
-    /// In channel order, one pair per source; a channel with none yields one
-    /// `(channel, Feed::None)`.
-    fn outputs(&self) -> impl Iterator<Item = (usize, Feed<NodeKey>)> {
+    /// In channel order, one [`ChannelFeed`] per source; a channel with none
+    /// yields one whose feed is `Feed::None`.
+    fn outputs(&self) -> impl Iterator<Item = ChannelFeed<NodeKey>> {
         self.outputs.iter().enumerate().flat_map(|(ch, sources)| {
             let feed = |s: &Source| match s {
                 Source::Node(p) => Feed::Node(p.node),
                 Source::Global(_) => Feed::Outside,
                 Source::Zero => Feed::None,
             };
-            let empty = sources.is_empty().then_some((ch, Feed::None));
+            let empty = sources.is_empty().then_some(ChannelFeed {
+                channel: ch,
+                feed: Feed::None,
+            });
             empty
                 .into_iter()
-                .chain(sources.iter().map(move |s| (ch, feed(s))))
+                .chain(sources.iter().map(move |s| ChannelFeed {
+                    channel: ch,
+                    feed: feed(s),
+                }))
         })
     }
 }

@@ -281,7 +281,8 @@ pub use inlet::InletNode;
 pub use instrument::Instrument;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use latency::{
-    Compensation, Delays, Feed, LatencyGraph, MAX_NODE_LATENCY, delays, plan as latency_plan,
+    ChannelFeed, Compensation, Delays, Feed, InputDelay, LatencyGraph, MAX_NODE_LATENCY,
+    OutputDelay, PortFeed, delays, plan as latency_plan,
 };
 pub use loss::EventLoss;
 pub use node::{

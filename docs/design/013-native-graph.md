@@ -478,7 +478,7 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
 #### Inlets: audio into the graph
 
 The inverse of the tap. `InletNode` has no inputs and one output a channel,
-and copies a standalone ring (`TapReader::standalone`, the writer kept by
+and copies a ring of its own (`TapReader::pair`, the writer kept by
 a thread of your own) into the graph: a block pops one frame per output frame,
 and a ring that runs dry writes silence for the frames it lacks. A width other
 than the ring's writes silence on every output and pops nothing. It is
@@ -5727,10 +5727,11 @@ latency. The sink's arrival is the latest departure over **all** its sources
 at **all** its ports, as `delays` computes for a node with several ports.
 
 - `LatencyGraph::inputs` returns one `Feed` per port. It becomes
-  `inputs(&self, node) -> impl Iterator<Item = (u16, Feed<Self::Node>)>`
-  (**new** signature): a fan-in port yields one pair per source, in the
-  compile's order. `Delays`' input entries gain the feed they delay, so a
-  delay is addressed by `(node, port, feed)`. `latency_plan` and `graph_tail`
+  `inputs(&self, node) -> impl Iterator<Item = PortFeed<Self::Node>>`
+  (**new** signature): a fan-in port yields one `PortFeed { port, feed }` per
+  source, in the compile's order. `Delays`' input entries gain the feed they
+  delay (`InputDelay { node, port, feed, by }`), so a delay is addressed by
+  its node, port and feed. `latency_plan` and `graph_tail`
   fold the same value, so both take the change; `graph_tail` treats a sum as
   passing the longest tail among its sources, which is what a sink with
   several tailed inputs already gets.
@@ -6060,12 +6061,13 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    `latency_plan` and `graph_tail` take several; the reference interpreter
    folds several. Tests drive the latency view directly with fan-in. Compile
    still refuses.
-   *As built:* `LatencyGraph::inputs` yields `(u16, Feed)` per source (an
-   unconnected port yields one `(port, Feed::None)`, a feedback addend
-   `Feed::None`), and `outputs` yields `(usize, Feed)` the same way, so an
-   output channel's sources are views too (the plan said only inputs).
-   `Delays::inputs` is `(node, port, feed, by)` and `Delays::outputs` is
-   `(channel, feed, by)`: each source of a summed port or channel is delayed
+   *As built:* `LatencyGraph::inputs` yields a `PortFeed { port, feed }` per
+   source (an unconnected port yields one whose feed is `Feed::None`, and so
+   does a feedback addend), and `outputs` yields a `ChannelFeed { channel,
+   feed }` the same way, so an output channel's sources are views too (the
+   plan said only inputs). `Delays::inputs` is a list of `InputDelay { node,
+   port, feed, by }` and `Delays::outputs` of `OutputDelay { channel, feed,
+   by }`, named structs rather than tuples so a reader sees `d.by`, not `.3`: each source of a summed port or channel is delayed
    to the arrival or the output time on its own; two outputs of one node into
    one port are one feed and one entry. A channel's arrival (and so its
    pre-roll in `Compensation`) is its latest source's departure.
@@ -7104,7 +7106,7 @@ fourth.
   that lost a packet. A SysEx ended by another status byte gets no `END`, and
   the receiver drops the open message. Nothing wires that callback into the
   server today. The AU input side reassembles
-  with the `SysExAssembler`, reserved by `AuInstance::initialize`, so
+  with `tutti_ump::SysexAssembler` (`tutti_plugin_types::sysex_assembler()`), reserved by `AuInstance::initialize`, so
   `send_midi` allocates nothing and counts what it drops
   (`AuInstance::sysex_dropped`); it hands `MusicDeviceSysEx` the complete
   message, `0xF0` and `0xF7` included, as `MusicDevice.h` asks. Pinned by the `a_sysex_from_the_plugin_*`

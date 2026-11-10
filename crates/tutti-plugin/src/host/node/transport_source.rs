@@ -334,52 +334,104 @@ fn played_across(from: &Transport, gap: usize, rate: SampleRate, to: &Transport)
     })
 }
 
+/// How the tempo moves over a stretch of `frames` frames that starts at
+/// `beat`, in BPM per sample (CLAP's `tempo_inc`: "tempo increment for each
+/// sample and until the next time info event"), for a plugin told the stretch
+/// by one transport event (doc 020 stage 5b: a stretch runs to the next event
+/// or the chunk's end).
+///
+/// The map's slope, held inside the segment the stretch starts in
+/// ([`TempoMap::tempo_slope_with`]): exact for a
+/// [`RampTime`](tutti_tempo::Shape::RampTime) ramp, whose tempo is linear in
+/// time, and a step inside the stretch adds no jump to it (a step is an event
+/// of its own). `0.0` when the transport is stopped, when the stretch reaches
+/// the loop's end (its last frame's beat is past `loop_end`: the beat jumps
+/// back there, so no slope describes the stretch), or when a figure is not
+/// usable.
+pub(crate) fn slope(
+    map: &TempoMap,
+    cursor: &mut Cursor,
+    beat: Beat,
+    playing: bool,
+    loop_end: Option<Beat>,
+    rate: SampleRate,
+    frames: usize,
+) -> f64 {
+    let rate = rate.get();
+    if !playing || frames == 0 || !beat.get().is_finite() || !rate.is_finite() || rate <= 0.0 {
+        return 0.0;
+    }
+    let t0 = map.seconds_at_with(beat, cursor).get();
+    if let Some(end) = loop_end {
+        let last = tutti_types::Seconds(t0 + (frames - 1) as f64 / rate);
+        if map.beat_at_seconds_with(last, cursor).get() > end.get() {
+            return 0.0;
+        }
+    }
+    let t1 = tutti_types::Seconds(t0 + frames as f64 / rate);
+    // `.get()`: the slope is a raw `f64` BPM per sample, for the C ABI.
+    map.tempo_slope_with(tutti_types::Seconds(t0), t1, cursor) / rate
+}
+
 impl Snapshot {
-    /// Replaces the transport's chord tempo with the project's tempo map's,
-    /// and sets the slope, for a chunk of `chunk` frames starting at this
-    /// snapshot's beat (which already accounts for latency, loops and seeks).
+    /// Replaces the transport's chord tempo with the project's tempo map's at
+    /// the snapshot's beat (which already accounts for latency, loops and
+    /// seeks), and clears the slope ([`slope`] sets it once a stretch's length
+    /// is known). Returns the beat the tempo was read at: the snapshot's, or
+    /// the beat of a map point it sits within a frame's tolerance before (an
+    /// engine's beat on a point's frame can fall an ulp short of the point's
+    /// own, which would read the tempo before the point).
     ///
-    /// - **`tempo`** is the map's instantaneous tempo at the beat: a step's
-    ///   own tempo (not a chord across it), a ramp's curve at that beat.
-    /// - **`tempo_inc`** is the change in tempo over the chunk per sample
-    ///   (CLAP's field: "tempo increment for each sample and until the next
-    ///   time info event"), the tempo the map has one chunk later minus the
-    ///   tempo now, over `chunk`. Exact for a [`RampTime`](tutti_tempo::Shape::RampTime)
-    ///   ramp, whose tempo is linear in time. It is `0.0` when the transport is
-    ///   stopped, when a map point lies in `(beat, beat + chunk]` (a point at
-    ///   the beat itself is fine: the chunk starts on it), or when the chunk
-    ///   crosses the loop's end, where the beat jumps: one slope cannot
-    ///   describe any of these. A point inside the chunk is told to the
-    ///   plugin by a transport event at its frame (doc 020 stage 5b, not
-    ///   here), which is when a non-zero slope could be right across it.
+    /// - **`tempo`** is the map's instantaneous tempo there: a step's own
+    ///   tempo (not a chord across it), a ramp's curve at that beat.
     ///
     /// A beat that is not finite keeps the transport's tempo.
-    pub(crate) fn follow(&mut self, map: &TempoMap, cursor: &mut Cursor, chunk: usize) {
+    pub(crate) fn settle(&mut self, map: &TempoMap, cursor: &mut Cursor) -> Beat {
         self.tempo_inc = 0.0;
-        let b0 = self.beat;
-        if !b0.get().is_finite() {
-            return;
+        let mut beat = self.beat;
+        if !beat.get().is_finite() {
+            return beat;
         }
-        self.tempo = map.tempo_at_with(b0, cursor);
         let rate = self.sample_rate.get();
-        if !self.playing || chunk == 0 || !rate.is_finite() || rate <= 0.0 {
-            return;
+        if rate.is_finite() && rate > 0.0 {
+            let points = map.points();
+            let from = map.seconds_at_with(beat, cursor).get();
+            let mut next = points.partition_point(|p| p.beat.get() <= beat.get());
+            while let Some(p) = points.get(next) {
+                let ahead = (map.seconds_at_with(p.beat, cursor).get() - from) * rate;
+                if tutti_types::first_frame_at_or_after(ahead) > 0 {
+                    break;
+                }
+                beat = p.beat;
+                next += 1;
+            }
         }
-        let frames = chunk as f64;
-        let t1 = tutti_types::Seconds(map.seconds_at_with(b0, cursor).get() + frames / rate);
-        let b1 = map.beat_at_seconds_with(t1, cursor);
-        // The points are sorted by beat: the first one past `b0`.
-        let points = map.points();
-        let next = points.partition_point(|p| p.beat.get() <= b0.get());
-        if points.get(next).is_some_and(|p| p.beat.get() <= b1.get()) {
-            return;
-        }
-        if self.looping.is_some_and(|(_, end)| b1.get() > end.get()) {
-            return;
-        }
-        // `.get()`: the slope is a raw `f64` BPM per sample, for the C ABI.
-        let ahead = map.tempo_at_seconds_with(t1, cursor).get();
-        self.tempo_inc = (ahead - self.tempo.get()) / frames;
+        self.tempo = map.tempo_at_with(beat, cursor);
+        beat
+    }
+
+    /// [`settle`](Self::settle), and the slope over a stretch of `chunk`
+    /// frames from there ([`slope`]). What a reader that sends one transport
+    /// per chunk (the in-process VST2 node) is told; the plugin node walks the
+    /// chunk's stretches itself (`transport_walk`).
+    #[cfg_attr(
+        not(any(feature = "vst2", test)),
+        allow(
+            dead_code,
+            reason = "only the in-process VST2 node reads one transport per chunk"
+        )
+    )]
+    pub(crate) fn follow(&mut self, map: &TempoMap, cursor: &mut Cursor, chunk: usize) {
+        let beat = self.settle(map, cursor);
+        self.tempo_inc = slope(
+            map,
+            cursor,
+            beat,
+            self.playing,
+            self.looping.map(|(_, end)| end),
+            self.sample_rate,
+            chunk,
+        );
     }
 
     /// The transport the node's input at frame `offset` was rendered at
@@ -417,6 +469,13 @@ impl Snapshot {
 /// signature and bar) and the tempo map (the tempo and its slope), each lent
 /// once for the block, with the node's cursor into the map. Built per block
 /// from the node's two readers; nothing here allocates.
+#[cfg_attr(
+    not(any(feature = "vst2", test)),
+    allow(
+        dead_code,
+        reason = "only the in-process VST2 node reads one transport per chunk"
+    )
+)]
 pub(crate) struct ProjectMaps<'a> {
     pub(crate) meter: &'a MeterMap,
     pub(crate) tempo: &'a TempoMap,
@@ -426,6 +485,13 @@ pub(crate) struct ProjectMaps<'a> {
 /// [`Snapshot::at`] for a chunk of `chunk` frames, as the plugin ABIs carry
 /// it: the tempo and slope from `maps`' tempo map ([`Snapshot::follow`]) and
 /// the signature and bar from its meter at the playhead.
+#[cfg_attr(
+    not(any(feature = "vst2", test)),
+    allow(
+        dead_code,
+        reason = "only the in-process VST2 node reads one transport per chunk"
+    )
+)]
 pub(crate) fn from_cx(
     cx: &Cx<'_>,
     offset: Offset,
@@ -944,27 +1010,37 @@ mod tests {
         }
     }
 
-    /// A chunk with a map point inside `(beat, beat + chunk]` is told no
-    /// slope (one slope cannot describe it; the transport event at the point
-    /// is stage 5b). A chunk that *starts* on a point is fine: the slope is
-    /// the segment's.
+    /// A stretch is told the slope of the segment it starts in, and a map
+    /// point inside it does not zero it (stage 5a zeroed it; stage 5b splits
+    /// the chunk at the point, `transport_walk`, so the stretch before it has
+    /// a slope that is right). The slope is held to the segment's end: it is
+    /// not the change of tempo from the stretch's start to the tempo one
+    /// stretch later, which past a point reads the next segment. A chunk that
+    /// *starts* on a point has the point's segment's slope.
     ///
-    /// Mutation: skip the `points.get(next)` check -> the chunk reaching
-    /// beat 4 is told a slope -> fails. Mutation: `partition_point(|p|
-    /// p.beat < b0)` (a point at the start counts as inside) -> the chunk at
-    /// beat 4 is told 0.0 -> fails.
+    /// Mutation: in `slope`, take `(tempo_at_seconds(t1) - tempo) / frames`
+    /// for the stretch (the 5a rule without its zero) -> the stretch reaching
+    /// beat 4 from 3.99 reads the next segment's falling tempo -> fails.
+    /// Mutation: return `0.0` when a point lies in the stretch (the 5a zero)
+    /// -> the stretch reaching beat 4 is told none -> fails.
     #[test]
-    fn a_chunk_holding_a_point_is_told_no_slope_and_one_starting_on_it_is() {
+    fn a_stretch_with_a_point_inside_is_told_its_segments_slope() {
         let map = TempoMap::new([
             point(0.0, 120.0, tutti_tempo::Shape::RampTime),
             point(4.0, 180.0, tutti_tempo::Shape::RampTime),
             point(8.0, 60.0, tutti_tempo::Shape::Step),
         ])
         .expect("a map");
-        // 1000 frames at 180 BPM is 0.0625 beat: past beat 4 from 3.99.
+        // 1000 frames at 180 BPM is 0.0625 beat: past beat 4 from 3.99. The
+        // first segment is the 120 -> 180 ramp (RAMP_SLOPE a frame), held to
+        // its end at beat 4; the chunk's tempo is that ramp's, just under 180.
         let across = told(&map, rolling(3.99), 1_000);
         assert!((across.timing.tempo - 180.0).abs() < 0.5);
-        assert_eq!(across.timing.tempo_inc, 0.0);
+        assert!(
+            (across.timing.tempo_inc - RAMP_SLOPE).abs() < 1e-9,
+            "slope {}",
+            across.timing.tempo_inc
+        );
         // On the point: 180 to 60 over four beats, 2 s (mean 120 BPM), so
         // -120 BPM over 96 000 frames.
         let on = told(&map, rolling(4.0), 64);

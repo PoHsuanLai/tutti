@@ -119,6 +119,6 @@ pub use sysex::{
     SYSEX_MESSAGE_CAPACITY, push_sysex, push_sysex_stack, sysex_assembler, sysex_packets,
 };
 pub use transport::{
-    BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportFlags, TransportInfo,
-    TransportPosition, is_usable,
+    BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportChange, TransportChanges,
+    TransportFlags, TransportInfo, TransportPosition, is_usable,
 };

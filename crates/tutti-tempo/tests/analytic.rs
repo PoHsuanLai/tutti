@@ -540,3 +540,58 @@ fn tempo_on_a_frame_is_the_tempo_at_that_second() {
         beats.tempo_at_frame(Frame(48_000), R)
     );
 }
+
+/// 120 -> 180 over four beats (tempo linear in time, 1.6 s), 180 to beat 8
+/// (until 1.6 + 4 / 3 s), then 60: inside the ramp the slope is 60 BPM / 1.6 s
+/// = 37.5 BPM per second whatever the span; a span that runs past the ramp's
+/// end is held to it; a step segment has none, and the jump down to 60 at
+/// its end is not part of a span that crosses it; an empty or reversed span
+/// has none.
+///
+/// Mutation (run): drop the `.min(s.dsec)` (the span crosses into the next
+/// segment) -> the beat ramp's span past its end reads an extrapolated
+/// exponential, not the chord to its end, and fails. Mutation (run): return
+/// `1.0` for an empty span -> fails.
+#[test]
+fn the_slope_is_held_inside_the_segment_it_starts_in() {
+    let m = TempoMap::new([
+        pt(0.0, 120.0, Shape::RampTime),
+        pt(4.0, 180.0, Shape::Step),
+        pt(8.0, 60.0, Shape::Step),
+    ])
+    .unwrap();
+    let mut hint = Cursor::default();
+    for (from, to) in [(0.0, 0.5), (0.25, 1.0), (1.0, 1.6)] {
+        let got = m.tempo_slope_with(Seconds(from), Seconds(to), &mut hint);
+        assert!((got - 37.5).abs() < 1e-9, "{from}..{to}: {got}");
+    }
+    // The ramp ends at 1.6 s; a span to 2.0 s is held to that end.
+    let held = m.tempo_slope_with(Seconds(1.0), Seconds(2.0), &mut hint);
+    assert!((held - 37.5).abs() < 1e-9, "{held}");
+    // A step segment, though its end (2.933 s) is crossed: no slope.
+    assert_eq!(
+        m.tempo_slope_with(Seconds(2.0), Seconds(3.5), &mut hint),
+        0.0
+    );
+    // Empty and reversed spans.
+    assert_eq!(
+        m.tempo_slope_with(Seconds(0.5), Seconds(0.5), &mut hint),
+        0.0
+    );
+    assert_eq!(
+        m.tempo_slope_with(Seconds(0.5), Seconds(0.2), &mut hint),
+        0.0
+    );
+    // A beat ramp's tempo is exponential in time (120 e^(0.25 s)), so a span
+    // past its end (4 ln 1.5 = 1.6219 s) is the chord to that end, not to the
+    // span's own: (180 - 120 e^0.125) / (1.6219 - 0.5).
+    let beats = TempoMap::new([
+        pt(0.0, 120.0, Shape::RampBeats),
+        pt(4.0, 180.0, Shape::Step),
+    ])
+    .unwrap();
+    let end = 4.0 * libm::log(1.5);
+    let want = (180.0 - 120.0 * libm::exp(0.125)) / (end - 0.5);
+    let got = beats.tempo_slope_with(Seconds(0.5), Seconds(5.0), &mut hint);
+    assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+}

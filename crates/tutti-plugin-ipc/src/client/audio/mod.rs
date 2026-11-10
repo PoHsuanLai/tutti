@@ -24,7 +24,7 @@ use crate::error::{Delivered, Result, StateError};
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamId, ParameterChanges, ParameterInfo, Preset, PresetId,
-    ScaleChanges, TransportInfo,
+    ScaleChanges, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
 use tutti_types::SampleRate;
@@ -406,6 +406,7 @@ impl AudioBridge {
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
+        transport_changes: TransportChanges,
     ) -> Submitted {
         if self.lifecycle.is_crashed() {
             return Submitted::REFUSED;
@@ -430,6 +431,7 @@ impl AudioBridge {
         payload.expr_texts = harmony.expr_texts;
         payload.expr_ints = harmony.expr_ints;
         payload.transport = transport;
+        payload.transport_changes = transport_changes;
 
         // Publish the block number *before* queueing it, so the bridge thread
         // can never dequeue a command that looks newer than what the host admits

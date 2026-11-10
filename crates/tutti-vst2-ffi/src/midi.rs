@@ -493,6 +493,12 @@ impl MidiSendBuffer {
         self.sysex.dropped()
     }
 
+    /// The plugin was reset: drops a SysEx message open across the reset
+    /// (counted in [`sysex_dropped`](Self::sysex_dropped)). Never allocates.
+    pub fn reset_sysex(&mut self) {
+        self.sysex.reset();
+    }
+
     /// Events refused since this buffer was made because a block staged more
     /// than its room ([`MIDI_STACK_CAPACITY`]); a refused SysEx is a whole
     /// message.

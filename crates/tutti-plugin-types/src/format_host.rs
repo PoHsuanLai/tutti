@@ -132,6 +132,17 @@ pub trait PluginAudio: Send {
         out: &mut ProcessOutput,
     ) -> Result<()>;
 
+    /// Asks the plugin to forget its signal history (a seek, a transport
+    /// reset), between blocks, on the thread that calls
+    /// [`process`](Self::process): [`Processor::reset`](crate::Processor::reset)
+    /// where the format has a Processor, `AudioUnitReset` for AU.
+    ///
+    /// # Errors
+    ///
+    /// The plugin refused the flush (AU reports a status); it keeps the history
+    /// it had.
+    fn reset(&mut self) -> Result<()>;
+
     /// Sets the render sample rate in Hz.
     ///
     /// A raw `f64` rather than `Hz`: this is the value handed straight to a C

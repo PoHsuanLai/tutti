@@ -232,7 +232,7 @@ fn expand(arg: &str, root: &Path) -> Vec<String> {
     }
 }
 
-/// `grep -E '\bbevy(_[a-z]+)?\b'`: "bevy" or "bevy_<lowercase>" as a whole
+/// `grep -E '\bbevy(_[a-z]+)?\b'`: `bevy` or `bevy_` and lowercase letters, as a whole
 /// word. Backtracking never helps here: if the optional group is followed by
 /// a word character, so is every shorter match.
 fn names_a_bevy_crate(line: &str) -> bool {

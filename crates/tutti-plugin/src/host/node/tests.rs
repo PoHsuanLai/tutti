@@ -11,6 +11,7 @@ use tutti_fixtures::main_thread;
 use tutti_plugin_ipc::AudioSlab;
 use tutti_plugin_ipc::PluginBridge;
 use tutti_plugin_ipc::SlabLayout;
+use tutti_plugin_ipc::unique_socket_path;
 use tutti_plugin_ipc::{BridgeEvent, BridgeThread};
 use tutti_plugin_ipc::{BridgeMessage, HostMessage, PROTOCOL_VERSION};
 use tutti_plugin_types::{
@@ -19,17 +20,6 @@ use tutti_plugin_types::{
 };
 use tutti_plugin_types::{EditorPresence, PluginClass, SampleFormat};
 use tutti_types::SampleRate;
-
-fn unique_socket_path(label: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "tutti-test-{}-{}-{}.sock",
-        label,
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
-}
 
 fn unique_shm_name(label: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,7 +62,7 @@ fn handle_with_mock_server(
 ) -> (PluginHandle, BridgeThread, std::thread::JoinHandle<()>) {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
-    let path = unique_socket_path("handle");
+    let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
@@ -177,7 +167,7 @@ fn handle_with_multi_reply_server(
 ) {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
-    let path = unique_socket_path("handle-multi");
+    let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();

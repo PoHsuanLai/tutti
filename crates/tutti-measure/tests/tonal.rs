@@ -5,7 +5,8 @@
 //! comment names, then restored.
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
-use tutti_dsp::{Error, FftScratch, StftGeometry};
+use tutti_dsp::{FftScratch, StftGeometry};
+use tutti_measure::Error;
 use tutti_measure::{
     ChordConfig, ChordQuality, ChromaConfig, Key, KeyProfile, Mode, PitchClass, Tuning, chroma,
     detect_chords, estimate_key,

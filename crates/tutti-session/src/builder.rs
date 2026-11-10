@@ -359,6 +359,7 @@ impl SessionBuilder {
             compensation: parts.compensation,
             latency: Samples(0),
             resumed: false,
+            silenced_seen: 0,
             #[cfg(feature = "midi")]
             midi: parts.midi,
             #[cfg(all(feature = "midi", not(feature = "midi-hardware")))]

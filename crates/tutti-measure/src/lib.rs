@@ -55,6 +55,7 @@ mod align;
 mod beat;
 mod chord;
 mod chroma;
+mod error;
 mod features;
 mod key;
 mod loudness;
@@ -76,6 +77,7 @@ mod yin;
 pub use align::{AlignConfig, Alignment, align};
 pub use chord::{ChordConfig, ChordQuality, ChordSpan, detect_chords};
 pub use chroma::{Chroma, ChromaConfig, ChromaState, Tuning, chroma, step_chroma};
+pub use error::{Error, Result};
 pub use features::{
     SpectralFeatures, spectral_centroid, spectral_features, spectral_flatness, spectral_rolloff,
 };

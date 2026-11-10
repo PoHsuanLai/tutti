@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// plugin wire they speak.
 ///
 /// The directory is the temporary one when the path fits a Unix socket
-/// address there ([`socket_path_in`]), so a long `TMPDIR` (a deep worktree, or
+/// address there (`socket_path_in`), so a long `TMPDIR` (a deep worktree, or
 /// macOS's per-user `/var/folders/…/T/`) moves the socket rather than failing
 /// the launch.
 ///

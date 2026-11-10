@@ -7,10 +7,10 @@ Dependencies on other lanes (this doc assumes they land first or alongside):
 
 | Lane | What this doc needs from it |
 |---|---|
-| E1 | Correctness: the fork-health check before the file lands, `Unmeasurable` on silence, clip counting, integer headroom for normalize, streaming normalize, the serial-versus-parallel test. |
-| E2 | `tutti-export` has `default = []`; `export-wav/flac/aiff/ogg` features on the umbrellas. |
-| E3 | Tempo. The live transport is single-tempo too and nothing in the engine reads `TempoMap`; the owner chose a separate design doc (doc 020, tempo maps) for one tempo model shared by live playback and offline render. This doc does not design it. It needs only a *project tempo source*: today the single transport tempo, later `TempoMap`, and an offline clock built from the same source. |
-| E5 | Dither and the streaming resampler in `tutti-dsp`. The pipeline calls them either way. |
+| E1 | Correctness. **Landed:** the fork-health check before the file lands (`Error::ForkFailed`), `Error::Unmeasurable` on silent or below-gate audio, clip counting (`Written::clipped_samples`) and integer headroom for normalize (`tutti-export/src/normalize.rs`). **Not found in the code:** a chunked measurer (step 2's cancel points in the measurement need one) and a serial-versus-parallel bit-identity test of an export; steps 2 and 6 still carry them. |
+| E2 | **Landed:** `tutti-export` has `default = []`, and the umbrellas carry `export-*` features. |
+| E3 | Tempo. The live transport is single-tempo too and nothing in the engine reads `TempoMap`; the owner chose a separate design doc ([020](020-tempo-map-transport.md), tempo maps) for one tempo model shared by live playback and offline render. This doc does not design it. It needs only a *project tempo source*: today the single transport tempo, later `TempoMap`, and an offline clock built from the same source. |
+| E5 | **Landed:** `DitherNoise` and `StreamingResampler` are in `tutti-dsp`; the pipeline calls them. |
 
 ## 1. The problem
 
@@ -154,6 +154,12 @@ common case.
 | Format | **Required.** `Bounce` has no default format; a missing one is `BounceError::Config(Missing)` at start, before any fork. | `.format(f)`, per-target `Stem::format(f)` |
 | Edit of the fork | None. | `.edit(PrepareEdit)`; runs on the job thread as today. |
 
+The tail row owns what [022](022-reverb.md) §12.4 deferred: the phase that resolves
+the tail at the programme's end, from what the graph reports then, instead of the
+ceiling. Step 0b shipped the fallback (export spends the ceiling against `cap`),
+and this design's `Tail::Graph { cap }` is where the second phase goes; the
+executor view and `reported_tail_now()` of 022 §12.4 are built with it.
+
 Rule: a derived figure is computed once, at one point (job start or the fork
 build), and stored in the `Plan` the bounce hands the pipeline; nothing
 re-derives it later.
@@ -195,9 +201,15 @@ is `vec![Output::master(target)]`.
 | `Stage` | `Preparing`, `Rendering`, `Measuring`, `Writing`, `Finalizing` | `#[non_exhaustive]`. |
 | `Outcome<T>` | `Finished(T)`, `Cancelled` | Unchanged. |
 | `Produced` | `File(Written)` or `Buffers(Rendered)` | One per `Output`, in order. |
-| `Written` | `path`, `bytes`, `frames: Samples`, `dropped_events: u64`, `clipped: u64`, `gain: Option<Db>`, `measured: Option<Loudness>` | Private fields, getters. `clipped` counts samples the quantizer clamped (E1). |
+| `Written` | `path`, `bytes`, `frames: Samples`, `dropped_events: u64`, `clipped_samples: u64`, `gain: Option<Db>`, `measured: Option<Loudness>` | Private fields, getters. `clipped_samples` counts samples the quantizer clamped, and non-finite ones (E1, built). |
 | `Rendered` | `planes`, `rate`, `dropped_events` | `Rendered::new(planes, rate, dropped) -> Result<_, RenderedError>` checks equal plane lengths, at least one plane, valid rate. `frames()`, `channels()`, `planes()`, `into_planes()`. No public fields. |
 | `RenderGraph` | an installed, paired `(Editor, Executor)` plus `Setup { pool, root }` | `RenderGraph::assemble(editor, executor, Setup) -> Result<_>` checks pairing and rate. `prepare(rate)`, `reported_latency()`, `reported_tail()` stay. The rest of the fork machinery is not here (§5). |
+
+Built today, for comparison: `Written` has `path`, `bytes`, `dropped_events`,
+`clipped_samples` and `normalized` (no `frames`), and `Rendered` has public
+`planes`, `sample_rate` and `dropped_events`. `Job`, `Output`, `Feed`, `Target`,
+`Stage`, `CancelToken` and `render` do not exist yet; `Control`'s role is played
+by `Flow` and `Pass`.
 
 What leaves `tutti-export`'s public surface: `ExportConfig`, `RenderConfig`,
 `EncodeConfig`, the five `render_*` functions and `write_buffers`,
@@ -360,7 +372,7 @@ section 10), measures, then runs the write pass over the spill. It never re-rend
 | `StemGain::Shared` | Each stem takes the master's measured gain (`GainSource::FromOutput(0)`). | Stems that still sum to the master. Valid only when the master is the plain sum of the stems; a graph with master-bus processing is the caller's responsibility, documented. |
 | `StemGain::Each(n)` | Each stem is measured and normalized on its own. | Independent stem libraries. Breaks balance by design. |
 
-A clipped sample is counted per output in `Written::clipped`. E1's headroom
+A clipped sample is counted per output in `Written::clipped_samples`. E1's headroom
 rule applies per output at its own integer width.
 
 ## 8. Errors
@@ -378,7 +390,7 @@ fields):
 | `Job(JobError)` | `Job::new` refused: rate, zero length, overflow. |
 | `Rendered(RenderedError)` | `Rendered::new` refused. |
 | `Target { output, why: TargetError }` | Format/width pair the encoder cannot take, topology the format cannot place (`Placement`). |
-| `Unmeasurable { output, why: Unmeasurable }` | `Silent`, `BelowGate`, `Width(ChannelLayout)`, `Rate(SampleRate)`. |
+| `Unmeasurable { output, why: Unmeasured }` | Built today as `Unmeasurable { channels, sample_rate, reason: Unmeasured }` with `Unmeasured::{Format, BelowGate, Silent}`. This design adds `output` and folds `Format` into the width and rate of the output it names. |
 | `TapOverrun { output, lost }` | §7.4. |
 | `EventsDropped { count }` | |
 | `ForkFailed { key, kind, cause }` | Checked before the commit. |
@@ -461,7 +473,7 @@ proceed in parallel with E3.
 
 | # | PR | Content | Keeps green by |
 |---|---|---|---|
-| 1 | `Job`, `Rendered`, `Written` | Add `Job` (validating), seal `Rendered`, extend `Written` (`clipped`, `gain`, `measured`). | The old config types call `Job::new` internally; callers are unchanged except `Rendered` field access, migrated in the PR. |
+| 1 | `Job`, `Rendered`, `Written` | Add `Job` (validating), seal `Rendered`, extend `Written` (`clipped_samples` is built; `gain` and `measured` are not: `Written::normalized` carries the gain today). | The old config types call `Job::new` internally; callers are unchanged except `Rendered` field access, migrated in the PR. |
 | 2 | `Control`, `Progress`, `Stage`, `CancelToken` | Replace `Flow`/`Pass`/`_with`; add the weight table; cancel checks in measure, resample flush, finalize (needs E1's chunked measurer). Session's `ExportHandle` wraps `CancelToken`. | The five `render_*` functions keep their names and lose the twins in the same PR; callers migrate in it. |
 | 3 | `Output`, `Feed`, `Target`, `render` | The multi-sink pass, tap draining, the shared-gain normalize and the spill; `render` replaces the `render_*` functions, which are deleted with their callers' migration (tests, examples, session). | One PR, because the old and new entry points cannot both own the block loop. |
 | 4 | Sealed `RenderGraph` | Move `gather/build/set_pool/set_root_topology/editor_mut/commit` into a private session `Fork`; add `RenderGraph::assemble`; move the session-only `ConfigError` variants to the session. | Session is the only caller of the machinery; `clap_fork.rs` migrates here. |

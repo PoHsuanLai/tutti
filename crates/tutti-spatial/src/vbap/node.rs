@@ -50,7 +50,7 @@ struct LastFinite {
 /// # The layouts are a closed set
 ///
 /// Five widths are supported — stereo, quad, 5.1, 7.1 and 7.1.4 Atmos — each
-/// built from a named preset of the underlying `vbap` crate's builder, which is
+/// built from a named preset of `tutti_dsp::SpeakerLayout`, which is
 /// what supplies the speaker *positions*. VBAP pans across the two or three
 /// speakers surrounding a direction, so it needs that arrangement and not
 /// merely a channel count; a bare width does not determine one.
@@ -62,31 +62,11 @@ struct LastFinite {
 ///
 /// # The energy law
 ///
-/// The speaker gains always sum to unit energy — `Σ gain² == 1.0` — for
-/// every bearing, every height, every spread and every supported layout. A
-/// source panned in a full circle holds a constant perceived level; it never
-/// fades out and never has a hole in it.
+/// The speaker gains sum to unit energy for every bearing, height, spread and
+/// supported layout, including the directions no speaker tuple surrounds;
+/// [`SpeakerLayout::gains_into`](tutti_dsp::SpeakerLayout::gains_into) says how.
 ///
-/// That is stronger than textbook VBAP. VBAP places a source
-/// inside the two or three speakers surrounding it, and a direction that no
-/// speaker tuple surrounds has no solution: an array with a gap fades a source
-/// out as it crosses the gap. Two such gaps exist here — the rear arc of a
-/// stereo pair, which has no speaker behind the listener at all, and everything
-/// below an Atmos bed. This node collapses a source in either onto the
-/// nearest direction the array can render, at full energy, rather than fading
-/// it:
-///
-/// - A front-only layout (stereo) has no front/back axis, so a rear bearing
-///   is mirrored about the lateral axis — 135° renders as 45°, 180° as
-///   front-centre. Anything still outside the ±30° pair hard-pans.
-/// - Any layout, at a height it has no speakers for, renders at the nearest
-///   height it does: a source under an Atmos bed comes from the bed.
-///
-/// Plain VBAP (as the `vbap` crate computes it) would instead lose energy on
-/// a stereo pair from 45° outward and fall silent from 150° through 210°, so
-/// a pan automated through 180° would make the source disappear.
-///
-/// The law holds at block edges, not strictly inside a moving block. The
+/// That law holds at block edges, not strictly inside a moving block. The
 /// gains are solved once per block, at its last frame, and ramped *linearly*
 /// from the previous block's solve — a chord between two unit-energy vectors,
 /// not the arc between them — so while the source moves, the frames inside a
@@ -228,7 +208,7 @@ impl VbapPannerNode {
     /// Creates a 2-out panner over the stereo speaker pair (±30°).
     ///
     /// # Errors
-    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// Returns [`VbapError::Geometry`](crate::vbap::VbapError::Geometry) if the preset
     /// geometry is rejected.
     pub fn stereo() -> Result<Self> {
         let panner = VbapPanner::stereo()?;
@@ -238,7 +218,7 @@ impl VbapPannerNode {
     /// Creates a 4-out panner over the quad field (FL/FR/RL/RR, no LFE).
     ///
     /// # Errors
-    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// Returns [`VbapError::Geometry`](crate::vbap::VbapError::Geometry) if the preset
     /// geometry is rejected.
     pub fn quad() -> Result<Self> {
         let panner = VbapPanner::quad()?;
@@ -250,7 +230,7 @@ impl VbapPannerNode {
     /// [`build_vbap_mix`](super::build_vbap_mix).
     ///
     /// # Errors
-    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// Returns [`VbapError::Geometry`](crate::vbap::VbapError::Geometry) if the preset
     /// geometry is rejected.
     pub fn surround_5_1() -> Result<Self> {
         let panner = VbapPanner::surround_5_1()?;
@@ -261,7 +241,7 @@ impl VbapPannerNode {
     /// and the LFE channel is fed separately.
     ///
     /// # Errors
-    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// Returns [`VbapError::Geometry`](crate::vbap::VbapError::Geometry) if the preset
     /// geometry is rejected.
     pub fn surround_7_1() -> Result<Self> {
         let panner = VbapPanner::surround_7_1()?;
@@ -272,7 +252,7 @@ impl VbapPannerNode {
     /// speakers.
     ///
     /// # Errors
-    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// Returns [`VbapError::Geometry`](crate::vbap::VbapError::Geometry) if the preset
     /// geometry is rejected.
     pub fn atmos_7_1_4() -> Result<Self> {
         let panner = VbapPanner::atmos_7_1_4()?;
@@ -285,7 +265,7 @@ impl VbapPannerNode {
     /// # Errors
     /// Returns [`VbapError::UnsupportedSpeakerLayout`](crate::vbap::VbapError::UnsupportedSpeakerLayout)
     /// for a width that has no preset, and
-    /// [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// [`VbapError::Geometry`](crate::vbap::VbapError::Geometry) if the preset
     /// geometry is rejected.
     pub fn for_layout(layout: tutti_types::ChannelLayout) -> Result<Self> {
         match layout.count() {

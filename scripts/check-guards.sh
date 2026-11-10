@@ -13,13 +13,12 @@
 #   its body under `guard(..)` (text match, as for tutti-clap-ffi).
 # - tutti-vst3-ffi: each `unsafe fn` in an `impl ...Trait for ...` block
 #   under `src/com`.
-# - vst-tutti (the VST2 `-ffi` crate that is not split yet): each
+# - tutti-vst2-ffi: each
 #   `extern "C" fn NAME` (generics allowed) defined outside test code in
 #   `src/host.rs` runs its body under `catch_unwind(..)`. The audioMaster
 #   callback (`callback_wrapper`) is the only function a VST2 plugin calls in
-#   the host; the other `extern "C" fn`s in the crate are the plugin side
-#   (`interfaces.rs`, `lib.rs`), which the host calls, and
-#   `tutti-vst2-host` defines none.
+#   the host; the plugin side (`dispatch.rs`, `lib.rs`) is
+#   `testing/tutti-vst2-author`'s, and `tutti-vst2-host` defines none.
 #
 # The functions in ALLOW only return a constant or have an empty body, so
 # there is nothing to guard. A new entry needs that argument.
@@ -27,7 +26,7 @@
 # Mutation (run): replace the `guarded(host, (), |cb| cb.request_restart())`
 # body of `host_request_restart` in clap-ffi with `()`, or delete the wrapper
 # of `getEventCount` in vst3-ffi, or the `catch_unwind` of `callback_wrapper`
-# in vst-tutti -> this script exits 1 naming the function.
+# in tutti-vst2-ffi -> this script exits 1 naming the function.
 #
 # No build needed (python3 only), so CI runs it in the static `paths` job.
 set -euo pipefail
@@ -140,7 +139,7 @@ for path in matches("crates/tutti-vst3-ffi/src/com/*.rs"):
 
 # VST2: the one audioMaster callback, which must be under `catch_unwind`.
 vst2_seen = 0
-for path in matches("crates/vst-tutti/src/host.rs"):
+for path in matches("crates/tutti-vst2-ffi/src/host.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s
@@ -150,7 +149,7 @@ for path in matches("crates/vst-tutti/src/host.rs"):
         if m.group(1) not in ALLOW and re.search(r"\bcatch_unwind\(", body_of(s, m.end())) is None:
             bad.append((path, m.group(1)))
 if vst2_seen == 0:
-    sys.exit("check-guards: no VST2 host callback found in vst-tutti/src/host.rs; the scan is broken")
+    sys.exit("check-guards: no VST2 host callback found in tutti-vst2-ffi/src/host.rs; the scan is broken")
 
 if seen < 100:
     sys.exit(f"check-guards: only {seen} callbacks found; the scan is broken")

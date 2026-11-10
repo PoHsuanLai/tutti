@@ -38,10 +38,6 @@ pub struct Vst2Instance {
     refused: bool,
 }
 
-// SAFETY: the host instances are `Send`, and the instance is driven from one
-// thread at a time.
-unsafe impl Send for Vst2Instance {}
-
 fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
     match err {
         Vst2Error::LoadFailed {

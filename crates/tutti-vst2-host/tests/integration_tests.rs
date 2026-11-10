@@ -611,7 +611,7 @@ fn chunk_state_round_trips() {
 /// back to a parameter snapshot rather than erroring. (`len == 0` and
 /// `len == -1` must not fold into the same empty `Vec`, or a *failed* chunk
 /// save silently becomes a parameter snapshot; the failure half is asserted in
-/// `vst-tutti`'s `failed_chunk_save_is_distinguishable_from_an_empty_one`.)
+/// `tutti-vst2-ffi`'s `failed_chunk_save_is_distinguishable_from_an_empty_one`.)
 ///
 /// Reached via `NO_CHUNKS` rather than an emptied chunk: the probe seeds its
 /// chunk non-empty and `set_state` rejects an empty `CHK\0` payload as
@@ -634,7 +634,7 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
 }
 
 // The refusal direction — that a chunk *refusal* is representable, so
-// `set_state` can report it — is pinned in `vst-tutti`'s
+// `set_state` can report it — is pinned in `tutti-vst2-ffi`'s
 // `a_chunk_refusal_is_representable`; the shared probe deliberately accepts
 // every chunk, so it cannot be built here. These cover the host-side half:
 // framing, fallback, and the acceptance path.

@@ -20,6 +20,7 @@ use crate::parameters::SendParams;
 use crate::processor::{ProcessorParts, Vst2Processor};
 use crate::scratch::RenderScratch;
 use crate::shell::Shell;
+use vst::control_cell::ControlKey;
 
 /// The main-thread half of an activation: the whole control surface of a
 /// [`Vst2Loaded`], reached through `Deref`, beside a Processor that renders.
@@ -45,6 +46,8 @@ use crate::shell::Shell;
 pub struct Vst2Controller {
     /// `None` only once `deactivate` has taken the shell.
     shell: Option<Arc<Shell>>,
+    /// Opens the shell's cell: the Controller's alone.
+    key: ControlKey,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -54,16 +57,11 @@ impl std::fmt::Debug for Vst2Controller {
     }
 }
 
-// SAFETY: the Controller runs on one thread at a time (every method takes
-// `&mut self` or a shared reference of a type that is not `Sync`), and clause 3
-// of the invariant on `Shell` keeps its calls to the set hosts run beside
-// `process`.
-unsafe impl Send for Vst2Controller {}
-
 impl Vst2Controller {
-    fn new(shell: Arc<Shell>) -> Self {
+    fn new(shell: Arc<Shell>, key: ControlKey) -> Self {
         Self {
             shell: Some(shell),
+            key,
             _not_sync: PhantomData,
         }
     }
@@ -75,8 +73,8 @@ impl Vst2Controller {
     }
 
     fn loaded(&self) -> &Vst2Loaded {
-        // SAFETY: main thread, shared; see `Shell::loaded`.
-        unsafe { self.shell().loaded() }
+        self.shell()
+            .loaded(&self.key)
             .as_ref()
             .expect("a live Controller's shell holds its plugin")
     }
@@ -92,9 +90,12 @@ impl Deref for Vst2Controller {
 
 impl DerefMut for Vst2Controller {
     fn deref_mut(&mut self) -> &mut Vst2Loaded {
-        let shell = self.shell();
-        // SAFETY: main thread, exclusive; see `Shell::loaded_mut`.
-        unsafe { shell.loaded_mut() }
+        let shell = self
+            .shell
+            .as_ref()
+            .expect("a Controller holds its shell until it is consumed");
+        shell
+            .loaded_mut(&mut self.key)
             .as_mut()
             .expect("a live Controller's shell holds its plugin")
     }
@@ -275,7 +276,8 @@ impl Loaded for Vst2Loaded {
             let _ = request.raise(self.host.requests());
         }
 
-        let shell = Arc::new(Shell::new(self));
+        let (shell, key) = Shell::new(self);
+        let shell = Arc::new(shell);
         let processor = Vst2Processor::new(ProcessorParts {
             shell: Arc::clone(&shell),
             render,
@@ -287,7 +289,7 @@ impl Loaded for Vst2Loaded {
             double_precision,
             host,
         });
-        Ok((processor, Vst2Controller::new(shell)))
+        Ok((processor, Vst2Controller::new(shell, key)))
     }
 
     /// Rejoins the halves of one activation: checks they are a pair, stops the

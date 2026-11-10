@@ -106,7 +106,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             (s.graph().insert(voice).0, Some(stream))
         }
         Tier::Memory => {
-            let mut wave = tutti_codec::Wave::new(2, RATE);
+            let mut wave = tutti_codec::Wave::new(2, tutti_nodes::SampleRate::new(RATE));
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);
             }

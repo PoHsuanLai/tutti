@@ -90,7 +90,7 @@ impl Plugin {
     /// ```no_run
     /// # fn ex() -> tutti_plugin::Result<()> {
     /// use tutti_plugin::catalog::Plugin;
-    /// let plugin = Plugin::open(None, "/Library/Audio/Plug-Ins/VST3/Foo.vst3", 48_000.0)?;
+    /// let plugin = Plugin::open(None, "/Library/Audio/Plug-Ins/VST3/Foo.vst3", tutti_types::SampleRate::new(48_000.0))?;
     /// # Ok(()) }
     /// ```
     ///

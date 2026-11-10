@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tutti_types::SampleRate;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::Offset;
@@ -30,7 +31,7 @@ fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware
 }
 
 fn main() {
-    let pm = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
+    let pm = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(44_100.0)));
     // The audio side's drain: what a `MidiInputNode` would own.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
     let io = MidiSession::open(pm.clone()).expect("open MIDI");

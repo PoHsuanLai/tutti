@@ -15,6 +15,7 @@ use tutti_graph::contract::{drive, prepared};
 #[cfg(feature = "convolution")]
 use tutti_nodes::ConvolverNode;
 use tutti_nodes::DownmixNode;
+#[cfg(feature = "convolution")]
 use tutti_nodes::testing::assert_golden;
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate};
 

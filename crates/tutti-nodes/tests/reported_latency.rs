@@ -14,7 +14,7 @@ use tutti_graph::{GraphBuilder, Node, Prepare};
 use tutti_nodes::testing::Through;
 use tutti_nodes::{CrossoverNode, DelayLineNode, ModDelayNode, MultibandCompressorNode};
 use tutti_types::Latency;
-use tutti_types::{ChannelLayout, Hz};
+use tutti_types::{ChannelLayout, Feedback, Hz, Mix, Seconds};
 use tutti_types::{SampleRate, Samples};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -103,8 +103,12 @@ fn crossover_and_multiband_report_zero_latency_and_respond_at_frame_0() {
 /// really *is* late) fails the frame-0 assertion.
 #[test]
 fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
-    let node = DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32);
-    node.set_mix(0.5_f32);
+    let node = DelayLineNode::new(
+        Seconds::new(1.0_f64),
+        Seconds::new(0.5_f64),
+        Feedback::new(0.0_f32),
+    );
+    node.set_mix(Mix::new(0.5_f32));
 
     assert_eq!(
         declared(&node),
@@ -129,8 +133,13 @@ fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 /// channel's delay as latency fails the declared-latency assertion.
 #[test]
 fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
-    let node = DelayLineNode::stereo(1.0_f64, 0.25_f64, 0.5_f64, 0.0_f32);
-    node.set_mix(0.5_f32);
+    let node = DelayLineNode::stereo(
+        Seconds::new(1.0_f64),
+        Seconds::new(0.25_f64),
+        Seconds::new(0.5_f64),
+        Feedback::new(0.0_f32),
+    );
+    node.set_mix(Mix::new(0.5_f32));
 
     assert_eq!(
         declared(&node),
@@ -163,7 +172,7 @@ fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
         ("chorus", ModDelayNode::chorus(ChannelLayout::STEREO)),
         ("flanger", ModDelayNode::flanger(ChannelLayout::STEREO)),
     ] {
-        node.set_mix(0.5_f32);
+        node.set_mix(Mix::new(0.5_f32));
         assert_eq!(
             declared(&node),
             Latency::ZERO,
@@ -196,8 +205,12 @@ fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
 #[test]
 fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
-    let echo = DelayLineNode::new(1.0_f64, 0.5_f64, 0.3_f32);
-    echo.set_mix(0.5_f32);
+    let echo = DelayLineNode::new(
+        Seconds::new(1.0_f64),
+        Seconds::new(0.5_f64),
+        Feedback::new(0.3_f32),
+    );
+    echo.set_mix(Mix::new(0.5_f32));
     let (echo, _) = g.add_with_controls(echo);
     let (chorus, _) = g.add_with_controls(ModDelayNode::chorus(ChannelLayout::STEREO));
     let dry = g.add(Through::mono());
@@ -289,7 +302,7 @@ mod convolver {
     fn convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         for mix in [0.0_f32, 0.5, 1.0] {
             let node = ConvolverNode::new(&[1.0], 256);
-            node.set_mix(mix);
+            node.set_mix(Mix::new(mix));
 
             let latency = node.latency_samples().0;
             assert_eq!(latency, 256);
@@ -336,7 +349,7 @@ mod convolver {
         for (name, build) in builds {
             for mix in [0.0_f32, 0.5, 1.0] {
                 let node = build();
-                node.set_mix(mix);
+                node.set_mix(Mix::new(mix));
                 let latency = node.latency_samples().0;
                 assert_eq!(
                     declared(&node),
@@ -363,7 +376,7 @@ mod convolver {
     #[test]
     fn convolver_reset_clears_the_dry_alignment_ring() {
         let mut node = prepared(ConvolverNode::new(&[1.0], 64), SR, 256);
-        node.set_mix(0.0_f32);
+        node.set_mix(Mix::new(0.0_f32));
 
         // Load the dry ring with a take, then reset mid-ring.
         drive(&mut node, SR, &[&[1.0; 32]], &[]);
@@ -395,8 +408,16 @@ mod convolver {
         let latency = conv.latency_samples();
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
         let (conv, _) = g.add_with_controls(conv);
-        let (echo_a, _) = g.add_with_controls(DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32));
-        let (echo_b, _) = g.add_with_controls(DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32));
+        let (echo_a, _) = g.add_with_controls(DelayLineNode::new(
+            Seconds::new(1.0_f64),
+            Seconds::new(0.5_f64),
+            Feedback::new(0.0_f32),
+        ));
+        let (echo_b, _) = g.add_with_controls(DelayLineNode::new(
+            Seconds::new(1.0_f64),
+            Seconds::new(0.5_f64),
+            Feedback::new(0.0_f32),
+        ));
         let dry = g.add(Through::mono());
         g.connect_input(0, conv, 0)
             .connect(conv, 0, echo_a, 0)

@@ -155,7 +155,8 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
     let rate = f64::from(meta.sample_rate);
     let total = meta.total_frames.expect("flac reports a length") as usize;
 
-    let mut sampler = DiskStreamer::manual(rate, Default::default()).expect("builds");
+    let mut sampler =
+        DiskStreamer::manual(SampleRate::new(rate), Default::default()).expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let (stream, reader) = settle(&mut sampler, opening).expect("a cut file opens");
     assert_eq!(
@@ -163,9 +164,13 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
         StreamPhase::Faulted(StreamFault::Decode)
     );
 
-    let mut voice = prepared(DiskVoice::from_reader(reader, Beat(0.0), None), rate, 512);
+    let mut voice = prepared(
+        DiskVoice::from_reader(reader, Beat(0.0), None),
+        SampleRate::new(rate),
+        512,
+    );
     let clock = MockTransport::rolling(Beat(0.0), Bpm::of(120.0));
-    let out = play(&mut voice, &clock, rate, total, 512);
+    let out = play(&mut voice, &clock, SampleRate::new(rate), total, 512);
     let kept = out[0].iter().rposition(|&s| s != 0.0).map_or(0, |i| i + 1);
     assert!(
         kept > 1_000 && kept < total,
@@ -188,7 +193,8 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
 fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = constant_file(dir.path(), "short.wav", 8_000, 1, 0.25);
-    let mut sampler = DiskStreamer::manual(8_000.0, Default::default()).expect("builds");
+    let mut sampler =
+        DiskStreamer::manual(SampleRate::new(8_000.0), Default::default()).expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let (mut stream, mut reader) = settle(&mut sampler, opening).expect("opens");
     assert_eq!(
@@ -228,7 +234,8 @@ fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
 fn underruns_are_read_from_the_status() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = constant_file(dir.path(), "a.wav", 8_000, 1, 0.25);
-    let mut sampler = DiskStreamer::manual(8_000.0, Default::default()).expect("builds");
+    let mut sampler =
+        DiskStreamer::manual(SampleRate::new(8_000.0), Default::default()).expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let (stream, reader) = settle(&mut sampler, opening).expect("opens");
     assert_eq!(stream.status().underruns, 0);

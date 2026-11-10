@@ -27,7 +27,7 @@ fn spec_at(rate: f64) -> OutputSpec {
 /// fails here only together with the restore removed.)
 #[test]
 fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
-    let transport = Transport::new(44_100.0);
+    let transport = Transport::new(SampleRate::new(44_100.0));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(44_100.0), Samples(512)));
     let engine = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
     let state = Arc::new(AudioCallbackState::new(engine));

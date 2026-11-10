@@ -277,16 +277,16 @@ impl TransportAudio {
     /// generation moves on first.
     ///
     /// ```
-    /// use tutti_types::Beat;
+    /// use tutti_types::{Beat, SampleRate};
     /// use tutti_transport::{Timeline, Transport};
-    /// let transport = Transport::new(48_000.0);
-    /// let mut audio = transport.audio(48_000.0).expect("the only audio side");
+    /// let transport = Transport::new(SampleRate(48_000.0));
+    /// let mut audio = transport.audio(SampleRate(48_000.0)).expect("the only audio side");
     /// audio.set_playhead(Beat(4.0));
     /// assert_eq!(transport.beat(), Beat(4.0));
     /// // A jump: a reader keyed on the segment re-seats.
     /// assert_eq!(transport.segment_generation(), 1);
     /// // The audio side is held: nobody else may store.
-    /// assert!(transport.audio(48_000.0).is_err());
+    /// assert!(transport.audio(SampleRate(48_000.0)).is_err());
     /// ```
     pub fn set_playhead(&mut self, beat: impl Into<Beat>) {
         self.clock.set_playhead(beat.into());
@@ -321,11 +321,15 @@ mod tests {
     /// the second take after the drop is refused → fails.
     #[test]
     fn the_audio_side_is_taken_once_and_comes_back() {
-        let t = Transport::new(48_000.0);
-        let first = t.audio(48_000.0).expect("first");
-        assert_eq!(t.clone().audio(48_000.0).err(), Some(AudioTaken));
+        let t = Transport::new(SampleRate::new(48_000.0));
+        let first = t.audio(SampleRate::new(48_000.0)).expect("first");
+        assert_eq!(
+            t.clone().audio(SampleRate::new(48_000.0)).err(),
+            Some(AudioTaken)
+        );
         drop(first);
-        t.audio(48_000.0).expect("handed back on drop");
+        t.audio(SampleRate::new(48_000.0))
+            .expect("handed back on drop");
     }
 
     /// A command still waiting for its beat outlives the audio side that
@@ -337,16 +341,18 @@ mod tests {
     /// → fails.
     #[test]
     fn a_waiting_command_outlives_its_audio_side() {
-        let t = Transport::new(48_000.0);
+        let t = Transport::new(SampleRate::new(48_000.0));
         t.motion
             .schedule(At::Beat(tutti_types::Beat(1000.0)), MotionEvent::Play)
             .expect("room");
-        let mut first = t.audio(48_000.0).expect("first");
+        let mut first = t.audio(SampleRate::new(48_000.0)).expect("first");
         first.gather();
         assert_eq!(first.pending().len(), 1);
         drop(first);
 
-        let mut next = t.audio(48_000.0).expect("handed back on drop");
+        let mut next = t
+            .audio(SampleRate::new(48_000.0))
+            .expect("handed back on drop");
         next.gather();
         assert_eq!(next.pending().len(), 1, "carried over");
         assert_eq!(t.motion.scheduled_outstanding(), 1);
@@ -363,8 +369,8 @@ mod tests {
     /// outstanding count stays 2 → fails; skipping `count_late` → 0 → fails.
     #[test]
     fn firing_a_command_frees_its_credit_and_counts_it_late() {
-        let t = Transport::new(48_000.0);
-        let mut a = t.audio(48_000.0).expect("first");
+        let t = Transport::new(SampleRate::new(48_000.0));
+        let mut a = t.audio(SampleRate::new(48_000.0)).expect("first");
         t.motion
             .schedule(At::Frame(Frame(0)), MotionEvent::Play)
             .expect("room");
@@ -390,8 +396,8 @@ mod tests {
     /// without lending -> the block keeps 120 -> fails.
     #[test]
     fn a_published_constant_map_is_the_next_blocks_tempo() {
-        let t = Transport::new(48_000.0);
-        let mut a = t.audio(48_000.0).expect("first");
+        let t = Transport::new(SampleRate::new(48_000.0));
+        let mut a = t.audio(SampleRate::new(48_000.0)).expect("first");
         assert_eq!(a.begin_block().tempo, Bpm::of(120.0));
         t.settings.set_tempo_map(constant(97.25));
         assert_eq!(a.begin_block().tempo, Bpm::of(97.25));
@@ -408,8 +414,8 @@ mod tests {
     /// command's 90 reverts to the map's 120 at the next block -> fails.
     #[test]
     fn a_timed_tempo_holds_until_the_next_publish() {
-        let t = Transport::new(48_000.0);
-        let mut a = t.audio(48_000.0).expect("first");
+        let t = Transport::new(SampleRate::new(48_000.0));
+        let mut a = t.audio(SampleRate::new(48_000.0)).expect("first");
         t.motion
             .schedule(At::NextBlock, TransportCommand::Tempo(Bpm::of(90.0)))
             .expect("room");
@@ -430,9 +436,9 @@ mod tests {
 
     /// A rolling transport over `map`, at `rate`.
     fn rolling_on(rate: f64, map: std::sync::Arc<TempoMap>) -> (Transport, TransportAudio) {
-        let t = Transport::new(rate);
+        let t = Transport::new(SampleRate::new(rate));
         t.settings.set_tempo_map(map);
-        let mut a = t.audio(rate).expect("first");
+        let mut a = t.audio(SampleRate::new(rate)).expect("first");
         t.motion
             .schedule(At::NextBlock, MotionEvent::Play)
             .expect("room");
@@ -481,8 +487,8 @@ mod tests {
         // Moving nothing: the same look again.
         assert_eq!(a.tempo_ahead(512, &t, 8).changes, ahead.changes);
 
-        let t = Transport::new(48_000.0);
-        let mut c = t.audio(48_000.0).expect("first");
+        let t = Transport::new(SampleRate::new(48_000.0));
+        let mut c = t.audio(SampleRate::new(48_000.0)).expect("first");
         let blk = c.begin_block();
         assert!(c.tempo_ahead(512, &blk, 8).changes.is_empty());
     }
@@ -498,8 +504,8 @@ mod tests {
     /// fails.
     #[test]
     fn a_swapped_in_step_map_re_seats_at_the_current_beat() {
-        let t = Transport::new(48_000.0);
-        let mut a = t.audio(48_000.0).expect("first");
+        let t = Transport::new(SampleRate::new(48_000.0));
+        let mut a = t.audio(SampleRate::new(48_000.0)).expect("first");
         t.motion
             .schedule(At::NextBlock, MotionEvent::Play)
             .expect("room");
@@ -660,7 +666,9 @@ mod tests {
     fn a_map_published_before_the_audio_side_is_taken_is_followed() {
         let (t, a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0)]);
         drop(a);
-        let mut a = t.audio(48_000.0).expect("handed back on drop");
+        let mut a = t
+            .audio(SampleRate::new(48_000.0))
+            .expect("handed back on drop");
         let mut seen = Vec::new();
         for _ in 0..3 {
             let blk = a.begin_block();

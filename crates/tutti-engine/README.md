@@ -80,7 +80,7 @@ impl Node for Beats {
     fn reset(&mut self) {}
 }
 
-let transport = Transport::new(48_000.0);
+let transport = Transport::new(SampleRate(48_000.0));
 
 // The editor is the control thread's half of the graph; the executor goes to
 // the engine. Every edit reaches it through a `commit`.

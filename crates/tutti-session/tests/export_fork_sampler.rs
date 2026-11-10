@@ -108,7 +108,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let tone = |i: usize| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
 
     let mut session = session();
-    let mut wave = tutti_codec::Wave::new(1, RATE);
+    let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
     for i in 0..RATE as usize {
         wave.push_frame(&[tone(i)]);
     }
@@ -120,7 +120,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         node
     };
     let zero = {
-        let mut wave = tutti_codec::Wave::new(1, RATE);
+        let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
         for i in 0..RATE as usize {
             wave.push_frame(&[tone(i)]);
         }
@@ -270,7 +270,7 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
     let (disk_node, memory_node): (NodeKey, NodeKey) = {
         let bare = disk_voice(reader, 3.0);
         let wrapped = node_of(VoiceSource::Disk(disk_voice(other_reader, 3.0)));
-        let mut wave = tutti_codec::Wave::new(2, RATE);
+        let mut wave = tutti_codec::Wave::new(2, SampleRate::new(RATE));
         for i in 0..LEN {
             wave.push_frame(&[value(i), -value(i)]);
         }

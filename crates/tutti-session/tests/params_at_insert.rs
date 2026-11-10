@@ -30,7 +30,7 @@ use tutti_graph::NodeKey;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_session::{GraphSource, ParamRef, Session};
 use tutti_types::AtomicF32;
-use tutti_types::{ChannelLayout, Depth, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{ChannelLayout, Depth, Drive, SampleRate, Samples, Seconds, UnitParam};
 
 use common::probe::ProbeUnit;
 
@@ -86,7 +86,7 @@ fn add_addresses_a_hosts_param_node() {
 #[test]
 fn add_addresses_an_engine_node() {
     let mut s = session();
-    let node = DistortionNode::new(ShapeKind::Tanh, BASE);
+    let node = DistortionNode::new(ShapeKind::Tanh, Drive::new(BASE));
     let cell = node.drive();
     let (key, _) = s.graph().add(node);
     modulate_drive(&mut s, key);

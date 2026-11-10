@@ -37,7 +37,8 @@ use tutti_transport::{
     TransportCommand,
 };
 use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
+    Amplitude, At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples,
+    Tail,
 };
 
 const SR: f64 = 48_000.0;
@@ -180,7 +181,7 @@ fn beat(p: (f32, f32)) -> f64 {
 /// - step the beat while stopped → the stop at 8 000 keeps moving.
 #[test]
 fn the_env_walk_is_the_env_beat() {
-    let transport = Transport::new(SR);
+    let transport = Transport::new(SampleRate::new(SR));
     let log = Log::default();
     let sink = GraphBeats::new(&log);
     let env_beats = Arc::clone(&sink.1);
@@ -199,7 +200,9 @@ fn the_env_walk_is_the_env_beat() {
     // Armed with the playhead inside it (~0.03): wraps from ~1 600.
     m.schedule(
         at(1_000),
-        TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.02, 0.06).expect("ordered"))),
+        TransportCommand::Loop(LoopEdit::over(
+            LoopRange::new(Beat::new(0.02), Beat::new(0.06)).expect("ordered"),
+        )),
     )
     .expect("room");
     m.schedule(at(2_900), TransportCommand::Loop(LoopEdit::armed(false)))
@@ -208,7 +211,9 @@ fn the_env_walk_is_the_env_beat() {
     // Armed behind the playhead (~3.28): no jump.
     m.schedule(
         at(4_000),
-        TransportCommand::Loop(LoopEdit::over(LoopRange::new(1.0, 2.0).expect("ordered"))),
+        TransportCommand::Loop(LoopEdit::over(
+            LoopRange::new(Beat::new(1.0), Beat::new(2.0)).expect("ordered"),
+        )),
     )
     .expect("room");
     // Into it, just before its end: wraps ~300 frames on.
@@ -321,10 +326,10 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 /// → fails.
 #[test]
 fn click_clicks_on_the_model_beats() {
-    let transport = Transport::new(SR);
+    let transport = Transport::new(SampleRate::new(SR));
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
-    settings.set_volume(1.0);
+    settings.set_volume(Amplitude::new(1.0));
     let click = ClickNode::new(&transport, settings);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     const CLICK: NodeKey = NodeKey(1);
@@ -352,7 +357,9 @@ fn click_clicks_on_the_model_beats() {
     .expect("room");
     m.schedule(
         At::Frame(Frame(30_001)),
-        TransportCommand::Loop(LoopEdit::over(LoopRange::new(6.5, 8.25).expect("ordered"))),
+        TransportCommand::Loop(LoopEdit::over(
+            LoopRange::new(Beat::new(6.5), Beat::new(8.25)).expect("ordered"),
+        )),
     )
     .expect("room");
     let mut out = Vec::new();
@@ -438,7 +445,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     let blocks = blocks(96_000);
 
     // Live.
-    let live_t = Transport::new(SR);
+    let live_t = Transport::new(SampleRate::new(SR));
     let live_log = Arc::new(Mutex::new(Vec::new()));
     let (mut ed, exec) = env_graph(512, &live_log);
     let live = Engine::new(&live_t, &mut ed, exec).expect("within the limits");
@@ -447,7 +454,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
         .motion
         .schedule(
             At::NextBlock,
-            LoopEdit::over(LoopRange::new(6.0, 7.0).expect("ordered")),
+            LoopEdit::over(LoopRange::new(Beat::new(6.0), Beat::new(7.0)).expect("ordered")),
         )
         .expect("room");
     live_t
@@ -464,7 +471,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
         start_beat: Beat(BAR_2),
         tempo: Bpm::of(100.0),
         sample_rate: SampleRate(SR),
-        loop_range: LoopRange::new(6.0, 7.0),
+        loop_range: LoopRange::new(Beat::new(6.0), Beat::new(7.0)),
     }));
     let off_log = Arc::new(Mutex::new(Vec::new()));
     let (_ed, mut exec) = env_graph(512, &off_log);

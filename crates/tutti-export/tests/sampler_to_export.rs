@@ -76,7 +76,7 @@ const DUR_S: f64 = 1.0;
 /// rate would do the transposition itself and pre-cancel the very effect under
 /// test, reporting a clean 440 Hz for every case.
 fn tone(frames: usize) -> Arc<Wave> {
-    let mut w = Wave::new(1, SR);
+    let mut w = Wave::new(1, SampleRate::new(SR));
     for i in 0..frames {
         w.push_frame(&[(TAU * BASE_HZ * i as f32 / SR as f32).sin()]);
     }

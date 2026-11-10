@@ -92,7 +92,7 @@ impl Clock {
 
 /// A constant-valued source, long enough not to run dry.
 fn dc_wave(len: usize) -> Arc<Wave> {
-    let mut w = Wave::new(2, SR);
+    let mut w = Wave::new(2, SampleRate::new(SR));
     for _ in 0..len {
         w.push_frame(&[LEVEL, LEVEL]);
     }

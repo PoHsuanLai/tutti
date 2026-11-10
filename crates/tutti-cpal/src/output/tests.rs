@@ -23,7 +23,7 @@ use tutti_types::{SampleRate, Samples};
 /// gates need a `#[global_allocator]` that only a test binary root can
 /// declare.
 fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
-    let transport = Transport::new(sample_rate);
+    let transport = Transport::new(SampleRate::new(sample_rate));
 
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(sample_rate), Samples(512)));
     let (source, filter) = (NodeKey(1), NodeKey(2));
@@ -91,7 +91,7 @@ fn test_transport_loop_wrapping() {
         .schedule(
             tutti_types::At::NextBlock,
             tutti_transport::LoopEdit::over(
-                tutti_types::LoopRange::new(0.0, 4.0).expect("ordered"),
+                tutti_types::LoopRange::new(Beat::new(0.0), Beat::new(4.0)).expect("ordered"),
             ),
         )
         .expect("room");
@@ -126,7 +126,7 @@ fn manual_spec() -> OutputSpec {
 }
 
 fn driver_over(engine: AudioEngine) -> crate::TuttiDriver {
-    let transport = Transport::new(48_000.0);
+    let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     let graph = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
     crate::TuttiDriver::new(engine, Arc::new(AudioCallbackState::new(graph)))

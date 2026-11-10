@@ -3,6 +3,7 @@
 //! and dropping one is a hot-plug the kernel announces: nothing here is faked.
 
 use std::time::{Duration, Instant};
+use tutti_types::SampleRate;
 
 use super::client::SeqClient;
 use crate::{Devices, HardwareMidiInputs};
@@ -292,7 +293,7 @@ fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
 #[test]
 fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, 44_100.0));
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
     let name = unique("held");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
@@ -386,7 +387,7 @@ fn an_idle_devices_does_not_wake_itself() {
 #[test]
 fn the_engines_own_clients_are_not_listed() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, 44_100.0));
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
     let name = unique("own");
     let device = plug(&name);
     let mut backlog = Vec::new();
@@ -656,7 +657,7 @@ struct Pumped {
 
 impl Pumped {
     fn open() -> Self {
-        let ports = std::sync::Arc::new(HardwareMidiInputs::new(64, 44_100.0));
+        let ports = std::sync::Arc::new(HardwareMidiInputs::new(64, SampleRate::new(44_100.0)));
         let device = plug(&unique("pump"));
         let id = super::enumerate::pack_id(device.0.id().unwrap(), 0);
         let producer = ports.open_input_port("pump");
@@ -755,7 +756,7 @@ fn dropping_an_input_stops_a_blocked_pump_promptly() {
 #[test]
 fn an_input_whose_pump_fails_reads_as_gone() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, 44_100.0));
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
     let name = unique("dies");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;

@@ -248,7 +248,7 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 /// calling thread; see [`measure`] for why only that thread counts.)
 #[test]
 fn rendering_blocks_allocates_nothing() {
-    let transport = Transport::new(48_000.0);
+    let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = graph(16);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 

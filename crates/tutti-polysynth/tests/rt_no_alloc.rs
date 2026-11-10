@@ -53,7 +53,7 @@ fn polysynth_process_idle_is_allocation_free() {
     // bookkeeping and the MIDI inbox poll.
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -76,7 +76,7 @@ fn polysynth_process_idle_is_allocation_free() {
 fn polysynth_process_with_active_voices_is_allocation_free() {
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             filter: FilterType::Svf {
@@ -114,7 +114,7 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
 fn polysynth_one_frame_blocks_with_active_voices_are_allocation_free() {
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Triangle,
             ..Default::default()
@@ -141,7 +141,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     // the event-driven boundaries.
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -188,7 +188,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 fn polysynth_every_decoded_message_is_allocation_free() {
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: 8,
             mpe_enabled: true,
             ..Default::default()
@@ -341,7 +341,7 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
 
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: MAX_VOICES,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -411,7 +411,7 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 
     let build = || {
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: MAX_VOICES,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -482,7 +482,7 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 fn a_first_block_on_a_cold_thread_is_allocation_free() {
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::new(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -595,7 +595,7 @@ fn mono_and_legato_event_paths_are_allocation_free() {
     ] {
         let mut synth = Hand::new(
             PolySynth::new(SynthConfig {
-                sample_rate: tutti_types::SampleRate::from(48_000.0),
+                sample_rate: tutti_types::SampleRate::new(48_000.0),
                 max_voices: 4,
                 voice_mode: mode,
                 oscillator: OscillatorType::Saw,

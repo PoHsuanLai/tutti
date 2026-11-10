@@ -173,7 +173,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     ed.commit().expect("the graph compiles");
     let declared = ed.spec().topology.nodes[&key].latency;
 
-    let transport = Transport::new(rate);
+    let transport = Transport::new(SampleRate::new(rate));
     let engine = Engine::new(&transport, &mut ed, exec).expect("the engine builds");
     let period = Duration::from_secs_f64(quantum as f64 / rate);
     let warm_up = 8 + declared.get().div_ceil(quantum);

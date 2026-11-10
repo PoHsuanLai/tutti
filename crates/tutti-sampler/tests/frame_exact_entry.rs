@@ -72,7 +72,7 @@ const HAND: usize = 77;
 /// A pool with one voice placed at `start`, playing a constant (so its first
 /// frame is already non-zero).
 fn pool(start: Beat) -> VoicePool {
-    let mut wave = Wave::new(1, SR);
+    let mut wave = Wave::new(1, SampleRate::new(SR));
     for _ in 0..SR as usize {
         wave.push_frame(&[0.5]);
     }
@@ -114,7 +114,7 @@ struct Run {
 }
 
 fn transport() -> Transport {
-    let t = Transport::new(SR);
+    let t = Transport::new(SampleRate::new(SR));
     t.settings.set_tempo(TEMPO);
     t
 }

@@ -108,7 +108,7 @@ impl OnsetConfig {
     /// minimum gap.
     #[must_use]
     pub fn new(geometry: StftGeometry, function: DetectionFunction) -> Self {
-        let min_gap = Seconds(0.05).to_samples(geometry.sample_rate().get());
+        let min_gap = Seconds(0.05).to_samples(geometry.sample_rate());
         Self {
             geometry,
             function,
@@ -139,7 +139,8 @@ impl OnsetConfig {
     /// how a gap ends up a thousand times off.
     #[must_use]
     pub fn with_min_gap(mut self, gap: impl Into<Seconds>) -> Self {
-        self.min_gap = gap.into().to_samples(self.geometry.sample_rate().get());
+        let gap: Seconds = gap.into();
+        self.min_gap = gap.to_samples(self.geometry.sample_rate());
         self
     }
 
@@ -500,7 +501,7 @@ mod tests {
     }
 
     fn geometry() -> StftGeometry {
-        StftGeometry::new(SAMPLE_RATE, Samples(2048), Samples(512)).unwrap()
+        StftGeometry::new(SampleRate::new(SAMPLE_RATE), Samples(2048), Samples(512)).unwrap()
     }
 
     fn signal(seconds: f64, onsets: &[f64]) -> Vec<f32> {
@@ -669,7 +670,7 @@ mod tests {
         let mut fft = FftScratch::new();
 
         let coarse = OnsetConfig::new(
-            StftGeometry::new(SAMPLE_RATE, Samples(2048), Samples(1024)).unwrap(),
+            StftGeometry::new(SampleRate::new(SAMPLE_RATE), Samples(2048), Samples(1024)).unwrap(),
             DetectionFunction::SpectralFlux,
         );
         let fine = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
@@ -712,7 +713,7 @@ mod tests {
             // frame the spike falls.
             let tolerance = cfg.geometry().window().get() as f64 / SAMPLE_RATE;
             for (found, &expected) in onsets.iter().zip(&truth) {
-                let t = found.time(SAMPLE_RATE).get();
+                let t = found.time(SampleRate::new(SAMPLE_RATE)).get();
                 assert!(
                     (t - expected).abs() <= tolerance,
                     "{function:?}: onset at {t} is not within one window of {expected}"

@@ -1,6 +1,7 @@
 use super::super::read::probe_path;
 use super::*;
 use crate::Wave;
+use tutti_types::Seconds;
 use tutti_types::Stop;
 
 /// Write `wave` as a 16-bit WAV named `name` and return its path.
@@ -34,7 +35,7 @@ fn save_wav16(wave: &Wave, name: &str) -> std::path::PathBuf {
 /// file while another is still writing it.
 fn write_test_wav(frames: usize, tag: &str) -> std::path::PathBuf {
     let sample_rate = 44100.0;
-    let mut wave = Wave::new(2, sample_rate);
+    let mut wave = Wave::new(2, SampleRate::new(sample_rate));
     for i in 0..frames {
         // Distinct per-frame values so slice comparisons are meaningful.
         let l = (i as f32 / frames as f32) - 0.5;
@@ -405,7 +406,11 @@ fn a_clean_end_of_file_has_no_error() {
 /// number rather than a plausible one.
 fn write_indexed_wav(channels: usize, frames: usize, tag: &str) -> std::path::PathBuf {
     let sample_rate = 44100.0;
-    let mut wave = Wave::zero(channels, sample_rate, frames as f64 / sample_rate);
+    let mut wave = Wave::zero(
+        channels,
+        SampleRate::new(sample_rate),
+        Seconds::new(frames as f64) / sample_rate,
+    );
     for i in 0..frames {
         for c in 0..channels {
             wave.set(c, i, (c + 1) as f32 * 0.1 + (i % 64) as f32 * 0.0005);
@@ -494,7 +499,11 @@ fn pull_delivers_the_files_own_width() {
     let frames = 64;
     let sample_rate = 44100.0;
     // 5.1 order L R C LFE Ls Rs — centre only.
-    let mut wave = Wave::zero(6, sample_rate, frames as f64 / sample_rate);
+    let mut wave = Wave::zero(
+        6,
+        SampleRate::new(sample_rate),
+        Seconds::new(frames as f64) / sample_rate,
+    );
     for i in 0..frames {
         wave.set(2, i, 0.5);
     }
@@ -528,7 +537,11 @@ fn pull_delivers_the_files_own_width() {
 fn a_mono_file_is_not_widened() {
     let frames = 64;
     let sample_rate = 44100.0;
-    let mut wave = Wave::zero(1, sample_rate, frames as f64 / sample_rate);
+    let mut wave = Wave::zero(
+        1,
+        SampleRate::new(sample_rate),
+        Seconds::new(frames as f64) / sample_rate,
+    );
     // A ramp, not a constant: a constant cannot distinguish "one frame
     // duplicated" from "two frames read".
     for i in 0..frames {
@@ -558,7 +571,11 @@ fn a_mono_file_is_not_widened() {
 fn a_caller_can_still_fold_to_stereo_itself() {
     let frames = 64;
     let sample_rate = 44100.0;
-    let mut wave = Wave::zero(6, sample_rate, frames as f64 / sample_rate);
+    let mut wave = Wave::zero(
+        6,
+        SampleRate::new(sample_rate),
+        Seconds::new(frames as f64) / sample_rate,
+    );
     for i in 0..frames {
         wave.set(2, i, 0.5); // centre only, as above
     }

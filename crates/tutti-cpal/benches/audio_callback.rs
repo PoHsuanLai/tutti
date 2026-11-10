@@ -45,7 +45,8 @@ fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<Tap
             .expect("the sources exist")
     });
     ed.commit().expect("commits");
-    let engine = Engine::new(&Transport::new(SR), &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&Transport::new(SampleRate::new(SR)), &mut ed, exec)
+        .expect("within the limits");
     // Built once per case in setup, so the leak is bounded by case count
     // rather than iteration count.
     Box::leak(Box::new(ed));

@@ -181,6 +181,15 @@ of `tutti-plugin`, moved), with the three calls that keep it faithful:
 `set_parameter`, `set_state`, `poll_edits`. `Reopen::reopen` also takes the
 token. Built in step 1 (§10.1).
 
+As built (step 4a-1): every `InProcess` format keeps an `Origin` (the file it
+opened and the `Load` that chose the plugin, by id even when the load named
+none) and answers `InProcess::origin`, and `Reopen` is one blanket
+`impl<F: InProcess> Reopen for F` over it. VST3's private `LoadOrigin`, which
+`rebuild` read, is that `Origin` now. The contract case
+`reopen_is_a_fresh_instance` holds every format to it. The OS clock the
+transport source read (`os_monotonic_ns`) is `tutti_rt::monotonic_ns`, so
+`tutti-plugin-host` will need no `libc` or `windows` edge of its own.
+
 ### 2.2 Hostings (in `tutti-plugin-host` and `tutti-plugin-ipc`)
 
 ```rust

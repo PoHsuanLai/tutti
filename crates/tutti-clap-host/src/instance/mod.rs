@@ -86,6 +86,9 @@ pub struct ClapLoaded {
     /// The pool `clap.thread-pool` requests run on, or `None` to refuse them
     /// ([`set_thread_pool`](ClapLoaded::set_thread_pool)).
     pub(crate) thread_pool: Option<Arc<tutti_clap_ffi::GraphPool>>,
+    /// The file and plugin this instance was loaded from, what a reopen
+    /// loads again.
+    pub(crate) origin: tutti_plugin_types::Origin,
 }
 
 impl std::fmt::Debug for ClapLoaded {

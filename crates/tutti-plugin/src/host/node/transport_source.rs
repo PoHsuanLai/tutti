@@ -94,7 +94,7 @@ impl HostClock {
     /// vDSO's or QPC's. 2^63 ns is 292 years of uptime, so the saturation
     /// is unreachable.
     pub(crate) fn now_ns(self) -> i64 {
-        os_monotonic_ns()
+        tutti_rt::monotonic_ns()
     }
 
     /// The clock `frames` past a reading of `block_ns`, at `rate`: where a
@@ -555,55 +555,6 @@ pub(crate) fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
         info = info.with_loop(true, start.get(), end.get());
     }
     info
-}
-
-/// `CLOCK_MONOTONIC` (`CLOCK_UPTIME_RAW` on Apple), in nanoseconds; see
-/// [`HostClock`].
-#[cfg(unix)]
-fn os_monotonic_ns() -> i64 {
-    #[cfg(target_vendor = "apple")]
-    const CLOCK: libc::clockid_t = libc::CLOCK_UPTIME_RAW;
-    #[cfg(not(target_vendor = "apple"))]
-    const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid, writable `timespec`, and the clock id is one
-    // every Unix (or, on Apple, macOS 10.12+) provides. It cannot fail with
-    // those, and a failure would leave `ts` zero, a valid reading.
-    unsafe { libc::clock_gettime(CLOCK, &mut ts) };
-    // The `timespec` field types are platform-sized; widen to `i64`.
-    #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
-    let (secs, nanos) = (i64::from(ts.tv_sec as i64), i64::from(ts.tv_nsec as i64));
-    secs.saturating_mul(1_000_000_000).saturating_add(nanos)
-}
-
-/// `QueryPerformanceCounter`, in nanoseconds; see [`HostClock`].
-#[cfg(windows)]
-fn os_monotonic_ns() -> i64 {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
-
-    // The frequency is fixed at boot: read once, then cached (0 is unread).
-    static FREQUENCY: AtomicI64 = AtomicI64::new(0);
-    let mut freq = FREQUENCY.load(Ordering::Relaxed);
-    if freq <= 0 {
-        // SAFETY: a valid, writable `i64`. It cannot fail on Windows XP and
-        // later; a failure leaves it 0, handled below.
-        let _ = unsafe { QueryPerformanceFrequency(&mut freq) };
-        if freq <= 0 {
-            return 0;
-        }
-        FREQUENCY.store(freq, Ordering::Relaxed);
-    }
-    let mut count = 0i64;
-    // SAFETY: as above.
-    let _ = unsafe { QueryPerformanceCounter(&mut count) };
-    // Whole seconds and the remainder apart, so the scaling cannot overflow.
-    let (secs, rest) = (count / freq, count % freq);
-    secs.saturating_mul(1_000_000_000)
-        .saturating_add(rest * 1_000_000_000 / freq)
 }
 
 /// A node's own transport state, the same for both hostings: the project
@@ -1918,36 +1869,5 @@ mod tests {
             y - x <= elapsed + 1_000_000,
             "and no further than Instant says"
         );
-    }
-
-    /// **The host clock is the OS's**, not one this process started: on
-    /// Unix a reading sits between two direct reads of the clock it names
-    /// (on Windows, QPC's scaling is pinned by the 20 ms check above).
-    ///
-    /// Mutation: count from a process-local `Instant` origin again → the
-    /// reading is milliseconds, the OS's is the uptime → fails. Mutation:
-    /// `CLOCK_REALTIME` → decades past the uptime → fails.
-    #[cfg(unix)]
-    #[test]
-    fn the_host_clock_is_the_os_monotonic_clock() {
-        #[cfg(target_vendor = "apple")]
-        const CLOCK: libc::clockid_t = libc::CLOCK_UPTIME_RAW;
-        #[cfg(not(target_vendor = "apple"))]
-        const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
-        let direct = || {
-            let mut ts = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            // SAFETY: a valid, writable `timespec`.
-            unsafe { libc::clock_gettime(CLOCK, &mut ts) };
-            #[allow(clippy::unnecessary_cast)]
-            let ns = ts.tv_sec as i64 * 1_000_000_000 + ts.tv_nsec as i64;
-            ns
-        };
-        let a = direct();
-        let x = HostClock.now_ns();
-        let b = direct();
-        assert!(a <= x && x <= b, "{a} <= {x} <= {b}");
     }
 }

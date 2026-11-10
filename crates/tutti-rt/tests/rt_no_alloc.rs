@@ -393,3 +393,17 @@ fn drain_clock_is_allocation_free() {
         }
     });
 }
+
+/// The OS clock, from its first read: on Windows that first read also queries
+/// and caches the counter's frequency, so it runs inside the gate too.
+///
+/// Mutation (run): `monotonic_ns` boxing its reading before it returns ->
+/// aborts.
+#[test]
+fn the_clock_is_allocation_free_from_its_first_read() {
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            core::hint::black_box(tutti_rt::monotonic_ns());
+        }
+    });
+}

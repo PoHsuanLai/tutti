@@ -588,11 +588,11 @@ impl Loaded for Vst3Loaded {
     /// refusal leaves the old one in place.
     fn rebuild(mut self, main: &MainThread) -> Result<Self, Refused<Self>> {
         let state = self.save_state(main).ok();
-        let options = match &self.origin.class {
-            Some(class) => super::loaded::LoadOptions::new().class(class.clone()),
+        let options = match self.origin.load().chosen() {
+            Some(class) => super::loaded::LoadOptions::new().class(class),
             None => super::loaded::LoadOptions::new(),
         };
-        let mut fresh = match Vst3Loaded::load(main, &self.origin.path, options) {
+        let mut fresh = match Vst3Loaded::load(main, self.origin.path(), options) {
             Ok(fresh) => fresh,
             Err(error) => {
                 return Err(Refused {

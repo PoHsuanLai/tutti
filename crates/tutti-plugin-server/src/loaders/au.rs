@@ -1574,7 +1574,7 @@ mod tests {
             .with_tempo(137.5)
             .with_time_signature(TimeSignature::of(3, 4))
             .with_playing(true)
-            .with_position_beats(beat0, 0.0);
+            .with_position_beats(beat0, tutti_plugin_types::Seconds(0.0));
         run(&mut au, Some(&start));
         let (status, beat, tempo, delta, num, den, changed, playing) = pull(&au);
         assert_eq!(status, 0);
@@ -1586,12 +1586,15 @@ mod tests {
         assert!(changed, "the first block is a start");
 
         // The next block is where playing leaves the playhead: no locate.
-        let next = start.with_position_beats(beat0 + FRAMES as f64 / RATE * 137.5 / 60.0, 0.0);
+        let next = start.with_position_beats(
+            beat0 + FRAMES as f64 / RATE * 137.5 / 60.0,
+            tutti_plugin_types::Seconds(0.0),
+        );
         run(&mut au, Some(&next));
         assert!(!pull(&au).6, "a continuous block is not a locate");
 
         // A seek is one.
-        let seek = next.with_position_beats(32.0, 0.0);
+        let seek = next.with_position_beats(32.0, tutti_plugin_types::Seconds(0.0));
         run(&mut au, Some(&seek));
         let (_, beat, _, delta, _, _, changed, _) = pull(&au);
         assert_eq!(beat, 32.0);
@@ -1609,7 +1612,10 @@ mod tests {
         run(&mut au, Some(&next));
         run(&mut au, None);
         assert_eq!(pull(&au).0, CANNOT_DO, "no frozen beat after a gap");
-        let resumed = next.with_position_beats(next.position.beats + 0.026, 0.0);
+        let resumed = next.with_position_beats(
+            next.position.beats + 0.026,
+            tutti_plugin_types::Seconds(0.0),
+        );
         run(&mut au, Some(&resumed));
         let (status, _, _, _, _, _, changed, _) = pull(&au);
         assert_eq!(status, 0);

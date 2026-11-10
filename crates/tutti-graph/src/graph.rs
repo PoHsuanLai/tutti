@@ -452,7 +452,7 @@ pub struct EventTapId(pub u32);
 pub struct EventTapSpec {
     /// The event output copied. `None` once its node was removed (a key is
     /// the author's and can be inserted again, and a tap left naming it would
-    /// read the new node, as [`TapSpec::sources`] says of an audio lane): it
+    /// read the new node, as [`TapSpec::Ports`] says of an audio lane): it
     /// reads nothing. A port that does not exist (a node replaced by one with
     /// fewer event outputs) reads nothing too; it does not fail a commit.
     /// Opening an event tap refuses a port that does not exist at that moment.
@@ -461,16 +461,70 @@ pub struct EventTapSpec {
     pub align: TapAlign,
 }
 
-/// "Tap these sources": one lane per source, any ports, any number.
+/// What a tap copies out: the graph's output channels, or any sources.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct TapSpec {
-    /// One per lane. A lane naming a port that does not exist (a node
-    /// replaced by one with fewer outputs, a removed node, a global input
-    /// past the declared width) reads silence; it does not fail a commit. Opening
-    /// a tap refuses a source that does not exist at that moment.
-    pub sources: Vec<Source>,
+pub enum TapSpec {
+    /// The graph's global outputs, one lane per output channel, following
+    /// [`Topology::outputs`] when they change, **post-sum and aligned**: lane
+    /// `c` is the signal output channel `c` carries (every source of a summed
+    /// channel delayed to the output time and added), at the output's time,
+    /// before the engine's fold and declick. A tap names ports and not sums,
+    /// so this is the form that hears a fan-in channel whole.
+    Outputs {
+        /// The lanes the tap was opened with: fixed, because the writer the
+        /// executor holds has that many rings. A lane past the topology's
+        /// output count reads silence.
+        width: usize,
+    },
+    /// These sources, one lane each, any ports, any number.
+    Ports {
+        /// One per lane. A lane naming a port that does not exist (a node
+        /// replaced by one with fewer outputs, a removed node, a global input
+        /// past the declared width) reads silence; it does not fail a commit.
+        /// Opening a tap refuses a source that does not exist at that moment.
+        sources: Vec<Source>,
+        /// Where the copy sits in time.
+        align: TapAlign,
+    },
+}
+
+impl TapSpec {
+    /// A tap on `sources` as they leave their nodes.
+    #[must_use]
+    pub fn raw(sources: Vec<Source>) -> Self {
+        Self::Ports {
+            sources,
+            align: TapAlign::Raw,
+        }
+    }
+
+    /// A tap on `sources` aligned to the output time, as an output of the
+    /// same sources would carry them.
+    #[must_use]
+    pub fn aligned(sources: Vec<Source>) -> Self {
+        Self::Ports {
+            sources,
+            align: TapAlign::ToOutput,
+        }
+    }
+
+    /// The number of lanes the tap writes.
+    #[must_use]
+    pub fn lanes(&self) -> usize {
+        match self {
+            Self::Outputs { width } => *width,
+            Self::Ports { sources, .. } => sources.len(),
+        }
+    }
+
     /// Where the copy sits in time.
-    pub align: TapAlign,
+    #[must_use]
+    pub fn align(&self) -> TapAlign {
+        match self {
+            Self::Outputs { .. } => TapAlign::ToOutput,
+            Self::Ports { align, .. } => *align,
+        }
+    }
 }
 
 /// An empty graph with **no global inputs** — a master graph before anything is
@@ -762,6 +816,45 @@ impl Topology {
             self.edges.remove(&at);
         }
         true
+    }
+
+    /// Adds `source` to the sources of global output `channel`, keeping the
+    /// list sorted and free of duplicates, as [`connect`](Self::connect) does
+    /// for an input port (the output is a sink too: several sources sum).
+    /// `Source::Zero` adds nothing. Returns whether the set changed.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` is past [`outputs`](Self::outputs).
+    pub fn connect_output(&mut self, channel: usize, source: Source) -> bool {
+        if source == Source::Zero {
+            return false;
+        }
+        let list = &mut self.outputs[channel];
+        match list.binary_search(&source) {
+            Ok(_) => false,
+            Err(i) => {
+                list.insert(i, source);
+                true
+            }
+        }
+    }
+
+    /// Removes `source` from the sources of global output `channel`. Returns
+    /// whether it was there.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` is past [`outputs`](Self::outputs).
+    pub fn disconnect_output(&mut self, channel: usize, source: Source) -> bool {
+        let list = &mut self.outputs[channel];
+        match list.binary_search(&source) {
+            Ok(i) => {
+                list.remove(i);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Sets the global outputs to one source per channel, in order, replacing

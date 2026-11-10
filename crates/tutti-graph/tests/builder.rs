@@ -694,3 +694,90 @@ fn every_writer_normalises_silence_to_the_empty_set() {
     ed.remove(NodeKey(1));
     assert_eq!(ed.spec().topology.outputs, vec![Vec::<Source>::new()]);
 }
+
+/// `connect`, `connect_input`, `connect_output` and `feedback` **add** a source
+/// to a port's set (the graph sums it) and `set_source`, `set_sources` and
+/// `set_output` replace it; `disconnect_from` removes one. Figures: a `Width`
+/// node's output `c` is `c + 1` plus its inputs, so `one` is 1, `two`'s port 1
+/// is 2, and `sink` reads `1 + (sum of what feeds it)`.
+///
+/// Mutations (each run, each fails this test): `connect` goes through
+/// `set_source` (replace) -> the first figure is 2, not 4; `add_output` writes
+/// `outputs[c] = vec![source]` -> the output figure is 1 (one replaced the sink), not 3;
+/// `disconnect_from` clears the whole port -> the figure after it is 1, not 2;
+/// `feedback` goes back to `edges.insert(at, vec![..])` -> the direct edge is
+/// gone and the last assert fails.
+#[test]
+fn connect_adds_and_set_source_replaces() {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let one = g.add(node(0, 1));
+    let two = g.add(node(0, 2));
+    let sink = g.add(node(1, 1));
+    let at = InPort {
+        node: sink,
+        port: 0,
+    };
+    let from_one = Source::Node(OutPort { node: one, port: 0 });
+    let from_two = Source::Node(OutPort { node: two, port: 1 });
+    let held = |g: &GraphBuilder| {
+        g.spec()
+            .topology
+            .edges
+            .get(&at)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let both = || {
+        let mut sorted = vec![Edge::Direct(from_one), Edge::Direct(from_two)];
+        sorted.sort();
+        sorted
+    };
+
+    g.connect(one, 0, sink, 0).connect(two, 1, sink, 0);
+    assert_eq!(held(&g), both(), "two sources, in the graph's order");
+    g.connect(two, 1, sink, 0);
+    assert_eq!(held(&g).len(), 2, "the same source twice is one");
+
+    g.connect_output(sink, 0, 0);
+    let mut r = g.renderer(prepare(64)).expect("builds");
+    assert_eq!(r.render(8)[0], vec![4.0; 8], "1 + 1 + 2");
+
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let one = g.add(node(0, 1));
+    let two = g.add(node(0, 2));
+    let sink = g.add(node(1, 1));
+    g.connect(one, 0, sink, 0).connect(two, 1, sink, 0);
+    g.set_source(sink, 0, from_one);
+    assert_eq!(
+        held(&g),
+        vec![Edge::Direct(from_one)],
+        "set_source replaces"
+    );
+    g.set_sources(sink, 0, &[from_two, from_one]);
+    assert_eq!(held(&g), both(), "set_sources: exactly these");
+    g.disconnect_from(sink, 0, from_two);
+    assert_eq!(held(&g), vec![Edge::Direct(from_one)], "the others stay");
+    g.disconnect_from(sink, 0, from_two);
+    assert_eq!(held(&g).len(), 1, "removing what is not there is a no-op");
+
+    // Output channels sum too: `sink` (2) and `one` (1) into channel 0.
+    g.connect_output(sink, 0, 0).connect_output(one, 0, 0);
+    assert_eq!(g.spec().topology.outputs[0].len(), 2);
+    let mut r = g.renderer(prepare(64)).expect("builds");
+    assert_eq!(r.render(8)[0], vec![3.0; 8], "sink (1 + 1) plus one (1)");
+
+    // A feedback edge is added beside the direct one, not instead of it.
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let one = g.add(node(0, 1));
+    let sink = g.add(node(1, 1));
+    g.connect(one, 0, sink, 0)
+        .feedback(sink, 0, sink, 0, Samples(64));
+    let at = InPort {
+        node: sink,
+        port: 0,
+    };
+    let edges = &g.spec().topology.edges[&at];
+    assert_eq!(edges.len(), 2);
+    assert!(matches!(edges[0], Edge::Direct(_)));
+    assert!(matches!(edges[1], Edge::Feedback(_)));
+}

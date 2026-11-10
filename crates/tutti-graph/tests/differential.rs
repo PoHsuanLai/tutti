@@ -575,17 +575,26 @@ proptest! {
     }
 
     /// A tap changes nothing and reads exactly what it names: with an aligned
-    /// tap of every output's source open, the executor still renders the
-    /// reference's graph bit for bit, and the tap's lanes are the output
-    /// channels, sample for sample, at every block schedule, serial and
-    /// parallel. The reference knows no taps; this holds the tap op to the
-    /// output it must copy, on random graphs with feedback, PDC and events.
+    /// tap of every output's source and an outputs tap open, the executor
+    /// still renders the reference's graph bit for bit, and the lanes of each
+    /// are the output channels, sample for sample, at every block schedule,
+    /// serial and parallel. The outputs tap reads **every** channel, summed
+    /// ones included (post-sum and aligned); the ports tap names the source of
+    /// a one-source channel only (a tap of ports names no sum), so it is
+    /// compared on those. The reference knows no taps; this holds the tap ops
+    /// to the output they must copy, on random graphs with feedback, PDC,
+    /// fan-in and events.
     ///
     /// Mutation (run, recorded here): skip the tap's aligning delay in
-    /// `compile` (`if false && spec.align == ToOutput ...`) -> a graph whose
+    /// `compile` (`if false && align == ToOutput ...`) -> a graph whose
     /// outputs differ in latency has a lane ahead of its output and the
     /// comparison fails. Mutation (run): make the `Op::Tap` arm in `exec.rs`
     /// write the block twice -> the tap's lanes run ahead of the outputs.
+    /// Mutation (run): stop `compile` forcing the alignment delay into its own
+    /// op for an outputs tap (`master_meter` ignores `TapSpec::Outputs`) -> a
+    /// delayed channel's `output_refs` entry is the undelayed source and the
+    /// outputs comparison fails. Mutation (run): make the outputs tap's lane 0
+    /// silence -> that comparison fails.
     #[test]
     fn an_aligned_tap_of_the_outputs_is_the_output(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -597,28 +606,29 @@ proptest! {
                 .iter()
                 .map(|s| match s[..] {
                     [one] => one,
-                    // A summed channel is no tap's source (a tap names ports,
-                    // not sums): its lane reads silence and is not compared.
+                    // A ports tap names no sum: its lane reads silence and is
+                    // not compared.
                     _ => Source::Zero,
                 })
                 .collect();
             let summed: Vec<bool> = desc.spec.topology.outputs.iter().map(|s| s.len() > 1).collect();
+            let channels = outputs.len();
             let mut spec = desc.spec.clone();
-            spec.topology.taps.insert(
-                TapId(1),
-                TapSpec { sources: outputs.clone(), align: TapAlign::ToOutput },
-            );
+            spec.topology.taps.insert(TapId(1), TapSpec::aligned(outputs.clone()));
+            spec.topology.taps.insert(TapId(2), TapSpec::Outputs { width: channels });
             let valid = spec.validate().expect("generated graphs are valid");
             let mut pair = Pair::with_workers(MAX_BLOCK, workers);
-            // The harness compiles the spec itself; the reader's lanes ride the
+            // The harness compiles the spec itself; the readers' lanes ride the
             // same commit.
             // `open_tap` refuses a source the editor's spec lacks, and the
             // harness compiles `spec` itself: give the editor the same nodes.
             pair.editor.spec_mut().topology.nodes = spec.topology.nodes.clone();
             pair.editor.spec_mut().topology.inputs = spec.topology.inputs;
             let mut tap = pair.editor.open_tap(TapId(1), outputs, TapAlign::ToOutput, Samples(1 << 16)).expect("the sources exist");
+            let mut heard = pair.editor.open_output_tap(TapId(2), channels, Samples(1 << 16)).expect("the sources exist");
             pair.switch(&valid, &desc.kinds);
             let width = tap.width();
+            prop_assert_eq!(heard.width(), channels);
             let mut frame = 0;
             for n in schedule(which, seed, 700) {
                 let input = input_signal(frame, n);
@@ -630,7 +640,14 @@ proptest! {
                     let lane: Vec<f32> = got.iter().skip(c).step_by(width).copied().collect();
                     prop_assert_eq!(bits(&[lane]), bits(std::slice::from_ref(channel)), "tap lane {} at frame {}", c, frame);
                 }
+                let mut got = vec![0.0f32; n * channels];
+                prop_assert_eq!(heard.pop_into(&mut got).get(), n);
+                for (c, channel) in exec.iter().enumerate() {
+                    let lane: Vec<f32> = got.iter().skip(c).step_by(channels).copied().collect();
+                    prop_assert_eq!(bits(&[lane]), bits(std::slice::from_ref(channel)), "outputs tap lane {} at frame {}", c, frame);
+                }
                 prop_assert_eq!(tap.take_lost().get(), 0);
+                prop_assert_eq!(heard.take_lost().get(), 0);
                 frame += n as u64;
             }
         }

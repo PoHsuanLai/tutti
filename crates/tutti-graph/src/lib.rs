@@ -137,8 +137,9 @@
 //! graph ports ([`EventIn`], [`EventOut`]), so the same delay compensation that aligns audio aligns
 //! them. An event input may have several sources, merged by offset and then
 //! by the source port's `(NodeKey, port)` — a property of the wiring, not of
-//! the order edges were listed in. Audio keeps one source per input port;
-//! summing is a node's job.
+//! the order edges were listed in. An audio input port, and a
+//! global output channel, holds a set of sources, which the graph sums
+//! (`Op::Sum`, doc 013 "Audio fan-in sums").
 //!
 //! - Each event output port declares how many events it writes per block
 //!   ([`Shape::event_capacity`]), and every buffer downstream is sized from

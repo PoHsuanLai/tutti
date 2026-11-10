@@ -7,7 +7,7 @@
 //! | `Graph` | the editor |
 //! |---|---|
 //! | `insert` | `Editor::insert` of the node's own [`IntoNode`] at a [`NodeKey`] minted by `NodeKey::fresh`, its controls handed back |
-//! | `set_source`, `set_output_source`, `widen_outputs` | written into `editor.spec_mut()` |
+//! | `set_source`, `set_sources`, `add_source`, `remove_source`, the `output` forms, `widen_outputs` | written into `editor.spec_mut()` (a port holds a set of sources, which the graph sums) |
 //! | `set_param` | the node's [`ParamSet`], when it has one |
 //! | `replace`, `crossfade` | `Editor::replace_or_swap` with a [`Fade`]: a plain swap when there is nothing to fade from |
 //! | `node_latency`, `node_tail`, `node_inputs`, `node_outputs` | the editor's [`Shapes`](tutti_graph::Shapes) |
@@ -72,9 +72,12 @@ const PLUGIN_KIND: &str = "tutti-session:plugin";
 /// Where one input port — a node's, or a global output channel — reads from.
 ///
 /// The graph's answer to "what feeds this port", naming the node by its
-/// [`NodeKey`]. Read back with [`Graph::source`] and
-/// [`Graph::output_source`]; written with [`Graph::set_source`] and
-/// [`Graph::set_output_source`].
+/// [`NodeKey`]. A port holds a **set** of these, which the graph sums. Read
+/// back with [`Graph::sources`] and [`Graph::output_sources`]; written with
+/// [`Graph::set_sources`], [`Graph::add_source`] and [`Graph::remove_source`]
+/// (and the `output` forms), or [`Graph::set_source`] and
+/// [`Graph::set_output_source`] for exactly one. `Silence` is never part of a
+/// set: it is the empty set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GraphSource {
     /// Output `port` of `node`.
@@ -349,9 +352,6 @@ pub struct Graph {
     /// capacity), so [`reopen_event_taps`](Self::reopen_event_taps) can open it
     /// again.
     event_taps: BTreeMap<EventTapId, (EventSource, TapAlign, usize)>,
-    /// The taps that copy the graph's outputs ([`open_output_tap`](Self::open_output_tap)),
-    /// by the channels they were opened with: their sources follow the outputs.
-    output_taps: BTreeMap<TapId, usize>,
     /// The id the next meter takes (`MASTER_METER` is taken at construction).
     next_meter: u32,
     /// The master meter's reader until a host takes it.
@@ -506,7 +506,6 @@ impl Graph {
             next_tap: 0,
             next_event_tap: 0,
             event_taps: BTreeMap::new(),
-            output_taps: BTreeMap::new(),
             next_meter: 1,
             master_meter: Some(master_meter),
             parked: VecDeque::new(),
@@ -1567,34 +1566,87 @@ impl Graph {
         }
     }
 
-    /// What feeds `node`'s input `port`.
-    pub fn source(&self, node: NodeKey, port: usize) -> GraphSource {
+    /// What feeds `node`'s input `port`: every source of the port's set, in
+    /// the order the graph sums them (the compiler's: by node, then port, then
+    /// a global input). Empty for a port nothing feeds, which reads silence.
+    pub fn sources(&self, node: NodeKey, port: usize) -> Vec<GraphSource> {
         let at = InPort {
             node,
             port: port as u16,
         };
-        // This graph writes one source per port, so the first is the only.
-        match self
-            .editor
+        self.editor
             .spec()
             .topology
             .edges
             .get(&at)
-            .and_then(|es| es.first())
-        {
-            Some(Edge::Direct(source)) => self.lift(*source),
-            // This graph writes no feedback edge.
-            Some(Edge::Feedback(_)) | None => GraphSource::Silence,
-        }
+            .into_iter()
+            .flatten()
+            .filter_map(|edge| match edge {
+                Edge::Direct(source) => Some(self.lift(*source)),
+                // This graph writes no feedback edge.
+                Edge::Feedback(_) => None,
+            })
+            .filter(|s| *s != GraphSource::Silence)
+            .collect()
     }
 
-    /// Feeds `node`'s input `port` from `source`. A port holds one source;
-    /// this replaces whatever it held.
+    /// Feeds `node`'s input `port` from `source` and nothing else: the port's
+    /// set becomes exactly this one source. It is
+    /// [`set_sources`](Self::set_sources) with a slice of one, and
+    /// [`GraphSource::Silence`] clears the port.
     ///
     /// # Panics
     ///
     /// If `source` is `node` itself: a node cannot feed its own input.
     pub fn set_source(&mut self, node: NodeKey, port: usize, source: GraphSource) {
+        self.set_sources(node, port, &[source]);
+    }
+
+    /// Feeds `node`'s input `port` from exactly `sources`, which the graph
+    /// sums. A source listed twice is one source, and the order does not
+    /// matter (the graph orders them). Touches nothing, and marks nothing
+    /// edited, when that is what the port already holds. A slice of one
+    /// [`GraphSource::Silence`], or an empty slice, clears the port.
+    ///
+    /// # Panics
+    ///
+    /// If a source is `node` itself (a node cannot feed its own input), or
+    /// [`GraphSource::Silence`] is in a set of several: silence is the empty
+    /// set and is never stored beside others.
+    pub fn set_sources(&mut self, node: NodeKey, port: usize, sources: &[GraphSource]) {
+        let want = Self::edge_set(sources);
+        assert!(
+            !want
+                .iter()
+                .any(|e| matches!(e, Edge::Direct(Source::Node(p)) if p.node == node)),
+            "a node cannot feed its own input"
+        );
+        let at = InPort {
+            node,
+            port: port as u16,
+        };
+        let edges = &mut self.editor.spec_mut().topology.edges;
+        if edges.get(&at).map_or(&[][..], Vec::as_slice) == want.as_slice() {
+            return;
+        }
+        // An unwritten port reads silence, so silence is no edge: the value
+        // stays the same whether a port was never wired or wired and cleared.
+        if want.is_empty() {
+            edges.remove(&at);
+        } else {
+            edges.insert(at, want);
+        }
+        self.edited = true;
+    }
+
+    /// Adds `source` to what feeds `node`'s input `port`, beside the others:
+    /// the graph sums them. Adding a source the port already holds, or
+    /// [`GraphSource::Silence`], does nothing and marks nothing edited.
+    ///
+    /// # Panics
+    ///
+    /// If `source` is `node` itself: a node cannot feed its own input.
+    pub fn add_source(&mut self, node: NodeKey, port: usize, source: GraphSource) {
         assert!(
             !matches!(source, GraphSource::Node(from, _) if from == node),
             "a node cannot feed its own input"
@@ -1603,19 +1655,44 @@ impl Graph {
             node,
             port: port as u16,
         };
-        let edges = &mut self.editor.spec_mut().topology.edges;
-        match Self::lower(source) {
-            // An unwritten port reads silence, so silence is no edge: the
-            // value stays the same whether a port was never wired or wired
-            // and cleared.
-            Source::Zero => {
-                edges.remove(&at);
-            }
-            source => {
-                edges.insert(at, vec![Edge::Direct(source)]);
-            }
+        let topology = &mut self.editor.spec_mut().topology;
+        let held = topology.edges.get(&at).map_or(0, Vec::len);
+        topology.connect(at, Edge::Direct(Self::lower(source)));
+        if topology.edges.get(&at).map_or(0, Vec::len) != held {
+            self.edited = true;
         }
-        self.edited = true;
+    }
+
+    /// Removes `source` from what feeds `node`'s input `port`; the others
+    /// stay. A source the port does not hold, or [`GraphSource::Silence`],
+    /// does nothing and marks nothing edited.
+    pub fn remove_source(&mut self, node: NodeKey, port: usize, source: GraphSource) {
+        let at = InPort {
+            node,
+            port: port as u16,
+        };
+        let edge = Edge::Direct(Self::lower(source));
+        if self.editor.spec_mut().topology.disconnect(at, edge) {
+            self.edited = true;
+        }
+    }
+
+    /// The sorted, distinct edges of a set of sources, as the topology holds
+    /// them. A lone `Silence` is the empty set.
+    fn edge_set(sources: &[GraphSource]) -> Vec<Edge> {
+        assert!(
+            sources.len() < 2 || !sources.contains(&GraphSource::Silence),
+            "silence is the empty set and cannot be one of several sources"
+        );
+        let mut edges: Vec<Edge> = sources
+            .iter()
+            .map(|s| Self::lower(*s))
+            .filter(|s| *s != Source::Zero)
+            .map(Edge::Direct)
+            .collect();
+        edges.sort();
+        edges.dedup();
+        edges
     }
 
     // --- Param modulation ---
@@ -1696,29 +1773,90 @@ impl Graph {
             .cloned()
     }
 
-    /// What feeds global output `channel`.
-    pub fn output_source(&self, channel: usize) -> GraphSource {
+    /// What feeds global output `channel`: every source of its set, in the
+    /// order the graph sums them. Empty for a channel nothing feeds (and for
+    /// one past the global outputs).
+    pub fn output_sources(&self, channel: usize) -> Vec<GraphSource> {
         self.editor
             .spec()
             .topology
             .outputs
             .get(channel)
-            .and_then(|sources| sources.first())
-            .map_or(GraphSource::Silence, |s| self.lift(*s))
+            .into_iter()
+            .flatten()
+            .map(|s| self.lift(*s))
+            .filter(|s| *s != GraphSource::Silence)
+            .collect()
     }
 
-    /// Feeds global output `channel` from `source`.
+    /// Feeds global output `channel` from `source` and nothing else:
+    /// [`set_output_sources`](Self::set_output_sources) with a slice of one.
     ///
     /// # Panics
     ///
     /// If `channel` is past the global outputs.
     pub fn set_output_source(&mut self, channel: usize, source: GraphSource) {
-        self.editor.spec_mut().topology.outputs[channel] = match Self::lower(source) {
-            Source::Zero => Vec::new(),
-            source => vec![source],
-        };
-        self.follow_outputs();
-        self.edited = true;
+        self.set_output_sources(channel, &[source]);
+    }
+
+    /// Feeds global output `channel` from exactly `sources`, which the graph
+    /// sums (each delayed to the output time first). The rules are those of
+    /// [`set_sources`](Self::set_sources): duplicates collapse, order does not
+    /// matter, nothing is marked edited when the set is unchanged.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` is past the global outputs, or
+    /// [`GraphSource::Silence`] is in a set of several.
+    pub fn set_output_sources(&mut self, channel: usize, sources: &[GraphSource]) {
+        let want: Vec<Source> = Self::edge_set(sources)
+            .into_iter()
+            .filter_map(|e| match e {
+                Edge::Direct(s) => Some(s),
+                Edge::Feedback(_) => None,
+            })
+            .collect();
+        let held = &mut self.editor.spec_mut().topology.outputs[channel];
+        if *held != want {
+            *held = want;
+            self.edited = true;
+        }
+    }
+
+    /// Adds `source` to what feeds global output `channel`, beside the
+    /// others. Adding a source the channel holds, or
+    /// [`GraphSource::Silence`], does nothing and marks nothing edited.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` is past the global outputs.
+    pub fn add_output_source(&mut self, channel: usize, source: GraphSource) {
+        if self
+            .editor
+            .spec_mut()
+            .topology
+            .connect_output(channel, Self::lower(source))
+        {
+            self.edited = true;
+        }
+    }
+
+    /// Removes `source` from what feeds global output `channel`; the others
+    /// stay. A source the channel does not hold does nothing and marks
+    /// nothing edited.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` is past the global outputs.
+    pub fn remove_output_source(&mut self, channel: usize, source: GraphSource) {
+        if self
+            .editor
+            .spec_mut()
+            .topology
+            .disconnect_output(channel, Self::lower(source))
+        {
+            self.edited = true;
+        }
     }
 
     /// Feeds **every** global output from `node`: channel `c` from its port
@@ -1764,7 +1902,6 @@ impl Graph {
                 })]
             };
         }
-        self.follow_outputs();
         self.edited = true;
     }
 
@@ -1832,8 +1969,11 @@ impl Graph {
     }
 
     /// A tap on the graph's global outputs, aligned: lane `c` is output
-    /// channel `c` as the outputs carry it. Its sources follow the outputs
-    /// when they are re-wired ([`set_output_source`](Self::set_output_source),
+    /// channel `c` as the outputs carry it, **post-sum**: a channel several
+    /// sources feed is heard whole, each source delayed to the output time and
+    /// added ([`TapSpec::Outputs`](tutti_graph::TapSpec::Outputs)). It follows
+    /// the outputs when they are re-wired
+    /// ([`set_output_sources`](Self::set_output_sources),
     /// [`set_outputs_from`](Self::set_outputs_from)); its width is the
     /// output count when it was opened, and a later
     /// [`widen_outputs`](Self::widen_outputs) does not widen it. When the root
@@ -1847,23 +1987,25 @@ impl Graph {
     /// the fade, use [`Session::open_heard_tap`](crate::Session::open_heard_tap).
     ///
     /// Refuses with [`MissingSource`] when an output names a source that does
-    /// not exist now (an output wired to a port the node does not have).
+    /// not exist now (an output wired to a port the node does not have); only
+    /// the open is checked, as for [`open_tap`](Self::open_tap).
     ///
     /// # Errors
     ///
-    /// [`MissingSource`] for the first source that is not in the graph now.
+    /// [`MissingSource`] for the first output source that is not in the graph
+    /// now.
     pub fn open_output_tap(&mut self, capacity: Samples) -> Result<TapReader, MissingSource> {
-        let outputs: Vec<GraphSource> =
-            (0..self.outputs()).map(|c| self.output_source(c)).collect();
-        let reader = self.open_tap(&outputs, TapAlign::ToOutput, capacity)?;
-        self.output_taps.insert(reader.id(), reader.width());
+        let id = TapId(self.next_tap);
+        let width = self.outputs();
+        let reader = self.editor.open_output_tap(id, width, capacity)?;
+        self.next_tap += 1;
+        self.edited = true;
         Ok(reader)
     }
 
     /// Closes a tap: its ops leave the plan at the next commit and the ring
     /// is freed on this side. Closing a closed tap does nothing.
     pub fn close_tap(&mut self, id: TapId) {
-        self.output_taps.remove(&id);
         self.editor.close_tap(id);
         self.edited = true;
     }
@@ -1873,8 +2015,6 @@ impl Graph {
     pub(crate) fn reap_taps(&mut self) -> usize {
         let reaped = self.editor.reap_taps();
         if reaped > 0 {
-            let open = &self.editor.spec().topology.taps;
-            self.output_taps.retain(|id, _| open.contains_key(id));
             self.edited = true;
         }
         reaped
@@ -1986,29 +2126,6 @@ impl Graph {
             self.edited = true;
         }
         reaped
-    }
-
-    /// Points each output tap's lanes at the outputs as they are now.
-    fn follow_outputs(&mut self) {
-        if self.output_taps.is_empty() {
-            return;
-        }
-        let spec = self.editor.spec_mut();
-        let outputs = spec.topology.outputs.clone();
-        for (id, &width) in &self.output_taps {
-            if let Some(tap) = spec.topology.taps.get_mut(id) {
-                // A lane whose output channel is gone (the root narrowed) reads
-                // silence, so the reader keeps the lanes it was opened with.
-                tap.sources = outputs
-                    .iter()
-                    // One source per channel in this graph, so the first is
-                    // the only.
-                    .map(|sources| sources.first().copied().unwrap_or(Source::Zero))
-                    .chain(std::iter::repeat(Source::Zero))
-                    .take(width)
-                    .collect();
-            }
-        }
     }
 
     // --- Meters ---
@@ -2291,7 +2408,6 @@ impl Graph {
         if outputs.len() != width {
             outputs.resize(width, Vec::new());
             self.edited = true;
-            self.follow_outputs();
         }
         Ok(())
     }

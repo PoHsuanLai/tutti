@@ -173,8 +173,7 @@ mod tests {
     use crate::host::node::param_delivery::DeliveryCounters;
     use std::sync::Arc;
     use tutti_graph::{
-        Env, ParamRamp, PlayClock, PlayReading, SegmentShape, Transport, TransportChanges,
-        TransportHistory,
+        Env, Law, ParamRamp, PlayClock, PlayReading, Transport, TransportChanges, TransportHistory,
     };
     use tutti_plugin_types::ParamId;
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
@@ -239,7 +238,7 @@ mod tests {
             at(0, ParamRamp::foreign(7, 0.0, Samples(8))),
             at(
                 11,
-                ParamRamp::foreign(7, 1.0, Samples(40)).with_shape(SegmentShape::PowerIn(2.0)),
+                ParamRamp::foreign(7, 1.0, Samples(40)).with_shape(Law::PowerIn(2.0)),
             ),
             at(40, ParamRamp::foreign(7, 0.0, Samples(4))),
         ];
@@ -309,7 +308,7 @@ mod tests {
             Event::ramp(off(10), ParamRamp::foreign(7, 1.0, Samples(4))),
             Event::segment(
                 off(20),
-                ParamSegment::foreign(7, 0.9, 0.9, Samples(2), SegmentShape::Linear),
+                ParamSegment::foreign(7, 0.9, 0.9, Samples(2), Law::Linear),
             ),
             Event::ramp(off(20), ParamRamp::foreign(7, 0.0, Samples(2))),
         ];
@@ -478,7 +477,7 @@ mod tests {
         let events: Vec<Event> = (0..300)
             .map(|i| {
                 let v = if i % 2 == 0 { 0.25 } else { 0.75 };
-                let seg = ParamSegment::foreign(7, v, v, Samples(2), SegmentShape::Linear);
+                let seg = ParamSegment::foreign(7, v, v, Samples(2), Law::Linear);
                 Event::segment(Offset::new(i, Samples(len)).expect("inside"), seg)
             })
             .collect();

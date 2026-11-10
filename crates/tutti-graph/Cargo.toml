@@ -28,6 +28,8 @@ contract = []
 # tail vocabulary.
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
+# `Law`, the closed set of easings a param segment and a ramp move along.
+tutti-curve = { path = "../tutti-curve" }
 # `Ump`, the packet an event carries, and its note-off test. No other tutti
 # crate and no codec: this is why the packet is not in `tutti-types`.
 tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }

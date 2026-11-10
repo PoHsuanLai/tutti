@@ -18,7 +18,7 @@ use tutti_graph::{
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
-    Adsr, Clock, CurveType, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
+    Adsr, Clock, Declarations, Law, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
     Source as ModSource, SourceKey, TargetDecl, TargetKey, Wave,
 };
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
@@ -288,7 +288,7 @@ impl Decl {
                 to: RouteTarget::Param(to),
                 depth: Depth(depth),
                 polarity: Polarity::Bipolar,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
         ));
         RouteKey(k)

@@ -15,7 +15,7 @@ use tutti_graph::{
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_modulation::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity, Wave};
+use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 use tutti_types::{
@@ -63,7 +63,7 @@ fn constant(depth: f32) -> ControlProgram {
         amount: Amount {
             depth: Depth(depth),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     };

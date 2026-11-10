@@ -2,30 +2,22 @@
 //! sums the fan-in. These cases were the `build_vbap_mix` builder's tests and
 //! pin what the panners do through that wiring.
 
-use tutti_graph::{GraphBuilder, NodeKey, Prepare};
-use tutti_nodes::testing::Const;
+use tutti_graph::{GraphBuilder, Prepare};
+use tutti_nodes::testing::{Const, vbap_mix};
 use tutti_nodes::{VbapError, VbapPannerNode};
 use tutti_types::{Azimuth, ChannelLayout, SampleRate, Samples};
 
-/// A panner per `(azimuth, elevation)` source (a DC `[1.0, 1.0]` each), every
-/// panner channel `c` wired to output `c`. Renders 49 blocks of 256 frames,
-/// past the panners' ~0.05 s position smoother, and returns each output
-/// channel's energy over the last block.
+/// A panner per bearing (a DC `[1.0, 1.0]` source each), wired by
+/// [`vbap_mix`]. Renders 49 blocks of 256 frames, past the panners' ~0.05 s
+/// position smoother, and returns each output channel's energy over the last
+/// block.
 fn settled_energy(layout: ChannelLayout, bearings: &[f32]) -> Vec<f32> {
-    let width = layout.count() as usize;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
-    for &az in bearings {
-        let src: NodeKey = g.add(Const::frame(&[1.0, 1.0]));
-        let panner = VbapPannerNode::for_layout(layout).expect("a preset");
-        panner
-            .controls()
-            .set_position(Azimuth::new(az), tutti_types::Elevation::LEVEL);
-        let (pan, _) = g.add_with_controls(panner);
-        g.connect(src, 0, pan, 0).connect(src, 1, pan, 1);
-        for c in 0..width {
-            g.connect_output(pan, c, c);
-        }
-    }
+    let sources: Vec<_> = bearings
+        .iter()
+        .map(|&az| (g.add(Const::frame(&[1.0, 1.0])), Azimuth::new(az)))
+        .collect();
+    vbap_mix(&mut g, layout, &sources).expect("a preset");
     let mut r = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(256)))
         .expect("builds");

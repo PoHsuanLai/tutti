@@ -36,7 +36,7 @@ signal-driven source's node, and the event edges between them. The
 - **The ECS.** The Bevy declarations (`Mods`, `ModRoute`, `ModRange`) are
   `bevy_tutti::modulation`'s, one layer up.
 
-It depends only on `tutti-types` and `audio-automation` (for `CurveType`).
+It depends only on `tutti-types` and `tutti-curve` (for `Law`).
 
 ## Example
 
@@ -44,7 +44,7 @@ An LFO on a filter's cutoff, a quarter of the range deep:
 
 ```rust
 use tutti_modulation::{
-    compile, Clock, CurveType, Declarations, LfoShape, Polarity, ProgramTime, RouteDecl,
+    compile, Clock, Law, Declarations, LfoShape, Polarity, ProgramTime, RouteDecl,
     RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey, Wave,
 };
 use tutti_types::{
@@ -67,7 +67,7 @@ let routes = [(
         to: RouteTarget::Param(cutoff),
         depth: Depth(0.25),
         polarity: Polarity::Bipolar,
-        curve: CurveType::Linear,
+        curve: Law::Linear,
     },
 )];
 let targets = [(cutoff, TargetDecl { min: 200.0, max: 1_000.0, automation: None })];

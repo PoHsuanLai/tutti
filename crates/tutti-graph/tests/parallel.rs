@@ -18,8 +18,8 @@ use common::{Kind, TestNode, WORKERS, bits, test_pool};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
-    ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamIn, ParamRamp, ParamRange,
-    ParamSegment, Prepare, Schedule, SegmentShape, Shape, Status, Transport, Unforkable,
+    ForkTarget, Forked, IntoNode, Io, Law, Node, NodeParts, ParamIn, ParamRamp, ParamRange,
+    ParamSegment, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, UnitParam};
@@ -123,10 +123,10 @@ impl Node for RampEvery {
                     // A curve segment spanning the next event: interrupted.
                     k => {
                         let shape = [
-                            SegmentShape::PowerIn(2.0),
-                            SegmentShape::Exp(3.0),
-                            SegmentShape::PowerInOut(1.5),
-                            SegmentShape::Hold,
+                            Law::PowerIn(2.0),
+                            Law::Exp(3.0),
+                            Law::PowerInOut(1.5),
+                            Law::Hold,
                         ][(f / 111) as usize % 4];
                         let seg = ParamSegment::unit(
                             self.param,

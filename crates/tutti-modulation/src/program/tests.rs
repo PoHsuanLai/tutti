@@ -2,7 +2,7 @@
 //! figures. Each test carries the mutations it was seen to fail under.
 
 use super::*;
-use audio_automation::{AutomationEnvelope, AutomationPoint};
+use tutti_curve::{Breakpoint, Trajectory};
 
 const SR: f64 = 48_000.0;
 
@@ -28,7 +28,7 @@ fn amount(depth: f32) -> Amount {
     Amount {
         depth: Depth(depth),
         polarity: Polarity::Bipolar,
-        curve: CurveType::Linear,
+        curve: Law::Linear,
     }
 }
 
@@ -61,11 +61,11 @@ fn program(layers: Vec<Layer>) -> ControlProgram {
     ControlProgram::new(None, layers, vec![]).expect("a valid program")
 }
 
-/// A 500 at beat 0 → 0 at beat 4 envelope.
+/// A 500 at beat 0 → 0 at beat 4 trajectory.
 fn ramp() -> Arc<dyn Curve> {
-    let mut e = AutomationEnvelope::new(());
-    e.add_point(AutomationPoint::new(0.0, 500.0));
-    e.add_point(AutomationPoint::new(4.0, 0.0));
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::new(Beat(0.0), 500.0));
+    e.add_breakpoint(Breakpoint::new(Beat(4.0), 0.0));
     Arc::new(e)
 }
 
@@ -88,7 +88,7 @@ fn automation_replaces_the_knob() {
         Some(250.0)
     );
     assert_eq!(p.value_at(None, &at_beat(2.0), 100.0, &[]), Some(250.0));
-    let empty: Arc<dyn Curve> = Arc::new(AutomationEnvelope::<()>::new(()));
+    let empty: Arc<dyn Curve> = Arc::new(Trajectory::new());
     let p = ControlProgram::from_curve(empty);
     assert_eq!(
         p.value_at(Some(1000.0), &at_beat(2.0), 100.0, &[]),
@@ -143,7 +143,7 @@ fn an_inputs_offset_is_depth_times_span_times_x() {
             amount: Amount {
                 depth: Depth(0.25),
                 polarity: Polarity::Unipolar,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
         },
     ];
@@ -277,7 +277,7 @@ fn each_wave_has_its_corners() {
     };
     let lin = amount(1.0);
     let curved = Amount {
-        curve: CurveType::Exponential,
+        curve: Law::PowerIn(2.0),
         ..lin
     };
     assert_eq!(corner(LfoShape::Square, lin, 0.5), Some(Beat(2.0)));
@@ -298,8 +298,7 @@ fn each_wave_has_its_corners() {
 }
 
 /// Every curve but `Linear` bends a bipolar sine at its zero crossings,
-/// the easing family included, since `shape` evaluates each one as
-/// `audio-automation` does; `Linear` does not.
+/// each kind of law included; `Linear` does not.
 ///
 /// Mutation (run): `kinks_at_zero` matching only `Exponential`,
 /// `Logarithmic` and `SCurve` → `QuadIn`'s sine has no corner.
@@ -314,11 +313,15 @@ fn every_non_linear_curve_kinks_a_bipolar_sine() {
             .next_corner(&at_beat(1.0))
             .beat
     };
-    assert_eq!(corner(CurveType::Linear), None);
-    for c in crate::shape::every_curve()
-        .into_iter()
-        .filter(|c| *c != CurveType::Linear)
-    {
+    assert_eq!(corner(Law::Linear), None);
+    for c in [
+        Law::Hold,
+        Law::PowerIn(2.0),
+        Law::PowerOut(3.0),
+        Law::PowerInOut(2.0),
+        Law::PowerIn(0.5),
+        Law::Exp(3.0),
+    ] {
         assert_eq!(corner(c), Some(Beat(2.0)), "{c:?}");
     }
 }
@@ -369,9 +372,9 @@ fn the_left_limit_is_the_level_before_a_jump() {
     let before = r.value_before(Some(0.0), &at_beat(3.0), 1.0, &[]);
     assert_eq!(before, r.value_at(Some(0.0), &at_beat(2.5), 1.0, &[]));
     assert_ne!(before, r.value_at(Some(0.0), &at_beat(3.0), 1.0, &[]));
-    let mut e = AutomationEnvelope::new(());
-    e.add_point(AutomationPoint::with_curve(0.0, 100.0, CurveType::Stepped));
-    e.add_point(AutomationPoint::new(2.0, 300.0));
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::with_law(Beat(0.0), 100.0, Law::Hold));
+    e.add_breakpoint(Breakpoint::new(Beat(2.0), 300.0));
     let a = ControlProgram::from_curve(Arc::new(e));
     assert_eq!(a.value_at(None, &at_beat(2.0), 1.0, &[]), Some(300.0));
     assert_eq!(a.value_before(None, &at_beat(2.0), 1.0, &[]), Some(100.0));
@@ -414,8 +417,8 @@ impl Curve for Thawed {
         Some(1.0)
     }
     fn frozen(&self) -> Option<Arc<dyn Curve>> {
-        let mut e = AutomationEnvelope::new(());
-        e.add_point(AutomationPoint::new(0.0, 2.0));
+        let mut e = Trajectory::new();
+        e.add_breakpoint(Breakpoint::new(Beat(0.0), 2.0));
         Some(Arc::new(e))
     }
 }
@@ -512,17 +515,17 @@ fn a_drawn_wave_follows_its_points() {
         PeriodPoint {
             at: Phase(0.1),
             value: 1.0,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         PeriodPoint {
             at: Phase(0.5),
             value: -1.0,
-            curve: CurveType::Exponential,
+            curve: Law::PowerIn(2.0),
         },
         PeriodPoint {
             at: Phase(0.9),
             value: 0.5,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
     ]);
     let w = Wave::Drawn(Arc::clone(&points));
@@ -574,12 +577,12 @@ fn new_refuses_what_a_lane_cannot_hold() {
             PeriodPoint {
                 at: Phase(0.5),
                 value: 0.0,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
             PeriodPoint {
                 at: Phase(0.2),
                 value: 0.0,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
         ])),
         ..l(5)
@@ -620,7 +623,7 @@ fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
     let curved = Amount {
         depth: Depth(0.5),
         polarity: Polarity::Bipolar,
-        curve: CurveType::Exponential,
+        curve: Law::PowerIn(2.0),
     };
     let p = program(vec![scaled(curved)]);
     assert_eq!(p.next_corner(&at_beat(1.0)).beat, Some(Beat(2.0)));
@@ -652,7 +655,7 @@ fn the_unit_depth_by_is_half_raw_plus_one_in_f64() {
         let held = Wave::Drawn(Arc::from(vec![PeriodPoint {
             at: Phase(0.0),
             value: raw,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         }]));
         let l = Layer {
             wave: Wave::Const(1.0),

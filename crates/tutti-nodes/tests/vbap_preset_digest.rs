@@ -21,6 +21,15 @@
 //! Mutation (run): the second and third columns of a triplet's matrix swapped
 //! in `SpeakerLayout::new` moves the 7.1.4 digest; a `norm` fixed at 1 moves
 //! all five.
+//!
+//! These digests also carry the deleted `spatial_smoother_digest` and
+//! `vbap_fold_digest` tests. Mutations run against them (each moves the
+//! digests named, so each deleted test was safe to delete):
+//! `Smoother::gap_closed` with `powi(steps + 1)` moves all five; the stereo
+//! to mono fold's `scale: 0.5` -> `1.0` in `tutti-types`' `Fold` moves all
+//! five; the mono branch's held-gain shortcut in `VbapGains::render_channel`
+//! as `mono(l, r) * (g_to + 1e-4)` moves the stereo digest; `pair()`'s `half`
+//! as `* 0.6` (the crossfade out of and into the mono branch) moves all five.
 
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::VbapPannerNode;

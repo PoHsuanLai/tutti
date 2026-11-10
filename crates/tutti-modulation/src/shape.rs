@@ -2,11 +2,11 @@
 //!
 //! [`Polarity`] and [`LfoShape`] are the small enums a route needs;
 //! [`shape`] is the pure function a [`ControlProgram`](crate::ControlProgram)
-//! shapes every offset with. Its response curve is `audio-automation`'s
-//! [`CurveType::interpolate`], the one evaluation of a [`CurveType`] the
-//! engine and the editor share.
+//! shapes every offset with. Its response curve is `tutti-curve`'s
+//! [`Law::interpolate`], the one evaluation of a [`Law`] the graph, the lanes
+//! and the editor share.
 
-pub use audio_automation::CurveType;
+use tutti_curve::Law;
 
 use tutti_types::{Depth, Phase};
 
@@ -166,21 +166,16 @@ impl core::fmt::Display for LfoShape {
 /// direction from base) then curves. `depth` scales the result.
 ///
 /// The curve is `curve.interpolate(0.0, 1.0, u)` on the normalized `u`, so
-/// every [`CurveType`] shapes exactly as the editor draws it, the easing
-/// family, `Stepped` and `Bezier` included. Every curve runs from 0 at no
-/// input to 1 at full input. `Back` and `Elastic` dip below 0 on the way
-/// (minima about −0.10 at 0.42 and −0.373 at 0.865; neither exceeds 1), so
-/// a small input pushes the offset the other way: opposite its sign when
-/// bipolar, below base when unipolar. A `Bezier` whose control values leave
-/// `[0, 1]` can dip below 0 or exceed 1; its control points are not
-/// checked. `Bounce` stays in `[0, 1]` but is not monotone. `Stepped` is 0 until the input is exactly full.
+/// every [`Law`] shapes exactly as the editor draws it. Every law runs from 0
+/// at no input to 1 at full input, and none leaves `[0, 1]` on the way, so the
+/// offset never exceeds `depth`. `Hold` is 0 until the input is exactly full.
 ///
 /// The return is a bare `f32`, not a [`Depth`]: it is an offset in the
 /// *target's* units — Hz for a cutoff, linear gain for a fader — which the
 /// caller has already scaled by the target's range. Only the input amount is a
 /// `Depth`.
 #[inline]
-pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: CurveType) -> f32 {
+pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: Law) -> f32 {
     let depth = depth.get();
     match polarity {
         // Bipolar: preserve sign, curve the magnitude, restore sign.
@@ -194,68 +189,6 @@ pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: CurveType) -> f32 
             depth * curve.interpolate(0.0, 1.0, u)
         }
     }
-}
-
-/// Every [`CurveType`], one control-point pair standing in for `Bezier`.
-///
-/// The `match` names each variant, so a new one is a compile error here
-/// until it joins the list (and gets its own slot). tutti-nodes' lane tests
-/// keep their own copy (`automation/lane.rs`).
-#[cfg(test)]
-pub(crate) fn every_curve() -> [CurveType; 22] {
-    use CurveType as C;
-    const ALL: [CurveType; 22] = [
-        C::Linear,
-        C::Exponential,
-        C::Logarithmic,
-        C::SCurve,
-        C::Stepped,
-        C::Bezier(0.25, 0.75),
-        C::Elastic,
-        C::Bounce,
-        C::Back,
-        C::Circular,
-        C::QuadIn,
-        C::QuadOut,
-        C::QuadInOut,
-        C::CubicIn,
-        C::CubicOut,
-        C::CubicInOut,
-        C::QuartIn,
-        C::QuartOut,
-        C::QuartInOut,
-        C::QuintIn,
-        C::QuintOut,
-        C::QuintInOut,
-    ];
-    let slot = |c: CurveType| match c {
-        C::Linear => 0,
-        C::Exponential => 1,
-        C::Logarithmic => 2,
-        C::SCurve => 3,
-        C::Stepped => 4,
-        C::Bezier(..) => 5,
-        C::Elastic => 6,
-        C::Bounce => 7,
-        C::Back => 8,
-        C::Circular => 9,
-        C::QuadIn => 10,
-        C::QuadOut => 11,
-        C::QuadInOut => 12,
-        C::CubicIn => 13,
-        C::CubicOut => 14,
-        C::CubicInOut => 15,
-        C::QuartIn => 16,
-        C::QuartOut => 17,
-        C::QuartInOut => 18,
-        C::QuintIn => 19,
-        C::QuintOut => 20,
-        C::QuintInOut => 21,
-    };
-    for (i, c) in ALL.into_iter().enumerate() {
-        assert_eq!(slot(c), i, "{c:?} is out of place in the list");
-    }
-    ALL
 }
 
 #[cfg(test)]

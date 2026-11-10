@@ -32,7 +32,7 @@ use std::sync::atomic::Ordering;
 use tutti_codec::Wave;
 use tutti_graph::NodeKey;
 use tutti_graph::{EventOut, ForkMode, ForkTarget, ParamIn, ParamRange, Prepare, Solo, Transport};
-use tutti_modulation::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity};
+use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polarity};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
 use tutti_types::{
@@ -291,7 +291,7 @@ fn drive_volume(
         amount: Amount {
             depth: Depth(depth),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     };

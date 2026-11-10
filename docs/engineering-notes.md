@@ -530,25 +530,26 @@ When the constraint *is* real: derive at the point of use rather than mirror and
 reconcile. A second owner of a value something else already owns needs
 invalidation, and the invalidation always has a case it cannot see.
 
-## Consumers, and the two pins that must stay in step
+## Consumers, and the one pin that must stay in step
 
 The engine is consumed as a pinned git dependency — `dawai` is the first such
-consumer. Two things must not drift between this repo and a consumer that also
-names them directly:
+consumer. One thing must not drift between this repo and a consumer that also
+names it directly: **the bevy 0.19 line**, for anything that touches
+`bevy-tutti`. It is declared in this repo's `[workspace.dependencies]`.
 
-- **`audio-automation`'s rev.** Two revs are two disjoint copies of `Curve`, and
-  the error surfaces at the *consumer's* seam as `expected Curve, found Curve`,
-  nowhere near here.
-- **The bevy 0.19 line**, for anything that touches `bevy-tutti`.
-
-Both are declared in this repo's `[workspace.dependencies]`.
+There used to be a second pin, `audio-automation`'s rev (two revs were two
+disjoint copies of `Curve`, and the error surfaced at the *consumer's* seam as
+`expected Curve, found Curve`, nowhere near here). The crate is gone from this
+repo (doc 024, Q25): the curve laws and the automation point list are
+`tutti-curve`'s, a type of the engine's own, so a consumer converts at its own
+seam and shares no type.
 
 `Cargo.lock` is committed and every CI and `cargo xtask` cargo command passes
 `--locked`, so a drifted lock fails loudly instead of resolving newer
 dependencies (an unpinned resolve once brought in a deprecation,
 `SystemCondition::and`, that broke a PR's clippy). That protects this repo
 only. **A git-dependency consumer ignores our lock** and resolves with its
-own, so the two pins above still have to be kept in step by hand.
+own, so the pin above still has to be kept in step by hand.
 `rust-toolchain.toml` pins the stable every gate runs on, for the same
 reason: a new stable's lints otherwise land on whichever PR runs first.
 Nightly jobs (miri) name `+nightly`, which overrides the file.

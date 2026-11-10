@@ -49,7 +49,7 @@ use tutti_modulation::{
     Adsr, CompileError, Curve, Declarations, Follower, Lfo, NoteEnvelope, RouteDecl, RouteKey,
     RouteTarget, Source, SourceKey, TargetKey,
 };
-use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, RecordMode};
+use tutti_nodes::automation::{Breakpoint, RecordMode, Trajectory};
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
     AudioSide, GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, Session,
@@ -463,7 +463,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
 /// **A take suspends the automation, then restores it.** A cutoff (knob 300)
 /// automated to 800: the automation plays. A touch take opens on the
 /// automation's target: the knob plays (the gesture drives the param). The
-/// take records 650 and is released: its envelope becomes the automation, and
+/// take records 650 and is released: its trajectory becomes the automation, and
 /// 650 plays.
 ///
 /// Mutations (run in `bevy-tutti`), each failed: the declarations ignoring
@@ -477,8 +477,8 @@ fn a_take_suspends_the_automation_then_restores_it() {
     let (probe, _) = s.graph().add(ProbeUnit::new(300.0));
     master(&mut s, &[probe]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut lane = AutomationEnvelope::new(0.0).with_range(0.0, 1_000.0);
-    lane.add_point(AutomationPoint::new(0.0, 800.0));
+    let mut lane = Trajectory::new().with_range(0.0, 1_000.0);
+    lane.add_breakpoint(Breakpoint::new(Beat(0.0), 800.0));
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     m.automate(cutoff, Arc::new(lane));
@@ -513,7 +513,7 @@ fn a_take_suspends_the_automation_then_restores_it() {
     assert_eq!(
         last(&render(&mut side, 512, 128)),
         650.0,
-        "the take's envelope plays"
+        "the take's trajectory plays"
     );
 }
 
@@ -615,7 +615,7 @@ fn host_update(
             to: RouteTarget::Param(target),
             depth: Depth(0.1),
             polarity: tutti_modulation::Polarity::Bipolar,
-            curve: tutti_modulation::CurveType::Linear,
+            curve: tutti_modulation::Law::Linear,
         },
     )];
     let input = ModInput {
@@ -691,11 +691,8 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
     }
     assert_eq!(s.mod_state().refusal(), None, "dropping it applies again");
 
-    let curve = || -> Option<Arc<dyn Curve>> {
-        Some(Arc::new(
-            AutomationEnvelope::new(0.0).with_range(0.0, 1_000.0),
-        ))
-    };
+    let curve =
+        || -> Option<Arc<dyn Curve>> { Some(Arc::new(Trajectory::new().with_range(0.0, 1_000.0))) };
     let two_automations = declare_targets(
         [(cutoff, 0.0, 1_000.0)],
         [(cutoff, curve()), (cutoff, curve())],

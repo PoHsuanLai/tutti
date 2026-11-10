@@ -1,9 +1,7 @@
 //! [`EnvelopeFollowerNode`]: an audio input's level, sent to control lanes
 //! on the play-clock grid (design doc 014 §6).
 
-use tutti_graph::{
-    Cost, Cx, Event, Io, Node, Offset, ParamSegment, Prepare, SegmentShape, Shape, Status,
-};
+use tutti_graph::{Cost, Cx, Event, Io, Law, Node, Offset, ParamSegment, Prepare, Shape, Status};
 use tutti_modulation::{SignalKind, SourceId, SourceNode};
 use tutti_types::{ChannelLayout, SampleRate, Seconds};
 use tutti_types::{SamplePosition, Samples};
@@ -183,14 +181,8 @@ impl Node for EnvelopeFollowerNode {
             if r.play.get().is_multiple_of(step) {
                 let (from, to) = (self.from as f32, self.env as f32);
                 if from != 0.0 || to != 0.0 || self.sent != 0.0 {
-                    let seg = ParamSegment::foreign(
-                        self.source,
-                        from,
-                        to,
-                        Samples(0),
-                        SegmentShape::Linear,
-                    )
-                    .resumed(SamplePosition(0.0), SamplePosition(f64::from(CONTROL_STEP)));
+                    let seg = ParamSegment::foreign(self.source, from, to, Samples(0), Law::Linear)
+                        .resumed(SamplePosition(0.0), SamplePosition(f64::from(CONTROL_STEP)));
                     if let Some(at) = Offset::new(i, cx.env.block_len) {
                         // Past the capacity (a block past 8192 frames) the
                         // piece is dropped; the next one carries both ends.

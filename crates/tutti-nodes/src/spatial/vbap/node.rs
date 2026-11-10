@@ -406,7 +406,8 @@ impl Node for VbapPannerNode {
     /// speaker that feeds it (LFE: none, so silence). The panner never feeds
     /// LFE; the caller feeds it a separate low-passed send. A block of
     /// one frame collapses the ramp to its end point, which is the exact
-    /// per-frame solve (pinned by `tests/vbap_block_gains.rs`).
+    /// per-frame solve (pinned by `a_position_change_lands_in_the_next_block_as_a_ramp` in
+    /// `tests/vbap_block_gains.rs`).
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
         if size == 0 {

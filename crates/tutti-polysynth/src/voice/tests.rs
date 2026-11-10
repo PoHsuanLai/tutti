@@ -1,4 +1,5 @@
 use super::*;
+use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 
 #[test]
@@ -733,7 +734,10 @@ fn random_streams_keep_their_invariants() {
             ..Default::default()
         });
         if stream % 5 == 0 {
-            alloc.set_zones(Zones::new(3, 2).unwrap());
+            alloc.set_zones(MpeZones::new(
+                MpeZoneConfig::lower(3),
+                MpeZoneConfig::upper(2),
+            ));
         }
         // The test's own model of the held keys of each channel.
         let mut held: [Vec<u8>; 2] = [vec![], vec![]];
@@ -979,4 +983,31 @@ fn a_return_after_the_voice_ended_starts_a_fresh_one() {
             "{mode:?}: {gates:?}"
         );
     }
+}
+
+/// A velocity reaches the note logic as the nearest 16-bit word, not the one
+/// below: 0.5 is 32767.5 words, which rounds to 32768 (M2-104's centre word).
+/// A mono return to a held key plays that word back, so it is observable.
+///
+/// Mutation (run, seen to fail): `allocate` truncating (`(v * 65535.0) as u16`)
+/// gives 32767 and the returned velocity is 32767 / 65535.
+#[test]
+fn a_velocity_is_quantised_to_the_nearest_word() {
+    let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {
+        max_voices: 4,
+        mode: VoiceMode::Mono,
+        ..Default::default()
+    });
+    let ch = MidiChannel::of(0);
+    let id = |n| NoteId::from_channel_note(ch, NoteNumber::of(n));
+    alloc.allocate(id(60), NoteNumber::of(60), ch, 0.5);
+    alloc.allocate(id(64), NoteNumber::of(64), ch, 0.9);
+    alloc.take_gates();
+    alloc.release(id(64), ch);
+    let gates = alloc.take_gates();
+    let back = gates.iter().find_map(|g| match g {
+        Gate::Start { key, velocity, .. } if *key == NoteNumber::of(60) => Some(*velocity),
+        _ => None,
+    });
+    assert_eq!(back, Some(32768.0 / 65535.0), "{gates:?}");
 }

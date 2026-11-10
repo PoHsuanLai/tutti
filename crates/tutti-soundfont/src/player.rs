@@ -33,13 +33,12 @@ use crate::voices::Voices;
 // The controllers `ump` has no name for: the least significant half of a 14-bit
 // controller is its MSB's number plus 32, and the two sends are General MIDI's
 // effects depths 1 and 3.
-// M1 adds an LSB helper and named send constants; these become those.
-const MOD_WHEEL_LSB: CCNumber = CCNumber::of(CCNumber::MOD_WHEEL.get() + 32);
-const VOLUME_LSB: CCNumber = CCNumber::of(CCNumber::VOLUME.get() + 32);
-const PAN_LSB: CCNumber = CCNumber::of(CCNumber::PAN.get() + 32);
-const EXPRESSION_LSB: CCNumber = CCNumber::of(CCNumber::EXPRESSION.get() + 32);
-const REVERB_SEND: CCNumber = CCNumber::of(91);
-const CHORUS_SEND: CCNumber = CCNumber::of(93);
+// The fine (LSB) controller of each coarse one the player reads; a match arm
+// needs a constant, and `lsb` is `None` only above controller 31.
+const MOD_WHEEL_LSB: CCNumber = CCNumber::MOD_WHEEL.lsb().unwrap();
+const VOLUME_LSB: CCNumber = CCNumber::VOLUME.lsb().unwrap();
+const PAN_LSB: CCNumber = CCNumber::PAN.lsb().unwrap();
+const EXPRESSION_LSB: CCNumber = CCNumber::EXPRESSION.lsb().unwrap();
 
 /// The gain applied to the mix of every voice, on every plane: the sends carry
 /// it too, so an effect node after the unit is unity-gain.
@@ -350,8 +349,8 @@ impl Player {
             PAN_LSB => info.set_pan_fine(value),
             CCNumber::EXPRESSION => info.set_expression_coarse(value),
             EXPRESSION_LSB => info.set_expression_fine(value),
-            REVERB_SEND => info.set_reverb_send(data),
-            CHORUS_SEND => info.set_chorus_send(data),
+            CCNumber::REVERB_SEND => info.set_reverb_send(data),
+            CCNumber::CHORUS_SEND => info.set_chorus_send(data),
             CCNumber::RESET_ALL => info.reset_all_controllers(),
             _ => (),
         }

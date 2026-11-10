@@ -37,7 +37,7 @@ use tutti_types::{ChannelLayout, Samples};
 
 use super::client::{InProcessVst2Client, drive_f32};
 use crate::host::node::{DeliveryCounters, ParamDeliveryStats, PluginMeter, param_input};
-use crate::protocol::{Features, WireMidi};
+use tutti_plugin_types::{Features, WireMidi};
 
 /// The most channels a block hands the plugin (the stack tables `process`
 /// builds from its `Io`). A wider plugin's channels past it read silence and
@@ -138,7 +138,7 @@ impl Node for InProcessVst2Client {
         // cell `audioMasterGetTime` reads, then calls `process`.
         let transport = self.transport.block(cx, size, self.features);
         let sends = self.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
-        let mut out_events = crate::protocol::MidiEventVec::new();
+        let mut out_events = tutti_plugin_types::MidiEventVec::new();
         // The graph's buffers go to the plugin as they are: `vst2-host`
         // copies them into its render scratch and the plugin's output back
         // out, the one copy each way its pointer tables need. Scoped so the
@@ -304,7 +304,7 @@ impl InProcessVst2Controls {
 
     /// MIDI events on the node's event input that never reached the plugin
     /// since it was loaded. Counted: an event past the
-    /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a block
+    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) a block
     /// carries; every event of a block the plugin did not run (the instance
     /// was locked; see `contention_count`); and the rest of every SysEx
     /// message that lost a packet either way or was open at a reset, so a

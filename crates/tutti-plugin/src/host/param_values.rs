@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::host::handles::PluginHandle;
-use crate::protocol::{Normalized, ParamId};
+use tutti_plugin_types::{Normalized, ParamId};
 
 /// Edits the plugin reported, in order, waiting for [`PluginParamValues::drain_edits`].
 type Edits = Arc<Mutex<Vec<(ParamId, Normalized)>>>;
@@ -179,10 +179,10 @@ mod tests {
     }
 
     use crate::backend::{HostParams, HostState, ParameterChangeSink};
-    use crate::error::StateError;
     use crate::handles::ParamId;
     use crate::handles::{Normalized, OptionalCapabilities};
     use crate::server::ParameterInfo;
+    use tutti_plugin_types::StateError;
 
     /// A backend listing `params` (address, value); a value of `None` is a
     /// parameter it lists but does not answer.

@@ -29,7 +29,7 @@ use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, WireMidi};
 use super::instance::Instance;
 use crate::host::node::transport_source::{self, HostClock, ProjectTime, SteadyTime};
 use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
-use crate::protocol::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, TransportInfo};
+use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, TransportInfo};
 
 /// A VST2 plugin running inside the host process, as a graph node.
 ///
@@ -129,7 +129,7 @@ pub(super) struct Declared {
     pub(super) inputs: ChannelLayout,
     pub(super) outputs: ChannelLayout,
     pub(super) latency: Samples,
-    pub(super) tail: crate::protocol::PluginTail,
+    pub(super) tail: tutti_plugin_types::PluginTail,
 }
 
 /// Who tells the plugin the rate the node is prepared at.
@@ -388,7 +388,7 @@ impl InProcessVst2Client {
     // Takes the lock rather than caching the flag locally: the answer lives on
     // the `HostState` the plugin already holds, and a second copy could
     // disagree with it.
-    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+    pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         self.inner.lock().set_offline_render(mode.is_offline());
         true
     }

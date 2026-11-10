@@ -57,6 +57,10 @@ atomic_float = "1.1"
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime" }
 
+# The process edge: the wire, the slab, the server's launch and the client of a
+# served plugin (design 021 step 3).
+tutti-plugin-ipc = { path = "../tutti-plugin-ipc" }
+
 # Shared value vocabulary used across host crates + IPC protocol.
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
 
@@ -64,29 +68,10 @@ tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "pro
 # subprocess probe.
 tutti-plugin-db = { path = "../tutti-plugin-db" }
 
-# The probe's private result directory (pure Rust; removed on drop, panic included).
-tempfile = "3"
-
-# Serialization for IPC
-serde = { version = "1", features = ["derive"] }
-bincode = "1"
-
-# Shared memory
-memmap2 = "0.9"
-
 # The in-process VST2 node's stack channel tables.
 arrayvec = { version = "0.7", optional = true }
 
-# Lock-free channels and queues
-crossbeam-channel = "0.5"
-crossbeam = "0.8"
 parking_lot = "0.12"
-
-# Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
-interprocess = { version = "2" }
-
-# Error handling
-thiserror = "2"
 
 # Logging
 tracing = "0.1"
@@ -104,7 +89,11 @@ tutti-clap-host = { path = "../tutti-clap-host", optional = true }
 tutti-au-host = { path = "../tutti-au-host", optional = true }
 tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
 
-# Platform-specific (shared memory)
+# The probe's private result directory (pure Rust; removed on drop, panic included).
+tempfile = "3"
+
+# Platform-specific
+
 [target.'cfg(unix)'.dependencies]
 # `clock_gettime`: the OS monotonic clock a hosted plugin's `systemTime` /
 # `nanoSeconds` is on (`transport_source::HostClock`).
@@ -112,18 +101,18 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52", features = [
-    "Win32_System_Memory",
-    "Win32_System_Threading",
-    "Win32_Foundation",
-    # `PeekNamedPipe`, which is how a control read gets a deadline on Windows.
-    # `interprocess` refuses `set_recv_timeout` on a named pipe, so without this
-    # every read blocks until the peer speaks. See `util::transport::control`.
-    "Win32_System_Pipes",
     # `QueryPerformanceCounter`: the host clock (`transport_source::HostClock`).
     "Win32_System_Performance",
 ] }
 
 [dev-dependencies]
+# The node tests' mock plugin-server speaks the wire by hand.
+interprocess = { version = "2" }
+bincode = "1"
+# The catalog tests' scan hand-off.
+crossbeam-channel = "0.5"
+# The client's test-only knobs (`set_rate_timeout`, `settled_replies`).
+tutti-plugin-ipc = { path = "../tutti-plugin-ipc", features = ["test-support"] }
 tutti-engine = { path = "../tutti-engine" }
 # `contract::{drive_input, Direct}`: the in-process VST2 node driven by hand, as
 # a graph drives it, in its tests, allocation gate and bench.
@@ -163,11 +152,15 @@ tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 
 # `kill(pid, 0)`, so `real_plugin_pressure`'s leak check asks about the exact
 # `plugin-server` pids it launched rather than spawning `pgrep` to scan the
-# process table. The Windows half of the same probe uses the `windows` crate
-# this package already depends on. Also `getrusage(RUSAGE_THREAD)`, for the
-# voluntary context switches its step clock reads on Linux.
+# process table. The Windows half of the same probe is below. Also
+# `getrusage(RUSAGE_THREAD)`, for the voluntary context switches its step clock
+# reads on Linux.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+# The Windows half of the pid probe: `OpenProcess` and its exit code.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 
 # NOTE: the `loom` model of this crate's shared-memory header protocol lives in

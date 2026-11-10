@@ -6,10 +6,11 @@
 //! open/close/state paths, this host-process object is a separate dlopen: the
 //! two editor surfaces stay distinct by design, one per world.
 
-use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::{Normalized, ParamId, ParamRange};
+use tutti_plugin_ipc::{BridgeError, Result};
+use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{Editor, EditorError, PluginError, PluginResult};
+use tutti_plugin_types::{Normalized, ParamId, ParamRange};
 
 /// Look up declared bounds for `id` in a table sorted by id.
 fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {

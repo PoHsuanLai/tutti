@@ -29,21 +29,13 @@ use tutti_plugin_types::MainThread;
 
 use tutti_types::SampleRate;
 
-use crate::error::{EditorError, StateError};
-use crate::protocol::{
+use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
+use tutti_plugin_types::{
     AutomationMode, Normalized, ParamId, ParameterInfo, Preset, PresetId, RenderMode,
 };
-use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
+use tutti_plugin_types::{EditorError, StateError};
 
-/// What the audio path has made of the blocks it sent a plugin, ever
-/// ([`HostParams::block_counts`]).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BlockCounts {
-    /// Blocks it gave up waiting for.
-    pub abandoned: u64,
-    /// Replies it took, on time or owed.
-    pub replies: u64,
-}
+pub use tutti_plugin_ipc::BlockCounts;
 
 /// Parameter catalog, live-value reads and writes, and the backend's liveness.
 ///
@@ -235,7 +227,7 @@ pub trait HostEditor: Send + Sync {
     /// Takes no parent, unlike [`open_editor`](Self::open_editor), and returns
     /// no size because the host does not lay out a window it did not create.
     /// Only CLAP has floating editors; check
-    /// [`Features::EDITOR_FLOATING`](crate::protocol::Features) first.
+    /// [`Features::EDITOR_FLOATING`](tutti_plugin_types::Features) first.
     ///
     /// # Errors
     ///
@@ -337,7 +329,7 @@ pub trait HostRenderMode: Send + Sync {
     /// Returns whether the plugin *accepted* the mode. `false` is a refusal, not
     /// an error: a CLAP plugin that does not implement `clap.render` renders
     /// identically either way, which is exactly what declining the extension
-    /// means. See [`Features::RENDER_MODE`](crate::protocol::Features).
+    /// means. See [`Features::RENDER_MODE`](tutti_plugin_types::Features).
     fn set_render_mode(&self, mode: RenderMode) -> bool;
 }
 
@@ -360,8 +352,8 @@ pub trait HostRenderMode: Send + Sync {
 /// A backend implements this only if it can reach presets at all; others do
 /// not, so [`PluginHandle::presets`] returns `None` — no stub.
 ///
-/// [`Features::PRESET_LIST`]: crate::protocol::Features::PRESET_LIST
-/// [`Features::PRESET_LOAD`]: crate::protocol::Features::PRESET_LOAD
+/// [`Features::PRESET_LIST`]: tutti_plugin_types::Features::PRESET_LIST
+/// [`Features::PRESET_LOAD`]: tutti_plugin_types::Features::PRESET_LOAD
 /// [`PluginHandle::presets`]: super::control_handle::PluginHandle::presets
 pub trait HostPresets: Send + Sync {
     /// Returns every preset the plugin advertises, in the plugin's own order.
@@ -371,7 +363,7 @@ pub trait HostPresets: Send + Sync {
     /// [`Features::PRESET_LIST`] on `loaded()`, exactly as it would for any
     /// other unasked-versus-declined capability.
     ///
-    /// [`Features::PRESET_LIST`]: crate::protocol::Features::PRESET_LIST
+    /// [`Features::PRESET_LIST`]: tutti_plugin_types::Features::PRESET_LIST
     fn presets(&self, main: &MainThread) -> Vec<Preset>;
 
     /// Asks the plugin to load a preset, by an id [`presets`](Self::presets)

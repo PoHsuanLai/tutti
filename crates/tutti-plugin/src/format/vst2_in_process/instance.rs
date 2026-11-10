@@ -18,8 +18,8 @@ use tutti_vst2_host::{
     Vst2ProcessContext, Vst2Processor,
 };
 
-use crate::error::LoadStage;
-use crate::protocol::PluginTail;
+use tutti_plugin_types::LoadStage;
+use tutti_plugin_types::PluginTail;
 
 /// What the plugin changed about itself since the last
 /// [`Instance::poll_changes`]. VST2 has no notification for any of it except
@@ -192,7 +192,10 @@ impl Instance {
 
     /// The block's parameter changes, written before it renders:
     /// [`Vst2Processor::write_automation`]. Returns how many were refused.
-    pub(super) fn write_automation(&mut self, changes: &crate::protocol::ParameterChanges) -> u32 {
+    pub(super) fn write_automation(
+        &mut self,
+        changes: &tutti_plugin_types::ParameterChanges,
+    ) -> u32 {
         match self.halves.as_mut() {
             Some((processor, _)) => processor.write_automation(changes),
             None => 0,
@@ -497,7 +500,7 @@ mod tests {
         assert!(events.is_empty());
         assert!(out.iter().flatten().all(|&x| x == 0.0), "silence");
         assert_eq!(
-            instance.write_automation(&crate::protocol::ParameterChanges::default()),
+            instance.write_automation(&tutti_plugin_types::ParameterChanges::default()),
             0
         );
     }

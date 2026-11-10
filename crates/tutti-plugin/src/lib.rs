@@ -1,16 +1,19 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub mod error;
+/// The errors a plugin host returns: the process edge's own ([`BridgeError`]
+/// and the fork's) and the format-agnostic ones every host shares.
+pub mod error {
+    pub use tutti_plugin_ipc::{BridgeError, PluginForkError, PluginRenderFault, Result};
+    pub use tutti_plugin_types::{Delivered, EditorError, LoadStage, PluginError, StateError};
+}
 pub use error::{BridgeError, EditorError, LoadStage, PluginForkError, PluginRenderFault, Result};
 
 mod format;
 mod host;
 pub(crate) mod util;
 
-pub(crate) mod protocol;
-
-pub use util::config::BridgeConfig;
+pub use tutti_plugin_ipc::BridgeConfig;
 
 // The main-thread token the editor, state and polling entries take; a host
 // claims it once, on its UI thread, with `MainThread::claim`.
@@ -86,12 +89,14 @@ pub use format::vst2_in_process::{
 /// table in a versioned JSON file. Without it, build the `PluginDb` from your
 /// own store and pass it to `Plugins::with_db`.
 pub mod catalog {
-    pub use crate::host::db_probe::{probe_record, probe_record_with};
-    pub use crate::host::subprocess::{DEFAULT_PROBE_TIMEOUT, ProbeLocator};
+    pub use crate::host::db_probe::{
+        DEFAULT_PROBE_TIMEOUT, probe_failure, probe_record, probe_record_with,
+    };
+    pub use tutti_plugin_types::{Helper, Locator};
     // Named in `Plugin::role` and `Plugins::iter`.
     pub use crate::host::plugin::Plugin;
     pub use crate::host::plugins::{PluginId, Plugins};
-    pub use crate::util::config::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
+    pub use tutti_plugin_ipc::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
     pub use tutti_plugin_types::{PluginDescriptor, PluginRole};
 }
 

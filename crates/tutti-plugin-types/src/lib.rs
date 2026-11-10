@@ -19,6 +19,7 @@ mod host;
 mod hosting;
 mod lifecycle;
 mod load_stage;
+mod locate;
 mod main_thread;
 mod metadata;
 mod midi;
@@ -101,6 +102,7 @@ pub use midi1_decoder::{
 };
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
+pub use locate::{Helper, Locator};
 pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };

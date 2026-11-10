@@ -121,7 +121,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use crate::protocol::{Normalized, ParamId, ParameterChanges, ParameterQueue};
+use tutti_plugin_types::{Normalized, ParamId, ParameterChanges, ParameterQueue};
 
 /// A slot with no queue in the chunk being filled.
 const NO_QUEUE: u32 = u32::MAX;
@@ -862,10 +862,38 @@ impl ParamDelivery {
     }
 }
 
+impl DeliveryCounters {
+    /// `n` MIDI events the node did not deliver. RT-safe: one relaxed add.
+    pub(crate) fn count_midi_dropped(&self, n: u64) {
+        if n > 0 {
+            self.midi_dropped.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Add the bridge thread's count to
+    /// [`dropped_midi_in`](Self::dropped_midi_in). Once, at bind;
+    /// a second call is ignored.
+    pub(crate) fn attach_bridge_midi(&self, cell: std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        let _ = self.bridge_midi_dropped.set(cell);
+    }
+
+    /// MIDI events on the node's event input that never reached the
+    /// plugin's host, since the plugin was bound: see
+    /// [`PluginControls::dropped_midi_in`](super::PluginControls::dropped_midi_in).
+    /// RT-safe: two relaxed loads.
+    pub(crate) fn dropped_midi_in(&self) -> u64 {
+        let bridge = self
+            .bridge_midi_dropped
+            .get()
+            .map_or(0, |c| c.load(Ordering::Relaxed));
+        self.midi_dropped.load(Ordering::Relaxed) + bridge
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ParamId;
+    use tutti_plugin_types::ParamId;
 
     fn op(id: u32) -> ParamId {
         ParamId::new(id)
@@ -1572,6 +1600,90 @@ mod tests {
         }
         for (id, &v) in latest.iter().enumerate() {
             assert_eq!(last[id], Some((511, f64::from(v))), "lane {id}");
+        }
+    }
+
+    // Moved from `tutti-plugin-ipc`'s `payload_pool` tests with the crate split
+    // (design 021 step 3): it fills the bridge's buffers through this node's
+    // delivery, which stays here.
+    /// **A buffer of the room before a re-prepare is dropped on its way
+    /// back, never handed to the node** (the sequence that broke it). A
+    /// 2 000-parameter node is prepared for 4096-frame chunks and its pool
+    /// reserved to match; a chunk goes, so a 4096-room buffer is in flight;
+    /// the node is re-prepared for 512 frames and the pool re-reserved; the
+    /// audio thread takes a buffer meanwhile, so the free list has a place
+    /// when the old one comes back. Then chunk after chunk, each swapped for
+    /// a free buffer as `submit` does and returned as the bridge does, with
+    /// 20 lanes offering a point on every frame (512 a queue, past the room
+    /// of 273). Every buffer the node fills must be of its own room: the
+    /// grid marks (`GridBits`) are laid out for it, and the server's lists
+    /// are reserved for it.
+    ///
+    /// Mutation (run), fails: `return_params` comparing the queues only
+    /// (`changes.point_room()` replaced by the reservation's own room,
+    /// `(reserved & 0xFFFF_FFFF) as usize`) → the 4096-room buffer is
+    /// recycled and reaches the node (the free-buffer assertion fails; past
+    /// it, `GridBits::fits`' debug assertion would fire, and in release a
+    /// queue would hold 385 points against the server's 273, with grid
+    /// points past the 64th read as corners).
+    #[test]
+    fn a_buffer_of_the_room_before_a_re_prepare_is_dropped_not_reused() {
+        let counters = Arc::new(DeliveryCounters::default());
+        let mut d = ParamDelivery::new((0..2000).map(ParamId::new), counters);
+        let pool = tutti_plugin_ipc::PayloadPool::new();
+        let lanes = 20u32;
+        let load = |d: &mut ParamDelivery, phase: usize| {
+            d.begin();
+            for f in 0..512i32 {
+                for id in 0..lanes {
+                    let v = ((f as usize + id as usize + phase) % 7 + 1) as f32 / 8.0;
+                    let address = ParamId::new(id);
+                    if f % 32 == 0 {
+                        d.grid_point(address, f, v);
+                    } else {
+                        d.point(address, f, v);
+                    }
+                }
+            }
+        };
+        // One chunk at 4096 frames goes: its buffer is in flight.
+        let points = d.prepare(4096);
+        pool.reserve_params(d.room(), points);
+        load(&mut d, 0);
+        let mut in_flight = pool.take_params().expect("a free buffer");
+        std::mem::swap(d.changes(), &mut in_flight);
+        d.handed_off(true);
+        assert_eq!(in_flight.point_room(), points);
+
+        // Re-prepared for 512, and re-reserved.
+        let points = d.prepare(512);
+        assert_eq!(points, ParameterQueue::chunk_room(512));
+        pool.reserve_params(d.room(), points);
+        // The audio thread takes one, so the list has a place free...
+        let taken = pool.take_params().expect("a free buffer");
+        // ...when the 4096-room buffer reaches the bridge thread.
+        pool.return_params(in_flight);
+        pool.return_params(taken);
+
+        for phase in 1..=3 * tutti_plugin_ipc::PARAM_BUFFERS {
+            load(&mut d, phase);
+            let mut sent = pool.take_params().expect("a free buffer");
+            assert_eq!(
+                sent.point_room(),
+                points,
+                "a free buffer of the node's room"
+            );
+            std::mem::swap(d.changes(), &mut sent);
+            d.handed_off(true);
+            assert_eq!(sent.len(), lanes as usize);
+            for q in &sent.queues {
+                assert!(
+                    q.points.len() <= points,
+                    "chunk {phase}: {} points, room {points}",
+                    q.points.len()
+                );
+            }
+            pool.return_params(sent);
         }
     }
 }

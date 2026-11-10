@@ -126,7 +126,7 @@ pub fn to_midi(event: &crate::api::MidiEvent) -> Option<WireMidi> {
 
 /// Serializes a Tutti UMP [`WireMidi`] to a VST2 `crate::api::MidiEvent`.
 ///
-/// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: [`midi1_of`] narrows a MIDI
+/// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `midi1_of` narrows a MIDI
 /// 2.0 channel voice message with the spec's Min-Center-Max downscale
 /// (`tutti_midi_protocol::midi1`), so no precision is lost beyond MIDI-1's
 /// inherent width. Translated: NoteOn/Off, CC, channel pitch bend,

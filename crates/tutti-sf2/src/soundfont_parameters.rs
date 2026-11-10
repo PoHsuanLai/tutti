@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
+use crate::chunk::{next_chunk, skip_pad};
 use crate::error::Error;
 use crate::generator::Generator;
 use crate::instrument::Instrument;
@@ -46,8 +47,7 @@ impl SoundFontParameters {
         let mut sample_headers: Option<Vec<SampleHeader>> = None;
 
         while reader.bytes_read() < end {
-            let id = reader.read_four_cc()?;
-            let size = reader.read_u32()? as usize;
+            let (id, size) = next_chunk(reader, end)?;
 
             match id.as_bytes() {
                 b"phdr" => preset_infos = Some(PresetInfo::read_from_chunk(reader, size)?),
@@ -59,8 +59,10 @@ impl SoundFontParameters {
                 b"imod" => reader.discard_data(size)?,
                 b"igen" => instrument_generators = Some(Generator::read_from_chunk(reader, size)?),
                 b"shdr" => sample_headers = Some(SampleHeader::read_from_chunk(reader, size)?),
-                _ => return Err(Error::ListContainsUnknownId(*id.as_bytes())),
+                // A reader ignores what it does not know (section 4).
+                _ => reader.discard_data(size)?,
             }
+            skip_pad(reader, size, end)?;
         }
 
         let preset_infos = preset_infos.ok_or(Error::SubChunkNotFound(*b"PHDR"))?;

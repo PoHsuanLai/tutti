@@ -1,6 +1,6 @@
-//! Butler thread controller: spawn, stop, and expose shared handles.
+//! Streamer thread controller: spawn, stop, and expose shared handles.
 //!
-//! The controller is UI-side — callers hold a `ButlerThread`, send commands
+//! The controller is UI-side — callers hold a `StreamerThread`, send commands
 //! via `command_sender`, and read metrics / cache / stream states through
 //! accessors. The thread body and command handlers live in sibling modules.
 
@@ -13,34 +13,34 @@ use tutti_graph::PrerollTable;
 use tutti_rt::{PriorityRequest, request_priority};
 use tutti_types::SampleRate;
 
-use super::ButlerSender;
+use super::StreamerSender;
 use super::cache::LruCache;
-use super::command::ButlerCommand;
+use super::command::StreamerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, SessionRate};
-use super::loop_body::{Pacing, butler_loop};
+use super::loop_body::{Pacing, streamer_loop};
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
 use super::preroll::PdcFeed;
-use super::step::ButlerCycle;
 #[cfg(any(test, feature = "test-support"))]
 use super::step::StepOutcome;
+use super::step::StreamerCycle;
 use crossbeam_channel::Receiver;
 
-/// Owner of the butler thread and of every handle shared with it.
+/// Owner of the streamer thread and of every handle shared with it.
 ///
 /// Control-thread side: build with [`with_config`](Self::with_config), spawn
 /// with [`start`](Self::start), drive through
 /// [`command_sender`](Self::command_sender), and read stream state through
 /// [`plans`](Self::plans). `Drop` stops the thread and joins it.
-pub struct ButlerThread {
+pub struct StreamerThread {
     /// The command queue's sending end, cloned for every sender.
-    tx: ButlerSender,
+    tx: StreamerSender,
     /// Its receiving end, until a driver takes it: the thread
     /// [`start`](Self::start) spawns (which drops it on exit, however it
-    /// exits), or `ButlerThread::step_once`. [`stop`](Self::stop) drops
-    /// it. With every receiver dropped a send reports the butler gone.
-    rx: Option<Receiver<ButlerCommand>>,
+    /// exits), or `StreamerThread::step_once`. [`stop`](Self::stop) drops
+    /// it. With every receiver dropped a send reports the streamer gone.
+    rx: Option<Receiver<StreamerCommand>>,
     thread_handle: Option<JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
     shared: Handles,
@@ -55,10 +55,10 @@ pub struct ButlerThread {
     /// has been called on an unstarted controller; `start` refuses once it is
     /// set, so the two drivers can never both own `Local`.
     #[cfg(any(test, feature = "test-support"))]
-    manual: Option<ButlerCycle>,
+    manual: Option<StreamerCycle>,
 }
 
-impl ButlerThread {
+impl StreamerThread {
     /// Build the controller and its shared handles without spawning anything —
     /// [`start`](Self::start) does that.
     ///
@@ -101,7 +101,7 @@ impl ButlerThread {
     /// index and denominated in [`Samples`](tutti_types::Samples).
     ///
     /// Set by whoever runs `tutti_types::latency::compensate` over the audio
-    /// graph (a session republishes it with every plan); the butler reads it
+    /// graph (a session republishes it with every plan); the streamer reads it
     /// each refill cycle and pre-rolls each stream by its channel's entry.
     /// The subscription is shared, not copied, so later sets are observed.
     ///
@@ -120,11 +120,11 @@ impl ButlerThread {
     }
 
     /// The cycle state a driver owns: the thread [`start`](Self::start)
-    /// spawns, or `ButlerThread::step_once`. Built here, on the control
+    /// spawns, or `StreamerThread::step_once`. Built here, on the control
     /// thread, by both, so the hand-stepped tests build what the thread runs,
     /// the compensation table included.
-    fn cycle(&self) -> ButlerCycle {
-        ButlerCycle::new(self.config, PdcFeed::over(self.pdc.as_ref()))
+    fn cycle(&self) -> StreamerCycle {
+        StreamerCycle::new(self.config, PdcFeed::over(self.pdc.as_ref()))
     }
 
     /// The hand-stepped cycle's preroll for `channel`, `None` before the
@@ -142,12 +142,12 @@ impl ButlerThread {
         self.pdc.as_ref()
     }
 
-    /// A cloneable sender onto the butler's command queue.
+    /// A cloneable sender onto the streamer's command queue.
     ///
     /// Valid before `start`: commands sent then simply queue until the thread
     /// drains them. Control threads only: a send waits while the queue is
     /// full.
-    pub(crate) fn command_sender(&self) -> ButlerSender {
+    pub(crate) fn command_sender(&self) -> StreamerSender {
         self.tx.clone()
     }
 
@@ -159,7 +159,7 @@ impl ButlerThread {
         self
     }
 
-    /// Spawn the butler thread at maximum priority. Idempotent — a second call
+    /// Spawn the streamer thread at maximum priority. Idempotent — a second call
     /// while the thread runs is a no-op.
     ///
     /// # Panics
@@ -181,7 +181,7 @@ impl ButlerThread {
         #[cfg(any(test, feature = "test-support"))]
         assert!(
             self.manual.is_none(),
-            "start on a hand-stepped butler: the cycle state is already owned here"
+            "start on a hand-stepped streamer: the cycle state is already owned here"
         );
 
         let shutdown = Arc::clone(&self.shutdown);
@@ -190,45 +190,45 @@ impl ButlerThread {
         let pacing = self.pacing;
 
         let handle = thread::Builder::new()
-            .name("tutti-butler".into())
+            .name("tutti-streamer".into())
             .spawn(move || {
                 // The thread owns the queue's one receiver, so however the
                 // loop ends (a panic included) its drop tells every sender
-                // the butler is gone instead of letting them queue into
+                // the streamer is gone instead of letting them queue into
                 // nothing.
                 // Disk streaming should stay ahead of background work, not
-                // compete with the audio threads (Ardour's butler sets no CPU
+                // compete with the audio threads (Ardour's streamer sets no CPU
                 // priority, LinuxSampler's disk thread runs at nice -10): a
                 // raised, never real-time priority, nice -10 on Linux and
                 // ABOVE_NORMAL on Windows. This replaced the highest the OS
                 // grants (nice -20, HIGHEST) on purpose. A refusal is
                 // harmless, so the outcome is only logged.
-                tracing::debug!("butler: {}", request_priority(PriorityRequest::Raised));
-                butler_loop(&queue, shared, cycle, shutdown, pacing);
+                tracing::debug!("streamer: {}", request_priority(PriorityRequest::Raised));
+                streamer_loop(&queue, shared, cycle, shutdown, pacing);
             })
-            // Fatal init: spawning the disk-I/O butler thread is a prerequisite
+            // Fatal init: spawning the disk-I/O streamer thread is a prerequisite
             // for all streaming/recording. A spawn failure means the OS is out of
             // threads — unrecoverable at this layer, and every downstream stream
             // command would silently stall on a channel with no consumer. Panic
             // loudly at startup rather than degrade into a mute engine.
-            .expect("Failed to spawn butler thread");
+            .expect("Failed to spawn streamer thread");
 
         self.thread_handle = Some(handle);
     }
 
-    /// Signal shutdown and join the butler thread, blocking until it exits.
+    /// Signal shutdown and join the streamer thread, blocking until it exits.
     ///
     /// The flag ends the loop at its next cycle, and a `Shutdown` command,
     /// queued when there is room, ends a wait or a cycle already draining.
-    /// The queue's receivers are gone afterwards (a started butler's thread
+    /// The queue's receivers are gone afterwards (a started streamer's thread
     /// dropped its own on the way out, and this drops the controller's, for
     /// one that never started), so a sender still holding the queue, a
-    /// waiting one included, is told the butler is gone. Called by `Drop`,
+    /// waiting one included, is told the streamer is gone. Called by `Drop`,
     /// and idempotent — stopping an already-stopped controller does nothing
     /// more.
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
-        let _ = self.tx.try_send(ButlerCommand::Shutdown);
+        let _ = self.tx.try_send(StreamerCommand::Shutdown);
 
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
@@ -236,16 +236,16 @@ impl ButlerThread {
         self.rx = None;
     }
 
-    /// Run exactly one butler cycle on the calling thread: drain every
+    /// Run exactly one streamer cycle on the calling thread: drain every
     /// queued command, then apply PDC preroll, seeks and refills.
     /// Returns once that work is done, reporting what the pacing layer *would*
     /// have done next.
     ///
-    /// This is the same [`ButlerCycle::step`] the butler thread runs — the
+    /// This is the same [`StreamerCycle::step`] the streamer thread runs — the
     /// thread adds only pacing — so driving a controller by hand exercises the
     /// shipped path rather than a parallel one.
     ///
-    /// Intended for tests, which is what the feature gate says. A butler-driven
+    /// Intended for tests, which is what the feature gate says. A streamer-driven
     /// stream is otherwise observable only through wall clock: send a command,
     /// sleep, look. Stepping makes it observable by *counting*, so a test can
     /// state "after three cycles the ring holds audio" rather than "after 50 ms
@@ -253,14 +253,14 @@ impl ButlerThread {
     ///
     /// # Panics
     ///
-    /// If the butler thread is running. Both drivers own the same butler-local
+    /// If the streamer thread is running. Both drivers own the same streamer-local
     /// state, so a controller is one or the other for its whole life; stepping a
     /// live controller would race the thread inside `Local`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn step_once(&mut self) -> StepOutcome {
         assert!(
             self.thread_handle.is_none(),
-            "step_once on a started butler: the thread already owns the cycle state"
+            "step_once on a started streamer: the thread already owns the cycle state"
         );
         if self.manual.is_none() {
             self.manual = Some(self.cycle());
@@ -272,15 +272,15 @@ impl ButlerThread {
 
     /// The shared per-channel plan map, keyed by channel index.
     ///
-    /// This is the reader-factory: a plan whose `link` the butler has installed
+    /// This is the reader-factory: a plan whose `link` the streamer has installed
     /// yields the ring consumer and the `RtState` a disk voice is built from.
-    /// Both the butler and the control thread hold it, so an entry may appear or
+    /// Both the streamer and the control thread hold it, so an entry may appear or
     /// change between two reads.
     pub fn plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
         Arc::clone(&self.shared.plans)
     }
 
-    /// The butler's wave cache (tests).
+    /// The streamer's wave cache (tests).
     #[cfg(test)]
     pub(crate) fn cache(&self) -> Arc<LruCache> {
         Arc::clone(&self.shared.cache)
@@ -300,7 +300,7 @@ impl ButlerThread {
     }
 }
 
-impl Drop for ButlerThread {
+impl Drop for StreamerThread {
     fn drop(&mut self) {
         self.stop();
     }
@@ -311,19 +311,19 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::butler::ButlerGone;
-    use crate::butler::loop_body::Pacing;
     use crate::ports::{Command, Commands};
+    use crate::streamer::StreamerGone;
+    use crate::streamer::loop_body::Pacing;
     use tutti_types::Samples;
 
     /// The controller is `Sync` (a Bevy resource holds it), with its
     /// hand-stepped cycle held plainly: a compile-time check.
     ///
-    /// Mutation (run): a `std::cell::Cell<u8>` field in `ButlerCycle` →
+    /// Mutation (run): a `std::cell::Cell<u8>` field in `StreamerCycle` →
     /// does not compile.
     const _: () = {
         fn sync<T: Sync>() {}
-        let _ = sync::<ButlerThread>;
+        let _ = sync::<StreamerThread>;
     };
 
     /// A table subscribed after the first hand step reaches the cycle:
@@ -334,16 +334,16 @@ mod tests {
     /// the cycle still reads no table (preroll 0), fails.
     #[test]
     fn a_table_subscribed_after_a_hand_step_reaches_the_cycle() {
-        let mut butler =
-            ButlerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
-        let _ = butler.step_once();
-        let mut butler = butler.with_pdc(Arc::new(PrerollTable::new(vec![Samples(7)])));
-        let _ = butler.step_once();
-        let cycle = butler.manual.as_ref().expect("stepped by hand");
+        let mut streamer =
+            StreamerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
+        let _ = streamer.step_once();
+        let mut streamer = streamer.with_pdc(Arc::new(PrerollTable::new(vec![Samples(7)])));
+        let _ = streamer.step_once();
+        let cycle = streamer.manual.as_ref().expect("stepped by hand");
         assert_eq!(cycle.pdc().preroll(0), 7);
     }
 
-    /// A butler that, left alone, would sleep far longer than any test waits.
+    /// A streamer that, left alone, would sleep far longer than any test waits.
     const LONG_WAIT: Pacing = Pacing {
         idle: Duration::from_secs(60),
         healthy: Duration::from_secs(60),
@@ -361,12 +361,12 @@ mod tests {
         done()
     }
 
-    /// A sent command wakes a waiting butler: it is drained well inside
+    /// A sent command wakes a waiting streamer: it is drained well inside
     /// the wait's timeout, not when the timeout ends.
     ///
-    /// The butler waits 60 s between cycles and the test allows 10 s: the
+    /// The streamer waits 60 s between cycles and the test allows 10 s: the
     /// bound is generous for a loaded machine, and still six times shorter
-    /// than a butler that only ever wakes on its own. The first send may land
+    /// than a streamer that only ever wakes on its own. The first send may land
     /// before the thread waits; the second is sent once the first has been
     /// drained, by which point the thread is (or is about to be) waiting, and
     /// the queue makes the two cases one.
@@ -375,66 +375,66 @@ mod tests {
     /// `thread::sleep` of the same length → the second command sits for the
     /// 60 s → fails at the 10 s bound.
     #[test]
-    fn a_send_wakes_a_waiting_butler() {
-        let mut butler =
-            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default())
+    fn a_send_wakes_a_waiting_streamer() {
+        let mut streamer =
+            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default())
                 .with_pacing(LONG_WAIT);
-        let tx = butler.command_sender();
-        butler.start();
+        let tx = streamer.command_sender();
+        streamer.start();
 
         for channel_index in [90, 91] {
-            tx.try_send(ButlerCommand::StopStreaming { channel_index })
+            tx.try_send(StreamerCommand::StopStreaming { channel_index })
                 .expect("room in an empty queue");
             assert!(
                 within(Duration::from_secs(10), || tx.is_empty()),
-                "command {channel_index} waited on the butler's 60 s wait"
+                "command {channel_index} waited on the streamer's 60 s wait"
             );
-            // Let the butler finish its cycle and wait again.
+            // Let the streamer finish its cycle and wait again.
             thread::sleep(Duration::from_millis(20));
         }
-        butler.stop();
+        streamer.stop();
     }
 
-    /// A stopped butler is gone to every sender, started or not.
+    /// A stopped streamer is gone to every sender, started or not.
     ///
-    /// A started butler's thread drops its receiver on the way out, so the
+    /// A started streamer's thread drops its receiver on the way out, so the
     /// mutation that bites is on the controller that never started.
     /// Mutation (run): `stop` without its `self.rx = None` → the unstarted
     /// half queues into a queue nobody drains, `Ok(())` → fails.
     #[test]
-    fn a_stopped_butler_reports_gone() {
+    fn a_stopped_streamer_reports_gone() {
         let mut unstarted =
-            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
+            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
         unstarted.stop();
         assert_eq!(
             Commands::new(unstarted.command_sender()).send(Command::Stop { channel_index: 0 }),
-            Err(ButlerGone),
+            Err(StreamerGone),
             "a controller stopped before it started"
         );
 
-        let mut butler =
-            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
-        butler.start();
-        let commands = Commands::new(butler.command_sender());
+        let mut streamer =
+            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
+        streamer.start();
+        let commands = Commands::new(streamer.command_sender());
         assert_eq!(commands.send(Command::Stop { channel_index: 0 }), Ok(()));
 
-        butler.stop();
+        streamer.stop();
         assert_eq!(
             commands.send(Command::Stop { channel_index: 0 }),
-            Err(ButlerGone)
+            Err(StreamerGone)
         );
     }
 
-    /// A send waiting on a full queue returns once the butler stops,
+    /// A send waiting on a full queue returns once the streamer stops,
     /// reporting it gone, rather than waiting for good.
     ///
     /// Mutation (run): `stop` without its `self.rx = None` → the waiting
     /// send never returns → fails at the 10 s bound.
     #[test]
-    fn a_waiting_send_is_released_when_the_butler_stops() {
-        let mut butler =
-            ButlerThread::with_config(1, SampleRate::new(48_000.0), BufferConfig::default());
-        let commands = Commands::new(butler.command_sender());
+    fn a_waiting_send_is_released_when_the_streamer_stops() {
+        let mut streamer =
+            StreamerThread::with_config(1, SampleRate::new(48_000.0), BufferConfig::default());
+        let commands = Commands::new(streamer.command_sender());
         assert_eq!(commands.send(Command::Stop { channel_index: 0 }), Ok(()));
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let waiter = {
@@ -449,16 +449,16 @@ mod tests {
             done_rx.try_recv().is_err(),
             "a send into a full queue waits"
         );
-        butler.stop();
+        streamer.stop();
         assert_eq!(
             done_rx.recv_timeout(Duration::from_secs(10)),
-            Ok(Err(ButlerGone)),
-            "the waiting send must return once the butler is gone, and say so"
+            Ok(Err(StreamerGone)),
+            "the waiting send must return once the streamer is gone, and say so"
         );
         waiter.join().unwrap();
     }
 
-    /// A butler thread that exits on its own is gone to its senders,
+    /// A streamer thread that exits on its own is gone to its senders,
     /// without its controller's `stop`: a `Shutdown` command ends the loop,
     /// and the thread's receiver goes with it.
     ///
@@ -466,24 +466,24 @@ mod tests {
     /// and keeping its own → the queue never disconnects → fails at the
     /// bound.
     #[test]
-    fn a_butler_that_exits_is_gone_to_its_senders() {
-        let mut butler =
-            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
-        butler.start();
-        let tx = butler.command_sender();
-        tx.try_send(ButlerCommand::Shutdown).unwrap();
+    fn a_streamer_that_exits_is_gone_to_its_senders() {
+        let mut streamer =
+            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
+        streamer.start();
+        let tx = streamer.command_sender();
+        tx.try_send(StreamerCommand::Shutdown).unwrap();
         // Probed without waiting, so a queue that never disconnects fails
         // at the bound rather than filling and blocking the probe.
         assert!(
             within(Duration::from_secs(10), || matches!(
-                tx.try_send(ButlerCommand::StopStreaming { channel_index: 0 }),
+                tx.try_send(StreamerCommand::StopStreaming { channel_index: 0 }),
                 Err(crossbeam_channel::TrySendError::Disconnected(_))
             )),
             "the thread exited but the queue still accepts commands"
         );
         assert_eq!(
             Commands::new(tx).send(Command::Stop { channel_index: 0 }),
-            Err(ButlerGone)
+            Err(StreamerGone)
         );
     }
 }

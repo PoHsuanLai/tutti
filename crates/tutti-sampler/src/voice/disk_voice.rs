@@ -1,7 +1,7 @@
-//! Disk streaming sample playback, fed by the butler thread.
+//! Disk streaming sample playback, fed by the streamer thread.
 //!
 //! Two types, one tier: [`DiskSource`] is the graph node that reads the
-//! butler's ring free-running (its own position, stepping by the read rate),
+//! streamer's ring free-running (its own position, stepping by the read rate),
 //! and [`DiskVoice`] is a timeline clip over the same stream: it places its
 //! read on the transport exactly as the memory tier's placed read does
 //! (`interp::place`, the same gate and step, from the block's `Env`) and
@@ -36,9 +36,9 @@ use super::live_read::{LiveRead, Out};
 use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
 use super::types::Direction;
-use crate::butler::control::StreamOrigin;
-use crate::butler::{RegionId, RtState, SharedReader};
 use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES, audible};
+use crate::streamer::control::StreamOrigin;
+use crate::streamer::{RegionId, RtState, SharedReader};
 
 /// Frames a free-running block's positions are computed for at a time:
 /// `process` renders a longer block in pieces this long, so the positions
@@ -47,10 +47,10 @@ const BLOCK_FRAMES: usize = 256;
 
 /// Disk streaming sampler, free-running: the streaming tier's bare reader.
 ///
-/// Reads the butler's ring at its own position — the stream's origin (its
+/// Reads the streamer's ring at its own position — the stream's origin (its
 /// offset), stepped by the read rate (`RtState::read_rate`: varispeed,
 /// conversion, stretch), less the channel's PDC preroll — and follows a
-/// `Command::Seek` the butler relays (`Ring::seek_request`). The butler fills
+/// `Command::Seek` the streamer relays (`Ring::seek_request`). The streamer fills
 /// the ring ahead of where it reads (`Ring::play`). A [`DiskVoice`] wraps one
 /// for its width and its ring, and reads by the clock instead.
 ///
@@ -159,7 +159,7 @@ impl DiskSource {
         self.playing.store(true, Ordering::Relaxed);
     }
 
-    /// Emits silence and stops reading. The butler keeps its window where the
+    /// Emits silence and stops reading. The streamer keeps its window where the
     /// reader last played.
     pub fn stop(&self) {
         self.playing.store(false, Ordering::Relaxed);
@@ -324,7 +324,7 @@ impl IntoNode for DiskSource {
 //
 // Per frame: the placement (`interp::place`, the memory tier's) gives the
 // position the transport puts the playhead at inside the window, `None`
-// outside it or on a standing transport; the ring is read there. The butler
+// outside it or on a standing transport; the ring is read there. The streamer
 // fills ahead of where the voice reads; a jump is the reader's own crossfade
 // (`LiveRead`).
 // ---------------------------------------------------------------------------
@@ -341,7 +341,7 @@ pub struct DiskVoiceConfig {
     /// File sample rate — converts the transport's second-offset into a file
     /// position, matching `MemorySource`'s use of `wave.sample_rate()`.
     ///
-    /// The rate the butler recorded from the file's header when it opened the
+    /// The rate the streamer recorded from the file's header when it opened the
     /// stream (`Status::take_disk_voice`), not one recovered from the session
     /// rate: that one moves on a device restart, and the file's does not.
     pub file_sample_rate: SampleRate,
@@ -363,14 +363,14 @@ pub struct DiskVoiceConfig {
 /// would move the live voice's window. So the fork (`fork_copy`,
 /// a graph fork's source for this node and for a `VoiceNode` or pool holding
 /// it) is cut off from the stream, and handed the stream's file, as the
-/// butler records it (path, rate, loop), to read on demand on the render's
+/// streamer records it (path, rate, loop), to read on demand on the render's
 /// thread. It plays the same window of the file on the render's transport
 /// (it reads its render's `Env`), read as the memory tier reads it; see
 /// `offline_read`. That path blocks on file I/O and is never taken live: a
 /// live fork of a disk voice is refused.
 pub struct DiskVoice {
     inner: DiskSource,
-    /// The playback controls: the butler's cell, shared with `inner`, while
+    /// The playback controls: the streamer's cell, shared with `inner`, while
     /// live; a private snapshot of it in a fork.
     shared_state: Arc<RtState>,
 
@@ -381,14 +381,14 @@ pub struct DiskVoice {
     /// position, matching `MemorySource`'s use of `wave.sample_rate()`.
     file_sample_rate: SampleRate,
 
-    /// The butler stream this voice consumes, as a read-only handle onto the
-    /// butler's record of it: what a fork reads its file from. `None` for a
+    /// The streamer stream this voice consumes, as a read-only handle onto the
+    /// streamer's record of it: what a fork reads its file from. `None` for a
     /// voice not built by [`Status::take_disk_voice`](crate::Status::take_disk_voice)
     /// (a test's bare ring), whose fork then plays silence.
     origin: Option<StreamOrigin>,
 
     /// `Some` in a fork ([`fork_copy`](Self::fork_copy)): it never touches
-    /// the ring or the butler, and plays what this holds instead. Boxed: a
+    /// the ring or the streamer, and plays what this holds instead. Boxed: a
     /// live voice (every voice in a pool) should not carry the pages' room,
     /// and it is built on the control thread, where a fork is taken.
     offline: Option<Box<Offline>>,
@@ -396,7 +396,7 @@ pub struct DiskVoice {
     /// The rate `prepare` last gave this voice, `None` until one did: the
     /// rate the step converts to. A fork never told a rate renders nothing
     /// and says so rather than play off pitch; a live voice never told one
-    /// steps by the butler's conversion for the session rate.
+    /// steps by the streamer's conversion for the session rate.
     sample_rate: Option<SampleRate>,
 
     /// The transport as this voice reads it when it is a graph node of its
@@ -414,7 +414,7 @@ pub struct DiskVoice {
 /// failures go.
 #[derive(Clone, Debug, Default)]
 struct Offline {
-    /// The file, from the butler's record when the fork was taken. `None`
+    /// The file, from the streamer's record when the fork was taken. `None`
     /// when the stream was gone by then: silence.
     read: Option<OfflineRead>,
     /// The first failure since this copy was forked (its stream gone, its
@@ -512,8 +512,8 @@ impl Clone for DiskVoice {
 impl DiskVoice {
     /// Places a `DiskSource`'s stream on the timeline.
     ///
-    /// Construction (butler stream registration, ring allocation) happens on
-    /// the ECS/butler side; this only binds the already-built unit to a
+    /// Construction (streamer stream registration, ring allocation) happens on
+    /// the ECS/streamer side; this only binds the already-built unit to a
     /// timeline window. `shared_state` must be the same `RtState` the `inner`
     /// unit holds.
     pub fn new(inner: DiskSource, shared_state: Arc<RtState>, config: DiskVoiceConfig) -> Self {
@@ -530,14 +530,14 @@ impl DiskVoice {
         }
     }
 
-    /// The butler stream this voice reads: its ring's region, which a loop
-    /// forwarded for the voice names so the butler ignores it once the
+    /// The streamer stream this voice reads: its ring's region, which a loop
+    /// forwarded for the voice names so the streamer ignores it once the
     /// channel carries another stream.
     pub(crate) fn stream(&self) -> RegionId {
         self.inner.read.ring().region_id()
     }
 
-    /// Record which butler stream this voice consumes, so a fork of it can
+    /// Record which streamer stream this voice consumes, so a fork of it can
     /// read the same file (see "A fork reads the file itself").
     pub(crate) fn with_origin(mut self, origin: StreamOrigin) -> Self {
         self.origin = Some(origin);
@@ -552,7 +552,7 @@ impl DiskVoice {
     /// A copy of this voice for an offline render, sharing nothing with
     /// it: cut off from the stream (no ring reader, no control cell — a
     /// private snapshot of the controls' values, `RtState::detached`), and
-    /// handed the stream's file, as the butler's record of it names it now
+    /// handed the stream's file, as the streamer's record of it names it now
     /// (with the loop set on it now), to read itself. A stream that has ended
     /// by now is a latched failure ([`fault`](Self::fault)): the export
     /// fails naming the voice rather than write its silence.
@@ -635,13 +635,13 @@ impl DiskVoice {
     }
 
     /// Sets the playback speed magnitude, in the shared `RtState` (what the
-    /// butler's `SetVarispeed` also sets). The next block reads at the
+    /// streamer's `SetVarispeed` also sets). The next block reads at the
     /// position the new speed gives, crossfaded.
     pub fn set_speed(&mut self, speed: PlaybackRate) {
         self.shared_state.set_speed(speed);
     }
 
-    /// Sets the playback direction, in the shared `RtState`. The butler turns
+    /// Sets the playback direction, in the shared `RtState`. The streamer turns
     /// the ring's mapping on its next cycle (reverse ignores the loop and
     /// mirrors the file, as the memory tier's reverse does).
     pub fn set_direction(&mut self, direction: Direction) {
@@ -668,7 +668,7 @@ impl DiskVoice {
     /// File frames per output frame: varispeed and the stretcher's rate, with
     /// the conversion from the file's rate to the rate this unit renders at —
     /// derived from the two rates, as the memory tier derives it. A live voice
-    /// never told a rate takes the butler's conversion for the session.
+    /// never told a rate takes the streamer's conversion for the session.
     #[inline]
     fn step_rate(&self) -> ReadRate {
         let (speed, stretch) = (
@@ -963,7 +963,7 @@ impl Node for DiskVoice {
 }
 
 /// The handle a host keeps on a [`DiskVoice`] inserted as a node of its
-/// own: the stream's playback controls (the butler's control cell, which
+/// own: the stream's playback controls (the streamer's control cell, which
 /// the voice reads once per block). Control thread.
 #[derive(Clone)]
 pub struct DiskVoiceControls {

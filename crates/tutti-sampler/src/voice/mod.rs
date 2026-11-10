@@ -2,7 +2,7 @@
 //! kernels they read through.
 //!
 //! - [`memory_source`] — in-memory playback ([`MemorySource`]).
-//! - [`disk_voice`] — disk-streaming playback, fed by the butler thread.
+//! - [`disk_voice`] — disk-streaming playback, fed by the streamer thread.
 //! - `offline_read` — a forked disk voice's file, read on demand offline.
 //! - [`types`] — the voice vocabulary: `Voice`, `VoiceSource`, `Playback`.
 //! - [`slot`] — a voice plus its stretch filter, and the per-voice block read.
@@ -21,14 +21,14 @@ pub(crate) mod clock;
 // Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
 pub mod interp;
 pub mod memory_source;
-// Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
+// Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) streamer
 // engine, which a non-Bevy host drives via `DiskStreamer`.
 pub mod disk_voice;
 // The first error an offline voice hit, for its fork's health probe.
 mod fault;
-// A live disk voice reads the butler's ring by position here.
+// A live disk voice reads the streamer's ring by position here.
 mod live_read;
-// A forked disk voice reads its file here instead of the butler's ring.
+// A forked disk voice reads its file here instead of the streamer's ring.
 mod offline_read;
 // The voice pool, one file per duty. Each holds Bevy-free DSP; the ECS pieces
 // are gated inside `pool`.

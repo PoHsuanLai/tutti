@@ -233,6 +233,22 @@ impl TempoMap {
         s.bpm_at_sec(seconds - s.sec0)
     }
 
+    /// The tempo on `frame`, counted from beat 0 at `rate`: the curve's
+    /// instantaneous tempo there, not a cell's chord. The slope a reader wants
+    /// over a stretch of frames is the difference of two of these over their
+    /// distance (doc 020, section 5).
+    #[must_use]
+    pub fn tempo_at_frame(&self, frame: Frame, rate: SampleRate) -> Bpm {
+        self.tempo_at_frame_with(frame, rate, &mut Cursor::default())
+    }
+
+    /// [`tempo_at_frame`](Self::tempo_at_frame) with a hint.
+    #[must_use]
+    #[inline]
+    pub fn tempo_at_frame_with(&self, frame: Frame, rate: SampleRate, hint: &mut Cursor) -> Bpm {
+        self.tempo_at_seconds_with(Seconds(frame.get() as f64 / rate.get()), hint)
+    }
+
     /// The beat on `frame`, counted from beat 0 at `rate`.
     #[must_use]
     pub fn beat_at_frame(&self, frame: Frame, rate: SampleRate) -> Beat {

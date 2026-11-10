@@ -4,7 +4,7 @@
 //! reads one: a claim per block, then per output frame the four taps of a
 //! cubic around a position that moves at a varispeed rate, each tap a
 //! `PosClaim::frame` (the slot map) and a stereo load, then the cubic. No
-//! butler, no decode and no voice around it, so the slot map is a visible
+//! streamer, no decode and no voice around it, so the slot map is a visible
 //! share of the time; `voice_pool`'s `pool64/disk*` cases are the same read
 //! inside the whole voice.
 //!
@@ -26,7 +26,7 @@ const RATE: f64 = 1.37;
 
 /// One disk voice: its ring's two ends and where it reads.
 struct Voice {
-    /// Keeps the ring's writer alive (the butler's, in the sampler).
+    /// Keeps the ring's writer alive (the streamer's, in the sampler).
     _writer: PosWriter,
     reader: PosReader,
     /// The window's first position.

@@ -88,6 +88,17 @@ impl AudioBuffers {
         }
     }
 
+    /// `(channels, frames)` the scratch holds now.
+    fn dims(&self) -> (usize, usize) {
+        fn of<T>(bufs: &[Vec<T>]) -> (usize, usize) {
+            (bufs.len(), bufs.first().map_or(0, Vec::len))
+        }
+        match self {
+            Self::F32 { input, .. } => of(input),
+            Self::F64 { input, .. } => of(input),
+        }
+    }
+
     /// Which format this scratch is currently allocated for.
     fn format(&self) -> SampleFormat {
         match self {
@@ -96,12 +107,18 @@ impl AudioBuffers {
         }
     }
 
-    /// Reshape to `(num_channels, samples)`. No-op when dimensions match.
+    /// Grow to at least `(num_channels, samples)`; never shrink. A block uses
+    /// the first `samples` frames of each channel, so a shorter block after a
+    /// longer one needs nothing, and the scratch reserved at slab setup
+    /// ([`AudioPipeline::reserve`]) holds every block the session admits: the
+    /// audio thread never grows it.
     fn resize(&mut self, num_channels: usize, samples: usize) {
         fn reshape<T: Clone + Default>(bufs: &mut Vec<Vec<T>>, channels: usize, samples: usize) {
-            if bufs.len() == channels && bufs.first().is_some_and(|v| v.len() == samples) {
+            if bufs.len() >= channels && bufs.iter().all(|v| v.len() >= samples) {
                 return;
             }
+            let samples = samples.max(bufs.first().map_or(0, Vec::len));
+            let channels = channels.max(bufs.len());
             bufs.clear();
             bufs.resize_with(channels, || vec![T::default(); samples]);
         }
@@ -275,8 +292,17 @@ impl AudioPipeline {
     /// A no-op when the format already matches.
     pub(crate) fn set_format(&mut self, format: SampleFormat) {
         if self.buffers.format() != format {
+            let (channels, samples) = self.buffers.dims();
             self.buffers = AudioBuffers::new(format);
+            self.buffers.resize(channels, samples);
         }
+    }
+
+    /// Sizes the scratch for blocks of up to `samples` frames over
+    /// `channels` channels. Called by `Session` when the slab is set up,
+    /// **not on the audio thread**: it allocates, so that no block does.
+    pub(crate) fn reserve(&mut self, channels: usize, samples: usize) {
+        self.buffers.resize(channels, samples);
     }
 
     /// Read input from `shm`, run `plugin`, write output back. Returns the
@@ -284,11 +310,13 @@ impl AudioPipeline {
     ///
     /// # Real-time
     ///
-    /// Runs on the realtime audio thread and does not allocate after warm-up:
-    /// the scratch is reshaped only when the block geometry changes, and the
-    /// slice tables handed to the plugin are fixed stack arrays. Denormals are
+    /// Runs on the realtime audio thread and does not allocate: the scratch is
+    /// sized when the slab is set up ([`reserve`](Self::reserve)) and only
+    /// grows, the session refuses a block longer than that, and the slice
+    /// tables handed to the plugin are fixed stack arrays. Denormals are
     /// flushed for the duration of the block. Pinned by
-    /// `tests::process_is_alloc_free`.
+    /// `tests::process_is_alloc_free` and
+    /// `tests::a_shorter_block_after_a_longer_one_does_not_allocate`.
     ///
     /// # Failure is silence, never wrong audio
     ///
@@ -1146,6 +1174,56 @@ mod tests {
     fn process_sanitizes_inf_output() {
         assert_sanitized(f32::INFINITY);
         assert_sanitized(f32::NEG_INFINITY);
+    }
+
+    /// **A shorter block after a longer one does not allocate (doc 027
+    /// D14).** The scratch is sized once, when the slab is set up
+    /// ([`AudioPipeline::reserve`]), and a block uses its first frames. The
+    /// reshape reallocated whenever the length changed, so a host's ragged
+    /// final chunk freed and rebuilt every channel on the audio thread.
+    ///
+    /// Mutation (run): the old exact-size check in `reshape` (`len() ==
+    /// samples`) → the 64-frame block reallocates → fails.
+    #[test]
+    fn a_shorter_block_after_a_longer_one_does_not_allocate() {
+        const N: usize = 128;
+        let layout = test_layout(
+            N,
+            SampleFormat::Float32,
+            &[ChannelLayout::STEREO],
+            &[ChannelLayout::STEREO],
+        );
+        let name = format!("tutti_ragged_test_{}", std::process::id());
+        let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
+        let mut shm = AudioSlab::open(name, layout).unwrap();
+
+        let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
+        pipeline.reserve(2, N);
+        let mut plugin = NanPlugin {
+            meta: meta(&[2], &[2]),
+            fill: 0.25,
+        };
+        let clock = Clock {
+            sample_rate: 48000.0,
+            format: SampleFormat::Float32,
+        };
+        assert_no_alloc::assert_no_alloc(|| {
+            for frames in [N, 64, N, 1, 100] {
+                pipeline
+                    .process(
+                        &mut plugin,
+                        &mut shm,
+                        &clock,
+                        AudioBlock {
+                            seq: SEQ,
+                            num_samples: frames,
+                            midi: &[],
+                            extras: None,
+                        },
+                    )
+                    .unwrap();
+            }
+        });
     }
 
     /// RT-safety regression: the per-block path — including the denormal

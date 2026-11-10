@@ -1,4 +1,4 @@
-//! Per-channel butler plan for a streaming playback.
+//! Per-channel streamer plan for a streaming playback.
 
 use std::sync::Arc;
 use tutti_types::{PlaybackRate, SampleRate, SrcRatio};
@@ -24,13 +24,13 @@ pub(crate) struct LoopConfig {
 ///
 /// Groups the ring buffer consumer, region identity, and optional loop config
 /// into one value. Created by `start_streaming`, dropped by `stop_streaming`.
-/// `region_id` is cached so the butler reads it without touching the
+/// `region_id` is cached so the streamer reads it without touching the
 /// [`SharedReader`], the ring every voice taken from the stream reads by
 /// position (`prefetch::Ring`).
 pub(crate) struct Link {
     pub(crate) consumer: SharedReader,
     pub(crate) region_id: RegionId,
-    /// The loop, as the butler runs it. Written only through
+    /// The loop, as the streamer runs it. Written only through
     /// [`set_loop`](Self::set_loop), which also tells the stream's
     /// [`StreamRecord`].
     loop_config: Option<LoopConfig>,
@@ -46,7 +46,7 @@ pub(crate) struct Link {
     /// What a fork of a voice on this stream needs to play the same file
     /// itself: the stream's own small record, shared with every voice taken
     /// from it (`take_streaming_unit`). The region writer that also knows the
-    /// path is butler-thread-local, out of any other thread's reach.
+    /// path is streamer-thread-local, out of any other thread's reach.
     pub(crate) record: Arc<StreamRecord>,
     /// Keeps the streamed wave pinned in the [`LruCache`](super::cache::LruCache)
     /// for exactly the stream's lifetime, so a fully-buffered (hence cold)
@@ -59,7 +59,7 @@ pub(crate) struct Link {
 
 impl Link {
     /// Set or clear the loop, and tell the stream's record: the one place a
-    /// loop changes, so the butler's loop and the one a fork reads cannot
+    /// loop changes, so the streamer's loop and the one a fork reads cannot
     /// disagree.
     pub(crate) fn set_loop(&mut self, config: Option<LoopConfig>) {
         self.record
@@ -76,14 +76,14 @@ impl Link {
 
 /// The stream is over the moment its link goes (stopped, or replaced by a
 /// new stream on the channel), so a voice still holding its record — on a
-/// ring the butler no longer feeds — forks to silence, as it plays live.
+/// ring the streamer no longer feeds — forks to silence, as it plays live.
 impl Drop for Link {
     fn drop(&mut self) {
         self.record.end();
     }
 }
 
-/// Per-channel butler-thread state.
+/// Per-channel streamer-thread state.
 ///
 /// `Idle` when no file is streaming, `Streaming` when active. The enum makes
 /// it impossible to have a loop config without an active link.
@@ -120,7 +120,7 @@ impl ChannelPlan {
     /// `stop_streaming` drops the link. Pass `None` for a stream that holds no
     /// resident cache entry (incremental disk streaming). `file_rate` is the
     /// file's own rate (see [`Link::file_rate`]); `file_path` the file, and
-    /// `cache` the butler's wave cache, both for the stream's
+    /// `cache` the streamer's wave cache, both for the stream's
     /// [`StreamRecord`]. `file_frames` is the file's length (see
     /// [`Link::file_frames`]).
     pub fn start_streaming(

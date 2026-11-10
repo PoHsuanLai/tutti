@@ -10,12 +10,12 @@ use tutti_types::value::Samples;
 /// The per-channel pre-roll of the plan sent last, indexed by output channel:
 /// how much earlier a source outside the graph must read so its audio
 /// arrives aligned. The session republishes it with every plan; the
-/// sampler's butler reads it once per refill cycle, and a host may read it
+/// sampler's streamer reads it once per refill cycle, and a host may read it
 /// to display.
 ///
 /// A plain lock, not an [`ArcLend`](tutti_rt::ArcLend): **no audio thread
 /// reads it.** The writer is the session's commit and the readers are the
-/// butler and the host, so a reader registered per thread and a retirement
+/// streamer and the host, so a reader registered per thread and a retirement
 /// list would buy nothing. Each call holds the lock for one copy of the
 /// table, or of one entry, and [`with`](Self::with) for its closure;
 /// [`set`](Self::set) overwrites the table in place and frees nothing once

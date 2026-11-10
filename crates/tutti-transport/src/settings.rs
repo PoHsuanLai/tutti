@@ -13,24 +13,11 @@ use super::state::AtomicBpm;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tutti_rt::{ArcLend, Reader};
-use tutti_tempo::{Shape, TempoMap};
+use tutti_tempo::TempoMap;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use tutti_types::{Beat, Bpm};
-
-/// [`TransportSettings::set_tempo_map`] refused a map with a ramp: the
-/// transport follows steps (doc 020, stage 3), and a ramp waits for stage 4.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HasRamp;
-
-impl std::fmt::Display for HasRamp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the transport follows step tempo maps only; ramps are not supported yet")
-    }
-}
-
-impl std::error::Error for HasRamp {}
 
 /// Transport values shared between threads.
 ///
@@ -180,18 +167,11 @@ impl TransportSettings {
     /// Publishes `map` as the project's tempo: the engine takes it at the next
     /// block start.
     ///
-    /// A map of steps is followed: the clock takes each step on the frame it
-    /// falls on (doc 020, stage 3). [`tempo`](Self::tempo) reads the map's
-    /// first point.
-    ///
-    /// # Errors
-    ///
-    /// [`HasRamp`] for a map with a ramp. The clock follows steps until stage 4,
-    /// and a map it cannot follow is refused rather than followed wrongly.
-    pub fn set_tempo_map(&self, map: Arc<TempoMap>) -> Result<(), HasRamp> {
-        if map.points().iter().any(|p| p.shape != Shape::Step) {
-            return Err(HasRamp);
-        }
+    /// Any map is followed: the clock takes each step on the frame it falls
+    /// on (doc 020, stage 3) and each ramp cell by cell, a constant tempo of
+    /// 128 frames at the chord of the curve (stage 4).
+    /// [`tempo`](Self::tempo) reads the map's first point.
+    pub fn set_tempo_map(&self, map: Arc<TempoMap>) {
         let tempo = map.points()[0].tempo;
         let _publishing = self
             .publishing
@@ -200,7 +180,6 @@ impl TransportSettings {
         self.tempo_map.publish(map);
         self.tempo.store(tempo, Ordering::Release);
         self.map_generation.fetch_add(1, Ordering::Release);
-        Ok(())
     }
 
     /// The map as published now. Control thread: it takes the cell's lock and
@@ -323,18 +302,17 @@ mod tests {
         }
     }
 
-    /// A constant map and a map of steps are the transport's tempo (read as
-    /// the first point's); a map with a ramp is refused whole (stage 4), and
-    /// the tempo stays.
+    /// A constant map, a map of steps and a map with a ramp are each the
+    /// transport's tempo (read as the first point's).
     ///
-    /// Mutation (run): drop the `HasRamp` check -> the ramp map is accepted
-    /// and the tempo moves to 100 -> fails.
+    /// Mutation (run): `set_tempo_map` ignoring a map with a ramp (an early
+    /// return) -> the tempo stays 75.5 and the map stays constant -> fails.
     #[test]
-    fn a_step_map_is_taken_and_a_ramp_is_refused() {
+    fn a_constant_a_step_and_a_ramp_map_are_each_taken() {
         use tutti_tempo::{Shape, TempoPoint};
         let s = TransportSettings::new();
         let constant = TempoMap::constant(Bpm::of(75.5)).unwrap();
-        assert_eq!(s.set_tempo_map(Arc::new(constant)), Ok(()));
+        s.set_tempo_map(Arc::new(constant));
         assert_eq!(s.tempo(), Bpm::of(75.5));
         assert_eq!(s.tempo_map().constant_tempo(), Some(Bpm::of(75.5)));
 
@@ -353,16 +331,25 @@ mod tests {
             ])
             .unwrap()
         };
-        assert_eq!(
-            s.set_tempo_map(Arc::new(two(Shape::RampTime))),
-            Err(HasRamp)
-        );
-        assert_eq!(s.tempo(), Bpm::of(75.5), "unmoved");
-        assert_eq!(s.tempo_map().constant_tempo(), Some(Bpm::of(75.5)));
+        for shape in [Shape::RampTime, Shape::RampBeats] {
+            s.set_tempo_map(Arc::new(constant_of(75.5)));
+            s.set_tempo_map(Arc::new(two(shape)));
+            assert_eq!(
+                s.tempo(),
+                Bpm::of(100.0),
+                "the ramp's first point, {shape:?}"
+            );
+            assert_eq!(s.tempo_map().constant_tempo(), None);
+            assert_eq!(s.tempo_map().points()[0].shape, shape);
+        }
 
-        assert_eq!(s.set_tempo_map(Arc::new(two(Shape::Step))), Ok(()));
+        s.set_tempo_map(Arc::new(two(Shape::Step)));
         assert_eq!(s.tempo(), Bpm::of(100.0), "the first point's");
         assert_eq!(s.tempo_map().constant_tempo(), None);
+    }
+
+    fn constant_of(bpm: f64) -> TempoMap {
+        TempoMap::constant(Bpm::of(bpm)).unwrap()
     }
 
     /// A map a block holds when it is replaced stays retired until the sweep

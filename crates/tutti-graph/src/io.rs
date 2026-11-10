@@ -427,7 +427,7 @@ impl<'a> Io<'a> {
     /// }
     /// ```
     pub fn sub_blocks(&self, p: usize) -> SubBlocks<'a> {
-        self.events_in[p].sub_blocks(self.frames)
+        self.events_in[p].sub_blocks(Samples(self.frames))
     }
 
     /// What declared param `k` ([`Shape::params`](crate::Shape::params))

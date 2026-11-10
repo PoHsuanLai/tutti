@@ -3,14 +3,14 @@
 //!
 //! A block walks a variable number of render segments (one per distinct
 //! event offset), so the likely regressions are shaped like allocation — collecting the segment boundaries into a `Vec`,
-//! growing the scratch buffers to `size` on the audio thread, or re-sizing
-//! `midi_buffer` when a block carries more events than usual.
+//! growing the scratch buffers to `size` on the audio thread, or collecting
+//! the block's events when it carries more than usual.
 //!
 //! What the unit owns, and where each is sized:
 //! - `left_buffer` / `right_buffer` — sized in `prepare` to the prepared
 //!   `MaxBlock` and never resized on the audio thread (no block is longer).
-//! - `midi_buffer` — `MIDI_BUFFER_CAPACITY` events, fully initialised in `new`
-//!   because the event input is gathered into existing slots.
+//! - no event scratch: the block's events are read in place, through
+//!   `Io::sub_blocks`.
 //!
 //! Driven by hand through `support::Hand` (`tutti_graph::contract::Direct`
 //! underneath), prepared outside every gate as a graph prepares a node.
@@ -151,8 +151,8 @@ fn soundfont_process_with_events_inside_block_is_allocation_free() {
 /// Many events in one block — every frame carries one, so the split loop runs
 /// its maximum number of segments for a 64-frame block.
 ///
-/// The worst case for the segment walk. `midi_buffer` holds 256 events and this
-/// queues 64 per block, so it also exercises the poll + sort without resizing.
+/// The worst case for the segment walk: 64 chunks in a block, each with its
+/// event, read in place.
 #[test]
 fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
     let mut unit = unit();
@@ -216,8 +216,8 @@ fn soundfont_one_frame_blocks_are_allocation_free() {
 /// all reach the synthesizer inside the gate.
 ///
 /// Mutation (run): a `Box::new(0u8)` kept alive in the `Voice2::PitchBend` arm
-/// of `Player::apply`, and separately in the `Message::Utility` arm of
-/// `apply_event`, each aborts inside the gate.
+/// of `Player::apply`, and separately in `apply_event` when a packet is not
+/// channel voice, each aborts inside the gate.
 #[test]
 fn soundfont_every_decoded_message_is_allocation_free() {
     let mut unit = unit();

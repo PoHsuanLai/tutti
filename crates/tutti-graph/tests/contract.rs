@@ -30,13 +30,13 @@ use tutti_graph::{
 use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
 use tutti_ump::Ump;
 
-/// A MIDI 1.0 volume controller (CC 7): the event every event row is excited
+/// A MIDI 2.0 volume controller (CC 7): the event every event row is excited
 /// by. It is not a held key, so a recompile that replaces the feeder closes
 /// nothing at the sink.
 ///
 /// Mutation (run): a note-on here -> the four `recompile_upstream_generation`
 /// rows fail, the sink hearing the close the replaced feeder owes.
-const PULSE: EventKind = EventKind::Midi(Ump([0x20b0_0764, 0, 0, 0]));
+const PULSE: EventKind = EventKind::Midi(Ump([0x40b0_0700, 0xC800_0000, 0, 0]));
 
 fn pulse() -> Excite {
     Excite::Event {

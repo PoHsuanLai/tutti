@@ -30,7 +30,7 @@ pub use tutti_midi_runtime::Moment;
 use tutti_midi_runtime::{TimedQueueNode, TimedSendError, TimedSender};
 use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, At, NodeKey, UnitParam};
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1};
+use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
 use crate::{Feeder, GraphSource, Session, SessionNode};
 
@@ -158,7 +158,11 @@ impl InstrumentHandle {
         self.sender.send(at, ump).map_err(SendError::from)
     }
 
-    /// Note on at `velocity`, at `at` (see [`send`](Self::send)).
+    /// A MIDI 2.0 Note On at `velocity` (16 bits), at `at` (see
+    /// [`send`](Self::send)), on group 1.
+    ///
+    /// A velocity of 0 is a Note On, not a Note Off (M2-104 §7.4.2): the key is
+    /// held until [`note_off`](Self::note_off).
     ///
     /// # Errors
     ///
@@ -168,12 +172,18 @@ impl InstrumentHandle {
         at: At,
         channel: MidiChannel,
         note: NoteNumber,
-        velocity: U7,
+        velocity: u16,
     ) -> Result<(), SendError> {
-        self.voice(at, channel, Voice1::NoteOn { note, velocity })
+        let on = Voice2::NoteOn {
+            note,
+            velocity,
+            attribute: Attribute::None,
+        };
+        self.voice(at, channel, on)
     }
 
-    /// Note off, at `at` (see [`send`](Self::send)).
+    /// A MIDI 2.0 Note Off at release velocity 0, at `at` (see
+    /// [`send`](Self::send)), on group 1.
     ///
     /// # Errors
     ///
@@ -184,25 +194,20 @@ impl InstrumentHandle {
         channel: MidiChannel,
         note: NoteNumber,
     ) -> Result<(), SendError> {
-        self.voice(
-            at,
-            channel,
-            Voice1::NoteOff {
-                note,
-                velocity: U7::of(0),
-            },
-        )
+        let off = Voice2::NoteOff {
+            note,
+            velocity: 0,
+            attribute: Attribute::None,
+        };
+        self.voice(at, channel, off)
     }
 
-    fn voice(&self, at: At, channel: MidiChannel, voice: Voice1) -> Result<(), SendError> {
-        let message = Message::Midi1(
-            Address {
-                group: MidiGroup::FIRST,
-                channel,
-            },
-            voice,
-        );
-        self.send(at, Ump::from(message))
+    fn voice(&self, at: At, channel: MidiChannel, voice: Voice2) -> Result<(), SendError> {
+        let address = Address {
+            group: MidiGroup::FIRST,
+            channel,
+        };
+        self.send(at, Ump::from(Message::Midi2(address, voice)))
     }
 
     /// How many messages the queue has dropped for want of room to hold them

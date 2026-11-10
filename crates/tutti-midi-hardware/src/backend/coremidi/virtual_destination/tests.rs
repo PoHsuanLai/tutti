@@ -23,9 +23,18 @@ fn create_ump_destination() {
 #[test]
 fn packet_words_decode_to_ump_stream_and_channel_voice() {
     use tutti_fixtures::midi::note_on;
-    use tutti_midi_types::{EndpointDiscoveryRequest, endpoint_discovery};
+    use tutti_ump::{DiscoveryFilter, Message, Stream, UmpVersion};
 
-    let discovery = endpoint_discovery(1, 1, EndpointDiscoveryRequest::all());
+    let discovery = tutti_ump::Ump::from(Message::Stream(Stream::EndpointDiscovery {
+        version: UmpVersion { major: 1, minor: 1 },
+        filter: DiscoveryFilter {
+            endpoint_info: true,
+            device_identity: true,
+            endpoint_name: true,
+            product_instance_id: true,
+            stream_configuration: true,
+        },
+    }));
     let note = note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
 
     // One packet carrying both, concatenated exactly as CoreMIDI delivers.

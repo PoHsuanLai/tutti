@@ -9,7 +9,7 @@
 //! A subscriber's queue is unbounded, and exists only while its
 //! [`DeviceEvents`] does: an app that wants no events subscribes to none.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 use tutti_graph::UmpAt;
@@ -220,8 +220,13 @@ impl Reporter {
         self.sink.seed(present);
     }
 
-    /// The handles of `present` that are known under another identity.
-    pub(crate) fn changed_in(&self, present: &[OsDevice]) -> BTreeSet<EndpointId> {
+    /// The handles of `present` that are known under another identity. Only the
+    /// ALSA watcher reuses a handle for another device, so only it asks.
+    #[cfg(all(target_os = "linux", alsa_ump))]
+    pub(crate) fn changed_in(
+        &self,
+        present: &[OsDevice],
+    ) -> std::collections::BTreeSet<EndpointId> {
         present
             .iter()
             .filter(|d| {

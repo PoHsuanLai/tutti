@@ -409,7 +409,7 @@ if "tutti-rt" in pkgs:
 if "tutti-midi-protocol" in pkgs:
     only("tutti-midi-protocol", ["tutti-ump"])
 if "tutti-midi-device" in pkgs:
-    only("tutti-midi-device", [])
+    only("tutti-midi-device", ["tutti-ump"])
 if "tutti-metering" in pkgs:
     only("tutti-metering", ["tutti-types"])
 if "tutti-codec" in pkgs:

@@ -25,9 +25,14 @@ use crate::{
 ///
 /// [`local`](Self::local) is the end for a user with no realtime thread:
 /// [`Effect::Lend`] does nothing and [`Effect::Recall`] answers
-/// [`Reply::Returned`] at once.
+/// [`Reply::Returned`] at once. [`threaded`](Self::threaded) pairs it with the
+/// realtime thread's [`tutti_rt::Rt`] (doc 016 §2.6): `Lend` moves the
+/// Processor into the handoff, `Recall` asks for it back, and
+/// [`Lifecycle::drive`] collects it on a tick and steps [`Event::Returned`].
 #[derive(Debug)]
 pub struct Hand<P> {
+    /// `None` for a local hand.
+    end: Option<tutti_rt::Hand<P>>,
     _processor: PhantomData<fn() -> P>,
 }
 
@@ -36,8 +41,27 @@ impl<P> Hand<P> {
     #[must_use]
     pub fn local() -> Self {
         Self {
+            end: None,
             _processor: PhantomData,
         }
+    }
+
+    /// The end for a user that renders on a realtime thread, and that
+    /// thread's end, which polls between blocks ([`tutti_rt::Rt::poll`], with
+    /// [`Processor::stop`] as its last step).
+    #[must_use]
+    pub fn threaded() -> (Self, tutti_rt::Rt<P>)
+    where
+        P: Send,
+    {
+        let (end, rt) = tutti_rt::handoff();
+        (
+            Self {
+                end: Some(end),
+                _processor: PhantomData,
+            },
+            rt,
+        )
     }
 }
 
@@ -142,20 +166,21 @@ impl<L: Loaded> Lifecycle<L> {
     /// [`drive`](Self::drive), and here answers [`Reply::Done`].
     ///
     /// A panic out of the plugin leaves [`Lifecycle::Poisoned`], not a
-    /// half-moved plugin, whichever call it came from. `hand` is unused until a
-    /// threaded hand exists: a local one needs nothing from the effects that
-    /// move the Processor.
+    /// half-moved plugin, whichever call it came from. `hand` is the
+    /// Processor's way to the realtime thread: a local one needs nothing from
+    /// the effects that move it.
     pub fn apply(
         &mut self,
         effect: Effect,
         hand: &mut Hand<L::Processor>,
         main: &MainThread,
     ) -> Reply {
-        let _ = hand;
         match effect {
             Effect::CallActivate(prepare) => self.activate(main, prepare),
             Effect::CallDeactivate => self.deactivate(main),
             Effect::Rebuild => self.rebuild(main),
+            Effect::Lend => self.lend(hand),
+            Effect::Recall => self.recall(hand),
             other => self
                 .guarded(|this| this.apply_in_place(other, main))
                 .unwrap_or(Reply::NotActive),
@@ -178,27 +203,13 @@ impl<L: Loaded> Lifecycle<L> {
     /// The effects that act on a plugin where it is.
     fn apply_in_place(&mut self, effect: Effect, main: &MainThread) -> Reply {
         match effect {
-            Effect::CallActivate(_) | Effect::CallDeactivate | Effect::Rebuild => {
-                unreachable!("transitions are applied by `apply`")
+            Effect::CallActivate(_)
+            | Effect::CallDeactivate
+            | Effect::Rebuild
+            | Effect::Lend
+            | Effect::Recall => {
+                unreachable!("transitions and moves are applied by `apply`")
             }
-            Effect::Recall => match self {
-                Self::Active {
-                    seat: Seat::Held(_),
-                    ..
-                } => Reply::Returned,
-                Self::Active {
-                    seat: Seat::Lent, ..
-                } => Reply::Lent,
-                _ => Reply::NotActive,
-            },
-            Effect::Lend => match self {
-                // A local hand has no realtime thread: the seat keeps it.
-                Self::Active {
-                    seat: Seat::Held(_),
-                    ..
-                } => Reply::Done,
-                _ => Reply::NotActive,
-            },
             Effect::ReadLatency => match self {
                 Self::Active { controller, .. } => Reply::Latency(controller.latency(main)),
                 _ => Reply::NotActive,
@@ -219,6 +230,79 @@ impl<L: Loaded> Lifecycle<L> {
             Effect::RunTimer(id) => self.with_control(|c| c.run_timer(main, id)),
             Effect::ServiceFd(id) => self.with_control(|c| c.service_fd(main, id)),
             Effect::Notify(_) => Reply::Done,
+        }
+    }
+
+    /// [`Effect::Lend`]: a threaded hand takes the held Processor. A lend the
+    /// handoff refuses (a recall still raised, a slot not yet emptied) keeps it
+    /// held, and [`drive`](Self::drive) retries on the next tick.
+    fn lend(&mut self, hand: &mut Hand<L::Processor>) -> Reply {
+        let Self::Active { seat, .. } = self else {
+            return Reply::NotActive;
+        };
+        // A local hand has no realtime thread: the seat keeps it.
+        let (Some(end), Seat::Held(_)) = (hand.end.as_mut(), &seat) else {
+            return Reply::Done;
+        };
+        let Seat::Held(processor) = std::mem::replace(seat, Seat::Lent) else {
+            unreachable!("matched held above");
+        };
+        if let Err(processor) = end.lend(processor) {
+            *seat = Seat::Held(processor);
+        }
+        Reply::Done
+    }
+
+    /// [`Effect::Recall`]: a held Processor is here; a lent one is withdrawn
+    /// at once if the realtime thread has not taken it, or asked back
+    /// ([`Reply::Lent`]) and collected by a later [`drive`](Self::drive).
+    fn recall(&mut self, hand: &mut Hand<L::Processor>) -> Reply {
+        match self {
+            Self::Active {
+                seat: Seat::Held(_),
+                ..
+            } => Reply::Returned,
+            Self::Active { seat, .. } => match hand.end.as_mut().and_then(tutti_rt::Hand::recall) {
+                Some(processor) => {
+                    *seat = Seat::Held(processor);
+                    Reply::Returned
+                }
+                None => Reply::Lent,
+            },
+            _ => Reply::NotActive,
+        }
+    }
+
+    /// On a tick: a Processor the realtime thread returned is collected
+    /// (`true`, and the caller steps [`Event::Returned`]), and one a refused
+    /// lend kept held is offered again.
+    fn trade(&mut self, hand: &mut Hand<L::Processor>, state: &State) -> bool {
+        let Some(end) = hand.end.as_mut() else {
+            return false;
+        };
+        let Self::Active { seat, .. } = self else {
+            return false;
+        };
+        match seat {
+            Seat::Lent => match end.take() {
+                Some(processor) => {
+                    *seat = Seat::Held(processor);
+                    true
+                }
+                None => false,
+            },
+            // Held while active, with no plan parked on it: a lend was
+            // refused, so offer it again.
+            Seat::Held(_) if !state.is_parked() && state.renders() => {
+                let Seat::Held(processor) = std::mem::replace(seat, Seat::Lent) else {
+                    unreachable!("matched held above");
+                };
+                if let Err(processor) = end.lend(processor) {
+                    *seat = Seat::Held(processor);
+                }
+                false
+            }
+            Seat::Held(_) => false,
         }
     }
 
@@ -334,13 +418,33 @@ impl<L: Loaded> Lifecycle<L> {
     /// While the Processor is lent, a plan that needs both halves is parked in
     /// the state by the core; this returns with it parked, and a later `drive`
     /// runs it once [`Event::Returned`] arrives.
+    ///
+    /// With a threaded [`Hand`], a tick also collects a Processor the realtime
+    /// thread returned and steps [`Event::Returned`] for it first, and offers
+    /// again one a refused lend kept here.
     pub fn drive(
+        &mut self,
+        mut state: State,
+        event: Event,
+        hand: &mut Hand<L::Processor>,
+        main: &MainThread,
+        mut notify: impl FnMut(Notice),
+    ) -> State {
+        if matches!(event, Event::Tick) && self.trade(hand, &state) {
+            // The realtime thread returned the Processor: a parked plan runs.
+            state = self.run(state, Event::Returned, hand, main, &mut notify);
+        }
+        self.run(state, event, hand, main, &mut notify)
+    }
+
+    /// [`drive`](Self::drive)'s one step and the effects it emits.
+    fn run(
         &mut self,
         state: State,
         event: Event,
         hand: &mut Hand<L::Processor>,
         main: &MainThread,
-        mut notify: impl FnMut(Notice),
+        notify: &mut dyn FnMut(Notice),
     ) -> State {
         if matches!(event, Event::Tick) {
             // The idle pass is the Controller's tick to retry what a full edit

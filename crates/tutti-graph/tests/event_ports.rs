@@ -61,7 +61,7 @@ impl Node for Burst {
             if let Some(at) = cx.env.offset_of(Frame(f))
                 && io
                     .event_out(port as usize)
-                    .push(Event::midi(at, [tag, 0, 0, 0]))
+                    .push(Event::midi(at, Ump([tag, 0, 0, 0])))
                     .is_err()
             {
                 self.refused.fetch_add(1, Ordering::Relaxed);
@@ -88,7 +88,7 @@ impl Node for Relay {
             };
             w[0] += 1000;
             io.event_out(0)
-                .push(Event::midi(e.offset, w))
+                .push(Event::midi(e.offset, Ump(w)))
                 .expect("forwards what it was handed");
         }
         Status::Silent

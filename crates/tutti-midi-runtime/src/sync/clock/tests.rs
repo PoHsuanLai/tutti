@@ -5,7 +5,7 @@ use tutti_ump::MidiGroup;
 
 fn us_per_tick(bpm: f64) -> u64 {
     // 1 beat = PPQN ticks; 1 beat at bpm = 60/bpm seconds = 60_000_000/bpm us
-    (60_000_000.0 / (bpm * PPQN as f64)) as u64
+    (60_000_000.0 / (bpm * f64::from(System::TIMING_CLOCKS_PER_QUARTER))) as u64
 }
 
 /// 24 ticks is one beat, and the count keeps accumulating across beats.

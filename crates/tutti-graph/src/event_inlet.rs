@@ -493,7 +493,7 @@ impl Node for EventInletNode {
             };
             // A refusal is counted by the port (the executor's dropped-event
             // count) and here.
-            if out.push(Event::midi(offset, w.ump.0)).is_err() {
+            if out.push(Event::midi(offset, w.ump)).is_err() {
                 refused += 1;
             }
             sent += 1;

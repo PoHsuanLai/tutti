@@ -6,6 +6,7 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tutti_ump::Ump;
 
 use common::{Kind, TestNode, prepare};
 use tutti_graph::NodeKey;
@@ -782,7 +783,7 @@ impl Node for OneShot {
         if let Some(at) = cx.env.offset_of(tutti_types::Frame(self.at)) {
             let _ = io
                 .event_out(0)
-                .push(tutti_graph::Event::midi(at, self.words));
+                .push(tutti_graph::Event::midi(at, Ump(self.words)));
         }
         Status::Silent
     }
@@ -922,7 +923,7 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
                     io.event_out(0)
                         .push(tutti_graph::Event::midi(
                             tutti_graph::Offset::ZERO,
-                            [0x2080_0000 | (n << 8), 0, 0, 0],
+                            Ump([0x2080_0000 | (n << 8), 0, 0, 0]),
                         ))
                         .expect("30 fit in 32");
                 }

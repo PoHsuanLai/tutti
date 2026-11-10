@@ -32,7 +32,7 @@ use tutti_graph::{Instrument, ParamSet};
 use tutti_midi_runtime::{TimedQueueNode, TimedSendError, TimedSender};
 use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, At, Moment, UnitParam};
-use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
+use tutti_ump::{Address, Message, MidiChannel, NoteNumber, Ump, Voice2};
 
 use crate::{Feeder, GraphSource, Session, SessionNode};
 
@@ -176,12 +176,7 @@ impl InstrumentHandle {
         note: NoteNumber,
         velocity: u16,
     ) -> Result<(), SendError> {
-        let on = Voice2::NoteOn {
-            note,
-            velocity,
-            attribute: Attribute::None,
-        };
-        self.voice(at, channel, on)
+        self.voice(at, channel, Voice2::note_on(note, velocity))
     }
 
     /// A MIDI 2.0 Note Off at release velocity 0, at `at` (see
@@ -196,19 +191,11 @@ impl InstrumentHandle {
         channel: MidiChannel,
         note: NoteNumber,
     ) -> Result<(), SendError> {
-        let off = Voice2::NoteOff {
-            note,
-            velocity: 0,
-            attribute: Attribute::None,
-        };
-        self.voice(at, channel, off)
+        self.voice(at, channel, Voice2::note_off(note, 0))
     }
 
     fn voice(&self, at: At, channel: MidiChannel, voice: Voice2) -> Result<(), SendError> {
-        let address = Address {
-            group: MidiGroup::FIRST,
-            channel,
-        };
+        let address = Address::first(channel);
         self.send(at, Ump::from(Message::Midi2(address, voice)))
     }
 

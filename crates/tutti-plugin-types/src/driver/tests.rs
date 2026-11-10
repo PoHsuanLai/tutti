@@ -5,10 +5,10 @@
 //! was applied to `driver.rs` (or `fake.rs`), the test watched to fail, and
 //! the code restored.
 //!
-//! The Processor is always held here (a local `Hand`): the lent-Processor paths
-//! (a recall that answers `Lent`, a parked plan resumed by `Event::Returned`)
-//! are covered by the core's own tests and get their `Lifecycle` cases when the
-//! threaded `Hand` lands.
+//! Most tests hold the Processor here (a local `Hand`). The lent-Processor
+//! paths (a recall that answers `Lent`, a parked plan resumed by
+//! `Event::Returned`) run with a threaded one, whose realtime end the test
+//! polls itself (`Rig::threaded`).
 
 use super::*;
 use crate::fake::{Call, FakeLoaded, FakePlugin};
@@ -48,6 +48,18 @@ impl Rig {
             hand: Hand::local(),
             notices: Vec::new(),
         }
+    }
+
+    /// A rig whose Processor goes to a realtime end the test holds.
+    fn threaded() -> (Self, tutti_rt::Rt<<FakeLoaded as Loaded>::Processor>) {
+        let (hand, rt) = Hand::threaded();
+        (
+            Self {
+                hand,
+                ..Self::new()
+            },
+            rt,
+        )
     }
 
     fn drive(&mut self, event: Event) {
@@ -711,4 +723,80 @@ fn a_panic_in_a_transition_is_not_told_twice() {
     assert!(rig.lifecycle.is_poisoned());
     assert!(notices.iter().any(|n| matches!(n, Notice::Refused { .. })));
     assert!(!notices.iter().any(|n| matches!(n, Notice::Lost { .. })));
+}
+
+/// The realtime end's poll between blocks, with `stop` as its last step.
+fn poll(rt: &mut tutti_rt::Rt<<FakeLoaded as Loaded>::Processor>) -> bool {
+    rt.poll(Processor::stop).is_some()
+}
+
+/// **With a threaded hand an activation lends the Processor, and a rate change
+/// recalls it, parks, and resumes when the realtime thread returns it.** The
+/// realtime end stops it before it hands it back; the next tick collects it,
+/// rejoins, activates at the new rate and lends again.
+///
+/// Mutation (run): `drive` not collecting a returned Processor on a tick
+/// (`trade` answering `false` for `Lent`) → the plan stays parked and the
+/// second activation never comes; `recall` answering `Returned` while lent →
+/// the plan runs without the Processor, and this test and the next fail.
+#[test]
+fn a_rate_change_recalls_the_lent_processor_and_lends_the_new_one() {
+    let (mut rig, mut rt) = Rig::threaded();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    assert!(rig.lifecycle.processor().is_none(), "lent at activation");
+    assert!(poll(&mut rt), "the realtime end takes it");
+
+    rig.op(HostOp::Reconfigure(prepare(44_100.0)));
+    assert!(rig.state.is_parked(), "waits for the Processor");
+    assert!(!rig.plugin.calls().contains(&Call::Deactivate));
+
+    assert!(!poll(&mut rt), "returned");
+    assert_eq!(rig.plugin.calls().last(), Some(&Call::Stop));
+    rig.tick();
+    assert!(!rig.state.is_parked());
+    let calls = rig.plugin.calls();
+    assert!(calls.contains(&Call::Deactivate));
+    assert!(calls.contains(&Call::Activate(SampleRate(44_100.0), Samples(64))));
+    assert_eq!(activations(&calls), 2);
+    assert!(poll(&mut rt), "the new Processor reaches the realtime end");
+}
+
+/// **A recall before the realtime thread took the Processor withdraws it at
+/// once:** the plan runs in the same drive, with no tick and no stop.
+///
+/// Mutation (run): `recall` ignoring what `tutti_rt::Hand::recall` withdrew
+/// (answering `Lent`) → the plan parks and the second activation is missing.
+#[test]
+fn a_recall_before_the_realtime_thread_took_it_is_immediate() {
+    let (mut rig, mut rt) = Rig::threaded();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.op(HostOp::Reconfigure(prepare(44_100.0)));
+    assert!(!rig.state.is_parked());
+    let calls = rig.plugin.calls();
+    assert_eq!(activations(&calls), 2);
+    assert!(
+        !calls.contains(&Call::Stop),
+        "it never reached the realtime end"
+    );
+    assert!(poll(&mut rt), "the new one is lent");
+}
+
+/// **A lend the handoff refuses keeps the Processor here and is offered again
+/// on a tick.** A recall raised with nothing lent refuses the next lend until
+/// the realtime end clears it.
+///
+/// Mutation (run): `trade` not offering a held Processor again → the realtime
+/// end never gets it.
+#[test]
+fn a_refused_lend_is_offered_again_on_a_tick() {
+    let (mut rig, mut rt) = Rig::threaded();
+    // A stale recall: nothing is lent, so the realtime end clears it at its
+    // next poll, and until then a lend is refused.
+    assert!(rig.hand.end.as_mut().unwrap().recall().is_none());
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    assert!(rig.lifecycle.processor().is_some(), "refused, kept here");
+    assert!(!poll(&mut rt), "nothing lent; the stale recall is cleared");
+    rig.tick();
+    assert!(rig.lifecycle.processor().is_none(), "offered again");
+    assert!(poll(&mut rt));
 }

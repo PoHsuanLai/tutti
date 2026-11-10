@@ -57,7 +57,7 @@ impl Node for Src {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         for w in self.0.lock().unwrap().drain(..) {
-            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, w));
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(w)));
         }
         Status::Modified
     }

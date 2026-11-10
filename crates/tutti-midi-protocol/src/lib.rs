@@ -18,6 +18,7 @@
 //! widened, or `None`. [`widen_message`] widens a whole
 //! [`Message`](tutti_ump::Message) and passes every other kind through, for an
 //! edge that forwards what it does not read (a plugin host's MIDI output).
+//! [`widen_bytes`] is the same for the wire bytes of one MIDI 1.0 message.
 //!
 //! ```
 //! use tutti_midi_protocol::widen;
@@ -100,4 +101,4 @@ pub use unit::{
     bend_u14_to_signed_f32, bend_u32_to_signed_f32, signed_f32_to_bend_u32, u7_to_unit_f32,
     u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
-pub use voice::{channel_voice, widen, widen_message};
+pub use voice::{channel_voice, widen, widen_bytes, widen_message};

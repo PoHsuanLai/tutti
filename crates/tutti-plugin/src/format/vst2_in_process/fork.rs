@@ -23,12 +23,9 @@
 //!    (`Control::save_state`: the plugin's own chunk through `effGetChunk`
 //!    when it declares `effFlagsProgramChunks`, else every parameter's value,
 //!    one `getParameter` each), and whether the host reports it as rendering
-//!    offline. Nothing else is touched. For as long as the lock is held the
-//!    live node's audio thread finds it taken (`try_lock`) and renders silent
-//!    blocks — the same stall a project save through the handle causes. That
-//!    is one block for a chunk or a few parameters, and can be several for a
-//!    plugin without chunks that has thousands of parameters, or a slow
-//!    `effGetChunk`.
+//!    offline. Nothing else is touched. The lock is the control side's: the
+//!    live node's audio thread renders through its lent Processor meanwhile,
+//!    as it does through a project save.
 //! 2. **Load a second instance** of the same file at the live node's rate:
 //!    `Vst2Loaded::load`, as the live one was. The second `dlopen` of the
 //!    path maps the image already loaded (one more reference to it), and the
@@ -168,7 +165,12 @@ impl Vst2Fork {
         let (program, state, live_offline) = {
             let mut instance = live.lock();
             let program = (instance.program_count() > 0).then(|| instance.current_program(main));
-            let state = Control::save_state(instance.controller_mut(), main)
+            let state = instance
+                .control()
+                .ok_or_else(|| {
+                    PluginForkError::SaveState(StateError::Rejected("the plugin is lost".into()))
+                })?
+                .save_state(main)
                 .map_err(|e| PluginForkError::SaveState(StateError::Rejected(e.to_string())))?;
             (program, state, instance.is_offline_render())
         };

@@ -56,19 +56,6 @@ use tutti_graph::UmpAt;
 use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, PitchBendSensitivity};
 use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, Rpn, Ump, Voice2, decode};
 
-/// A channel voice message on group 1 and `channel`: the group the per-note
-/// forms this ingest makes have always gone out on.
-fn first_group_voice(channel: MidiChannel, voice: Voice2) -> Ump {
-    Message::Midi2(
-        Address {
-            group: MidiGroup::FIRST,
-            channel,
-        },
-        voice,
-    )
-    .into()
-}
-
 /// The Registered Controller `rpn` carrying `data` on each channel of `channels`, on `group`
 /// at `offset`.
 fn send_rpns(
@@ -361,7 +348,10 @@ impl MpeIngest {
                     let note = self.held.note_on(ch)?;
                     Some((
                         event.0,
-                        first_group_voice(ch, Voice2::PerNotePitchBend { note, value }),
+                        Ump::from(Message::Midi2(
+                            Address::first(ch),
+                            Voice2::PerNotePitchBend { note, value },
+                        )),
                     ))
                 }
             },
@@ -371,7 +361,10 @@ impl MpeIngest {
                     let note = self.held.note_on(ch)?;
                     Some((
                         event.0,
-                        first_group_voice(ch, Voice2::PolyPressure { note, value }),
+                        Ump::from(Message::Midi2(
+                            Address::first(ch),
+                            Voice2::PolyPressure { note, value },
+                        )),
                     ))
                 }
             },
@@ -381,14 +374,14 @@ impl MpeIngest {
                     // CC74 -> Assignable Per-Note Controller index 74 (the MPE slide).
                     Some((
                         event.0,
-                        first_group_voice(
-                            ch,
+                        Ump::from(Message::Midi2(
+                            Address::first(ch),
                             Voice2::AssignablePerNote {
                                 note,
-                                controller: 74,
+                                controller: CCNumber::BRIGHTNESS.get(),
                                 value,
                             },
-                        ),
+                        )),
                     ))
                 } else {
                     Some(*event)

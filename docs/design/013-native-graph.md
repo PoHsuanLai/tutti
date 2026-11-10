@@ -470,8 +470,8 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
 - **`ToOutput` aligns to the outputs' time.** A source that departs later than
   every output cannot be delayed to it and is read as it leaves, as `Raw`.
 - **The consumers.** `tutti-session`'s `Graph::open_tap` and
-  `Graph::open_output_tap` (whose sources follow the outputs when they are
-  re-wired), and the `TapReader` itself as a `Source` (`impl Source for
+  `Graph::open_output_tap` (a `TapSpec::Outputs`: it follows the outputs when
+  they are re-wired and hears a fan-in channel post-sum), and the `TapReader` itself as a `Source` (`impl Source for
   TapReader`, as wide as the tap; there is no adapter type). Offline and
   headless sessions feed them: the op runs wherever the plan runs.
 
@@ -5942,8 +5942,12 @@ of `graph.rs` carry the same sentence and change with it. So does
 | `output_source` / `set_output_source` | `output_sources(channel)` / `set_output_sources(channel, &[GraphSource])`, with `set_output_source` as exactly one |
 | `set_outputs_from(node)` | unchanged: it replaces every output's set with the one source |
 
-`GraphSource::Silence` is never stored: in a set of several it is refused
-(`StoredSilence`), in a set of one it clears the port (the empty set), as now. `GraphBuilder::connect`
+`GraphSource::Silence` is never stored: it is the sum's zero, so the session
+drops it wherever it is listed. Alone it clears the port (the empty set), as
+now; beside a source it adds nothing. (The plan said to refuse it in a set of
+several; as built it is dropped, since `{silence, x}` sums to `x` and a
+refusal would only turn a correct answer into a panic. A raw `Topology` that
+stores `Source::Zero` is still `Invalid::StoredSilence`.) `GraphBuilder::connect`
 adds a source (it replaced); `connect_output` likewise; `disconnect(node,
 port)` clears the port and `disconnect_from` (**new**) removes one. This
 changes the meaning of `connect` for a caller that wired a port twice to
@@ -6110,8 +6114,8 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    Two differences from the plan: the `GatedPool` suites of other crates are
    unchanged (the gate lives in `tutti-graph`'s `rt_no_alloc`), and the
    generated-graph test of a summed output tap compares only unsummed
-   channels (a tap names ports, not sums; `TapSpec` gets its outputs variant
-   in PR 4).
+   channels (a tap names ports, not sums; PR 4's `TapSpec::Outputs` reads them, and the
+   test now covers them).
 4. **Session API.** `sources`, `set_sources`, `add_source`, `remove_source`,
    the output forms, the builder's `connect` and `disconnect_from`. `ChannelSumNode`
    still exists. `Graph::follow_outputs` snapshots each output channel's
@@ -6122,6 +6126,49 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    the workspace (code, tests, examples, doc comments) that connects one port
    twice, and decides each: a caller that meant to replace moves to
    `set_source` in the same PR, so no render changes silently.
+   *As built:* the session `Graph` has `sources(node, port) -> Vec<GraphSource>`
+   (`source` is gone), `set_source` (exactly one), `set_sources(node, port,
+   &[GraphSource])`, `add_source` and `remove_source`, and for a global output
+   `output_sources(channel)` (`output_source` is gone), `set_output_source`,
+   `set_output_sources`, `add_output_source` and `remove_output_source`. The
+   set-setters sort and de-duplicate (a source listed twice is one source, as
+   `set_event_sources` does, not a weight of 2) and touch nothing, and mark
+   nothing edited, when the set is unchanged; `add_source`/`remove_source` mark
+   the graph edited only when they change it. `GraphSource::Silence` alone
+   clears a port, adds nothing through `add_source`, and in a set of several
+   **panics** (the setter's form of `StoredSilence`); a node as its own source
+   panics, as `set_source` did. No setter checks that a node or port exists (the
+   commit's `validate` does), as before. `Topology` gained `connect_output` and
+   `disconnect_output`. `GraphBuilder::connect`, `connect_input`,
+   `connect_output` and `feedback` **add**; `set_source`, `set_output` and the
+   `pipe*`/`chain` forms stay exactly-one; `add_source`, `set_sources`,
+   `disconnect_from`, `add_output` and `disconnect_output_from` are new.
+   `TapSpec` is now an enum like `MeterSpec`: `Ports { sources, align }` (the
+   old struct, with `TapSpec::raw` and `aligned`) and `Outputs { width }`,
+   which reads each output channel's `output_refs` slot, post-sum and aligned
+   (the compiler gives the alignment delay its own op, as for a master meter,
+   when any outputs tap or meter is open). `Editor::open_output_tap(id, width,
+   capacity)` opens it, and refuses an output naming a missing source as
+   before; `Graph::open_output_tap` uses it, so `follow_outputs` and the
+   session's snapshot of the outputs are gone: the tap follows the outputs
+   because it names no source. The differential tap test now compares the
+   outputs tap on every channel, summed ones included (and the ports tap on the
+   unsummed ones).
+   *The callers that connect one port twice* were found by making the builder
+   panic on a second, different source at a port or output (`connect`,
+   `connect_input`, `connect_output`, `feedback`) and running the workspace
+   suite (7210 tests) and the `tutti-session` feature suite (290), then reading
+   every other call site (the feature-gated plugin tests, the examples and
+   benches, `mix_bus.rs`, `vbap/mix.rs`, `contract.rs`) and running the
+   doctests. **One**: the doctest of `GraphBuilder` (`builder.rs`) wired
+   `chain(half)`, which feeds every output from `half`, and then
+   `connect_output(gain, 0, 1)` meant to *replace* channel 1; with `connect`
+   adding it rendered 2.5, not 2.0. It is rewritten to wire each port once
+   (`connect_input` and `connect_output` for `half`'s left), the same figures.
+   Every other builder caller wires each port once (the plugin tests' loops
+   are over distinct ports; the `ChannelSumNode` tests wire distinct ports of
+   the sum), so no render changed. The session
+   `Graph` never had an adding call, so `set_source` callers are unaffected.
 5. **Migration.** `add_general_midi`, VBAP, the tests and benches. The node
    stays one more PR so each of those compiles and passes beside it.
 6. **Delete.** `ChannelSumNode`, its exports, `SessionNode` impl, README and
@@ -8435,9 +8482,9 @@ the seqlock the callback reads before entering the plugin.
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>` cell (first an
   `ArcSwapOption`) shared across the node's
   clones, and the out-of-process node's `PluginControls::meter` too.
-  Installed with `InProcessVst2Client::set_meter` (`clear_meter`,
-  `has_meter`), through the `PluginMeter` inserting the node hands back as
-  its controls (`IntoNode::Controls`, was `()`), or with `Plugin::set_meter`
+  Installed through either node's controls, one `NodeControls` (`set_meter`,
+  `clear_meter`, `has_meter`; `InProcessVst2Client::controls`, and what
+  inserting the node hands back, `IntoNode::Controls`), or with `Plugin::set_meter`
   / `Plugin::meter` for either backend. A fork takes the meter installed
   when it forks, in a cell of its own; none is 4/4 from bar 0.
 - **bevy-tutti gives it the project meter.** The plugin load captured

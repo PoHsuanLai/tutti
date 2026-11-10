@@ -38,22 +38,22 @@ fn a_second_claim_on_the_master_silently_replaces_the_first() {
 
     s.graph().set_outputs_from(first);
     assert_eq!(
-        s.graph_ref().output_source(0),
-        GraphSource::Node(first, 0),
+        s.graph_ref().output_sources(0),
+        [GraphSource::Node(first, 0)],
         "the first claim lands"
     );
 
     s.graph().set_outputs_from(second);
     assert_eq!(
-        s.graph_ref().output_source(0),
-        GraphSource::Node(second, 0),
+        s.graph_ref().output_sources(0),
+        [GraphSource::Node(second, 0)],
         "and the second overwrites it: not a mix"
     );
     assert_eq!(
-        s.graph_ref().output_source(1),
+        s.graph_ref().output_sources(1),
         // A mono `Osc` has one output, so `channel % node_outputs` wraps both
         // global channels onto port 0.
-        GraphSource::Node(second, 0),
+        [GraphSource::Node(second, 0)],
         "on every channel, not just channel 0"
     );
 }
@@ -70,11 +70,20 @@ fn a_master_claim_takes_every_channel_even_from_a_mono_source() {
     let (mono, _) = s.graph().add(ForkByClone(Osc::sine(Hz(880.0))));
 
     s.graph().set_outputs_from(stereo);
-    assert_eq!(s.graph_ref().output_source(1), GraphSource::Node(stereo, 1));
+    assert_eq!(
+        s.graph_ref().output_sources(1),
+        [GraphSource::Node(stereo, 1)]
+    );
     s.graph().set_outputs_from(mono);
 
     // `set_outputs_from` wraps with `channel % node_outputs`, so a 1-output
     // node feeds both channels from its single port.
-    assert_eq!(s.graph_ref().output_source(0), GraphSource::Node(mono, 0));
-    assert_eq!(s.graph_ref().output_source(1), GraphSource::Node(mono, 0));
+    assert_eq!(
+        s.graph_ref().output_sources(0),
+        [GraphSource::Node(mono, 0)]
+    );
+    assert_eq!(
+        s.graph_ref().output_sources(1),
+        [GraphSource::Node(mono, 0)]
+    );
 }

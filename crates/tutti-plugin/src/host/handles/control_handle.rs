@@ -723,7 +723,7 @@ impl PluginHandle {
         &self,
         f: F,
     ) -> &Self {
-        self.param_sink.set(f);
+        self.param_sink.set(move |(id, value)| f(id, value));
         self
     }
 

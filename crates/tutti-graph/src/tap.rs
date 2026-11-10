@@ -3,8 +3,10 @@
 //! A tap is declared on the [`Topology`](crate::Topology) as "copy these
 //! sources" ([`TapSpec`](crate::TapSpec)); the compiler emits one
 //! [`Op::Tap`](crate::Op::Tap) per tap, reading every lane's source, and, for an
-//! aligned tap, the same delay an output channel gets for each. A tap that is not in the topology compiles to
-//! nothing. Opening a tap refuses a source that does not exist then
+//! aligned tap, the same delay an output channel gets for each. The outputs
+//! form ([`TapSpec::Outputs`](crate::TapSpec::Outputs)) reads what each output
+//! channel carries, after the alignment delays and the sum of a fan-in. A tap
+//! that is not in the topology compiles to nothing. Opening a tap refuses a source that does not exist then
 //! ([`MissingSource`](crate::MissingSource)); a lane whose port goes missing
 //! later (a node replaced by a narrower one, a removed node) reads silence and
 //! the commit succeeds; the reader is not told, and the zeros count as neither

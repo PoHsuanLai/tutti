@@ -13,7 +13,34 @@
 //! its own boundary via `From` — the same shape `ChannelLayout` uses for speaker
 //! arrangements.
 
+use arrayvec::ArrayVec;
+use tutti_graph::MAX_TRANSPORT_CHANGES;
 use tutti_types::{BarNumber, Seconds, TimeSignature};
+
+/// A transport that takes effect part-way into a chunk: from frame
+/// [`offset`](Self::offset) of the chunk on, the transport is
+/// [`transport`](Self::transport), until the next change or the chunk's end.
+///
+/// A chunk's own transport ([`TransportInfo`], sent beside it) is the one at
+/// its first frame; a change is never at frame 0. A format with an
+/// inter-block transport event (CLAP's `CLAP_EVENT_TRANSPORT`) sends one
+/// event per change, at its frame. VST3, VST2 and AU read a chunk's first
+/// transport alone: none has such an event.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TransportChange {
+    /// The frame within the chunk, a raw `u32` as the wire's MIDI offset is:
+    /// the types stop at the IPC boundary.
+    pub offset: u32,
+    /// The transport from that frame on.
+    pub transport: TransportInfo,
+}
+
+/// The transport changes inside one chunk, in time order: at most the graph's
+/// own bound per block ([`MAX_TRANSPORT_CHANGES`]).
+/// Inline, so a chunk's payload never allocates one; a change that does not fit
+/// is the producer's to count.
+pub type TransportChanges = ArrayVec<TransportChange, MAX_TRANSPORT_CHANGES>;
 
 /// A transport snapshot passed into a plugin's process call.
 ///

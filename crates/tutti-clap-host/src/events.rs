@@ -27,7 +27,7 @@ use clap_sys::events::{
     CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VIBRATO,
     CLAP_NOTE_EXPRESSION_VOLUME, clap_event_header, clap_event_midi, clap_event_midi_sysex,
     clap_event_note, clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
-    clap_event_param_value,
+    clap_event_param_value, clap_event_transport,
 };
 use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
@@ -80,6 +80,9 @@ pub enum ClapEvent {
     ParamGestureBegin(clap_event_param_gesture),
     /// The continuous edit opened by `ParamGestureBegin` finished.
     ParamGestureEnd(clap_event_param_gesture),
+    /// A transport update inside the block (`CLAP_EVENT_TRANSPORT`): the
+    /// tempo, position and play state from its time on. Host→plugin.
+    Transport(clap_event_transport),
     /// A complete SysEx message, `0xF0 … 0xF7`.
     ///
     /// On an [`OutputEventList`] it owns its buffer: the inner C struct's
@@ -301,6 +304,7 @@ impl ClapEvent {
             ClapEvent::ParamMod(e) => &e.header,
             ClapEvent::ParamGestureBegin(e) => &e.header,
             ClapEvent::ParamGestureEnd(e) => &e.header,
+            ClapEvent::Transport(e) => &e.header,
             ClapEvent::MidiSysex { inner, .. } => &inner.header,
         }
     }
@@ -336,6 +340,7 @@ impl ClapEvent {
             ClapEvent::ParamMod(e) => &mut e.header,
             ClapEvent::ParamGestureBegin(e) => &mut e.header,
             ClapEvent::ParamGestureEnd(e) => &mut e.header,
+            ClapEvent::Transport(e) => &mut e.header,
             ClapEvent::MidiSysex { inner, .. } => &mut inner.header,
         }
     }
@@ -1315,6 +1320,20 @@ impl InputEventList {
         self
     }
 
+    /// Appends a `CLAP_EVENT_TRANSPORT` at frame `time` of the block: a
+    /// transport change inside it, which the plugin applies from that frame
+    /// on (the block's own transport, `clap_process.transport`, is the one at
+    /// frame 0). Added before [`sort_by_time`](Self::sort_by_time), it takes
+    /// its place in time order among the block's other events, after those
+    /// already added at the same frame. Room is the caller's
+    /// ([`reserve`](Self::reserve)): at most the graph's
+    /// `MAX_TRANSPORT_CHANGES` a block.
+    pub fn add_transport(&mut self, time: u32, mut event: clap_event_transport) -> &mut Self {
+        event.header.time = time;
+        self.events.push(ClapEvent::Transport(event));
+        self
+    }
+
     /// Clamps every event's `header.time` into `0..frames_count`.
     ///
     /// CLAP hands `time` to the plugin as a sample index into the block, and
@@ -1405,6 +1424,7 @@ impl tutti_clap_ffi::EventSource for InputEventList {
             | ClapEvent::NoteEnd(e) => EventRef::Note(e),
             ClapEvent::Midi(e) => EventRef::Midi(e),
             ClapEvent::NoteExpression(e) => EventRef::NoteExpression(e),
+            ClapEvent::Transport(e) => EventRef::Transport(e),
             ClapEvent::ParamValue(e) => EventRef::ParamValue(e),
             ClapEvent::ParamMod(e) => EventRef::ParamMod(e),
             ClapEvent::ParamGestureBegin(e) | ClapEvent::ParamGestureEnd(e) => {
@@ -2698,6 +2718,77 @@ mod tests {
 
         list.clamp_times(0);
         assert_eq!(first_time(&list), 0);
+    }
+
+    /// **A transport change is a `CLAP_EVENT_TRANSPORT` at its frame, in time
+    /// order with the block's other input events**: two changes with a MIDI
+    /// note between them, added the way `process_impl` adds them (MIDI first,
+    /// then the changes), come out transport at 5, note at 10, transport at 20,
+    /// each carrying its own tempo and slope, and the plugin is lent each as a
+    /// transport event.
+    ///
+    /// Mutation: skip `sort_by_time` for the block -> the changes follow the
+    /// note -> fails. Mutation: `add_transport` not setting the header's `time`
+    /// (every change at frame 0) -> the times are 0 -> fails.
+    #[test]
+    fn transport_changes_are_events_at_their_frames_in_order_with_midi() {
+        use tutti_clap_ffi::EventSource;
+        let transport = |tempo: f64, inc: f64| clap_event_transport {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_transport>() as u32,
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: clap_sys::events::CLAP_EVENT_TRANSPORT,
+                flags: 0,
+            },
+            flags: clap_sys::events::CLAP_TRANSPORT_HAS_TEMPO,
+            song_pos_beats: 0,
+            song_pos_seconds: 0,
+            tempo,
+            tempo_inc: inc,
+            loop_start_beats: 0,
+            loop_end_beats: 0,
+            loop_start_seconds: 0,
+            loop_end_seconds: 0,
+            bar_start: 0,
+            bar_number: 0,
+            tsig_num: 4,
+            tsig_denom: 4,
+        };
+        let mut list = InputEventList::new();
+        list.add_midi(&(
+            at(10),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ));
+        list.add_transport(5, transport(100.0, 0.5));
+        list.add_transport(20, transport(90.0, -0.25));
+        list.clamp_times(64);
+        list.sort_by_time();
+        let shape: Vec<_> = list
+            .events()
+            .iter()
+            .map(|e| match e {
+                ClapEvent::Transport(t) => (t.header.time, Some((t.tempo, t.tempo_inc))),
+                other => (other.header().time, None),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (5, Some((100.0, 0.5))),
+                (10, None),
+                (20, Some((90.0, -0.25)))
+            ]
+        );
+        // The plugin is lent a transport event for each.
+        assert!(matches!(
+            EventSource::get(&list, 0),
+            Some(tutti_clap_ffi::EventRef::Transport(_))
+        ));
+        assert!(matches!(
+            EventSource::get(&list, 1),
+            Some(tutti_clap_ffi::EventRef::Midi(_) | tutti_clap_ffi::EventRef::Note(_))
+        ));
     }
 
     // --- CLAP VOLUME is a gain in `0 < x <= 4`, not a unit fraction ---

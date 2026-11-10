@@ -347,7 +347,8 @@ fn reserve_input_events(scratch: &mut AudioScratch, table: &RangeTable, max_fram
     let param_points =
         ParameterChanges::point_budget(table.ranges.len(), ParameterQueue::chunk_room(max_frames));
     let events = &mut scratch.input_events;
-    let wanted = EVENT_SCRATCH_CAPACITY + param_points + EDIT_CAPACITY;
+    let wanted =
+        EVENT_SCRATCH_CAPACITY + param_points + EDIT_CAPACITY + tutti_graph::MAX_TRANSPORT_CHANGES;
     events.reserve(wanted.saturating_sub(events.events.len()));
     events.set_param_point_room(param_points);
     events.reserve_sysex();

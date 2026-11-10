@@ -207,6 +207,15 @@ impl ClapProcessor {
             );
         }
         let transport = ctx.transport.map(|t| convert_transport(t, sample_rate));
+        // Each change as the host's own snapshot, on the stack: at most the
+        // graph's bound, inline.
+        let mut changes = tutti_plugin_types::TransportChanges::new();
+        for c in ctx.transport_changes {
+            let _ = changes.try_push(tutti_plugin_types::TransportChange {
+                offset: c.offset,
+                transport: convert_transport(&c.transport, sample_rate),
+            });
+        }
         // `process` borrows `self` for the output it returns, so the expressions
         // are moved out of the scratch for the call and put back after. A move of
         // a `Vec`'s three words, no allocation.
@@ -218,6 +227,7 @@ impl ClapProcessor {
             params: ctx.param_changes.filter(|p| !p.is_empty()),
             expressions: &expressions,
             transport: transport.as_ref(),
+            transport_changes: &changes,
         };
         let result = self.process(buffer, &clap_ctx);
         let result = result

@@ -206,7 +206,7 @@ first frame:
 |---|---|---|
 | VST3 | `ProcessContext::tempo` (`kTempoValid`) | The tempo (`tempo_at_frame`, see below; a step's own tempo) at the chunk's first frame. The structure has no slope; a plugin that wants one reads successive blocks. |
 | CLAP | `clap_event_transport::tempo` | The same. |
-| CLAP | `tempo_inc` (with `CLAP_TRANSPORT_HAS_TEMPO`) | The tempo's change per sample until the next transport event, so the plugin can reconstruct `tempo + n x tempo_inc`. In a ramp, `tempo` and `tempo_inc` are the *instantaneous* tempo and slope at the chunk's first frame (below), not the chord; `0.0` in a step segment. The CLAP host sends a transport event at each cell boundary inside a block. |
+| CLAP | `tempo_inc` (with `CLAP_TRANSPORT_HAS_TEMPO`) | The tempo's change per sample until the next transport event, so the plugin can reconstruct `tempo + n x tempo_inc`. In a ramp, `tempo` and `tempo_inc` are the *instantaneous* tempo and slope at the chunk's first frame (below), not the chord; `0.0` in a step segment. The CLAP host sends a transport event at each change inside a chunk (stage 5b: a map point, a ramp's end, a seek, a loop wrap, a start or a stop), not at a ramp's cell edges. |
 | VST2 | `VstTimeInfo::tempo` | The same. |
 | AU | host tempo callback | The same. |
 
@@ -324,7 +324,7 @@ render bit-identical (stage 0 adds the guards first).
 | 2 | Publish the map | `ArcLend<TempoMap>` on the session, the engine's `Reader`, reclaim on `Phase::Reclaim`; `set_tempo` publishes a constant map. `AtomicBpm` stays as the write-back for readers. | loom is not needed (reuses `ArcLend`); no-alloc gate on the engine; golden unchanged. |
 | 3 | Steps | Non-constant maps in the walker; step cells push `TransportChanges`; the block split at the 8th entry. `OfflineTimelineConfig` takes a map. | New step tests of §8. |
 | 4 | Ramps | Ramp cells, the grid bound, `tempo_at` slope on `TempoMap` if missing. | Ramp tests; block-size independence. |
-| 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the map (5a: the plugin hosts, below; 5b: a transport event at each point inside a chunk). | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
+| 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the map (5a: the plugin hosts, below; 5b: a transport event at each change inside a chunk, below). | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
 | 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds`, `duration_to_frames`; `MidiFile::seconds_at` over `TempoMap`; `plugin_midi_export` pins the note frames, not only the length. | Needs lane E4's bounce API; docs 013 updated. |
 
 **As built, stages 0 to 2 (publish a constant map).** Stage 0's guards already
@@ -481,9 +481,8 @@ not the graph's chord, and CLAP its slope.
   `tempo_inc` is `(tempo_at_seconds(t1) - tempo) / n` with `t1 = seconds_at(b0)
   + n / rate`, exact for `RampTime`. It is `0.0` when the transport is stopped,
   when a map point lies in `(b0, b1]` (a point at `b0` itself is fine), or when
-  the chunk crosses the loop's end. A point inside the chunk is stage 5b's: a
-  transport event at the point's frame, which is when a slope across a point
-  could be right.
+  the chunk crosses the loop's end. (Stage 5b changed this: a point inside the
+  chunk no longer zeroes the slope, the chunk is split at it; see below.)
 - `MusicalTiming::tempo_inc` (BPM per sample, `f64`, default `0.0`) crosses the
   IPC wire inside `TransportInfo`, eight bytes after `tempo`, so the wire
   protocol is 22. The CLAP host sends it beside `HAS_TEMPO` (finite only);
@@ -495,36 +494,77 @@ not the graph's chord, and CLAP its slope.
   VST3 mirror included): not done in 5a; each host's unit tests pin that
   `timing.tempo` reaches the ABI field.
 
-**Planned, stage 5b (a transport event at each point inside a chunk).** A
+**As built, stage 5b (a transport event at each change inside a chunk).** A
 chunk is the plugin node's FIFO batch, not the graph's block. It can span
-blocks, so it can hold a map point, a step or a ramp's end. 5a tells the
-plugin the tempo at the chunk's first frame and zeroes the slope there. 5b
-tells it where the tempo changes:
+calls, so it can hold a map point, a step or a ramp's end, a seek, a loop wrap,
+a start or a stop. 5a told the plugin the tempo at the chunk's first frame and
+zeroed the slope when a point lay inside. 5b tells it where things change:
 
-- The chunk's payload (`BlockPayload`, and the wire's `ProcessAudioData`)
-  gains an inline list of transport changes, each a frame within the chunk and
-  a `TransportInfo`. The list holds at most `MAX_TRANSPORT_CHANGES` (8), the
-  graph's own limit. It allocates nothing. One more change than fits is
-  counted, and its transport waits for the next chunk's first frame.
-- The node adds an entry at each map point in `(b0, b1)` (the frame where
-  `beat_at_seconds` crosses it, `frame_at_or_after`'s rule) and at each `Env`
-  change inside the chunk (a seek, a loop wrap, a start or stop). Each entry's
-  `tempo` and `tempo_inc` follow 5a's rule over its own stretch, up to the
-  next entry or the chunk's end. A stretch that holds no point now has a
-  correct slope, so the "point inside the chunk" zero goes. Each entry
-  keeps the stopped and loop-end zeros.
-- The CLAP host sends one `CLAP_EVENT_TRANSPORT` per entry at its frame, in
-  time order with the chunk's other input events. This is the
-  "subsequent inter-block transport updates" `events.h` describes.
-- VST3, VST2 and AU have no transport event inside a block: they read the
-  chunk's first entry, as now. The doc says so per format. It is not a
-  `Gap`, because no format offers more.
-- The wire protocol goes to 23, because the list is a new field.
-- Tests come from the definition: a step inside a chunk is an event at the
-  step's frame with the step's tempo and a zero slope. A ramp's end inside a
-  chunk splits the slope at that frame. Nine changes in one chunk send eight
-  and count one. A VST3 plugin reads the first entry. Each test is
-  mutation-tested.
+- **Payload and wire.** `BlockPayload` (tutti-plugin) and the wire's
+  `ProcessAudioData` (tutti-plugin-ipc) carry `changes` / `transport_changes`:
+  a `tutti_plugin_types::TransportChanges`, an inline `ArrayVec` of
+  `TransportChange { offset: u32, transport: TransportInfo }` (the frame within
+  the chunk, never 0: frame 0 is the chunk's own `transport`) of at most
+  `tutti_graph::MAX_TRANSPORT_CHANGES` (8, imported, not copied). It allocates
+  nothing; a longer list is a decode error on the server. The wire protocol is
+  **23**. `ProcessContext::transport_changes` hands the server's loaders the
+  same slice.
+- **What makes an entry** (`tutti-plugin`'s `transport_walk.rs`): a map point
+  inside a playing stretch, at the first frame at or after the point's time
+  (`first_frame_at_or_after`, the rule `frame_at_or_after` uses) measured from
+  the stretch's own start; a loop wrap, the same way at the loop's end; and an
+  `Env` change that is not the stretch going on (a start or stop, a loop edit,
+  a seek). The engine's own tempo changes (a map step, a ramp's cell edge) are
+  in `Env::changes` too and are **not** entries: a change is one only when the
+  transport at its frame is not the stretch continued, to within two frames of
+  beats. Each entry's `tempo` is the map's at its beat (a point's beat is taken
+  as the point's own when the engine's falls an ulp short), and its `tempo_inc`
+  follows 5a's rule over its own stretch, to the next entry or the chunk's end:
+  `TempoMap::tempo_slope_with`, the slope held inside the segment the stretch
+  starts in (so a step adds no jump to it, and a ramp that ends in the stretch
+  is read to its end). The "point inside the chunk" zero is gone, because a
+  stretch holds no point; the stopped zero and the loop-end zero (the stretch's
+  last frame is past the loop's end) stay, per entry.
+- **A chunk spanning calls.** `begin` runs in the call holding the chunk's
+  first frame and sees only that call's `Env`. So the walk is incremental:
+  `take` runs it once per call over the frames that call puts into the chunk,
+  reading that call's own `Env` changes (shifted to the node's input time by
+  its arrival latency) and the transport at any frame through
+  `Cx::transport_at`. A point or a wrap is predicted from the stretch the walk
+  is on, so it is found in whichever call it falls in. A change that reaches
+  the input in a later call than the one that rendered it (arrival latency past
+  the block's end, so it is in the executor's history, not this `Env`) is found
+  by a check at each continuing call's first frame, and told at that frame:
+  late by up to a call, never lost.
+- **The cap.** One change more than fit is counted, and its transport waits for
+  the next chunk's first frame, which reads the transport as it stands. The
+  walk re-seats on a dropped change without an entry, so each further one is
+  counted once. A dropped seek, wrap, start or stop leaves the stretch it fell
+  in without a slope (no slope describes it). The count is
+  `PluginControls::dropped_transport_changes` (beside `dropped_midi_in`, in the
+  node's `DeliveryCounters`); VST3, VST2 and AU never count one.
+- **CLAP.** The host adds one `CLAP_EVENT_TRANSPORT` per entry at its frame
+  (`InputEventList::add_transport`, `EventRef::Transport` in `tutti-clap-ffi`),
+  after the chunk's MIDI and parameters and before the stable time sort, so it
+  is in time order with them. The server carries the list through
+  `ProcessExtras` and `ProcessContext` to
+  `ClapProcessContext::transport_changes` (room for 8 is reserved with the
+  event list).
+- **VST3, VST2 and AU** have no transport event inside a block: VST3's
+  `ProcessContext` and VST2's `VstTimeInfo` are one snapshot per `process`
+  call, and AU's host callbacks are read for the call's start. Each reads the
+  chunk's first transport, as in 5a, and ignores the list. This is not a
+  contract `Gap`: no format offers more, and the shared plugin records no
+  transport.
+- Tests: `graph_node::walk_tests` through the node (a step at its frame, a
+  ramp's end splitting the slope, a ramp chunk's slope and no entry for cell
+  edges, stop / start / seek / wrap, a chunk spanning two calls, nine changes,
+  a dropped seek), `tempo_slope_with`, the wire's golden (re-recorded for 23,
+  derived from the 22 bytes by script) and round trip, the CLAP host's event
+  order beside MIDI, the FFI's event validation, a real `plugin-server` echo
+  (`clap_transport`; the test plugin's `Transport` mode now echoes the chunk's
+  transport events), and `clap_node_no_alloc`, whose chunks hold a map point
+  and a seek in every pass.
 
 Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's

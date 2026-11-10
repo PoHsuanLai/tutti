@@ -2,6 +2,8 @@
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::{Address, MidiChannel, MidiGroup};
+
 /// One Universal MIDI Packet: four 32-bit words, of which the message type in
 /// the top nibble of the first word says how many are meaningful
 /// ([`words`](Self::words)). Unused words are zero.
@@ -30,6 +32,51 @@ impl Ump {
             _ => 4,
         };
         self.0.split_at(n).0
+    }
+
+    /// The message type: the top nibble of the first word (M2-104 Table 4),
+    /// `0x0` to `0xF`.
+    #[inline]
+    #[must_use]
+    pub const fn message_type(&self) -> u8 {
+        (self.0[0] >> 28) as u8
+    }
+
+    /// The Group of a message type that has one: System (`0x1`), MIDI 1.0
+    /// and 2.0 channel voice (`0x2`, `0x4`), Data 64 and 128 (`0x3`, `0x5`)
+    /// and Flex Data (`0xD`). `None` for Utility (`0x0`) and UMP Stream
+    /// (`0xF`), which are groupless, and for a reserved type.
+    #[inline]
+    #[must_use]
+    pub const fn group(&self) -> Option<MidiGroup> {
+        match self.message_type() {
+            0x1..=0x5 | 0xD => Some(MidiGroup::masked((self.0[0] >> 24) as u8)),
+            _ => None,
+        }
+    }
+
+    /// The Group and Channel of a channel voice message (MIDI 1.0, `0x2`, or
+    /// MIDI 2.0, `0x4`); `None` for any other type.
+    #[inline]
+    #[must_use]
+    pub const fn address(&self) -> Option<Address> {
+        match self.message_type() {
+            0x2 | 0x4 => Some(Address {
+                group: MidiGroup::masked((self.0[0] >> 24) as u8),
+                channel: MidiChannel::masked((self.0[0] >> 16) as u8),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The Channel of a channel voice message ([`address`](Self::address)'s).
+    #[inline]
+    #[must_use]
+    pub const fn channel(&self) -> Option<MidiChannel> {
+        match self.address() {
+            Some(a) => Some(a.channel),
+            None => None,
+        }
     }
 
     /// Whether this is a note-off: a MIDI 1.0 channel-voice (type `0x2`) Note
@@ -173,6 +220,44 @@ pub enum KeyEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The header readers against packets written out from M2-104's
+    /// layouts: Group in bits 27-24, Channel in 19-16 of a channel voice
+    /// message. Mutation: `group` answering for Utility or Stream, or
+    /// `address` for System (`0x1`) -> fails; reading the Channel from bits
+    /// 23-20 (the status) -> fails.
+    #[test]
+    fn the_header_readers_follow_the_message_type() {
+        // MIDI 2.0 Note On, group 5, channel 9; MIDI 1.0 CC, group 2,
+        // channel 14.
+        let m2 = Ump([0x4599_3C00, 0x8000_0000, 0, 0]);
+        let m1 = Ump([0x22BE_0740, 0, 0, 0]);
+        assert_eq!(m2.message_type(), 0x4);
+        assert_eq!(
+            m2.address(),
+            Some(Address {
+                group: MidiGroup::of(5),
+                channel: MidiChannel::of(9),
+            })
+        );
+        assert_eq!(m1.channel(), Some(MidiChannel::of(14)));
+        assert_eq!(m1.group(), Some(MidiGroup::of(2)));
+        // A System message has a Group and no Channel.
+        let clock = Ump([0x13F8_0000, 0, 0, 0]);
+        assert_eq!(clock.group(), Some(MidiGroup::of(3)));
+        assert_eq!(clock.address(), None);
+        // Utility and UMP Stream are groupless; a reserved type has neither.
+        for groupless in [Ump([0x0000_0000, 0, 0, 0]), Ump([0xF000_0000, 0, 0, 0])] {
+            assert_eq!(groupless.group(), None);
+            assert_eq!(groupless.channel(), None);
+        }
+        assert_eq!(Ump([0xE300_0000, 0, 0, 0]).group(), None);
+        // Every type that has a Group reads it from bits 27-24.
+        for mt in [0x1u32, 0x2, 0x3, 0x4, 0x5, 0xD] {
+            let u = Ump([(mt << 28) | (0xA << 24), 0, 0, 0]);
+            assert_eq!(u.group(), Some(MidiGroup::of(10)), "type {mt:#x}");
+        }
+    }
 
     /// Mutation: move `0xB | 0xC` into the 4-word default, or `0x6 | 0x7` into
     /// the 2-word arm -> the lengths fail.

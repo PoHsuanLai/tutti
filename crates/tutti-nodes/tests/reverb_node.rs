@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use tutti_dsp::{Design, Freeverb, FreeverbControls, FreeverbDesign, Kernel};
+use tutti_dsp::{
+    Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Kernel,
+};
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
     Env, GraphBuilder, IntoNode, Node, ParamFork, ParamIn, ParamNode, Prepare, Status, Transport,
@@ -14,7 +16,7 @@ use tutti_graph::{
 };
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_nodes::{FreeverbNode, ReverbNode};
+use tutti_nodes::{FdnNode, FreeverbNode, ReverbNode};
 use tutti_types::{
     AtomicF32, ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam,
 };
@@ -166,6 +168,49 @@ fn the_ports_and_the_ceiling() {
         live.param_set().get(UnitParam::Wet),
         Some(1.0),
         "wet only by default"
+    );
+}
+
+/// The ports are in a fixed order, which the graph's wires and a saved project
+/// name by index: the mix first, then the design's cells in the order its params
+/// list them. Freeverb offers `[Wet, RoomSize, Damping]`; the FDN offers the
+/// mix, then the three decays, the size, the diffusion, the pre-delay, the
+/// modulation depth and rate, the width and the wet gain.
+///
+/// Mutation (run): swapping the room and damping addresses in
+/// `FreeverbParams::addrs` fails the first assertion; swapping the first two
+/// decays in the FDN's `ADDRS` fails the second.
+#[test]
+fn the_port_order_is_the_mix_then_the_cells() {
+    let freeverb = live(gm());
+    assert_eq!(
+        freeverb.shape().params.as_slice(),
+        [
+            UnitAddr::first(UnitParam::Wet),
+            UnitAddr::first(UnitParam::RoomSize),
+            UnitAddr::first(UnitParam::Damping),
+        ]
+    );
+    let fdn: FdnNode = prepared(
+        ReverbNode::new(FdnDesign::default(), FdnControls::DEFAULT),
+        SR,
+        BLOCK,
+    );
+    assert_eq!(
+        fdn.shape().params.as_slice(),
+        [
+            UnitAddr::first(UnitParam::Wet),
+            UnitAddr::new(UnitParam::Decay, 0),
+            UnitAddr::new(UnitParam::Decay, 1),
+            UnitAddr::new(UnitParam::Decay, 2),
+            UnitAddr::first(UnitParam::RoomSize),
+            UnitAddr::first(UnitParam::Diffusion),
+            UnitAddr::first(UnitParam::DelayTime),
+            UnitAddr::first(UnitParam::Depth),
+            UnitAddr::first(UnitParam::Rate),
+            UnitAddr::first(UnitParam::StereoSpread),
+            UnitAddr::new(UnitParam::GainDb, 0),
+        ]
     );
 }
 

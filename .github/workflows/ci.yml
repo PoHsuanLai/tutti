@@ -411,6 +411,7 @@ jobs:
           cargo clippy --locked -p tutti-codec --lib --features decode-ogg -- -D warnings
           cargo clippy --locked -p tutti-codec --all-features --all-targets -- -D warnings
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-midi-protocol --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-dsp --lib -- -D warnings
@@ -451,6 +452,7 @@ jobs:
           # dev-dependency turns it on); this step names it so tests/serde.rs still runs
           # if that edge goes away.
           cargo nextest run --locked -p tutti-ump --features serde
+          cargo nextest run --locked -p tutti-midi-protocol --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
           cargo nextest run --locked -p tutti-tempo --features serde
           cargo nextest run --locked -p tutti-clap-host --features clap-extras

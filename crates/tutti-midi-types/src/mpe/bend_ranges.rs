@@ -1,8 +1,8 @@
 //! The per-note pitch-bend range each channel of a stream has set.
 
-use super::PitchBendSensitivity;
-use crate::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_ump::Ump;
+use tutti_ump::{Rpn, U7};
 
 /// The per-note pitch-bend range of each MIDI channel: what a per-note pitch
 /// bend's full scale means, in semitones, for a receiver that turns one into
@@ -27,18 +27,17 @@ use tutti_ump::Ump;
 /// # Examples
 ///
 /// ```
-/// use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-/// use tutti_fixtures::midi::registered_controller;
-/// use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
-/// use tutti_ump::{MidiChannel, MidiGroup};
+/// use tutti_fixtures::midi::registered_rpn;
+/// use tutti_midi_protocol::PitchBendSensitivity;
+/// use tutti_midi_types::PerNoteBendRanges;
+/// use tutti_ump::{MidiChannel, MidiGroup, Rpn};
 ///
 /// let mut ranges = PerNoteBendRanges::default();
 /// assert_eq!(ranges.semitones(3), 48.0);
-/// let rpn = registered_controller(
+/// let rpn = registered_rpn(
 ///     MidiGroup::FIRST,
 ///     MidiChannel::of(3),
-///     RPN_BANK_MPE,
-///     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+///     Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
 ///     PitchBendSensitivity::of(24).to_rpn_bits(),
 /// );
 /// assert!(ranges.observe(&rpn));
@@ -91,9 +90,9 @@ fn per_note_bend_sensitivity(ump: &Ump) -> Option<(u8, PitchBendSensitivity)> {
     else {
         return None;
     };
-    let ours = u8::from(m.bank()) == RPN_BANK_MPE
-        && u8::from(m.index()) == RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY;
-    ours.then(|| {
+    // A midi2 bank and index are 7-bit, so `U7::new` never refuses.
+    let rpn = Rpn::new(U7::new(u8::from(m.bank()))?, U7::new(u8::from(m.index()))?);
+    (rpn == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY).then(|| {
         (
             u8::from(m.channel()),
             PitchBendSensitivity::from_rpn_bits(m.controller_data()),

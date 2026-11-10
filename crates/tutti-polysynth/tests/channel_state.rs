@@ -11,12 +11,12 @@ mod support;
 use support::{BLOCK, Hand};
 use tutti_fixtures::midi;
 use tutti_graph::Node;
-use tutti_midi_types::mpe::PitchBendSensitivity;
-use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
+use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
 use tutti_types::{Amplitude, SampleRate, Seconds, Semitones};
+use tutti_ump::Rpn;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
@@ -75,11 +75,10 @@ fn bend_up(channel: u8) -> Ump {
 
 /// Pitch Bend Sensitivity (RPN 0) of whole `semitones`.
 fn sensitivity(channel: u8, semitones: u8) -> Ump {
-    midi::registered_controller(
+    midi::registered_rpn(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
-        RPN_BANK_MPE,
-        RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+        Rpn::PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(semitones).to_rpn_bits(),
     )
 }
@@ -391,11 +390,10 @@ fn reset_returns_the_per_note_range_to_its_default() {
         mpe_pitch_bend_range: Semitones(48.0),
         ..config()
     });
-    let rpn7 = midi::registered_controller(
+    let rpn7 = midi::registered_rpn(
         MidiGroup::FIRST,
         MidiChannel::of(1),
-        RPN_BANK_MPE,
-        tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+        Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(12).to_rpn_bits(),
     );
     play(&mut h, &[rpn7], 0.01);

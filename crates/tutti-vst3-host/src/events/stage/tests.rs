@@ -33,19 +33,17 @@ fn len(list: &EventList) -> usize {
 /// the second block's quarter bend reads 12 semitones (0.55), not 6 → fails.
 #[test]
 fn a_per_note_bend_range_outlives_its_block() {
+    use tutti_midi_protocol::PitchBendSensitivity;
     use tutti_midi_protocol::signed_f32_to_bend_u32;
-    use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let list = EventList::input();
     let mut stager = Stager::default();
     let sensitivity = [(
         Offset::ZERO,
-        midi::registered_controller(
+        midi::registered_rpn(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            RPN_BANK_MPE,
-            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(24).to_rpn_bits(),
         ),
     )];
@@ -102,9 +100,8 @@ fn a_per_note_bend_range_outlives_its_block() {
 #[test]
 fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     use tutti_clap_host::{ClapEvent, EventList as _, InputEventList};
+    use tutti_midi_protocol::PitchBendSensitivity;
     use tutti_midi_protocol::signed_f32_to_bend_u32;
-    use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let bend = |channel: u8| {
         (
@@ -120,11 +117,10 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     let first = [
         (
             Offset::ZERO,
-            midi::registered_controller(
+            midi::registered_rpn(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                RPN_BANK_MPE,
-                RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
                 PitchBendSensitivity::of(24).to_rpn_bits(),
             ),
         ),

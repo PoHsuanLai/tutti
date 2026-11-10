@@ -155,6 +155,60 @@ impl AddAssign<Samples> for Frame {
     }
 }
 
+/// A position on the engine's clock and the rate it was counted at: an instant
+/// that stays the same instant when the rate changes.
+///
+/// The engine's frame clock counts frames **at the current rate**, and a
+/// re-prepare at another rate moves it to the same wall-clock time at the new
+/// one ([`Frame::rescaled`]). A bare [`Frame`] read before such a change and
+/// used after it names the wrong instant; a `Moment` carries the rate it was
+/// read at, so whoever resolves it can rescale it.
+///
+/// ```
+/// use tutti_types::{Frame, Moment, SampleRate, Samples};
+/// let m = Moment::new(Frame(48_000), SampleRate(48_000.0));
+/// let later = m.after(Samples(480));
+/// assert_eq!((later.frame(), later.rate()), (Frame(48_480), SampleRate(48_000.0)));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Moment {
+    frame: Frame,
+    rate: super::SampleRate,
+}
+
+impl Moment {
+    /// `frame`, counted at `rate`.
+    #[inline]
+    #[must_use]
+    pub const fn new(frame: Frame, rate: super::SampleRate) -> Self {
+        Self { frame, rate }
+    }
+
+    /// The frame, at [`rate`](Self::rate).
+    #[inline]
+    #[must_use]
+    pub const fn frame(self) -> Frame {
+        self.frame
+    }
+
+    /// The rate the frame was counted at.
+    #[inline]
+    #[must_use]
+    pub const fn rate(self) -> super::SampleRate {
+        self.rate
+    }
+
+    /// `frames` later, at the same rate.
+    #[inline]
+    #[must_use]
+    pub fn after(self, frames: Samples) -> Self {
+        Self {
+            frame: self.frame + frames,
+            rate: self.rate,
+        }
+    }
+}
+
 /// When a scheduled command takes effect.
 ///
 /// Every control-thread command that is meant to happen *during playback* —

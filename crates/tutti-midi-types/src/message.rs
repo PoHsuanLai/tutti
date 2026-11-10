@@ -167,7 +167,7 @@ pub enum MidiMessage {
         /// **32-bit** bend, centre `0x8000_0000` — *not* zero. Treating this as
         /// unipolar puts a centred wheel at full positive bend. The semitone span
         /// it maps to is set out of band by RPN 0; see
-        /// [`PitchBendSensitivity`](crate::PitchBendSensitivity).
+        /// [`PitchBendSensitivity`](tutti_midi_protocol::PitchBendSensitivity).
         value: u32,
     },
     /// Per-note pitch bend (MIDI 2.0). Addresses one voice by `id`.

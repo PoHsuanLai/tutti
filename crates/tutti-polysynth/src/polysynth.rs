@@ -18,19 +18,15 @@ use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
+use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_types::cc;
-use tutti_midi_types::mpe::PitchBendSensitivity;
-use tutti_midi_types::ump::{
-    RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-    RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-};
 use tutti_types::Hz;
 use tutti_types::{Amplitude, Param, Tail};
 use tutti_ump::NoteId;
 use tutti_ump::{
-    CCNumber, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Ump, Voice2,
+    CCNumber, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Rpn, Ump, Voice2,
 };
 use tutti_voicing::{Controller, Effect, Stop, Zones};
 
@@ -463,16 +459,14 @@ impl PolySynth {
             // Sensitivity of Per-Note Pitch Bend (RPN 0/7, M2-104 §7.4.13): a
             // 7.25 semitone range that the following per-note bends sweep.
             Voice2::Registered { bank, index, value }
-                if bank.get() == RPN_BANK_MPE
-                    && index.get() == RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY =>
+                if Rpn::new(bank, index) == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY =>
             {
                 let range = PitchBendSensitivity::from_rpn_bits(value).as_semitones_f32();
                 self.set_mpe_pitch_bend_range(tutti_types::Semitones(range));
             }
             // Channel Pitch Bend Sensitivity (RPN 0): the note logic's.
             Voice2::Registered { bank, index, .. }
-                if bank.get() == RPN_BANK_MPE
-                    && index.get() == RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY =>
+                if Rpn::new(bank, index) == Rpn::PITCH_BEND_SENSITIVITY =>
             {
                 self.bend_message(channel, &voice);
             }

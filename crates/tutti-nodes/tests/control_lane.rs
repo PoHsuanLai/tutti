@@ -8,16 +8,16 @@
 
 use std::sync::Arc;
 
-use audio_automation::{AutomationEnvelope, AutomationPoint};
+use tutti_curve::{AutomationEnvelope, AutomationPoint};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
-    ForkTarget, Io, Node, Offset, PARAM_DECLICK, ParamIn, ParamRange, ParamSegment, Prepare,
-    SegmentShape, Shape, Status, Transport, TransportChanges,
+    ForkTarget, Io, Law, Node, Offset, PARAM_DECLICK, ParamIn, ParamRange, ParamSegment, Prepare,
+    Shape, Status, Transport, TransportChanges,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_modulation::{
-    Amount, Clock, ControlProgram, Curve, CurveType, DepthBy, InputLayer, Layer, LayerId, LfoShape,
+    Amount, Clock, ControlProgram, Curve, DepthBy, InputLayer, Layer, LayerId, LfoShape,
     PeriodPoint, Polarity, RateAnchor, SourceId, Wave,
 };
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode, LaneControls};
@@ -92,11 +92,7 @@ impl Node for SegSink {
         for i in 0..n {
             while let Some(&(_, s)) = events.get(k).filter(|e| e.0 == i) {
                 self.last = Some((s, base + i as u64));
-                marks[i] = if s.shape() == SegmentShape::Linear {
-                    1.0
-                } else {
-                    2.0
-                };
+                marks[i] = if s.shape() == Law::Linear { 1.0 } else { 2.0 };
                 k += 1;
             }
             vals[i] = self.last.map_or(0.0, |(s, at)| {
@@ -288,7 +284,7 @@ fn amount(depth: f32) -> Amount {
     Amount {
         depth: Depth(depth),
         polarity: Polarity::Bipolar,
-        curve: CurveType::Linear,
+        curve: Law::Linear,
     }
 }
 
@@ -326,10 +322,10 @@ fn program(automation: Option<Arc<dyn Curve>>, layers: Vec<Layer>) -> ControlPro
 }
 
 /// A linear envelope through `points` (beat, value).
-fn envelope(points: &[(f64, f32)]) -> AutomationEnvelope<()> {
-    let mut e = AutomationEnvelope::new(());
+fn envelope(points: &[(f64, f32)]) -> AutomationEnvelope {
+    let mut e = AutomationEnvelope::new();
     for &(b, v) in points {
-        e.add_point(AutomationPoint::new(b, v));
+        e.add_point(AutomationPoint::new(Beat(b), v));
     }
     e
 }
@@ -458,36 +454,42 @@ fn automation_replaces_the_knob_and_the_clamp_is_per_frame() {
 fn an_export_is_the_live_render_bit_for_bit() {
     let lanes: Vec<ControlProgram> = {
         let shaped: Arc<dyn Curve> = {
-            let mut e = AutomationEnvelope::new(());
+            // A range cutting into the 1500 breakpoint bends its two pieces, which
+            // go as grid pieces beside the exact ones.
+            let mut e = AutomationEnvelope::new().with_range(0.0, 1200.0);
             e.add_point(AutomationPoint::with_curve(
-                0.0,
+                Beat(0.0),
                 300.0,
-                CurveType::Exponential,
+                Law::PowerIn(2.0),
             ));
-            e.add_point(AutomationPoint::with_curve(0.37, 1500.0, CurveType::SCurve));
-            e.add_point(AutomationPoint::with_curve(1.1, 900.0, CurveType::Elastic));
-            e.add_point(AutomationPoint::new(1.9, 600.0));
+            e.add_point(AutomationPoint::with_curve(
+                Beat(0.37),
+                1500.0,
+                Law::PowerInOut(2.0),
+            ));
+            e.add_point(AutomationPoint::with_curve(Beat(1.1), 900.0, Law::Hold));
+            e.add_point(AutomationPoint::new(Beat(1.9), 600.0));
             Arc::new(e)
         };
         let drawn = Wave::Drawn(Arc::from(vec![
             PeriodPoint {
                 at: Phase(0.0),
                 value: -1.0,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
             PeriodPoint {
                 at: Phase(0.3),
                 value: 0.8,
-                curve: CurveType::Exponential,
+                curve: Law::PowerIn(2.0),
             },
             PeriodPoint {
                 at: Phase(0.7),
                 value: 0.2,
-                curve: CurveType::SCurve,
+                curve: Law::PowerInOut(2.0),
             },
         ]));
         let curved = Amount {
-            curve: CurveType::Exponential,
+            curve: Law::PowerIn(2.0),
             ..amount(0.2)
         };
         vec![
@@ -806,14 +808,18 @@ fn a_range_edit_rescales_on_the_next_block() {
 /// exponential piece goes as one `Exponential` segment → fails.
 #[test]
 fn a_plugin_lane_sends_linear_grid_pieces() {
-    let mut e = AutomationEnvelope::new(());
+    let mut e = AutomationEnvelope::new();
     e.add_point(AutomationPoint::with_curve(
-        0.0,
+        Beat(0.0),
         0.1,
-        CurveType::Exponential,
+        Law::PowerIn(2.0),
     ));
-    e.add_point(AutomationPoint::with_curve(0.3, 0.9, CurveType::SCurve));
-    e.add_point(AutomationPoint::new(0.6, 0.4));
+    e.add_point(AutomationPoint::with_curve(
+        Beat(0.3),
+        0.9,
+        Law::PowerInOut(2.0),
+    ));
+    e.add_point(AutomationPoint::new(Beat(0.6), 0.4));
     let curve: Arc<dyn Curve> = Arc::new(e);
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(128)));
     let lane = ControlLaneNode::for_foreign(
@@ -955,15 +961,10 @@ fn a_triangle_is_exact_and_a_sine_within_the_bound() {
 /// sine's crossings fall on grid frames.
 #[test]
 fn the_curves_with_no_bound_err_as_measured() {
-    let cases: [(LfoShape, CurveType, f64, f64); 8] = [
-        (LfoShape::Sine, CurveType::Logarithmic, 0.0512, 0.1),
-        (LfoShape::Sine, CurveType::Circular, 0.0209, 0.1),
-        (LfoShape::Sine, CurveType::Back, 0.00103, 0.1),
-        (LfoShape::Sine, CurveType::Elastic, 0.0100, 0.1),
-        (LfoShape::Sine, CurveType::Bounce, 0.0640, 0.1),
-        (LfoShape::Sine, CurveType::Bezier(0.25, 0.75), 0.000311, 0.1),
-        (LfoShape::Sine, CurveType::Stepped, 1.0, 1e-3),
-        (LfoShape::Triangle, CurveType::Stepped, 0.9375, 1e-3),
+    let cases: [(LfoShape, Law, f64, f64); 3] = [
+        (LfoShape::Sine, Law::PowerIn(0.5), 0.0512, 0.1),
+        (LfoShape::Sine, Law::Hold, 1.0, 1e-3),
+        (LfoShape::Triangle, Law::Hold, 0.9375, 1e-3),
     ];
     let keys: Vec<u64> = (0..cases.len() as u64).map(|k| k + 2).collect();
     let (mut ed, mut exec) = probes(128, &keys, (-10_000.0, 10_000.0));
@@ -1058,8 +1059,8 @@ fn an_input_offset_is_exact_from_its_frame() {
     let p = ControlProgram::new(None, vec![], vec![input]).expect("valid");
     let lane = native(&ed, 2, p, Some(10.0));
     wire(&mut ed, 1, lane, 2);
-    let step = |v| ParamSegment::foreign(7, v, v, Samples(0), SegmentShape::Linear);
-    let ramp = ParamSegment::foreign(7, 0.25, 1.0, Samples(200), SegmentShape::Linear);
+    let step = |v| ParamSegment::foreign(7, v, v, Samples(0), Law::Linear);
+    let ramp = ParamSegment::foreign(7, 0.25, 1.0, Samples(200), Law::Linear);
     let arrive = 600 + ramp.arrives_after().expect("arrives").get();
     ed.insert(
         NodeKey(5),
@@ -1133,8 +1134,7 @@ fn a_republished_program_reads_a_new_source() {
     let p = ControlProgram::new(None, vec![], eight).expect("valid");
     let lane = native(&ed, 2, p, Some(10.0));
     let controls = wire(&mut ed, 1, lane, 2);
-    let step =
-        |src: u32, v: f32| ParamSegment::foreign(src, v, v, Samples(0), SegmentShape::Linear);
+    let step = |src: u32, v: f32| ParamSegment::foreign(src, v, v, Samples(0), Law::Linear);
     let mut plan: Vec<(u64, ParamSegment)> = (1..=8).map(|k| (0, step(k, 0.0))).collect();
     plan.push((640, step(9, 0.5)));
     ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
@@ -1184,7 +1184,7 @@ fn a_reused_source_id_starts_from_nothing() {
     };
     let lane = native(&ed, 2, reads3(), Some(10.0));
     let controls = wire(&mut ed, 1, lane, 2);
-    let step = |v| ParamSegment::foreign(3, v, v, Samples(0), SegmentShape::Linear);
+    let step = |v| ParamSegment::foreign(3, v, v, Samples(0), Law::Linear);
     let plan = vec![(0, step(0.5)), (1_000, step(0.25))];
     ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
     feed_into(&mut ed, 5, 1);
@@ -1236,7 +1236,7 @@ fn an_unread_source_is_no_point() {
     let p = ControlProgram::new(None, vec![], vec![input]).expect("valid");
     let lane = ControlLaneNode::for_foreign(3, p, Some(0.25), (0.0, 1.0));
     wire_sink(&mut ed, 1, lane, 2);
-    let step = |v| ParamSegment::foreign(99, v, v, Samples(0), SegmentShape::Linear);
+    let step = |v| ParamSegment::foreign(99, v, v, Samples(0), Law::Linear);
     let plan = (1..60).map(|k| (k * 10, step(k as f32 / 100.0))).collect();
     ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
     feed_into(&mut ed, 5, 1);

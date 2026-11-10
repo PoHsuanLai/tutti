@@ -17,7 +17,7 @@ use tutti_graph::{
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
-    Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SignalKind, SourceId,
+    Adsr, Amount, ControlProgram, InputLayer, Law, LayerId, Polarity, SignalKind, SourceId,
     SourceNode,
 };
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
@@ -349,7 +349,7 @@ fn lane_to_probe(
         amount: Amount {
             depth: Depth(depth),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
     };
     let program = ControlProgram::new(None, vec![], vec![input]).expect("valid");

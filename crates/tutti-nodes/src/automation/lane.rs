@@ -3,57 +3,14 @@
 
 use std::sync::Arc;
 
-use audio_automation::CurveType;
 use tutti_graph::{
-    Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
-    SegmentShape, Shape, Status,
+    Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,
+    Status,
 };
 use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Latency, Tail};
 
 use super::Curve;
-
-/// The [`SegmentShape`] an `audio-automation` [`CurveType`] is, or `None`
-/// for the shapes the closed set does not carry.
-///
-/// | `CurveType` | `SegmentShape` |
-/// |---|---|
-/// | `Linear` | `Linear` |
-/// | `Stepped` | `Hold` |
-/// | `Exponential`, `QuadIn` (both `t²`) | `PowerIn(2)` |
-/// | `Logarithmic` (`√t`) | `PowerIn(0.5)` |
-/// | `CubicIn`, `QuartIn`, `QuintIn` | `PowerIn(3, 4, 5)` |
-/// | `QuadOut` … `QuintOut` | `PowerOut(2 … 5)` |
-/// | `SCurve`, `QuadInOut` (both quadratic) | `PowerInOut(2)` |
-/// | `CubicInOut` … `QuintInOut` | `PowerInOut(3 … 5)` |
-/// | `Circular`, `Back`, `Elastic`, `Bounce`, `Bezier` | none |
-///
-/// `Back` and `Elastic` dip below their start, `Bounce` is not monotone,
-/// and `Bezier`'s two control values would not fit an event; `Circular` is a quarter
-/// circle no power matches. A lane sends those pieces as linear pieces on
-/// the play-clock grid (see [`ControlLaneNode`](super::ControlLaneNode)).
-pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
-    use CurveType as C;
-    use SegmentShape as S;
-    Some(match curve {
-        C::Linear => S::Linear,
-        C::Stepped => S::Hold,
-        C::Exponential | C::QuadIn => S::PowerIn(2.0),
-        C::Logarithmic => S::PowerIn(0.5),
-        C::CubicIn => S::PowerIn(3.0),
-        C::QuartIn => S::PowerIn(4.0),
-        C::QuintIn => S::PowerIn(5.0),
-        C::QuadOut => S::PowerOut(2.0),
-        C::CubicOut => S::PowerOut(3.0),
-        C::QuartOut => S::PowerOut(4.0),
-        C::QuintOut => S::PowerOut(5.0),
-        C::SCurve | C::QuadInOut => S::PowerInOut(2.0),
-        C::CubicInOut => S::PowerInOut(3.0),
-        C::QuartInOut => S::PowerInOut(4.0),
-        C::QuintInOut => S::PowerInOut(5.0),
-        C::Circular | C::Back | C::Elastic | C::Bounce | C::Bezier(..) => return None,
-    })
-}
 
 /// An automation lane that evaluates a [`Curve`] against musical time.
 ///
@@ -92,7 +49,7 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
 /// (an envelope, read-only once shared). It is a generator
 /// ([`Tail::Unbounded`]), so the executor never skips it.
 ///
-/// [`AutomationEnvelope`]: audio_automation::AutomationEnvelope
+/// [`AutomationEnvelope`]: tutti_curve::AutomationEnvelope
 ///
 /// # Example
 ///
@@ -104,9 +61,9 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
 /// use tutti_graph::{Prepare, Solo, Transport};
 /// use tutti_nodes::automation::{AutomationEnvelope, AutomationLaneNode, AutomationPoint};
 ///
-/// let mut envelope: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0);
-/// envelope.add_point(AutomationPoint::new(0.0, 0.0));
-/// envelope.add_point(AutomationPoint::new(4.0, 1.0));
+/// let mut envelope: AutomationEnvelope = AutomationEnvelope::new();
+/// envelope.add_point(AutomationPoint::new(Beat(0.0), 0.0));
+/// envelope.add_point(AutomationPoint::new(Beat(4.0), 1.0));
 ///
 /// // No inputs, one output (the curve's value).
 /// let lane = AutomationLaneNode::new(envelope);
@@ -264,16 +221,16 @@ impl Clone for AutomationLaneNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio_automation::{AutomationEnvelope, AutomationPoint};
     use std::sync::atomic::Ordering;
+    use tutti_curve::{AutomationEnvelope, AutomationPoint};
     use tutti_graph::{Solo, Transport};
     use tutti_types::{AtomicF32, Bpm, SampleRate, Samples};
 
-    fn ramp_envelope() -> AutomationEnvelope<&'static str> {
-        let mut env: AutomationEnvelope<&str> = AutomationEnvelope::new("volume");
-        env.add_point(AutomationPoint::new(0.0, 0.0));
-        env.add_point(AutomationPoint::new(4.0, 1.0));
-        env.add_point(AutomationPoint::new(8.0, 0.5));
+    fn ramp_envelope() -> AutomationEnvelope {
+        let mut env: AutomationEnvelope = AutomationEnvelope::new();
+        env.add_point(AutomationPoint::new(Beat(0.0), 0.0));
+        env.add_point(AutomationPoint::new(Beat(4.0), 1.0));
+        env.add_point(AutomationPoint::new(Beat(8.0), 0.5));
         env
     }
 
@@ -287,107 +244,6 @@ mod tests {
 
     fn stopped_at(beat: f64) -> Transport {
         Transport::new(false, Bpm::of(120.0), Beat(beat), None)
-    }
-
-    /// Every [`CurveType`], one control-point pair standing in for
-    /// `Bezier`. The `match` names each variant, so a new one is a compile
-    /// error here until it joins the list (and gets its own slot). tutti-modulation
-    /// keeps its own copy (`shape.rs`); it is test-only there.
-    fn every_curve() -> [CurveType; 22] {
-        use CurveType as C;
-        const ALL: [CurveType; 22] = [
-            C::Linear,
-            C::Exponential,
-            C::Logarithmic,
-            C::SCurve,
-            C::Stepped,
-            C::Bezier(0.2, 0.8),
-            C::Elastic,
-            C::Bounce,
-            C::Back,
-            C::Circular,
-            C::QuadIn,
-            C::QuadOut,
-            C::QuadInOut,
-            C::CubicIn,
-            C::CubicOut,
-            C::CubicInOut,
-            C::QuartIn,
-            C::QuartOut,
-            C::QuartInOut,
-            C::QuintIn,
-            C::QuintOut,
-            C::QuintInOut,
-        ];
-        let slot = |c: CurveType| match c {
-            C::Linear => 0,
-            C::Exponential => 1,
-            C::Logarithmic => 2,
-            C::SCurve => 3,
-            C::Stepped => 4,
-            C::Bezier(..) => 5,
-            C::Elastic => 6,
-            C::Bounce => 7,
-            C::Back => 8,
-            C::Circular => 9,
-            C::QuadIn => 10,
-            C::QuadOut => 11,
-            C::QuadInOut => 12,
-            C::CubicIn => 13,
-            C::CubicOut => 14,
-            C::CubicInOut => 15,
-            C::QuartIn => 16,
-            C::QuartOut => 17,
-            C::QuartInOut => 18,
-            C::QuintIn => 19,
-            C::QuintOut => 20,
-            C::QuintInOut => 21,
-        };
-        for (i, c) in ALL.into_iter().enumerate() {
-            assert_eq!(slot(c), i, "{c:?} is out of place in the list");
-        }
-        ALL
-    }
-
-    /// Every [`SegmentShape`] `segment_shape` maps a curve to is that
-    /// curve as `audio-automation`'s `interpolate` evaluates it, on a grid
-    /// of 1025 points; the five it does not map are the ones no shape
-    /// carries. A param port evaluates the shape, which cannot name
-    /// `audio-automation` (`tutti-graph` depends on `tutti-types` alone),
-    /// so this mapping is the one place the two must agree.
-    ///
-    /// Mutations (run), each fails: `SCurve` mapped to `PowerIn(2)`,
-    /// `QuadOut` to `PowerOut(3)`, or `Circular` to `PowerIn(2)` → the
-    /// shape leaves the curve inside the segment.
-    #[test]
-    fn every_mapped_shape_is_the_curve_interpolate_evaluates() {
-        use CurveType as C;
-        let all = every_curve();
-        let mut unmapped = Vec::new();
-        for c in all {
-            let Some(s) = segment_shape(c) else {
-                unmapped.push(c);
-                continue;
-            };
-            for i in 0..=1024 {
-                let t = i as f32 / 1024.0;
-                let (got, want) = (s.eval(t), c.interpolate(0.0, 1.0, t));
-                assert!(
-                    (got - want).abs() < 1e-6,
-                    "{c:?} as {s:?} at {t}: {got}, interpolate {want}"
-                );
-            }
-        }
-        assert_eq!(
-            unmapped,
-            [
-                C::Bezier(0.2, 0.8),
-                C::Elastic,
-                C::Bounce,
-                C::Back,
-                C::Circular
-            ]
-        );
     }
 
     #[test]
@@ -441,9 +297,9 @@ mod tests {
         let mut lane = AutomationLaneNode::new(ramp_envelope());
         assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
 
-        let mut flat: AutomationEnvelope<&str> = AutomationEnvelope::new("flat");
-        flat.add_point(AutomationPoint::new(0.0, 0.9));
-        flat.add_point(AutomationPoint::new(8.0, 0.9));
+        let mut flat: AutomationEnvelope = AutomationEnvelope::new();
+        flat.add_point(AutomationPoint::new(Beat(0.0), 0.9));
+        flat.add_point(AutomationPoint::new(Beat(8.0), 0.9));
         lane.set_curve(flat);
 
         assert!((lane.update_to(Beat(2.0)) - 0.9).abs() < 0.01);
@@ -461,10 +317,10 @@ mod tests {
 
     #[test]
     fn test_empty_envelope_returns_zero() {
-        let empty: AutomationEnvelope<&str> = AutomationEnvelope::new("empty");
+        let empty: AutomationEnvelope = AutomationEnvelope::new();
         let mut lane = AutomationLaneNode::new(empty);
         assert_eq!(lane.update_to(Beat(5.0)), 0.0);
-        let empty: AutomationEnvelope<&str> = AutomationEnvelope::new("empty");
+        let empty: AutomationEnvelope = AutomationEnvelope::new();
         let out = render(AutomationLaneNode::new(empty), stopped_at(5.0), 1);
         assert_eq!(out[0], 0.0);
     }
@@ -491,9 +347,9 @@ mod tests {
     /// fails.
     #[test]
     fn test_process_updates_last_value() {
-        let mut flat: AutomationEnvelope<&str> = AutomationEnvelope::new("flat");
-        flat.add_point(AutomationPoint::new(0.0, 0.5));
-        flat.add_point(AutomationPoint::new(8.0, 0.5));
+        let mut flat: AutomationEnvelope = AutomationEnvelope::new();
+        flat.add_point(AutomationPoint::new(Beat(0.0), 0.5));
+        flat.add_point(AutomationPoint::new(Beat(8.0), 0.5));
         let mut d = tutti_graph::contract::Direct::new(
             AutomationLaneNode::new(flat),
             SampleRate(48_000.0),

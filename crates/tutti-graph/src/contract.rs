@@ -85,7 +85,7 @@ use tutti_ump::{Message, NoteNumber, Ump, Voice2, decode};
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
 use crate::editor::Editor;
-use crate::event::{Event, EventKind, EventWriter, ParamSegment, SegmentShape, SortedEvents};
+use crate::event::{Event, EventKind, EventWriter, ParamSegment, SortedEvents};
 use crate::exec::Executor;
 use crate::fork::Unforkable;
 use crate::history::TransportHistory;
@@ -95,6 +95,7 @@ use crate::node::{
 };
 use crate::param::{ParamIn, ParamInput};
 use crate::spec::{EventIn, EventOut};
+use tutti_curve::Law;
 
 mod snapshot;
 pub use snapshot::{IsolateRow, SNAPSHOT_FRAMES};
@@ -1661,8 +1662,7 @@ impl Node for ParamPulse {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         for (frame, value) in [(self.at, self.amplitude), (self.at + Samples(1), 0.0)] {
             if let Some(offset) = cx.env.offset_of(frame) {
-                let step =
-                    ParamSegment::unit(self.param, value, value, Samples(0), SegmentShape::Linear);
+                let step = ParamSegment::unit(self.param, value, value, Samples(0), Law::Linear);
                 io.event_out(0)
                     .push(Event::segment(offset, step))
                     .expect("two events fit");

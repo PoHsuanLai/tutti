@@ -22,7 +22,7 @@
 //! has no opinion on how targets are addressed, so it holds no registry and
 //! carries no target trait.
 
-use audio_automation::{AutomationEnvelope, AutomationPoint, CurveType};
+use tutti_curve::{AutomationEnvelope, AutomationPoint, Law};
 use tutti_modulation::Curve;
 use tutti_types::{Beat, BeatDuration};
 
@@ -33,10 +33,10 @@ use tutti_types::{Beat, BeatDuration};
 ///
 /// There is no `Off` and no `Play`: not recording is the absence of a recorder
 /// (the host's map simply has no entry), and *playback* is
-/// [`Curve::value_at`] on the saved envelope. Both were states on
-/// `audio_automation::AutomationState`, whose extra arms this type deliberately
-/// drops — a recorder that also answered reads would be a second accumulator
-/// competing with the saved envelope.
+/// [`Curve::value_at`] on the saved envelope. A mode with an `Off` and a `Play`
+/// arm would give the recorder reads of its own, which this type deliberately
+/// has none of — a recorder that also answered reads would be a second
+/// accumulator competing with the saved envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecordMode {
     /// Capture continuously from the first sample, no touch required.
@@ -82,7 +82,7 @@ pub struct RecordingConfig {
     /// Whether [`Recorder::finish`] thins the take before handing it back.
     pub auto_simplify: bool,
     /// Curve type stamped on each recorded point.
-    pub default_curve: CurveType,
+    pub default_curve: Law,
 }
 
 impl Default for RecordingConfig {
@@ -91,7 +91,7 @@ impl Default for RecordingConfig {
             min_point_interval: BeatDuration(0.01),
             simplify_tolerance: 0.01,
             auto_simplify: true,
-            default_curve: CurveType::Linear,
+            default_curve: Law::Linear,
         }
     }
 }
@@ -123,7 +123,7 @@ enum Take {
 /// share it with.
 #[derive(Debug, Clone)]
 pub struct Recorder {
-    envelope: AutomationEnvelope<f32>,
+    envelope: AutomationEnvelope,
     mode: RecordMode,
     take: Option<Take>,
     config: RecordingConfig,
@@ -143,7 +143,7 @@ impl Recorder {
             // `0.0` is the envelope's *target label*, not a value — the label is
             // unused here (the host's map key addresses the lane), and `Curve`'s
             // blanket impl ignores it beyond its thread bounds.
-            envelope: AutomationEnvelope::new(0.0).with_range(min, max),
+            envelope: AutomationEnvelope::new().with_range(min, max),
             mode,
             take: None,
             config,
@@ -152,7 +152,7 @@ impl Recorder {
 
     /// A recorder that overdubs onto an existing envelope — a second pass over a
     /// lane that already has points.
-    pub fn overdub(mode: RecordMode, envelope: AutomationEnvelope<f32>) -> Self {
+    pub fn overdub(mode: RecordMode, envelope: AutomationEnvelope) -> Self {
         Self {
             envelope,
             mode,
@@ -191,7 +191,7 @@ impl Recorder {
     }
 
     /// The envelope written so far, including the take in progress.
-    pub fn envelope(&self) -> &AutomationEnvelope<f32> {
+    pub fn envelope(&self) -> &AutomationEnvelope {
         &self.envelope
     }
 
@@ -271,7 +271,7 @@ impl Recorder {
     /// host's map does anyway (remove the entry, keep the envelope). This is the
     /// only way to get the envelope by value.
     #[must_use]
-    pub fn finish(mut self) -> AutomationEnvelope<f32> {
+    pub fn finish(mut self) -> AutomationEnvelope {
         if self.config.auto_simplify {
             self.envelope.simplify(self.config.simplify_tolerance);
         }
@@ -280,7 +280,7 @@ impl Recorder {
 
     fn write_point(&mut self, beat: Beat, value: f32) {
         self.envelope.add_point(AutomationPoint::with_curve(
-            beat.get(),
+            beat,
             value,
             self.config.default_curve,
         ));
@@ -548,9 +548,9 @@ mod tests {
 
     #[test]
     fn overdub_starts_from_an_existing_envelope() {
-        let mut env = AutomationEnvelope::new(0.0f32).with_range(0.0, 1.0);
-        env.add_point(AutomationPoint::new(0.0, 0.2));
-        env.add_point(AutomationPoint::new(8.0, 0.4));
+        let mut env = AutomationEnvelope::new().with_range(0.0, 1.0);
+        env.add_point(AutomationPoint::new(Beat(0.0), 0.2));
+        env.add_point(AutomationPoint::new(Beat(8.0), 0.4));
 
         let mut r = Recorder::overdub(RecordMode::Touch, env);
         assert_eq!(r.envelope().len(), 2);

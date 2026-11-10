@@ -31,7 +31,7 @@ use std::time::Duration;
 use tutti_fixtures::midi;
 use tutti_graph::{Offset, Transport, TransportChanges};
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
-use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, CurveType};
+use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, Law};
 use tutti_types::{Beat, Bpm, Samples};
 use tutti_types::{BeatDuration, Depth, PhaseIncrement};
 use tutti_types::{BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
@@ -115,7 +115,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         amount: Amount {
             depth: Depth(0.5),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     };
@@ -125,13 +125,13 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         .with_quantum(Samples(QUANTUM));
     // Curve segments on another parameter: an exponential envelope, so
     // each segment runs across chunks and the node follows it.
-    let mut env = AutomationEnvelope::new(());
+    let mut env = AutomationEnvelope::new();
     for k in 0..200 {
         let v = if k % 2 == 0 { 0.2 } else { 0.9 };
         env.add_point(AutomationPoint::with_curve(
             f64::from(k) * 2.0,
             v,
-            CurveType::Exponential,
+            Law::PowerIn(2.0),
         ));
     }
     let lane = ControlLaneNode::for_foreign(

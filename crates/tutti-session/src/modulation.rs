@@ -804,7 +804,7 @@ impl Mods<'_> {
                 to: RouteTarget::Param(target.key()),
                 depth,
                 polarity: tutti_modulation::Polarity::Bipolar,
-                curve: tutti_modulation::CurveType::Linear,
+                curve: tutti_modulation::Law::Linear,
             },
         );
         key

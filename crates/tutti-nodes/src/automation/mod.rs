@@ -1,6 +1,6 @@
 //! Transport-driven envelope automation.
 //!
-//! Envelope primitives come from the `audio_automation` crate, re-exported here
+//! Envelope primitives come from the `tutti_curve` crate, re-exported here
 //! so consumers need only one import path.
 //!
 //! Two pieces, one domain — the two directions of a [`Curve`]:
@@ -8,7 +8,7 @@
 //!   the transport's beat position (`beat -> value`) as audio, and the
 //!   [`ControlLaneNode`], which sends a target's whole `ControlProgram`
 //!   (automation and modulation) as curve-segment events for a param port
-//!   ([`segment_shape`] maps the curve kinds);
+//!   (a piece's [`Law`] rides in the segment);
 //! - the capture-side [`Recorder`], fed `(beat, value)` samples during a write /
 //!   touch / latch take and handing back an envelope.
 //!
@@ -29,10 +29,8 @@ mod recording;
 #[doc(hidden)]
 pub use control_lane::LaneProbe;
 pub use control_lane::{CONTROL_STEP, ControlLaneNode, LANE_EVENT_CAPACITY, LaneControls};
-pub use lane::{AutomationLaneNode, LiveAutomationLane, segment_shape};
+pub use lane::{AutomationLaneNode, LiveAutomationLane};
 pub use recording::{RecordMode, Recorder, RecordingConfig};
 pub use tutti_modulation::Curve;
 
-pub use audio_automation::{
-    AutomationClip, AutomationEnvelope, AutomationPoint, AutomationState, CurveType,
-};
+pub use tutti_curve::{AutomationEnvelope, AutomationPoint, Law};

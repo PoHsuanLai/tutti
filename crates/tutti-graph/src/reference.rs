@@ -132,9 +132,9 @@ struct RefRamp {
     /// A ramp's length, in frames.
     len: u64,
     /// A ramp's shape.
-    shape: crate::event::SegmentShape,
+    shape: tutti_curve::Law,
     /// A curve segment's `(position, length, shape)`; `None`: linear.
-    curve: Option<(f32, f32, crate::event::SegmentShape)>,
+    curve: Option<(f32, f32, tutti_curve::Law)>,
     /// Its value on the last frame evaluated.
     value: f32,
     /// Whether the source has sent an event yet: until it has, the port
@@ -1456,7 +1456,7 @@ impl Reference {
                                 target: to,
                                 at: now,
                                 len: 0,
-                                shape: crate::event::SegmentShape::Linear,
+                                shape: tutti_curve::Law::Linear,
                                 curve: Some((position, length, s.shape())),
                                 value: cur,
                                 started: true,

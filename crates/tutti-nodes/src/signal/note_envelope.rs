@@ -2,8 +2,7 @@
 //! exact segments (design doc 014 §6).
 
 use tutti_graph::{
-    Cost, Cx, Event, EventKind, Io, Node, Offset, ParamSegment, Prepare, SegmentShape, Shape,
-    Status,
+    Cost, Cx, Event, EventKind, Io, Law, Node, Offset, ParamSegment, Prepare, Shape, Status,
 };
 use tutti_modulation::{Adsr, SignalKind, SourceId, SourceNode};
 use tutti_types::{ChannelLayout, SampleRate};
@@ -168,7 +167,7 @@ impl NoteEnvelopeNode {
     }
 
     fn segment(&self, from: f32, to: f32, length: Samples) -> ParamSegment {
-        ParamSegment::foreign(self.source, from, to, Samples(0), SegmentShape::Linear)
+        ParamSegment::foreign(self.source, from, to, Samples(0), Law::Linear)
             .resumed(SamplePosition(0.0), SamplePosition(length.get() as f64))
     }
 

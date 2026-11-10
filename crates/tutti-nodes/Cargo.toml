@@ -51,7 +51,7 @@ tutti-graph = { path = "../tutti-graph" }
 
 # Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
 # `tutti_nodes::automation`.
-audio-automation = { workspace = true }
+tutti-curve = { path = "../tutti-curve" }
 
 # `ClickNode` reads the count-in flag off a `Transport` and follows a
 # `ProjectMeter`.

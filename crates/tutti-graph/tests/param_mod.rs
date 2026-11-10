@@ -47,8 +47,8 @@ use proptest::prelude::*;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, Cx, Editor, Event, EventOut, Executor, ForkByClone, ForkMode, ForkTarget,
-    GraphInvalid, Io, Node, PARAM_DECLICK, ParamIn, ParamInput, ParamRamp, ParamRange,
-    ParamSegment, Prepare, Reference, SegmentShape, Shape, Status, Transport, Unforkable,
+    GraphInvalid, Io, Law, Node, PARAM_DECLICK, ParamIn, ParamInput, ParamRamp, ParamRange,
+    ParamSegment, Prepare, Reference, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
@@ -1267,20 +1267,20 @@ fn render_moves(
 }
 
 /// A segment's analytic value `j` frames after its event, in `f64`, from
-/// the shapes' closed forms written out here (not `SegmentShape::eval`).
-fn analytic(from: f64, to: f64, shape: SegmentShape, position: f64, length: f64, j: u64) -> f64 {
+/// the shapes' closed forms written out here (not `Law::eval`).
+fn analytic(from: f64, to: f64, shape: Law, position: f64, length: f64, j: u64) -> f64 {
     let t = (position + j as f64) / length;
     if t >= 1.0 || t.is_nan() {
         return to;
     }
     let g = match shape {
-        SegmentShape::Linear => t,
-        SegmentShape::Hold => 0.0,
-        SegmentShape::PowerIn(p) => t.powf(f64::from(p)),
-        SegmentShape::PowerOut(p) => 1.0 - (1.0 - t).powf(f64::from(p)),
-        SegmentShape::PowerInOut(p) if t < 0.5 => (2.0 * t).powf(f64::from(p)) / 2.0,
-        SegmentShape::PowerInOut(p) => 1.0 - (2.0 - 2.0 * t).powf(f64::from(p)) / 2.0,
-        SegmentShape::Exp(k) => {
+        Law::Linear => t,
+        Law::Hold => 0.0,
+        Law::PowerIn(p) => t.powf(f64::from(p)),
+        Law::PowerOut(p) => 1.0 - (1.0 - t).powf(f64::from(p)),
+        Law::PowerInOut(p) if t < 0.5 => (2.0 * t).powf(f64::from(p)) / 2.0,
+        Law::PowerInOut(p) => 1.0 - (2.0 - 2.0 * t).powf(f64::from(p)) / 2.0,
+        Law::Exp(k) => {
             let k = f64::from(k);
             ((k * t).exp() - 1.0) / (k.exp() - 1.0)
         }
@@ -1296,7 +1296,7 @@ fn analytic(from: f64, to: f64, shape: SegmentShape, position: f64, length: f64,
 /// fractional position along a fractional length (a breakpoint between
 /// frames).
 ///
-/// Mutations (run), each fails: `SegmentShape::eval` returning `t` for
+/// Mutations (run), each fails: `Law::eval` returning `t` for
 /// `PowerIn` (linearised: frame 599 reads 0.5 for 0.25). In `Ramp::step`,
 /// not advancing a segment's `done` (every frame at its event frame's
 /// progress). In `ParamState::port`, holding an event source's first frame
@@ -1307,9 +1307,9 @@ fn analytic(from: f64, to: f64, shape: SegmentShape, position: f64, length: f64,
 fn a_segment_hits_its_analytic_values_per_frame() {
     const TOL: f64 = 1e-5;
     let key = ParamKey::<Hz>::CUTOFF;
-    let a = (SegmentShape::PowerIn(2.0), 0.0, 1.0, 1000usize);
-    let b = (SegmentShape::Exp(4.0), 2.0, -1.0, 300usize);
-    let c = (SegmentShape::PowerOut(3.0), 1.0, 5.0, 2.5f64, 40.5f64);
+    let a = (Law::PowerIn(2.0), 0.0, 1.0, 1000usize);
+    let b = (Law::Exp(4.0), 2.0, -1.0, 300usize);
+    let c = (Law::PowerOut(3.0), 1.0, 5.0, 2.5f64, 40.5f64);
     let segs = vec![
         (
             100,
@@ -1368,23 +1368,11 @@ fn an_interrupted_segment_hands_over_on_the_frame() {
     let segs = vec![
         (
             100,
-            ParamSegment::new(
-                key,
-                Hz(0.0),
-                Hz(1.0),
-                Samples(1000),
-                SegmentShape::PowerIn(2.0),
-            ),
+            ParamSegment::new(key, Hz(0.0), Hz(1.0), Samples(1000), Law::PowerIn(2.0)),
         ),
         (
             437,
-            ParamSegment::new(
-                key,
-                Hz(2.0),
-                Hz(3.0),
-                Samples(50),
-                SegmentShape::PowerOut(3.0),
-            ),
+            ParamSegment::new(key, Hz(2.0), Hz(3.0), Samples(50), Law::PowerOut(3.0)),
         ),
     ];
     let plan = vec![(611, UnitParam::Cutoff, 0.0, 10)];
@@ -1398,8 +1386,8 @@ fn an_interrupted_segment_hands_over_on_the_frame() {
                 out[f]
             );
         };
-        let a = |f: u64| analytic(0.0, 1.0, SegmentShape::PowerIn(2.0), 1.0, 1000.0, f - 100);
-        let b = |f: u64| analytic(2.0, 3.0, SegmentShape::PowerOut(3.0), 1.0, 50.0, f - 437);
+        let a = |f: u64| analytic(0.0, 1.0, Law::PowerIn(2.0), 1.0, 1000.0, f - 100);
+        let b = |f: u64| analytic(2.0, 3.0, Law::PowerOut(3.0), 1.0, 50.0, f - 437);
         near(436, a(436));
         near(437, b(437));
         near(460, b(460));
@@ -1421,7 +1409,7 @@ fn an_interrupted_segment_hands_over_on_the_frame() {
 /// last frame.
 ///
 /// Mutations (run), each fails: in `render_ramps`, start every ramp
-/// `SegmentShape::Linear` (`r.shape()` ignored) → frame 100 reads 0.25. In
+/// `Law::Linear` (`r.shape()` ignored) → frame 100 reads 0.25. In
 /// `Ramp::step`, evaluate the shape one frame behind (`(done - 1) / len`) →
 /// frame 100 reads 0.
 #[test]
@@ -1432,18 +1420,18 @@ fn a_shaped_ramp_hits_its_analytic_values_per_frame() {
         ParamRamp::new(key, Hz(target), Samples(len)).with_shape(shape)
     };
     let shaped = vec![
-        (100, ramp(1.0, 4, SegmentShape::PowerIn(2.0))),
-        (200, ramp(3.0, 300, SegmentShape::Exp(3.0))),
-        (600, ramp(-1.0, 150, SegmentShape::PowerOut(3.0))),
-        (900, ramp(5.0, 10, SegmentShape::Hold)),
+        (100, ramp(1.0, 4, Law::PowerIn(2.0))),
+        (200, ramp(3.0, 300, Law::Exp(3.0))),
+        (600, ramp(-1.0, 150, Law::PowerOut(3.0))),
+        (900, ramp(5.0, 10, Law::Hold)),
     ];
     let want = |f: u64| -> f64 {
         match f {
             0..100 => 0.0,
-            100..200 => analytic(0.0, 1.0, SegmentShape::PowerIn(2.0), 1.0, 4.0, f - 100),
-            200..600 => analytic(1.0, 3.0, SegmentShape::Exp(3.0), 1.0, 300.0, f - 200),
-            600..900 => analytic(3.0, -1.0, SegmentShape::PowerOut(3.0), 1.0, 150.0, f - 600),
-            _ => analytic(-1.0, 5.0, SegmentShape::Hold, 1.0, 10.0, f - 900),
+            100..200 => analytic(0.0, 1.0, Law::PowerIn(2.0), 1.0, 4.0, f - 100),
+            200..600 => analytic(1.0, 3.0, Law::Exp(3.0), 1.0, 300.0, f - 200),
+            600..900 => analytic(3.0, -1.0, Law::PowerOut(3.0), 1.0, 150.0, f - 600),
+            _ => analytic(-1.0, 5.0, Law::Hold, 1.0, 10.0, f - 900),
         }
     };
     for blocks in segment_schedules(1_000) {
@@ -1480,21 +1468,21 @@ fn an_interrupted_shaped_ramp_hands_over_on_the_frame() {
     let shaped = vec![
         (
             100,
-            ParamRamp::new(key, Hz(1.0), Samples(100)).with_shape(SegmentShape::PowerIn(2.0)),
+            ParamRamp::new(key, Hz(1.0), Samples(100)).with_shape(Law::PowerIn(2.0)),
         ),
         (150, ParamRamp::new(key, Hz(0.0), Samples(10))),
         (
             300,
-            ParamRamp::new(key, Hz(2.0), Samples(100)).with_shape(SegmentShape::PowerOut(2.0)),
+            ParamRamp::new(key, Hz(2.0), Samples(100)).with_shape(Law::PowerOut(2.0)),
         ),
         (
             500,
-            ParamRamp::new(key, Hz(0.0), Samples(20)).with_shape(SegmentShape::PowerInOut(2.0)),
+            ParamRamp::new(key, Hz(0.0), Samples(20)).with_shape(Law::PowerInOut(2.0)),
         ),
     ];
     let segs = vec![(
         340,
-        ParamSegment::new(key, Hz(4.0), Hz(6.0), Samples(1000), SegmentShape::Linear),
+        ParamSegment::new(key, Hz(4.0), Hz(6.0), Samples(1000), Law::Linear),
     )];
     for blocks in segment_schedules(600) {
         let out = render_moves(Vec::new(), shaped.clone(), segs.clone(), &blocks);
@@ -1540,7 +1528,7 @@ fn a_range_clamps_a_segment_without_rewriting_it() {
     const TOL: f64 = 1e-5;
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    let shape = SegmentShape::PowerOut(2.0);
+    let shape = Law::PowerOut(2.0);
     let seg = ParamSegment::new(
         ParamKey::<Hz>::CUTOFF,
         Hz(0.0),
@@ -1631,7 +1619,7 @@ impl Node for SegmentThenRamp {
                 Hz(5.0),
                 Hz(9.0),
                 Samples(20),
-                SegmentShape::Linear,
+                Law::Linear,
             );
             let ramp = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(0.0), Samples(4));
             let _ = io.event_out(0).push(Event::segment(o, seg));
@@ -1794,7 +1782,7 @@ fn a_segment_replaces_the_base() {
     const TOL: f64 = 1e-5;
     let (cutoff, q) = (Cell::new(0.5), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    let shape = SegmentShape::PowerInOut(2.0);
+    let shape = Law::PowerInOut(2.0);
     let seg = ParamSegment::new(
         ParamKey::<Hz>::CUTOFF,
         Hz(0.0),
@@ -2214,16 +2202,16 @@ const MAX_BLOCK: usize = 96;
 
 /// A segment shape for generator code `k`: every variant, the libm ones
 /// (a non-integer power, both signs of `Exp`) included.
-fn gen_shape(k: u8) -> SegmentShape {
+fn gen_shape(k: u8) -> Law {
     match k % 8 {
-        0 => SegmentShape::Linear,
-        1 => SegmentShape::Hold,
-        2 => SegmentShape::PowerIn(2.0),
-        3 => SegmentShape::PowerOut(3.0),
-        4 => SegmentShape::PowerInOut(2.0),
-        5 => SegmentShape::PowerIn(1.7),
-        6 => SegmentShape::Exp(3.0),
-        _ => SegmentShape::Exp(-2.5),
+        0 => Law::Linear,
+        1 => Law::Hold,
+        2 => Law::PowerIn(2.0),
+        3 => Law::PowerOut(3.0),
+        4 => Law::PowerInOut(2.0),
+        5 => Law::PowerIn(1.7),
+        6 => Law::Exp(3.0),
+        _ => Law::Exp(-2.5),
     }
 }
 

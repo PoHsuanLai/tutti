@@ -20,22 +20,19 @@ workspace = true
 default = []
 # `Reflect` on the `LfoShape`/`Polarity` vocabulary a Bevy component carries.
 #
-# Enables the reflection features of the crates whose types ride inside the
-# reflected ones (a `CurveType` inside a reflected route does not compile
-# otherwise). These are reflection-completeness edges rather than the
-# transitive Bevy leak the feature-hygiene rule guards against:
-# `audio-automation/bevy_reflect` pulls `bevy_reflect` alone, no ECS and no
-# runtime.
+# Enables the reflection feature of `tutti-types`, whose types ride inside the
+# reflected ones. A reflection-completeness edge rather than the transitive
+# Bevy leak the feature-hygiene rule guards against. (`tutti-curve` has no
+# `bevy` feature: a `Law` inside a reflected route is the adapter's to wrap.)
 bevy = [
     "tutti-types/bevy",
-    "audio-automation/bevy_reflect",
     "dep:bevy_reflect",
 ]
 
 [dependencies]
-# `CurveType`, the project's response-curve vocabulary, and the automation
-# envelope that is a `Curve`.
-audio-automation = { workspace = true }
+# `Law`, the project's response-curve vocabulary, and the automation envelope
+# that is a `Curve`.
+tutti-curve = { path = "../tutti-curve" }
 
 # The value vocabulary: `Depth`, `Beat`, `PhaseIncrement`, `ParamAddr` (a
 # target's param), `PlayReading`. A leaf crate: Bevy-free.

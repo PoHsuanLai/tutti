@@ -20,7 +20,7 @@
 
 use std::sync::atomic::Ordering;
 
-use audio_automation::CurveType;
+use tutti_curve::Law;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventOut, GraphBuilder, Io, Node, ParamIn, ParamNode, ParamRange, ParamSet,
@@ -155,7 +155,7 @@ fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
         amount: Amount {
             depth: Depth(0.25),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     };
@@ -237,7 +237,7 @@ fn render_chorus(
             amount: Amount {
                 depth: Depth(depth),
                 polarity: Polarity::Bipolar,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
             depth_by: None,
         };
@@ -385,7 +385,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
         amount: Amount {
             depth: Depth(depth),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     };
@@ -498,7 +498,7 @@ where
         amount: Amount {
             depth: Depth(depth),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     };

@@ -17,7 +17,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use audio_automation::CurveType;
+use tutti_curve::Law;
 use tutti_types::{
     Beat, BeatDuration, Depth, Frame, Hz, Phase, PhaseIncrement, SamplePosition, SampleRate,
 };
@@ -122,7 +122,7 @@ pub struct PeriodPoint {
     /// The raw value there, in `[-1, 1]`.
     pub value: f32,
     /// The curve of the piece from here to the next point.
-    pub curve: CurveType,
+    pub curve: Law,
 }
 
 /// How a raw value becomes an offset: `shape(raw, depth, polarity, curve) ×
@@ -135,7 +135,7 @@ pub struct Amount {
     /// Whether the offset swings both ways or one.
     pub polarity: Polarity,
     /// The response curve on the magnitude.
-    pub curve: CurveType,
+    pub curve: Law,
 }
 
 impl Amount {
@@ -161,7 +161,7 @@ impl Amount {
     /// curves with no error bound.
     #[inline]
     pub fn kinks_at_zero(&self) -> bool {
-        self.polarity == Polarity::Bipolar && self.curve != CurveType::Linear
+        self.polarity == Polarity::Bipolar && self.curve != Law::Linear
     }
 }
 
@@ -208,14 +208,14 @@ impl DepthBy {
     pub const UNIT: Amount = Amount {
         depth: Depth::FULL,
         polarity: Polarity::Unipolar,
-        curve: CurveType::Linear,
+        curve: Law::Linear,
     };
 
     /// The scale `raw` gives.
     #[inline]
     fn scale(&self, raw: f32) -> f64 {
         let a = self.amount;
-        if a.polarity == Polarity::Unipolar && a.curve == CurveType::Linear {
+        if a.polarity == Polarity::Unipolar && a.curve == Law::Linear {
             // `(raw + 1) / 2` in `f64`, and exactly that at full depth:
             // `1.0 ×` is exact.
             let u = (f64::from(raw.clamp(-1.0, 1.0)) + 1.0) * 0.5;
@@ -334,7 +334,7 @@ impl std::error::Error for ProgramError {}
 ///
 /// ```
 /// use tutti_modulation::{
-///     Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, Polarity,
+///     Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity,
 ///     ProgramTime, Wave,
 /// };
 /// use tutti_types::{Beat, BeatDuration, Depth, PhaseIncrement, SamplePosition, SampleRate};
@@ -344,7 +344,7 @@ impl std::error::Error for ProgramError {}
 ///     id: LayerId(1),
 ///     clock: Clock::Beats { per_cycle: BeatDuration(4.0), phase: PhaseIncrement(0.0) },
 ///     wave: Wave::Shape { shape: LfoShape::Square, seed: 0 },
-///     amount: Amount { depth: Depth(0.25), polarity: Polarity::Bipolar, curve: CurveType::Linear },
+///     amount: Amount { depth: Depth(0.25), polarity: Polarity::Bipolar, curve: Law::Linear },
 ///     depth_by: None,
 /// };
 /// let program = ControlProgram::new(None, vec![square], vec![]).unwrap();
@@ -983,11 +983,11 @@ fn drawn_value(points: &[PeriodPoint], frac: f64) -> f32 {
 /// Where in `(0, 1)` a `curve` piece from `a` to `b` crosses zero, if its
 /// ends have opposite signs: in closed form for a line, by bisection on the
 /// curve otherwise (deterministic: a fixed number of halvings).
-fn crossing(curve: CurveType, a: f32, b: f32) -> Option<f64> {
+fn crossing(curve: Law, a: f32, b: f32) -> Option<f64> {
     if !((a < 0.0 && b > 0.0) || (a > 0.0 && b < 0.0)) {
         return None;
     }
-    if curve == CurveType::Linear {
+    if curve == Law::Linear {
         return Some(f64::from(a) / (f64::from(a) - f64::from(b)));
     }
     let (mut lo, mut hi) = (0.0f32, 1.0f32);

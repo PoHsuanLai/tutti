@@ -1171,7 +1171,7 @@ Each step is green alone, `bevy-tutti`'s full suite included.
 - Every new test carries its mutation record.
 - Analytic figures only: no render compared against another reference
   render.
-- The `audio-automation` pin and the bevy 0.19 line are unaffected.
+- The bevy 0.19 line is unaffected (the `audio-automation` pin it once named is gone: `tutti-curve` replaced the crate).
 
 §9.1–§9.3 are **(c)** moves and can land in any order. §9.4 needs them.
 §9.5–§9.7 are sequential.

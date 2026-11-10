@@ -476,8 +476,8 @@ fn a_take_suspends_the_automation_then_restores_it() {
     let (probe, _) = s.graph().add(ProbeUnit::new(300.0));
     master(&mut s, &[probe]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut lane = AutomationEnvelope::new(0.0).with_range(0.0, 1_000.0);
-    lane.add_point(AutomationPoint::new(0.0, 800.0));
+    let mut lane = AutomationEnvelope::new().with_range(0.0, 1_000.0);
+    lane.add_point(AutomationPoint::new(Beat(0.0), 800.0));
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     m.automate(cutoff, Arc::new(lane));
@@ -614,7 +614,7 @@ fn host_update(
             to: RouteTarget::Param(target),
             depth: Depth(0.1),
             polarity: tutti_modulation::Polarity::Bipolar,
-            curve: tutti_modulation::CurveType::Linear,
+            curve: tutti_modulation::Law::Linear,
         },
     )];
     let input = ModInput {
@@ -691,9 +691,7 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
     assert_eq!(s.mod_state().refusal(), None, "dropping it applies again");
 
     let curve = || -> Option<Arc<dyn Curve>> {
-        Some(Arc::new(
-            AutomationEnvelope::new(0.0).with_range(0.0, 1_000.0),
-        ))
+        Some(Arc::new(AutomationEnvelope::new().with_range(0.0, 1_000.0)))
     };
     let two_automations = declare_targets(
         [(cutoff, 0.0, 1_000.0)],

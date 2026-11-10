@@ -1,0 +1,26 @@
+[package]
+name = "tutti-curve"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The easing laws of the Tutti engine and the automation point list built on them"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-curve"
+publish = false
+keywords = ["audio", "automation", "easing"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+# No features: a `Law` is a plain `Copy` value. Nothing here persists a curve,
+# so there is no `serde`, and nothing is a Bevy component, so there is no
+# `bevy`.
+
+[dependencies]
+# `Beat`, the position of an automation point.
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]

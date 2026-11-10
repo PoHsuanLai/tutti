@@ -24,10 +24,12 @@
 # - `arc-lend` and `tutti-ump` depend on no workspace crate, of any kind;
 # - `tutti-types` depends on no workspace crate, and `tutti-rt` on `arc-lend`
 #   alone;
-# - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
+# - `tutti-dsp` depends on `tutti-types` alone, `tutti-curve` too (layer 1, above
+#   `tutti-types` in layer 0),
+#   `tutti-modulation` on `tutti-types` and `tutti-curve`,
 #   `tutti-midi-types` on `tutti-types`, `tutti-rt`, `tutti-ump` and
 #   `tutti-midi-protocol`, and
-#   `tutti-graph` on those three;
+#   `tutti-graph` on `tutti-types`, `tutti-rt`, `tutti-ump` and `tutti-curve`;
 # - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
 # - `tutti-midi-device` depends on no workspace crate;
@@ -85,7 +87,7 @@
 # - `tutti-types` as a `[dependencies]` entry of `tutti-ump`: "tutti-ump -> tutti-types
 #   (normal) points up" and "tutti-ump may depend on no workspace crate";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-graph`: "tutti-graph may
-#   depend on ['tutti-rt', 'tutti-types', 'tutti-ump'] only";
+#   depend on ['tutti-curve', 'tutti-rt', 'tutti-types', 'tutti-ump'] only";
 # - `tutti-types` as a `[dependencies]` entry of `tutti-midi-protocol`:
 #   "tutti-midi-protocol may depend on ['tutti-ump'] only";
 # - `tutti-midi-protocol` deleted from LAYERS: "tutti-midi-protocol is not in
@@ -130,6 +132,12 @@
 # `cargo public-api`, which this repo does not run.
 # - `"tutti-export/ogg"` in `tutti-session`'s `export` feature: "tutti-session with
 #   `export` alone reaches ogg_next_sys";
+# - `tutti-rt` as a `[dependencies]` entry of `tutti-curve`: "tutti-curve -> tutti-rt
+#   (normal) points up or sideways" and "tutti-curve may depend on ['tutti-types']
+#   only"; `tutti-curve` as a `[dependencies]` entry of `tutti-dsp`: "tutti-dsp may
+#   depend on ['tutti-types'] only"; `tutti-curve` deleted from LAYERS:
+#   "tutti-curve is not in LAYERS" (`tutti-graph` or `tutti-types` as an entry of
+#   `tutti-curve` is a dependency cycle, which cargo refuses first);
 # - `tutti-rt` as a `[dependencies]` entry of `tutti-tempo`: "tutti-tempo may depend on
 #   ['tutti-types'] only"; `tutti-graph` there too: "tutti-tempo -> tutti-graph (normal)
 #   points up or sideways".
@@ -175,8 +183,10 @@ def rel(p):
 # layer. Derived from the real edges; see CLAUDE.md.
 LAYERS = [
     # no workspace dependency at all
-    ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump"],
-    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
+    # (`tutti-types` is here: it depends on no workspace crate, and
+    # `tutti-curve`, the layer above, depends on it.)
+    ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump", "tutti-types"],
+    ["tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-curve"],
     ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-midi-types", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
     ["tutti-transport", "tutti-plugin-types", "tutti-measure"],
@@ -443,13 +453,16 @@ if "tutti-plugin-probe" in pkgs:
     for name in pkgs:
         if "tutti-plugin-probe" in deps_of(name):
             fail(f"{name} depends on tutti-plugin-probe; nothing does, it is a binary")
-for n in ("tutti-dsp", "tutti-modulation"):
-    if n in pkgs:
-        only(n, ["tutti-types"])
+if "tutti-dsp" in pkgs:
+    only("tutti-dsp", ["tutti-types"])
+if "tutti-curve" in pkgs:
+    only("tutti-curve", ["tutti-types"])
+if "tutti-modulation" in pkgs:
+    only("tutti-modulation", ["tutti-types", "tutti-curve"])
 if "tutti-measure" in pkgs:
     only("tutti-measure", ["tutti-types", "tutti-dsp"])
 if "tutti-graph" in pkgs:
-    only("tutti-graph", ["tutti-types", "tutti-rt", "tutti-ump"])
+    only("tutti-graph", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-curve"])
 if "tutti-midi-types" in pkgs:
     only("tutti-midi-types", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-midi-protocol"])
 if "tutti-nodes" in pkgs and "tutti-spatial" in deps_of("tutti-nodes"):

@@ -230,7 +230,7 @@ impl tutti_nodes::automation::Curve for SineCurve {
 }
 
 /// Four event-output lanes, each driving its own probe's cutoff (outputs
-/// 0..4): exponential, cubic-out and S-curve pieces, an `Elastic` piece
+/// 0..4): exponential, cubic-out and S-curve pieces, a range-clamped piece
 /// (the linear fallback), and a curve with no pieces.
 fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use std::sync::Arc;
@@ -239,28 +239,40 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use tutti_graph::{OutPort, Source};
     use tutti_modulation::ControlProgram;
     use tutti_nodes::automation::{
-        AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
+        AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, Law,
     };
-    use tutti_types::{Hz, ParamKey, Samples, UnitParam};
-    let mut shaped = AutomationEnvelope::new(());
+    use tutti_types::{Beat, Hz, ParamKey, Samples, UnitParam};
+    let mut shaped = AutomationEnvelope::new();
     shaped.add_point(AutomationPoint::with_curve(
+        Beat(0.0),
         0.0,
-        0.0,
-        CurveType::Exponential,
+        Law::PowerIn(2.0),
     ));
-    shaped.add_point(AutomationPoint::with_curve(0.25, 1.0, CurveType::CubicOut));
-    shaped.add_point(AutomationPoint::with_curve(0.4, 0.2, CurveType::SCurve));
-    shaped.add_point(AutomationPoint::new(0.55, 0.9));
-    let mut elastic = AutomationEnvelope::new(());
-    elastic.add_point(AutomationPoint::with_curve(0.1, 0.0, CurveType::Elastic));
-    elastic.add_point(AutomationPoint::new(0.45, 1.0));
+    shaped.add_point(AutomationPoint::with_curve(
+        Beat(0.25),
+        1.0,
+        Law::PowerOut(3.0),
+    ));
+    shaped.add_point(AutomationPoint::with_curve(
+        Beat(0.4),
+        0.2,
+        Law::PowerInOut(2.0),
+    ));
+    shaped.add_point(AutomationPoint::new(Beat(0.55), 0.9));
+    let mut clamped = AutomationEnvelope::new().with_range(0.0, 0.5);
+    clamped.add_point(AutomationPoint::with_curve(
+        Beat(0.1),
+        0.0,
+        Law::PowerIn(2.0),
+    ));
+    clamped.add_point(AutomationPoint::new(Beat(0.45), 1.0));
     let key = ParamKey::<Hz>::CUTOFF;
     let lane = |curve: Arc<dyn Curve>| {
         ControlLaneNode::for_param(key, ControlProgram::from_curve(curve), None, None)
     };
     let lanes = [
         lane(Arc::new(shaped.clone())),
-        lane(Arc::new(elastic)),
+        lane(Arc::new(clamped)),
         lane(Arc::new(SineCurve)),
         lane(Arc::new(shaped)),
     ];
@@ -343,11 +355,11 @@ impl tutti_graph::Pool for GatedPool {
 /// An automation lane's event output (a `ControlLaneNode` of automation alone)
 /// wired to a param port never allocates on the audio thread: curve
 /// segments at breakpoints, loop wraps inside blocks, the linear fallback
-/// for an `Elastic` piece and for a curve with no pieces, ragged blocks;
+/// for a range-clamped piece and for a curve with no pieces, ragged blocks;
 /// serial, and on a pool whose helpers run under the gate too.
 ///
 /// Changed in doc 014 §12.2: the lanes are `ControlLaneNode`s, and the
-/// `Elastic` and sine lanes send grid points of the play clock; the
+/// clamped and sine lanes send grid points of the play clock; the
 /// no-allocation property stands.
 ///
 /// Mutation (run): a `Vec::with_capacity(8)` per block in
@@ -476,19 +488,18 @@ impl tutti_graph::Node for Probe8 {
 fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
     use std::sync::Arc;
     use tutti_modulation::{
-        Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, PeriodPoint, Polarity,
-        Wave,
+        Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, PeriodPoint, Polarity, Wave,
     };
     use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint};
-    use tutti_types::{BeatDuration, Depth, Hz, Phase, PhaseIncrement};
+    use tutti_types::{Beat, BeatDuration, Depth, Hz, Phase, PhaseIncrement};
     let depth = 0.05 + 0.01 * ((k as u32 + generation) % 7) as f32;
     let amount = Amount {
         depth: Depth(depth),
         polarity: Polarity::Bipolar,
         curve: if k.is_multiple_of(3) {
-            CurveType::Exponential
+            Law::PowerIn(2.0)
         } else {
-            CurveType::Linear
+            Law::Linear
         },
     };
     let beats = Clock::Beats {
@@ -522,25 +533,25 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
                     PeriodPoint {
                         at: Phase(0.0),
                         value: -0.5,
-                        curve: CurveType::Linear,
+                        curve: Law::Linear,
                     },
                     PeriodPoint {
                         at: Phase(0.4),
                         value: 1.0,
-                        curve: CurveType::SCurve,
+                        curve: Law::PowerInOut(2.0),
                     },
                 ])),
             )],
         ),
         3 => (None, vec![layer(seconds, shape(LfoShape::RandomSmooth))]),
         _ => {
-            let mut e = AutomationEnvelope::new(());
+            let mut e = AutomationEnvelope::new();
             e.add_point(AutomationPoint::with_curve(
-                0.0,
+                Beat(0.0),
                 200.0,
-                CurveType::Exponential,
+                Law::PowerIn(2.0),
             ));
-            e.add_point(AutomationPoint::new(1.3, 800.0));
+            e.add_point(AutomationPoint::new(Beat(1.3), 800.0));
             let curve: Arc<dyn tutti_modulation::Curve> = Arc::new(e);
             (Some(curve), vec![layer(seconds, shape(LfoShape::Sawtooth))])
         }
@@ -865,7 +876,7 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use tutti_graph::{Edge, InPort, OutPort, Source};
     use tutti_graph::{EventEdge, EventIn, EventOut, ForkByClone, ParamIn, ParamRange, Prepare};
     use tutti_modulation::{
-        Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SourceId,
+        Adsr, Amount, ControlProgram, InputLayer, Law, LayerId, Polarity, SourceId,
     };
     use tutti_nodes::automation::ControlLaneNode;
     use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
@@ -944,7 +955,7 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
             amount: Amount {
                 depth: Depth(if k % 2 == 0 { -0.4 } else { 0.4 }),
                 polarity: Polarity::Bipolar,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
         };
         let lane = ControlLaneNode::for_param(
@@ -1152,8 +1163,8 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use tutti_graph::{Edge, InPort, OutPort, Source};
     use tutti_graph::{Editor, ForkByClone, Prepare, Transport};
     use tutti_modulation::{
-        Clock, CurveType, Declarations, Polarity, RouteDecl, RouteKey, RouteTarget,
-        Source as ModSource, SourceKey, TargetDecl, TargetKey, Wave,
+        Clock, Declarations, Law, Polarity, RouteDecl, RouteKey, RouteTarget, Source as ModSource,
+        SourceKey, TargetDecl, TargetKey, Wave,
     };
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
@@ -1191,7 +1202,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
         to: RouteTarget::Param(at(p)),
         depth: Depth(depth),
         polarity: Polarity::Bipolar,
-        curve: CurveType::Linear,
+        curve: Law::Linear,
     };
 
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(128)));

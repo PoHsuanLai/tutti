@@ -4,11 +4,10 @@
 //! modulation: an automation envelope is a `Curve`, and so is a
 //! [`ControlProgram`](crate::ControlProgram)'s automation. It lives here rather than in
 //! `tutti-nodes` because modulation depends on it and `tutti-nodes` depends on
-//! this crate. The one foreign impl,
-//! [`AutomationEnvelope`], is orphan-legal here since `audio_automation` is a
-//! direct dependency.
+//! this crate. The envelope's impl is here too, so `tutti-curve` stays free of
+//! the trait.
 
-use audio_automation::{AutomationEnvelope, CurveType};
+use tutti_curve::{AutomationEnvelope, Law};
 use tutti_types::Beat;
 
 /// The piece of a [`Curve`] a beat falls in, between two breakpoints: what a
@@ -25,7 +24,7 @@ pub enum CurveSegment {
         until: Option<Beat>,
     },
     /// The value moves from `from` at `start` to `to` at `end` along
-    /// `shape`, as [`CurveType::interpolate`] reads it: at beat `b` the
+    /// `shape`, as [`Law::interpolate`] reads it: at beat `b` the
     /// value is `shape.interpolate(from, to, (b - start) / (end - start))`.
     /// `start < end`.
     Move {
@@ -38,13 +37,13 @@ pub enum CurveSegment {
         /// The value at `end`.
         to: f32,
         /// How it gets there.
-        shape: CurveType,
+        shape: Law,
     },
 }
 
 /// A value as a pure function of a musical position (`beat -> value`).
 ///
-/// An automation envelope (`audio_automation::AutomationEnvelope`) is a
+/// An automation envelope ([`AutomationEnvelope`]) is a
 /// curve, as is any host's own. The stored form — breakpoints, a constant, an LFO shape, an expression — is
 /// the implementor's business. Callers supply an already-resolved, already
 /// loop-wrapped [`Beat`]; the curve holds no clock and consults no loop range.
@@ -90,38 +89,29 @@ pub trait Curve: Send + Sync {
     }
 }
 
-/// `T` is the envelope's target *label* — never the evaluated value, which is
-/// always `f32` — so the impl ignores it beyond the thread bounds a `Curve`
-/// trait object needs.
-impl<T: Send + Sync> Curve for AutomationEnvelope<T> {
+impl Curve for AutomationEnvelope {
     fn value_at(&self, beat: Beat) -> Option<f32> {
-        self.get_value_at(beat.get())
+        AutomationEnvelope::value_at(self, beat)
     }
 
-    /// The envelope's breakpoints, each point's `curve` the shape of the
-    /// piece it starts. `None` where it has no value (disabled, empty), and
-    /// for a piece its constraints would bend: a `step_size` quantises every
-    /// value, and a `min`/`max` that cuts into a piece's endpoints clamps
-    /// its middle, neither of which a shape carries. (A clamp the endpoints
-    /// stay inside never bites: an `audio-automation` shape that overshoots
-    /// its endpoints has no segment form anyway.)
+    /// The envelope's breakpoints, each point's `curve` the law of the piece it
+    /// starts. `None` where it has no value (empty), and for a piece its range
+    /// would bend: a range that cuts into a piece's endpoints clamps its
+    /// middle, which a law does not carry. (A clamp the endpoints stay inside
+    /// never bites: every law stays between its endpoints.)
     fn segment_at(&self, beat: Beat) -> Option<CurveSegment> {
-        let points = &self.points;
-        if !self.enabled || points.is_empty() || self.step_size.is_some() {
+        let points = self.points();
+        if points.is_empty() {
             return None;
         }
-        let inside =
-            |v: f32| self.min_value.is_none_or(|m| v >= m) && self.max_value.is_none_or(|m| v <= m);
-        let b = beat.get();
+        let inside = |v: f32| self.range().is_none_or(|(min, max)| v >= min && v <= max);
         // The first point after `beat`: the piece is the one before it.
-        let next = points.partition_point(|p| p.time <= b);
+        let next = points.partition_point(|p| p.time <= beat);
         // Before the first point or from the last on: that point's value,
         // clamped as `value_at` clamps it.
-        let hold = |until: Option<f64>| {
-            self.value_at(beat).map(|value| CurveSegment::Hold {
-                value,
-                until: until.map(Beat),
-            })
+        let hold = |until: Option<Beat>| {
+            self.value_at(beat)
+                .map(|value| CurveSegment::Hold { value, until })
         };
         if next == 0 {
             return hold(Some(points[0].time));
@@ -134,8 +124,8 @@ impl<T: Send + Sync> Curve for AutomationEnvelope<T> {
             return None;
         }
         Some(CurveSegment::Move {
-            start: Beat(p.time),
-            end: Beat(q.time),
+            start: p.time,
+            end: q.time,
             from: p.value,
             to: q.value,
             shape: p.curve,

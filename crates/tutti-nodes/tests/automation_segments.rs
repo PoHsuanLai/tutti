@@ -12,13 +12,13 @@
 //! - a piece no segment shape carries goes as linear pieces exact at every
 //!   grid point of the play clock (doc 014 §5.4), whatever the blocks.
 //!
-//! The figures are `audio-automation`'s own `value_at` at each frame's beat,
+//! The figures are the envelope's own `value_at` at each frame's beat,
 //! within a tolerance (the curve's `powf`, `sqrt` and the port's `f32`
 //! progress differ in the last bits).
 
 use std::sync::Arc;
 
-use audio_automation::{AutomationEnvelope, AutomationPoint, CurveType};
+use tutti_curve::{AutomationEnvelope, AutomationPoint, Law};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamIn, Prepare, Shape, Status, Transport,
@@ -129,7 +129,7 @@ fn ragged(total: usize) -> Vec<usize> {
 /// `looping` when set), and checks every frame against `curve` at that
 /// frame's beat. Returns the rendered values.
 fn check_rolling(
-    curve: &AutomationEnvelope<()>,
+    curve: &AutomationEnvelope,
     lane: ControlLaneNode,
     blocks: &[usize],
     looping: Option<LoopRange>,
@@ -166,17 +166,25 @@ fn frames_per_beat() -> f64 {
 
 /// Exponential (`t²`), cubic-out, S-curve and linear pieces, the
 /// breakpoints between frames.
-fn shaped() -> AutomationEnvelope<()> {
-    let mut e = AutomationEnvelope::new(());
+fn shaped() -> AutomationEnvelope {
+    let mut e = AutomationEnvelope::new();
     e.add_point(AutomationPoint::with_curve(
+        Beat(0.0),
         0.0,
-        0.0,
-        CurveType::Exponential,
+        Law::PowerIn(2.0),
     ));
-    e.add_point(AutomationPoint::with_curve(0.25, 1.0, CurveType::CubicOut));
-    e.add_point(AutomationPoint::with_curve(0.4, 0.2, CurveType::SCurve));
-    e.add_point(AutomationPoint::with_curve(0.55, 0.9, CurveType::Linear));
-    e.add_point(AutomationPoint::new(0.6, 0.4));
+    e.add_point(AutomationPoint::with_curve(
+        Beat(0.25),
+        1.0,
+        Law::PowerOut(3.0),
+    ));
+    e.add_point(AutomationPoint::with_curve(
+        Beat(0.4),
+        0.2,
+        Law::PowerInOut(2.0),
+    ));
+    e.add_point(AutomationPoint::with_curve(Beat(0.55), 0.9, Law::Linear));
+    e.add_point(AutomationPoint::new(Beat(0.6), 0.4));
     e
 }
 
@@ -185,7 +193,7 @@ fn shaped() -> AutomationEnvelope<()> {
 /// blocks: where linear pieces and the curve differ (halfway along the
 /// exponential piece, a quarter for a half), the port reads the curve.
 ///
-/// Mutations (run), each fails: `segment_shape` mapping `Exponential` to
+/// Mutations (run), each fails: a segment carrying `PowerIn(2)` as
 /// `Linear`; the lane sending every piece as the piecewise-linear fallback
 /// (ignoring `segment_at`); the lane computing a segment's position from
 /// the piece's end instead of its start.
@@ -294,8 +302,8 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
     out
 }
 
-/// A piece whose shape no segment carries (`Elastic` overshoots) goes as
-/// linear pieces on the play-clock grid: exact on every grid frame, a line
+/// A piece no segment carries (a range clamping its middle, which a law does
+/// not say) goes as linear pieces on the play-clock grid: exact on every grid frame, a line
 /// between, and the same frames whatever the blocks.
 ///
 /// Changed in doc 014 §12.2: this sampled the curve at block edges, which
@@ -308,9 +316,13 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
 /// differ and frames miss the line.
 #[test]
 fn an_unrepresentable_piece_is_linear_on_the_grid() {
-    let mut curve = AutomationEnvelope::new(());
-    curve.add_point(AutomationPoint::with_curve(0.0, 0.0, CurveType::Elastic));
-    curve.add_point(AutomationPoint::new(0.2, 1.0));
+    let mut curve = AutomationEnvelope::new().with_range(0.0, 0.5);
+    curve.add_point(AutomationPoint::with_curve(
+        Beat(0.0),
+        0.0,
+        Law::PowerIn(2.0),
+    ));
+    curve.add_point(AutomationPoint::new(Beat(0.2), 1.0));
     let total = (0.15 * frames_per_beat()) as usize;
     let lane = || automation(curve.clone());
     let a = check_grid(&curve, lane(), &ragged(total), 1e-4);

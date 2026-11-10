@@ -15,7 +15,7 @@
 //! list lends a queue a larger buffer for a block
 //! ([`lend_from`](ParamValueQueueImpl::lend_from)).
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use vst3::Steinberg::{
     Vst::{IParamValueQueue, IParamValueQueueTrait, kNoParamId},
     kInvalidArgument, kResultFalse, kResultOk, tresult,
@@ -194,6 +194,8 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
 
     /// `kResultFalse` while another thread is writing the queue.
     unsafe fn getPoint(&self, index: i32, sample_offset: *mut i32, value: *mut f64) -> tresult {
+        // SAFETY: COM out-parameters: each null or valid for this call.
+        let (offset_out, value_out) = unsafe { (Out::new(sample_offset), Out::new(value)) };
         guard(vst3::Steinberg::kInternalError, || {
             let Some(points) = self.points.try_borrow() else {
                 return kResultFalse;
@@ -202,16 +204,8 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
                 return kInvalidArgument;
             }
             let point = &points[index as usize];
-            if !sample_offset.is_null() {
-                // SAFETY: `sample_offset` is non-null (just checked) and the ABI
-                // passes it as a valid out-pointer for the call.
-                unsafe { *sample_offset = point.sample_offset };
-            }
-            if !value.is_null() {
-                // SAFETY: `value` is non-null (just checked) and the ABI passes it
-                // as a valid out-pointer for the call.
-                unsafe { *value = point.value.get() };
-            }
+            offset_out.set(point.sample_offset);
+            value_out.set(point.value.get());
             kResultOk
         })
     }
@@ -228,6 +222,8 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
     /// While another thread reads or writes the queue the point is dropped,
     /// `kResultFalse`, and counted when the count is free too.
     unsafe fn addPoint(&self, sample_offset: i32, value: f64, index: *mut i32) -> tresult {
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let index = unsafe { Out::new(index) };
         guard(vst3::Steinberg::kInternalError, || {
             let Some(mut points) = self.points.try_borrow_mut() else {
                 self.count_dropped();
@@ -248,11 +244,7 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
                 }
             };
             match at {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3
-                // ABI.
-                Some(i) if !index.is_null() => unsafe { *index = i as i32 },
-                Some(_) => {}
+                Some(i) => index.set(i as i32),
                 None => return kResultFalse,
             }
             kResultOk

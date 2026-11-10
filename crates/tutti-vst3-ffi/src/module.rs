@@ -468,16 +468,8 @@ pub struct FactoryInfo {
 impl FactoryInfo {
     /// The plugin declares that its exported class list can change between
     /// loads (`kClassesDiscardable`), so a host must not answer "what does this
-    /// bundle contain?" from a cache.
-    ///
-    /// **Nothing in tutti acts on this yet.** The scan cache
-    /// (`tutti_plugin_db`) is keyed on file mtime alone, and it
-    /// stores one descriptor per bundle path while `find_audio_class` takes
-    /// only the first audio class — so a bundle's class *list* is not something
-    /// the catalog can currently represent, let alone re-derive. Acting on the
-    /// flag becomes meaningful when that changes; reading it is this crate's
-    /// job either way, and dropping it here would leave the consumer with
-    /// nothing to act on when it arrives.
+    /// bundle contain?" from a cache. Nothing in tutti acts on it yet: the scan
+    /// cache keys on mtime and holds one descriptor per bundle.
     pub fn classes_discardable(&self) -> bool {
         self.flags.contains(FactoryFlags::CLASSES_DISCARDABLE)
     }

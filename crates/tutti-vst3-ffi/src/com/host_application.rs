@@ -10,7 +10,7 @@
 //! `IPlugView::attached` — a segfault on the first editor open. See
 //! `run_loop.rs` for the full mechanism and how it was confirmed.
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use std::ffi::c_void;
 
 use vst3::Steinberg::{
@@ -120,13 +120,11 @@ impl IHostApplicationTrait for HostApplication {
         iid: *mut TUID,
         obj: *mut *mut c_void,
     ) -> tresult {
-        // Defined output even if the body panics.
-        if !obj.is_null() {
-            // SAFETY: a COM out-parameter the plugin passes valid for this call.
-            unsafe { *obj = std::ptr::null_mut() };
-        }
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let out = unsafe { Out::new(obj) };
+        out.set(std::ptr::null_mut());
         guard(vst3::Steinberg::kInternalError, || {
-            if cid.is_null() || iid.is_null() || obj.is_null() {
+            if cid.is_null() || iid.is_null() || out.is_null() {
                 return kInvalidArgument;
             }
             // SAFETY: `cid` and `iid` are non-null (checked above) and the ABI
@@ -141,23 +139,18 @@ impl IHostApplicationTrait for HostApplication {
             if cid_bytes == imessage_iid && iid_bytes == imessage_iid {
                 let msg = Message::new();
                 if let Some(ptr) = msg.to_com_ptr::<IMessage>() {
-                    // SAFETY: `obj` is non-null (checked above) and a valid
-                    // out-pointer; it receives the +1 reference `into_raw`
-                    // releases ownership of, which the plugin now owns.
-                    unsafe { *obj = ptr.into_raw() as *mut c_void };
+                    // The plugin owns the +1 reference `into_raw` hands over.
+                    out.set(ptr.into_raw().cast());
                     return kResultOk;
                 }
             }
             if cid_bytes == iattrlist_iid && iid_bytes == iattrlist_iid {
                 let attrs = AttributeList::new();
                 if let Some(ptr) = attrs.to_com_ptr::<IAttributeList>() {
-                    // SAFETY: as above: a valid out-pointer receiving a +1 reference.
-                    unsafe { *obj = ptr.into_raw() as *mut c_void };
+                    out.set(ptr.into_raw().cast());
                     return kResultOk;
                 }
             }
-            // SAFETY: `obj` is non-null (checked above) and a valid out-pointer.
-            unsafe { *obj = std::ptr::null_mut() };
             kNotImplemented
         })
     }
@@ -216,8 +209,8 @@ impl IPlugInterfaceSupportTrait for HostApplication {
             if iid.is_null() {
                 return kInvalidArgument;
             }
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-            // VST3 ABI.
+            // SAFETY: `iid` is non-null (checked above) and, by the ABI, valid for
+            // a read of one `TUID` for this call.
             let queried = unsafe { *iid };
             if SUPPORTED_IIDS.contains(&queried) {
                 kResultTrue

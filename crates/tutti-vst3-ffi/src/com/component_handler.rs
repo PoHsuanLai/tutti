@@ -34,7 +34,7 @@
 //! truncated at [`PROGRESS_DESCRIPTION_CAPACITY`] bytes), so no callback
 //! allocates, and dropping a queued notification frees nothing.
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use tutti_plugin_types::{Normalized, Request, RescanScope};
@@ -544,17 +544,9 @@ impl IComponentHandler2Trait for ComponentHandler {
 }
 
 impl IComponentHandler3Trait for ComponentHandler {
-    /// Returns `null` to decline building a host context menu.
-    ///
-    /// This is intentional and spec-legal: `IComponentHandler3` lets a plugin
-    /// ask the host for a menu it can populate with host-contributed items (and
-    /// into which the plugin then injects its own), but returning `null` is the
-    /// documented way to say "the host offers no menu here" — the plugin falls
-    /// back to its own built-in menu. Declining is deliberate because nothing in
-    /// the host or frontend contributes plugin context-menu items or consumes an
-    /// `IContextMenu`; building a real host menu object would be dead surface. If
-    /// a frontend consumer is ever added, this becomes a real `IContextMenu`
-    /// implementation gated on that consumer.
+    /// Declines to build a host context menu: `null` is the spec's "the host
+    /// offers no menu here", and the plugin falls back to its own. Nothing in
+    /// the host contributes menu items or consumes an `IContextMenu`.
     unsafe fn createContextMenu(
         &self,
         _plug_view: *mut IPlugView,
@@ -598,11 +590,9 @@ impl IProgressTrait for ComponentHandler {
         optional_description: *const u16,
         out_id: *mut ID,
     ) -> tresult {
-        // Defined output even if the body panics.
-        if !out_id.is_null() {
-            // SAFETY: a COM out-parameter the plugin passes valid for this call.
-            unsafe { *out_id = 0 };
-        }
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let out_id = unsafe { Out::new(out_id) };
+        out_id.set(0);
         guard(vst3::Steinberg::kInternalError, || {
             let id = self.next_progress_id.fetch_add(1, Ordering::SeqCst);
             // SAFETY: the interface passes null or a NUL-terminated string.
@@ -612,11 +602,7 @@ impl IProgressTrait for ComponentHandler {
                 progress_type: ProgressKind::from_raw(r#type),
                 description: desc,
             }));
-            if !out_id.is_null() {
-                // SAFETY: `out_id` is non-null (just checked) and a valid
-                // out-pointer for the call, as at the top of this method.
-                unsafe { *out_id = id };
-            }
+            out_id.set(id);
             kResultOk
         })
     }

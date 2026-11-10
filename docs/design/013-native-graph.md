@@ -5727,10 +5727,11 @@ latency. The sink's arrival is the latest departure over **all** its sources
 at **all** its ports, as `delays` computes for a node with several ports.
 
 - `LatencyGraph::inputs` returns one `Feed` per port. It becomes
-  `inputs(&self, node) -> impl Iterator<Item = (u16, Feed<Self::Node>)>`
-  (**new** signature): a fan-in port yields one pair per source, in the
-  compile's order. `Delays`' input entries gain the feed they delay, so a
-  delay is addressed by `(node, port, feed)`. `latency_plan` and `graph_tail`
+  `inputs(&self, node) -> impl Iterator<Item = PortFeed<Self::Node>>`
+  (**new** signature): a fan-in port yields one `PortFeed { port, feed }` per
+  source, in the compile's order. `Delays`' input entries gain the feed they
+  delay (`InputDelay { node, port, feed, by }`), so a delay is addressed by
+  its node, port and feed. `latency_plan` and `graph_tail`
   fold the same value, so both take the change; `graph_tail` treats a sum as
   passing the longest tail among its sources, which is what a sink with
   several tailed inputs already gets.
@@ -6060,6 +6061,20 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    `latency_plan` and `graph_tail` take several; the reference interpreter
    folds several. Tests drive the latency view directly with fan-in. Compile
    still refuses.
+   *As built:* `LatencyGraph::inputs` yields a `PortFeed { port, feed }` per
+   source (an unconnected port yields one whose feed is `Feed::None`, and so
+   does a feedback addend), and `outputs` yields a `ChannelFeed { channel,
+   feed }` the same way, so an output channel's sources are views too (the
+   plan said only inputs). `Delays::inputs` is a list of `InputDelay { node,
+   port, feed, by }` and `Delays::outputs` of `OutputDelay { channel, feed,
+   by }`, named structs rather than tuples so a reader sees `d.by`, not `.3`: each source of a summed port or channel is delayed
+   to the arrival or the output time on its own; two outputs of one node into
+   one port are one feed and one entry. A channel's arrival (and so its
+   pre-roll in `Compensation`) is its latest source's departure.
+   `graph_tail` needed only the signature change: the max over sources is what
+   it already took. The reference sorts each sink's sources by `Edge` order
+   itself and folds them from `+0.0`; one source is an alias (its `-0.0`
+   stays). The tests are `tests/fan_in_views.rs`.
 3. **The op.** `Op::Sum`, `sum_chain`, colouring, `sum_op`, `par.rs`, `cost.rs`,
    `verify.rs`; the refusal goes. The analytic, order, differential, flag,
    PDC, add/remove, plan and no-alloc tests of point 9, written against a
@@ -6595,6 +6610,7 @@ the four lanes above, the graph's own surface is:
 | Tap and level meter on any port | Built (`Op::Tap`, `Op::Meter`) |
 | Event tap (any event output, out to a thread) | Built (`Op::EventTap`, `EventTapReader`, `Graph::open_event_tap`; doc 017, stage E1) |
 | Inlet (a thread's ring into the graph) | Built (`Graph::open_inlet`; `InletNode` is its implementation, not a node an author adds) |
+| Event inlet (a thread's events into the graph on their frame) | Built (`Graph::open_event_inlet`; `EventInletNode` is its implementation, not a node an author adds; doc 017, stage E2) |
 | Event fan-in (merge) | Built (`Op::EventMerge`) |
 | Param modulation and automation on a param port | Built (doc 014: the compiler's lane per param) |
 | Transport and tempo | Built (`Env`) |
@@ -6623,7 +6639,8 @@ the four lanes above, the graph's own surface is:
   across plans by `EventTapId` (a port that goes missing keeps its table entry
   and gets no op), and not in a fork. The reference interpreter knows no taps,
   audio or event, so the serial/pooled comparison and analytic figures hold it
-  (`tests/event_tap.rs`). The event inlet (`Graph::open_event_inlet`) is E2.
+  (`tests/event_tap.rs`). The **event inlet is built** too (E2): `EventInletNode` over a `ringbuf` ring,
+  a waiting list on `Env::due`, a silent fork, `Moment` in `tutti-types`.
   It is the MIDI lanes' work (doc 017 owns the event side); this document
   records only that it belongs to the graph.
 

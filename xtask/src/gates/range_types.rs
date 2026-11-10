@@ -39,7 +39,7 @@ use super::{Report, Tree, under_skipped_dir};
 /// `(file, type, what removes the entry)`.
 pub(super) const EXCEPTIONS: &[(&str, &str, &str)] = &[
     (
-        "crates/tutti-midi-types/src/mpe/sensitivity.rs",
+        "crates/tutti-midi-protocol/src/sensitivity.rs",
         "PitchBendSensitivity",
         "permanent: every u32 is a valid RPN word",
     ),

@@ -718,26 +718,31 @@ impl Reference {
                 }
             }
         }
-        let arrivals: Vec<Samples> = t
+        // The output time is the latest departure over every source of every
+        // channel; each source of a summed channel is delayed to it on its own.
+        let source_departure = |s: &Source| match *s {
+            Source::Node(p) => departure(p.node).samples(),
+            Source::Global(_) | Source::Zero => Samples::ZERO,
+        };
+        let total = t
             .outputs
             .iter()
-            .map(|s| match single(s) {
-                Some(Source::Node(p)) => departure(p.node).samples(),
-                _ => Samples::ZERO,
-            })
-            .collect();
-        let total = arrivals.iter().copied().max().unwrap_or_default();
-        for (ch, (s, a)) in t.outputs.iter().zip(&arrivals).enumerate() {
-            let d = total.checked_sub(*a).unwrap_or_default();
-            let s = &single(s).unwrap_or(Source::Zero);
-            if !d.is_zero() && *s != Source::Zero {
-                delays.insert(
-                    DelayKey::Output {
-                        channel: ch as u16,
-                        from: *s,
-                    },
-                    d,
-                );
+            .flatten()
+            .map(source_departure)
+            .max()
+            .unwrap_or_default();
+        for (ch, sources) in t.outputs.iter().enumerate() {
+            for s in sources {
+                let d = total.checked_sub(source_departure(s)).unwrap_or_default();
+                if !d.is_zero() && *s != Source::Zero {
+                    delays.insert(
+                        DelayKey::Output {
+                            channel: ch as u16,
+                            from: *s,
+                        },
+                        d,
+                    );
+                }
             }
         }
 
@@ -1084,20 +1089,23 @@ impl Reference {
             }
 
             for (ch, sources) in t.outputs.iter().enumerate() {
-                let source = &single(sources).unwrap_or(Source::Zero);
-                let mut buf = match source {
-                    Source::Node(p) => audio[p].clone(),
-                    Source::Global(g) => inputs[*g as usize][..frames].to_vec(),
-                    Source::Zero => vec![0.0; frames],
-                };
-                let key = DelayKey::Output {
-                    channel: ch as u16,
-                    from: *source,
-                };
-                if let Some(line) = self.audio_lines.get_mut(&key) {
-                    delay_line(line, &mut buf);
+                let mut addends: Vec<Vec<f32>> = Vec::new();
+                for source in sorted(sources) {
+                    let mut buf = match source {
+                        Source::Node(p) => audio[&p].clone(),
+                        Source::Global(g) => inputs[g as usize][..frames].to_vec(),
+                        Source::Zero => vec![0.0; frames],
+                    };
+                    let key = DelayKey::Output {
+                        channel: ch as u16,
+                        from: source,
+                    };
+                    if let Some(line) = self.audio_lines.get_mut(&key) {
+                        delay_line(line, &mut buf);
+                    }
+                    addends.push(buf);
                 }
-                outputs[ch][..frames].copy_from_slice(&buf);
+                outputs[ch][..frames].copy_from_slice(&sum_addends(addends, frames));
             }
 
             // Feed the feedback delays with this block, after every read of them.
@@ -1137,22 +1145,27 @@ impl Reference {
         let mut ins: Vec<Vec<f32>> = Vec::new();
         for port in 0..shape.audio_in.count() {
             let at = InPort { node: key, port };
-            let edge = t.edges.get(&at).and_then(|es| single(es));
-            let mut buf = match edge {
-                None | Some(Edge::Direct(Source::Zero)) => vec![0.0; frames],
-                Some(Edge::Direct(Source::Global(g))) => inputs[g as usize][..frames].to_vec(),
-                Some(Edge::Direct(Source::Node(p))) => audio[&p].clone(),
-                Some(Edge::Feedback(f)) => {
-                    let line = &self.fb_audio[&(f.from, graph.generation(f.from.node), f.delay)];
-                    line.iter().take(frames).copied().collect()
+            // The addends in source order, each through its own PDC delay.
+            let mut addends: Vec<Vec<f32>> = Vec::new();
+            for edge in sorted(t.edges.get(&at).map_or(&[][..], Vec::as_slice)) {
+                let mut buf = match edge {
+                    Edge::Direct(Source::Zero) => vec![0.0; frames],
+                    Edge::Direct(Source::Global(g)) => inputs[g as usize][..frames].to_vec(),
+                    Edge::Direct(Source::Node(p)) => audio[&p].clone(),
+                    Edge::Feedback(f) => {
+                        let line =
+                            &self.fb_audio[&(f.from, graph.generation(f.from.node), f.delay)];
+                        line.iter().take(frames).copied().collect()
+                    }
+                };
+                if let Edge::Direct(from) = edge
+                    && let Some(line) = self.audio_lines.get_mut(&DelayKey::Audio { at, from })
+                {
+                    delay_line(line, &mut buf);
                 }
-            };
-            if let Some(Edge::Direct(from)) = edge
-                && let Some(line) = self.audio_lines.get_mut(&DelayKey::Audio { at, from })
-            {
-                delay_line(line, &mut buf);
+                addends.push(buf);
             }
-            ins.push(buf);
+            ins.push(sum_addends(addends, frames));
         }
 
         let mut ev_ins: Vec<Vec<Event>> = Vec::new();
@@ -1993,12 +2006,31 @@ fn flat_edges(t: &crate::Topology) -> impl Iterator<Item = (&InPort, &Edge)> {
         .flat_map(|(at, es)| es.iter().map(move |e| (at, e)))
 }
 
-/// The one source of a sink, or none. The interpreter does not sum yet, so a
-/// set of two or more is a bug in the test that wrote it, not a silent pick.
-fn single<T: Copy>(set: &[T]) -> Option<T> {
-    assert!(
-        set.len() <= 1,
-        "the reference interpreter does not sum a fan-in yet"
-    );
-    set.first().copied()
+/// A sink's sources in source order: `Edge`'s and `Source`'s derived `Ord`,
+/// whatever order the spec lists them in (the compiler sorts its list alike).
+fn sorted<T: Copy + Ord>(set: &[T]) -> Vec<T> {
+    let mut v = set.to_vec();
+    v.sort();
+    v
+}
+
+/// The value a sink holds: none is silence, one is itself (an alias, so a
+/// `-0.0` stays), several are the left fold `((+0.0 + a_0) + a_1) + ..` in
+/// `f32`, one rounding per add (doc 013, "Audio fan-in sums", points 1 and 2).
+/// Skips nothing, silent addends included: the executor skips them and must
+/// agree.
+fn sum_addends(mut addends: Vec<Vec<f32>>, frames: usize) -> Vec<f32> {
+    match addends.len() {
+        0 => vec![0.0; frames],
+        1 => addends.remove(0),
+        _ => {
+            let mut acc = vec![0.0f32; frames];
+            for a in &addends {
+                for (x, y) in acc.iter_mut().zip(a) {
+                    *x += *y;
+                }
+            }
+            acc
+        }
+    }
 }

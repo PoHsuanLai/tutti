@@ -178,6 +178,7 @@ pub use tutti_plugin as plugin;
 pub mod prelude {
     pub use tutti_engine::prelude::*;
     pub use tutti_graph::{CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, TapReader};
+    pub use tutti_graph::{EventInletNode, EventInletWriter, Refused};
     pub use tutti_graph::{EventTapId, EventTapReader, TapAlign, TapEvent, TapId};
     pub use tutti_metering::{LoadMeter, LoadReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};

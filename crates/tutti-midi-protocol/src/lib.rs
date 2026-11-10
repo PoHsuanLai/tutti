@@ -73,19 +73,26 @@
 //!   function for it. The 14-bit pairs (CC 1 to 31 with 33 to 63) stay two
 //!   independent messages, as D.3.3 says.
 //!
-//! The crate depends on `tutti-ump` alone and has no allocation.
+//! [`PitchBendSensitivity`] is the 7.25 fixed-point range of RPN #00/07 (M2-104
+//! section 7.4.13), the one value type here that is not a function.
+//!
+//! The crate depends on `tutti-ump` alone and has no allocation. Its `serde`
+//! feature (off by default) derives serde on [`PitchBendSensitivity`], which
+//! carries the 32 RPN bits.
 
 #![forbid(unsafe_code)]
 
 mod midi1;
 mod narrow;
 mod scale;
+mod sensitivity;
 mod translator;
 mod unit;
 mod voice;
 
 pub use midi1::{midi1, narrow};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
+pub use sensitivity::PitchBendSensitivity;
 pub use translator::Translator;
 pub use unit::{
     bend_u14_to_signed_f32, bend_u32_to_signed_f32, signed_f32_to_bend_u32, u7_to_unit_f32,

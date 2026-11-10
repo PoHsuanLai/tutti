@@ -27,13 +27,13 @@ mod support;
 
 use support::{Change, Segment, model_beats};
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status,
     Unforkable,
 };
+use tutti_graph::{OutPort, Source};
 use tutti_transport::{FadeOut, LoopEdit, MotionEvent, Then, Transport, TransportCommand};
-use tutti_types::NodeKey;
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
 };

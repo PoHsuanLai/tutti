@@ -1,7 +1,7 @@
 //! The graph-node handle an entity carries.
 
 use bevy_ecs::prelude::Component;
-use tutti_types::NodeKey;
+use tutti_graph::NodeKey;
 
 /// Component identity for a graph node.
 ///

@@ -1139,7 +1139,7 @@ Read from the code on `main`:
 |---|---|---|
 | Declared | `Shape::tail`, via `NodeSpec` and `Editor` (`node.tail = shape.tail`) | the shape at insert/prepare |
 | Silence skip | `exec.rs`: `tail_elapsed(rec.park_after, u.quiet)`; `NodeRec::park_after` = latency then tail, copied into the plan (`plan.rs`), verified in `compile/verify.rs` | the plan's copy |
-| Graph tail | `tutti_types::graph_tail` (until the graph/latency/tail move into `tutti-graph`, doc 013), a fold over `TailGraph::tail(node)`, implemented by `Topology` from each node's spec tail | the spec |
+| Graph tail | `tutti_graph::graph_tail` (until the graph/latency/tail move into `tutti-graph`, doc 013), a fold over `TailGraph::tail(node)`, implemented by `Topology` from each node's spec tail | the spec |
 | Export | `RenderGraph::reported_tail()` (`tutti-export/src/graph.rs`) is `graph_tail(editor.spec().topology)`; `ExportRequest::with_reported_tail(cap)` resolves it (Unbounded -> `cap`); `RenderPlan::new` fixes `output_length = duration + tail` before the render | the spec, before the render |
 | Contract | doc 013: "A tail excludes latency"; `Node::shape` "must not change after `prepare`" | n/a |
 

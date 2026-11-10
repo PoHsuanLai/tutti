@@ -32,10 +32,11 @@ both to a [`TuttiDriver`] with [`TuttiDriver::new`]:
 
 ```rust,no_run
 use std::sync::Arc;
-use tutti_types::graph::{OutPort, Source};
+use tutti_graph::{OutPort, Source};
 use tutti_engine::Engine;
 use tutti_transport::Transport;
-use tutti_types::{Hz, NodeKey, Samples};
+use tutti_types::{Hz, Samples};
+use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};

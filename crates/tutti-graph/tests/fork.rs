@@ -8,14 +8,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use common::{Kind, TestNode, bits, prepare};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventOut, Fade, ForkBuild, ForkByClone,
     ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkRemains, ForkSource,
     ForkTarget, Forked, GraphBuilder, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet,
     PendingFork, Prepare, Renderer, Shape, Status, Unforkable, param_parts,
 };
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{Amplitude, ChannelLayout, NodeKey, Param, Samples, Tail, UnitParam};
+use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
+use tutti_types::{Amplitude, ChannelLayout, Param, Samples, Tail, UnitParam};
 
 /// Output `c` is `base + c`, so which port feeds a channel reads straight off
 /// the render. Its `Clone` shares nothing, so it is inserted [`ForkByClone`].
@@ -892,8 +893,8 @@ fn a_fork_source_from_an_older_generation_is_refused() {
 /// mark is missing → fails.
 #[test]
 fn a_fork_carries_params_event_capacity_and_its_own_marks() {
+    use tutti_graph::ParamValue;
     use tutti_graph::Resolution;
-    use tutti_types::graph::ParamValue;
     let (emit, fold, emit2, fold2) = (NodeKey(1), NodeKey(2), NodeKey(3), NodeKey(4));
     let pre = prepare(64);
     let (mut ed, _exec) = Editor::with_event_capacity(pre, 8);

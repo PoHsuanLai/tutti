@@ -28,12 +28,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_plugin::server::RING_SLOTS;
 use tutti_transport::Transport;
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut};
-use tutti_types::{NodeKey, SampleRate, Samples, Tail};
+use tutti_types::{SampleRate, Samples, Tail};
 
 /// What the probe declares and delays by (`REPORTED_LATENCY_SAMPLES`).
 const PROBE_LATENCY: usize = 137;

@@ -3,10 +3,11 @@
 
 use std::sync::Arc;
 
+use tutti_graph::NodeKey;
 use tutti_session::{GeneralMidi, GraphSource, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples, Tail};
+use tutti_types::{ChannelLayout, SampleRate, Samples, Tail};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 

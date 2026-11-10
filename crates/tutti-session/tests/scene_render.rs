@@ -32,15 +32,14 @@
 //!   the waveshaper and the limiter's constants call the platform's `tan`,
 //!   `tanh` and `powf`, whose last ulp differs between C runtimes.
 
+use tutti_graph::NodeKey;
 use tutti_graph::{
     CrossfadeCurve, Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
 };
 use tutti_nodes::testing::{Osc, assert_golden};
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
 use tutti_session::{AudioSide, GraphSource, Session};
-use tutti_types::{
-    ChannelLayout, Db, Drive, Hz, NodeKey, Q, SampleRate, Samples, Seconds, UnitParam,
-};
+use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds, UnitParam};
 
 const RATE: f64 = 48_000.0;
 

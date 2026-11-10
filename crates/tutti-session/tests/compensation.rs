@@ -33,7 +33,7 @@ fn limiter() -> LimiterNode {
 
 /// ch0 through a limiter, ch1 dry: ch1's source must pre-roll to match.
 /// Returns the limiter's node latency.
-fn skewed(s: &mut Session) -> (tutti_types::NodeKey, Samples) {
+fn skewed(s: &mut Session) -> (tutti_graph::NodeKey, Samples) {
     let (a, _) = s.graph().insert(Const::mono(1.0));
     let (eff, _) = s.graph().insert(limiter());
     let (b, _) = s.graph().insert(Const::mono(1.0));
@@ -160,7 +160,7 @@ fn the_latency_fold_and_the_compiled_plan_agree() {
             .planned_compensation()
             .expect("a plan is compiled");
         let width = folded.channels().len().max(planned.channels().len());
-        let of = |c: &tutti_types::latency::Compensation| -> (Vec<Samples>, Samples) {
+        let of = |c: &tutti_graph::Compensation| -> (Vec<Samples>, Samples) {
             ((0..width).map(|i| c.for_channel(i)).collect(), c.total())
         };
         let (f, p) = (of(&folded), of(&planned));

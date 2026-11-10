@@ -1,7 +1,7 @@
 //! Taps: copy-out points of the compiled plan.
 //!
-//! A tap is declared on the [`Topology`](tutti_types::Topology) as "copy these
-//! sources" ([`TapSpec`](tutti_types::TapSpec)); the compiler emits one
+//! A tap is declared on the [`Topology`](crate::Topology) as "copy these
+//! sources" ([`TapSpec`](crate::TapSpec)); the compiler emits one
 //! [`Op::Tap`](crate::Op::Tap) per tap, reading every lane's source, and, for an
 //! aligned tap, the same delay an output channel gets for each. A tap that is not in the topology compiles to
 //! nothing. Opening a tap refuses a source that does not exist then
@@ -30,10 +30,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
+use crate::TapId;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_rt::RtScope;
-use tutti_types::{ChannelLayout, Pull, Samples, Source, TapId};
+use tutti_types::{ChannelLayout, Pull, Samples, Source};
 
 use crate::slots::AudioSlots;
 

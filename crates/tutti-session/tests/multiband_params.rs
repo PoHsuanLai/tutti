@@ -12,6 +12,7 @@
 
 use std::f64::consts::{PI, TAU};
 
+use tutti_graph::NodeKey;
 #[cfg(feature = "modulation")]
 use tutti_modulation::Lfo;
 use tutti_nodes::testing::Osc;
@@ -20,7 +21,7 @@ use tutti_nodes::{MultibandCompressorNode, MultibandControls};
 use tutti_session::ParamRef;
 use tutti_session::{GraphSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
 #[cfg(feature = "modulation")]
 use tutti_types::{BeatDuration, Depth};
 use tutti_types::{Db, Hz, UnitAddr, UnitParam};

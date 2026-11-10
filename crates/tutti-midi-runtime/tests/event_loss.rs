@@ -8,12 +8,13 @@ use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node, Prepare,
     Shape, Status, Transport, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const FRAMES_PER_BEAT: f64 = 24_000.0;

@@ -21,18 +21,19 @@
 use std::sync::atomic::Ordering;
 
 use audio_automation::CurveType;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventOut, GraphBuilder, Io, Node, ParamIn, ParamNode, ParamRange, ParamSet,
     Prepare, Renderer, Shape, Status, Unforkable,
 };
+use tutti_graph::{OutPort, Source};
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterNode, ModDelayNode, PhaserNode,
     SvfFilterNode, SvfType,
 };
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{BeatDuration, Depth, Hz, NodeKey, PhaseIncrement, SampleRate, Samples};
+use tutti_types::{BeatDuration, Depth, Hz, PhaseIncrement, SampleRate, Samples};
 use tutti_types::{ChannelLayout, UnitParam};
 
 /// Writes `value` to `p` through `node`'s set, as a host does; `false` for

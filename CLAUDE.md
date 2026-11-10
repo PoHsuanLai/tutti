@@ -19,8 +19,8 @@ holds the `Editor`; PDC is the compiler's, export forks the live graph with
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
 the numeric tower are deleted; the engine and `tutti-session` key a node by
 `NodeKey` (`AudioNode` is `bevy-tutti`'s component, wrapping one), and
-`tutti_types::latency` is a pure pass that is the compiler's own solve (`compile`
-calls `latency::delays`; one copy). A block's tasks can run on a worker pool (below); a cost model decides when
+`Topology` and its passes live here (`tutti_graph::delays` is a pure pass and the
+compiler's own solve, one copy; `latency_plan` and `graph_tail` fold the same value). A block's tasks can run on a worker pool (below); a cost model decides when
 that pays, and the compiler packs tasks too cheap to dispatch alone.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
@@ -353,8 +353,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  `tutti-types`; `publish = false`
   tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
                  the pure `DeviceTable`; no OS, no thread, and no dependency but optional `serde`
-  tutti-types    vocabulary only: units, channel layouts, io edge traits,
-                 Topology; no FFT and no new algorithms but `Fold` (topology to
+  tutti-types    vocabulary only: units, channel layouts, io edge traits;
+                 no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
                  The width folds (`fold_frame`, `fold_frame_to_*`) and sample
                  conversion stay until the edges move off them
@@ -949,7 +949,10 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti-io` → dissolved: `TapIn` is gone (`TapReader` is a
+- **Dead crate names:** `tutti_types::{Topology, NodeKey, Valid, TapId, TapSpec, TapAlign,
+  MeterId, MeterSpec, graph, latency, tail, Compensation, Delays, Feed, LatencyGraph, delays,
+  GraphTail, TailGraph, graph_tail}` → `tutti_graph::` (`latency::plan` is
+  `tutti_graph::latency_plan`), `tutti-io` → dissolved: `TapIn` is gone (`TapReader` is a
   `Source`), `WavOut` → `tutti_codec::FileOut` (any `Format`, beside `FileIn`),
   `MicMonitorNode` and `MicRing` → `tutti_graph::InletNode` (opened by
   `Graph::open_inlet`), `Recorder` and `PumpLoop` → `tutti-session` (feature

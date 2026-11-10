@@ -8,13 +8,14 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Harmony,
     Io, LoopRange, Node, Prepare, Shape, Status, Transport,
 };
+use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{HarmonyControls, HarmonyNode, TimedHarmony};
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;

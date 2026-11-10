@@ -53,7 +53,8 @@
 //!
 //! There is no gain: a level belongs in a node downstream of this one.
 
-use tutti_types::{ChannelLayout, Samples, Tail, TapId};
+use crate::TapId;
+use tutti_types::{ChannelLayout, Samples, Tail};
 
 use crate::cost::Cost;
 use crate::io::Io;

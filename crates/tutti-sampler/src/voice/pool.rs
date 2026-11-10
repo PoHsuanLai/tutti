@@ -56,7 +56,7 @@ pub struct VoicePoolRef(pub VoicePoolHandle);
 /// here would be a second owner of state the graph already owns.
 #[cfg(feature = "bevy")]
 #[derive(Component, Debug, Clone, Copy)]
-pub struct VoicePoolNode(pub tutti_types::NodeKey);
+pub struct VoicePoolNode(pub tutti_graph::NodeKey);
 
 // ---------------------------------------------------------------------------
 // Retirement — values the audio thread must not drop.

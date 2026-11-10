@@ -18,12 +18,13 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, LimiterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, Db, Hz, InterleavedMut, NodeKey, Q, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Db, Hz, InterleavedMut, Q, SampleRate, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

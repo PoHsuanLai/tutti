@@ -83,10 +83,10 @@ impl tutti_graph::Node for TransportTone {
 /// a snapshot) → fails.
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
+    use tutti_graph::NodeKey;
     use tutti_graph::{Editor, EventIn, EventKind, Prepare, Unforkable};
+    use tutti_graph::{OutPort, Source};
     use tutti_transport::{MotionEvent, TransportCommand};
-    use tutti_types::NodeKey;
-    use tutti_types::graph::{OutPort, Source};
     use tutti_types::{At, Beat, Bpm, Frame};
     use tutti_ump::Ump;
 
@@ -181,9 +181,10 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 /// lend removed) -> `tempo_in_force` stays 120 -> the assertion fails.
 #[test]
 fn a_published_tempo_map_is_taken_without_allocating() {
+    use tutti_graph::NodeKey;
     use tutti_graph::{Editor, Prepare, Unforkable};
-    use tutti_types::graph::{OutPort, Source};
-    use tutti_types::{Bpm, NodeKey};
+    use tutti_graph::{OutPort, Source};
+    use tutti_types::Bpm;
 
     let transport = Transport::new(48_000.0);
     let (mut ed, exec) = Editor::new(Prepare::new(
@@ -242,11 +243,12 @@ fn a_published_tempo_map_is_taken_without_allocating() {
 /// scalar 120 -> the assertion fails.
 #[test]
 fn a_step_map_is_followed_without_allocating() {
+    use tutti_graph::NodeKey;
     use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_graph::{OutPort, Source};
     use tutti_tempo::{Shape, TempoMap, TempoPoint};
     use tutti_transport::MotionEvent;
-    use tutti_types::graph::{OutPort, Source};
-    use tutti_types::{At, Beat, Bpm, NodeKey};
+    use tutti_types::{At, Beat, Bpm};
 
     let dense = |last: f64| {
         let mut points: Vec<TempoPoint> = (0..41)
@@ -397,9 +399,9 @@ fn a_step_map_is_followed_without_allocating() {
 #[test]
 fn the_master_meter_is_allocation_free() {
     use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_graph::{MeterId, MeterSpec, NodeKey};
+    use tutti_graph::{OutPort, Source};
     use tutti_transport::MotionEvent;
-    use tutti_types::graph::{OutPort, Source};
-    use tutti_types::{MeterId, MeterSpec, NodeKey};
 
     for width in [2usize, 6] {
         let transport = Transport::new(48_000.0);
@@ -452,10 +454,10 @@ fn the_master_meter_is_allocation_free() {
 /// writer in `Hearing::swap` -> the debug panic.
 #[test]
 fn the_heard_tap_is_allocation_free() {
+    use tutti_graph::NodeKey;
     use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_graph::{OutPort, Source};
     use tutti_transport::MotionEvent;
-    use tutti_types::NodeKey;
-    use tutti_types::graph::{OutPort, Source};
 
     let transport = Transport::new(48_000.0);
     let (mut ed, exec) = Editor::new(Prepare::new(
@@ -533,11 +535,12 @@ fn the_heard_tap_is_allocation_free() {
 /// `ClickNode::render` → the gate panics → fails.
 #[test]
 fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
+    use tutti_graph::NodeKey;
     use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
+    use tutti_graph::{OutPort, Source};
     use tutti_transport::{MotionEvent, TransportCommand};
-    use tutti_types::graph::{OutPort, Source};
+    use tutti_types::Tail;
     use tutti_types::{At, Beat, Bpm, Frame};
-    use tutti_types::{NodeKey, Tail};
 
     /// The beat of every frame, whole beats then the fraction.
     struct BeatWalk;
@@ -649,9 +652,9 @@ impl tutti_graph::Pool for GatedPool {
 /// → the callback's gate aborts.
 #[test]
 fn graph_engine_on_a_worker_pool_is_allocation_free() {
+    use tutti_graph::NodeKey;
+    use tutti_graph::{Edge, InPort, OutPort, Source};
     use tutti_graph::{Editor, ForkByClone, Prepare};
-    use tutti_types::NodeKey;
-    use tutti_types::graph::{Edge, InPort, OutPort, Source};
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);

@@ -26,15 +26,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, ForkError, ForkFaultKind, ForkMode, ForkTarget, IntoNode, Prepare, Renderer,
 };
+use tutti_graph::{OutPort, Source};
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::NodeKey;
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::{SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -1148,11 +1148,11 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     let _controls = live.insert(key, "plugin", probe.client.bind());
     for port in 0..inputs {
         live.spec_mut().topology.edges.insert(
-            tutti_types::graph::InPort {
+            tutti_graph::InPort {
                 node: key,
                 port: port as u16,
             },
-            tutti_types::graph::Edge::Direct(Source::Node(OutPort { node: src, port: 0 })),
+            tutti_graph::Edge::Direct(Source::Node(OutPort { node: src, port: 0 })),
         );
     }
     live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];

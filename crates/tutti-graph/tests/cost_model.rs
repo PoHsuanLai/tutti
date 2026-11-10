@@ -9,9 +9,10 @@
 mod common;
 
 use common::{Kind, TestNode, WORKERS, bits, test_pool};
+use tutti_graph::NodeKey;
 use tutti_graph::{Cost, Editor, Executor, Schedule, Transport, Unforkable};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, Samples};
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, Samples};
 
 const MAX_BLOCK: usize = 256;
 

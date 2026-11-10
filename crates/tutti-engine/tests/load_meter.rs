@@ -11,10 +11,10 @@
 use assert_no_alloc::AllocDisabler;
 use std::time::{Duration, Instant};
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Prepare, Unforkable};
+use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
-use tutti_types::NodeKey;
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 #[global_allocator]

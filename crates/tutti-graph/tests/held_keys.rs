@@ -23,13 +23,14 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::TestPool;
+use tutti_graph::NodeSpec;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, Fade, ForkByClone,
     ForkMode, ForkTarget, Io, Node, Offset, Prepare, Reference, Shape, Shapes, Status, Transport,
     Unforkable,
 };
-use tutti_types::graph::NodeSpec;
-use tutti_types::{ChannelLayout, NodeKey, Samples, Topology};
+use tutti_graph::{NodeKey, Topology};
+use tutti_types::{ChannelLayout, Samples};
 use tutti_ump::Ump;
 
 type Words = [u32; 4];
@@ -210,12 +211,12 @@ impl Rig {
                 );
                 if lag {
                     ed.spec_mut().topology.edges.insert(
-                        tutti_types::graph::InPort {
+                        tutti_graph::InPort {
                             node: NodeKey(s),
                             port: 0,
                         },
-                        tutti_types::graph::Edge::Direct(tutti_types::graph::Source::Node(
-                            tutti_types::graph::OutPort {
+                        tutti_graph::Edge::Direct(tutti_graph::Source::Node(
+                            tutti_graph::OutPort {
                                 node: NodeKey(LAG),
                                 port: 0,
                             },
@@ -295,12 +296,12 @@ impl Rig {
                 if self.lag {
                     for &s in &self.sinks {
                         t.edges.insert(
-                            tutti_types::graph::InPort {
+                            tutti_graph::InPort {
                                 node: NodeKey(s),
                                 port: 0,
                             },
-                            tutti_types::graph::Edge::Direct(tutti_types::graph::Source::Node(
-                                tutti_types::graph::OutPort {
+                            tutti_graph::Edge::Direct(tutti_graph::Source::Node(
+                                tutti_graph::OutPort {
                                     node: NodeKey(LAG),
                                     port: 0,
                                 },
@@ -1548,12 +1549,10 @@ fn forked(log: &Log, blocks: usize, mid_note: bool) -> (Editor, Executor) {
     ed.insert(NodeKey(2), "hear", ForkByClone(Hear(log.clone(), 2)));
     ed.spec_mut()
         .connect_events(at(2), EventEdge::Direct(out(1)));
-    ed.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
-        tutti_types::graph::OutPort {
-            node: NodeKey(2),
-            port: 0,
-        },
-    )];
+    ed.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
+        node: NodeKey(2),
+        port: 0,
+    })];
     ed.commit().unwrap();
     exec.apply_pending();
     ed.collect();

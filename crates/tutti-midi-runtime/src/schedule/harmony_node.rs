@@ -122,7 +122,8 @@ impl Shared {
 /// See the module docs.
 ///
 /// ```
-/// use tutti_types::{Beat, NodeKey, SampleRate, Samples};
+/// use tutti_types::{Beat, SampleRate, Samples};
+/// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Harmony, Prepare};
 /// use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 ///

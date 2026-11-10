@@ -10,11 +10,8 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use tutti_types::NodeKey;
-use tutti_types::{
-    Topology,
-    graph::{Edge, FeedbackFrom, InPort, OutPort, Source},
-};
+use crate::NodeKey;
+use crate::{Edge, FeedbackFrom, InPort, OutPort, Source, Topology};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
@@ -593,7 +590,8 @@ impl Error for ForkError {
 /// ```
 /// use tutti_graph::{Editor, ForkByClone, ForkMode, ForkTarget, Prepare};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
-/// # use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+/// # use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// # use tutti_graph::NodeKey;
 /// # #[derive(Clone)]
 /// # struct Silence;
 /// # impl Node for Silence {
@@ -605,8 +603,8 @@ impl Error for ForkError {
 /// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
 /// let (mut editor, _exec) = Editor::new(prepare);
 /// editor.insert(NodeKey(1), "silence", ForkByClone(Silence));
-/// editor.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
-///     tutti_types::graph::OutPort { node: NodeKey(1), port: 0 },
+/// editor.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(
+///     tutti_graph::OutPort { node: NodeKey(1), port: 0 },
 /// )];
 /// assert!(editor.fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, prepare).is_ok());
 /// ```
@@ -671,7 +669,8 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
 /// ```
 /// use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget, Prepare, Unforkable};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
-/// # use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+/// # use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// # use tutti_graph::NodeKey;
 /// # struct Silence;
 /// # impl Node for Silence {
 /// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
@@ -682,8 +681,8 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
 /// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
 /// let (mut editor, _exec) = Editor::new(prepare);
 /// editor.insert(NodeKey(1), "silence", Unforkable(Silence));
-/// editor.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
-///     tutti_types::graph::OutPort { node: NodeKey(1), port: 0 },
+/// editor.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(
+///     tutti_graph::OutPort { node: NodeKey(1), port: 0 },
 /// )];
 /// assert_eq!(
 ///     editor.fork(ForkTarget::Master, ForkMode::Live, prepare).err(),

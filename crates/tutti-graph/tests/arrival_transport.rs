@@ -20,12 +20,13 @@ mod common;
 use std::collections::{BTreeMap, VecDeque};
 
 use common::prepare;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Env, Executor, Io, LoopRange, Node, Offset, Prepare, Reference, Shape, Status,
     Transport, TransportChanges, TransportHistory, Unforkable,
 };
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples};
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples};
 
 const MAX: usize = 64;
 const LATENT: NodeKey = NodeKey(1);

@@ -32,10 +32,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use tutti_graph::NodeKey;
 use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Renderer, Shape, Status, Unforkable};
 use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
-use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Latency, SampleRate, Samples};
 
 /// A bound plugin as the only node of a graph: the global inputs feed
 /// its inputs in order, its outputs feed the global outputs. The executor

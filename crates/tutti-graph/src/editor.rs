@@ -46,17 +46,18 @@
 //! sends them back re-prepared, with a plan compiled against their new
 //! shapes. Its doc states what happens to delay and feedback state. An
 //! offline render must be prepared with a `MaxBlock` no larger than the
-//! graph's shortest feedback delay (see `tutti_types::graph::FeedbackFrom`);
+//! graph's shortest feedback delay (see `crate::FeedbackFrom`);
 //! `compile` enforces it, and `reprepare` refuses such a change before
 //! sending anything.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::MAX_NODE_LATENCY;
+use crate::{Edge, FeedbackFrom, NodeSpec, Source};
+use crate::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
 use ringbuf::traits::{Consumer, Producer};
-use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
-use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Latency, MeterId, MeterSpec, NodeKey, Samples, TapAlign, TapId, TapSpec};
+use tutti_types::{Latency, Samples};
 
 use tutti_types::At;
 
@@ -175,7 +176,7 @@ pub enum CommitError {
         node: NodeKey,
     },
     /// A latency past what PDC compensates
-    /// (`tutti_types::latency::MAX_NODE_LATENCY`), refused rather than
+    /// (`crate::MAX_NODE_LATENCY`), refused rather than
     /// silently clamped ([`Editor::set_latency`]).
     LatencyTooLong {
         /// The node.
@@ -378,8 +379,9 @@ impl std::error::Error for MissingSource {}
 ///
 /// ```
 /// use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status, Transport};
-/// use tutti_types::graph::{Edge, InPort, OutPort, Source};
-/// use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+/// use tutti_graph::{Edge, InPort, OutPort, Source};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
+/// use tutti_graph::NodeKey;
 ///
 /// #[derive(Clone)]
 /// struct Half;
@@ -1237,7 +1239,7 @@ impl Editor {
     ///
     /// Refused with [`CommitError::NoSuchNode`] for a key with no node,
     /// [`CommitError::LatencyTooLong`] past what PDC compensates
-    /// (`tutti_types::latency::MAX_NODE_LATENCY`; a probed latency is
+    /// (`crate::MAX_NODE_LATENCY`; a probed latency is
     /// clamped there, a figure set by hand is refused), and
     /// [`CommitError::Repreparing`] between a re-prepare's two commits (its
     /// second half re-probes every unit and would overwrite this).

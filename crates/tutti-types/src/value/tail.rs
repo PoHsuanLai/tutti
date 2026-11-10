@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// convolves their responses, so their *lengths* combine as `La + Lb - 1`,
 /// while their ring-outs combine as plain `(La - 1) + (Lb - 1)`. Defined this
 /// way a chain is a sum and a merge is a max, with no correction term, which is
-/// why [`tail`](crate::tail) can add with [`Samples`]' own operator.
+/// why `tutti_graph::graph_tail` can add with [`Samples`]' own operator.
 ///
 /// It is also the question a render actually asks — "how much longer must I
 /// pull?" — so a node that passes its input through unchanged answers zero

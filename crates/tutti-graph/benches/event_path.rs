@@ -14,11 +14,12 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventOut, Executor, Io, Node, Prepare, Shape, Status,
     Transport, Unforkable,
 };
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const BLOCK: usize = 1024;
 

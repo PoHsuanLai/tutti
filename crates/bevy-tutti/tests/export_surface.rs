@@ -30,8 +30,8 @@ use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
 };
 use tutti_nodes::testing::{Const, Sink};
-use tutti_types::NodeKey;
-use tutti_types::graph::{OutPort, Source};
+use tutti_graph::NodeKey;
+use tutti_graph::{OutPort, Source};
 
 /// A tiny CPAL-free graph with one node piped to the output bus, so a fork
 /// of it has something to render.

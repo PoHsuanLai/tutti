@@ -26,10 +26,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tutti_graph::CrossfadeCurve;
+use tutti_graph::NodeKey;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_session::{GraphSource, ParamRef, Session};
 use tutti_types::AtomicF32;
-use tutti_types::{ChannelLayout, Depth, NodeKey, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{ChannelLayout, Depth, SampleRate, Samples, Seconds, UnitParam};
 
 use common::probe::ProbeUnit;
 

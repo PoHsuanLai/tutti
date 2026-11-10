@@ -50,9 +50,10 @@
 //! The diagram above, as a [`Topology`](crate::Topology):
 //!
 //! ```
-//! use tutti_types::graph::{Edge, InPort, NodeSpec, OutPort, Source};
-//! use tutti_types::delays;
-//! use tutti_types::{ChannelLayout, NodeKey, Samples, Topology};
+//! use tutti_graph::{Edge, InPort, NodeSpec, OutPort, Source};
+//! use tutti_graph::delays;
+//! use tutti_types::{ChannelLayout, Samples};
+//! use tutti_graph::{NodeKey, Topology};
 //!
 //! let (a, limiter, b, mixer) = (NodeKey(1), NodeKey(2), NodeKey(3), NodeKey(4));
 //! let (mono, stereo) = (ChannelLayout::MONO, ChannelLayout::STEREO);
@@ -75,9 +76,9 @@
 //!
 //! [`other_sources`]: LatencyGraph::other_sources
 
-use crate::value::Samples;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use tutti_types::Samples;
 
 /// The upper bound on any single node's reported latency: 10 s at 48 kHz.
 ///

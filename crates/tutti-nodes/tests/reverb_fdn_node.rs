@@ -306,7 +306,7 @@ fn a_lane_driving_the_decay_changes_how_long_it_rings() {
             Some(Arc::new(AtomicF32::new(decay)).into()),
             None,
         );
-        let key = tutti_types::NodeKey(9_000);
+        let key = tutti_graph::NodeKey(9_000);
         let editor = r.editor_mut();
         editor.insert(key, "lane", lane);
         editor

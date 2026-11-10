@@ -12,10 +12,10 @@ mod support;
 use support::Sine;
 use tutti_engine::{Engine, GraphEngineError};
 use tutti_graph::MAX_ROOT_CHANNELS;
+use tutti_graph::NodeKey;
 use tutti_graph::{CommitError, Editor, ForkByClone, Prepare};
+use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
-use tutti_types::NodeKey;
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
 
 /// A graph whose root has `outputs` channels, with a sine at key 1 feeding

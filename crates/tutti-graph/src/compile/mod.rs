@@ -9,7 +9,7 @@
 //!    The shape is what the unit says about itself and the spec is what the
 //!    value says; if they disagree, one of them is stale, and compiling
 //!    either would make the latency folds over the value
-//!    (`tutti_types::latency::plan`) disagree with the plan. Every event
+//!    (`crate::latency_plan`) disagree with the plan. Every event
 //!    edge marked with a required resolution is checked against its sink's
 //!    declared `Shape::event_resolution`.
 //! 2. **SCC** ([`order::scc`]) over direct audio + event dependencies. A cycle
@@ -19,7 +19,7 @@
 //!    that feeds the delay, so the op DAG stays acyclic.
 //! 3. **Order** ([`order::kahn`]) — one deterministic topological sort.
 //! 4. **Latency solve** — `arrival = max(departures)`, `departure = arrival +
-//!    own`: `tutti_types::delays`' solve, over the spec (its
+//!    own`: `crate::delays`' solve, over the spec (its
 //!    `LatencyGraph` impl lists event and param sources). **Event and param
 //!    edges count toward arrival**, and **a `Source::Global` input is a
 //!    merge-point source**, delayed to the node's arrival like any other.
@@ -59,8 +59,9 @@ pub(crate) mod verify;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
+use crate::NodeKey;
+use crate::{Edge, FeedbackFrom, InPort, OutPort, Source};
+use tutti_types::{ChannelLayout, Latency, Samples, Tail};
 
 use crate::node::{InPlaceMask, MAX_PORTS, Prepare, Resolution, Shape};
 use crate::param::ParamIn;
@@ -628,10 +629,10 @@ pub fn compile(
     let order = order::kahn(&keys, &preds);
 
     // ---- 4. latency -------------------------------------------------------
-    // One solve: `tutti_types::latency::delays` over the checked graph. The
+    // One solve: `crate::delays` over the checked graph. The
     // compiler places its delays itself (event and param edges included) from
     // the solve's arrivals.
-    let solved = tutti_types::latency::delays(graph);
+    let solved = crate::delays(graph);
     let arrival: Vec<Latency> = keys
         .iter()
         .map(|&k| Latency::new(solved.arrival(k)))
@@ -902,7 +903,7 @@ pub fn compile(
     let master_meter = topology
         .meters
         .values()
-        .any(|spec| matches!(spec, tutti_types::MeterSpec::Outputs));
+        .any(|spec| matches!(spec, crate::MeterSpec::Outputs));
     let mut output_refs: Vec<ARef> = Vec::with_capacity(topology.outputs.len());
     for (channel, source) in topology.outputs.iter().enumerate() {
         let channel = channel as u16;
@@ -955,7 +956,7 @@ pub fn compile(
     // a global input past the declared width) reads silence rather than
     // failing the commit, as a meter's does; it gets no delay ring, and the
     // other lanes' rings are keyed by their own lane and source.
-    let mut tap_ids: Vec<tutti_types::TapId> = Vec::new();
+    let mut tap_ids: Vec<crate::TapId> = Vec::new();
     for (&tap, spec) in &topology.taps {
         let mut srcs = Vec::with_capacity(spec.sources.len());
         for (lane, source) in spec.sources.iter().enumerate() {
@@ -970,7 +971,7 @@ pub fn compile(
                 },
                 Source::Zero => (ARef::Zero, Latency::ZERO),
             };
-            if spec.align == tutti_types::TapAlign::ToOutput && src != ARef::Zero {
+            if spec.align == crate::TapAlign::ToOutput && src != ARef::Zero {
                 let d = dep.gap_to(total);
                 if !d.is_zero() {
                     let ARef::Val(v) = src else {
@@ -1018,11 +1019,11 @@ pub fn compile(
     // by a narrower one, a removed node) reads silence rather than failing the
     // commit. One op a meter, so its lanes are folded together. A closed meter
     // is not in the topology.
-    let mut meter_ids: Vec<(tutti_types::MeterId, usize)> = Vec::new();
+    let mut meter_ids: Vec<(crate::MeterId, usize)> = Vec::new();
     for (&meter, spec) in &topology.meters {
         let srcs: Vec<ARef> = match spec {
-            tutti_types::MeterSpec::Outputs => output_refs.clone(),
-            tutti_types::MeterSpec::Ports { sources, align } => {
+            crate::MeterSpec::Outputs => output_refs.clone(),
+            crate::MeterSpec::Ports { sources, align } => {
                 let mut srcs = Vec::with_capacity(sources.len());
                 for (lane, source) in sources.iter().enumerate() {
                     let (mut src, dep) = match *source {
@@ -1036,7 +1037,7 @@ pub fn compile(
                         },
                         Source::Zero => (ARef::Zero, Latency::ZERO),
                     };
-                    if *align == tutti_types::TapAlign::ToOutput
+                    if *align == crate::TapAlign::ToOutput
                         && let ARef::Val(v) = src
                     {
                         let d = dep.gap_to(total);

@@ -345,7 +345,7 @@ the interpreter.
   *events* of a vanished delay are flushed to the surviving sink at offset 0,
   so a note-off is never lost. Feedback keys include the unit generation.
 - **Global inputs are aligned like any other source** at a merge point with a
-  latent path. `tutti_types::latency::plan` (the fundsp side) did not; it is
+  latent path. `tutti_graph::latency_plan` (the fundsp side) did not; it is
   now the compiler's own solve (one copy), and does
   ([the fork is deleted](#the-fork-is-deleted)).
 - **Env and PDC**: the beat comes from `Env`, not an audio signal PDC
@@ -3387,7 +3387,7 @@ clip entering mid-render) and `graph_engine_clock.rs`'s
 Source}` and `topology::compile`; the `Net` forms of `build_vbap_mix` /
 `VbapMixParts::insert_into` (tutti-spatial) (`ParamModParts::insert_into`
 went with the whole param chain in compiler-owned param modulation); `PdcDelay`,
-`tutti_types::latency::compensate(&mut Net)` and `unit_param`; the nodes'
+`tutti_graph::compensate(&mut Net)` and `unit_param`; the nodes'
 own tests (tutti-nodes, tutti-sampler, tutti-spatial, tutti-graph's builder
 and fork suites) and tutti-graph's `graph_render` A/B bench; tutti-sampler's
 `profile_stretch_clone` example; and `TransportClock`'s `AudioUnit` half.
@@ -3430,7 +3430,7 @@ non-test used the fork by then), and of `tutti-node` only the filters'
 | fork tests/benches/examples | 3,963 |
 | `tutti-node`: `num.rs` Num/Float/Real/`F32x` tower, `signal.rs` `Routing`/`route`, `setting.rs` `Parameter`/`Address`/`NodeAddr`, `AudioUnit`, `BufferRef/BufferMut` SIMD layout | most of 2,995 |
 | `tutti_core::dsp` (44 names), `unit_param`, `Setting`, `topology::Catalog`/`compile` → `Net` | — |
-| the `Net`-facing half of `tutti-types::latency` (`DelayInsertion`, `compensate(&mut G)`) | — |
+| the `Net`-facing half of `tutti-graph`'s `latency` (`DelayInsertion`, `compensate(&mut G)`) | — |
 | `fundsp-tutti` exclusions in CI clippy/rustdoc, the `--features` fork no_std note | — |
 
 Keeps: `Topology`, the latency/tail folds (as pure passes), `RtPublish`,
@@ -4979,12 +4979,17 @@ request and a plugin that parallelises its own voices ran them serially.
   something a caller can forget or reorder. Its soundness argument (the FP-environment rule it departs from,
   and the audit of what runs inside it) is its `# Soundness` docs.
 
-### Move `graph`, `latency` and `tail` into `tutti-graph` (planned)
+### Move `graph`, `latency` and `tail` into `tutti-graph` (done)
 
-Until this move, `tutti-types/src/{graph,latency,tail}.rs` hold `Topology` and
+Done 2026-11-10 as a pure move (`tutti-graph/src/{graph,latency,tail}.rs`, modules
+private, everything re-exported at the root; `latency::plan` is exported as
+`latency_plan`, and `tests/graph_value.rs` moved with them). `NodeKey` moved too:
+`Topology` is keyed by it and `tutti-types` cannot depend upward, and no crate
+below `tutti-graph` names it. Below is the plan as it stood: until this move,
+`tutti-types/src/{graph,latency,tail}.rs` held `Topology` and
 its parts, the latency pass and the tail fold (768, 674 and 639 lines). The
 owner decided on 2026-11-07, and confirmed on 2026-11-10, that they move into
-`tutti-graph`. Nothing has moved yet.
+`tutti-graph`.
 
 - **What moves:** `Topology`, `Valid`/`Invalid`, `OutPort`, `InPort`, `Source`,
   `Edge`, `FeedbackFrom`, `ParamValue`, `NodeSpec`, the meter and tap specs
@@ -5028,14 +5033,14 @@ owner decided on 2026-11-07, and confirmed on 2026-11-10, that they move into
   - the six crate READMEs that import `tutti_types::graph::{OutPort, Source}`,
     `scripts/check-layout.sh` (the `tutti-graph` dependency comment) and
     `CLAUDE.md`, which changes with the code and not before;
-  - about 105 files: 84 name `tutti_types::graph` (68 of them in
+  - about 105 files: 84 name `tutti_graph` (68 of them in
     `tutti-graph`), about 19 name `latency` and 2 name `tail`.
 - **Order:** after the core-split PR 3 and the `AudioNode` decision (done:
   `bevy-tutti` owns `AudioNode`, the engine and `tutti-session` use `NodeKey`),
   so no prerequisite is open. The "one PDC latency solve" item is done:
-  the compiler calls `latency::delays` over `ValidGraph` (which implements
+  the compiler calls `delays` over `ValidGraph` (which implements
   `LatencyGraph`) and reads `Delays::arrival` / `departure` for the delays it
-  places itself, so `latency.rs` holds the only copy and the move is a plain
+  places itself, so `tutti-graph/src/latency.rs` holds the only copy and the move is a plain
   file move.
 
 ## Per-node rewrite plan
@@ -7037,7 +7042,7 @@ bare `plotters` dev-dependency did), so CI stops installing
 `libfontconfig1-dev`; and `lfqueue`, which broke `--cfg loom` and is why
 `tutti-shm-model` is its own crate, left the tree.
 
-**The Net-facing half of `tutti_types::latency` became a pass.**
+**The Net-facing half of `tutti_graph` became a pass.**
 `DelayInsertion` and `compensate(&mut G)` existed so `Net` could have its
 delays inserted into it; `latency::delays(&G) -> Delays<N>` returns the same
 lists (per audio port, per output channel, and the `Compensation`) as a

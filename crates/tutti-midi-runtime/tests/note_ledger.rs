@@ -54,15 +54,16 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use tutti_fixtures::midi::{cc, note_off, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode,
     ForkSource, ForkTarget, Forked, IntoNode, Io, LoopRange, Node, NodeParts, Offset, Prepare,
     Shape, Status, Transport, Unforkable,
 };
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, Latency, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, ChannelLayout, Latency, SampleRate, Samples};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
 
 const FPB: f64 = 24_000.0;

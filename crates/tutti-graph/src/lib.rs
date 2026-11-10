@@ -69,7 +69,7 @@
 //! ```
 //!
 //! - [`GraphSpec`] is the graph as data: a
-//!   [`Topology`](tutti_types::Topology) (nodes, audio edges, global inputs
+//!   [`Topology`] (nodes, audio edges, global inputs
 //!   and outputs) plus event edges and each param port's event source.
 //! - [`Editor`] (control thread) holds the spec and the units not yet
 //!   shipped. [`Editor::insert`] adds a node and returns its typed controls;
@@ -173,7 +173,7 @@
 //! - [`Editor::fork`] builds an independent copy of the graph, or of the part
 //!   feeding one node, for an offline export or a live duplicate.
 //! - A feedback loop is an explicit edge with its own delay
-//!   (`tutti_types::graph::FeedbackFrom`), so an offline bounce at a larger
+//!   (`crate::FeedbackFrom`), so an offline bounce at a larger
 //!   block loops like playback; a delay shorter than the maximum block is
 //!   [`CompileError::FeedbackTooShort`].
 //!
@@ -227,12 +227,14 @@ mod event;
 mod exec;
 mod fade;
 mod fork;
+mod graph;
 mod held;
 mod history;
 mod inlet;
 mod instrument;
 mod io;
 mod kernels;
+mod latency;
 mod loss;
 mod meter;
 mod node;
@@ -245,6 +247,7 @@ mod preroll;
 mod reference;
 mod slots;
 mod spec;
+mod tail;
 mod tap;
 mod time;
 
@@ -265,10 +268,19 @@ pub use fork::{
     ForkBuild, ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode,
     ForkRemains, ForkSource, ForkTarget, Forked, PendingFork, Unforkable,
 };
+// The audio graph as a value, and the two passes over it. `plan` is the
+// latency pass and is exported as `latency_plan`.
+pub use graph::{
+    Edge, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec, NodeKey, NodeSpec, OutPort,
+    ParamValue, Source, TapAlign, TapId, TapSpec, Topology, Valid,
+};
 pub use history::TransportHistory;
 pub use inlet::InletNode;
 pub use instrument::Instrument;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
+pub use latency::{
+    Compensation, Delays, Feed, LatencyGraph, MAX_NODE_LATENCY, delays, plan as latency_plan,
+};
 pub use loss::EventLoss;
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS, MAX_TRANSPORT_CHANGES,
@@ -287,6 +299,7 @@ pub use plan::{
 pub use play::PlayClock;
 pub use pool::{WorkerPool, WorkerPoolBuilder};
 pub use preroll::PrerollTable;
+pub use tail::{GraphTail, MAX_NODE_TAIL, TailGraph, graph_tail};
 // The reading is a value type, `tutti-types`' (the modulation compiler
 // carries one without naming the graph); the clock that keeps it is here.
 pub use meter::{Level, MeterReader, MeterWriter};

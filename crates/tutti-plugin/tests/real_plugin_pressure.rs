@@ -120,7 +120,7 @@ struct GraphUnit {
     renderer: tutti_graph::Renderer,
     /// Read only by [`latency`](Self::latency), for the VST3/AU null test.
     #[cfg(any(feature = "vst3", feature = "au"))]
-    key: tutti_types::NodeKey,
+    key: tutti_graph::NodeKey,
     inputs: usize,
     outputs: usize,
     ins: Vec<Vec<f32>>,

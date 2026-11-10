@@ -530,7 +530,7 @@ impl From<BarNumber> for i32 {
 /// Where a beat position falls in musical bar/beat terms.
 ///
 /// The answer to one query with the arithmetic already done, so no consumer
-/// re-derives it — the same shape as [`Compensation`](crate::latency::Compensation).
+/// re-derives it — the same shape as `tutti_graph::Compensation`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BarPosition {
     /// Which bar, 1-based.

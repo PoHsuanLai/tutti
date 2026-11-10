@@ -76,5 +76,5 @@ fn the_limiter_renders_what_it_always_did() {
         eat(&out[1]);
     }
     println!("DIGEST {digest:#018x}");
-    assert_golden("limiter_render", digest, 0);
+    assert_golden("limiter_render", digest, 0x193c_3ddd_3ece_3335);
 }

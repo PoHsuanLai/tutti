@@ -172,7 +172,7 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     assert!(!processor.is_f64());
     assert_eq!(
         controller.latency(&main_thread()),
-        Samples(controller.latency_samples(&main_thread()) as usize),
+        Samples(controller.loaded().latency_samples(&main_thread()) as usize),
         "the trait's figure is the plugin's"
     );
     assert!(matches!(

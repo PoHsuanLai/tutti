@@ -662,9 +662,11 @@ server's `Plugin` enum, still use them.
 one.
 
 - `ClapLoaded` implements `Loaded` and `Control`; `ClapController` implements
-  `Control` and `Controller` and derefs to `ClapLoaded`, so the inherent surface
-  the format has (editor, state contexts, ports, the `clap-extras` extensions)
-  stays reachable while audio runs, as `ClapActive` gave it through `Deref`.
+  `Control` and `Controller` and does not deref to `ClapLoaded`: the inherent
+  surface the format has (editor, state contexts, ports, the `clap-extras`
+  extensions) stays reachable while audio runs through `loaded()` and
+  `loaded_mut()`, and a call that must also tell the Processor
+  (`set_thread_pool`) is a method of the Controller itself.
   The Processor never touches that `ClapLoaded`: it keeps its own copy of the
   plugin pointer, the port layout and the host state, so the Controller's
   `&mut ClapLoaded` has no Rust-level alias. The shell is an `Arc` owning the
@@ -1091,7 +1093,7 @@ and from CLAP and VST3:
   by the claim, `activate` needing no live audio half, destroy on the main
   thread once and last (`retired`, set before the claim is taken), and
   callbacks that touch only the embedder's callbacks. The Controller now owns
-  its `ClapLoaded` directly (`Option<ClapLoaded>`, `Deref`), and the Processor
+  its `ClapLoaded` directly (`Option<ClapLoaded>`, behind `loaded()`; no `Deref`), and the Processor
   owns an `AudioSide`; a rejoin checks `plugin.owns(&side)` and
   `plugin.audio_sides() == 1` where it compared `Arc` pointers and counts. An
   `AudioSide` is retired once its instance is destroyed *or deactivated*, so a
@@ -1990,7 +1992,10 @@ splits: `AuProcessor` (render and MIDI from the render thread) and `AuController
   `reactivate`, `set_sample_rate` and `restart_bus_configuration`.
 - `HostEditor::open_editor`'s `*mut c_void`; `WindowHandle::{from_raw, from_ptr,
   from_u64}`; AU's public raw `AudioComponent` and `raw_unit`.
-- The `Active` trait and the `DerefMut` from the active type to the loaded one;
+- The `Active` trait and the `DerefMut` from the active type to the loaded one,
+  and with it every Controller's `Deref`/`DerefMut` to its `Loaded` type (the
+  access is `loaded()`/`loaded_mut()`; CLAP, VST3 and VST2 each pin it with a
+  compile-fail doctest);
   the CLAP `AudioThreadClaim`, which the Processor's `&mut` replaces.
 - The filesystem-reading default methods of `CatalogExt` (the trait itself is gone: `PluginDb` is a plain table).
 - `Vst2Instance`'s `Sync`.

@@ -239,13 +239,13 @@ impl Plugin {
     /// `IPrefetchableSupport::getPrefetchableSupport`, if the processor has the
     /// interface and answers.
     #[must_use]
-    pub fn prefetchable_support(&self, main: &MainThread) -> Option<u32> {
+    pub fn prefetchable_support(&self, main: &MainThread) -> Option<crate::PrefetchSupport> {
         let _scope = self.scoped(main);
         let proc = self.ext.prefetchable_support.as_ref()?;
         let mut support: u32 = 0;
         // SAFETY: `support` is a valid out-parameter.
         check(unsafe { proc.getPrefetchableSupport(&mut support) }).ok()?;
-        Some(support)
+        Some(crate::PrefetchSupport::from_raw(support))
     }
 
     /// `IAudioPresentationLatency`, if the processor has it. `false` without.

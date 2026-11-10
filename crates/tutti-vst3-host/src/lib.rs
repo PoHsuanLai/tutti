@@ -22,12 +22,12 @@ pub use host::{
 };
 pub use types::{
     AudioBuffer, BufferPtrs, BusInfo, ContentScale, EditorCapabilities, EditorSize, KeyEvent,
-    KeyModifiers, KeyOutcome, MidiEvent, NoteExpressionFlags, NoteExpressionIntValue,
-    NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterFlags, ParameterPoint,
-    ParameterQueue, PlainRange, PluginInfo, PrefetchSupport, ProcessContextRequirements,
-    ProcessMode, ProcessOutput, ProcessOutputRef, Sample, TransportInfo, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo,
-    WindowHandle, keyswitch_type, physical_ui_type, to_process_context, unit_ids,
+    KeyModifiers, KeyOutcome, KeyswitchKind, MidiEvent, NoteExpressionFlags,
+    NoteExpressionIntValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    ParameterFlags, ParameterPoint, ParameterQueue, PhysicalUiType, PlainRange, PluginInfo,
+    PrefetchSupport, ProcessContextRequirements, ProcessMode, ProcessOutput, ProcessOutputRef,
+    Sample, TransportInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+    Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo, WindowHandle, to_process_context, unit_ids,
 };
 
 pub use tutti_vst3_ffi::{

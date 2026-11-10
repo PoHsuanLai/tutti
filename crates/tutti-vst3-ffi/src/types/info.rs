@@ -430,8 +430,8 @@ bitflags::bitflags! {
 /// on which keys.
 #[derive(Clone, Debug)]
 pub struct Vst3KeyswitchInfo {
-    /// Keyswitch kind (`KeyswitchTypeIDs`). See [`keyswitch_type`].
-    pub type_id: u32,
+    /// What kind of switch this is.
+    pub kind: KeyswitchKind,
     /// UTF-16 display title (the articulation name).
     pub title: [u16; 128],
     /// UTF-16 abbreviated title (for narrow UIs).
@@ -453,7 +453,7 @@ pub struct Vst3KeyswitchInfo {
 impl Default for Vst3KeyswitchInfo {
     fn default() -> Self {
         Self {
-            type_id: 0,
+            kind: KeyswitchKind::from_raw(0),
             title: [0; 128],
             short_title: [0; 128],
             keyswitch_min: 0,
@@ -479,7 +479,7 @@ impl Vst3KeyswitchInfo {
     /// Reads the plugin's `KeyswitchInfo` record.
     pub(crate) fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
         Self {
-            type_id: c.typeId,
+            kind: KeyswitchKind::from_raw(c.typeId),
             title: c.title,
             short_title: c.shortTitle,
             keyswitch_min: c.keyswitchMin,
@@ -602,57 +602,106 @@ pub mod unit_ids {
     pub const NO_PROGRAM_LIST: i32 = vst3::Steinberg::Vst::kNoProgramListId;
 }
 
-/// VST3 `KeyswitchTypeIDs` constants — the *kind* of a key switch, mirroring
-/// `KeyswitchTypeIDs_` from the Steinberg SDK.
-pub mod keyswitch_type {
-    use super::KeyswitchTypeIDs_;
-
+/// The kind of a key switch, by the SDK's `KeyswitchTypeIDs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyswitchKind {
     /// Switch selected by playing its key before the note.
-    pub const NOTE_ON_KEYSWITCH: u32 = KeyswitchTypeIDs_::kNoteOnKeyswitchTypeID;
+    NoteOn,
     /// Switch that can be changed while a note sustains.
-    pub const ON_THE_FLY_KEYSWITCH: u32 = KeyswitchTypeIDs_::kOnTheFlyKeyswitchTypeID;
+    OnTheFly,
     /// Switch applied on note release.
-    pub const ON_RELEASE_KEYSWITCH: u32 = KeyswitchTypeIDs_::kOnReleaseKeyswitchTypeID;
+    OnRelease,
     /// A key *range* mapped to an articulation rather than a single switch key.
-    pub const KEY_RANGE: u32 = KeyswitchTypeIDs_::kKeyRangeTypeID;
+    KeyRange,
+    /// A kind the SDK does not define, as the plugin sent it.
+    Other(u32),
 }
 
-/// VST3 `PhysicalUITypeIDs` constants — which physical control a
-/// note-expression-physical-UI mapping entry refers to. Mirrors
-/// `PhysicalUITypeIDs_` from the Steinberg SDK. Returned (as the first tuple
-/// element) by
-/// the host's physical UI mapping query.
-///
-/// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
-/// the former's lint.
-pub mod physical_ui_type {
-    use super::PhysicalUITypeIDs_;
+impl KeyswitchKind {
+    /// The kind a `KeyswitchTypeIDs` value names.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        match raw {
+            KeyswitchTypeIDs_::kNoteOnKeyswitchTypeID => Self::NoteOn,
+            KeyswitchTypeIDs_::kOnTheFlyKeyswitchTypeID => Self::OnTheFly,
+            KeyswitchTypeIDs_::kOnReleaseKeyswitchTypeID => Self::OnRelease,
+            KeyswitchTypeIDs_::kKeyRangeTypeID => Self::KeyRange,
+            other => Self::Other(other),
+        }
+    }
+}
 
+/// Which physical control a note-expression-physical-UI mapping entry refers
+/// to, by the SDK's `PhysicalUITypeIDs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PhysicalUiType {
     /// Horizontal movement of the physical control.
-    pub const X_MOVEMENT: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIXMovement);
+    XMovement,
     /// Vertical movement of the physical control.
-    pub const Y_MOVEMENT: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIYMovement);
+    YMovement,
     /// Pressure applied to the physical control.
-    pub const PRESSURE: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIPressure);
-    /// Sentinel for "no physical UI type" / unmapped.
-    pub const INVALID: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kInvalidPUITypeID);
+    Pressure,
+    /// A type the SDK does not define (including its "invalid" sentinel), as
+    /// the plugin sent it.
+    Other(u32),
 }
 
-/// VST3 `IPrefetchableSupport` result constants, mirroring
-/// `ePrefetchableSupport_` from the Steinberg SDK. Returned by
-/// the host's prefetchable-support query.
-///
-/// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
-/// the former's lint.
-pub mod prefetchable_support {
-    use super::ePrefetchableSupport_;
+impl PhysicalUiType {
+    /// The type a `PhysicalUITypeIDs` value names.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        let is = |sdk| raw == crate::sdk_enum_u32(sdk);
+        if is(PhysicalUITypeIDs_::kPUIXMovement) {
+            Self::XMovement
+        } else if is(PhysicalUITypeIDs_::kPUIYMovement) {
+            Self::YMovement
+        } else if is(PhysicalUITypeIDs_::kPUIPressure) {
+            Self::Pressure
+        } else {
+            Self::Other(raw)
+        }
+    }
 
+    /// The `PhysicalUITypeIDs` value.
+    #[must_use]
+    pub fn raw(self) -> u32 {
+        match self {
+            Self::XMovement => crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIXMovement),
+            Self::YMovement => crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIYMovement),
+            Self::Pressure => crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIPressure),
+            Self::Other(raw) => raw,
+        }
+    }
+}
+
+/// A plugin's answer to `IPrefetchableSupport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefetchSupport {
     /// The plugin can never be used in prefetch (offline look-ahead) mode.
-    pub const NEVER: u32 = crate::sdk_enum_u32(ePrefetchableSupport_::kIsNeverPrefetchable);
-    /// The plugin currently supports prefetch.
-    pub const YET: u32 = crate::sdk_enum_u32(ePrefetchableSupport_::kIsYetPrefetchable);
-    /// The plugin doesn't currently support prefetch (but may later).
-    pub const NOT_YET: u32 = crate::sdk_enum_u32(ePrefetchableSupport_::kIsNotYetPrefetchable);
+    Never,
+    /// The plugin supports prefetch now.
+    Yes,
+    /// The plugin does not support prefetch now, but may later.
+    NotYet,
+    /// A value the SDK does not define, as returned.
+    Unknown(u32),
+}
+
+impl PrefetchSupport {
+    /// The `ePrefetchableSupport` value the plugin returned.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        let is = |sdk| raw == crate::sdk_enum_u32(sdk);
+        if is(ePrefetchableSupport_::kIsNeverPrefetchable) {
+            Self::Never
+        } else if is(ePrefetchableSupport_::kIsYetPrefetchable) {
+            Self::Yes
+        } else if is(ePrefetchableSupport_::kIsNotYetPrefetchable) {
+            Self::NotYet
+        } else {
+            Self::Unknown(raw)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -709,7 +758,8 @@ mod note_expression_info_tests {
 
 #[cfg(test)]
 mod keyswitch_info_tests {
-    use super::{Vst3KeyswitchInfo, keyswitch_type};
+    use super::{KeyswitchKind, Vst3KeyswitchInfo};
+    use vst3::Steinberg::Vst::KeyswitchTypeIDs_;
 
     fn string128(s: &str) -> [u16; 128] {
         let mut buf = [0u16; 128];
@@ -725,7 +775,7 @@ mod keyswitch_info_tests {
     fn from_c_decodes_articulation_and_range() {
         // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
         let mut raw: vst3::Steinberg::Vst::KeyswitchInfo = unsafe { std::mem::zeroed() };
-        raw.typeId = keyswitch_type::NOTE_ON_KEYSWITCH;
+        raw.typeId = KeyswitchTypeIDs_::kNoteOnKeyswitchTypeID;
         raw.title = string128("Staccato");
         raw.shortTitle = string128("Stac");
         raw.keyswitchMin = 24; // C1
@@ -735,7 +785,7 @@ mod keyswitch_info_tests {
 
         let info = Vst3KeyswitchInfo::from_c(&raw);
 
-        assert_eq!(info.type_id, keyswitch_type::NOTE_ON_KEYSWITCH);
+        assert_eq!(info.kind, KeyswitchKind::NoteOn);
         assert_eq!(info.title_string(), "Staccato");
         assert_eq!(info.short_title_string(), "Stac");
         assert_eq!(info.keyswitch_min, 24);

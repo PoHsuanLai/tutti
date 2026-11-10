@@ -338,7 +338,7 @@ impl Plugin {
         main: &MainThread,
         bus_index: i32,
         channel: i16,
-    ) -> Vec<(u32, u32)> {
+    ) -> Vec<(crate::PhysicalUiType, u32)> {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.physical_ui_mapping.as_ref() else {
             return Vec::new();
@@ -360,7 +360,12 @@ impl Plugin {
         }
         entries
             .iter()
-            .map(|e| (e.physicalUITypeID, e.noteExpressionTypeID))
+            .map(|e| {
+                (
+                    crate::PhysicalUiType::from_raw(e.physicalUITypeID),
+                    e.noteExpressionTypeID,
+                )
+            })
             .collect()
     }
 

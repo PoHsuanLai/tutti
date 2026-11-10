@@ -27,9 +27,7 @@ impl Vst3Loaded {
     /// `IPrefetchableSupport`. `None` if the plugin doesn't implement the
     /// interface. Main/UI thread.
     pub fn prefetchable_support(&self, main: &MainThread) -> Option<PrefetchSupport> {
-        self.plugin
-            .prefetchable_support(main)
-            .map(PrefetchSupport::from_raw)
+        self.plugin.prefetchable_support(main)
     }
 
     /// Tells the plugin the downstream presentation latency (in samples) for a

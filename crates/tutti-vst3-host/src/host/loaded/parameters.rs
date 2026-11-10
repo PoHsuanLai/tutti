@@ -242,7 +242,7 @@ impl Vst3Loaded {
         main: &MainThread,
         bus_index: i32,
         channel: i16,
-    ) -> Vec<(u32, u32)> {
+    ) -> Vec<(crate::PhysicalUiType, u32)> {
         self.plugin.physical_ui_mapping(main, bus_index, channel)
     }
 

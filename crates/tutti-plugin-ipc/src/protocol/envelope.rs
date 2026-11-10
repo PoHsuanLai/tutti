@@ -41,6 +41,10 @@ pub struct StagedState {
 /// A request travelling host → subprocess.
 ///
 /// Variant order is wire-significant; see the module docs.
+// `ProcessAudio` is inline, as `BridgeMessage::AudioProcessed` is: it is the
+// message of every block, and a box would be an allocation at each end per
+// block (doc 027 P2b). Bincode encodes a box and its contents alike.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostMessage {
     /// Instantiate and activate the plugin, ready to process audio. A state
@@ -76,8 +80,8 @@ pub enum HostMessage {
     /// Deactivate and destroy the plugin instance, keeping the subprocess alive.
     UnloadPlugin,
     /// Process one audio block. Audio rides the shared `AudioSlab`, in the ring
-    /// slot `seq` selects; the boxed payload carries the per-block side-band.
-    ProcessAudio(Box<ProcessAudioData>),
+    /// slot `seq` selects; the payload carries the per-block side-band.
+    ProcessAudio(ProcessAudioData),
     /// Set one parameter to a normalized value.
     SetParameter {
         /// Which parameter — opaque handle or positional index, per format.
@@ -138,6 +142,7 @@ pub enum HostMessage {
         /// Whether this is the final chunk. A one-chunk state sets it on `seq` 0.
         last: bool,
         /// Opaque, format-defined bytes. Never interpret them host-side.
+        #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
     /// Open the plugin's editor window.
@@ -223,6 +228,7 @@ pub enum HostMessage {
         /// Whether this is the final chunk.
         last: bool,
         /// Opaque, format-defined bytes. Never interpret them host-side.
+        #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
 }
@@ -309,6 +315,7 @@ pub enum BridgeMessage {
         /// Whether this is the final chunk.
         last: bool,
         /// Opaque, format-defined bytes. Never interpret them host-side.
+        #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
     /// The editor window opened, at the size the plugin asked for.

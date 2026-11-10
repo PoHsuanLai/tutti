@@ -599,12 +599,12 @@ mod tests {
         .into_iter()
         .collect();
 
-        let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
+        let msg = HostMessage::ProcessAudio(ProcessAudioData {
             seq: 42,
             num_samples: 512,
             midi_events,
             ..Default::default()
-        }));
+        });
 
         let encoded = bincode::serialize(&msg).unwrap();
         let decoded: HostMessage = bincode::deserialize(&encoded).unwrap();

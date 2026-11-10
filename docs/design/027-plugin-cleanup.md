@@ -135,6 +135,19 @@ became one `tutti_plugin_types::Locator` with a `Helper`. What remains:
   write. Also: `AudioResponse` is about 5 KB and is copied per block, and
   `serde_bytes` belongs on the byte fields. Pinned by a no-alloc gate around
   a client and server round trip.
+
+  **Done:** each thread writes through one kept buffer (`serialize_into`
+  behind a prefix placeholder, one `write_all`), the server reads through one
+  and the host through its `PartialFrame`'s, each trimmed to 256 KiB after a
+  larger frame. `HostMessage::ProcessAudio` is inline, as `AudioProcessed`
+  is, so neither end boxes a block (bincode encodes a box and its contents
+  alike: no protocol change). The state chunks use `wire::bytes` (the same
+  encoding, one copy instead of a call per byte), not the `serde_bytes`
+  crate. A gate runs a block's round trip over a socket pair inside
+  `assert_no_alloc`. **Decided: `AudioResponse` stays copied.** It is 256
+  events of 20 bytes, one memcpy of about 5 KB per block on the audio thread,
+  under a microsecond and no allocation; removing it needs a per-sequence
+  slot table with its own synchronisation, which costs more than it saves.
 - **P5, small items:**
   - `serde(default)` does nothing under bincode, so drop it. Every wire
     change already bumps `PROTOCOL_VERSION`.

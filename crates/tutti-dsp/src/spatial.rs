@@ -1,4 +1,9 @@
-//! Vector base amplitude panning: the speaker layout and the gain solve.
+//! Spatial algorithms: vector base amplitude panning (the speaker layout and
+//! the gain solve) and the HRTF binaural convolver (`hrtf.rs`, over the HRIR
+//! sphere of `sphere.rs`).
+//!
+//! ## VBAP
+//!
 //!
 //! A [`SpeakerLayout`] is built once, on the control side, from the speakers'
 //! positions: it picks the **pairs** (a horizontal layout) or **triplets** (a
@@ -13,13 +18,25 @@
 //! gains are scaled to unit power. The tuples themselves are chosen from
 //! Pulkki's published method, not from any implementation of it: see
 //! `select.rs`.
+//!
+//! ## HRTF
+//!
+//! [`HrtfBinaural`] convolves a mono input with the HRIR pair blended for the
+//! direction it is told to render, `HRTF_STEP` frames at a time. The caller
+//! smooths the direction and hands it over per step.
 
 mod error;
+mod hrtf;
 mod layout;
 mod math;
 mod select;
+mod sphere;
 
 pub use error::SpeakerGeometryError;
+pub use hrtf::{
+    HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE,
+    MIN_SPHERE_RATE,
+};
 pub use layout::{MAX_SPEAKERS, PanningMode, SpeakerLayout, Tuple};
 
 #[cfg(test)]

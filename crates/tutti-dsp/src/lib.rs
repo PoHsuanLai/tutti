@@ -141,7 +141,10 @@ pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;
-pub use spatial::{MAX_SPEAKERS, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple};
+pub use spatial::{
+    HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPEAKERS,
+    MAX_SPHERE_RATE, MIN_SPHERE_RATE, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple,
+};
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

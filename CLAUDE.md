@@ -633,8 +633,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
   `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
-  pairs and triplets, selected from the published method, doc 028 section 4; the nodes and the
-  smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  pairs and triplets, selected from the published method, doc 028 section 4), the HRTF
+  convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`
+  and the sphere-rate constants; it takes the aimed direction per call, `HRTF_STEP` frames at a
+  time, so the de-zipper is the caller's; the nodes and the smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the realizations

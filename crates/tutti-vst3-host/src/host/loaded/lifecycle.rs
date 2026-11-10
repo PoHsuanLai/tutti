@@ -135,7 +135,7 @@ impl Vst3Loaded {
     ///   `kIoChanged` and `kLatencyChanged` both need a deactivate/reactivate
     ///   cycle this `&mut Vst3Loaded` cannot run, so the caller does it (the
     ///   core plans it from the same flags, as
-    ///   [`take_requests`](Self::take_requests) gives them), then reads
+    ///   [`Control::take_requests`](tutti_plugin_types::Control::take_requests) gives them), then reads
     ///   [`latency_samples`](Self::latency_samples).
     /// - **`on_event`** — each [`PluginNotification`] in arrival order across
     ///   all three kinds: `BeginEdit`/`PerformEdit`/`EndEdit`/… edits, `IProgress`
@@ -324,20 +324,6 @@ impl Vst3Loaded {
         crate::host::shell::reap()
     }
 
-    /// What the plugin has asked of the host since the last take, as the
-    /// core's requests, appended to `out`: every `restartComponent` flag that
-    /// has a request ([`RestartFlags::raise_into`] says which). A host that
-    /// drives a [`Lifecycle`](tutti_plugin_types::Lifecycle) feeds these to it.
-    ///
-    /// Wait-free and allocation-free up to `out`'s capacity, so it can run
-    /// between blocks of a realtime-priority thread. Queued edits, progress
-    /// and unit news stay for
-    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) or
-    /// [`discard_notifications`](Self::discard_notifications).
-    pub fn take_requests(&self, _main: &MainThread, out: &mut Vec<Request>) {
-        out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
-    }
-
     /// Whether the plugin is activated: `setActive(1)` has run and
     /// `setActive(0)` has not.
     #[must_use]
@@ -348,7 +334,7 @@ impl Vst3Loaded {
     /// Re-queries the `IMidiMapping` CC to parameter table from the controller
     /// and publishes it, so the Processor routes against it from its next
     /// block. Call it when the plugin raised
-    /// [`Request::MidiCcAssignmentChanged`]. Allocates.
+    /// [`Request::MidiCcAssignmentChanged`](tutti_plugin_types::Request::MidiCcAssignmentChanged). Allocates.
     pub fn rebuild_midi_cc_mapping(&mut self, main: &MainThread) {
         self.midi_cc
             .publish(MidiCcCell(MidiCcMapping::query(main, &self.plugin)));

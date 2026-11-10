@@ -74,7 +74,7 @@ pub use editor::{
     ResizeHints, WindowHandle,
 };
 pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
-pub use hosting::{Editor, InProcess, Load, Origin, OutOfProcess, Reopen};
+pub use hosting::{Editor, EditorWindow, InProcess, Load, Origin, OutOfProcess, Reopen};
 pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
 pub use requests::{Edit, EditDrain, EditSink, edits, taken};

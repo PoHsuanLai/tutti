@@ -6195,6 +6195,17 @@ Each PR passes CI by itself. The doc is its own PR, this one.
 6. **Delete.** `ChannelSumNode`, its exports, `SessionNode` impl, README and
    the lists; CLAUDE.md, `graph.rs`, `spec.rs`, `engineering-notes.md`.
 
+   > **As built (PR 6).** `mix_bus.rs` is deleted with its unit tests, its
+   > export and `SessionNode` impl, `rt_no_alloc`'s
+   > `channel_sum_process_is_allocation_free` (the op's own no-alloc gate is
+   > `tutti-graph`'s) and the `isolate_snapshots` mention. CLAUDE.md lists it
+   > under the dead names; the READMEs of `tutti-nodes` and `tutti-soundfont`,
+   > doc 015's example (its sidechain bus is a `BusStripNode`) and doc 024's
+   > row 30 no longer offer it. `graph.rs`, `spec.rs` and the engineering notes
+   > had no mention left. The parked `bevy-tutti`'s `graph_value` tests still
+   > name it; per the parking rule they are left for the un-parking PR. The
+   > mentions above this note are the record of how it went.
+
 #### Edge gain: a mixer is a weighted sum
 
 Decided by the owner. The sum of the section above becomes a **weighted sum**:

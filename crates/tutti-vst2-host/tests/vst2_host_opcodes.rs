@@ -41,7 +41,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 
-use tutti_plugin_types::{Request, RescanScope};
+use tutti_plugin_types::{Control, Request, RescanScope};
 
 #[path = "support/active.rs"]
 mod active;
@@ -112,9 +112,9 @@ impl Drop for Probe {
 }
 
 /// The requests the plugin has raised since the last call.
-fn requests(instance: &Active) -> Vec<Request> {
+fn requests(instance: &mut Active) -> Vec<Request> {
     let mut asked = Vec::new();
-    instance.loaded().take_requests(&main_thread(), &mut asked);
+    instance.take_requests(&main_thread(), &mut asked);
     asked
 }
 
@@ -132,9 +132,9 @@ fn update_display_reaches_the_host() {
     let probe = Probe::acquire();
     probe.fires_update_display();
 
-    let instance = probe.load();
+    let mut instance = probe.load();
 
-    let asked = requests(&instance);
+    let asked = requests(&mut instance);
     assert!(
         asked.contains(&Request::RescanParams(RescanScope::Info)),
         "audioMasterUpdateDisplay fell through to the unhandled-opcode arm, so \
@@ -155,14 +155,14 @@ fn the_requests_are_consumed_by_taking_them() {
     let probe = Probe::acquire();
     probe.fires_update_display();
 
-    let instance = probe.load();
+    let mut instance = probe.load();
 
     assert!(
-        !requests(&instance).is_empty(),
+        !requests(&mut instance).is_empty(),
         "first take sees the request"
     );
     assert!(
-        requests(&instance).is_empty(),
+        requests(&mut instance).is_empty(),
         "the word must clear on take, or a single request re-reads forever"
     );
 }
@@ -176,10 +176,10 @@ fn a_quiet_plugin_asks_for_nothing() {
     let probe = Probe::acquire();
     // No `fires_update_display` — the probe's default.
 
-    let instance = probe.load();
+    let mut instance = probe.load();
 
     assert_eq!(
-        requests(&instance),
+        requests(&mut instance),
         [],
         "nothing asked for a refresh, so nothing should be reported"
     );

@@ -16,7 +16,20 @@ use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample, Transport};
 /// `AEffect::uniqueId`.
 pub const UNIQUE_ID: i32 = i32::from_be_bytes(*b"TSHP");
 
-struct Params(Arc<Core>);
+/// The parameters' object, with the host to tell what `core::NOTICE_ON_LOAD` says.
+struct Params(Arc<Core>, HostCallback);
+
+impl Params {
+    /// What a state load raises (`core::NOTICE_ON_LOAD`): the plugin reporting a
+    /// parameter move of its own, as `audioMasterAutomate`.
+    fn loaded(&self, bytes: &[u8]) -> bool {
+        let loaded = self.0.load(bytes).is_ok();
+        if loaded && self.0.notice() == core::NOTICE_ON_LOAD {
+            self.1.automate(0, 0.5);
+        }
+        loaded
+    }
+}
 
 impl PluginParameters for Params {
     fn get_parameter(&self, index: i32) -> Option<f32> {
@@ -55,10 +68,10 @@ impl PluginParameters for Params {
         self.0.save()
     }
     fn load_preset_data(&self, data: &[u8]) -> bool {
-        self.0.load(data).is_ok()
+        self.loaded(data)
     }
     fn load_bank_data(&self, data: &[u8]) -> bool {
-        self.0.load(data).is_ok()
+        self.loaded(data)
     }
 }
 
@@ -130,7 +143,7 @@ impl Plugin for Shared {
         core::TAIL as isize
     }
     fn get_parameter_object(&mut self) -> Arc<dyn PluginParameters> {
-        Arc::new(Params(Arc::clone(&self.core)))
+        Arc::new(Params(Arc::clone(&self.core), self.host))
     }
 
     fn process_events(&mut self, events: &api::Events) {

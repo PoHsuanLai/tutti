@@ -4,8 +4,9 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    Control, EditorPresence, Features, LoadedPlugin, Normalized, ParamId, ParameterInfo,
-    PluginClass, PluginDescriptor, PluginError, PluginResult, Preset, PresetId,
+    ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin,
+    Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
+    Preset, PresetId, RenderMode, Request, WindowHandle,
 };
 
 use crate::error::Vst2Error;
@@ -181,5 +182,74 @@ impl Control for Vst2Loaded {
 
     fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
         Some(PresetId::Number(self.current_program(main)))
+    }
+
+    /// Takes the requests the plugin raised since the last call, in the order
+    /// [`taken`](tutti_plugin_types::taken) yields them, into `out`.
+    ///
+    /// VST 2.4 has one notice, `audioMasterIOChanged`, for the pins, the latency
+    /// and the tail alike, so it raises [`Request::IoChanged`],
+    /// [`Request::LatencyChanged`] and [`Request::TailChanged`] together;
+    /// `audioMasterUpdateDisplay` raises a rescan of the parameters' values and
+    /// of their names. Feed them to [`Lifecycle::drive`](tutti_plugin_types::Lifecycle::drive);
+    /// the core reads the figures again rather than restarting the plugin
+    /// ([`RestartRules::NONE`](tutti_plugin_types::RestartRules::NONE)).
+    fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+        // Control side, so the one warning about a plugin that grew its pins past the
+        // activation (S7: it renders silence until re-activated) is logged here.
+        let _ = self.instance.report_pin_refusals();
+        out.extend(tutti_plugin_types::taken(self.host.requests()));
+    }
+
+    /// Sets whether the host reports itself as rendering offline.
+    ///
+    /// Unlike the other three formats there is nothing to push: VST2 carries
+    /// this through `audioMasterGetCurrentProcessLevel`, a callback the plugin
+    /// makes whenever it likes. So this stores the answer the host will give,
+    /// and no plugin can decline it: there is no query to refuse. That is also
+    /// why a render-mode change needs no restart here, and the answer is always
+    /// `true`. The store is atomic: the plugin may ask from its audio thread
+    /// while the control thread sets it.
+    fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
+        self.set_offline_render(mode.is_offline());
+        true
+    }
+
+    /// The reports of `audioMasterAutomate` (the plugin's own editor moving a
+    /// knob), oldest first. A report naming a negative index names no
+    /// parameter and is dropped. The queue the reports arrive in drops rather
+    /// than growing when nobody drains it:
+    /// [`dropped_param_changes`](Vst2Loaded::dropped_param_changes) counts them.
+    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        while let Some((index, value)) = self.param_rx.pop() {
+            if let Ok(index) = u32::try_from(index) {
+                out.push((ParamId::new(index), Normalized::clamped(f64::from(value))));
+            }
+        }
+    }
+}
+
+impl EditorWindow for Vst2Loaded {
+    fn has_editor(&self, _main: &MainThread) -> bool {
+        self.instance.has_editor()
+    }
+
+    /// `scale` is ignored: VST2 has no content-scale call, the fused `AEffect`
+    /// editor sizes itself in the parent's pixels.
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        _scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        self.open_editor_in(main, parent).map_err(plugin_error)
+    }
+
+    fn close_editor(&mut self, main: &MainThread) {
+        self.instance.close_editor(main);
+    }
+
+    fn editor_idle(&mut self, main: &MainThread) {
+        self.instance.idle_editor(main);
     }
 }

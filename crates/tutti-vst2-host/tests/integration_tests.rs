@@ -18,7 +18,7 @@ use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_plugin_types::{Control, Normalized, ParamId};
+use tutti_plugin_types::{ContentScale, Control, EditorWindow, Normalized, ParamId};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext};
 
@@ -260,7 +260,7 @@ fn opening_an_editor_on_an_editorless_plugin_says_so() {
 
     let err = instance
         .loaded_mut()
-        .open_editor(&main_thread(), parent)
+        .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
         .expect_err("a plugin with no editor must not report a successful open");
 
     let msg = err.to_string();

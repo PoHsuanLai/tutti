@@ -27,6 +27,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use tutti_graph::UmpAt;
+use tutti_plugin_types::{Control, RenderMode};
 
 mod support;
 use support::active::{Activate, Active, ActiveExt};
@@ -813,7 +814,7 @@ fn host_render_mode_reaches_the_plugin() {
     let mut loaded = session.load();
 
     assert!(
-        loaded.set_render_mode(&main_thread(), true),
+        loaded.set_render_mode(&main_thread(), RenderMode::Offline),
         "plugin accepts offline render"
     );
     assert_eq!(
@@ -824,7 +825,7 @@ fn host_render_mode_reaches_the_plugin() {
     );
 
     assert!(
-        loaded.set_render_mode(&main_thread(), false),
+        loaded.set_render_mode(&main_thread(), RenderMode::Realtime),
         "plugin accepts realtime"
     );
     assert_eq!(

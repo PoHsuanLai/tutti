@@ -18,7 +18,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_clap_ffi::ActivateError;
 use tutti_plugin_types::MainThread;
-use tutti_plugin_types::{PluginError, Prepare, Refused, Request, SampleFormat, negotiate, taken};
+use tutti_plugin_types::{
+    Control, PluginError, Prepare, Refused, Request, SampleFormat, negotiate, taken,
+};
 use tutti_rt::ArcLend;
 
 /// Heap reservation for pooled per-call event scratch on a `ClapProcessor`,
@@ -155,7 +157,7 @@ impl ClapLoaded {
         // CLAP's render mode is `[main-thread]` and carries no activation
         // constraint; a plugin without the extension has declined, which is
         // not a failure.
-        let _ = self.set_render_mode(main, prepare.mode().is_offline());
+        let _ = Control::set_render_mode(&mut self, main, prepare.mode());
 
         // The plugin may have changed its ports since it was loaded or last
         // deactivated, and the 64-bit flag is part of them.

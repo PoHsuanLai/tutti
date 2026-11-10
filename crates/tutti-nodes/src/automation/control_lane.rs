@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use tutti_curve::Piece;
 use tutti_graph::{
     Cost, Cx, Event, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Law, Node,
     NodeParts, Offset, ParamRange, ParamRangeReader, ParamSegment, PlayReading, Prepare, Shape,
@@ -502,7 +503,7 @@ fn value_along(seg: &ParamSegment, from: f32, to: f32, j: f64) -> f32 {
     }
     let t = ((p + j) / l) as f32;
     if t < 1.0 {
-        from + (to - from) * seg.shape().eval(t)
+        Piece::new(from, to, seg.shape()).value(t)
     } else {
         to
     }

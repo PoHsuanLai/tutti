@@ -20,10 +20,11 @@ use tutti_plugin_types::{
     Samples, State, standing,
 };
 use tutti_rt::Rt;
-use tutti_vst2_host::{ChannelLayout, ParameterChange, Vst2Loaded, Vst2Processor};
+use tutti_vst2_host::{ChannelLayout, Vst2Loaded, Vst2Processor};
 
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::PluginTail;
+use tutti_plugin_types::{Control, Normalized, ParamId};
 
 /// What the plugin changed about itself since the last
 /// [`Instance::pump`]. VST2 has no notification for any of it except
@@ -278,8 +279,8 @@ impl Instance {
     /// read. Main thread: a re-read dispatches `effGetTailSize`.
     pub(super) fn pump(&mut self, main: &MainThread) -> Changes {
         let mut asked = Vec::new();
-        if let Some(plugin) = self.plugin() {
-            plugin.take_requests(main, &mut asked);
+        if let Some(plugin) = self.plugin_mut() {
+            Control::take_requests(plugin, main, &mut asked);
         }
         // The plugin's own signal, reported as it was raised: its pin counts or
         // latency may have moved, and the handle's `Io` says so even when the
@@ -315,10 +316,12 @@ impl Instance {
     }
 
     /// The plugin's parameter edits since the last call.
-    pub(super) fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        self.plugin()
-            .map(Vst2Loaded::drain_param_changes)
-            .unwrap_or_default()
+    pub(super) fn drain_param_changes(&mut self, main: &MainThread) -> Vec<(ParamId, Normalized)> {
+        let mut edits = Vec::new();
+        if let Some(plugin) = self.plugin_mut() {
+            Control::take_reported_edits(plugin, main, &mut edits);
+        }
+        edits
     }
 
     /// Whether the plugin is split and rendering.

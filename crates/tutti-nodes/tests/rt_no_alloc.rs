@@ -258,34 +258,3 @@ fn distortion_process_is_allocation_free_fed_and_unfed() {
         }
     }
 }
-
-/// The channel-major bus: four stereo sources summed, 1 000 blocks under
-/// `assert_no_alloc`.
-///
-/// Mutation (run): a `black_box(vec![0.0f32; size])` at the top of
-/// `ChannelSumNode::process` → fails.
-#[test]
-fn channel_sum_process_is_allocation_free() {
-    use tutti_graph::contract::BlockRig;
-    use tutti_nodes::ChannelSumNode;
-    use tutti_types::{ChannelLayout, SampleRate};
-
-    let (mut rig, ()) = BlockRig::new(
-        ChannelSumNode::new(4, ChannelLayout::STEREO),
-        SampleRate(48_000.0),
-        64,
-    );
-    for (c, x) in rig.inputs_mut().iter_mut().enumerate() {
-        x.fill(0.05 * (c + 1) as f32);
-    }
-    rig.block();
-    assert!(
-        (0..2).all(|c| rig.output(c).iter().any(|s| s.abs() > 1e-6)),
-        "the bus rendered silence; the gate would walk no sum"
-    );
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            rig.block();
-        }
-    });
-}

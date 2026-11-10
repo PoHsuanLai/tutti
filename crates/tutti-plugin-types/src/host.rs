@@ -23,17 +23,17 @@
 //! one plugin instance at once.
 
 use crate::{
-    AudioBufferMut, AutomationMode, LoadedPlugin, Normalized, ParamId, ParameterInfo,
+    AudioBufferMut, AutomationMode, EditorWindow, LoadedPlugin, Normalized, ParamId, ParameterInfo,
     PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext,
     ProcessOutput, Samples,
 };
-use crate::{FdId, MainThread, Prepare, RescanScope, RestartRules, TimerId};
+use crate::{FdId, MainThread, Prepare, RenderMode, Request, RescanScope, RestartRules, TimerId};
 
 /// What the main thread asks of a plugin, in any state that has one.
 ///
 /// Object-safe: [`Lifecycle::control`](crate::Lifecycle::control) lends it as
 /// `&mut dyn Control`.
-pub trait Control {
+pub trait Control: EditorWindow {
     /// The plugin's catalog identity.
     fn info(&self) -> &PluginDescriptor;
 
@@ -139,6 +139,32 @@ pub trait Control {
     /// Services a plugin file descriptor that is ready.
     fn service_fd(&mut self, main: &MainThread, id: FdId) {
         let _ = (main, id);
+    }
+
+    /// The shell's one pass over what the plugin asked for since the last call,
+    /// appended to `out` in the order [`taken`](crate::taken) yields them, for
+    /// [`Lifecycle::drive`](crate::Lifecycle::drive). A format with nothing to
+    /// ask says so by pushing nothing.
+    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+        let _ = (main, out);
+    }
+
+    /// Tells the plugin its render mode now. `true` when the format applied it
+    /// without a restart; `false` when it cannot, and the caller reconfigures
+    /// through the [`Lifecycle`](crate::Lifecycle), whose
+    /// [`Prepare::mode`](crate::Prepare::mode) the next activation carries. A
+    /// `false` changes nothing.
+    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+        let _ = (main, mode);
+        false
+    }
+
+    /// Appends the parameter edits the plugin reported outside a block (its own
+    /// editor moving a knob), oldest first, to `out`. Only VST2 reports them
+    /// this way; CLAP and VST3 report them in the block's [`ProcessOutput`] and
+    /// push nothing here.
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        let _ = (main, out);
     }
 }
 

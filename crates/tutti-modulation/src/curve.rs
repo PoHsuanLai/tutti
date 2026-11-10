@@ -24,8 +24,8 @@ pub enum CurveSegment {
         until: Option<Beat>,
     },
     /// The value moves from `from` at `start` to `to` at `end` along
-    /// `shape`, as [`Law::interpolate`] reads it: at beat `b` the
-    /// value is `shape.interpolate(from, to, (b - start) / (end - start))`.
+    /// `shape`, as [`tutti_curve::Piece::value`] reads it: at beat `b` the
+    /// value is `Piece::new(from, to, shape).value((b - start) / (end - start))`.
     /// `start < end`.
     Move {
         /// Where the move starts.

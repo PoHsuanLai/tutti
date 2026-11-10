@@ -1,9 +1,9 @@
 use super::*;
+use crate::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool as StdAtomicBool;
 use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 use tutti_types::Bpm;
 
 /// Test transport: tempo + beat + playing under a switch.
@@ -614,7 +614,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
         // Piece 0 sits on an even frame of the timeline, and the label is
         // that frame: they differ by under the sample the event is placed
         // on.
-        let lag = piece0_at - tc.to_seconds();
+        let lag = piece0_at - tc.to_seconds().get();
         assert!(
             lag.abs() < 2.0 / rate,
             "{rate} Hz {fps:?}: {tc} is {lag} s from piece 0"

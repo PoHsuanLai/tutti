@@ -15,17 +15,64 @@
 //!
 //! This module models the file as a flat list of `(delta_ticks, Ump)`,
 //! which is all a Type-0-like clip needs; the caller supplies the DCTPQ.
+//!
+//! # Examples
+//!
+//! A clip written with a [`ClipHeader`] declares its own tempo and time
+//! signature (M2-116 §7.1.1/§7.1.2), so an importer can place it in real time
+//! rather than assuming the project's:
+//!
+//! ```
+//! use tutti_fixtures::midi::note_on;
+//! use tutti_midi_file::{
+//!     ParsedClipFile, write_clip_file_with_header, ClipEvent, ClipHeader,
+//!     CLIP_FILE_MAGIC,
+//! };
+//! use tutti_types::Bpm;
+//! use tutti_ump::{MidiChannel, MidiGroup};
+//!
+//! let bytes = write_clip_file_with_header(
+//!     480,
+//!     ClipHeader { tempo_bpm: Bpm::of(174.0), time_signature: (7, 8) },
+//!     &[ClipEvent::new(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))],
+//! );
+//!
+//! // Self-identifying: a file can be recognised before it is parsed.
+//! assert_eq!(&bytes[..8], &CLIP_FILE_MAGIC);
+//!
+//! let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
+//! assert_eq!(clip.time_signature(), Some((7, 8)));
+//! assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm::of(174.0), 0.05));
+//! ```
+//!
+//! [`ParsedClipFile::notes`] pairs the event stream into whole notes, so an
+//! importer gets durations without reimplementing note matching — and without
+//! narrowing velocity to 7 bits on the way:
+//!
+//! ```
+//! use tutti_fixtures::midi::{note_off, note_on};
+//! use tutti_midi_file::{ParsedClipFile, write_clip_file_from_beats};
+//! use tutti_types::{Beat, BeatDuration};
+//! use tutti_ump::{MidiChannel, MidiGroup};
+//!
+//! let bytes = write_clip_file_from_beats(96, [
+//!     (Beat(0.0), note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
+//!     (Beat(1.5), note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
+//! ]);
+//!
+//! let notes = ParsedClipFile::from_bytes(&bytes).unwrap().notes();
+//! assert_eq!(notes.len(), 1);
+//! assert_eq!(notes[0].duration_beats, BeatDuration(1.5));
+//! assert_eq!(notes[0].velocity, 0xABCD);
+//! ```
 
 use std::vec::Vec;
 
-use midi2::Data;
-use midi2::ump_stream::{EndOfClip, StartOfClip};
-use midi2::utility::{DeltaClockstamp, DeltaClockstampTpq};
-use midi2::ux::u20;
-
 use tutti_midi_protocol::channel_voice;
 use tutti_types::{Beat, BeatDuration, Bpm};
-use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Ump, Utility, Voice2};
+use tutti_ump::{
+    DeltaTicks, KeyEvent, Message, MidiChannel, MidiGroup, Stream, Ump, Utility, Voice2,
+};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
 pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -115,7 +162,7 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
 /// Re-encode a parsed clip with [`ParsedClipFile::header`]:
 ///
 /// ```
-/// # use tutti_midi_types::{ParsedClipFile, write_clip_file_with_header, ClipHeader};
+/// # use tutti_midi_file::{ParsedClipFile, write_clip_file_with_header, ClipHeader};
 /// # let first = write_clip_file_with_header(96, ClipHeader::default(), &[]);
 /// let clip = ParsedClipFile::from_bytes(&first).unwrap();
 /// let again = write_clip_file_with_header(
@@ -145,8 +192,8 @@ fn leading_header_len(events: &[ClipEvent]) -> usize {
         .iter()
         .take_while(|ce| {
             ce.delta_ticks == 0
-                && (crate::ump::flex_tempo_bpm(&ce.event).is_some()
-                    || crate::ump::flex_time_signature(&ce.event).is_some())
+                && (tutti_midi_types::ump::flex_tempo_bpm(&ce.event).is_some()
+                    || tutti_midi_types::ump::flex_time_signature(&ce.event).is_some())
         })
         .count()
 }
@@ -184,14 +231,19 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
         push_words(&mut out, delta_clockstamp(0).words());
         push_words(
             &mut out,
-            crate::ump::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm).words(),
+            tutti_midi_types::ump::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm).words(),
         );
         push_words(&mut out, delta_clockstamp(0).words());
         push_words(
             &mut out,
             // 8 thirty-second notes per quarter — the standard value.
-            crate::ump::flex_set_time_signature(MidiGroup::FIRST, numerator, denominator, 8)
-                .words(),
+            tutti_midi_types::ump::flex_set_time_signature(
+                MidiGroup::FIRST,
+                numerator,
+                denominator,
+                8,
+            )
+            .words(),
         );
     }
 
@@ -223,8 +275,8 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 /// than `u32::MAX` ticks is clamped to it.
 ///
 /// ```
-/// # use tutti_midi_types::{write_clip_file_from_beats, ParsedClipFile};
-/// # use tutti_midi_types::Beat;
+/// # use tutti_midi_file::{write_clip_file_from_beats, ParsedClipFile};
+/// # use tutti_types::Beat;
 /// # use tutti_ump::{MidiChannel, MidiGroup};
 /// use tutti_fixtures::midi::{note_off, note_on};
 /// let bytes = write_clip_file_from_beats(96, [
@@ -326,7 +378,7 @@ impl ParsedClipFile {
     pub fn tempo_bpm(&self) -> Option<Bpm> {
         self.events
             .iter()
-            .find_map(|ce| crate::ump::flex_tempo_bpm(&ce.event))
+            .find_map(|ce| tutti_midi_types::ump::flex_tempo_bpm(&ce.event))
     }
 
     /// The clip's musical context as a [`ClipHeader`] — the value to hand back
@@ -350,7 +402,7 @@ impl ParsedClipFile {
     pub fn time_signature(&self) -> Option<(u8, u8)> {
         self.events
             .iter()
-            .find_map(|ce| crate::ump::flex_time_signature(&ce.event))
+            .find_map(|ce| tutti_midi_types::ump::flex_time_signature(&ce.event))
     }
 
     /// The clip's musical length in beats: the absolute beat of the last event
@@ -520,9 +572,12 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
 
     while let Some(word0) = words.peek() {
         let mt = (word0 >> 28) as u8;
-        let n = crate::ump::ump_word_count(mt);
+        // The packet's length is `Ump::words`'s, by its message type.
+        let n = Ump([word0, 0, 0, 0]).words().len();
         let raw = words.take(n).ok_or(ClipFileError::Truncated)?;
-        let ev = crate::ump::packet_from(raw);
+        let mut packet = [0u32; 4];
+        packet[..n].copy_from_slice(raw);
+        let ev = Ump(packet);
 
         // Classify by message type + status.
         if mt == 0x0 {
@@ -614,9 +669,9 @@ fn push_words(out: &mut Vec<u8>, words: &[u32]) {
 const DCS_MAX: u32 = 0x000F_FFFF;
 
 fn delta_clockstamp(ticks: u32) -> Ump {
-    let mut m = DeltaClockstamp::<[u32; 1]>::new();
-    m.set_time_data(u20::new(ticks & DCS_MAX));
-    crate::ump::packet_from(m.data())
+    Ump::from(Message::Utility(Utility::DeltaClockstamp(
+        DeltaTicks::masked(ticks & DCS_MAX),
+    )))
 }
 
 /// Emit `ticks` as Delta Clockstamps, restarting the count with a NOOP each
@@ -641,17 +696,17 @@ fn push_delta(out: &mut Vec<u8>, mut ticks: u32) {
 }
 
 fn dctpq(ticks_per_quarter: u16) -> Ump {
-    let mut m = DeltaClockstampTpq::<[u32; 1]>::new();
-    m.set_time_data(ticks_per_quarter);
-    crate::ump::packet_from(m.data())
+    Ump::from(Message::Utility(Utility::TicksPerQuarterNote(
+        ticks_per_quarter,
+    )))
 }
 
 fn start_of_clip() -> Ump {
-    crate::ump::packet_from(StartOfClip::<[u32; 4]>::new().data())
+    Ump::from(Message::Stream(Stream::StartOfClip))
 }
 
 fn end_of_clip() -> Ump {
-    crate::ump::packet_from(EndOfClip::<[u32; 4]>::new().data())
+    Ump::from(Message::Stream(Stream::EndOfClip))
 }
 
 /// Reads big-endian u32 words from a byte slice.

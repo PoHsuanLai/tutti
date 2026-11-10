@@ -427,7 +427,11 @@ crates/          everything shipped; directory name = package name; no nesting
                  turns a note into voices; it executes `tutti-voicing`'s
                  commands), tutti-sf2 (the SoundFont 2 file as data)
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
-                 (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
+                 (raw ALSA UMP FFI that alsa-sys lacks; Linux only). The Clip File codec
+                 (both halves) is `tutti-midi-file`'s; the inbound sync decoders
+                 (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`) are
+                 `tutti-midi-runtime`'s, beside `ClockMaster`; `tutti-midi-types` is
+                 shrinking away (design 017 stage 5b)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
                  control socket, the plugin-server's launch, and the
@@ -719,7 +723,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
-- `tutti-midi-file` is OS-free.
+- `tutti-midi-file` is OS-free. It holds the MIDI 2.0 Clip File codec (`ParsedClipFile`,
+  `write_clip_file*`, `ClipFileError`) beside SMF.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
   sample headers, sample data, raw generators) and holds nothing that plays.
   Its workspace dependencies are `tutti-ump` and `tutti-types` (the units its

@@ -6,12 +6,13 @@
 // Everything here runs on or feeds the audio thread, where refusal is shaped as
 // a value, not an error: a full mailbox drops and reports a count, and
 // `MpeIngest::translate` sends nothing for an event it drops. The MIDI parse errors live one crate
-// down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
+// down (`tutti_midi_file::ClipFileError`, `tutti_midi_types::MidiParseError`).
 
 mod ledger;
 mod live;
 mod outbound;
 mod schedule;
+mod sync;
 mod traits;
 
 pub use ledger::{NoteLedger, Sending};
@@ -30,6 +31,7 @@ pub use schedule::{
     CLIP_EVENT_DENSITY, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode, MidiClipControls,
     MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
+pub use sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode};
 pub use traits::{MidiIn, MidiOut};
 
 // Value types that live one crate down, re-exported so a consumer of the runtime

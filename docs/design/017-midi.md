@@ -158,7 +158,7 @@ event output port carries, so an edge that ends can close them. They have
 different owners, keys and failure modes; unifying them would give one of them a
 question it does not ask.
 
-**`tutti-midi-types` is still about 9,000 lines of pre-017 vocabulary:** `mpe/`, `translation/`, `clip_file`, `cc/mapping`, `sync/`, and the `MidiIn` and
+**`tutti-midi-types` is still about 9,000 lines of pre-017 vocabulary:** `mpe/`, `translation/`, `cc/mapping`, and the `MidiIn` and
 `MidiOut` traits, beside the `MidiEvent` above.
 
 ## 2. The hierarchy
@@ -1269,9 +1269,9 @@ nothing new: nothing here adds `unsafe` or a lock-free structure.
 | `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
 | `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
-| `tutti-midi-runtime` | Engine | Graph nodes | `tutti-graph`, `tutti-midi-protocol` |
+| `tutti-midi-runtime` | Engine | Graph nodes, `ClockMaster`, and the inbound sync decoders (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`, `SmpteFrameRate`, `ClockTransportState`) | `tutti-graph`, `tutti-midi-protocol` |
 | `tutti-graph` | Graph | Event ports hold `Ump`; the event tap and the event inlet | `tutti-types`, `tutti-ump` |
-| `tutti-midi-file` | Files | SMF, Clip File | `tutti-ump`, `tutti-tempo` |
+| `tutti-midi-file` | Files | SMF, Clip File (the byte codec and the path-level reader and writer) | `tutti-ump`, `tutti-tempo` |
 | `tutti-tempo` | Time | `TempoMap` (beat to sample); not MIDI | `tutti-types` |
 
 `tutti-midi-types` goes away. This is not a split for compile time, which is
@@ -1287,6 +1287,30 @@ sets no maximum), the four RPN address constants (`RPN_BANK_MPE`, `RPN_INDEX_MCM
 to one `tutti_ump::Rpn` with named addresses, and `PitchBendSensitivity` to
 `tutti-midi-protocol` (an optional `serde` feature, because `MpeZoneConfig` persists
 it). `PerNoteBendRanges` moves with the Plugins lane after these.
+
+Stage 5b part (a) moved three more groups, with no shim left behind:
+
+- `clip_file` (`write_clip_file*`, `ParsedClipFile`, `ClipHeader`, `ClipEvent`,
+  `ClipNote`, `ClipFileError`, `CLIP_FILE_MAGIC`) to `tutti-midi-file`, which already
+  held its path-level half. Its only production users were `tutti-midi-file` itself;
+  `tutti-midi-runtime` (the same layer) named it in a doc comment alone and
+  `tutti-midi-hardware` re-exported it, which it no longer does (it depends on no
+  file crate). It still builds its UMP words through `midi2` and calls
+  `tutti_midi_types::ump`'s Flex Data builders, which the later parts replace.
+- `sync/` (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`, `SmpteFrameRate`,
+  `ClockTransportState`) to **`tutti-midi-runtime`**, not `tutti-midi-device`. The
+  decoders speak `Bpm` and `Beat`, and `tutti-midi-device` may not depend on
+  `tutti-types` (the same layer, and it takes no workspace crate but `tutti-ump`);
+  the alternative was bare `f64` at its edge, which the unit rule forbids. The
+  runtime is also where the one production user already is: `ClockMaster` builds
+  `SmpteTimecode` and `SmpteFrameRate` to send MTC, and the decoders are its inverse
+  and its test oracle (the loopback tests). `SmpteTimecode::to_seconds` now returns
+  `Seconds` and `to_beats` a `Beat`. The decoders still have no consumer of their own;
+  they are deleted, not kept, if a clock slave does not arrive.
+- `PerNoteMap` to `tutti-polysynth` as a crate-private type, its only user (the
+  slot table's note-id index).
+- `fixed` (`q7_9_to_f32`, `q7_25_to_f32`) was deleted, with no caller: `tutti_ump::Pitch`
+  holds the Q7.9 and Q7.25 words and `Pitch::note_number` is the one conversion.
 
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
 out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and
@@ -1310,8 +1334,9 @@ is named for what it is. A byte-stream source is read by `tutti_ump::Midi1Parser
 MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only in the
 `-ffi` crates, and `scripts/check-plugin-ffi.sh` or a sibling gate enforces it.
 
-`sync`'s clock and MTC decoders have no consumer today. They move to the runtime
-when a clock slave uses them (§9), and are deleted otherwise. `cc::mapping` is
+`sync`'s clock and MTC decoders have no consumer today beyond `ClockMaster`'s loopback
+tests. They are in the runtime (stage 5b), and are deleted if a clock slave (§9) does
+not use them. `cc::mapping` is
 replaced by a CC modulation source (§9), and `jr_timestamp` is rewritten in
 `tutti-midi-device`, where it can be negotiated and driven by elapsed time.
 
@@ -1814,7 +1839,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    Note On.
 - **Stage 5b. Shrink `tutti-midi-types` away:** what 5a, 3a, 3c and 4 leave
    (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
-   to its owner (§6) or is deleted, then the crate, and `midi2` from the workspace
+   to its owner (§6) or is deleted (`clip_file` is in `tutti-midi-file`, `sync/` in
+   `tutti-midi-runtime`, `PerNoteMap` in `tutti-polysynth` and `fixed` is gone), then the crate, and `midi2` from the workspace
    and `Cargo.lock`. With `mpe/`: `MpeZoneConfig` has public fields, so a literal
    can hold a member count or master channel its constructors would refuse, and a
    `DualZone` pair totalling more than 15 members (the two spans overlap) is not

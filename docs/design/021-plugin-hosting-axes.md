@@ -729,7 +729,8 @@ departures from the plan, each because a piece named something above layer 4:
   buffers through the node's `ParamDelivery` is in `param_delivery`'s tests
   (`PayloadPool` is `#[doc(hidden)] pub` for it), the two `Delivered` mapping
   tests are with `SubprocessBackend`, and `From<BridgeError> for ProbeFailure`
-  (both now foreign to `tutti-plugin`) is the function `probe_failure`. The
+  (both now foreign to `tutti-plugin`) is the function
+  `tutti_plugin::catalog::probe_failure`, which the contract's `probe` suite calls. The
   launch tests lost their `clap` feature gate (this crate has no format
   features) and need the plugin-server like the other suites that spawn it.
 

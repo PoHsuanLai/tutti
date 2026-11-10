@@ -915,7 +915,8 @@ place that loses precision to be written out explicitly:
      `f64`, bit for bit, not only after the `f32` port split, and
      `transport_at` is the host's position at any frame, through any number
      of wraps inside the block.
-   - **`OfflineTimeline`'s position is one `Mutex<FrameClock>`**, moved and
+   - **`OfflineTimeline`'s position is one `Mutex` over a `FrameClock`** (and,
+     over a map with steps, its walk position: doc 020 stage 3), moved and
      published under the lock, so a seek racing an advance cannot publish a
      mixed position; readers read the published beat lock-free.
    - **The MTC quarter-frame grid is closed form too** (quarter-frame `k`
@@ -1460,8 +1461,10 @@ Seven gaps had to close before the flip:
    included), stop/start and mid-block tempo steps, and `ClickNode` behind
    it clicks on the same frames. Offline, `OfflineTimeline::graph_block`
    gives the executor the block's `Transport` (and no changes: the tempo
-   and loop are fixed, a wrap is derived) and `render_graph` processes
-   then advances, so an offline graph reads the clock its samplers read.
+   and loop are fixed, a wrap is derived; over a map with steps, doc 020
+   stage 3, `render_graph` carries the steps as changes) and `render_graph`
+   processes then advances, so an offline graph reads the clock its samplers
+   read.
    Found on the way: `ClickNode` gates on the live play flag
    (`MotionFsm::is_playing`) once per 64-frame chunk. On the graph every
    chunk runs after the engine's walk has applied the whole block's

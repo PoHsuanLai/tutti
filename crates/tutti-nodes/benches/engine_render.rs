@@ -35,13 +35,13 @@
 //! # Running
 //!
 //! ```text
-//! just bench                       # everything
+//! cargo xtask bench                       # everything
 //! cargo bench -p tutti-nodes --bench engine_render
-//! just bench-save main             # a baseline on THIS machine
-//! just bench-cmp main              # compare against it
+//! cargo xtask bench-save main             # a baseline on THIS machine
+//! cargo xtask bench-cmp main              # compare against it
 //! ```
 //!
-//! Baselines are per-machine and do not travel; see `just bench-save`.
+//! Baselines are per-machine and do not travel; see `cargo xtask bench-save`.
 
 use std::hint::black_box;
 

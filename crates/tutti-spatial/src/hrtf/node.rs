@@ -52,6 +52,7 @@ pub struct HrtfBinauralNode {
 struct LastFinite {
     azimuth: f32,
     elevation: f32,
+    blend: f32,
 }
 
 /// The live controls of an [`HrtfBinauralNode`]: its position and its
@@ -159,6 +160,7 @@ impl HrtfBinauralNode {
             good: LastFinite {
                 azimuth: Azimuth::FRONT.get(),
                 elevation: Elevation::LEVEL.get(),
+                blend: Mix::WET.get(),
             },
         })
     }
@@ -225,7 +227,11 @@ impl Node for HrtfBinauralNode {
         // The controls' cells are the one copy of the commanded position and
         // blend; the renderer reads them here, once per block.
         let target = self.placement();
-        let blend = self.controls.blend.load();
+        // `Mix::new_clamped` passes a NaN through, so the blend is held too.
+        let blend = Mix(hold_finite(
+            &mut self.good.blend,
+            self.controls.blend.load().get(),
+        ));
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);

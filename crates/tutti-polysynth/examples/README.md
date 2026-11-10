@@ -4,7 +4,7 @@ Judges `PolySynth`'s rendered audio against first-principles synthesis theory â€
 harmonic series, filter transfer functions, unison beating.
 
 ```bash
-just verify-audio                 # renders + judges everything, this included
+cargo xtask verify-audio                 # renders + judges everything, this included
 # or directly:
 cargo run --release \
     -p tutti-polysynth --example render_synth_cases -- /tmp/tutti-polysynth

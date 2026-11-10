@@ -33,8 +33,8 @@ capture = ["dep:tutti-io", "dep:tutti-codec"]
 # served, so a host's config type does not change shape per OS.
 #
 # Needs libjack at BUILD time on Linux (`libjack-jackd2-dev` /
-# `jack-audio-connection-kit-devel`), which is why `just check-jack` is a
-# separate recipe from `just check-features`.
+# `jack-audio-connection-kit-devel`), which is why `cargo xtask check-jack` is a
+# separate recipe from `cargo xtask check-features`.
 jack = ["cpal/jack"]
 
 [dependencies]

@@ -291,7 +291,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
 /// Absent third-party units are skipped, not failed — the crate's rule is that
 /// only Apple's units are guaranteed present.
 ///
-/// Behind the `installed-units` feature (`just test-au-installed`): none of the
+/// Behind the `installed-units` feature (`cargo xtask test-au-installed`): none of the
 /// units is installed on a hosted runner, and a test that can only fail there
 /// is compiled out rather than filtered by name or skipped.
 #[cfg(feature = "installed-units")]

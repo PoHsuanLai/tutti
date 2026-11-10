@@ -1387,7 +1387,7 @@ consumer; its generic parts go to dsp (consolidation 8) and the unit stays.
 
 ## 10. Staged plan
 
-Each step is one PR that passes `just ci`. Bit-identity rule: where a realization is
+Each step is one PR that passes `cargo xtask ci`. Bit-identity rule: where a realization is
 unchanged, record a digest of the node's render of seeded input at the commit
 before the step, and assert it after (the method of doc 022 "Bit-identity of the
 General MIDI send"); a render that calls libm (`tan`, `powf`, `exp10`) uses

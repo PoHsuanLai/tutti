@@ -46,7 +46,7 @@ tutti-measure = { path = "../tutti-measure" }
 [dev-dependencies]
 # Every format on for this crate's own tests, examples and bench (none is
 # default: `ogg` links C), the pattern `tutti-codec` uses. A consumer's build
-# never sees it. `just test-features` checks the library with each alone.
+# never sees it. `cargo xtask test-features` checks the library with each alone.
 tutti-export = { path = ".", features = ["wav", "flac", "aiff", "ogg"] }
 criterion.workspace = true
 # An independent reader for the WAV files the tests export.

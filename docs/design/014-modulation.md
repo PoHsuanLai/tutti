@@ -1961,7 +1961,7 @@ CLAUDE.md's modulation lines, the CHANGELOG's migrations (`ModMatrix` /
 `ControlLaneNode::for_foreign` per parameter; a hand-wired event source
 sends its current value on a fork's first block, per §10's two classes).
 
-**Properties.** The workspace, doctests, `just check-windows` and the
+**Properties.** The workspace, doctests, `cargo xtask check-windows` and the
 canonical-paths gate are green; every ported suite stays green.
 
 **Exit.** `grep` finds none of §10; a param port holds at most one event

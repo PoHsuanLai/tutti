@@ -1835,7 +1835,7 @@ mod disk {
 ///
 /// **They bite only with a threaded pool**, so CI runs them threaded beside
 /// `the_rendered_graph_is_dropped_on_the_main_thread`: the `dark features`
-/// job (and `just test-features`) runs this module with
+/// job (and `cargo xtask test-features`) runs this module with
 /// `--features full,bevy_tasks/multi_threaded`. This crate's own feature set
 /// leaves `multi_threaded` off, and then `bevy_tasks` runs a spawned task to
 /// completion inside `spawn` (its single-threaded pool), on the main thread:

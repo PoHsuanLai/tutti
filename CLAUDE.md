@@ -120,7 +120,9 @@ serial one.
 
 ## Commands
 
-`just` wraps these; `just --list` shows them. `just ci` runs what CI runs.
+`cargo xtask <recipe>` wraps these (the `xtask` crate; `.cargo/config.toml` aliases it);
+`cargo xtask help` lists them, and `cargo xtask --dry-run <recipe>` prints what a recipe would
+run. `cargo xtask ci` runs what CI runs.
 
 ```bash
 cargo build
@@ -135,14 +137,14 @@ scripts/check-guards.sh            # every host callback runs under the panic gu
 scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
 scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
-just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
+cargo xtask deny                   # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
 
-`just deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
+`cargo xtask deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
 the same version) and fails with that command when it is missing.
 
-`just doc` runs rustdoc as CI does (`--document-private-items`, per feature,
-and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
+`cargo xtask doc` runs rustdoc as CI does (`--document-private-items`, per feature,
+and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy under
 `--cfg loom`.
 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
@@ -153,7 +155,7 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
   one caller still pinned.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
-  `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.
+  `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.
 
 ### Testing
 
@@ -164,7 +166,7 @@ and global state; nextest isolates each test in its own process.
 cargo nextest run --workspace
 cargo nextest run -p tutti-engine -E 'test(my_test_name)'
 cargo test --doc --workspace       # nextest does NOT run doctests, silently
-just test-all                      # both
+cargo xtask test-all              # both
 ```
 
 - **A test finds a repo file through `tutti_fixtures`, never a relative `..`
@@ -200,13 +202,13 @@ just test-all                      # both
   enables just what some member's dependency edge turns on (for example
   `tutti-nodes/convolution`), not a crate's own optional features. The rest
   (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
-  `dark features` job and `just test-features`. Name the feature when testing
+  `dark features` job and `cargo xtask test-features`. Name the feature when testing
   one crate, and add a new gated suite to both lists, or it never runs.
   **`tutti-midi-hardware --features sequencer-tests` is the exception:** it runs
   `Devices` against the real ALSA sequencer, which needs the kernel's `snd-seq`
   module and a readable `/dev/snd/seq`. CI's runner kernel (Azure) ships
   neither the module nor a package for it, so CI only lints the feature and the
-  suite runs locally (`just test-features`). It fails, never skips, where the
+  suite runs locally (`cargo xtask test-features`). It fails, never skips, where the
   sequencer is missing. Run it before changing `backend/alsa`.
 - **Golden digests** go through `tutti_nodes::testing::assert_golden`: asserted
   on x86_64 with glibc 2.39 (`RECORDED_ARCH`, `RECORDED_GLIBC`, Ubuntu 24.04),
@@ -262,7 +264,7 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
   cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
-`just check-windows` runs this over the workspace and over the plugin crates
+`cargo xtask check-windows` runs this over the workspace and over the plugin crates
 with every format feature. It leaves out the members that cannot
 cross-compile: `ogg_next_sys` (reached through `tutti-codec`'s `encode-vorbis`
 feature, which `tutti-export` turns on) and `tutti-vst3-host`'s `conformance` probe need
@@ -287,6 +289,9 @@ One workspace at the repo root. The member list in `Cargo.toml` is the source
 of truth.
 
 ```
+xtask/           the development commands (`cargo xtask help`): std only, no
+                 dependency of any kind, `publish = false`, the one member outside
+                 crates/ and testing/; no layer, nothing depends on it
 crates/          everything shipped; directory name = package name; no nesting
   tutti          Bevy-free umbrella. Every item is a `pub use` (tests/no_logic.rs).
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
@@ -402,10 +407,16 @@ list (normal and build edges; dev-dependencies may go anywhere).
 7. `tutti-plugin-server`, `tutti-session`
 8. `tutti`, `bevy-tutti`
 
-- A member is directly `crates/<package-name>` or `testing/<dir>`; a nested
-  directory is refused. Nothing under `crates/` has a normal or build
+- A member is directly `crates/<package-name>` or `testing/<dir>`, except
+  `xtask` (a named exception, the top-level directory); a nested directory is
+  refused. Nothing under `crates/` has a normal or build
   dependency on `testing/`; a test reaches `testing/` through a
   dev-dependency.
+- `xtask` is in no layer: it depends on no workspace crate (of any kind, and
+  on no outside crate: std only), nothing depends on it, it is
+  `#![forbid(unsafe_code)]` and `publish = false` (`scripts/check-layout.sh`).
+  A recipe is its planning in `xtask/src/recipes.rs`; keep the commands there
+  the commands CI runs.
 - `vendor/` holds third-party code we never edit and no workspace member.
   Our own forks (`tutti-sf2`, `tutti-vst2-ffi`) are crates, not vendored.
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on

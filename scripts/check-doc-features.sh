@@ -13,7 +13,7 @@
 #
 # The feature list is read from each Cargo.toml, so a new feature is covered
 # without editing this file. Run from the repo root; `RUSTDOCFLAGS` defaults to
-# `-D warnings`. `jack` is skipped: it links libjack, as in `just check-features`.
+# `-D warnings`. `jack` is skipped: it links libjack, as in `cargo xtask check-features`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

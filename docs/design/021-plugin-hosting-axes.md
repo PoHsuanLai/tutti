@@ -10,8 +10,7 @@ supports. `OutOfProcess<Vst2>` then does not compile.
 
 Builds on [016](016-plugin-hosts.md) (`Loaded`, `Processor`, `Controller`,
 `Lifecycle`). Where 016 §2.4 makes the server dispatch over an `AnyPlugin` of four
-formats, this design makes it dispatch over the formats that can be served. 019
-and 020 are drafts on other branches.
+formats, this design makes it dispatch over the formats that can be served.
 
 ## Summary
 
@@ -626,7 +625,7 @@ changes:
 
 ## 10. Staged plan
 
-Each step is one reviewable PR and leaves `just ci` green (with `cargo build -p
+Each step is one reviewable PR and leaves `cargo xtask ci` green (with `cargo build -p
 tutti-plugin-server` first). It runs after the AU FFI lane lands, wherever a
 step touches AU files: PRs #350 and #353 extract `tutti-au-ffi` (layer 4), make
 `tutti-au-host` `forbid(unsafe_code)` and move it from layer 4 to 5, and edit

@@ -1,7 +1,7 @@
 //! `WavOut::create` takes a `Pcm`, which `tutti-io` does not re-export: a build
 //! with `io` (or `audio-io`) and no format feature must still name it.
 //!
-//! Compiled only with `io`; `just check-features` and CI's `dark features` job
+//! Compiled only with `io`; `cargo xtask check-features` and CI's `dark features` job
 //! run it with `audio-io`. Mutation (run): `io = ["dep:tutti-io"]` without
 //! `codec` fails to compile this file.
 #![cfg(feature = "io")]

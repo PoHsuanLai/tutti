@@ -183,10 +183,13 @@ FFI runs, and a plugin-side `activate` refusal leaves the instance untouched and
 not active. Activation never leaves half a pair: the Processor and the
 Controller exist only on success.
 
-### Why `Deref` from `ClapController` to `ClapLoaded` is sound
+### Why the loaded plugin stays reachable from a `ClapController`
 
-CLAP does not *revoke* the loaded-state operations on activation; it re-tags some
-of their **threading** contracts. The two states partition what is legal in one
+A `ClapController` lends its `ClapLoaded` by name ([`loaded`][`ClapController::loaded`]
+and [`loaded_mut`][`ClapController::loaded_mut`]; it does not `Deref`, so a call
+that the Controller also answers cannot quietly skip the Controller). That is
+sound because CLAP does not *revoke* the loaded-state operations on activation;
+it re-tags some of their **threading** contracts. The two states partition what is legal in one
 direction only — `process` requires active — and never in the other, so
 activation is additive and the pre-activation surface stays reachable.
 
@@ -194,8 +197,8 @@ Where a contract does change with activation, the condition is read at the call
 rather than assumed from the type, which works precisely because the flag lives
 on the *inner* `ClapLoaded`: [`flush_params`][`ClapLoaded::flush_params`] is
 tagged `[active ? audio-thread : main-thread]` and branches on that live flag, so
-the same code reached through `Deref` from a `ClapController` takes an
-[`AudioThreadClaim`][`host::AudioThreadClaim`] where a bare `ClapLoaded` is a
+the same code reached through a `ClapController`'s `loaded_mut` takes the
+audio-thread claim (`tutti_clap_ffi::AudioClaim`) where a bare `ClapLoaded` is a
 main-thread call (it takes the `&MainThread` either way).
 
 The distinction that gates it is *active* versus *processing*, and they are not
@@ -275,5 +278,4 @@ MIT OR Apache-2.0
 [`WindowHandle`]: crate::WindowHandle
 [`EditorSize`]: crate::EditorSize
 [`MidiEvent`]: crate::MidiEvent
-[`host::AudioThreadClaim`]: crate::host::AudioThreadClaim
 [`tutti_midi_types::MidiEvent`]: tutti_midi_types::MidiEvent

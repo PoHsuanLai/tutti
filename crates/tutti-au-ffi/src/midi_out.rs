@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use coreaudio_sys::{AudioTimeStamp, MIDIPacket, MIDIPacketList, OSStatus};
-use tutti_plugin_types::{Midi1Decoder, MidiEvent};
+use tutti_plugin_types::{Midi1Decoder, WireMidi};
 #[cfg(feature = "test-support")]
 use tutti_plugin_types::{Midi1Message, Midi1Splitter};
 
@@ -47,7 +47,7 @@ pub(crate) struct AuMidiOutputCallbackStruct {
 /// `pktlist` is a `MIDIPacketList` whose packet timestamps are **sample offsets**
 /// from `timeStamp`, not host times — Apple's header is explicit about this, and
 /// it is what makes the offsets directly usable as
-/// [`MidiEvent::frame_offset`] without a clock conversion.
+/// [`WireMidi::offset`] without a clock conversion.
 impl crate::plain::Sealed for AuMidiOutputCallbackStruct {}
 // SAFETY: an `Option<unsafe extern "C" fn>` and a raw pointer in a
 // `#[repr(C)]` struct: every bit pattern, zero (`None`, null) included, is a
@@ -64,7 +64,7 @@ type AuMidiOutputCallbackFn = unsafe extern "C" fn(
 /// What a host does with MIDI the AU emitted.
 ///
 /// # The no-allocation contract
-pub type MidiOutSink = Box<dyn FnMut(u32, &[MidiEvent]) + Send>;
+pub type MidiOutSink = Box<dyn FnMut(u32, &[WireMidi]) + Send>;
 
 /// The state the AU's `userData` points at, and the thing whose lifetime the
 /// removal ordering protects.
@@ -356,7 +356,7 @@ fn dispatch(
     // to a block that is gone.
     state.decoder.begin_list();
     let MidiOutState { sink, decoder, .. } = &mut *state;
-    let mut flush = |events: &[MidiEvent]| (*sink)(midi_out_num, events);
+    let mut flush = |events: &[WireMidi]| (*sink)(midi_out_num, events);
     // SAFETY: `pktlist` is non-null (checked) and a valid packet list for the
     // call, which is `for_each_packet`'s contract.
     unsafe {
@@ -429,7 +429,7 @@ unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32,
         // in this list are **sample offsets** from the AudioTimeStamp provided."
         // So the value is already the frame offset this host wants — no host-time
         // conversion, and no clock to consult. It is a `u64` at the ABI and a
-        // `u32` in `MidiEvent`; a value past `u32::MAX` would be nonsense from a
+        // `u32` in `WireMidi`; a value past `u32::MAX` would be nonsense from a
         // render block, and saturating is the honest narrowing (the alternative,
         // wrapping, would place a late event at the start of the block).
         let frame_offset = u32::try_from(time_stamp).unwrap_or(u32::MAX);
@@ -501,10 +501,10 @@ fn next_packet(raw_next: *const u8) -> *const u8 {
 /// `pktlist` must be a well-formed, non-null `MIDIPacketList`.
 #[doc(hidden)]
 #[cfg(feature = "test-support")]
-pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<MidiEvent> {
+pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<WireMidi> {
     let mut out = Vec::new();
     let mut decoder = Midi1Decoder::new();
-    let mut flush = |events: &[MidiEvent]| out.extend_from_slice(events);
+    let mut flush = |events: &[WireMidi]| out.extend_from_slice(events);
     // SAFETY: the test passes a packet list it built; see `for_each_packet`.
     unsafe {
         for_each_packet(pktlist, |frame_offset, bytes| {
@@ -546,6 +546,7 @@ pub unsafe fn split_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<
 mod tests {
     use super::*;
     use std::mem::size_of;
+    use tutti_ump::KeyEvent;
 
     /// The hand-declared callback struct must match Apple's: an
     /// `AUMIDIOutputCallback` function pointer then a `void *userData`, 16 bytes
@@ -726,12 +727,15 @@ mod tests {
         // SAFETY: `list` is the packet list this test just built.
         let events = unsafe { decode_packet_list_for_test(list) };
         assert_eq!(events.len(), 5);
-        assert!(events[0].is_note_on());
-        assert_eq!(events[0].note(), Some(60));
-        assert_eq!(events[0].frame_offset, 0);
-        assert!(events[1].is_note_off());
-        assert_eq!(events[4].note(), Some(64));
-        assert_eq!(events[4].frame_offset, 384);
+        let note_on = |e: &WireMidi| match e.ump.key_event() {
+            Some(KeyEvent::On(key)) => Some(key.note()),
+            _ => None,
+        };
+        assert_eq!(note_on(&events[0]), Some(60));
+        assert_eq!(events[0].offset, 0);
+        assert!(events[1].ump.is_note_off());
+        assert_eq!(note_on(&events[4]), Some(64));
+        assert_eq!(events[4].offset, 384);
     }
 
     /// `next_packet` must reproduce `MIDIPacketNext` for this architecture.

@@ -93,7 +93,7 @@ pub use lifecycle::{
 pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
 pub use metadata::{BusChannels, BusTopologies, Layout, LoadedPlugin, PluginTail};
-pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents};
+pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 pub use midi1_decoder::{
     Midi1Decoder, Midi1Message, Midi1Splitter, SYSEX_OUT_CAPACITY, note_on_velocity_midi1,
 };
@@ -123,7 +123,3 @@ pub use transport::{
     BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportFlags, TransportInfo,
     TransportPosition, is_usable,
 };
-
-/// Re-export of the workspace-wide MIDI event so host crates don't all
-/// need to add a direct `tutti-midi-types` dependency just for the type.
-pub use tutti_midi_types::MidiEvent;

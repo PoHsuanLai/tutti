@@ -1,6 +1,6 @@
-//! [`MidiMessage`] — the app-facing decoded view of a [`MidiEvent`].
+//! [`MidiMessage`] — the app-facing decoded view of a [`Ump`].
 //!
-//! Modeled on `std::net::IpAddr`: a [`MidiEvent`] is the wire form (a UMP packet
+//! Modeled on `std::net::IpAddr`: a [`Ump`] is the wire form (a UMP packet
 //! that may be MIDI 1.0 or 2.0 on the wire), and [`MidiMessage`] is the "just
 //! tell me what it is" view an application matches on — the way `IpAddr` unifies
 //! `Ipv4Addr`/`Ipv6Addr`. Like `IpAddr`, it carries the **common accessors**
@@ -10,21 +10,23 @@
 //! Values are the MIDI 2.0 spec widths verbatim — 16-bit velocity, 32-bit
 //! controllers/bend, per-note [`NoteId`] identity. No lossy narrowing happens
 //! here; convert to `f32` at your DSP edge if you need to. Decode with
-//! [`MidiEvent::message`]; it first runs [`normalize`](crate::normalize()), so a MIDI 1.0
+//! [`MidiMessage::from_ump`]; it first runs [`normalize`](crate::normalize()), so a MIDI 1.0
 //! event is already promoted to its MIDI 2.0 form before you see it.
 //!
 //! System Real-Time / System Common messages (M2-104 §7.6 — UMP Message Type
 //! 0x1: clock, transport start/stop/continue, MTC, song position/select) are
 //! first-class variants. For the families this enum still does not model (SysEx,
 //! Flex Data, UMP Stream, utility) [`MidiMessage::Other`] is returned; reach for
-//! `event.data_words()` + `midi2` when you need those.
+//! `ump.words()` + `midi2` when you need those.
 
 use midi2::channel_voice2::ChannelVoice2 as Cv2;
 use midi2::{Channeled, UmpMessage};
-use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2, decode};
+use tutti_ump::{
+    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
+    RegisteredPerNoteController, System, U7, U14, Ump, Voice2, decode,
+};
 
 use crate::note_id::NoteId;
-use crate::ump::MidiEvent;
 
 /// Which per-note controller a [`MidiMessage::PerNoteController`] carries.
 /// Registered controllers name a spec-defined function; assignable ones carry a
@@ -69,29 +71,27 @@ pub enum ControllerNamespace {
 pub type NoteAttribute = midi2::channel_voice2::NoteAttribute;
 
 /// A decoded MIDI 2.0 message — tutti's application-facing view of a
-/// [`MidiEvent`]. See this module header. `#[non_exhaustive]` so added
+/// [`Ump`]. See this module header. `#[non_exhaustive]` so added
 /// message families never break an existing `match`.
 ///
-/// Every variant carries `frame_offset` (the source event's sample-accurate
-/// timing) so a decode → re-encode round-trip preserves timing; note variants
-/// carry the note `attribute`. Unmodeled families keep their whole source event
-/// in [`Other`](Self::Other), so [`MidiEvent::try_from`] can reconstruct any
-/// message this view produced.
+/// No variant carries timing: a message in a block is `(Offset, Ump)` and the
+/// caller keeps the offset beside the packet. Note variants carry the note
+/// `attribute`. Unmodeled families keep their whole source packet in
+/// [`Other`](Self::Other), so [`Ump::try_from`] can reconstruct any message
+/// this view produced.
 ///
 /// # Group
 ///
 /// The view is **group-agnostic**: decoding drops the UMP group and
-/// [`MidiEvent::try_from`] re-encodes onto [`MidiGroup::FIRST`]. Only
-/// [`Other`](Self::Other) keeps its event, group included. A stream spanning
-/// several groups must route on the [`MidiEvent`] (its
-/// [`group`](MidiEvent::group)), not on this view.
+/// [`Ump::try_from`] re-encodes onto [`MidiGroup::FIRST`]. Only
+/// [`Other`](Self::Other) keeps its packet, group included. A stream spanning
+/// several groups must route on the [`Ump`] (its group is bits 24 to 27 of
+/// word 0), not on this view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MidiMessage {
     /// Note on. `velocity` is the full 16-bit MIDI 2.0 value.
     NoteOn {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Host-internal voice identity, distinct even between two live notes of
         /// the same number. Minted on decode; not carried on the wire.
         id: NoteId,
@@ -102,8 +102,7 @@ pub enum MidiMessage {
         /// **16-bit** velocity. A promoted MIDI 1.0 note upscales its 7 bits by
         /// Min-Center-Max, so `0x7F` becomes `0xFFFF` exactly; narrowing back
         /// with a shift is lossy and
-        /// [`MidiEvent::velocity_u7`](crate::MidiEvent::velocity_u7) is the
-        /// correct inverse.
+        /// `tutti_midi_protocol::narrow_velocity` is the correct inverse.
         velocity: u16,
         /// MIDI 2.0 note attribute, preserved so a decode/re-encode round-trip
         /// does not drop it. `None` on a promoted MIDI 1.0 note.
@@ -111,8 +110,6 @@ pub enum MidiMessage {
     },
     /// Note off (also a MIDI 1.0 velocity-0 note-on, folded by `normalize`).
     NoteOff {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Voice identity of the note being released.
         id: NoteId,
         /// Channel, 0-indexed.
@@ -126,8 +123,6 @@ pub enum MidiMessage {
     },
     /// Polyphonic key pressure (per-note aftertouch). `pressure` is 32-bit.
     PolyPressure {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Voice identity the pressure applies to.
         id: NoteId,
         /// Channel, 0-indexed.
@@ -140,8 +135,6 @@ pub enum MidiMessage {
     },
     /// Control change. `value` is the full 32-bit MIDI 2.0 value.
     ControlChange {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Channel, 0-indexed.
         channel: MidiChannel,
         /// Controller number, 0..=127. See [`crate::cc`] for the named roster.
@@ -154,8 +147,6 @@ pub enum MidiMessage {
     },
     /// Program change, with an optional bank (MSB<<7 | LSB) when present.
     ProgramChange {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Channel, 0-indexed.
         channel: MidiChannel,
         /// Program number, 0..=127.
@@ -166,8 +157,6 @@ pub enum MidiMessage {
     },
     /// Channel (mono) aftertouch. `pressure` is 32-bit.
     ChannelPressure {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Channel, 0-indexed.
         channel: MidiChannel,
         /// **32-bit** unipolar pressure applying to every note on the channel.
@@ -175,8 +164,6 @@ pub enum MidiMessage {
     },
     /// Channel pitch bend. `value` is 32-bit, bipolar around `0x8000_0000`.
     PitchBend {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Channel, 0-indexed.
         channel: MidiChannel,
         /// **32-bit** bend, centre `0x8000_0000` — *not* zero. Treating this as
@@ -187,8 +174,6 @@ pub enum MidiMessage {
     },
     /// Per-note pitch bend (MIDI 2.0). Addresses one voice by `id`.
     PerNotePitchBend {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Voice identity the bend applies to.
         id: NoteId,
         /// Channel, 0-indexed.
@@ -200,8 +185,6 @@ pub enum MidiMessage {
     },
     /// Per-note controller (MIDI 2.0). `value` is 32-bit.
     PerNoteController {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Voice identity the controller applies to.
         id: NoteId,
         /// Channel, 0-indexed.
@@ -222,8 +205,6 @@ pub enum MidiMessage {
     /// running-status reassembly is needed — the address and the whole value
     /// arrive in one packet.
     RegisteredController {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Channel, 0-indexed.
         channel: MidiChannel,
         /// Whether `bank`/`index` address the registered or assignable space.
@@ -249,8 +230,6 @@ pub enum MidiMessage {
     /// scale. Per §7.4.8 these share the absolute form's address space and banks
     /// but "cannot be translated to the MIDI 1.0 Protocol".
     RelativeController {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Channel, 0-indexed.
         channel: MidiChannel,
         /// Whether `bank`/`index` address the registered or assignable space.
@@ -268,8 +247,6 @@ pub enum MidiMessage {
     /// Per-Note Management (MIDI 2.0): detach / reset the addressed note's
     /// controllers.
     PerNoteManagement {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Voice identity being managed.
         id: NoteId,
         /// Channel, 0-indexed.
@@ -284,33 +261,19 @@ pub enum MidiMessage {
     },
     /// System Real-Time: timing clock (M2-104 §7.6, status 0xF8 — 24 clocks per
     /// quarter-note). Carries no channel or data.
-    TimingClock {
-        /// Sample offset within the block this tick lands on.
-        frame_offset: u32,
-    },
+    TimingClock,
     /// System Real-Time: transport start (M2-104 §7.6, status 0xFA — rewind to
     /// zero and play).
-    Start {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
-    },
+    Start,
     /// System Real-Time: transport continue (M2-104 §7.6, status 0xFB — play
     /// from the current position).
-    Continue {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
-    },
+    Continue,
     /// System Real-Time: transport stop (M2-104 §7.6, status 0xFC).
-    Stop {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
-    },
+    Stop,
     /// System Common: MIDI Time Code quarter-frame (M2-104 §7.6, status 0xF1).
     /// `code` is the 7-bit data byte: message type in bits 4..6, value in
     /// bits 0..3.
     TimeCode {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// The 7-bit quarter-frame byte. Feed it straight to
         /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), which owns the
         /// nibble reassembly.
@@ -319,33 +282,23 @@ pub enum MidiMessage {
     /// System Common: song position pointer (M2-104 §7.6, status 0xF2). 14-bit
     /// position in MIDI beats (1/16 notes) since song start.
     SongPosition {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Position in sixteenth notes since song start, 0..=16383. Six MIDI
         /// clock ticks per unit — not a beat count.
         position: u16,
     },
     /// System Common: song select (M2-104 §7.6, status 0xF3). 7-bit song number.
     SongSelect {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
         /// Song number, 0..=127.
         song: u8,
     },
     /// System Real-Time: active sensing (M2-104 §7.6, status 0xFE).
-    ActiveSensing {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
-    },
+    ActiveSensing,
     /// System Real-Time: reset (M2-104 §7.6, status 0xFF).
-    Reset {
-        /// Sample offset within the block this event lands on.
-        frame_offset: u32,
-    },
+    Reset,
     /// Any message family this view does not model (SysEx, Flex Data, UMP
-    /// Stream, utility) — carries the whole source [`MidiEvent`] so it is never
-    /// information-free. Inspect it via `event.data_words()` + `midi2`.
-    Other(MidiEvent),
+    /// Stream, utility) — carries the whole source [`Ump`] so it is never
+    /// information-free. Inspect it via `ump.words()` + `midi2`.
+    Other(Ump),
 }
 
 impl MidiMessage {
@@ -410,35 +363,6 @@ impl MidiMessage {
         }
     }
 
-    /// Sample-accurate offset within the current audio block, for every message.
-    #[inline]
-    pub fn frame_offset(&self) -> u32 {
-        match self {
-            Self::NoteOn { frame_offset, .. }
-            | Self::NoteOff { frame_offset, .. }
-            | Self::PolyPressure { frame_offset, .. }
-            | Self::ControlChange { frame_offset, .. }
-            | Self::ProgramChange { frame_offset, .. }
-            | Self::ChannelPressure { frame_offset, .. }
-            | Self::PitchBend { frame_offset, .. }
-            | Self::PerNotePitchBend { frame_offset, .. }
-            | Self::PerNoteController { frame_offset, .. }
-            | Self::RegisteredController { frame_offset, .. }
-            | Self::RelativeController { frame_offset, .. }
-            | Self::PerNoteManagement { frame_offset, .. }
-            | Self::TimingClock { frame_offset }
-            | Self::Start { frame_offset }
-            | Self::Continue { frame_offset }
-            | Self::Stop { frame_offset }
-            | Self::TimeCode { frame_offset, .. }
-            | Self::SongPosition { frame_offset, .. }
-            | Self::SongSelect { frame_offset, .. }
-            | Self::ActiveSensing { frame_offset }
-            | Self::Reset { frame_offset } => *frame_offset,
-            Self::Other(ev) => ev.frame_offset,
-        }
-    }
-
     /// `true` for a note-on with non-zero velocity.
     #[inline]
     #[must_use]
@@ -454,23 +378,21 @@ impl MidiMessage {
     }
 }
 
-impl MidiEvent {
-    /// Decodes into the app-facing [`MidiMessage`] view. Runs [`normalize`](crate::normalize())
-    /// first, so a MIDI 1.0 channel-voice event arrives already promoted to its
+impl MidiMessage {
+    /// Decodes `ump` into the app-facing [`MidiMessage`] view. Runs [`normalize`](crate::normalize())
+    /// first, so a MIDI 1.0 channel-voice packet arrives already promoted to its
     /// MIDI 2.0 form. Anything this view doesn't model yields
-    /// [`MidiMessage::Other`] — use [`data_words`](Self::data_words) + `midi2`
-    /// for those.
-    pub fn message(&self) -> MidiMessage {
-        let ev = crate::normalize(self);
-        let frame_offset = ev.frame_offset;
-        let cv2 = match UmpMessage::try_from(ev.data_words()) {
+    /// [`MidiMessage::Other`] — use [`Ump::words`] + `midi2` for those.
+    pub fn from_ump(ump: Ump) -> MidiMessage {
+        let this = &ump;
+        let ev = crate::normalize(this);
+        let cv2 = match UmpMessage::try_from(ev.words()) {
             Ok(UmpMessage::ChannelVoice2(cv2)) => cv2,
             Ok(UmpMessage::SystemCommon(sc)) => {
-                return system_common_message(sc, frame_offset)
-                    .unwrap_or(MidiMessage::Other(*self));
+                return system_common_message(sc).unwrap_or(MidiMessage::Other(*this));
             }
-            // Preserve the *original* event verbatim so a re-encode is exact.
-            _ => return MidiMessage::Other(*self),
+            // Preserve the *original* packet verbatim so a re-encode is exact.
+            _ => return MidiMessage::Other(*this),
         };
         let channel = MidiChannel::masked(u8::from(cv2.channel()));
         let note_id = |note: u8| NoteId::from_channel_note(channel, note);
@@ -479,7 +401,6 @@ impl MidiEvent {
             Cv2::NoteOn(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::NoteOn {
-                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -490,7 +411,6 @@ impl MidiEvent {
             Cv2::NoteOff(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::NoteOff {
-                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -501,7 +421,6 @@ impl MidiEvent {
             Cv2::KeyPressure(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PolyPressure {
-                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -509,31 +428,26 @@ impl MidiEvent {
                 }
             }
             Cv2::ControlChange(m) => MidiMessage::ControlChange {
-                frame_offset,
                 channel,
                 index: u8::from(m.control()),
                 value: m.control_change_data(),
             },
             Cv2::ProgramChange(m) => MidiMessage::ProgramChange {
-                frame_offset,
                 channel,
                 program: u8::from(m.program()),
-                bank: MidiEvent::program_change_bank_of(ev.data_words()),
+                bank: crate::ump::program_change_bank_of(ev.words()),
             },
             Cv2::ChannelPressure(m) => MidiMessage::ChannelPressure {
-                frame_offset,
                 channel,
                 pressure: m.channel_pressure_data(),
             },
             Cv2::ChannelPitchBend(m) => MidiMessage::PitchBend {
-                frame_offset,
                 channel,
                 value: m.pitch_bend_data(),
             },
             Cv2::PerNotePitchBend(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PerNotePitchBend {
-                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -544,7 +458,6 @@ impl MidiEvent {
                 let note = u8::from(m.note_number());
                 let (index, value) = controller_index_and_data(m.controller());
                 MidiMessage::PerNoteController {
-                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -555,7 +468,6 @@ impl MidiEvent {
             Cv2::AssignablePerNoteController(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PerNoteController {
-                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -567,7 +479,6 @@ impl MidiEvent {
             // All four carry the same `(bank, index)` address; only the
             // namespace and the absolute/relative reading of the data differ.
             Cv2::RegisteredController(m) => MidiMessage::RegisteredController {
-                frame_offset,
                 channel,
                 namespace: ControllerNamespace::Registered,
                 bank: u8::from(m.bank()),
@@ -575,7 +486,6 @@ impl MidiEvent {
                 data: m.controller_data(),
             },
             Cv2::AssignableController(m) => MidiMessage::RegisteredController {
-                frame_offset,
                 channel,
                 namespace: ControllerNamespace::Assignable,
                 bank: u8::from(m.bank()),
@@ -586,7 +496,6 @@ impl MidiEvent {
             // for, not a lossy cast: the wire field *is* a signed value, so a
             // decrement must read as `-1` rather than `0xFFFF_FFFF`.
             Cv2::RelativeRegisteredController(m) => MidiMessage::RelativeController {
-                frame_offset,
                 channel,
                 namespace: ControllerNamespace::Registered,
                 bank: u8::from(m.bank()),
@@ -594,7 +503,6 @@ impl MidiEvent {
                 delta: m.controller_data() as i32,
             },
             Cv2::RelativeAssignableController(m) => MidiMessage::RelativeController {
-                frame_offset,
                 channel,
                 namespace: ControllerNamespace::Assignable,
                 bank: u8::from(m.bank()),
@@ -607,12 +515,11 @@ impl MidiEvent {
             Cv2::PerNoteManagement(m) => {
                 let note = u8::from(m.note_number());
                 let Ok(Message::Midi2(_, Voice2::PerNoteManagement { detach, reset, .. })) =
-                    decode(Ump(ev.data))
+                    decode(ev)
                 else {
-                    return MidiMessage::Other(*self);
+                    return MidiMessage::Other(*this);
                 };
                 MidiMessage::PerNoteManagement {
-                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -629,13 +536,13 @@ impl MidiEvent {
                 unreachable_patterns,
                 reason = "`Cv2` is #[non_exhaustive]; the arm is unreachable only until upstream adds a variant"
             )]
-            _ => MidiMessage::Other(*self),
+            _ => MidiMessage::Other(*this),
         }
     }
 }
 
 /// A [`MidiMessage`] variant that this engine cannot re-encode to a
-/// [`MidiEvent`]. Every variant `MidiEvent::message` produces *can* be
+/// [`Ump`]. Every variant `MidiMessage::from_ump` produces *can* be
 /// re-encoded, so this only arises for hand-built messages using a per-note
 /// controller index or program bank outside the encodable range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -643,21 +550,36 @@ pub struct UnencodableMessage;
 
 impl core::fmt::Display for UnencodableMessage {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("MidiMessage cannot be encoded to a MidiEvent")
+        f.write_str("MidiMessage cannot be encoded to a Ump")
     }
 }
 
 impl std::error::Error for UnencodableMessage {}
 
-impl TryFrom<MidiMessage> for MidiEvent {
+/// A 7-bit field from a raw byte, masked (`& 0x7F`) as the wire does.
+fn u7(raw: u8) -> U7 {
+    U7::new(raw & 0x7F).unwrap_or_default()
+}
+
+/// A note number from a raw byte, masked (`& 0x7F`) as the wire does.
+fn note_number(raw: u8) -> NoteNumber {
+    NoteNumber::new(raw & 0x7F).unwrap_or_default()
+}
+
+impl TryFrom<MidiMessage> for Ump {
     type Error = UnencodableMessage;
 
-    /// Re-encode a [`MidiMessage`] back to its wire [`MidiEvent`], preserving the
-    /// frame offset (and note attribute where present). Every message produced by
-    /// [`MidiEvent::message`] round-trips; the error case only occurs for
-    /// hand-built controller/bank values with no MIDI-2 encoding.
+    /// Re-encode a [`MidiMessage`] back to its wire [`Ump`] (and note attribute
+    /// where present). Every message produced by [`MidiMessage::from_ump`]
+    /// round-trips; the error case only occurs for hand-built controller/bank
+    /// values with no MIDI-2 encoding.
     fn try_from(msg: MidiMessage) -> Result<Self, Self::Error> {
-        let ev = match msg {
+        let group = MidiGroup::FIRST;
+        let voice = |channel: MidiChannel, v: Voice2| -> Ump {
+            Message::Midi2(Address { group, channel }, v).into()
+        };
+        let system = |s: System| -> Ump { Message::System(group, s).into() };
+        let ump = match msg {
             MidiMessage::NoteOn {
                 channel,
                 note,
@@ -677,53 +599,81 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 note,
                 pressure,
                 ..
-            } => MidiEvent::poly_pressure(MidiGroup::FIRST, channel, note, pressure),
+            } => voice(
+                channel,
+                Voice2::PolyPressure {
+                    note: note_number(note),
+                    value: pressure,
+                },
+            ),
             MidiMessage::ControlChange {
                 channel,
                 index,
                 value,
                 ..
-            } => MidiEvent::cc(MidiGroup::FIRST, channel, CCNumber::masked(index), value),
+            } => voice(
+                channel,
+                Voice2::ControlChange {
+                    controller: CCNumber::masked(index),
+                    value,
+                },
+            ),
             MidiMessage::ProgramChange {
                 channel,
                 program,
                 bank,
                 ..
-            } => MidiEvent::program_change(MidiGroup::FIRST, channel, program, bank),
+            } => voice(
+                channel,
+                Voice2::ProgramChange {
+                    program: u7(program),
+                    bank: bank.map(|b| Bank {
+                        msb: u7((b >> 7) as u8),
+                        lsb: u7(b as u8),
+                    }),
+                },
+            ),
             MidiMessage::ChannelPressure {
                 channel, pressure, ..
-            } => MidiEvent::channel_pressure(MidiGroup::FIRST, channel, pressure),
+            } => voice(channel, Voice2::ChannelPressure(pressure)),
             MidiMessage::PitchBend { channel, value, .. } => {
-                MidiEvent::pitch_bend(MidiGroup::FIRST, channel, value)
+                voice(channel, Voice2::PitchBend(value))
             }
             MidiMessage::PerNotePitchBend {
                 channel,
                 note,
                 value,
                 ..
-            } => MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, channel, note, value),
+            } => voice(
+                channel,
+                Voice2::PerNotePitchBend {
+                    note: note_number(note),
+                    value,
+                },
+            ),
             MidiMessage::PerNoteController {
                 channel,
                 note,
                 controller,
                 value,
                 ..
-            } => {
-                let (index, registered) = match controller {
-                    PerNoteController::Registered { index } => (index, true),
-                    PerNoteController::Assignable { index } => (index, false),
-                };
-                MidiEvent::per_note_controller(
-                    MidiGroup::FIRST,
-                    channel,
-                    note,
-                    index,
-                    value,
-                    registered,
-                )
-            }
-            // The namespace picks the constructor; the absolute/relative split
-            // is already carried by the variant itself.
+            } => voice(
+                channel,
+                match controller {
+                    PerNoteController::Registered { index } => Voice2::RegisteredPerNote {
+                        note: note_number(note),
+                        controller: RegisteredPerNoteController::from(index),
+                        value,
+                    },
+                    PerNoteController::Assignable { index } => Voice2::AssignablePerNote {
+                        note: note_number(note),
+                        controller: index,
+                        value,
+                    },
+                },
+            ),
+            // The namespace picks the message; the absolute/relative split is
+            // already carried by the variant itself.
             MidiMessage::RegisteredController {
                 channel,
                 namespace,
@@ -731,13 +681,21 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 index,
                 data,
                 ..
-            } => {
-                let build = match namespace {
-                    ControllerNamespace::Registered => MidiEvent::registered_controller,
-                    ControllerNamespace::Assignable => MidiEvent::assignable_controller,
-                };
-                build(MidiGroup::FIRST, channel, bank, index, data)
-            }
+            } => voice(
+                channel,
+                match namespace {
+                    ControllerNamespace::Registered => Voice2::Registered {
+                        bank: u7(bank),
+                        index: u7(index),
+                        value: data,
+                    },
+                    ControllerNamespace::Assignable => Voice2::Assignable {
+                        bank: u7(bank),
+                        index: u7(index),
+                        value: data,
+                    },
+                },
+            ),
             MidiMessage::RelativeController {
                 channel,
                 namespace,
@@ -745,48 +703,61 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 index,
                 delta,
                 ..
-            } => {
-                let build = match namespace {
-                    ControllerNamespace::Registered => MidiEvent::relative_registered_controller,
-                    ControllerNamespace::Assignable => MidiEvent::relative_assignable_controller,
-                };
-                build(MidiGroup::FIRST, channel, bank, index, delta)
-            }
+            } => voice(
+                channel,
+                match namespace {
+                    ControllerNamespace::Registered => Voice2::RelativeRegistered {
+                        bank: u7(bank),
+                        index: u7(index),
+                        delta,
+                    },
+                    ControllerNamespace::Assignable => Voice2::RelativeAssignable {
+                        bank: u7(bank),
+                        index: u7(index),
+                        delta,
+                    },
+                },
+            ),
             MidiMessage::PerNoteManagement {
                 channel,
                 note,
                 detach,
                 reset,
                 ..
-            } => MidiEvent::per_note_management(MidiGroup::FIRST, channel, note, detach, reset),
-            MidiMessage::TimingClock { .. } => MidiEvent::timing_clock(MidiGroup::FIRST),
-            MidiMessage::Start { .. } => MidiEvent::start(MidiGroup::FIRST),
-            MidiMessage::Continue { .. } => MidiEvent::continue_msg(MidiGroup::FIRST),
-            MidiMessage::Stop { .. } => MidiEvent::stop(MidiGroup::FIRST),
-            MidiMessage::TimeCode { code, .. } => {
-                MidiEvent::mtc_quarter_frame(MidiGroup::FIRST, code)
-            }
-            MidiMessage::SongPosition { position, .. } => {
-                MidiEvent::song_position(MidiGroup::FIRST, position)
-            }
-            MidiMessage::SongSelect { song, .. } => MidiEvent::song_select(MidiGroup::FIRST, song),
-            MidiMessage::ActiveSensing { .. } => MidiEvent::active_sensing(MidiGroup::FIRST),
-            MidiMessage::Reset { .. } => MidiEvent::system_reset(MidiGroup::FIRST),
-            // The source event was preserved verbatim.
-            MidiMessage::Other(ev) => return Ok(ev),
+            } => voice(
+                channel,
+                Voice2::PerNoteManagement {
+                    note: note_number(note),
+                    detach,
+                    reset,
+                },
+            ),
+            MidiMessage::TimingClock => system(System::TimingClock),
+            MidiMessage::Start => system(System::Start),
+            MidiMessage::Continue => system(System::Continue),
+            MidiMessage::Stop => system(System::Stop),
+            MidiMessage::TimeCode { code } => system(System::TimeCode(u7(code))),
+            MidiMessage::SongPosition { position } => system(System::SongPosition(
+                U14::new(position & 0x3FFF).unwrap_or_default(),
+            )),
+            MidiMessage::SongSelect { song } => system(System::SongSelect(u7(song))),
+            MidiMessage::ActiveSensing => system(System::ActiveSensing),
+            MidiMessage::Reset => system(System::Reset),
+            // The source packet was preserved verbatim.
+            MidiMessage::Other(ump) => ump,
         };
-        Ok(ev.with_frame_offset(msg.frame_offset()))
+        Ok(ump)
     }
 }
 
-/// Build a note-on/off [`MidiEvent`], re-applying a note `attribute` if present.
+/// Build a note-on/off [`Ump`], re-applying a note `attribute` if present.
 fn note_with_attribute(
     on: bool,
     channel: MidiChannel,
     note: u8,
     velocity: u16,
     attribute: Option<NoteAttribute>,
-) -> MidiEvent {
+) -> Ump {
     use midi2::channel_voice2::{NoteOff, NoteOn};
     use midi2::prelude::*;
     let mut words = [0u32; 4];
@@ -809,7 +780,7 @@ fn note_with_attribute(
         }
         words[..2].copy_from_slice(m.data());
     }
-    MidiEvent::from_ump(0, &words[..2])
+    Ump(words)
 }
 
 /// Split a registered per-note `Controller` into its spec index and 32-bit data
@@ -847,30 +818,24 @@ fn controller_index_and_data(c: midi2::channel_voice2::Controller) -> (u8, u32) 
 /// variant (M2-104 §7.6). Returns `None` for the families this view still leaves
 /// in [`MidiMessage::Other`] (currently just Tune Request), so the caller
 /// preserves the original event verbatim.
-fn system_common_message(
-    sc: midi2::system_common::SystemCommon<&[u32]>,
-    frame_offset: u32,
-) -> Option<MidiMessage> {
+fn system_common_message(sc: midi2::system_common::SystemCommon<&[u32]>) -> Option<MidiMessage> {
     use midi2::system_common::SystemCommon as Sc;
     Some(match sc {
-        Sc::TimingClock(_) => MidiMessage::TimingClock { frame_offset },
-        Sc::Start(_) => MidiMessage::Start { frame_offset },
-        Sc::Continue(_) => MidiMessage::Continue { frame_offset },
-        Sc::Stop(_) => MidiMessage::Stop { frame_offset },
+        Sc::TimingClock(_) => MidiMessage::TimingClock,
+        Sc::Start(_) => MidiMessage::Start,
+        Sc::Continue(_) => MidiMessage::Continue,
+        Sc::Stop(_) => MidiMessage::Stop,
         Sc::TimeCode(m) => MidiMessage::TimeCode {
-            frame_offset,
             code: u8::from(m.time_code()),
         },
         Sc::SongPositionPointer(m) => MidiMessage::SongPosition {
-            frame_offset,
             position: u16::from(m.position()),
         },
         Sc::SongSelect(m) => MidiMessage::SongSelect {
-            frame_offset,
             song: u8::from(m.song()),
         },
-        Sc::ActiveSensing(_) => MidiMessage::ActiveSensing { frame_offset },
-        Sc::Reset(_) => MidiMessage::Reset { frame_offset },
+        Sc::ActiveSensing(_) => MidiMessage::ActiveSensing,
+        Sc::Reset(_) => MidiMessage::Reset,
         // Tune Request has no modeled variant; the caller keeps it in `Other`.
         _ => return None,
     })

@@ -41,7 +41,7 @@ or an offline export, gets its MIDI without linking CoreMIDI or ALSA.
 
 - **No ports, and no `cfg(target_os)`.** Enumerating, opening and sending on a
   real endpoint belongs to `tutti-midi-hardware`.
-- **No wire vocabulary.** `MidiEvent`, `MidiMessage`, `NoteId` and the MIDI 1↔2
+- **No wire vocabulary.** `MidiMessage`, `NoteId` and the MIDI 1↔2
   scaling belong to `tutti-midi-types`.
 - **No files.** SMF and the path-level Clip File codec belong to
   `tutti-midi-file`.
@@ -82,15 +82,15 @@ allocates or locks, which is what lets either half sit on the audio thread.
 
 ```rust
 use tutti_midi_runtime::MidiMailbox;
-use tutti_midi_types::MidiEvent;
-use tutti_ump::MidiChannel;
+use tutti_midi_types::MidiMessage;
+use tutti_ump::{MidiChannel, Ump};
 
 let (tx, rx) = MidiMailbox::pair();
 assert!(tx.note_on(MidiChannel::FIRST, 60, 100));
 
-let mut block = [MidiEvent::noop(); 8];
+let mut block = [(0, Ump([0; 4])); 8];
 assert_eq!(rx.poll_into(&mut block), 1);
-assert_eq!(block[0].note(), Some(60));
+assert_eq!(MidiMessage::from_ump(block[0].1).note(), Some(60));
 ```
 
 ## MPE folded to native per-note messages
@@ -102,7 +102,10 @@ has to know what MPE is.
 ```rust
 use tutti_midi_runtime::MpeIngest;
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-use tutti_midi_types::MidiEvent;
+use tutti_fixtures::midi::{note_on, pitch_bend};
+use tutti_graph::Offset;
+use tutti_midi_types::MidiMessage;
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
@@ -110,17 +113,17 @@ let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
 // A note-on claims member channel 1; the map now resolves that channel.
 let member = MidiChannel::of(1);
 ingest
-    .translate(&MidiEvent::note_on_7bit(MidiGroup::FIRST, member, 60, 100))
+    .translate(&(Offset::ZERO, note_on(MidiGroup::FIRST, member, 60, midi1_velocity_to_midi2(100))))
     .next()
     .expect("a note-on passes through");
 
 // A channel-wide bend on that member becomes a per-note bend on note 60.
-let bend = MidiEvent::pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
-let folded = ingest
-    .translate(&bend)
+let bend = pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
+let (_, folded) = ingest
+    .translate(&(Offset::ZERO, bend))
     .next()
     .expect("the channel holds a note");
-assert_eq!(folded.note(), Some(60));
+assert_eq!(MidiMessage::from_ump(folded).note(), Some(60));
 ```
 
 ## Constraint: [`MpeIngest::set_mode`] drops all held-note state

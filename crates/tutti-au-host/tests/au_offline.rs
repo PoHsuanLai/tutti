@@ -61,6 +61,8 @@ use support::corpus::{
 use tutti_au_host::AuError;
 use tutti_au_host::offline::{self, PushScratch, RENDER_QUALITY_MAX};
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_PROPERTY;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_plugin_types::ChannelLayout;
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -207,11 +209,9 @@ fn an_offline_flagged_unit_still_renders() {
             );
 
             // Instruments have no input bus, so they are driven by MIDI.
-            au.send_midi(&[tutti_au_host::MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                0xC000,
+            au.send_midi(&[(
+                Offset::ZERO,
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
             )]);
             let input = silence(2, BLOCK as usize);
             let mut output = silence(2, BLOCK as usize);
@@ -1171,11 +1171,9 @@ fn offline_flagged_render_does_not_allocate() {
         .expect("initialize with the offline flag set");
     assert!(au.is_offline_render().unwrap());
 
-    au.send_midi(&[tutti_au_host::MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0xC000,
+    au.send_midi(&[(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
     )]);
     let mut b = RtBufs::new();
     let drive = |au: &mut tutti_au_host::AuInstance, b: &mut RtBufs| {

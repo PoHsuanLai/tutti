@@ -10,11 +10,12 @@
 
 use tutti_midi_types::ump::{
     SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
-    SYSEX7_STATUS_START, UmpMessageType,
+    SYSEX7_STATUS_START, UmpMessageType, message_type, sysex7_packet_count, sysex7_packets,
+    sysex7_payload,
 };
-use tutti_ump::{MidiGroup, frame};
+use tutti_ump::{MidiGroup, Ump, frame};
 
-use crate::{MIDI_STACK_CAPACITY, MidiEvent, MidiEventVec, RtMidiEvents};
+use crate::{MIDI_STACK_CAPACITY, MidiEventVec, RtMidiEvents, WireMidi};
 
 /// The longest complete message a plugin is handed, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`] and its two delimiters. No input produces a longer
@@ -63,13 +64,16 @@ pub fn is_framed(message: &[u8]) -> bool {
 /// whether it was pushed.
 pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> bool {
     let payload = unframed(message);
-    let packets = MidiEvent::sysex7_packet_count(payload.len());
+    let packets = sysex7_packet_count(payload.len());
     if packets > out.remaining() {
         out.mark_overflowed();
         return false;
     }
-    for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
-        out.push(packet.with_frame_offset(frame_offset));
+    for packet in sysex7_packets(MidiGroup::FIRST, payload) {
+        out.push(WireMidi {
+            offset: frame_offset,
+            ump: packet,
+        });
     }
     true
 }
@@ -79,12 +83,15 @@ pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> 
 /// `out`'s remaining room is dropped and `false` is returned. Never allocates.
 pub fn push_sysex_stack(out: &mut MidiEventVec, frame_offset: u32, message: &[u8]) -> bool {
     let payload = unframed(message);
-    let packets = MidiEvent::sysex7_packet_count(payload.len());
+    let packets = sysex7_packet_count(payload.len());
     if packets > out.remaining_capacity() {
         return false;
     }
-    for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
-        out.push(packet.with_frame_offset(frame_offset));
+    for packet in sysex7_packets(MidiGroup::FIRST, payload) {
+        out.push(WireMidi {
+            offset: frame_offset,
+            ump: packet,
+        });
     }
     true
 }
@@ -279,15 +286,15 @@ impl SysExAssembler {
     ///
     /// A malformed SysEx7 packet (a length past six) is [`SysExStep::Held`]
     /// and has no effect.
-    pub fn push(&mut self, event: &MidiEvent) -> SysExStep {
-        if event.message_type() != UmpMessageType::Sysex7 {
+    pub fn push(&mut self, event: &Ump) -> SysExStep {
+        if message_type(event) != UmpMessageType::Sysex7 {
             return SysExStep::NotSysEx;
         }
-        let Some((status, payload, n)) = event.sysex7_payload() else {
+        let Some((status, payload, n)) = sysex7_payload(event) else {
             return SysExStep::Held;
         };
         let payload = &payload[..n];
-        let group = event.group();
+        let group = MidiGroup::masked(((event.0[0] >> 24) & 0x0F) as u8);
         match status {
             SYSEX7_STATUS_SINGLE => {
                 if self.run_group() == Some(group) {
@@ -449,10 +456,11 @@ fn sysex_ref(start: usize, len: usize) -> SysExRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::{from_midi1_bytes, sysex7_fragments};
 
-    fn packets(group: MidiGroup, payload: &[u8]) -> Vec<MidiEvent> {
+    fn packets(group: MidiGroup, payload: &[u8]) -> Vec<Ump> {
         let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(group, payload, &mut out);
+        sysex7_fragments(group, payload, &mut out);
         out
     }
 
@@ -461,7 +469,7 @@ mod tests {
     }
 
     /// Feed `events`, collecting each completed message's bytes.
-    fn feed(asm: &mut SysExAssembler, events: &[MidiEvent]) -> Vec<Vec<u8>> {
+    fn feed(asm: &mut SysExAssembler, events: &[Ump]) -> Vec<Vec<u8>> {
         let mut done = Vec::new();
         for e in events {
             if let SysExStep::Complete(r) = asm.push(e) {
@@ -593,7 +601,7 @@ mod tests {
         use tutti_ump::MidiChannel;
         let body = payload(20);
         let pkts = packets(MidiGroup::FIRST, &body);
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(0), 60, 0x8000);
+        let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::of(0), 60, 0x8000);
         let mut asm = SysExAssembler::reserved();
         assert!(feed(&mut asm, &pkts[..2]).is_empty());
         assert_eq!(asm.push(&note), SysExStep::NotSysEx);
@@ -626,7 +634,7 @@ mod tests {
         let pkts = packets(MidiGroup::FIRST, &body);
         let mut asm = SysExAssembler::reserved();
         let base = asm.bytes().as_ptr();
-        let singles: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY)
+        let singles: Vec<Ump> = (0..MIDI_STACK_CAPACITY)
             .flat_map(|_| packets(MidiGroup::of(1), &[1, 2, 3, 4, 5, 6]))
             .collect();
         let mut done = 0usize;
@@ -732,9 +740,12 @@ mod tests {
             for message in [framed(&body), body.clone()] {
                 let mut out = RtMidiEvents::new();
                 assert!(push_sysex(&mut out, 9, &message), "{len} bytes");
-                assert!(out.iter().all(|e| e.frame_offset == 9));
+                assert!(out.iter().all(|e| e.offset == 9));
                 assert!(!out.is_overflowed());
-                assert_eq!(feed(&mut asm, out.as_slice()), vec![framed(&body)]);
+                assert_eq!(
+                    feed(&mut asm, &out.iter().map(|e| e.ump).collect::<Vec<_>>()),
+                    vec![framed(&body)]
+                );
             }
         }
         assert_eq!(asm.dropped(), 0);
@@ -758,7 +769,10 @@ mod tests {
 
         // What fits after another event is judged on the room that is left.
         let mut out = RtMidiEvents::new();
-        assert!(out.push(MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100]).unwrap()));
+        assert!(out.push(WireMidi {
+            offset: 0,
+            ump: from_midi1_bytes(&[0x90, 60, 100]).unwrap()
+        }));
         assert!(!push_sysex(&mut out, 0, &payload((room - 1) * 6 + 1)));
         assert_eq!(out.len(), 1);
         assert!(push_sysex(&mut out, 0, &payload((room - 1) * 6)));

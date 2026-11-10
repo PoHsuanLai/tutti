@@ -38,9 +38,9 @@ mod fork;
 mod node;
 
 use std::sync::Arc;
+use tutti_graph::Offset;
 use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Tail};
 use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Unknown, Voice1, decode};
@@ -156,7 +156,7 @@ pub struct SoundFontUnit {
     /// event's offset.
     planes: [Vec<f32>; Plane::COUNT],
     /// The block's MIDI, sorted by offset: its event input's.
-    midi_buffer: Vec<MidiEvent>,
+    midi_buffer: Vec<(Offset, Ump)>,
 }
 
 impl std::fmt::Debug for SoundFontUnit {
@@ -175,7 +175,7 @@ impl SoundFontUnit {
             ring_out: player.ring_out(),
             player,
             planes: std::array::from_fn(|_| vec![0.0; buffers]),
-            midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
+            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); MIDI_BUFFER_CAPACITY],
         }
     }
 
@@ -329,7 +329,7 @@ impl SoundFontUnit {
         let mut walk = BlockSplitter::new(size, Overrun::ClampToLastFrame);
         while let Some(step) = walk.step(&self.midi_buffer[..count]) {
             match step {
-                Step::Event(event) => self.apply_event(&event),
+                Step::Event((_, ump)) => self.apply_event(&ump),
                 Step::Span(span) => self.render_range(span),
             }
         }
@@ -341,8 +341,8 @@ impl SoundFontUnit {
     /// The group is ignored: one unit is one instrument, whatever group its
     /// notes arrive on. This is a sink, so a message it has no use for
     /// (including one `decode` cannot frame) is unused, not an error.
-    fn apply_event(&mut self, event: &MidiEvent) {
-        match decode(Ump(event.data)) {
+    fn apply_event(&mut self, ump: &Ump) {
+        match decode(*ump) {
             Ok(Message::Midi1(address, voice)) => self.voice1(address.channel, voice),
             Ok(Message::Midi2(address, voice)) => self.player.apply(address.channel, voice),
             // Not channel voice: the player has no clock, sysex, flex
@@ -389,7 +389,7 @@ impl Clone for SoundFontUnit {
             // Scratch, not state: sized fresh rather than copied, since every
             // block overwrites the frames it reads back.
             planes: std::array::from_fn(|_| vec![0.0; self.planes[0].len()]),
-            midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
+            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); MIDI_BUFFER_CAPACITY],
         }
     }
 }

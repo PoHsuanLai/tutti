@@ -19,8 +19,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiEvent, MidiSession};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::Offset;
+use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiMessage, MidiSession};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 /// Pick the loopback endpoint. See the module doc for why this is not VirMIDI.
 fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware::DeviceInfo> {
@@ -51,20 +53,27 @@ fn main() {
 
     let mut failures = 0usize;
 
-    let mut roundtrip = |label: &str, sent: MidiEvent, check: &dyn Fn(MidiEvent) -> bool| {
-        assert_eq!(io.send(&[sent]), 1, "the session accepted the event");
+    let mut roundtrip = |label: &str, sent: Ump, check: &dyn Fn(Ump) -> bool| {
+        assert_eq!(
+            io.send(&[(Offset::ZERO, sent)]),
+            1,
+            "the session accepted the event"
+        );
         thread::sleep(Duration::from_millis(150));
         let mut first = None;
-        drain.cycle_start_read_all_inputs(512, |_, ev| {
+        drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
             if first.is_none() {
                 first = Some(ev);
             }
         });
         match first {
-            Some(ev) if check(ev) => println!("  PASS [{label}]: {:?}", ev.message()),
+            Some(ev) if check(ev) => println!("  PASS [{label}]: {:?}", MidiMessage::from_ump(ev)),
             Some(ev) => {
                 failures += 1;
-                println!("  FAIL [{label}]: unexpected {:?}", ev.message());
+                println!(
+                    "  FAIL [{label}]: unexpected {:?}",
+                    MidiMessage::from_ump(ev)
+                );
             }
             None => {
                 failures += 1;
@@ -76,32 +85,30 @@ fn main() {
     println!("\n=== Test 1: Note On ===");
     roundtrip(
         "note-on",
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-        &|ev| ev.message().is_note_on(),
+        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        &|ev| MidiMessage::from_ump(ev).is_note_on(),
     );
 
     println!("\n=== Test 2: Note Off ===");
     roundtrip(
         "note-off",
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
-        &|ev| ev.message().is_note_off(),
+        note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+        &|ev| MidiMessage::from_ump(ev).is_note_off(),
     );
 
     println!("\n=== Test 3: Burst (10 notes) ===");
     for n in 60..70u8 {
-        io.send(&[MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            n,
-            0xA000,
+        io.send(&[(
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
         )]);
     }
     thread::sleep(Duration::from_millis(250));
     let mut count = 0usize;
     let mut all_on = true;
-    drain.cycle_start_read_all_inputs(512, |_, ev| {
+    drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
         count += 1;
-        all_on &= ev.message().is_note_on();
+        all_on &= MidiMessage::from_ump(ev).is_note_on();
     });
     if count == 10 && all_on {
         println!("  PASS: received 10/10, all note_on");

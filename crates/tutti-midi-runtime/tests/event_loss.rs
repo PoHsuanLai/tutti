@@ -6,12 +6,12 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node, Prepare,
     Shape, Status, Transport, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
@@ -65,17 +65,17 @@ fn key(i: u32) -> (MidiChannel, u8) {
     (MidiChannel::of(((i / 128) % 16) as u8), (i % 128) as u8)
 }
 
-fn on(i: u32) -> MidiEvent {
+fn on(i: u32) -> Ump {
     let (c, n) = key(i);
-    MidiEvent::note_on(MidiGroup::FIRST, c, n, 0xFFFF)
+    note_on(MidiGroup::FIRST, c, n, 0xFFFF)
 }
 
-fn off(i: u32) -> MidiEvent {
+fn off(i: u32) -> Ump {
     let (c, n) = key(i);
-    MidiEvent::note_off(MidiGroup::FIRST, c, n, 0)
+    note_off(MidiGroup::FIRST, c, n, 0)
 }
 
-fn at(frame: u64, event: MidiEvent) -> TimedMidiEvent {
+fn at(frame: u64, event: Ump) -> TimedMidiEvent {
     TimedMidiEvent::new(beat_of(frame), event)
 }
 
@@ -294,12 +294,13 @@ fn the_port_follows_the_block() {
 #[test]
 fn the_hardware_input_follows_the_block() {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tutti_graph::Offset;
+    use tutti_midi_runtime::MidiIn;
     use tutti_midi_runtime::MidiInputNode;
-    use tutti_midi_types::MidiIn;
 
     struct Wire(Arc<AtomicUsize>);
     impl MidiIn for Wire {
-        fn poll_block(&mut self, _: usize, _: &mut [MidiEvent]) -> usize {
+        fn poll_block(&mut self, _: usize, _: &mut [(Offset, Ump)]) -> usize {
             0
         }
         fn reserve(&mut self, events: usize) {

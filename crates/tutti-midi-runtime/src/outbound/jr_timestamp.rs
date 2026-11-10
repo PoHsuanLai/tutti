@@ -6,11 +6,11 @@
 //! (31.25 kHz — one tick every 32 µs); the receiver reads the deltas between
 //! successive stamps to recover inter-event intervals.
 //!
-//! [`tutti_midi_types::MidiEvent::jr_timestamp`] is the wire constructor. This
+//! The `Message::Utility(Utility::JrTimestamp(..))` of `tutti_ump` is the wire message. This
 //! module is the *engine* around it:
 //! - [`JrClock`] — the shared tick reference (samples ↔ 16-bit ticks).
 //! - [`JrStamper`] — outbound: interleave a JR Timestamp before each event,
-//!   derived from the event's sample-accurate `frame_offset`. Pure.
+//!   derived from the event's sample-accurate [`Offset`]. Pure.
 //! - [`JrClockEmitter`] — outbound: the periodic JR *Clock* (§7.2.2.1), which
 //!   is what makes the stamps usable at all. §7.2.2.3: a receiver that has seen
 //!   no JR Clock renders messages "as soon as possible", ignoring every stamp.
@@ -25,8 +25,10 @@
 
 use std::time::Duration;
 
-use tutti_midi_types::ump::MidiEvent;
+use tutti_graph::Offset;
+use tutti_midi_types::jr_timestamp_value;
 use tutti_types::SampleRate;
+use tutti_ump::{Message, Ump, Utility};
 
 /// The JR timestamp reference clock: **31 250 ticks per second** (one tick every
 /// 32 µs), a 16-bit counter that wraps roughly every 2.097 s (M2-104 §2.1.4).
@@ -62,8 +64,8 @@ impl JrClock {
 }
 
 /// Outbound JR stamping: turns a bare UMP stream into a JR-timestamped one by
-/// prefixing each event with a [`MidiEvent::jr_timestamp`] derived from the
-/// event's `frame_offset`. Stateless across calls (each `stamp_block` is relative
+/// prefixing each event with a JR Timestamp derived from the
+/// event's [`Offset`]. Stateless across calls (each `stamp_block` is relative
 /// to the block it's given); carry a running sample origin in the caller if you
 /// need cross-block continuity.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,7 +86,7 @@ impl JrStamper {
     }
 
     /// Writes each input event into `out`, preceded by a JR Timestamp for its
-    /// `frame_offset`. `origin_samples` is the absolute sample position of this
+    /// [`Offset`]. `origin_samples` is the absolute sample position of this
     /// block's frame-offset zero, so stamps stay monotonic across blocks.
     ///
     /// Prefer [`JrStream`] over calling this directly: the origin has to advance
@@ -99,11 +101,16 @@ impl JrStamper {
     /// per-block operation whose consumers hand the result straight to
     /// `MidiOut::queue` as a slice. Returning one allocated on every block for a
     /// value nobody keeps.
-    pub fn stamp_block(&self, events: &[MidiEvent], origin_samples: u64, out: &mut Vec<MidiEvent>) {
+    pub fn stamp_block(
+        &self,
+        events: &[(Offset, Ump)],
+        origin_samples: u64,
+        out: &mut Vec<(Offset, Ump)>,
+    ) {
         out.reserve(events.len() * 2);
         for ev in events {
-            let ticks = self.clock.ticks_at(origin_samples + ev.frame_offset as u64);
-            out.push(MidiEvent::jr_timestamp(ticks).with_frame_offset(ev.frame_offset));
+            let ticks = self.clock.ticks_at(origin_samples + u64::from(ev.0.get()));
+            out.push((ev.0, Message::Utility(Utility::JrTimestamp(ticks)).into()));
             out.push(*ev);
         }
     }
@@ -114,10 +121,10 @@ impl JrStamper {
     /// Split out from [`JrStream::stamp`] so the arithmetic that keeps stamps
     /// monotonic is stated once and testable on its own.
     #[inline]
-    pub fn block_span(events: &[MidiEvent]) -> u64 {
+    pub fn block_span(events: &[(Offset, Ump)]) -> u64 {
         events
             .iter()
-            .map(|e| e.frame_offset as u64)
+            .map(|e| u64::from(e.0.get()))
             .max()
             .map_or(0, |m| m + 1)
     }
@@ -190,7 +197,7 @@ impl JrClockEmitter {
     ///
     /// Call once per block with the block's starting sample position. The first
     /// call always yields a clock.
-    pub fn due(&mut self, origin_samples: u64) -> Option<MidiEvent> {
+    pub fn due(&mut self, origin_samples: u64) -> Option<Ump> {
         let owed = match self.last_emit {
             None => true,
             Some(last) => origin_samples.wrapping_sub(last) >= self.interval_samples,
@@ -199,7 +206,7 @@ impl JrClockEmitter {
             return None;
         }
         self.last_emit = Some(origin_samples);
-        Some(MidiEvent::jr_clock(self.clock.ticks_at(origin_samples)))
+        Some(Message::Utility(Utility::JrClock(self.clock.ticks_at(origin_samples))).into())
     }
 
     /// The configured interval, in samples.
@@ -284,7 +291,7 @@ impl JrStream {
     /// block. That is fine for stamping — an empty block stamps nothing — but it
     /// means a clock cadence driven from here would freeze on a silent stream.
     /// Use [`stamp_span`](Self::stamp_span) when clocking.
-    pub fn stamp(&mut self, events: &[MidiEvent], out: &mut Vec<MidiEvent>) {
+    pub fn stamp(&mut self, events: &[(Offset, Ump)], out: &mut Vec<(Offset, Ump)>) {
         self.stamp_span(events, JrStamper::block_span(events), out);
     }
 
@@ -302,15 +309,15 @@ impl JrStream {
     /// `MidiOut::queue`.
     pub fn stamp_span(
         &mut self,
-        events: &[MidiEvent],
+        events: &[(Offset, Ump)],
         block_samples: u64,
-        out: &mut Vec<MidiEvent>,
+        out: &mut Vec<(Offset, Ump)>,
     ) {
         out.clear();
         if let Some(emitter) = self.emitter.as_mut()
             && let Some(clock) = emitter.due(self.origin_samples)
         {
-            out.push(clock);
+            out.push((Offset::ZERO, clock));
         }
         self.stamper.stamp_block(events, self.origin_samples, out);
         self.origin_samples = self.origin_samples.wrapping_add(block_samples);
@@ -351,8 +358,8 @@ impl JrReceiver {
     /// applies to what follows). On any other event, returns the reconstructed
     /// delay since the previous timestamp — `Some(Duration::ZERO)` when two events
     /// share a timestamp, `None` before any timestamp has been seen.
-    pub fn observe(&mut self, event: &MidiEvent) -> Option<Duration> {
-        if let Some(ticks) = event.jr_timestamp_value() {
+    pub fn observe(&mut self, event: &Ump) -> Option<Duration> {
+        if let Some(ticks) = jr_timestamp_value(event) {
             // Delta from the previous timestamp, honoring the 16-bit wrap.
             let delay = self.prev.map(|p| wrap_delta(p, ticks));
             self.prev = Some(ticks);

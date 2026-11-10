@@ -1,8 +1,8 @@
 use super::*;
-use tutti_midi_types::MidiEvent;
+use tutti_fixtures::midi::note_off;
 
 /// **The off the ledger writes is the MIDI 2.0 Note Off at velocity 0 that
-/// `MidiEvent::note_off` builds**, on the key's group, channel and note.
+/// `note_off` builds**, on the key's group, channel and note.
 ///
 /// Mutation (run): `NoteKey::off` on channel 0 → fails.
 #[test]
@@ -13,8 +13,8 @@ fn an_owed_off_is_the_note_off_the_wire_types_build() {
         note: NoteNumber::new(61).unwrap(),
     };
     let off = key.off(Offset::ZERO);
-    let want = MidiEvent::note_off(key.group, key.channel, 61, 0);
-    assert_eq!(off, Event::midi(Offset::ZERO, want.data));
+    let want = note_off(key.group, key.channel, 61, 0);
+    assert_eq!(off, Event::midi(Offset::ZERO, want.0));
 }
 
 /// **A table entry is 12 bytes for the clip's tag and 6 for none**, so

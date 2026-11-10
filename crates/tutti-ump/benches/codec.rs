@@ -4,7 +4,7 @@
 //! controllers and bends, MIDI 1.0 notes and a few System Exclusive, Flex and
 //! Stream packets. One iteration is the whole block, so the per-packet figure
 //! is the printed time over the block length. The comparison with the old
-//! `MidiEvent::message()` is in `tutti-midi-types`' `message_baseline` bench.
+//! `MidiMessage::from_ump` is in `tutti-midi-types`' `message_baseline` bench.
 
 use std::hint::black_box;
 

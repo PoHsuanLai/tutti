@@ -14,7 +14,7 @@
 //! render thread, and each was *measured* rather than assumed:
 //!
 //! - **instrument render driven by MIDI**, because `AuInstance::send_midi`
-//!   decodes every event through `MidiEvent::message()` (a UMP `normalize()`
+//!   decodes every event through `MidiMessage::from_ump` (a UMP `normalize()`
 //!   plus a `MidiMessage` construction) on what a host calls from the RT path.
 //!   That decode is the suspicious part, and it is why this file does not stop
 //!   at effects.
@@ -52,8 +52,9 @@ use std::sync::Mutex;
 use assert_no_alloc::AllocDisabler;
 use tutti_au_host::AuInstance;
 use tutti_au_host::BusDirection;
-use tutti_au_host::MidiEvent;
 use tutti_au_host::parameters::{self, ParamAddress};
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 
 mod support;
 use support::corpus;
@@ -221,11 +222,9 @@ fn instrument_render_with_midi_does_not_allocate() {
     let mut au = corpus::DLS_SYNTH.open(48_000.0, BLOCK);
     let mut b = Bufs::new();
 
-    au.send_midi(&[MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0xC000,
+    au.send_midi(&[(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
     )]);
     for _ in 0..WARMUP {
         b.render(&mut au);
@@ -240,7 +239,7 @@ fn instrument_render_with_midi_does_not_allocate() {
 /// Decoding MIDI events for delivery must not allocate.
 ///
 /// This is the case that motivated widening the file. `send_midi` runs every
-/// event through `MidiEvent::message()`, which calls `normalize()` and builds a
+/// event through `MidiMessage::from_ump`, which calls `normalize()` and builds a
 /// `MidiMessage` — a decode the host performs per event, per block, on the RT
 /// path. It measured allocation-free, so this guards the property rather than
 /// reporting a bug: the day that decode grows a heap-backed variant (a SysEx
@@ -257,11 +256,9 @@ fn send_midi_decode_does_not_allocate() {
     let mut au = corpus::DLS_SYNTH.open(48_000.0, BLOCK);
     let mut b = Bufs::new();
 
-    au.send_midi(&[MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0xC000,
+    au.send_midi(&[(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
     )]);
     for _ in 0..WARMUP {
         b.render(&mut au);
@@ -271,22 +268,37 @@ fn send_midi_decode_does_not_allocate() {
         for i in 0..GUARDED {
             let note = 60 + (i % 12) as u8;
             au.send_midi(&[
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xC000),
-                MidiEvent::cc(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    CCNumber::VOLUME,
-                    0x4000_0000,
+                (
+                    Offset::ZERO,
+                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xC000),
                 ),
-                MidiEvent::pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 0x4000_0000),
+                (
+                    Offset::ZERO,
+                    midi::cc(
+                        MidiGroup::FIRST,
+                        MidiChannel::FIRST,
+                        CCNumber::VOLUME,
+                        0x4000_0000,
+                    ),
+                ),
+                (
+                    Offset::ZERO,
+                    midi::pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 0x4000_0000),
+                ),
                 // No legacy channel-voice form: exercises the skip arm.
-                MidiEvent::per_note_pitch_bend(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    note,
-                    0x4000_0000,
+                (
+                    Offset::ZERO,
+                    midi::per_note_pitch_bend(
+                        MidiGroup::FIRST,
+                        MidiChannel::FIRST,
+                        note,
+                        0x4000_0000,
+                    ),
                 ),
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0),
+                (
+                    Offset::ZERO,
+                    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0),
+                ),
             ]);
             b.render(&mut au);
         }
@@ -311,18 +323,21 @@ fn send_midi_decode_does_not_allocate() {
 /// is dropped and the first `assert_eq!` fails.
 #[test]
 fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
+    use tutti_midi_types::sysex7_fragments;
     use tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD;
+    use tutti_ump::Ump;
 
     let _lock = lock();
     let au = corpus::SAMPLER.open(48_000.0, BLOCK);
 
     // Built before the guarded region: the harness allocates, the host must not.
     let body: Vec<u8> = (0..3000).map(|i| (i % 0x7F) as u8).collect();
-    let mut long = Vec::new();
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &body, &mut long);
+    let mut packets = Vec::new();
+    sysex7_fragments(MidiGroup::FIRST, &body, &mut packets);
+    let long: Vec<(Offset, Ump)> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
     let oversized_body = vec![1u8; SYSEX7_MAX_PAYLOAD + 10];
-    let mut oversized = Vec::new();
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &oversized_body, &mut oversized);
+    sysex7_fragments(MidiGroup::FIRST, &oversized_body, &mut packets);
+    let oversized: Vec<(Offset, Ump)> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
 
     au.send_midi(&long);
     au.send_midi(&oversized);

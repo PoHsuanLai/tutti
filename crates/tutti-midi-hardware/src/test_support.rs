@@ -30,9 +30,10 @@ use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use tutti_graph::Offset;
 use tutti_midi_device::{Direction, EndpointId, Identity, OsChange};
-use tutti_midi_types::MidiOut;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_runtime::MidiOut;
+use tutti_ump::Ump;
 
 /// A backend with a fixed device list and no OS behind it.
 ///
@@ -226,7 +227,7 @@ struct FakeSink {
 }
 
 impl MidiOut for FakeSink {
-    fn queue(&self, events: &[MidiEvent]) -> usize {
+    fn queue(&self, events: &[(Offset, Ump)]) -> usize {
         self.sent.fetch_add(events.len(), Ordering::SeqCst);
         self.accepts.min(events.len())
     }

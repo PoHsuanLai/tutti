@@ -27,9 +27,9 @@ use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tutti_fixtures::midi;
 use tutti_graph::{Offset, Transport, TransportChanges};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, CurveType};
 use tutti_types::{Beat, Bpm, Samples};
@@ -141,14 +141,14 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let mut block = |b: usize, outs: &mut [&mut [f32]]| {
         if b.is_multiple_of(4) {
             let note = 60 + (b % 12) as u8;
-            let on = MidiEvent::note_on(
+            let on = midi::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 note,
                 midi1_velocity_to_midi2(100),
             );
-            let off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), note, 0);
-            sender.queue(&[on, off]);
+            let off = midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), note, 0);
+            sender.queue(&[(Offset::ZERO, on), (Offset::ZERO, off)]);
         }
         let n = BLOCK;
         let t = Transport::new(true, Bpm::of(120.0), Beat(b as f64), None).with_recording(true);

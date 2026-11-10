@@ -440,8 +440,8 @@ pub fn an_instrument_is_one_handle_at_a_time<S: Subject>() {
 /// order is pinned by the plugin subject's other cases, six of which fail under
 /// that mutation, and by the server's staging tests.
 pub fn a_fork_starts_silent_and_plays<S: Subject>() {
+    use tutti_fixtures::midi;
     use tutti_midi_runtime::TimedMidiEvent;
-    use tutti_midi_types::ump::MidiEvent;
     use tutti_ump::{MidiChannel, MidiGroup};
 
     let mut rig = S::rig();
@@ -456,7 +456,7 @@ pub fn a_fork_starts_silent_and_plays<S: Subject>() {
             rig.node,
             [TimedMidiEvent::new(
                 tutti_types::Beat(0.01),
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
             )],
         )
         .expect("an instrument takes a clip");

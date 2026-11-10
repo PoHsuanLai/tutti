@@ -22,7 +22,8 @@
 /// than swallowed, and that an output can be selected at all.
 mod midi_out_device {
     use bevy_tutti::midi::{MidiOutDrops, MidiOutRouter};
-    use tutti_midi_types::ump::MidiEvent;
+    use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// A router with no transport at all — the state an app is in before it selects
@@ -43,8 +44,14 @@ mod midi_out_device {
         {
             let mut router = router_with_no_output(&drops);
             router.route(&[
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+                (
+                    Offset::ZERO,
+                    note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                ),
+                (
+                    Offset::ZERO,
+                    note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+                ),
             ]);
         }
 
@@ -62,11 +69,9 @@ mod midi_out_device {
         let drops = MidiOutDrops::default();
         for _ in 0..3 {
             let mut router = router_with_no_output(&drops);
-            router.route(&[MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                0x8000,
+            router.route(&[(
+                Offset::ZERO,
+                note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
             )]);
         }
         assert_eq!(drops.count(), 3);
@@ -90,11 +95,9 @@ mod midi_out_device {
             out: None,
             drops: None,
         };
-        router.route(&[MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000,
+        router.route(&[(
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         )]);
     }
 
@@ -161,9 +164,10 @@ mod midi_hardware_frame_offset {
 
     use std::sync::Arc;
 
+    use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
     use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs};
-    use tutti_midi_types::ump::MidiEvent;
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
     /// A block long enough that a 1 ms offset is a large, unambiguous fraction of
     /// it, and short enough to stay a plausible audio block.
@@ -188,7 +192,7 @@ mod midi_hardware_frame_offset {
         let block_start = Instant::now();
         assert!(
             handle.push(
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
                 block_start - AGE
             ),
             "the fifo has room for one event"
@@ -196,11 +200,11 @@ mod midi_hardware_frame_offset {
 
         // The drain hands each event to a visitor rather than returning a slice, so
         // nothing borrows into the audio-thread-only scratch.
-        let mut seen: Vec<MidiEvent> = Vec::new();
+        let mut seen: Vec<(Offset, Ump)> = Vec::new();
         let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
         drain.cycle_start_read_all_inputs_at(NFRAMES, block_start, |_port, event| seen.push(event));
         assert_eq!(seen.len(), 1, "exactly the event we pushed");
-        seen[0].frame_offset
+        seen[0].0.get()
     }
 
     /// The rate the device reports is the rate the offset is computed against.
@@ -243,9 +247,10 @@ mod midi_hardware_frame_offset {
 mod midi_session_without_hardware {
     use std::sync::Arc;
 
+    use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
     use tutti_midi_hardware::test_support::FakeBackend;
     use tutti_midi_hardware::{DeviceId, HardwareMidiInputs, MidiSession};
-    use tutti_midi_types::ump::MidiEvent;
     use tutti_ump::{MidiChannel, MidiGroup};
 
     fn session() -> (MidiSession, tutti_midi_hardware::test_support::FakeCounters) {
@@ -292,7 +297,10 @@ mod midi_session_without_hardware {
             .unwrap();
         s.connect_output(&synth.id)
             .expect("the fake list contains Synth A");
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        let note = (
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        );
         assert_eq!(
             s.send(&[note, note]),
             2,

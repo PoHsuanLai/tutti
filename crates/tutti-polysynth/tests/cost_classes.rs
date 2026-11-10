@@ -6,13 +6,13 @@
 
 use std::sync::Arc;
 
+use tutti_fixtures::midi;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, EventEdge, EventIn, EventOut, Executor, Io, Node, Prepare, Schedule, Shape,
     Status, Transport, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
 use tutti_nodes::ChannelSumNode;
 use tutti_polysynth::{OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
@@ -66,7 +66,7 @@ fn notes(k: u64) -> Vec<TimedMidiEvent> {
         .map(|i| {
             TimedMidiEvent::new(
                 Beat(0.001 * (k + 3 * i) as f64),
-                MidiEvent::note_on(
+                midi::note_on(
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     48 + (k * 5 + i * 7) as u8,

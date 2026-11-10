@@ -3,10 +3,12 @@
 //! Format-neutral types are re-exported from `tutti_plugin_types`; this module
 //! adds the VST2-specific ones, [`PluginInfo`] and [`Vst2ProcessContext`].
 
-pub use tutti_plugin_types::Samples;
+use tutti_graph::Offset;
+pub use tutti_plugin_types::{Samples, WireMidi};
+use tutti_ump::Ump;
 
 pub use tutti_plugin_types::{
-    ChannelLayout, EditorSize, MidiEvent, ParameterInfo, PluginTail, TimeSignature, TransportInfo,
+    ChannelLayout, EditorSize, ParameterInfo, PluginTail, TimeSignature, TransportInfo,
     WindowHandle,
 };
 
@@ -67,7 +69,7 @@ pub use tutti_plugin_types::Vst2Category;
 /// plugin's MIDI-out queue can hold (`MidiIo::new`), so draining a full queue
 /// into it on the audio thread never grows it. A process call returns it
 /// borrowed; a caller copies out what it keeps.
-pub type MidiEventVec = Vec<MidiEvent>;
+pub type MidiEventVec = Vec<WireMidi>;
 
 /// Per-block inputs to [`Vst2Processor::process_f32`] and
 /// [`Vst2Processor::process_f64`] beyond the audio buffers.
@@ -78,7 +80,7 @@ pub type MidiEventVec = Vec<MidiEvent>;
 pub struct Vst2ProcessContext<'a> {
     /// Events to deliver before the block renders, each carrying its own frame
     /// offset within the block. Empty is normal for an effect.
-    pub midi: &'a [MidiEvent],
+    pub midi: &'a [(Offset, Ump)],
     /// Transport state for this block. `None` leaves the plugin's `VstTimeInfo`
     /// reporting a stopped transport, which is what a plugin syncing to host
     /// tempo will see.
@@ -105,7 +107,7 @@ impl<'a> Vst2ProcessContext<'a> {
 
     /// Attaches this block's MIDI events, replacing any already set.
     #[must_use]
-    pub fn midi(mut self, midi: &'a [MidiEvent]) -> Self {
+    pub fn midi(mut self, midi: &'a [(Offset, Ump)]) -> Self {
         self.midi = midi;
         self
     }

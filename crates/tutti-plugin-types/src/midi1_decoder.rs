@@ -4,7 +4,7 @@
 //! `MIDIPacketList`) has a stream, not messages: a packet may carry several
 //! messages, running status, real-time bytes inside another message, and a
 //! SysEx that starts in one packet and ends in a later one. [`Midi1Decoder`]
-//! turns each packet's bytes into [`MidiEvent`]s, with a SysEx message as UMP
+//! turns each packet's bytes into [`WireMidi`]s, with a SysEx message as UMP
 //! SysEx7 packets (the inverse of what [`SysExAssembler`](crate::SysExAssembler)
 //! does for input), and hands them to the caller in batches. The platform
 //! code only walks its own packet structure and calls in.
@@ -12,7 +12,9 @@
 //! Nothing here allocates after [`Midi1Decoder::new`]: the SysEx capture
 //! buffer is reserved there, and the batch is inline.
 
-use crate::{MIDI_STACK_CAPACITY, MidiEvent, MidiEventVec, push_sysex_stack};
+use tutti_midi_types::{from_midi1_bytes, sysex7_packet_count};
+
+use crate::{MIDI_STACK_CAPACITY, MidiEventVec, WireMidi, push_sysex_stack};
 
 /// The longest SysEx message the decoder delivers, in bytes, delimiters
 /// included: what [`MIDI_STACK_CAPACITY`] SysEx7 packets (six payload bytes
@@ -195,7 +197,7 @@ impl Midi1Splitter {
     }
 }
 
-/// Decodes MIDI 1.0 bytes into [`MidiEvent`]s. See the module docs.
+/// Decodes MIDI 1.0 bytes into [`WireMidi`]s. See the module docs.
 ///
 /// # Policy
 ///
@@ -215,7 +217,7 @@ impl Midi1Splitter {
 ///   and the byte is read as usual (an `0xF0` starts the next message).
 /// - **Real-time bytes inside a SysEx** are delivered at once and the
 ///   message continues.
-/// - Other messages are as `MidiEvent::from_midi1_bytes` reads them; a
+/// - Other messages are as `from_midi1_bytes` reads them; a
 ///   data byte with no status to attribute it to, or a status whose data
 ///   bytes are cut short, is dropped. Real-time bytes among a message's data
 ///   are delivered and the message goes on; any other status byte there ends
@@ -261,18 +263,14 @@ impl Midi1Decoder {
     /// staging area is full, or a SysEx message needs more room than is left,
     /// `flush` gets what is staged first, in order. Call
     /// [`flush`](Self::flush) after the last packet of a list. Never allocates.
-    pub fn decode(
-        &mut self,
-        bytes: &[u8],
-        frame_offset: u32,
-        flush: &mut impl FnMut(&[MidiEvent]),
-    ) {
+    pub fn decode(&mut self, bytes: &[u8], frame_offset: u32, flush: &mut impl FnMut(&[WireMidi])) {
         let Self { splitter, batch } = self;
         splitter.split(bytes, frame_offset, &mut |frame, message| match message {
             Midi1Message::Short(bytes) => {
-                let Some(event) = MidiEvent::from_midi1_bytes(frame, bytes) else {
+                let Some(ump) = from_midi1_bytes(bytes) else {
                     return;
                 };
+                let event = WireMidi { offset: frame, ump };
                 if batch.is_full() {
                     flush_batch(batch, flush);
                 }
@@ -280,7 +278,7 @@ impl Midi1Decoder {
                 let _ = batch.try_push(event);
             }
             Midi1Message::SysEx(message) => {
-                let packets = MidiEvent::sysex7_packet_count(message.len() - 2);
+                let packets = sysex7_packet_count(message.len() - 2);
                 if packets > batch.remaining_capacity() {
                     flush_batch(batch, flush);
                 }
@@ -293,12 +291,12 @@ impl Midi1Decoder {
     }
 
     /// Hands on what is staged. Call it after a list's last packet.
-    pub fn flush(&mut self, flush: &mut impl FnMut(&[MidiEvent])) {
+    pub fn flush(&mut self, flush: &mut impl FnMut(&[WireMidi])) {
         flush_batch(&mut self.batch, flush);
     }
 }
 
-fn flush_batch(batch: &mut MidiEventVec, flush: &mut impl FnMut(&[MidiEvent])) {
+fn flush_batch(batch: &mut MidiEventVec, flush: &mut impl FnMut(&[WireMidi])) {
     if !batch.is_empty() {
         flush(batch);
         batch.clear();
@@ -382,12 +380,13 @@ fn data_len(status: u8) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::{SysExAssembler, SysExStep};
+    use tutti_midi_types::{MidiMessage, to_midi1_bytes};
     use tutti_ump::frame;
 
     /// Decode each packet in turn, then flush; one `Vec` per flush call.
-    fn run(decoder: &mut Midi1Decoder, packets: &[(&[u8], u32)]) -> Vec<Vec<MidiEvent>> {
+    fn run(decoder: &mut Midi1Decoder, packets: &[(&[u8], u32)]) -> Vec<Vec<WireMidi>> {
         let mut flushes = Vec::new();
-        let mut sink = |events: &[MidiEvent]| flushes.push(events.to_vec());
+        let mut sink = |events: &[WireMidi]| flushes.push(events.to_vec());
         for (bytes, frame) in packets {
             decoder.decode(bytes, *frame, &mut sink);
         }
@@ -395,8 +394,12 @@ mod tests {
         flushes
     }
 
-    fn all(flushes: &[Vec<MidiEvent>]) -> Vec<MidiEvent> {
+    fn all(flushes: &[Vec<WireMidi>]) -> Vec<WireMidi> {
         flushes.iter().flatten().copied().collect()
+    }
+
+    fn msg(e: &WireMidi) -> MidiMessage {
+        MidiMessage::from_ump(e.ump)
     }
 
     fn payload(len: usize) -> Vec<u8> {
@@ -408,11 +411,11 @@ mod tests {
     }
 
     /// The messages a stream of UMP packets reassembles to.
-    fn reassemble(events: &[MidiEvent]) -> Vec<Vec<u8>> {
+    fn reassemble(events: &[WireMidi]) -> Vec<Vec<u8>> {
         let mut asm = SysExAssembler::reserved();
         let mut out = Vec::new();
         for e in events {
-            if let SysExStep::Complete(r) = asm.push(e) {
+            if let SysExStep::Complete(r) = asm.push(&e.ump) {
                 out.push(asm.message(r).to_vec());
             }
         }
@@ -432,7 +435,7 @@ mod tests {
             let mut decoder = Midi1Decoder::new();
             let flushes = run(&mut decoder, &[(&message, 5)]);
             assert_eq!(flushes.len(), 1, "{len} bytes in one batch");
-            assert!(flushes[0].iter().all(|e| e.frame_offset == 5));
+            assert!(flushes[0].iter().all(|e| e.offset == 5));
             assert_eq!(reassemble(&flushes[0]), vec![message], "{len} bytes");
             assert_eq!(decoder.sysex_dropped(), 0);
         }
@@ -454,7 +457,7 @@ mod tests {
         let flushes = run(&mut decoder, &[(a, 3), (b, 9), (c, 17)]);
         let events = all(&flushes);
         assert_eq!(reassemble(&events), vec![message.clone()]);
-        assert!(events.iter().all(|e| e.frame_offset == 3), "start offset");
+        assert!(events.iter().all(|e| e.offset == 3), "start offset");
 
         // Across a flush too: the list ended, the message did not.
         let mut decoder = Midi1Decoder::new();
@@ -508,8 +511,8 @@ mod tests {
         );
         let events = all(&flushes);
         assert_eq!(decoder.sysex_dropped(), 2);
-        assert!(events[0].is_note_on());
-        assert_eq!(events[0].frame_offset, 4);
+        assert!(msg(&events[0]).is_note_on());
+        assert_eq!(events[0].offset, 4);
         assert_eq!(reassemble(&events[1..]), vec![vec![0xF0, 7, 0xF7]]);
         assert_eq!(events.len(), 2);
     }
@@ -526,10 +529,8 @@ mod tests {
         let events = all(&flushes);
         assert_eq!(events.len(), 2);
         assert_eq!(
-            MidiEvent::from_midi1_bytes(0, &[0xF8])
-                .unwrap()
-                .to_midi1_bytes(),
-            events[0].to_midi1_bytes(),
+            from_midi1_bytes(&[0xF8]).unwrap(),
+            events[0].ump,
             "the clock first"
         );
         assert_eq!(reassemble(&events[1..]), vec![vec![0xF0, 1, 2, 0xF7]]);
@@ -558,14 +559,10 @@ mod tests {
             4,
             "three notes and the clock; the cut CC lost"
         );
-        assert_eq!(events[0].note(), Some(60));
-        assert_eq!(events[1].note(), Some(62));
-        assert_eq!(events[3].note(), Some(64));
-        assert!(
-            events
-                .iter()
-                .all(|e| e.frame_offset == 2 || e.frame_offset == 3)
-        );
+        assert_eq!(msg(&events[0]).note(), Some(60));
+        assert_eq!(msg(&events[1]).note(), Some(62));
+        assert_eq!(msg(&events[3]).note(), Some(64));
+        assert!(events.iter().all(|e| e.offset == 2 || e.offset == 3));
     }
 
     /// **A SysEx that does not fit the room left flushes what is staged
@@ -587,7 +584,7 @@ mod tests {
         let flushes = run(&mut decoder, &packets);
         assert_eq!(flushes.len(), 2);
         assert_eq!(flushes[0].len(), notes.len(), "the notes, before the dump");
-        assert!(flushes[0].iter().all(|e| e.is_note_on()));
+        assert!(flushes[0].iter().all(|e| msg(e).is_note_on()));
         assert_eq!(reassemble(&flushes[1]), vec![big]);
 
         // More short messages than a batch holds flush as it fills.
@@ -623,7 +620,7 @@ mod tests {
     fn a_sysex_continued_into_a_later_list_lands_at_the_start() {
         let mut decoder = Midi1Decoder::new();
         let mut out = Vec::new();
-        let mut sink = |events: &[MidiEvent]| out.extend_from_slice(events);
+        let mut sink = |events: &[WireMidi]| out.extend_from_slice(events);
         decoder.begin_list();
         decoder.decode(&[0xF0, 1, 2], 40, &mut sink);
         decoder.flush(&mut sink);
@@ -631,16 +628,16 @@ mod tests {
         decoder.decode(&[3, 0xF7], 9, &mut sink);
         decoder.flush(&mut sink);
         assert_eq!(reassemble(&out), vec![vec![0xF0, 1, 2, 3, 0xF7]]);
-        assert!(out.iter().all(|e| e.frame_offset == 0));
+        assert!(out.iter().all(|e| e.offset == 0));
 
         // Within one list the start's offset stands.
         let mut out = Vec::new();
-        let mut sink = |events: &[MidiEvent]| out.extend_from_slice(events);
+        let mut sink = |events: &[WireMidi]| out.extend_from_slice(events);
         decoder.begin_list();
         decoder.decode(&[0xF0, 1], 40, &mut sink);
         decoder.decode(&[2, 0xF7], 41, &mut sink);
         decoder.flush(&mut sink);
-        assert!(out.iter().all(|e| e.frame_offset == 40));
+        assert!(out.iter().all(|e| e.offset == 40));
     }
 
     /// **A status byte among a short message's data ends it**, a real-time one
@@ -663,7 +660,7 @@ mod tests {
         let events = all(&flushes);
         let bytes: Vec<_> = events
             .iter()
-            .map(|e| e.to_midi1_bytes().map(|(b, n)| b[..n as usize].to_vec()))
+            .map(|e| to_midi1_bytes(&e.ump).map(|(b, n)| b[..n as usize].to_vec()))
             .collect();
         assert_eq!(
             bytes,
@@ -677,7 +674,7 @@ mod tests {
         // Running status: the data position holds a status.
         let mut decoder = Midi1Decoder::new();
         let flushes = run(&mut decoder, &[(&[0x90, 60, 100, 62, 0x80, 62, 0], 0)]);
-        let notes: Vec<_> = all(&flushes).iter().map(|e| e.is_note_on()).collect();
+        let notes: Vec<_> = all(&flushes).iter().map(|e| msg(e).is_note_on()).collect();
         assert_eq!(notes, vec![true, false], "the cut note-on 62 is dropped");
     }
 
@@ -692,7 +689,7 @@ mod tests {
         let mut decoder = Midi1Decoder::new();
         let mut seen = 0usize;
         assert_no_alloc::assert_no_alloc(|| {
-            let mut sink = |events: &[MidiEvent]| seen += events.len();
+            let mut sink = |events: &[WireMidi]| seen += events.len();
             for bytes in [&big[..], &too_long, &[0x90, 60, 100], &big, &[0xF0, 1]] {
                 decoder.decode(bytes, 0, &mut sink);
             }

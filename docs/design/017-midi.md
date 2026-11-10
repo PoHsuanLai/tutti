@@ -87,18 +87,26 @@ A survey of `main` after stages 1, 1.5 and 2 (the CLAP host, the VST3 host, the
 polysynth and the SoundFont read `Message`). What is left is mostly duplication
 and a vocabulary that is half old.
 
-**Three event shapes coexist.**
+**One event shape, since stage 5a.** The legacy `MidiEvent { frame_offset,
+data: [u32; 4] }` is deleted, with its constructors. What it carried is now
+said by the type of the position beside a `Ump`:
 
-- `tutti_graph::Event { offset, kind: EventKind::Midi(Ump) }`
-  (`tutti-graph/src/event.rs`): the target.
-- The legacy `tutti_midi_types::MidiEvent { frame_offset, data: [u32; 4] }`
-  (`tutti-midi-types/src/ump/mod.rs:37`). It is still the currency of the
-  `MidiIn` and `MidiOut` traits, the plugin hosts (`tutti-plugin-types`
-  re-exports it, and its `ProcessContext` and `emit_midi` use it),
-  `MidiSession::send`, the SoundFont's `apply_event(&MidiEvent)`,
-  `BlockSplitter` and `gather_midi`. It appears in about 40 files of
-  `tutti-midi-types`, 30 of `tutti-midi-runtime` and 18 of `tutti-plugin`.
-- Bare `Ump` or `Message` (`PolySynth::process_midi_event`, `Voicing::step`).
+- `(Offset, Ump)` in a block: `MidiIn`, `MidiOut` (both in
+  `tutti-midi-runtime` now), `ProcessContext::midi_events`, `BlockSplitter`,
+  `gather_midi`. The graph's `Event { offset, kind: EventKind::Midi(Ump) }`
+  is the same pair.
+- A raw `u32` where the event crosses a thread or a process ahead of any
+  block, and becomes an `Offset` where a block is known: the `MidiMailbox`
+  ring's `(u32, Ump)` stamp, and `tutti-plugin-types`' `WireMidi` (plugin
+  output and the IPC wire, clamped into the host's block by the batcher).
+- An absolute time in storage: `(Beat, Ump)` from an SMF, `(Instant, Ump)` in
+  the hardware input ring.
+- Bare `Ump` or `Message` where no time is involved (`PolySynth::process_midi_event`,
+  `SoundFontUnit::apply_event(&Ump)`, `Voicing::step`, `tutti-midi-types`,
+  which sits in `tutti-graph`'s layer and cannot name `Offset`).
+
+A single message is built as `Ump::from(Message::..)`; tests use
+`tutti_fixtures::midi`, one builder per message over the same encoder.
 
 **Stage 3's `Translator` is not built.** The old `Midi1ToMidi2Translator`
 (`tutti-midi-types/src/translation/rpn.rs:81`) is what `MidiInputNode` runs, and it
@@ -1073,7 +1081,13 @@ cannot be exercised on Linux. Stage 4 does not depend on this order and can land
 at any point; its CI codec move and `ci`/`negotiate` deletion shrink
 `tutti-midi-types` the same way.
 
-- **Stage 5a. One event shape.** Replace `MidiEvent` with `(Offset, Ump)` everywhere:
+- **Stage 5a. One event shape.** Done (§1.4 lists what replaced `MidiEvent` where).
+   What the stage settled beyond the plan: the mailbox ring and plugin output
+   carry a raw `u32` position, not an `Offset` built against a block that does
+   not exist yet; `MidiMessage` lost `frame_offset`; multi-packet builders
+   (SysEx, Flex Data, UMP Stream) are free functions over `Ump` in
+   `tutti-midi-types` until 3c, 4 and 5b move them. The plan was:
+   Replace `MidiEvent` with `(Offset, Ump)` everywhere:
    the `MidiIn` and `MidiOut` element type, the plugin hosts and `tutti-plugin-types`,
    the SoundFont's `apply_event`, `BlockSplitter`, `gather_midi` and
    `MidiSession::send`. Deletes `MidiEvent` and its constructors. Oracle: none

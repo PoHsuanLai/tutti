@@ -209,7 +209,7 @@ impl crate::MidiEndpoints for Capture {
     ) -> Result<Box<dyn crate::InputConnection>> {
         Err(Error::MidiDevice("none".into()))
     }
-    fn open_output(&self, _: EndpointId) -> Result<Box<dyn tutti_midi_types::MidiOut>> {
+    fn open_output(&self, _: EndpointId) -> Result<Box<dyn tutti_midi_runtime::MidiOut>> {
         Err(Error::MidiDevice("none".into()))
     }
 }

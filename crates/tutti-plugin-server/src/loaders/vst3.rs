@@ -609,7 +609,7 @@ mod tests {
     }
 
     use std::path::Path;
-    use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, Features, MidiEvent};
+    use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, Features};
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// Sets `TUTTI_PROBE_MISBEHAVIOUR` for the life of the guard and restores
@@ -1378,11 +1378,14 @@ mod tests {
             .expect("Failed to load VST3 plugin");
 
         let num_samples = 512;
-        let note_on = [MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        let note_on = [(
+            tutti_graph::Offset::ZERO,
+            tutti_fixtures::midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                60,
+                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+            ),
         )];
 
         let mut has_nonzero = false;

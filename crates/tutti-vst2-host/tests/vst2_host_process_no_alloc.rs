@@ -20,9 +20,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::AllocDisabler;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst2_host::{MidiEvent, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_vst2_host::{TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/active.rs"]
@@ -277,8 +279,14 @@ fn process_f32_with_midi_does_not_allocate() {
         let ins: &[&[f32]] = &[];
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let warm = [
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            (
+                Offset::ZERO,
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+            ),
+            (
+                Offset::ZERO,
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            ),
         ];
         let ctx = Vst2ProcessContext::new(SAMPLE_RATE)
             .midi(&warm)
@@ -287,22 +295,18 @@ fn process_f32_with_midi_does_not_allocate() {
     }
     drive_silent(&mut inst, 32, &transport);
 
-    let on_event = [MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0x4000,
+    let on_event = [(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
     )];
-    let off_event = [MidiEvent::note_off(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0,
+    let off_event = [(
+        Offset::ZERO,
+        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
     )];
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {
-            let events: &[MidiEvent] = match i % 32 {
+            let events: &[(Offset, Ump)] = match i % 32 {
                 0 => &on_event,
                 16 => &off_event,
                 _ => &[],

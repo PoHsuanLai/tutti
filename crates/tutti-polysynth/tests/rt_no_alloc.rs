@@ -24,8 +24,8 @@ use assert_no_alloc::AllocDisabler;
 mod support;
 
 use support::Hand;
+use tutti_fixtures::midi;
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::{Hz, Q, SampleRate};
 use tutti_ump::{
@@ -36,8 +36,8 @@ use tutti_ump::{
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-fn note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
-    MidiEvent::note_on(
+fn note_on(channel: u8, note: u8, vel: u8) -> Ump {
+    midi::note_on(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
@@ -45,8 +45,8 @@ fn note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
     )
 }
 
-fn note_off(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
+fn note_off(channel: u8, note: u8) -> Ump {
+    midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
 }
 
 #[test]
@@ -203,10 +203,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
     };
     let note = NoteNumber::new(60).unwrap();
     let u7 = |v| U7::new(v).unwrap();
-    let ev = |m: Message| MidiEvent {
-        frame_offset: 0,
-        data: Ump::from(m).0,
-    };
+    let ev = |m: Message| Ump::from(m);
     let m1 = |v| ev(Message::Midi1(address, v));
     let m2 = |v| ev(Message::Midi2(address, v));
     let events = [
@@ -311,10 +308,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             tutti_ump::System::TimingClock,
         )),
         // A reserved message type: `decode` refuses it.
-        MidiEvent {
-            frame_offset: 0,
-            data: [0x6000_0000, 0, 0, 0],
-        },
+        Ump([0x6000_0000, 0, 0, 0]),
     ];
     for _ in 0..8 {
         synth.queue_midi(&events);
@@ -360,10 +354,10 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
 
     // Distinct pitches so the allocator assigns a separate voice to each
     // rather than retriggering one slot.
-    let all_on: Vec<MidiEvent> = (0..MAX_VOICES)
+    let all_on: Vec<Ump> = (0..MAX_VOICES)
         .map(|i| note_on(0, 36 + i as u8, 100))
         .collect();
-    let all_off: Vec<MidiEvent> = (0..MAX_VOICES).map(|i| note_off(0, 36 + i as u8)).collect();
+    let all_off: Vec<Ump> = (0..MAX_VOICES).map(|i| note_off(0, 36 + i as u8)).collect();
 
     // Warm up: run the full on/off cycle once outside the gate so every
     // lazily-sized buffer reaches its steady-state capacity first.
@@ -428,10 +422,10 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
         .unwrap()
     };
 
-    let notes: Vec<MidiEvent> = (0..MAX_VOICES)
+    let notes: Vec<Ump> = (0..MAX_VOICES)
         .map(|i| note_on(0, 36 + i as u8, 100))
         .collect();
-    let offs: Vec<MidiEvent> = (0..MAX_VOICES).map(|i| note_off(0, 36 + i as u8)).collect();
+    let offs: Vec<Ump> = (0..MAX_VOICES).map(|i| note_off(0, 36 + i as u8)).collect();
 
     // Warm the THREAD only, so this test measures the instance alone: a cold
     // thread is `a_first_block_on_a_cold_thread_is_allocation_free`'s subject.
@@ -617,7 +611,7 @@ fn mono_and_legato_event_paths_are_allocation_free() {
         assert_no_alloc::assert_no_alloc(|| {
             for round in 0..200u8 {
                 let cc = |n: u8, v: u32| {
-                    MidiEvent::cc(
+                    midi::cc(
                         MidiGroup::FIRST,
                         MidiChannel::of(0),
                         CCNumber::of(n),

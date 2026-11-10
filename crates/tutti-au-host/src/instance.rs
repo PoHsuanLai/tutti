@@ -23,13 +23,14 @@ use crate::preset::AuPreset;
 use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport;
 use crate::types::*;
-use tutti_midi_types::MidiEvent;
+use tutti_graph::Offset;
 use tutti_plugin_types::{
     ChannelLayout, EditorSize, MainThread, SYSEX_MESSAGE_CAPACITY, SysExAssembler, TransportInfo,
     WindowHandle,
 };
 use tutti_types::Samples;
 use tutti_types::value::units::Seconds;
+use tutti_ump::Ump;
 
 /// An AU that has been instantiated but not yet initialized.
 ///
@@ -604,7 +605,7 @@ impl AuInstance {
     ///
     /// Each channel-voice event is decoded to a 3-byte MIDI 1.0 message (status
     /// byte + up to two data bytes, MIDI 2.0 resolutions scaled down per spec)
-    /// and delivered at its `frame_offset` through `MusicDeviceMIDIEvent`.
+    /// and delivered at its block offset through `MusicDeviceMIDIEvent`.
     ///
     /// **SysEx goes out through `MusicDeviceSysEx`** (`MusicDevice.h:237-241`),
     /// a separate entry point that takes a byte buffer rather than a packed
@@ -620,7 +621,7 @@ impl AuInstance {
     /// Only meaningful for AUs whose type [`AuType::receives_midi`] is true;
     /// the caller gates on that. Errors from individual events are ignored so a
     /// single rejected message can't abort the whole block.
-    pub fn send_midi(&self, events: &[MidiEvent]) {
+    pub fn send_midi(&self, events: &[(Offset, Ump)]) {
         use tutti_midi_types::MidiMessage;
         use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
         use tutti_plugin_types::{SysExStep, is_framed};
@@ -649,10 +650,10 @@ impl AuInstance {
         sysex.begin_block();
 
         let unit = self.unit();
-        for ev in events {
+        for &(offset, ev) in events {
             // (status, data1, data2) for the legacy 3-byte message, or None if
             // this message has no legacy channel-voice representation.
-            let (status, d1, d2) = match ev.message() {
+            let (status, d1, d2) = match MidiMessage::from_ump(ev) {
                 MidiMessage::NoteOn {
                     channel,
                     note,
@@ -716,7 +717,7 @@ impl AuInstance {
                 // a UMP SysEx7 packet carries at most 6 bytes, so anything
                 // longer than that arrives as START/CONTINUE.../END.
                 MidiMessage::Other(_) => {
-                    if let SysExStep::Complete(message) = sysex.push(ev) {
+                    if let SysExStep::Complete(message) = sysex.push(&ev) {
                         // `MusicDeviceSysEx` takes the complete message,
                         // `0xF0` and `0xF7` included (`MusicDevice.h`).
                         let bytes = sysex.message(message);
@@ -728,7 +729,7 @@ impl AuInstance {
                 _ => continue,
             };
             {
-                let _ = unit.midi_event(status, d1, d2, ev.frame_offset);
+                let _ = unit.midi_event(status, d1, d2, offset.get());
             }
         }
     }

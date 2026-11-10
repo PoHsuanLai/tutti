@@ -1790,11 +1790,14 @@ mod tests {
         let num_samples = 512;
 
         // First block: send a NoteOn event
-        let note_on = [tutti_plugin::server::MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        let note_on = [(
+            tutti_graph::Offset::ZERO,
+            tutti_fixtures::midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                60,
+                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+            ),
         )];
 
         let mut has_nonzero = false;
@@ -1980,11 +1983,14 @@ mod tests {
         .expect("Failed to load Surge XT");
 
         let num_samples = 512;
-        let note_on = [tutti_plugin::server::MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        let note_on = [(
+            tutti_graph::Offset::ZERO,
+            tutti_fixtures::midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                60,
+                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+            ),
         )];
 
         // Process block with NoteOn + follow-up blocks.
@@ -2635,11 +2641,14 @@ mod tests {
         )
         .expect("Failed to load");
 
-        let note_on = [tutti_plugin::server::MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        let note_on = [(
+            tutti_graph::Offset::ZERO,
+            tutti_fixtures::midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                60,
+                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+            ),
         )];
 
         let mut expr_changes = NoteExpressionChanges::new();

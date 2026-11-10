@@ -7,16 +7,18 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi::{note_off, note_on, pitch_bend, registered_controller, timing_clock};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Io, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges,
 };
 use tutti_midi_runtime::{
-    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiInputNode,
-    MidiOutNode, MidiQueueNode,
+    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
+    MidiInputNode, MidiOutNode, MidiQueueNode,
 };
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-use tutti_midi_types::{MidiEvent, MidiIn, cc};
+use tutti_midi_types::{MidiMessage, cc, from_midi1_bytes};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
@@ -24,7 +26,7 @@ use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 const RATE: f64 = 48_000.0;
 
 /// `(sink port, absolute frame, event)` of every MIDI event a sink received.
-type Seen = Arc<Mutex<Vec<(usize, u64, MidiEvent)>>>;
+type Seen = Arc<Mutex<Vec<(usize, u64, Ump)>>>;
 
 /// Logs the MIDI on each of its `ports` event inputs; a silent mono output,
 /// so a fork has somewhere to end.
@@ -48,11 +50,7 @@ impl Node for Sink {
         for p in 0..usize::from(self.ports) {
             for e in io.events(p) {
                 if let EventKind::Midi(Ump(data)) = e.kind {
-                    let ev = MidiEvent {
-                        frame_offset: e.offset.get(),
-                        data,
-                    };
-                    seen.push((p, cx.env.frame.get() + u64::from(e.offset.get()), ev));
+                    seen.push((p, cx.env.frame.get() + u64::from(e.offset.get()), Ump(data)));
                 }
             }
         }
@@ -108,16 +106,16 @@ fn block(exec: &mut Executor, len: usize) {
 }
 
 /// A wire that hands out one scripted batch per poll.
-struct Wire(std::collections::VecDeque<Vec<MidiEvent>>);
+struct Wire(std::collections::VecDeque<Vec<(Offset, Ump)>>);
 
 impl Wire {
-    fn new(batches: Vec<Vec<MidiEvent>>) -> Box<Self> {
+    fn new(batches: Vec<Vec<(Offset, Ump)>>) -> Box<Self> {
         Box::new(Self(batches.into()))
     }
 }
 
 impl MidiIn for Wire {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [(Offset, Ump)]) -> usize {
         let batch = self.0.pop_front().unwrap_or_default();
         let n = batch.len().min(buffer.len());
         buffer[..n].copy_from_slice(&batch[..n]);
@@ -125,14 +123,31 @@ impl MidiIn for Wire {
     }
 }
 
-fn note(channel: u8, note: u8, offset: u32) -> MidiEvent {
-    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::of(channel), note, 100)
-        .with_frame_offset(offset)
+/// `ump` at frame `offset`, which may lie past the 512-frame blocks these
+/// tests run: it is built against a block long enough to hold it.
+fn at(offset: u32, ump: Ump) -> (Offset, Ump) {
+    (Offset::new(offset as usize, Samples(1 << 20)).unwrap(), ump)
+}
+
+/// A note-on with 7-bit velocity 100, widened (M2-115), at `offset`.
+fn note(channel: u8, note: u8, offset: u32) -> (Offset, Ump) {
+    at(
+        offset,
+        note_on(
+            MidiGroup::FIRST,
+            MidiChannel::of(channel),
+            note,
+            midi1_velocity_to_midi2(100),
+        ),
+    )
 }
 
 /// A MIDI 1.0 wire CC (status 0xB0 | channel).
-fn cc_ev(channel: u8, control: CCNumber, value: u8) -> MidiEvent {
-    MidiEvent::from_midi1_bytes(0, &[0xB0 | channel, control.get(), value]).unwrap()
+fn cc_ev(channel: u8, control: CCNumber, value: u8) -> (Offset, Ump) {
+    at(
+        0,
+        from_midi1_bytes(&[0xB0 | channel, control.get(), value]).unwrap(),
+    )
 }
 
 /// **Each event leaves on its channel's port, in offset order.** A note on
@@ -144,7 +159,7 @@ fn cc_ev(channel: u8, control: CCNumber, value: u8) -> MidiEvent {
 /// `the_queue_sends_in_offset_order`: here each port holds one event.)
 #[test]
 fn each_event_leaves_on_its_channels_port() {
-    let clock = MidiEvent::timing_clock(MidiGroup::FIRST).with_frame_offset(20);
+    let clock = at(20, timing_clock(MidiGroup::FIRST));
     let wire = Wire::new(vec![vec![note(9, 64, 40), note(0, 60, 10), clock]]);
     let (_ed, mut exec, _c, seen) =
         rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
@@ -174,7 +189,7 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
     let (port, frame, ev) = seen[0];
     assert_eq!((port, frame), (3, 512));
     // MIDI 2.0 channel voice (type 4), Registered Controller (status 0x2).
-    assert_eq!((ev.data[0] >> 28, (ev.data[0] >> 20) & 0xF), (0x4, 0x2));
+    assert_eq!((ev.0[0] >> 28, (ev.0[0] >> 20) & 0xF), (0x4, 0x2));
 }
 
 /// **A requested MPE mode is adopted once and holds.** With the lower zone
@@ -191,9 +206,12 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
 #[test]
 fn a_requested_mpe_mode_is_adopted_once() {
     let member = MidiChannel::of(1);
-    let bend = MidiEvent::pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
+    let bend = at(0, pitch_bend(MidiGroup::FIRST, member, 0xC000_0000));
     let wire = Wire::new(vec![
-        vec![MidiEvent::note_on_7bit(MidiGroup::FIRST, member, 60, 100)],
+        vec![at(
+            0,
+            note_on(MidiGroup::FIRST, member, 60, midi1_velocity_to_midi2(100)),
+        )],
         vec![bend],
         vec![bend],
     ]);
@@ -207,11 +225,14 @@ fn a_requested_mpe_mode_is_adopted_once() {
     }
     let seen = seen.lock().unwrap();
     // MIDI 2.0 channel voice (type 4), Registered Controller (status 0x2).
-    let is_rpn = |ev: &MidiEvent| (ev.data[0] >> 28, (ev.data[0] >> 20) & 0xF) == (4, 2);
+    let is_rpn = |ev: &Ump| (ev.0[0] >> 28, (ev.0[0] >> 20) & 0xF) == (4, 2);
     let resets: Vec<u64> = seen.iter().filter(|s| is_rpn(&s.2)).map(|s| s.1).collect();
     assert_eq!(resets, vec![0; 7], "the ranges, once, at frame 0: {seen:?}");
     let music: Vec<_> = seen.iter().filter(|s| !is_rpn(&s.2)).collect();
-    let folded: Vec<Option<u8>> = music[1..].iter().map(|s| s.2.note()).collect();
+    let folded: Vec<Option<u8>> = music[1..]
+        .iter()
+        .map(|s| MidiMessage::from_ump(s.2).note())
+        .collect();
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
 }
 
@@ -228,12 +249,15 @@ fn a_requested_mpe_mode_is_adopted_once() {
 fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
     use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
-    let range = MidiEvent::registered_controller(
-        MidiGroup::FIRST,
-        MidiChannel::of(2),
-        RPN_BANK_MPE,
-        RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-        PitchBendSensitivity::of(12).to_rpn_bits(),
+    let range = at(
+        0,
+        registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::of(2),
+            RPN_BANK_MPE,
+            RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::of(12).to_rpn_bits(),
+        ),
     );
     let wire = Wire::new(vec![vec![range]]);
     let (_ed, mut exec, controls, seen) =
@@ -284,7 +308,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     let mut range_ports = Vec::new();
     for (port, _, ev) in seen.iter() {
         if ranges.observe(ev) {
-            assert_eq!(ev.channel().map(MidiChannel::get), Some(*port as u8));
+            assert_eq!(((ev.0[0] >> 16) & 0x0F) as u8, *port as u8);
             range_ports.push(*port);
         }
     }
@@ -294,7 +318,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     }
     let notes: Vec<(usize, u64)> = seen
         .iter()
-        .filter(|s| s.2.is_note_on())
+        .filter(|s| MidiMessage::from_ump(s.2).is_note_on())
         .map(|s| (s.0, s.1))
         .collect();
     assert_eq!(notes, vec![(1, 5)]);
@@ -313,7 +337,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 #[test]
 fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     use tutti_midi_types::PerNoteBendRanges;
-    let mut batch: Vec<MidiEvent> = (0..508).map(|i| note(0, 60, i)).collect();
+    let mut batch: Vec<(Offset, Ump)> = (0..508).map(|i| note(0, 60, i)).collect();
     batch.extend([
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
@@ -332,7 +356,10 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
         "no range went out"
     );
     assert_eq!(seen.len(), 509);
-    assert!(seen.iter().any(|s| s.0 == 1 && s.2.note() == Some(61)));
+    assert!(
+        seen.iter()
+            .any(|s| s.0 == 1 && MidiMessage::from_ump(s.2).note() == Some(61))
+    );
     assert_eq!(controls.dropped_events(), 7);
 }
 
@@ -346,15 +373,17 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
 /// in `stage`) → the four note-offs are dropped and counted → fails.
 #[test]
 fn a_note_off_has_room_past_the_capacity() {
-    let mut batch: Vec<MidiEvent> = (0..505).map(|i| note(0, 60, i)).collect();
+    let mut batch: Vec<(Offset, Ump)> = (0..505).map(|i| note(0, 60, i)).collect();
     batch.extend([
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
         cc_ev(2, cc::DATA_ENTRY, 12),
     ]);
     batch.extend((0..4).map(|k| {
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 61 + k as u8, 0)
-            .with_frame_offset(510 + k)
+        at(
+            510 + k,
+            note_off(MidiGroup::FIRST, MidiChannel::of(1), 61 + k as u8, 0),
+        )
     }));
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
     let node = MidiInputNode::new(Some(Wire::new(vec![batch])))
@@ -396,7 +425,7 @@ fn the_queue_sends_in_offset_order() {
         .lock()
         .unwrap()
         .iter()
-        .map(|s| (s.1, s.2.note()))
+        .map(|s| (s.1, MidiMessage::from_ump(s.2).note()))
         .collect();
     assert_eq!(got, vec![(3, Some(62)), (511, Some(60))]);
 }
@@ -427,15 +456,15 @@ fn the_out_node_hands_midi_back_and_counts_drops() {
     );
     ed.commit().unwrap();
     for _ in 0..5 {
-        let batch: Vec<MidiEvent> = (0..256).map(|i| note(0, 60, 7 + i / 128)).collect();
+        let batch: Vec<(Offset, Ump)> = (0..256).map(|i| note(0, 60, 7 + i / 128)).collect();
         assert_eq!(keys.queue(&batch), 256);
         exec.process(512, &Transport::default(), &[], &mut []);
     }
     assert_eq!(out.dropped(), 256);
-    let mut buf = vec![MidiEvent::noop(); 2048];
+    let mut buf = vec![(0, Ump([0; 4])); 2048];
     assert_eq!(out.poll_into(&mut buf), 1024);
-    assert_eq!(buf[0].frame_offset, 7);
-    assert_eq!(buf[1023].frame_offset, 3 * 512 + 8);
+    assert_eq!(buf[0].0, 7);
+    assert_eq!(buf[1023].0, 3 * 512 + 8);
 }
 
 /// **A start inside a block clocks from its frame.** Stopped at beat 0 for
@@ -458,7 +487,7 @@ fn a_start_inside_a_block_clocks_from_its_frame() {
         .unwrap();
     let mut out = vec![0.0f32; 2048];
     exec.process_with_changes(2048, &stopped, &changes, &[], &mut [&mut out[..]]);
-    let status = |e: &MidiEvent| ((e.data[0] >> 16) & 0xFF) as u8;
+    let status = |e: &Ump| ((e.0[0] >> 16) & 0xFF) as u8;
     let got: Vec<(u64, u8)> = seen
         .lock()
         .unwrap()
@@ -567,7 +596,7 @@ fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
         .unwrap();
     let mut out = vec![0.0f32; 4_000];
     exec.process_with_changes(4_000, &rolling, &changes, &[], &mut [&mut out[..]]);
-    let status = |e: &MidiEvent| ((e.data[0] >> 16) & 0xFF) as u8;
+    let status = |e: &Ump| ((e.0[0] >> 16) & 0xFF) as u8;
     let got: Vec<(u64, u8)> = seen
         .lock()
         .unwrap()

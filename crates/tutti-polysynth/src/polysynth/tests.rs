@@ -4,6 +4,7 @@ use crate::{
     Adsr, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve, PortamentoMode,
     SynthConfig, UnisonConfig, VoiceMode,
 };
+use tutti_fixtures::midi;
 use tutti_midi_types::cc;
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
@@ -26,12 +27,14 @@ fn note_number(n: u8) -> NoteNumber {
 /// - [`tick`](Hand::tick) is a one-frame block: every queued event lands
 ///   on its frame.
 /// - [`render_planar`](Hand::render_planar) is one block of `left.len()`
-///   frames: each queued event on its `frame_offset`, and one past the
+///   frames: each queued event on its offset, and one past the
 ///   block applied after it (as the renderer applies an event at or past
 ///   the block's end).
 struct Hand {
     synth: PolySynth,
-    queued: Vec<MidiEvent>,
+    /// Each event with its frame offset into the block it is driven in: a
+    /// raw index, because only `drive` knows the block length.
+    queued: Vec<(usize, Ump)>,
 }
 
 impl std::ops::Deref for Hand {
@@ -58,7 +61,7 @@ impl Hand {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         let mut queued = std::mem::take(&mut self.queued);
         for e in &mut queued {
-            e.frame_offset = 0;
+            e.0 = 0;
         }
         let [l, r] = self.drive(1, queued);
         output[0] = l[0];
@@ -77,18 +80,16 @@ impl Hand {
 
     /// One block of `frames` under `queued` (stable-sorted by offset),
     /// through `Node::process`.
-    fn drive(&mut self, frames: usize, mut queued: Vec<MidiEvent>) -> [Vec<f32>; 2] {
-        queued.sort_by_key(|e| e.frame_offset);
+    fn drive(&mut self, frames: usize, mut queued: Vec<(usize, Ump)>) -> [Vec<f32>; 2] {
+        queued.sort_by_key(|e| e.0);
         let block = tutti_types::Samples(frames);
-        let (inside, past): (Vec<MidiEvent>, Vec<MidiEvent>) = queued
-            .into_iter()
-            .partition(|e| (e.frame_offset as usize) < frames);
+        let (inside, past): (Vec<(usize, Ump)>, Vec<(usize, Ump)>) =
+            queued.into_iter().partition(|e| e.0 < frames);
         let events: Vec<tutti_graph::Event> = inside
             .iter()
-            .map(|e| {
-                let at = tutti_graph::Offset::new(e.frame_offset as usize, block)
-                    .expect("inside the block");
-                tutti_graph::Event::midi(at, e.data)
+            .map(|&(index, ump)| {
+                let at = tutti_graph::Offset::new(index, block).expect("inside the block");
+                tutti_graph::Event::midi(at, ump.0)
             })
             .collect();
         let env = tutti_graph::Env {
@@ -101,8 +102,8 @@ impl Hand {
         };
         let out =
             tutti_graph::contract::drive_input(&mut self.synth, &env, &[], &[], &[&events]).audio;
-        for e in &past {
-            self.synth.apply_midi(Ump(e.data));
+        for &(_, ump) in &past {
+            self.synth.apply_midi(ump);
         }
         out.try_into().expect("stereo")
     }
@@ -160,14 +161,19 @@ fn a_full_block_renders_every_frame() {
 }
 
 /// Queue events for the synth's next hand-driven block ([`Hand`]).
-fn queue_midi(synth: &mut Hand, events: &[MidiEvent]) {
+fn queue_midi(synth: &mut Hand, events: &[Ump]) {
+    synth.queued.extend(events.iter().map(|&e| (0, e)));
+}
+
+/// Queue events on their own frame offsets in the next hand-driven block.
+fn queue_midi_at(synth: &mut Hand, events: &[(usize, Ump)]) {
     synth.queued.extend_from_slice(events);
 }
 
 // --- Test event builders (MIDI 1.0 7-bit values upconverted to UMP CV2) ---
 
-fn ev_note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
-    MidiEvent::note_on(
+fn ev_note_on(channel: u8, note: u8, vel: u8) -> Ump {
+    midi::note_on(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
@@ -175,12 +181,12 @@ fn ev_note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
     )
 }
 
-fn ev_note_off(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
+fn ev_note_off(channel: u8, note: u8) -> Ump {
+    midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
 }
 
-fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> MidiEvent {
-    MidiEvent::cc(
+fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> Ump {
+    midi::cc(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         cc_num,
@@ -188,16 +194,16 @@ fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> MidiEvent {
     )
 }
 
-fn ev_bend(channel: u8, bend14: u16) -> MidiEvent {
-    MidiEvent::pitch_bend(
+fn ev_bend(channel: u8, bend14: u16) -> Ump {
+    midi::pitch_bend(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         midi1_pitch_bend_to_midi2(bend14),
     )
 }
 
-fn ev_per_note_management(channel: u8, note: u8, detach: bool, reset: bool) -> MidiEvent {
-    MidiEvent::per_note_management(
+fn ev_per_note_management(channel: u8, note: u8, detach: bool, reset: bool) -> Ump {
+    midi::per_note_management(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
@@ -206,8 +212,8 @@ fn ev_per_note_management(channel: u8, note: u8, detach: bool, reset: bool) -> M
     )
 }
 
-fn ev_aftertouch(channel: u8, pressure: u8) -> MidiEvent {
-    MidiEvent::channel_pressure(
+fn ev_aftertouch(channel: u8, pressure: u8) -> Ump {
+    midi::channel_pressure(
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         midi1_cc_to_midi2(pressure),
@@ -589,7 +595,7 @@ fn test_note_off_respects_channel() {
     });
 
     // Play same note (C4=60) on channel 0 and channel 1
-    // note_on(MidiGroup::of(frame_offset), MidiChannel::of(channel), note, velocity)
+    // note_on(MidiGroup::of(0), MidiChannel::of(channel), note, velocity)
     let note_on_ch0 = ev_note_on(0, 60, 100);
     let note_on_ch1 = ev_note_on(1, 60, 100);
     queue_midi(&mut synth, &[note_on_ch0, note_on_ch1]);
@@ -600,7 +606,7 @@ fn test_note_off_respects_channel() {
     assert_eq!(synth.active_voice_count(), 2, "Should have 2 active voices");
 
     // Note off on channel 0 only
-    // note_off(MidiGroup::of(frame_offset), MidiChannel::of(channel), note, velocity)
+    // note_off(MidiGroup::of(0), MidiChannel::of(channel), note, velocity)
     let note_off_ch0 = ev_note_off(0, 60);
     queue_midi(&mut synth, &[note_off_ch0]);
     synth.tick(&[], &mut output);
@@ -760,7 +766,7 @@ fn test_cc120_all_sound_off() {
     });
 
     // Play multiple notes
-    let events: Vec<MidiEvent> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
+    let events: Vec<Ump> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
     queue_midi(&mut synth, &events);
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
@@ -796,7 +802,7 @@ fn test_cc123_all_notes_off() {
     });
 
     // Play multiple notes
-    let events: Vec<MidiEvent> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
+    let events: Vec<Ump> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
     queue_midi(&mut synth, &events);
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
@@ -1120,7 +1126,7 @@ fn test_polysynth_reset() {
     });
 
     // Play notes
-    let events: Vec<MidiEvent> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
+    let events: Vec<Ump> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
     queue_midi(&mut synth, &events);
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
@@ -1170,8 +1176,7 @@ fn test_mpe_per_voice_pitch_bend() {
     // only that voice. Classic-MPE channel bends are rewritten to this native
     // form at the input edge (`MpeIngest`); the synth is zone-agnostic and only
     // ever sees native per-note messages.
-    let bend =
-        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
@@ -1230,8 +1235,7 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
     assert_eq!(synth.active_voice_count(), 2);
 
     // Native per-note pitch bend addressed to note 60 only (full positive).
-    let bend =
-        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
@@ -1291,8 +1295,8 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
     queue_midi(
         &mut synth,
         &[
-            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF),
-            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF_FFFF),
+            midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF),
+            midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF_FFFF),
         ],
     );
     synth.tick(&[], &mut output);
@@ -1355,7 +1359,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
 
     // Pitch 7.25 for note 60 = 69.0 (A440). Q7.25: 69 << 25. Registered
     // per-note controller index 3 (Pitch 7.25).
-    let pitch = MidiEvent::per_note_controller(
+    let pitch = midi::per_note_controller(
         MidiGroup::FIRST,
         MidiChannel::of(1),
         60,
@@ -1415,7 +1419,7 @@ fn test_per_note_management_detach_freezes_the_note() {
     // Bend fully, then Detach.
     queue_midi(
         &mut synth,
-        &[MidiEvent::per_note_pitch_bend(
+        &[midi::per_note_pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
@@ -1443,7 +1447,7 @@ fn test_per_note_management_detach_freezes_the_note() {
     // A further per-note bend to zero must be IGNORED — the note holds its value.
     queue_midi(
         &mut synth,
-        &[MidiEvent::per_note_pitch_bend(
+        &[midi::per_note_pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
@@ -1481,7 +1485,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
 
     // Sensitivity RPN: 12 semitones (7.25 fixed-point).
     let sens = tutti_midi_types::mpe::PitchBendSensitivity::of(12);
-    let rpn = MidiEvent::registered_controller(
+    let rpn = midi::registered_controller(
         MidiGroup::FIRST,
         MidiChannel::of(1),
         tutti_midi_types::ump::RPN_BANK_MPE,
@@ -1495,7 +1499,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     // Full per-note bend up — now clamped to the 12-semitone range.
     queue_midi(
         &mut synth,
-        &[MidiEvent::per_note_pitch_bend(
+        &[midi::per_note_pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
@@ -1543,7 +1547,7 @@ fn test_reset_all_controllers_spares_per_note() {
     // Set a per-note bend.
     queue_midi(
         &mut synth,
-        &[MidiEvent::per_note_pitch_bend(
+        &[midi::per_note_pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
@@ -1605,7 +1609,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
     // Registered per-note Brightness (index 74) addressed to note 60, full value.
     queue_midi(
         &mut synth,
-        &[MidiEvent::per_note_controller(
+        &[midi::per_note_controller(
             MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
@@ -1683,7 +1687,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
     // Assignable per-note CC7 (the clip Gain-lane encoding) → half gain on 60.
     queue_midi(
         &mut synth,
-        &[MidiEvent::per_note_controller(
+        &[midi::per_note_controller(
             MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
@@ -1731,7 +1735,7 @@ fn test_mpe_per_voice_pressure() {
 
     // Native per-note pressure addressed to the ch1 note (60) only. Classic-MPE
     // channel pressure is rewritten to this form at the input edge.
-    let pressure = MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let pressure = midi::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[pressure]);
     synth.tick(&[], &mut output);
 
@@ -1785,7 +1789,7 @@ fn test_mpe_per_voice_slide() {
 
     // Native per-note CC74 (slide) addressed to the ch1 note (60). Classic-MPE
     // channel CC74 is rewritten to this form at the input edge.
-    let slide = MidiEvent::per_note_controller(
+    let slide = midi::per_note_controller(
         MidiGroup::FIRST,
         MidiChannel::of(1),
         60,
@@ -1876,7 +1880,7 @@ fn test_mpe_pressure_affects_amplitude() {
     }
 
     // Apply full pressure as a native per-note pressure on the note (60).
-    let pressure = MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let pressure = midi::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[pressure]);
 
     let mut max_with_pressure = 0.0f32;
@@ -2028,8 +2032,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
     synth.tick(&[], &mut output);
 
     // Bend the sounding note well off centre.
-    let bend =
-        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
     assert!(
@@ -2099,12 +2102,12 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
     // One 512-frame block: a note at 0, a second note at 200 (gliding in),
     // the first released at 300.
     let mut long = synth(config());
-    queue_midi(
+    queue_midi_at(
         &mut long,
         &[
-            ev_note_on(0, 60, 100),
-            ev_note_on(0, 67, 100).with_frame_offset(200),
-            ev_note_off(0, 60).with_frame_offset(300),
+            (0, ev_note_on(0, 60, 100)),
+            (200, ev_note_on(0, 67, 100)),
+            (300, ev_note_off(0, 60)),
         ],
     );
     let (mut l_long, mut r_long) = (vec![0.0f32; 512], vec![0.0f32; 512]);
@@ -2116,8 +2119,8 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
     for block in 0..8 {
         match block {
             0 => queue_midi(&mut short, &[ev_note_on(0, 60, 100)]),
-            3 => queue_midi(&mut short, &[ev_note_on(0, 67, 100).with_frame_offset(8)]),
-            4 => queue_midi(&mut short, &[ev_note_off(0, 60).with_frame_offset(44)]),
+            3 => queue_midi_at(&mut short, &[(8, ev_note_on(0, 67, 100))]),
+            4 => queue_midi_at(&mut short, &[(44, ev_note_off(0, 60))]),
             _ => {}
         }
         let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
@@ -2229,7 +2232,7 @@ fn process_and_tick_agree_through_a_glide() {
     let mut via_tick = Vec::new();
     let mut via_process = Vec::new();
     for block in 0..BLOCKS {
-        let events: &[MidiEvent] = match block {
+        let events: &[Ump] = match block {
             0 => &[ev_note_on(0, 48, 100)],
             // Three octaves up over 50 ms, well after the attack.
             10 => &[ev_note_on(0, 84, 100)],

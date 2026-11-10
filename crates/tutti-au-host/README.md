@@ -41,7 +41,7 @@ the lower-level functions that take a raw `AudioUnit`.
 
 ## What it does not own
 
-**The shared vocabulary.** `EditorSize`, `MidiEvent`, `TransportInfo` and
+**The shared vocabulary.** `EditorSize`, `TransportInfo` and
 `WindowHandle` come from `tutti-plugin-types`, and `Samples` / `Seconds` from
 `tutti-types`; all are re-exported here.
 

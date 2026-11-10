@@ -8,11 +8,11 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use tutti_fixtures::midi;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, ParamIn, ParamRange, Prepare, Renderer, Transport,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
 use tutti_modulation::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
@@ -85,7 +85,7 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
     let note = TimedMidiEvent::new(
         Beat(0.0),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
     );
     ed.insert(NodeKey(1), "clip", MidiClipNode::new([note]));
     ed.insert(SYNTH, "synth", synth);

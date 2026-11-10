@@ -3,7 +3,7 @@
 //!
 //! The control thread pushes into a [`MidiSender`] (the node's controls);
 //! each block the node drains what arrived and sends it out, every event on
-//! its `frame_offset` clamped into the block (what a control thread builds
+//! its stamp clamped into the block (what a control thread builds
 //! has offset 0: the block's first frame). Wire the port to the node that
 //! should hear it; to reach several, wire it to each.
 //!
@@ -14,11 +14,11 @@ use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
 };
-use tutti_midi_types::ump::MidiEvent;
 use tutti_types::ChannelLayout;
+use tutti_ump::Ump;
 
 use super::mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
-use super::order::{in_offset_order, offset_of};
+use super::order::{clamp_stamp, in_offset_order};
 
 /// A [`MidiQueueNode`]'s ring, and its event port's declared capacity.
 pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
@@ -39,7 +39,7 @@ pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
 pub struct MidiQueueNode {
     rx: MidiReceiver,
     tx: MidiSender,
-    scratch: Box<[MidiEvent]>,
+    scratch: Box<[(u32, Ump)]>,
 }
 
 impl std::fmt::Debug for MidiQueueNode {
@@ -59,7 +59,7 @@ impl MidiQueueNode {
         Self {
             rx,
             tx,
-            scratch: vec![MidiEvent::noop(); MIDI_QUEUE_CAPACITY].into_boxed_slice(),
+            scratch: vec![(0, Ump([0; 4])); MIDI_QUEUE_CAPACITY].into_boxed_slice(),
         }
     }
 }
@@ -89,7 +89,7 @@ impl Node for MidiQueueNode {
         in_offset_order(events);
         let out = io.event_out(0);
         for ev in events.iter() {
-            let _ = out.push(Event::midi(offset_of(ev, block_len), ev.data));
+            let _ = out.push(Event::midi(clamp_stamp(ev.0, block_len), ev.1.0));
         }
         Status::Modified
     }

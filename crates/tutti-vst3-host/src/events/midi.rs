@@ -1,19 +1,22 @@
-//! `MidiEvent` to VST3 event and back.
+//! A UMP event to VST3 event and back.
 
+use tutti_graph::Offset;
 use tutti_midi_protocol::{midi1, narrow, widen};
-use tutti_midi_types::PerNoteBendRanges;
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
-use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for, unframed};
+use tutti_midi_types::{PerNoteBendRanges, sysex7_single};
+use tutti_plugin_types::{
+    NoteExpressionType, NoteExpressionValue, WireMidi, note_id_for, unframed,
+};
 use tutti_ump::{
-    Message, Midi1Bytes, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
+    Address, Attribute, Message, Midi1Bytes, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Ump, Unknown, Voice1, Voice2, decode as decode_ump,
 };
 
 use super::{
-    Data, Event, K_DATA_TYPE_MIDI_SYSEX, MidiEvent, NoteOff, NoteOn, Payload, PolyPressure,
-    ToEvent, sample_offset,
+    Data, Event, K_DATA_TYPE_MIDI_SYSEX, NoteOff, NoteOn, Payload, PolyPressure, ToEvent,
+    sample_offset,
 };
 
 /// VST3's tuning expression for a per-note bend of `bend` (signed, `[-1, 1]`)
@@ -23,7 +26,7 @@ fn tuning_expression(bend: f32, range: f32) -> f64 {
     0.5 + f64::from(bend) * f64::from(range) / 240.0
 }
 
-/// Encodes UMP [`MidiEvent`]s as VST3 [`Event`]s, keeping each channel's
+/// Encodes UMP events (`(Offset, Ump)`) as VST3 [`Event`]s, keeping each channel's
 /// per-note bend range ([`PerNoteBendRanges`]) across blocks.
 #[derive(Debug, Default)]
 pub struct MidiEncoder {
@@ -51,12 +54,13 @@ impl MidiEncoder {
     ///
     /// The group is ignored: one plugin instance has one set of channels,
     /// whatever group a message arrives on.
-    pub fn encode(&mut self, event: &MidiEvent) -> Option<Event> {
-        if self.ranges.observe(event) {
+    pub fn encode(&mut self, event: &(Offset, Ump)) -> Option<Event> {
+        let (at, ump) = event;
+        if self.ranges.observe(ump) {
             return None;
         }
-        let offset = sample_offset(event.frame_offset);
-        match decode_ump(Ump(event.data)) {
+        let offset = sample_offset(at.get());
+        match decode_ump(*ump) {
             Ok(message) => self.message(offset, message),
             // A reserved or undefined packet. VST3 has no event that carries
             // raw words, so there is no way to forward it: this host is a
@@ -202,8 +206,8 @@ impl MidiEncoder {
 /// The three messages a MIDI 2.0 Program Change with a valid bank stands for
 /// (M2-104 App. D): Bank Select MSB (CC 0), Bank Select LSB (CC 32), then the
 /// Program Change. `None` for anything else.
-pub(super) fn bank_program(event: &MidiEvent) -> Option<[Midi1Bytes; 3]> {
-    let message = decode_ump(Ump(event.data)).ok().filter(|message| {
+pub(super) fn bank_program(ump: &Ump) -> Option<[Midi1Bytes; 3]> {
+    let message = decode_ump(*ump).ok().filter(|message| {
         matches!(
             message,
             Message::Midi2(_, Voice2::ProgramChange { bank: Some(_), .. })
@@ -295,30 +299,49 @@ fn midi_note(raw: i16) -> u8 {
     (raw as u8) & 0x7F
 }
 
+/// A VST3 `i16` pitch field as a note number (`None` is never taken: it is
+/// masked to 7 bits).
+fn note_number(raw: i16) -> Option<NoteNumber> {
+    NoteNumber::new(midi_note(raw))
+}
+
+/// Group 1 and the VST3 channel field, the address of a decoded event.
+fn address(channel: i16) -> Address {
+    Address {
+        group: MidiGroup::FIRST,
+        channel: MidiChannel::masked(midi_channel(channel)),
+    }
+}
+
 /// See [`EventExt::to_midi`](super::EventExt::to_midi).
-pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
+pub(super) fn decode(event: &Event) -> Option<WireMidi> {
     let frame = event.sample_offset().max(0).cast_unsigned();
     // Notes and poly-pressure build native MIDI-2 Channel Voice events so the
     // plugin's f32 velocity and pressure keep their full 16 and 32-bit width.
     let built = match &event.payload {
-        Payload::NoteOn(e) => MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::masked(midi_channel(e.channel)),
-            midi_note(e.pitch),
-            unit_f32_to_u16(e.velocity),
-        ),
-        Payload::NoteOff(e) => MidiEvent::note_off(
-            MidiGroup::FIRST,
-            MidiChannel::masked(midi_channel(e.channel)),
-            midi_note(e.pitch),
-            unit_f32_to_u16(e.velocity),
-        ),
-        Payload::PolyPressure(e) => MidiEvent::poly_pressure(
-            MidiGroup::FIRST,
-            MidiChannel::masked(midi_channel(e.channel)),
-            midi_note(e.pitch),
-            unit_f32_to_u32(e.pressure),
-        ),
+        Payload::NoteOn(e) => Ump::from(Message::Midi2(
+            address(e.channel),
+            Voice2::NoteOn {
+                note: note_number(e.pitch)?,
+                velocity: unit_f32_to_u16(e.velocity),
+                attribute: Attribute::None,
+            },
+        )),
+        Payload::NoteOff(e) => Ump::from(Message::Midi2(
+            address(e.channel),
+            Voice2::NoteOff {
+                note: note_number(e.pitch)?,
+                velocity: unit_f32_to_u16(e.velocity),
+                attribute: Attribute::None,
+            },
+        )),
+        Payload::PolyPressure(e) => Ump::from(Message::Midi2(
+            address(e.channel),
+            Voice2::PolyPressure {
+                note: note_number(e.pitch)?,
+                value: unit_f32_to_u32(e.pressure),
+            },
+        )),
         Payload::Data(d) => {
             let bytes = d.payload();
             if bytes.len() < 2 {
@@ -328,15 +351,15 @@ pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
             // as is the raw channel-voice fallback's. Strip the delimiters and rebuild a
             // single packet; a message too long for one packet is dropped, not truncated.
             if bytes[0] == 0xF0 {
-                return MidiEvent::sysex7_single(MidiGroup::FIRST, unframed(bytes))
-                    .map(|m| m.with_frame_offset(frame));
+                return sysex7_single(MidiGroup::FIRST, unframed(bytes))
+                    .map(|ump| WireMidi { offset: frame, ump });
             }
             // Widened to Channel Voice 2 here. System messages pass through unchanged.
             let message = Midi1Parser::message(MidiGroup::FIRST, bytes)?;
-            return Some(MidiEvent::from_ump(
-                frame,
-                Ump::from(widened(message)).words(),
-            ));
+            return Some(WireMidi {
+                offset: frame,
+                ump: Ump::from(widened(message)),
+            });
         }
         Payload::LegacyCcOut(e) => return super::legacy_cc::decode(e, frame),
         // A reassembled SysEx's bytes are in the list's buffer, which the list drains.
@@ -347,7 +370,10 @@ pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
         | Payload::Scale(_)
         | Payload::ExpressionInt(_) => return None,
     };
-    Some(built.with_frame_offset(frame))
+    Some(WireMidi {
+        offset: frame,
+        ump: built,
+    })
 }
 
 /// A MIDI 1.0 channel voice message as the MIDI 2.0 message that means the

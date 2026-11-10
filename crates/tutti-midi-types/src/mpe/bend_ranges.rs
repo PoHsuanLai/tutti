@@ -1,7 +1,8 @@
 //! The per-note pitch-bend range each channel of a stream has set.
 
 use super::PitchBendSensitivity;
-use crate::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+use crate::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+use tutti_ump::Ump;
 
 /// The per-note pitch-bend range of each MIDI channel: what a per-note pitch
 /// bend's full scale means, in semitones, for a receiver that turns one into
@@ -11,7 +12,7 @@ use crate::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIV
 /// own synth assumes too, and follows the stream's "Sensitivity of Per-Note
 /// Pitch Bend" (RPN #00/07, M2-104 §7.4.13), which a sender sets per channel.
 /// The range is the stream's state, not a block's: a receiver keeps one for
-/// as long as it reads the stream ([`observe`](Self::observe) each event in
+/// as long as it reads the stream ([`observe`](Self::observe) each packet in
 /// order).
 ///
 /// Keyed by channel alone, ignoring the UMP group: per-note identity is keyed
@@ -27,12 +28,13 @@ use crate::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIV
 ///
 /// ```
 /// use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-/// use tutti_midi_types::{MidiEvent, PerNoteBendRanges, PitchBendSensitivity};
+/// use tutti_fixtures::midi::registered_controller;
+/// use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
 /// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// let mut ranges = PerNoteBendRanges::default();
 /// assert_eq!(ranges.semitones(3), 48.0);
-/// let rpn = MidiEvent::registered_controller(
+/// let rpn = registered_controller(
 ///     MidiGroup::FIRST,
 ///     MidiChannel::of(3),
 ///     RPN_BANK_MPE,
@@ -64,12 +66,12 @@ impl PerNoteBendRanges {
         self.get(channel).as_semitones_f32()
     }
 
-    /// Follow `event`: a per-note bend sensitivity (RPN #00/07) sets its
+    /// Follow `ump`: a per-note bend sensitivity (RPN #00/07) sets its
     /// channel's range, and `true` says it was one. A receiver that has no
     /// event of its own for the message (no plugin format has one) consumes
     /// it there. Anything else leaves the ranges as they are. No allocation.
-    pub fn observe(&mut self, event: &MidiEvent) -> bool {
-        match per_note_bend_sensitivity(event) {
+    pub fn observe(&mut self, ump: &Ump) -> bool {
+        match per_note_bend_sensitivity(ump) {
             Some((channel, range)) => {
                 self.0[usize::from(channel & 0x0F)] = range;
                 true
@@ -80,12 +82,12 @@ impl PerNoteBendRanges {
 }
 
 /// The channel and range of a per-note bend sensitivity message (RPN
-/// #00/07), or `None` for any other event.
-fn per_note_bend_sensitivity(event: &MidiEvent) -> Option<(u8, PitchBendSensitivity)> {
+/// #00/07), or `None` for any other packet.
+fn per_note_bend_sensitivity(ump: &Ump) -> Option<(u8, PitchBendSensitivity)> {
     use midi2::channel_voice2::ChannelVoice2;
     use midi2::{Channeled, UmpMessage};
     let UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) =
-        UmpMessage::try_from(event.data_words()).ok()?
+        UmpMessage::try_from(ump.words()).ok()?
     else {
         return None;
     };

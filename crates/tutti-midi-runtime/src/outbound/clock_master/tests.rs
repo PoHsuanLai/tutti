@@ -83,12 +83,17 @@ fn master(
 }
 
 /// Drains a receiver fully into a `Vec`.
-fn drain_all(receiver: &crate::MidiReceiver) -> Vec<MidiEvent> {
+fn drain_all(receiver: &crate::MidiReceiver) -> Vec<(Offset, Ump)> {
     let mut out = Vec::new();
-    let mut buf = [MidiEvent::noop(); 256];
+    let mut buf = [(0, Ump([0; 4])); 256];
     loop {
         let n = receiver.poll_into(&mut buf);
-        out.extend_from_slice(&buf[..n]);
+        // The ring's stamps here are block offsets (the rig queues them so).
+        out.extend(
+            buf[..n]
+                .iter()
+                .map(|&(stamp, ump)| (Offset::new(stamp as usize, Samples(1 << 20)).unwrap(), ump)),
+        );
         if n < buf.len() {
             break;
         }
@@ -96,8 +101,8 @@ fn drain_all(receiver: &crate::MidiReceiver) -> Vec<MidiEvent> {
     out
 }
 
-fn is_status(ev: &MidiEvent, status: u8) -> bool {
-    let w0 = ev.data[0];
+fn is_status(ev: &(Offset, Ump), status: u8) -> bool {
+    let w0 = ev.1.0[0];
     (w0 >> 28) & 0x0F == 0x1 && ((w0 >> 16) & 0xFF) as u8 == status
 }
 
@@ -222,25 +227,24 @@ fn ticks_are_sample_accurate_within_block() {
         .collect();
     assert_eq!(events.len(), 3, "expected 3 ticks in the block");
     assert!(
-        events[0].frame_offset < events[1].frame_offset
-            && events[1].frame_offset < events[2].frame_offset,
+        events[0].0.get() < events[1].0.get() && events[1].0.get() < events[2].0.get(),
         "ticks ordered"
     );
-    assert_eq!(events[0].frame_offset, 0, "the start beat's tick");
-    assert!((events[1].frame_offset as i64 - 1000).abs() < 4);
-    assert!((events[2].frame_offset as i64 - 2000).abs() < 4);
+    assert_eq!(events[0].0.get(), 0, "the start beat's tick");
+    assert!((events[1].0.get() as i64 - 1000).abs() < 4);
+    assert!((events[2].0.get() as i64 - 2000).abs() < 4);
 }
 
 /// Where the first Timing Clock goes, and in what order, for a block that
 /// does not continue the previous one: the transport message(s), then an
 /// F8 on frame 0 when the beat sits on a tick boundary, else the first F8
 /// on the next boundary.
-fn first_clock(events: &[MidiEvent]) -> (usize, u32) {
+fn first_clock(events: &[(Offset, Ump)]) -> (usize, u32) {
     let i = events
         .iter()
         .position(|e| is_status(e, 0xF8))
         .expect("a timing clock");
-    (i, events[i].frame_offset)
+    (i, events[i].0.get())
 }
 
 /// Start at beat 0, Continue at an on-tick beat, and a locate while
@@ -345,7 +349,7 @@ fn run_at(
     rate: f64,
     (block, blocks): (usize, usize),
     (beat, frame): (&mut f64, &mut u64),
-) -> Vec<(MidiEvent, u64)> {
+) -> Vec<((Offset, Ump), u64)> {
     let mut at = Vec::new();
     for _ in 0..blocks {
         transport.set_beat(*beat);
@@ -353,7 +357,7 @@ fn run_at(
         at.extend(
             drain_all(cons)
                 .into_iter()
-                .map(|e| (e, *frame + u64::from(e.frame_offset))),
+                .map(|e| (e, *frame + u64::from(e.0.get()))),
         );
         *beat += block as f64 * 2.0 / rate;
         *frame += block as u64;
@@ -362,7 +366,7 @@ fn run_at(
 }
 
 /// The frames of the events in `events` with `status`.
-fn of(events: &[(MidiEvent, u64)], status: u8) -> Vec<u64> {
+fn of(events: &[((Offset, Ump), u64)], status: u8) -> Vec<u64> {
     events
         .iter()
         .filter(|(e, _)| is_status(e, status))
@@ -521,8 +525,8 @@ fn generated_clock_round_trips_through_decoder() {
         transport.set_beat(beat);
         cm.tick(block);
         for ev in drain_all(&cons) {
-            let ts_us = ((sample_clock + ev.frame_offset as u64) as f64 * us_per_sample) as u64;
-            decoder.feed(&ev, ts_us);
+            let ts_us = ((sample_clock + ev.0.get() as u64) as f64 * us_per_sample) as u64;
+            decoder.feed(&ev.1, ts_us);
         }
         beat += block as f64 * beats_per_sample;
         sample_clock += block as u64;
@@ -558,7 +562,7 @@ fn mtc_quarter_frames_round_trip_to_a_timecode() {
             if is_status(&ev, 0xF1) {
                 // The quarter-frame data byte is the 2nd wire byte; decode
                 // via the message view's TimeCode.
-                if let tutti_midi_types::MidiMessage::TimeCode { code, .. } = ev.message() {
+                if let MidiMessage::TimeCode { code, .. } = MidiMessage::from_ump(ev.1) {
                     decoder.feed(code);
                     if decoder.timecode().is_some() {
                         got_tc = true;
@@ -591,7 +595,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
     let mut decoder = MtcDecoder::new();
     let (mut piece0_at, mut last_count, mut cycles) = (0.0, None, 0u32);
     for (ev, at) in events.iter().filter(|(e, _)| is_status(e, 0xF1)) {
-        let MidiMessage::TimeCode { code, .. } = ev.message() else {
+        let MidiMessage::TimeCode { code, .. } = MidiMessage::from_ump(ev.1) else {
             panic!("not a quarter-frame");
         };
         if code >> 4 == 0 {
@@ -704,11 +708,11 @@ fn looping_rig() -> (Rig, Arc<TestTransport>, crate::MidiReceiver) {
 }
 
 /// The `(offset, ...)` of the events with `status`.
-fn offsets(events: &[MidiEvent], status: u8) -> Vec<u32> {
+fn offsets(events: &[(Offset, Ump)], status: u8) -> Vec<u32> {
     events
         .iter()
         .filter(|e| is_status(e, status))
-        .map(|e| e.frame_offset)
+        .map(|e| e.0.get())
         .collect()
 }
 
@@ -764,13 +768,13 @@ fn the_song_position_lands_on_the_wraps_frame() {
     let events = drain_all(&cons);
     let positions: Vec<_> = events
         .iter()
-        .filter_map(|e| match e.message() {
-            MidiMessage::SongPosition { position, .. } => Some((e.frame_offset, position)),
+        .filter_map(|e| match MidiMessage::from_ump(e.1) {
+            MidiMessage::SongPosition { position, .. } => Some((e.0.get(), position)),
             _ => None,
         })
         .collect();
     assert_eq!(positions, [(0, 4), (12_000, 4)]);
-    let at_wrap: Vec<_> = events.iter().filter(|e| e.frame_offset == 12_000).collect();
+    let at_wrap: Vec<_> = events.iter().filter(|e| e.0.get() == 12_000).collect();
     assert!(
         is_status(at_wrap[0], 0xF2) && is_status(at_wrap[1], 0xF8),
         "the Song Position, then the wrapped pass's first tick"
@@ -798,8 +802,8 @@ fn the_mtc_grid_restarts_on_the_wrap() {
     let events = drain_all(&cons);
     let qf: Vec<_> = events
         .iter()
-        .filter_map(|e| match e.message() {
-            MidiMessage::TimeCode { code, .. } => Some((e.frame_offset, code >> 4)),
+        .filter_map(|e| match MidiMessage::from_ump(e.1) {
+            MidiMessage::TimeCode { code, .. } => Some((e.0.get(), code >> 4)),
             _ => None,
         })
         .collect();
@@ -823,7 +827,12 @@ fn the_mtc_grid_restarts_on_the_wrap() {
 /// `region`) through blocks of `lens`, the host's clock giving each block its
 /// start beat, and returns every event with its absolute frame, in the order
 /// sent. `mtc` turns the quarter-frames on.
-fn play_layout(from: f64, region: (f64, f64), mtc: bool, lens: &[usize]) -> Vec<(u64, MidiEvent)> {
+fn play_layout(
+    from: f64,
+    region: (f64, f64),
+    mtc: bool,
+    lens: &[usize],
+) -> Vec<(u64, (Offset, Ump))> {
     let (cm, transport, cons) = master(Bpm::of(120.0), 48_000.0);
     transport.set_loop(region.0, region.1);
     transport.set_playing(true);
@@ -838,7 +847,7 @@ fn play_layout(from: f64, region: (f64, f64), mtc: bool, lens: &[usize]) -> Vec<
         out.extend(
             drain_all(&cons)
                 .into_iter()
-                .map(|e| (frame + u64::from(e.frame_offset), e)),
+                .map(|e| (frame + u64::from(e.0.get()), e)),
         );
         host.advance(Samples(len), looping);
         frame += len as u64;
@@ -910,8 +919,8 @@ fn the_stream_does_not_depend_on_the_block_boundaries() {
     ] {
         assert_eq!(lens.iter().sum::<usize>(), TOTAL);
         let got = play_layout(0.0, region, true, &lens);
-        let key = |v: &[(u64, MidiEvent)]| {
-            let mut v: Vec<_> = v.iter().map(|&(at, e)| (at, e.data[0])).collect();
+        let key = |v: &[(u64, (Offset, Ump))]| {
+            let mut v: Vec<_> = v.iter().map(|&(at, e)| (at, e.1.0[0])).collect();
             v.sort_by_key(|&(at, _)| at);
             v
         };
@@ -932,7 +941,7 @@ fn a_loop_wrapping_on_every_block_edge_sends_a_song_position_each_time() {
     let events = play_layout(0.0, (0.0, 8.0), false, &fixed(3 * 192_000, 512));
     let positions: Vec<_> = events
         .iter()
-        .filter_map(|(at, e)| match e.message() {
+        .filter_map(|(at, e)| match MidiMessage::from_ump(e.1) {
             MidiMessage::SongPosition { position, .. } => Some((*at, position)),
             _ => None,
         })
@@ -957,8 +966,8 @@ fn a_wrap_on_the_block_edge_and_a_locate_are_one_song_position() {
     cm.tick(100);
     let positions: Vec<_> = drain_all(&cons)
         .iter()
-        .filter_map(|e| match e.message() {
-            MidiMessage::SongPosition { position, .. } => Some((e.frame_offset, position)),
+        .filter_map(|e| match MidiMessage::from_ump(e.1) {
+            MidiMessage::SongPosition { position, .. } => Some((e.0.get(), position)),
             _ => None,
         })
         .collect();

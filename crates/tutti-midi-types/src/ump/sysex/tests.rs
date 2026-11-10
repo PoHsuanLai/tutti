@@ -1,4 +1,5 @@
 use super::*;
+use tutti_ump::{MidiGroup, Ump};
 
 // NOTE: the single-packet case of `sysex7_fragments` is covered twice over —
 // `sysex7_multi_packet` below pins the same two-words-per-packet shape (and
@@ -9,11 +10,11 @@ use super::*;
 fn sysex7_multi_packet() {
     let mut out = Vec::new();
     let data: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &data, &mut out);
+    sysex7_fragments(MidiGroup::FIRST, &data, &mut out);
     // 15 bytes / 6 per packet = 3 packets
     assert_eq!(out.len(), 3);
     for ev in &out {
-        assert_eq!(ev.data_words().len(), 2);
+        assert_eq!(ev.words().len(), 2);
     }
 }
 
@@ -25,14 +26,14 @@ fn sysex7_single_payload_round_trips() {
         &[0x7E, 0x7F, 0x06, 0x01][..],
         &[1, 2, 3, 4, 5, 6][..],
     ] {
-        let ev = MidiEvent::sysex7_single(MidiGroup::FIRST, payload).expect("fits one packet");
-        let (status, bytes, n) = ev.sysex7_payload().expect("decodes");
+        let ev = sysex7_single(MidiGroup::FIRST, payload).expect("fits one packet");
+        let (status, bytes, n) = sysex7_payload(&ev).expect("decodes");
         assert_eq!(status, SYSEX7_STATUS_SINGLE);
         assert_eq!(n, payload.len());
         assert_eq!(&bytes[..n], payload);
     }
     // 7 bytes is more than one packet.
-    assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
+    assert!(sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
 }
 
 /// The allocation-free packetizer emits exactly the packets midi2 does,
@@ -46,8 +47,8 @@ fn sysex7_packets_match_the_midi2_fragmenter() {
     for len in (0..=40).chain([199, 200]) {
         for group in [MidiGroup::FIRST, MidiGroup::of(5)] {
             let mut expected = Vec::new();
-            MidiEvent::sysex7_fragments(group, &data[..len], &mut expected);
-            let got: Vec<MidiEvent> = MidiEvent::sysex7_packets(group, &data[..len]).collect();
+            sysex7_fragments(group, &data[..len], &mut expected);
+            let got: Vec<Ump> = sysex7_packets(group, &data[..len]).collect();
             assert_eq!(got, expected, "{len} bytes, group {}", group.get());
         }
     }
@@ -63,8 +64,8 @@ fn sysex7_packet_count_is_what_sysex7_packets_yields() {
     let data = [0u8; 40];
     for len in 0..=40 {
         assert_eq!(
-            MidiEvent::sysex7_packet_count(len),
-            MidiEvent::sysex7_packets(MidiGroup::FIRST, &data[..len]).count(),
+            sysex7_packet_count(len),
+            sysex7_packets(MidiGroup::FIRST, &data[..len]).count(),
             "{len} bytes"
         );
     }
@@ -78,9 +79,9 @@ fn sysex7_packet_count_is_what_sysex7_packets_yields() {
 #[test]
 fn sysex7_single_words_are_the_spec_words() {
     let words = |group, payload: &[u8]| {
-        MidiEvent::sysex7_single(MidiGroup::of(group), payload)
+        sysex7_single(MidiGroup::of(group), payload)
             .expect("fits one packet")
-            .data_words()
+            .words()
             .to_vec()
     };
     assert_eq!(
@@ -90,5 +91,5 @@ fn sysex7_single_words_are_the_spec_words() {
     assert_eq!(words(0, &[]), [0x3000_0000, 0]);
     assert_eq!(words(15, &[1, 2, 3, 4, 5, 6]), [0x3F06_0102, 0x0304_0506]);
     assert_eq!(words(0, &[0x81, 0xFF]), [0x3002_017F, 0]);
-    assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
+    assert!(sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
 }

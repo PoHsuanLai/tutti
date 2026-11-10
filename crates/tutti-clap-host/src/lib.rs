@@ -44,9 +44,9 @@ pub use types::ClapNoteExpression;
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout, ContentScale,
-    EditorCapabilities, EditorSize, MidiEvent, NoteDialect, NoteDialects, NoteExpressionType,
-    NoteName, NotePortInfo, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo,
-    StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle,
+    EditorCapabilities, EditorSize, NoteDialect, NoteDialects, NoteExpressionType, NoteName,
+    NotePortInfo, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, StateContext,
+    SurroundChannel, TransportInfo, VoiceInfo, WindowHandle, WireMidi,
 };
 #[cfg(feature = "clap-extras")]
 pub use types::{

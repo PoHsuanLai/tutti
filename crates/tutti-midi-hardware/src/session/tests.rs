@@ -34,9 +34,12 @@ fn input(s: &MidiSession, name: &str) -> DeviceId {
         .id
 }
 
-fn note() -> MidiEvent {
+fn note() -> (Offset, Ump) {
     use tutti_ump::{MidiChannel, MidiGroup};
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+    (
+        Offset::ZERO,
+        tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+    )
 }
 
 #[test]

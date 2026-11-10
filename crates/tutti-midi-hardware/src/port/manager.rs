@@ -3,7 +3,7 @@
 //!
 //! One manager holds N input rings. A drain's `cycle_start_read_all_inputs`
 //! fans them all in for one block, converting each event's arrival `Instant`
-//! into a `frame_offset` within that block. Everything on that path is
+//! into a [`Offset`] within that block. Everything on that path is
 //! RT-safe: bounded work, no locks, no allocation, and no free.
 //!
 //! The manager is shared (`Arc`); a drain is owned by the one node that polls
@@ -17,10 +17,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use tutti_rt::{ArcLend, Reader};
-use tutti_types::SampleRate;
+use tutti_types::{SampleRate, Samples};
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
-use tutti_midi_types::ump::MidiEvent;
+use tutti_graph::Offset;
+use tutti_ump::Ump;
 
 /// One port's identity: its slot in the manager, and which of the ports ever
 /// created there it is.
@@ -151,7 +152,7 @@ impl DrainShared {
 }
 
 /// Drain `input_ports`' active rings into `events`, converting arrival
-/// timestamps to sample-accurate `frame_offset`s at `sample_rate`, and return
+/// timestamps to sample-accurate [`Offset`]s at `sample_rate`, and return
 /// how many were taken. RT-safe (lock-free, no heap allocation).
 ///
 /// `buffer_start` is when this block began — the instant every event's age
@@ -161,7 +162,7 @@ impl DrainShared {
 /// checkable at all. See
 /// [`cycle_start_read_all_inputs_at`](HardwareMidiDrain::cycle_start_read_all_inputs_at).
 fn read_inputs(
-    events: &mut Vec<(PortId, MidiEvent)>,
+    events: &mut Vec<(PortId, (Offset, Ump))>,
     limit: usize,
     input_ports: &PortSlots,
     sample_rate: SampleRate,
@@ -169,15 +170,18 @@ fn read_inputs(
     buffer_start: Instant,
 ) -> usize {
     let nframes_u32 = u32::try_from(nframes).unwrap_or(u32::MAX);
-    let frame_offset = |arrival: Instant| {
+    let offset_of = |arrival: Instant| {
         let delta = buffer_start.saturating_duration_since(arrival);
         let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
         let offset = nframes_u32.saturating_sub(samples_ago);
-        if offset >= nframes_u32 {
+        let offset = if offset >= nframes_u32 {
             nframes_u32.saturating_sub(1)
         } else {
             offset
-        }
+        };
+        // In range by the clamp above; only a zero-length block has no frame
+        // `offset` names, and it got offset 0 before, which is `ZERO`.
+        Offset::new(offset as usize, Samples(nframes)).unwrap_or(Offset::ZERO)
     };
 
     // Each port gets the headroom left by the ports before it, so the
@@ -193,10 +197,9 @@ fn read_inputs(
             continue;
         }
         let id = port.id();
-        port.drain_limited(headroom, |arrival, mut event| {
-            event.frame_offset = frame_offset(arrival);
+        port.drain_limited(headroom, |arrival, ump| {
             debug_assert!(events.len() < events.capacity(), "limited to the headroom");
-            events.push((id, event));
+            events.push((id, (offset_of(arrival), ump)));
         });
     }
     events.len()
@@ -290,7 +293,7 @@ impl HardwareMidiInputs {
         live + self.retired_dropped.load(Ordering::Relaxed)
     }
 
-    /// Sets the [`SampleRate`] the arrival-timestamp → `frame_offset` conversion
+    /// Sets the [`SampleRate`] the arrival-timestamp → [`Offset`] conversion
     /// divides by.
     ///
     /// Safe to call from any thread at any time: the rate is an atomic the
@@ -514,11 +517,11 @@ pub struct HardwareMidiDrain {
     /// the drain lends the set through, once per drain.
     ports: Reader<PortSlots>,
     /// The block's drained events, already timed. One buffer, not two: the
-    /// timestamp → `frame_offset` conversion needs only the rate, `nframes`
+    /// timestamp → [`Offset`] conversion needs only the rate, `nframes`
     /// and the block start, all known before the first pop, so each event is
     /// converted as it leaves its ring and stored once. The events reach the
     /// caller through a visitor, copied out one at a time.
-    events: Vec<(PortId, MidiEvent)>,
+    events: Vec<(PortId, (Offset, Ump))>,
     /// The most events one drain takes: at most `events`' capacity.
     limit: usize,
 }
@@ -559,7 +562,7 @@ impl HardwareMidiDrain {
     }
 
     /// Drains all active input port rings for this block, converting arrival
-    /// timestamps to sample-accurate `frame_offset`s, and hand each event to
+    /// timestamps to sample-accurate [`Offset`]s, and hand each event to
     /// `visit` with the [`PortId`] of the port it came from. Returns how many
     /// were visited.
     ///
@@ -571,7 +574,7 @@ impl HardwareMidiDrain {
     pub fn cycle_start_read_all_inputs(
         &mut self,
         nframes: usize,
-        visit: impl FnMut(PortId, MidiEvent),
+        visit: impl FnMut(PortId, (Offset, Ump)),
     ) -> usize {
         self.cycle_start_read_all_inputs_at(nframes, Instant::now(), visit)
     }
@@ -579,7 +582,7 @@ impl HardwareMidiDrain {
     /// [`cycle_start_read_all_inputs`](Self::cycle_start_read_all_inputs) with
     /// the block's start instant supplied rather than read from the clock.
     ///
-    /// Every inbound event's `frame_offset` is
+    /// Every inbound event's [`Offset`] is
     /// `nframes - (buffer_start - arrival) * sample_rate`, clamped into the
     /// block. `buffer_start` is the one term a caller cannot otherwise pin — the
     /// arrival stamp rides in with the event and `nframes` is an argument — so
@@ -600,7 +603,7 @@ impl HardwareMidiDrain {
         &mut self,
         nframes: usize,
         buffer_start: Instant,
-        visit: impl FnMut(PortId, MidiEvent),
+        visit: impl FnMut(PortId, (Offset, Ump)),
     ) -> usize {
         let limit = self.limit;
         self.read_limited(nframes, buffer_start, limit, visit)
@@ -613,7 +616,7 @@ impl HardwareMidiDrain {
         nframes: usize,
         buffer_start: Instant,
         limit: usize,
-        mut visit: impl FnMut(PortId, MidiEvent),
+        mut visit: impl FnMut(PortId, (Offset, Ump)),
     ) -> usize {
         let shared = &self.inputs.shared;
         if shared.draining.swap(true, Ordering::Relaxed) {
@@ -627,7 +630,7 @@ impl HardwareMidiDrain {
         // One borrow of the port set for the drain, so a hotplug publishing a
         // new set mid-read leaves this one intact; the borrow cannot free it
         // when it drops, whatever was published meanwhile. Events are copied
-        // into the scratch by value (`MidiEvent: Copy`), so nothing borrows
+        // into the scratch by value (`Ump: Copy`), so nothing borrows
         // from the snapshot past it. The borrow is held to the drain's end:
         // a port removed while the drain runs is freed by the control side
         // afterwards (`collect`), never by this borrow's drop.
@@ -647,17 +650,17 @@ impl HardwareMidiDrain {
     }
 }
 
-impl tutti_midi_types::MidiIn for HardwareMidiDrain {
+impl tutti_midi_runtime::MidiIn for HardwareMidiDrain {
     /// Drains every connected hardware input for this block into `buffer`.
     ///
-    /// `block_size` drives the timestamp → `frame_offset` conversion (it is the
+    /// `block_size` drives the timestamp → [`Offset`] conversion (it is the
     /// block's `nframes`). RT-safe: a bounded copy out of the drain's own
     /// scratch, with no allocation.
     ///
     /// Takes no more events than `buffer` holds: the rest stay in the port
     /// rings for the next block, so a small `buffer` defers events and drops
     /// none.
-    fn poll_block(&mut self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    fn poll_block(&mut self, block_size: usize, buffer: &mut [(Offset, Ump)]) -> usize {
         let mut written = 0usize;
         self.read_limited(block_size, Instant::now(), buffer.len(), |_port, event| {
             buffer[written] = event;

@@ -4239,6 +4239,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4252,6 +4253,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-au-ffi",
  "tutti-au-host",
+ "tutti-fixtures",
+ "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
@@ -4400,6 +4403,7 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4456,6 +4460,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-types",
  "tutti-ump",
@@ -4474,6 +4479,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tutti-alsa-ump-sys",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-device",
  "tutti-midi-hardware",
@@ -4500,6 +4506,7 @@ dependencies = [
  "bytemuck",
  "criterion",
  "crossbeam-queue",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-types",
  "tutti-rt",
@@ -4519,6 +4526,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-rt",
  "tutti-types",
@@ -4608,6 +4616,7 @@ dependencies = [
  "tempfile",
  "tutti-clap-host",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin",
  "tutti-plugin-db",
@@ -4689,6 +4698,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-midi-types",
  "tutti-rt",
  "tutti-types",
@@ -4704,6 +4714,7 @@ dependencies = [
  "criterion",
  "thiserror 2.0.21",
  "tutti-dsp",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-runtime",
@@ -4952,6 +4963,8 @@ dependencies = [
  "log",
  "num-traits",
  "num_enum 0.5.11",
+ "tutti-fixtures",
+ "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-ump",
@@ -4969,6 +4982,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
@@ -5001,6 +5015,7 @@ dependencies = [
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
+ "tutti-ump",
  "vst3",
 ]
 
@@ -5018,6 +5033,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-clap-host",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-plugin-types",

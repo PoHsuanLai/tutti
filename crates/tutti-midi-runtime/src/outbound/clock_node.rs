@@ -16,12 +16,12 @@
 use std::sync::Arc;
 
 use tutti_graph::{
-    Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
-    Shape, Status,
+    Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Offset,
+    Prepare, Shape, Status,
 };
-use tutti_midi_types::ump::MidiEvent;
 use tutti_rt::RtVec;
 use tutti_types::{ChannelLayout, SampleRate};
+use tutti_ump::Ump;
 
 use super::clock_master::ClockMaster;
 use crate::live::order::{in_offset_order, offset_of};
@@ -57,7 +57,7 @@ pub struct ClockNode {
     /// Where a block's events are gathered, to go out in offset order. Capped
     /// at the port's capacity: past it an event is refused and counted on the
     /// master ([`ClockMaster::dropped_events`]), never grown into.
-    pending: RtVec<MidiEvent, CLOCK_EVENT_CAPACITY>,
+    pending: RtVec<(Offset, Ump), CLOCK_EVENT_CAPACITY>,
 }
 
 impl ClockNode {
@@ -97,24 +97,33 @@ impl Node for ClockNode {
         let block_len = cx.env.block_len;
         self.pending.clear();
         let pending = &mut self.pending;
+        // A segment's events lie inside it, so inside the block; the clamp is
+        // what the sort's `offset_of` did to a stray one.
+        let last = block_len.get().saturating_sub(1);
         let mut dropped = 0u64;
         for (start, seg) in cx.env.segments() {
             let base = start.get();
             self.master
-                .tick(&seg.transport, seg.block_len.get(), &mut |e: MidiEvent| {
-                    // Never grows on the audio thread: past the capacity the
-                    // rest are refused, as the port would refuse them, and
-                    // counted for the host.
-                    if !pending.push(e.with_frame_offset(base + e.frame_offset)) {
-                        dropped += 1;
-                    }
-                });
+                .tick(
+                    &seg.transport,
+                    seg.block_len.get(),
+                    &mut |(at, ump): (Offset, Ump)| {
+                        // Never grows on the audio thread: past the capacity the
+                        // rest are refused, as the port would refuse them, and
+                        // counted for the host.
+                        let at = base as usize + at.index();
+                        let at = Offset::new(at.min(last), block_len).unwrap_or(Offset::ZERO);
+                        if !pending.push((at, ump)) {
+                            dropped += 1;
+                        }
+                    },
+                );
         }
         self.master.count_dropped(dropped);
         in_offset_order(self.pending.as_mut_slice());
         let out = io.event_out(0);
         for e in &self.pending {
-            let _ = out.push(Event::midi(offset_of(e, block_len), e.data));
+            let _ = out.push(Event::midi(offset_of(e, block_len), e.1.0));
         }
         Status::Modified
     }

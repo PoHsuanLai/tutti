@@ -51,6 +51,7 @@
 //! [`MpeIngest::new`], so reconfiguring is off-RT and rebuilds the whole
 //! transform.
 
+use tutti_graph::Offset;
 use tutti_midi_types::PitchBendSensitivity;
 use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
@@ -58,10 +59,25 @@ use tutti_midi_types::mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
 use tutti_midi_types::ump::{
-    MidiEvent, RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+    RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
+
+use crate::group::group_of;
+
+/// A channel voice message on group 1 and `channel`: the group the per-note
+/// forms this ingest makes have always gone out on.
+fn first_group_voice(channel: u8, voice: Voice2) -> Ump {
+    Message::Midi2(
+        Address {
+            group: MidiGroup::FIRST,
+            channel: MidiChannel::masked(channel),
+        },
+        voice,
+    )
+    .into()
+}
 
 /// What [`MpeIngest::translate`] makes of one event, in order: nothing, the
 /// event or its per-note form, a per-note bend range for each member channel
@@ -72,11 +88,11 @@ pub struct Translated(Out);
 
 #[derive(Clone, Debug)]
 enum Out {
-    One(Option<MidiEvent>),
+    One(Option<(Offset, Ump)>),
     /// Registered controllers in [`RPN_BANK_MPE`], each run in turn.
     Rpns {
         group: MidiGroup,
-        frame_offset: u32,
+        offset: Offset,
         runs: [Option<RpnRun>; MAX_RPN_RUNS],
     },
 }
@@ -95,43 +111,48 @@ struct RpnRun {
 
 impl Translated {
     /// RPN runs at `event`'s group and offset.
-    fn rpns(group: MidiGroup, frame_offset: u32, runs: [Option<RpnRun>; MAX_RPN_RUNS]) -> Self {
+    fn rpns(group: MidiGroup, offset: Offset, runs: [Option<RpnRun>; MAX_RPN_RUNS]) -> Self {
         Self(Out::Rpns {
             group,
-            frame_offset,
+            offset,
             runs,
         })
     }
 }
 
-impl From<Option<MidiEvent>> for Translated {
-    fn from(event: Option<MidiEvent>) -> Self {
+impl From<Option<(Offset, Ump)>> for Translated {
+    fn from(event: Option<(Offset, Ump)>) -> Self {
         Self(Out::One(event))
     }
 }
 
 impl Iterator for Translated {
-    type Item = MidiEvent;
+    type Item = (Offset, Ump);
 
-    fn next(&mut self) -> Option<MidiEvent> {
+    fn next(&mut self) -> Option<(Offset, Ump)> {
         match &mut self.0 {
             Out::One(event) => event.take(),
             Out::Rpns {
                 group,
-                frame_offset,
+                offset,
                 runs,
             } => runs.iter_mut().flatten().find_map(|run| {
                 let channel = run.channels.next()?;
-                Some(
-                    MidiEvent::registered_controller(
-                        *group,
-                        MidiChannel::masked(channel),
-                        RPN_BANK_MPE,
-                        run.index,
-                        run.data,
+                Some((
+                    *offset,
+                    Message::Midi2(
+                        Address {
+                            group: *group,
+                            channel: MidiChannel::masked(channel),
+                        },
+                        Voice2::Registered {
+                            bank: U7::new(RPN_BANK_MPE).expect("the MPE bank is 7-bit"),
+                            index: U7::new(run.index).expect("an RPN index is 7-bit"),
+                            value: run.data,
+                        },
                     )
-                    .with_frame_offset(*frame_offset),
-                )
+                    .into(),
+                ))
             }),
         }
     }
@@ -240,14 +261,14 @@ impl MpeIngest {
     }
 
     /// The bend ranges the configured zones start at, as RPNs on `group` at
-    /// `frame_offset`: for each zone, RPN #00/00 = ±2 on its master channel
+    /// `offset`: for each zone, RPN #00/00 = ±2 on its master channel
     /// and RPN #00/07 = ±48 on each member channel, what an MPE
     /// Configuration Message resets a receiver to. A host that sets the mode
     /// itself ([`set_mode`](Self::set_mode)) sends these downstream, so a
     /// receiver that followed the old zones' ranges starts the new ones at
     /// their defaults, as an MCM from the wire would have it. Nothing for
     /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`].
-    pub fn zone_defaults(&self, group: MidiGroup, frame_offset: u32) -> Translated {
+    pub fn zone_defaults(&self, group: MidiGroup, offset: Offset) -> Translated {
         let mut runs = [None, None, None, None];
         let zones = match &self.mode {
             MpeMode::LowerZone(c) | MpeMode::UpperZone(c) => [Some(c), None],
@@ -261,7 +282,7 @@ impl MpeIngest {
                 slot[1] = Some(b);
             }
         }
-        Translated::rpns(group, frame_offset, runs)
+        Translated::rpns(group, offset, runs)
     }
 
     /// Rewrite one already-normalized (MIDI-2) event.
@@ -278,12 +299,12 @@ impl MpeIngest {
     ///
     /// Nothing means "drop this event" (e.g. a member-channel message with no
     /// note currently held on that channel).
-    pub fn translate(&mut self, event: &MidiEvent) -> Translated {
+    pub fn translate(&mut self, event: &(Offset, Ump)) -> Translated {
         self.translate_one(event).unwrap_or_else(|| None.into())
     }
 
     /// [`translate`](Self::translate), with `None` for nothing.
-    fn translate_one(&mut self, event: &MidiEvent) -> Option<Translated> {
+    fn translate_one(&mut self, event: &(Offset, Ump)) -> Option<Translated> {
         // An MPE Configuration Message (RPN 0x00/0x06, M2-104 §7.4.7) reconfigures
         // the zone from the wire — handled in *any* mode, including Disabled (a
         // controller declaring its zone should enable MPE). The message itself
@@ -293,7 +314,7 @@ impl MpeIngest {
         // `from_mcm` requires the master channel be Ch1 or Ch16 per RP-053, so
         // RPN 0x00/0x06 on any other channel is ordinary parameter traffic and
         // passes through rather than being swallowed as configuration.
-        if let Some((master, members)) = MpeZoneConfig::from_mcm(event) {
+        if let Some((master, members)) = MpeZoneConfig::from_mcm(&event.1) {
             self.reconfigure_from_mcm(master, members);
             let configured = match (&self.mode, master) {
                 (MpeMode::LowerZone(c) | MpeMode::DualZone { lower: c, .. }, 0)
@@ -303,8 +324,8 @@ impl MpeIngest {
             };
             let [a, b] = zone_default_runs(configured);
             return Some(Translated::rpns(
-                event.group(),
-                event.frame_offset,
+                group_of(&event.1),
+                event.0,
                 [Some(a), Some(b), None, None],
             ));
         }
@@ -313,7 +334,7 @@ impl MpeIngest {
             return Some(Some(*event).into());
         }
 
-        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(event.data_words()) else {
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(event.1.words()) else {
             // Not a channel-voice-2 message (System, SysEx, …) — pass through.
             return Some(Some(*event).into());
         };
@@ -332,7 +353,7 @@ impl MpeIngest {
     /// `None` for anything else (the master channel's passes through).
     fn member_bend_range(
         &self,
-        event: &MidiEvent,
+        event: &(Offset, Ump),
         cv2: &ChannelVoice2<&[u32]>,
     ) -> Option<Translated> {
         let ChannelVoice2::RegisteredController(m) = cv2 else {
@@ -358,8 +379,8 @@ impl MpeIngest {
             data: m.controller_data(),
         };
         Some(Translated::rpns(
-            event.group(),
-            event.frame_offset,
+            group_of(&event.1),
+            event.0,
             [Some(run), None, None, None],
         ))
     }
@@ -399,9 +420,9 @@ impl MpeIngest {
     /// note that member channel holds; master-channel and native per-note pass.
     fn translate_zoned(
         &mut self,
-        event: &MidiEvent,
+        event: &(Offset, Ump),
         cv2: ChannelVoice2<&[u32]>,
-    ) -> Option<MidiEvent> {
+    ) -> Option<(Offset, Ump)> {
         match cv2 {
             ChannelVoice2::NoteOn(m) => {
                 let (ch, note, vel) = (
@@ -442,15 +463,16 @@ impl MpeIngest {
                     Some(*event)
                 } else if zone.is_member {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
-                    Some(
-                        MidiEvent::per_note_pitch_bend(
-                            MidiGroup::FIRST,
-                            MidiChannel::masked(ch),
-                            note,
-                            m.pitch_bend_data(),
-                        )
-                        .with_frame_offset(event.frame_offset),
-                    )
+                    Some((
+                        event.0,
+                        first_group_voice(
+                            ch,
+                            Voice2::PerNotePitchBend {
+                                note: NoteNumber::new(note)?,
+                                value: m.pitch_bend_data(),
+                            },
+                        ),
+                    ))
                 } else {
                     Some(*event)
                 }
@@ -462,15 +484,16 @@ impl MpeIngest {
                     Some(*event)
                 } else if zone.is_member {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
-                    Some(
-                        MidiEvent::poly_pressure(
-                            MidiGroup::FIRST,
-                            MidiChannel::masked(ch),
-                            note,
-                            m.channel_pressure_data(),
-                        )
-                        .with_frame_offset(event.frame_offset),
-                    )
+                    Some((
+                        event.0,
+                        first_group_voice(
+                            ch,
+                            Voice2::PolyPressure {
+                                note: NoteNumber::new(note)?,
+                                value: m.channel_pressure_data(),
+                            },
+                        ),
+                    ))
                 } else {
                     Some(*event)
                 }
@@ -483,17 +506,17 @@ impl MpeIngest {
                 if zone.is_member {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
                     // CC74 → Assignable Per-Note Controller index 74 (the MPE slide).
-                    Some(
-                        MidiEvent::per_note_controller(
-                            MidiGroup::FIRST,
-                            MidiChannel::masked(ch),
-                            note,
-                            74,
-                            m.control_change_data(),
-                            false,
-                        )
-                        .with_frame_offset(event.frame_offset),
-                    )
+                    Some((
+                        event.0,
+                        first_group_voice(
+                            ch,
+                            Voice2::AssignablePerNote {
+                                note: NoteNumber::new(note)?,
+                                controller: 74,
+                                value: m.control_change_data(),
+                            },
+                        ),
+                    ))
                 } else {
                     Some(*event)
                 }
@@ -510,9 +533,9 @@ impl MpeIngest {
     fn translate_rotation(
         &mut self,
         channel: u8,
-        event: &MidiEvent,
+        event: &(Offset, Ump),
         cv2: ChannelVoice2<&[u32]>,
-    ) -> Option<MidiEvent> {
+    ) -> Option<(Offset, Ump)> {
         // Messages off the rotation channel are ignored (this mode owns one).
         if u8::from(cv2.channel()) != channel {
             return None;

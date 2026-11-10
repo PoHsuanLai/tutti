@@ -7,21 +7,20 @@
 //! - **RPN / NRPN.** MIDI 1.0 expresses a Registered/Non-Registered Parameter as
 //!   a run of CCs — select the parameter with CC 101/100 (RPN MSB/LSB) or CC
 //!   99/98 (NRPN MSB/LSB), then send the value with CC 6/38 (Data Entry MSB/LSB).
-//!   MIDI 2.0 has one dedicated message each ([`MidiEvent::registered_controller`]
-//!   / [`MidiEvent::assignable_controller`]). [`Midi1ToMidi2Translator`] watches
+//!   MIDI 2.0 has one dedicated message each (`Voice2::Registered`
+//!   / `Voice2::Assignable`). [`Midi1ToMidi2Translator`] watches
 //!   the CC stream per channel and, when a Data Entry completes a selected
 //!   parameter, emits the single MIDI-2 controller message.
 //!
-//! A translator is stateful and per-endpoint; feed it every inbound CV1 event.
-//! Events that aren't part of an (N)RPN run are promoted straight through via
+//! A translator is stateful and per-endpoint; feed it every inbound CV1 packet.
+//! Packets that aren't part of an (N)RPN run are promoted straight through via
 //! [`normalize`](super::normalize), so a caller can treat it as "MIDI-1 in, MIDI-2 out".
 
 use midi2::channel_voice1::ChannelVoice1;
 use midi2::{Channeled, UmpMessage};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2};
 
 use crate::cc;
-use crate::ump::MidiEvent;
 
 /// The registered (RPN) or non-registered (NRPN) parameter last selected.
 #[derive(Clone, Copy, Debug, Default)]
@@ -114,20 +113,20 @@ impl Midi1ToMidi2Translator {
     /// - anything else, Data Increment and Decrement included (`ump_convert.c`
     ///   passes them through as CCs), is promoted through
     ///   [`normalize`](super::normalize).
-    pub fn translate(&mut self, event: &MidiEvent) -> Option<MidiEvent> {
-        let Ok(UmpMessage::ChannelVoice1(cv1)) = UmpMessage::try_from(event.data_words()) else {
+    pub fn translate(&mut self, ump: &Ump) -> Option<Ump> {
+        let Ok(UmpMessage::ChannelVoice1(cv1)) = UmpMessage::try_from(ump.words()) else {
             // Not a MIDI-1 channel message — nothing to accumulate.
-            return Some(super::normalize(event));
+            return Some(super::normalize(ump));
         };
         let ChannelVoice1::ControlChange(m) = cv1 else {
             if let ChannelVoice1::ProgramChange(m) = cv1 {
                 return Some(self.program_change(
-                    event,
+                    ump,
                     u8::from(m.channel()),
                     u8::from(m.program()),
                 ));
             }
-            return Some(super::normalize(event));
+            return Some(super::normalize(ump));
         };
         let channel = u8::from(m.channel()) as usize;
         // Wire boundary: midi2's `u7` is already in range, so the mask is a no-op.
@@ -136,22 +135,20 @@ impl Midi1ToMidi2Translator {
         let state = &mut self.channels[channel & 0x0F];
 
         match control {
-            cc::RPN_MSB => self.select(channel, event.frame_offset, true, ParamByte::Bank(value)),
-            cc::RPN_LSB => self.select(channel, event.frame_offset, true, ParamByte::Index(value)),
-            cc::NRPN_MSB => self.select(channel, event.frame_offset, false, ParamByte::Bank(value)),
-            cc::NRPN_LSB => {
-                self.select(channel, event.frame_offset, false, ParamByte::Index(value))
-            }
+            cc::RPN_MSB => self.select(channel, true, ParamByte::Bank(value)),
+            cc::RPN_LSB => self.select(channel, true, ParamByte::Index(value)),
+            cc::NRPN_MSB => self.select(channel, false, ParamByte::Bank(value)),
+            cc::NRPN_LSB => self.select(channel, false, ParamByte::Index(value)),
             cc::DATA_ENTRY => {
                 state.data_msb = value;
                 state.msb_set = true;
-                self.emit(channel, event.frame_offset)
+                self.emit(channel)
             }
             cc::DATA_ENTRY_LSB => {
                 state.data_lsb = value;
                 state.lsb_set = true;
                 if state.msb_set {
-                    self.emit(channel, event.frame_offset)
+                    self.emit(channel)
                 } else {
                     None
                 }
@@ -168,21 +165,35 @@ impl Midi1ToMidi2Translator {
                 None
             }
             // A plain CC (not part of an (N)RPN run) promotes normally.
-            _ => Some(super::normalize(event)),
+            _ => Some(super::normalize(ump)),
         }
     }
 
     /// A Program Change, carrying the bank latched on its channel if one was
     /// selected since the last Program Change (`ump_convert.c` 427-431: the
     /// flag is cleared, the MSB and LSB values are not).
-    fn program_change(&mut self, event: &MidiEvent, channel: u8, program: u8) -> MidiEvent {
+    fn program_change(&mut self, ump: &Ump, channel: u8, program: u8) -> Ump {
         let state = &mut self.channels[usize::from(channel & 0x0F)];
         let bank = state
             .bank_set
             .then(|| (u16::from(state.bank_msb) << 7) | u16::from(state.bank_lsb));
         state.bank_set = false;
-        MidiEvent::program_change(event.group(), MidiChannel::masked(channel), program, bank)
-            .with_frame_offset(event.frame_offset)
+        // M2-104 Figure 64: Bank Valid is set exactly when a bank rides along.
+        let bank = bank.map(|b| tutti_ump::Bank {
+            msb: U7::new(((b >> 7) & 0x7F) as u8).unwrap_or_default(),
+            lsb: U7::new((b & 0x7F) as u8).unwrap_or_default(),
+        });
+        Message::Midi2(
+            Address {
+                group: MidiGroup::masked(((ump.0[0] >> 24) & 0x0F) as u8),
+                channel: MidiChannel::masked(channel),
+            },
+            Voice2::ProgramChange {
+                program: U7::new(program & 0x7F).unwrap_or_default(),
+                bank,
+            },
+        )
+        .into()
     }
 
     /// Handle one parameter-select byte (CC 98/99/100/101).
@@ -197,16 +208,10 @@ impl Midi1ToMidi2Translator {
     /// It also implements the Null Function rule: "RPN/NRPN Null Function, where
     /// both the MSB and LSB is set to 0x7F, is not translated." Null deselects,
     /// so a following Data Entry must not synthesize a controller message.
-    fn select(
-        &mut self,
-        channel: usize,
-        frame_offset: u32,
-        registered: bool,
-        byte: ParamByte,
-    ) -> Option<MidiEvent> {
+    fn select(&mut self, channel: usize, registered: bool, byte: ParamByte) -> Option<Ump> {
         let state = &self.channels[channel & 0x0F];
         let flushed = if state.lsb_set && !state.msb_set {
-            self.emit(channel, frame_offset)
+            self.emit(channel)
         } else {
             None
         };
@@ -232,7 +237,7 @@ impl Midi1ToMidi2Translator {
 
     /// Emit the MIDI-2 controller message for the channel's currently-selected
     /// parameter and accumulated data. `None` if no parameter is selected.
-    fn emit(&self, channel: usize, frame_offset: u32) -> Option<MidiEvent> {
+    fn emit(&self, channel: usize) -> Option<Ump> {
         let state = &self.channels[channel & 0x0F];
         if !state.selected {
             return None;
@@ -242,15 +247,31 @@ impl Midi1ToMidi2Translator {
         // MIDI-2 equivalent would.
         let data14 = ((state.data_msb as u16) << 7) | (state.data_lsb as u16);
         let data32 = super::scaling::midi1_pitch_bend_to_midi2(data14);
-        let ch = MidiChannel::masked(channel as u8);
-        let ev = if state.registered {
-            let n = state.rpn;
-            MidiEvent::registered_controller(MidiGroup::FIRST, ch, n.bank, n.index, data32)
-        } else {
-            let n = state.nrpn;
-            MidiEvent::assignable_controller(MidiGroup::FIRST, ch, n.bank, n.index, data32)
+        let address = Address {
+            group: MidiGroup::FIRST,
+            channel: MidiChannel::masked(channel as u8),
         };
-        Some(ev.with_frame_offset(frame_offset))
+        let (n, registered) = if state.registered {
+            (state.rpn, true)
+        } else {
+            (state.nrpn, false)
+        };
+        let bank = U7::new(n.bank & 0x7F).unwrap_or_default();
+        let index = U7::new(n.index & 0x7F).unwrap_or_default();
+        let voice = if registered {
+            Voice2::Registered {
+                bank,
+                index,
+                value: data32,
+            }
+        } else {
+            Voice2::Assignable {
+                bank,
+                index,
+                value: data32,
+            }
+        };
+        Some(Message::Midi2(address, voice).into())
     }
 }
 

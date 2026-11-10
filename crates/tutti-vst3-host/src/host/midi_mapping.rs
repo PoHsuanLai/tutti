@@ -28,7 +28,8 @@ use tutti_midi_protocol::widen;
 use tutti_ump::{Message, Ump, Unknown, Voice2, decode};
 
 use crate::events::{InputEvents, Stager};
-use crate::types::{MidiEvent, ParameterChanges};
+use crate::types::ParameterChanges;
+use tutti_graph::Offset;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, MainThread};
 use tutti_rt::{Reader, RtVec};
 use tutti_vst3_ffi::{EventList, Plugin};
@@ -36,7 +37,7 @@ use tutti_vst3_ffi::{EventList, Plugin};
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
 /// never drops an event the plugin node delivered. Dropping one would cut a
 /// multi-packet SysEx the event list is reassembling.
-pub(crate) type FilteredMidi = RtVec<MidiEvent, MIDI_STACK_CAPACITY>;
+pub(crate) type FilteredMidi = RtVec<(Offset, Ump), MIDI_STACK_CAPACITY>;
 
 /// Number of MIDI channels VST3 enumerates mappings for.
 pub(crate) const NUM_CHANNELS: usize = 16;
@@ -141,7 +142,7 @@ impl MidiCcMapping {
     }
 }
 
-/// Decompose a [`MidiEvent`] into the `(channel, controller, normalized_value)`
+/// Decompose a UMP packet into the `(channel, controller, normalized_value)`
 /// a VST3 `IMidiMapping` parameter expects, or `None` if the event is not a
 /// mappable controller (CC / channel pressure / pitch bend).
 ///
@@ -152,10 +153,10 @@ impl MidiCcMapping {
 /// - CC / channel pressure: 32-bit → unit `0.0..=1.0`.
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
 ///   `0.5`), matching what the plugin's parameter funnel expects.
-pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize, f64)> {
+pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(u8, usize, f64)> {
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u32_to_unit_f32};
 
-    let (channel, voice) = match decode(Ump(event.data)) {
+    let (channel, voice) = match decode(*ump) {
         Ok(Message::Midi1(address, voice)) => (address.channel, widen(voice)),
         Ok(Message::Midi2(address, voice)) => (address.channel, voice),
         // Not channel voice, or a packet `decode` cannot frame: there is no
@@ -217,12 +218,12 @@ pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize,
 /// pushes into existing storage.
 pub(crate) fn route_cc_events(
     mapping: &MidiCcMapping,
-    midi_events: &[MidiEvent],
+    midi_events: &[(Offset, Ump)],
     out_filtered: &mut FilteredMidi,
     out_params: &mut ParameterChanges,
 ) {
     for event in midi_events {
-        let mapped = midi_to_mapped_controller(event);
+        let mapped = midi_to_mapped_controller(&event.1);
         match mapped {
             Some((channel, controller, value)) => match mapping.lookup(channel, controller) {
                 Some(param_id) => {
@@ -231,8 +232,7 @@ pub(crate) fn route_cc_events(
                     // keeps the latest value in time, the host's or the CC's
                     // (`PointBuf::push_or_replace_last`), counted in the
                     // set's `points_overflowed`.
-                    let _ =
-                        out_params.add_change(param_id.into(), event.frame_offset as i32, value);
+                    let _ = out_params.add_change(param_id.into(), event.0.get() as i32, value);
                 }
                 // Mappable message but no mapping for this slot — keep it as a
                 // MIDI event so the plugin can still react.
@@ -458,7 +458,7 @@ impl CcRoute {
     /// same lossless path the event list's encoding uses for events.
     pub(crate) fn route(
         &mut self,
-        midi_events: &[MidiEvent],
+        midi_events: &[(Offset, Ump)],
         param_changes: Option<&ParameterChanges>,
     ) -> Option<(&FilteredMidi, &ParameterChanges)> {
         let Self {

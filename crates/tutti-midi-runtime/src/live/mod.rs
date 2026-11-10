@@ -2,7 +2,7 @@
 //! one. Inside the graph MIDI travels on event
 //! ports; these are the nodes at its border.
 //!
-//! - [`MidiInputNode`] polls a [`MidiIn`](tutti_midi_types::MidiIn) (the
+//! - [`MidiInputNode`] polls a [`MidiIn`](crate::MidiIn) (the
 //!   hardware ports), translates, and sends each event out of its channel's
 //!   port: routing by channel is which ports a listener is wired to.
 //! - [`MidiQueueNode`] sends what a control thread pushes (a keyboard).

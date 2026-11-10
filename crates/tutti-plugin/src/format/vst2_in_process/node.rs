@@ -32,14 +32,12 @@ use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
     Status,
 };
-use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, Samples};
-use tutti_ump::Ump;
 
 use super::client::{InProcessVst2Client, drive_f32};
 use crate::host::node::{DeliveryCounters, ParamDeliveryStats, PluginMeter, param_input};
-use crate::protocol::Features;
+use crate::protocol::{Features, WireMidi};
 
 /// The most channels a block hands the plugin (the stack tables `process`
 /// builds from its `Io`). A wider plugin's channels past it read silence and
@@ -122,11 +120,8 @@ impl Node for InProcessVst2Client {
             &mut self.segments,
             &mut self.params,
             |e, _| match e.kind {
-                EventKind::Midi(Ump(data)) => {
-                    let event = MidiEvent {
-                        frame_offset: e.offset.get(),
-                        data,
-                    };
+                EventKind::Midi(ump) => {
+                    let event = WireMidi::at(e.offset, ump);
                     midi_dropped += intake.push_displacing(midi, event);
                 }
                 // VST 2.4 has no chord or scale event; the walk keeps the
@@ -202,13 +197,13 @@ impl Node for InProcessVst2Client {
             self.intake.lost();
         }
         if sends {
-            tutti_plugin_types::insertion_sort_by_key(&mut out_events, |e| e.frame_offset);
+            tutti_plugin_types::insertion_sort_by_key(&mut out_events, |e| e.offset);
             let writer = io.event_out(0);
             let block = Samples(size);
             for e in &out_events {
-                let at = (e.frame_offset as usize).min(size - 1);
+                let at = (e.offset as usize).min(size - 1);
                 if let Some(at) = Offset::new(at, block) {
-                    let _ = writer.push(Event::midi(at, e.data));
+                    let _ = writer.push(Event::midi(at, e.ump.0));
                 }
             }
         }
@@ -463,16 +458,13 @@ mod owed_tests {
     /// A 60-byte SysEx's ten packets, then a 12-byte one's two, all on
     /// group 1, as graph events at frame 0.
     fn dumps() -> (Vec<Event>, Vec<Event>) {
-        use tutti_midi_types::ump::MidiEvent;
         use tutti_ump::MidiGroup;
         let packets = |len: usize| {
             let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
             let mut out = Vec::new();
-            MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+            tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
             let at = Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block");
-            out.iter()
-                .map(|e| Event::midi(at, e.data))
-                .collect::<Vec<_>>()
+            out.iter().map(|e| Event::midi(at, e.0)).collect::<Vec<_>>()
         };
         (packets(60), packets(12))
     }

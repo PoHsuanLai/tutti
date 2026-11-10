@@ -5,16 +5,31 @@
 //! Here, not in the host's `src/`, because the plugin's side of these calls is
 //! `unsafe` COM and the host crate forbids `unsafe`.
 
-use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, SysExStep};
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_midi_types::{sysex7_fragments, sysex7_payload};
+use tutti_plugin_types::{
+    MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, SysExStep, WireMidi,
+};
+use tutti_types::Samples;
+use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_ffi::{
     EVENT_CAPACITY, EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena,
 };
-use tutti_vst3_host::{InputEvents, MidiEvent, Stager, Utf16Chord, drain_midi};
+use tutti_vst3_host::{InputEvents, Stager, Utf16Chord, drain_midi};
 use vst3::Steinberg::Vst::{Event, IEventList, IEventListTrait};
 use vst3::Steinberg::{kResultFalse, kResultOk};
 
-fn midi_only(midi: &[MidiEvent]) -> InputEvents<'_> {
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
+
+fn midi_only(midi: &[(Offset, Ump)]) -> InputEvents<'_> {
     InputEvents {
         midi,
         ..Default::default()
@@ -45,11 +60,11 @@ fn data_sysex(sample_offset: i32, bytes: &[u8]) -> Event {
 }
 
 /// Reassembles `events` into the complete messages they carry.
-fn reassembled(events: &[MidiEvent]) -> Vec<Vec<u8>> {
+fn reassembled(events: &[WireMidi]) -> Vec<Vec<u8>> {
     let mut asm = tutti_plugin_types::SysExAssembler::reserved();
     let mut done = Vec::new();
     for e in events {
-        if let SysExStep::Complete(r) = asm.push(e) {
+        if let SysExStep::Complete(r) = asm.push(&e.ump) {
             done.push(asm.message(r).to_vec());
         }
     }
@@ -79,7 +94,7 @@ fn a_sysex_from_the_plugin_reaches_the_host_whole() {
         let mut pool = RtMidiEvents::new();
         drain_midi(&list, &mut pool);
         assert!(!pool.is_overflowed());
-        assert!(pool.iter().all(|m| m.frame_offset == 11));
+        assert!(pool.iter().all(|m| m.offset == 11));
         assert_eq!(reassembled(pool.as_slice()), vec![message], "{len} bytes");
         assert_eq!(list.dropped(), 0);
     }
@@ -167,7 +182,7 @@ fn a_sysex_is_detected_by_its_data_type() {
     let mut pool = RtMidiEvents::new();
     drain_midi(&list, &mut pool);
     assert_eq!(pool.len(), 1);
-    assert!(pool.as_slice()[0].sysex7_payload().is_none());
+    assert!(sysex7_payload(&pool.as_slice()[0].ump).is_none());
 }
 
 /// **A SysEx the host's MIDI pool has no room for is dropped whole and
@@ -339,8 +354,10 @@ fn sysex_read_by_plugin(list: &EventList) -> Vec<(i32, Vec<u8>)> {
 /// without the room check → a partial bank in the full list → fails.
 #[test]
 fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
-    let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085))
-        .with_frame_offset(5);
+    let pc = (
+        at(5),
+        midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+    );
     let list = EventList::input();
     let mut stager = Stager::default();
     assert_no_alloc::assert_no_alloc(|| stager.stage(&list, &midi_only(&[pc])));
@@ -366,7 +383,10 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
     );
 
     // Room for two: nothing of the bank is staged, and all three are counted.
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let note = (
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+    );
     let mut midi = vec![note; EVENT_CAPACITY - 2];
     midi.push(pc);
     let full = EventList::input();
@@ -376,12 +396,10 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
     assert_eq!(full.dropped(), 3);
 }
 
-fn sysex_packets(payload: &[u8], frame: u32) -> Vec<MidiEvent> {
+fn sysex_packets(payload: &[u8], frame: u32) -> Vec<(Offset, Ump)> {
     let mut out = Vec::new();
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
-    out.into_iter()
-        .map(|e| e.with_frame_offset(frame))
-        .collect()
+    sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+    out.into_iter().map(|ump| (at(frame), ump)).collect()
 }
 
 fn framed(payload: &[u8]) -> Vec<u8> {
@@ -406,10 +424,13 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
     let body = sysex_payload(100);
     let mut midi = sysex_packets(&body, 5);
     let last = midi.len() - 1;
-    midi[last].frame_offset = 9;
+    midi[last].0 = at(9);
     midi.insert(
         3,
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(7),
+        (
+            at(7),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
     );
     let list = EventList::input();
     let mut stager = Stager::default();

@@ -15,15 +15,15 @@
 
 use tutti_midi_runtime::{CiInitiator, Sysex7PacketReassembler};
 use tutti_midi_types::ci::{DiscoveryData, Muid, NO_FUNCTION_BLOCK, ci_to_sysex7, sysex7_to_ci};
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::sysex7_payload;
 use tutti_ump::{Message, Midi1Parser, MidiGroup, Ump};
 
 /// The payload bytes of SysEx7 packets, in order.
-fn payload_of(packets: &[MidiEvent]) -> Vec<u8> {
+fn payload_of(packets: &[Ump]) -> Vec<u8> {
     packets
         .iter()
         .flat_map(|packet| {
-            let (_status, bytes, n) = packet.sysex7_payload().expect("a SysEx7 packet");
+            let (_status, bytes, n) = sysex7_payload(packet).expect("a SysEx7 packet");
             bytes.into_iter().take(n)
         })
         .collect()
@@ -62,11 +62,11 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
 
     // Parse the bytes, then reassemble the packets.
     let mut parser = Midi1Parser::new(MidiGroup::FIRST);
-    let fragments: Vec<MidiEvent> = parser
+    let fragments: Vec<Ump> = parser
         .feed_all(&wire)
         .map(|message| {
             assert!(matches!(message, Message::Sysex7(..)));
-            MidiEvent::from_ump(0, Ump::from(message).words())
+            Ump::from(message)
         })
         .collect();
 

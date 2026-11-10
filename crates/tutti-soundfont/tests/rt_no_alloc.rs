@@ -29,10 +29,12 @@ use assert_no_alloc::AllocDisabler;
 mod support;
 
 use support::Hand;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::SampleRate;
+use tutti_types::{SampleRate, Samples};
 use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Data128, Flex, Message, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Stream, Sysex7Packet, SysexStatus, System, U7, U14, Ump, Utility,
@@ -59,13 +61,24 @@ fn unit() -> Hand {
     Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).expect("create SoundFontUnit"))
 }
 
-fn note_on(key: u8, offset: u32) -> MidiEvent {
-    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, key, 100)
-        .with_frame_offset(offset)
+/// `offset` frames into a block of [`Hand`]'s length.
+fn at(offset: u32) -> Offset {
+    Offset::new(offset as usize, Samples(64)).expect("inside the block")
 }
 
-fn note_off(key: u8, offset: u32) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0).with_frame_offset(offset)
+fn note_on(key: u8, offset: u32) -> (Offset, Ump) {
+    let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+    (
+        at(offset),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, velocity),
+    )
+}
+
+fn note_off(key: u8, offset: u32) -> (Offset, Ump) {
+    (
+        at(offset),
+        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0),
+    )
 }
 
 #[test]
@@ -86,7 +99,7 @@ fn soundfont_process_idle_is_allocation_free() {
 #[test]
 fn soundfont_process_with_active_voices_is_allocation_free() {
     let mut unit = unit();
-    unit.queue_midi(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
+    unit.queue_midi_at(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
 
     for _ in 0..32 {
         unit.block(64);
@@ -111,11 +124,11 @@ fn soundfont_process_with_events_inside_block_is_allocation_free() {
     let mut unit = unit();
 
     // Warm up every lazily-sized buffer at full occupancy first.
-    unit.queue_midi(&[note_on(48, 0), note_on(60, 16), note_on(72, 48)]);
+    unit.queue_midi_at(&[note_on(48, 0), note_on(60, 16), note_on(72, 48)]);
     for _ in 0..64 {
         unit.block(64);
     }
-    unit.queue_midi(&[note_off(48, 0), note_off(60, 0), note_off(72, 0)]);
+    unit.queue_midi_at(&[note_off(48, 0), note_off(60, 0), note_off(72, 0)]);
     for _ in 0..256 {
         unit.block(64);
     }
@@ -125,9 +138,9 @@ fn soundfont_process_with_events_inside_block_is_allocation_free() {
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..200 {
             if i % 2 == 0 {
-                unit.queue_midi(&[note_on(60, 0), note_on(64, 24), note_on(67, 63)]);
+                unit.queue_midi_at(&[note_on(60, 0), note_on(64, 24), note_on(67, 63)]);
             } else {
-                unit.queue_midi(&[note_off(60, 0), note_off(64, 24), note_off(67, 63)]);
+                unit.queue_midi_at(&[note_off(60, 0), note_off(64, 24), note_off(67, 63)]);
             }
             unit.block(64);
         }
@@ -145,19 +158,19 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
 
     // One event per frame of the block, alternating on and off across keys so
     // the voice collection churns rather than retriggering one slot.
-    let on: Vec<MidiEvent> = (0..64u32)
+    let on: Vec<(Offset, Ump)> = (0..64u32)
         .map(|f| note_on(36 + (f % 24) as u8, f))
         .collect();
-    let off: Vec<MidiEvent> = (0..64u32)
+    let off: Vec<(Offset, Ump)> = (0..64u32)
         .map(|f| note_off(36 + (f % 24) as u8, f))
         .collect();
 
     for _ in 0..8 {
-        unit.queue_midi(&on);
+        unit.queue_midi_at(&on);
         for _ in 0..16 {
             unit.block(64);
         }
-        unit.queue_midi(&off);
+        unit.queue_midi_at(&off);
         for _ in 0..64 {
             unit.block(64);
         }
@@ -165,11 +178,11 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..64 {
-            unit.queue_midi(&on);
+            unit.queue_midi_at(&on);
             for _ in 0..8 {
                 unit.block(64);
             }
-            unit.queue_midi(&off);
+            unit.queue_midi_at(&off);
             for _ in 0..32 {
                 unit.block(64);
             }
@@ -182,7 +195,7 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
 #[test]
 fn soundfont_one_frame_blocks_are_allocation_free() {
     let mut unit = unit();
-    unit.queue_midi(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
+    unit.queue_midi_at(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
 
     for _ in 0..256 {
         unit.tick();
@@ -213,10 +226,7 @@ fn soundfont_every_decoded_message_is_allocation_free() {
     };
     let note = NoteNumber::new(60).unwrap();
     let u7 = |v| U7::new(v).unwrap();
-    let ev = |m: Message| MidiEvent {
-        frame_offset: 0,
-        data: Ump::from(m).0,
-    };
+    let ev = |m: Message| Ump::from(m);
     let m1 = |v| ev(Message::Midi1(address, v));
     let m2 = |v| ev(Message::Midi2(address, v));
     let events = [
@@ -333,10 +343,7 @@ fn soundfont_every_decoded_message_is_allocation_free() {
         ev(Message::Flex(MidiGroup::FIRST, Flex::SetTempo(500_000))),
         ev(Message::Stream(Stream::StartOfClip)),
         // A reserved message type: `decode` refuses it.
-        MidiEvent {
-            frame_offset: 0,
-            data: [0x6000_0000, 0, 0, 0],
-        },
+        Ump([0x6000_0000, 0, 0, 0]),
     ];
     for _ in 0..4 {
         unit.queue_midi(&events);
@@ -380,26 +387,25 @@ fn two_drums_of_a_class(font: &SoundFont) -> (u8, u8) {
         .expect("two drums share a class in this font")
 }
 
-fn cc(channel: u8, controller: u8, value: u8) -> MidiEvent {
-    MidiEvent {
-        frame_offset: 0,
-        data: Ump::from(Message::Midi1(
-            Address {
-                group: MidiGroup::FIRST,
-                channel: MidiChannel::new(channel).unwrap(),
-            },
-            Voice1::ControlChange {
-                controller: CCNumber::new(controller).unwrap(),
-                value: U7::new(value).unwrap(),
-            },
-        ))
-        .0,
-    }
+fn cc(channel: u8, controller: u8, value: u8) -> Ump {
+    Ump::from(Message::Midi1(
+        Address {
+            group: MidiGroup::FIRST,
+            channel: MidiChannel::new(channel).unwrap(),
+        },
+        Voice1::ControlChange {
+            controller: CCNumber::new(controller).unwrap(),
+            value: U7::new(value).unwrap(),
+        },
+    ))
 }
 
-fn drum(key: u8, offset: u32) -> MidiEvent {
-    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::of(9), key, 100)
-        .with_frame_offset(offset)
+fn drum(key: u8, offset: u32) -> (Offset, Ump) {
+    let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+    (
+        at(offset),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::of(9), key, velocity),
+    )
 }
 
 /// The note logic's paths allocate nothing: a pool that is full and gives up a
@@ -421,28 +427,28 @@ fn soundfont_note_logic_is_allocation_free() {
     let settings = Settings::new(SampleRate::SR_44K1).with_polyphony(NonZeroUsize::new(8).unwrap());
     let mut unit = Hand::new(SoundFontUnit::new(font, &settings).expect("create SoundFontUnit"));
 
-    let ons: Vec<MidiEvent> = (0..24u32).map(|f| note_on(36 + f as u8, f * 2)).collect();
-    let offs: Vec<MidiEvent> = (0..24u32).map(|f| note_off(36 + f as u8, f * 2)).collect();
+    let ons: Vec<(Offset, Ump)> = (0..24u32).map(|f| note_on(36 + f as u8, f * 2)).collect();
+    let offs: Vec<(Offset, Ump)> = (0..24u32).map(|f| note_off(36 + f as u8, f * 2)).collect();
     let round = |unit: &mut Hand| {
         // Every key struck over a full pool, and one of them again.
-        unit.queue_midi(&ons);
-        unit.queue_midi(&[note_on(40, 60)]);
+        unit.queue_midi_at(&ons);
+        unit.queue_midi_at(&[note_on(40, 60)]);
         unit.block(64);
         // The pedals down with notes under them, then the notes off.
         unit.queue_midi(&[cc(0, 64, 127), cc(0, 66, 127)]);
         unit.block(64);
-        unit.queue_midi(&offs);
+        unit.queue_midi_at(&offs);
         unit.block(64);
         unit.queue_midi(&[cc(0, 64, 0), cc(0, 66, 0)]);
         unit.block(64);
         // An exclusive class: the second drum ends the first.
-        unit.queue_midi(&[drum(open, 0), drum(closed, 8)]);
+        unit.queue_midi_at(&[drum(open, 0), drum(closed, 8)]);
         unit.block(64);
         // The panics and the reset.
-        unit.queue_midi(&ons);
+        unit.queue_midi_at(&ons);
         unit.queue_midi(&[cc(0, 123, 0)]);
         unit.block(64);
-        unit.queue_midi(&ons);
+        unit.queue_midi_at(&ons);
         unit.queue_midi(&[cc(0, 120, 0), cc(0, 121, 0)]);
         unit.block(64);
         for _ in 0..8 {
@@ -457,7 +463,7 @@ fn soundfont_note_logic_is_allocation_free() {
             round(&mut unit);
         }
         for _ in 0..20 {
-            unit.queue_midi(&ons);
+            unit.queue_midi_at(&ons);
             unit.block(64);
             tutti_graph::Node::reset(&mut *unit);
         }

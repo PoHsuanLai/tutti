@@ -4,7 +4,7 @@ use super::ClapProcessor;
 use super::config::AudioScratch;
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
-use crate::types::{ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo};
+use crate::types::{ClapNoteExpression, ParameterChanges, TransportInfo};
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
     CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
@@ -15,8 +15,11 @@ use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL, clap_process_status};
 use std::sync::atomic::Ordering;
 use tutti_clap_ffi::{Planar, ProcessCall, ProcessError};
+use tutti_graph::Offset;
 use tutti_plugin_types::AudioBufferMut;
+use tutti_plugin_types::WireMidi;
 use tutti_plugin_types::is_usable;
+use tutti_ump::Ump;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
 /// non-RT consumers (tests, offline render) via
@@ -25,7 +28,7 @@ use tutti_plugin_types::is_usable;
 #[derive(Debug, Clone, Default)]
 pub struct ProcessOutput {
     /// MIDI the plugin emitted during the block, in event order.
-    pub midi_events: Vec<MidiEvent>,
+    pub midi_events: Vec<WireMidi>,
     /// Parameter values the plugin changed itself, e.g. from its own GUI.
     pub param_changes: ParameterChanges,
     /// Note expressions the plugin emitted.
@@ -38,7 +41,7 @@ pub struct ProcessOutput {
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessOutputRef<'a> {
     /// MIDI the plugin emitted during the block, in event order.
-    pub midi_events: &'a [MidiEvent],
+    pub midi_events: &'a [WireMidi],
     /// Parameter values the plugin changed itself, e.g. from its own GUI.
     pub param_changes: &'a ParameterChanges,
     /// Note expressions the plugin emitted.
@@ -62,12 +65,13 @@ impl<'a> ProcessOutputRef<'a> {
 ///
 /// ```no_run
 /// # use tutti_ump::{MidiChannel, MidiGroup};
+/// # use tutti_graph::Offset;
 /// # use tutti_plugin_types::AudioBufferMut;
-/// # use tutti_clap_host::{ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
+/// # use tutti_clap_host::{ClapProcessor, ClapProcessContext, TransportInfo};
 /// # fn ex(plugin: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)
 /// # -> tutti_clap_host::Result<()> {
 /// let transport = TransportInfo::default().with_tempo(120.0);
-/// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+/// let midi = [(Offset::ZERO, tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384))];
 /// plugin.process(buffer, &ClapProcessContext {
 ///     midi: &midi,
 ///     transport: Some(&transport),
@@ -79,7 +83,7 @@ impl<'a> ProcessOutputRef<'a> {
 pub struct ClapProcessContext<'a> {
     /// MIDI to deliver during this block. Sorted by time before being handed
     /// to the plugin, so the caller need not pre-sort.
-    pub midi: &'a [MidiEvent],
+    pub midi: &'a [(Offset, Ump)],
     /// Parameter changes to apply during this block, as normalized `0..=1`
     /// values. They are denormalized against the plugin's declared ranges on
     /// the way in; changes for an id the plugin never described are dropped
@@ -127,12 +131,13 @@ impl ClapProcessor {
     ///
     /// ```no_run
     /// # use tutti_ump::{MidiChannel, MidiGroup};
+    /// # use tutti_graph::Offset;
     /// # use tutti_plugin_types::AudioBufferMut;
-    /// # use tutti_clap_host::{ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
+    /// # use tutti_clap_host::{ClapProcessor, ClapProcessContext, TransportInfo};
     /// # fn ex(active: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)
     /// # -> tutti_clap_host::Result<()> {
     /// let transport = TransportInfo::default().with_tempo(120.0);
-    /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+    /// let midi = [(Offset::ZERO, tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384))];
     /// active.process(buffer, &ClapProcessContext {
     ///     midi: &midi,
     ///     transport: Some(&transport),
@@ -268,7 +273,7 @@ impl ClapProcessor {
         &mut self,
         audio: Planar<'_, '_>,
         frames: usize,
-        midi_events: &[MidiEvent],
+        midi_events: &[(Offset, Ump)],
         param_changes: &ParameterChanges,
         note_expressions: &[ClapNoteExpression],
         transport: Option<&TransportInfo>,

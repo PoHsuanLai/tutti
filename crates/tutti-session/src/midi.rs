@@ -16,13 +16,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use tutti_graph::Offset;
 use tutti_midi_runtime::{
     MidiClipControls, MidiClipNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
     TimedMidiEvent, compile_routes,
 };
-use tutti_midi_types::ump::MidiEvent;
-use tutti_types::NodeKey;
-use tutti_ump::MidiChannel;
+use tutti_types::{NodeKey, Samples};
+use tutti_ump::{MidiChannel, Ump};
 
 use crate::graph::{Feeder, Graph};
 use crate::{Error, EventSource, MidiNodes, Result};
@@ -46,7 +46,7 @@ const DRAIN_CHUNK: usize = 256;
 /// `#[cfg]`: a Linux ALSA seq-UMP output stamps exactly as a CoreMIDI one
 /// does.
 pub struct UmpOut {
-    sink: Box<dyn tutti_midi_types::MidiOut>,
+    sink: Box<dyn tutti_midi_runtime::MidiOut>,
     stream: tutti_midi_runtime::JrStream,
     /// Whether to JR-stamp. Separate from "is there an output" on purpose:
     /// stamping off must still *send*, just without timestamps. Folding the
@@ -56,7 +56,7 @@ pub struct UmpOut {
     /// once per block and the result is only borrowed, straight to
     /// `MidiOut::queue`. `JrStream::stamp` clears it on entry, so nothing
     /// carries between blocks.
-    stamped: Vec<MidiEvent>,
+    stamped: Vec<(Offset, Ump)>,
 }
 
 impl core::fmt::Debug for UmpOut {
@@ -80,7 +80,7 @@ impl UmpOut {
     /// §7.2.2.3 has a receiver that has seen no JR Clock render messages "as
     /// soon as possible", discarding the timing entirely.
     pub fn new(
-        sink: Box<dyn tutti_midi_types::MidiOut>,
+        sink: Box<dyn tutti_midi_runtime::MidiOut>,
         sample_rate: impl Into<tutti_types::SampleRate>,
     ) -> Self {
         let sample_rate = sample_rate.into();
@@ -112,7 +112,7 @@ impl UmpOut {
     /// cadence advances with the *block*, and this entry point can only
     /// advance by the events it was handed, so a silent stream never
     /// clocks. With stamping off the events go out unchanged.
-    pub fn send_stamped(&mut self, events: &[MidiEvent]) {
+    pub fn send_stamped(&mut self, events: &[(Offset, Ump)]) {
         if !self.stamping {
             self.send_all(events);
             return;
@@ -129,7 +129,7 @@ impl UmpOut {
     /// long the block was so the JR Clock cadence keeps running through
     /// silence (§7.2.2.1: the cadence is a property of elapsed time, not of
     /// traffic).
-    pub fn send_stamped_span(&mut self, events: &[MidiEvent], block_samples: u64) {
+    pub fn send_stamped_span(&mut self, events: &[(Offset, Ump)], block_samples: u64) {
         if !self.stamping {
             self.send_all(events);
             return;
@@ -140,7 +140,7 @@ impl UmpOut {
         self.stamped = buf;
     }
 
-    fn send_all(&mut self, events: &[MidiEvent]) {
+    fn send_all(&mut self, events: &[(Offset, Ump)]) {
         // One `queue` for the batch: a backend may pack several UMP
         // messages into one packet.
         self.sink.queue(events);
@@ -206,7 +206,7 @@ pub struct MidiOutRouter<'a> {
 impl MidiOutRouter<'_> {
     /// Routes a batch of drained events to the open output. An event with
     /// no output is dropped (the ring must not back up), counted first.
-    pub fn route(&mut self, events: &[MidiEvent]) {
+    pub fn route(&mut self, events: &[(Offset, Ump)]) {
         match self.out.as_mut() {
             Some(out) => out.send_stamped(events),
             None => {
@@ -224,22 +224,38 @@ impl MidiOutRouter<'_> {
 /// and whatever else is wired to it) and a host's own outbound mailbox push
 /// into a mailbox, and this reads the paired receiver off the audio thread.
 ///
-/// Each drained batch is rebased onto its first event (every `frame_offset`
-/// less the first's, wrapping), so what the stamper reads is the events'
-/// spacing: the hardware out stamps each with its frame on the graph's
-/// clock, which means nothing to a stream stamped batch by batch.
+/// Each drained batch is rebased onto its first event (every stamp less the
+/// first's, wrapping), so what the stamper reads is the events' spacing: the
+/// hardware out stamps each with its frame on the graph's clock, which means
+/// nothing to a stream stamped batch by batch. The batch is the "block" the
+/// sink delivers: each rebased stamp becomes an [`Offset`] against the batch's
+/// own span (the largest rebased stamp plus one), so an offset is the event's
+/// spacing inside its batch.
 pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRouter<'_>) {
-    let mut buf = [MidiEvent::noop(); DRAIN_CHUNK];
+    // Both on the stack, as the one buffer was before: this runs every frame.
+    let mut buf = [(0u32, Ump([0; 4])); DRAIN_CHUNK];
+    let mut batch = [(Offset::ZERO, Ump([0; 4])); DRAIN_CHUNK];
     loop {
         let n = receiver.poll_into(&mut buf);
         if n == 0 {
             break;
         }
-        let base = buf[0].frame_offset;
-        for e in &mut buf[..n] {
-            e.frame_offset = e.frame_offset.wrapping_sub(base);
+        let base = buf[0].0;
+        let span = buf[..n]
+            .iter()
+            .map(|e| e.0.wrapping_sub(base))
+            .max()
+            .map_or(1, |m| u64::from(m) + 1);
+        let mut len = 0;
+        for &(stamp, ump) in &buf[..n] {
+            // Always `Some`: every rebased stamp is below the span.
+            if let Some(at) = Offset::new(stamp.wrapping_sub(base) as usize, Samples(span as usize))
+            {
+                batch[len] = (at, ump);
+                len += 1;
+            }
         }
-        router.route(&buf[..n]);
+        router.route(&batch[..len]);
         if n < DRAIN_CHUNK {
             break;
         }
@@ -849,8 +865,8 @@ mod tests {
     /// Counts what reached the wire. Stands in for a real OS endpoint so
     /// these tests run on every platform.
     struct CountingSink(Arc<AtomicUsize>);
-    impl tutti_midi_types::MidiOut for CountingSink {
-        fn queue(&self, events: &[MidiEvent]) -> usize {
+    impl tutti_midi_runtime::MidiOut for CountingSink {
+        fn queue(&self, events: &[(Offset, Ump)]) -> usize {
             self.0.fetch_add(events.len(), Ordering::SeqCst);
             events.len()
         }
@@ -863,9 +879,11 @@ mod tests {
         (out, count)
     }
 
-    fn note(offset: u32) -> MidiEvent {
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
-            .with_frame_offset(offset)
+    fn note(offset: u32) -> (Offset, Ump) {
+        (
+            Offset::new(offset as usize, Samples(512)).unwrap(),
+            tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        )
     }
 
     /// Both drains stamp through one stream, so the origin keeps climbing

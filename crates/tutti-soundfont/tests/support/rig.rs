@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use super::{BLOCK, Hand};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
@@ -35,18 +34,14 @@ pub fn timgm6mb() -> Arc<SoundFont> {
 }
 
 /// A MIDI 1.0 channel voice message on group 0.
-pub fn m1(channel: MidiChannel, voice: Voice1) -> MidiEvent {
-    MidiEvent {
-        frame_offset: 0,
-        data: Ump::from(Message::Midi1(
-            Address {
-                group: MidiGroup::FIRST,
-                channel,
-            },
-            voice,
-        ))
-        .0,
-    }
+pub fn m1(channel: MidiChannel, voice: Voice1) -> Ump {
+    Ump::from(Message::Midi1(
+        Address {
+            group: MidiGroup::FIRST,
+            channel,
+        },
+        voice,
+    ))
 }
 
 /// A unit over a font, with the messages of the old synthesizer's surface.

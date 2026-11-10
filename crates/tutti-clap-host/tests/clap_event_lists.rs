@@ -19,12 +19,23 @@ use clap_sys::events::{
 use tutti_clap_ffi::{
     EventSink, EventSource, header_size, input_raw_for_test, output_raw_for_test,
 };
-use tutti_clap_host::{
-    ClapEvent, EventList, InputEventList, MidiEvent, NoteExpressionType, OutputEventList,
-};
+use tutti_clap_host::{ClapEvent, EventList, InputEventList, NoteExpressionType, OutputEventList};
+use tutti_graph::Offset;
 use tutti_plugin_types::{
-    ParameterChanges, ParameterQueue, RtMidiEvents, SysExAssembler, SysExStep, unframed,
+    ParameterChanges, ParameterQueue, RtMidiEvents, SysExAssembler, SysExStep, WireMidi, unframed,
 };
+use tutti_types::Samples;
+use tutti_ump::Ump;
+
+/// The packet of `words`, zero-padded to four, `k` frames into a 100-frame block.
+fn packet(k: u32, words: &[u32]) -> (Offset, Ump) {
+    let mut w = [0u32; 4];
+    w[..words.len()].copy_from_slice(words);
+    (
+        Offset::new(k as usize, Samples(100)).expect("inside the block"),
+        Ump(w),
+    )
+}
 
 /// The raw output list of `output`, valid while `output` is alive and unmoved.
 fn raw_out(output: &mut OutputEventList) -> *const clap_output_events {
@@ -489,8 +500,9 @@ fn test_output_events_push_sysex_with_data() {
     // drains as UMP SysEx7 packets at the plugin's frame offset.
     let drained = output.to_midi_events();
     assert_eq!(drained.len(), 1, "a 4-byte payload is one packet");
-    assert_eq!(drained[0].frame_offset, 25);
-    let (status, bytes, n) = drained[0].sysex7_payload().expect("a SysEx7 packet");
+    assert_eq!(drained[0].offset, 25);
+    let (status, bytes, n) =
+        tutti_midi_types::sysex7_payload(&drained[0].ump).expect("a SysEx7 packet");
     assert_eq!(status, tutti_midi_types::ump::SYSEX7_STATUS_SINGLE);
     assert_eq!(&bytes[..n], &sysex_data[1..sysex_data.len() - 1]);
 }
@@ -526,12 +538,12 @@ fn a_long_sysex_from_the_plugin_drains_whole() {
             &sysex as *const clap_event_midi_sysex as *const clap_event_header,
         ));
     }
-    let reassemble = |events: &[MidiEvent]| {
+    let reassemble = |events: &[WireMidi]| {
         let mut asm = SysExAssembler::reserved();
         let mut done = Vec::new();
         for e in events {
-            assert_eq!(e.frame_offset, 7);
-            if let SysExStep::Complete(r) = asm.push(e) {
+            assert_eq!(e.offset, 7);
+            if let SysExStep::Complete(r) = asm.push(&e.ump) {
                 done.push(asm.message(r).to_vec());
             }
         }
@@ -748,8 +760,8 @@ fn input_event_pointers_have_the_alignment_their_payload_needs() {
 fn a_midi1_note_on_at_velocity_zero_reaches_the_plugin_as_a_release_at_half() {
     let mut list = InputEventList::new();
     list.reserve(4);
-    list.add_midi(&MidiEvent::from_ump(7, &[0x2091_3C00]));
-    list.add_midi(&MidiEvent::from_ump(8, &[0x2091_3C64]));
+    list.add_midi(&packet(7, &[0x2091_3C00]));
+    list.add_midi(&packet(8, &[0x2091_3C64]));
     let raw = raw_in(&list);
     assert_eq!(unsafe { ((*raw).size.unwrap())(raw) }, 2);
 

@@ -10,12 +10,15 @@
 //! `AudioBlock` and builds the wire `BridgeMessage::AudioProcessed` from the
 //! resulting `AudioOutput`.
 
+use tutti_graph::Offset;
 use tutti_plugin::Result;
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent, MidiEventVec,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
-    PluginInstance, ProcessContext, ProcessOutput, SampleFormat, ScaleChanges, TransportInfo,
+    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MIDI_STACK_CAPACITY,
+    MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
+    ParameterChanges, PluginInstance, ProcessContext, ProcessOutput, SampleFormat, Samples,
+    ScaleChanges, TransportInfo, WireMidi,
 };
+use tutti_ump::Ump;
 
 /// Maximum channel count handled by the audio pipeline's stack-array
 /// slice tables. 16 covers every realistic plugin layout (most are mono
@@ -153,7 +156,10 @@ pub(crate) struct AudioBlock<'a> {
     /// buffers and every slab read/write below are sized from it.
     pub num_samples: usize,
     /// MIDI arriving with this block, already in the host's event order.
-    pub midi: &'a [MidiEvent],
+    ///
+    /// Raw wire offsets: they become `Offset`s of this block's `num_samples`
+    /// where the plugin's context is built ([`block_midi`]).
+    pub midi: &'a [WireMidi],
     /// The full-fidelity extras, or `None` when the host sent the compact
     /// audio-only message shape.
     pub extras: Option<ProcessExtras<'a>>,
@@ -353,7 +359,9 @@ impl AudioPipeline {
             // here would silently drop automation for any plugin that leaves that
             // optional flag unset — host says send, server throws it away.
             let features = plugin.loaded().features;
-            let mut ctx = ProcessContext::new().midi(block.midi);
+            let mut timed = [(Offset::ZERO, Ump([0; 4])); MIDI_STACK_CAPACITY];
+            let timed_len = block_midi(block.midi, num_samples, &mut timed);
+            let mut ctx = ProcessContext::new().midi(&timed[..timed_len]);
             if let Some(ref ex) = block.extras {
                 ctx = ctx.params(ex.param_changes);
                 if features.contains(Features::NOTE_EXPRESSION) {
@@ -518,6 +526,35 @@ impl AudioPipeline {
             })
         })
     }
+}
+
+/// The wire's MIDI as the `(Offset, Ump)` list of a block of `frames`, into
+/// `out`; returns how many it wrote. The host never sends an offset outside
+/// its block, and an `Offset` cannot hold one: a stray one is clamped to the
+/// block's last frame (the one behaviour difference from passing it through).
+/// A block of no frames holds no offset, so its MIDI could not be placed and
+/// would be dropped; tutti's host never sends one (a graph block holds at least
+/// one frame, and every chunk the host ships is made of them), and a debug
+/// build says so. Allocates nothing.
+fn block_midi(
+    midi: &[WireMidi],
+    frames: usize,
+    out: &mut [(Offset, Ump); MIDI_STACK_CAPACITY],
+) -> usize {
+    debug_assert!(
+        frames > 0 || midi.is_empty(),
+        "a process block of 0 frames carries MIDI it cannot place"
+    );
+    let block = Samples(frames);
+    let last = frames.saturating_sub(1);
+    let mut n = 0;
+    for e in midi.iter().take(MIDI_STACK_CAPACITY) {
+        if let Some(at) = Offset::new((e.offset as usize).min(last), block) {
+            out[n] = (at, e.ump);
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Counts a block the plugin failed, and says so on the first and then on every
@@ -1373,9 +1410,12 @@ mod tests {
         const POINTS: usize = 40;
 
         // The event *values* are irrelevant here — only how many there are, and
-        // that `MidiEvent` is `Copy` so the copy is a memcpy.
-        let emitted_midi: Vec<MidiEvent> = (0..EVENTS)
-            .map(|i| MidiEvent::from_ump(i as u32, &[0x2090_3C40]))
+        // that `WireMidi` is `Copy` so the copy is a memcpy.
+        let emitted_midi: Vec<WireMidi> = (0..EVENTS)
+            .map(|i| WireMidi {
+                offset: i as u32,
+                ump: Ump([0x2090_3C40, 0, 0, 0]),
+            })
             .collect();
         let mut emitted_params = ParameterChanges::reserved(PARAMS, POINTS);
         for p in 0..PARAMS {

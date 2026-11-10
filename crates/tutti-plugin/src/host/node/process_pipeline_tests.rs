@@ -58,7 +58,7 @@ impl super::batcher::Chunks for MidiEventVec {
             .expect("an emptied list holds a full one");
     }
 
-    fn emit(&mut self, _frame: usize, _event: crate::protocol::MidiEvent) {}
+    fn emit(&mut self, _frame: usize, _event: crate::protocol::WireMidi) {}
 }
 
 /// `CHANNELS` planar channels of `BATCH_SIZE` frames: the buffers the
@@ -1310,7 +1310,7 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
             &mut output.outs(),
             &mut midi_out,
         );
-        stamps.push(midi_out.iter().map(|e| e.data[0]).collect());
+        stamps.push(midi_out.iter().map(|e| e.ump.0[0]).collect());
         wait_for_reply(&bridge, block as u64 + 1, WAIT_BUDGET);
     }
 
@@ -1424,7 +1424,7 @@ fn bridge_with_first_block_stalled(
 /// answers. The reply is the only thing that crosses the socket which the host
 /// consumes at all — audio travels through the slab and is gated on the slot's
 /// own sequence — so this stamp is the only way a test can observe *which block*
-/// an arriving frame belongs to. `frame_offset` is a label here and nothing
+/// an arriving frame belongs to. `offset` is a label here and nothing
 /// interprets it as a position.
 fn stamped_server(
     stall: std::time::Duration,
@@ -1498,9 +1498,9 @@ fn stamped_server(
                             }
                             server_slab.publish_output(seq);
                         }
-                        let midi_out = [crate::protocol::MidiEvent {
-                            frame_offset: 0,
-                            data: [seq as u32, 0, 0, 0],
+                        let midi_out = [crate::protocol::WireMidi {
+                            offset: 0,
+                            ump: tutti_ump::Ump([seq as u32, 0, 0, 0]),
                         }]
                         .into_iter()
                         .collect();
@@ -1547,12 +1547,15 @@ impl super::batcher::Chunks for LossProbe {
     fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
 
     fn payload(&mut self, _frames: usize) -> BlockPayload {
-        let note = crate::protocol::MidiEvent::note_on(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_ump::MidiChannel::FIRST,
-            60,
-            0x8000,
-        );
+        let note = crate::protocol::WireMidi {
+            offset: 0,
+            ump: tutti_fixtures::midi::note_on(
+                tutti_ump::MidiGroup::FIRST,
+                tutti_ump::MidiChannel::FIRST,
+                60,
+                0x8000,
+            ),
+        };
         BlockPayload {
             midi: std::iter::repeat_n(note, self.midi).collect(),
             ..BlockPayload::default()
@@ -1571,7 +1574,7 @@ impl super::batcher::Chunks for LossProbe {
         self.out.clone_from(events);
     }
 
-    fn emit(&mut self, _frame: usize, _event: crate::protocol::MidiEvent) {}
+    fn emit(&mut self, _frame: usize, _event: crate::protocol::WireMidi) {}
 }
 
 /// **A chunk whose audio cannot be staged reports its MIDI lost**, so the
@@ -1667,7 +1670,10 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
     let _lock = exclusive();
     let cut = sysex_fragments(60); // 10 packets
     let next = sysex_fragments(12); // 2 packets
-    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let note = crate::protocol::WireMidi {
+        offset: 0,
+        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+    };
     let (three, four, dropped) = two_stale_blocks([
         cut[..3].to_vec(),
         cut[3..6].to_vec(),
@@ -1703,7 +1709,10 @@ fn a_stale_block_holding_only_a_start_cuts_its_message() {
     let _lock = exclusive();
     let lost = sysex_fragments(12); // a START and an END
     let other = sysex_fragments(20);
-    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let note = crate::protocol::WireMidi {
+        offset: 0,
+        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+    };
     // The `START` in the last stale block: an earlier one's `lost` would
     // cut it anyway.
     let (three, four, dropped) = two_stale_blocks([
@@ -1718,11 +1727,13 @@ fn a_stale_block_holding_only_a_start_cuts_its_message() {
 }
 
 /// `len` payload bytes as SysEx7 packets on group 1.
-fn sysex_fragments(len: usize) -> Vec<crate::protocol::MidiEvent> {
+fn sysex_fragments(len: usize) -> Vec<crate::protocol::WireMidi> {
     let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
     let mut out = Vec::new();
-    crate::protocol::MidiEvent::sysex7_fragments(tutti_ump::MidiGroup::FIRST, &payload, &mut out);
-    out
+    tutti_midi_types::sysex7_fragments(tutti_ump::MidiGroup::FIRST, &payload, &mut out);
+    out.into_iter()
+        .map(|ump| crate::protocol::WireMidi { offset: 0, ump })
+        .collect()
 }
 
 /// Submits four blocks of MIDI before the mock server says `Ready`, so the
@@ -1730,10 +1741,10 @@ fn sysex_fragments(len: usize) -> Vec<crate::protocol::MidiEvent> {
 /// them. Returns the MIDI the server got in blocks 3 and 4, and the
 /// bridge's count of the MIDI it did not send.
 fn two_stale_blocks(
-    blocks: [Vec<crate::protocol::MidiEvent>; 4],
+    blocks: [Vec<crate::protocol::WireMidi>; 4],
 ) -> (
-    Vec<crate::protocol::MidiEvent>,
-    Vec<crate::protocol::MidiEvent>,
+    Vec<crate::protocol::WireMidi>,
+    Vec<crate::protocol::WireMidi>,
     u64,
 ) {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
@@ -1764,7 +1775,7 @@ fn two_stale_blocks(
         );
         while let Some(msg) = recv_host_msg(&server_stream) {
             if let HostMessage::ProcessAudio(data) = msg {
-                let midi: Vec<crate::protocol::MidiEvent> = data.midi_events.to_vec();
+                let midi: Vec<crate::protocol::WireMidi> = data.midi_events.to_vec();
                 let _ = got_tx.send((data.seq, midi));
                 send_bridge_msg(
                     &server_stream,

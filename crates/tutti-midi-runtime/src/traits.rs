@@ -6,7 +6,8 @@
 //! what is the graph's wiring (a `MidiInputNode` in `tutti-midi-runtime`
 //! sends each channel out of its own event port).
 
-use crate::ump::MidiEvent;
+use tutti_graph::Offset;
+use tutti_ump::Ump;
 
 // -----------------------------------------------------------------------------
 // Delivery: write side (out) and read side (in)
@@ -31,7 +32,7 @@ pub trait MidiOut: Send + Sync {
     /// A partial accept is a **prefix**, not a subset: an implementation that
     /// hits a failure stops there rather than skipping and continuing, so the
     /// count always names an unbroken run and the stream stays in order.
-    fn queue(&self, events: &[MidiEvent]) -> usize;
+    fn queue(&self, events: &[(Offset, Ump)]) -> usize;
 }
 
 /// One input edge's per-node read state, which the audio thread polls once per block.
@@ -53,7 +54,7 @@ pub trait MidiOut: Send + Sync {
 ///
 /// `block_size` is the frame count of the upcoming audio block. An edge that
 /// converts arrival timestamps into offsets uses it, and every returned event's
-/// `frame_offset` lies in `[0, block_size)`.
+/// `Offset` lies in `[0, block_size)`.
 ///
 /// Implementations must be **lock-free** and **alloc-free** — this runs on the
 /// audio thread, once per block.
@@ -65,7 +66,7 @@ pub trait MidiIn: Send {
     /// next block, so it defers rather than drops; one that cannot (it has
     /// consumed the events already) drops the overflow and counts it. Size
     /// `buffer` for the largest burst worth taking in one block.
-    fn poll_block(&mut self, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
+    fn poll_block(&mut self, block_size: usize, buffer: &mut [(Offset, Ump)]) -> usize;
 
     /// Sizes the source for blocks of up to `events` events. Called on the
     /// control thread before the first [`poll_block`](Self::poll_block), and

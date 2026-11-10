@@ -1,7 +1,7 @@
-//! MIDI wire codec between `tutti_midi_types::MidiEvent` and `crate::api::MidiEvent`.
+//! MIDI wire codec between a UMP (`tutti_ump::Ump`) and `crate::api::MidiEvent`.
 //!
 //! VST2's on-the-wire format is plain 3-byte MIDI-1 plus a `delta_frames`
-//! sample offset — `tutti_midi_types::MidiEvent` already knows how to encode
+//! sample offset — `tutti_midi_types` already knows how to encode
 //! and decode that via `to_midi1_bytes` / `from_midi1_bytes`, so the
 //! event-level helpers are thin structural conversions.
 //!
@@ -17,10 +17,12 @@
 //! [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY) is
 //! dropped whole and counted.
 
-use tutti_plugin_types::MidiEvent;
+use tutti_graph::Offset;
+use tutti_plugin_types::WireMidi;
+use tutti_ump::Ump;
 
 /// A block's plugin-to-host MIDI, reserved once and reused.
-pub type MidiEventVec = Vec<MidiEvent>;
+pub type MidiEventVec = Vec<WireMidi>;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 
@@ -39,7 +41,7 @@ pub struct MidiIo {
     /// Bounded: the callback runs on the audio thread, so the push must
     /// neither allocate nor grow. See `host.rs`'s *Why the queues are
     /// bounded* for the drop policy and the counter that reports it.
-    pub out_rx: Arc<ArrayQueue<MidiEvent>>,
+    pub out_rx: Arc<ArrayQueue<WireMidi>>,
     /// Pooled drain of `out_rx`, refilled and borrowed back each block.
     pub out: MidiEventVec,
     /// What `out` was reserved for: the inbox's capacity. A block's pieces all
@@ -61,7 +63,7 @@ impl std::fmt::Debug for MidiIo {
 impl MidiIo {
     /// Constructs with the inbox queue; pre-sizes both reusable buffers so
     /// the audio thread never allocates.
-    pub fn new(out_rx: Arc<ArrayQueue<MidiEvent>>) -> Self {
+    pub fn new(out_rx: Arc<ArrayQueue<WireMidi>>) -> Self {
         // Reserved from the queue's own capacity, not a constant that happens
         // to match it: `drain_midi_out` empties the queue into this buffer in
         // one pass, so anything smaller reallocates on the audio thread the
@@ -98,38 +100,43 @@ impl MidiIo {
                 self.out_overflow += 1;
                 continue;
             }
-            self.out
-                .push(ev.with_frame_offset(ev.frame_offset.saturating_add(start)));
+            self.out.push(WireMidi {
+                offset: ev.offset.saturating_add(start),
+                ..ev
+            });
         }
     }
 }
 
 /// Parses a VST2 `crate::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
-/// UMP [`MidiEvent`]. Tags the event with the original `delta_frames`.
-pub fn to_midi(event: &crate::api::MidiEvent) -> Option<MidiEvent> {
+/// UMP [`WireMidi`]. Tags the event with the original `delta_frames`.
+pub fn to_midi(event: &crate::api::MidiEvent) -> Option<WireMidi> {
     let bytes = event.midi_data;
     let frame = event.delta_frames.max(0) as u32;
     // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the engine
     // sees one vocabulary regardless of source — matching the hardware input
     // path. System / SysEx messages pass through `normalize` unchanged.
-    MidiEvent::from_midi1_bytes(frame, &bytes).map(|e| tutti_midi_types::normalize(&e))
+    tutti_midi_types::from_midi1_bytes(&bytes).map(|e| WireMidi {
+        offset: frame,
+        ump: tutti_midi_types::normalize(&e),
+    })
 }
 
-/// Serializes a Tutti UMP [`MidiEvent`] to a VST2 `crate::api::MidiEvent`.
+/// Serializes a Tutti UMP [`WireMidi`] to a VST2 `crate::api::MidiEvent`.
 ///
 /// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `to_midi1_bytes` performs the
 /// spec Min-Center-Max downscale (16-bit velocity / 32-bit CC / bend → 7/14-bit;
 /// `convert.rs`), so no precision is lost beyond MIDI-1's inherent width.
 /// Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
 /// program change (everything with a 3-byte MIDI-1 form). SysEx is not a
-/// `MidiEvent` in VST2: [`MidiSendBuffer::stage_piece`] reassembles it into a
+/// `api::MidiEvent` in VST2: [`MidiSendBuffer::stage_piece`] reassembles it into a
 /// `SysExEvent`.
 /// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
 /// controllers, per-note management (Detach/Reset), and any resolution beyond
 /// 7/14 bits.
-pub fn from_midi(event: &MidiEvent) -> Option<crate::api::MidiEvent> {
-    let (midi_data, len) = event.to_midi1_bytes()?;
-    Some(midi_event(event.frame_offset, midi_data, len))
+pub fn from_midi(event: &WireMidi) -> Option<crate::api::MidiEvent> {
+    let (midi_data, len) = tutti_midi_types::to_midi1_bytes(&event.ump)?;
+    Some(midi_event(event.offset, midi_data, len))
 }
 
 /// One MIDI-1 message as a VST2 event at `frame_offset`.
@@ -302,7 +309,7 @@ impl MidiSendBuffer {
     /// that call.
     pub fn stage_piece(
         &mut self,
-        midi_events: &[MidiEvent],
+        midi_events: &[(Offset, Ump)],
         start: usize,
         len: usize,
         total: usize,
@@ -318,8 +325,8 @@ impl MidiSendBuffer {
         // block, so an event past its end lands on its last frame, in the last
         // piece.
         let last = total.saturating_sub(1);
-        let delta_in_piece = |offset: u32| {
-            let at = (offset as usize).min(last);
+        let delta_in_piece = |offset: Offset| {
+            let at = offset.index().min(last);
             (start..start + len)
                 .contains(&at)
                 .then(|| (at - start) as i32)
@@ -340,12 +347,12 @@ impl MidiSendBuffer {
         if start == 0 {
             self.sysex.begin_block();
             self.completed.clear();
-            for (index, ev) in midi_events.iter().enumerate() {
-                if let SysExStep::Complete(message) = self.sysex.push(ev) {
+            for (index, (offset, ump)) in midi_events.iter().enumerate() {
+                if let SysExStep::Complete(message) = self.sysex.push(ump) {
                     if self.completed.len() == self.completed.capacity() {
                         self.events_dropped += 1;
                     } else {
-                        let at = (ev.frame_offset as usize).min(last);
+                        let at = offset.index().min(last);
                         self.completed.push((index, at, message));
                     }
                 }
@@ -354,8 +361,8 @@ impl MidiSendBuffer {
         // Staged in input order (a completed SysEx at its `END` packet), so the
         // stable sort below keeps input order at equal frames.
         let mut next_sysex = 0;
-        for (index, ev) in midi_events.iter().enumerate() {
-            if ev.message_type() == UmpMessageType::Sysex7 {
+        for (index, (offset, ev)) in midi_events.iter().enumerate() {
+            if tutti_midi_types::message_type(ev) == UmpMessageType::Sysex7 {
                 let Some(&(end, at, message)) = self.completed.get(next_sysex) else {
                     continue;
                 };
@@ -375,21 +382,21 @@ impl MidiSendBuffer {
                 self.sysex_events.push(event);
                 continue;
             }
-            let Some(delta) = delta_in_piece(ev.frame_offset) else {
+            let Some(delta) = delta_in_piece(*offset) else {
                 continue;
             };
             // One UMP can be several MIDI-1 messages (a Program Change with a
             // bank is CC 0, CC 32, PC): each takes a slot at the same frame,
             // and all of them fit or none is staged (a bank is not sent
             // without its program).
-            let messages = ev.to_midi1_messages();
+            let messages = tutti_midi_types::to_midi1_messages(ev);
             let n = messages.len();
             if self.order.len() + n > self.room {
                 self.events_dropped += n as u64;
                 continue;
             }
             for (bytes, len) in messages {
-                let mut api = midi_event(ev.frame_offset, bytes, len);
+                let mut api = midi_event(offset.get(), bytes, len);
                 api.delta_frames = delta;
                 self.order.push(Staged::Midi(self.api_events.len()));
                 self.api_events.push(api);
@@ -465,7 +472,7 @@ impl MidiSendBuffer {
     pub fn send_piece(
         &mut self,
         render: &mut RenderHandle,
-        midi_events: &[MidiEvent],
+        midi_events: &[(Offset, Ump)],
         start: usize,
         len: usize,
         total: usize,
@@ -525,6 +532,18 @@ fn header_words(events: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_fixtures::midi;
+    use tutti_plugin_types::Samples;
+
+    /// A plugin-side event at a raw frame (`WireMidi` is unchecked, as `from_midi` reads it).
+    fn wire(ump: Ump, offset: u32) -> WireMidi {
+        WireMidi { offset, ump }
+    }
+
+    /// A block event at frame `k` of a block long enough to hold it.
+    fn at(k: usize, ump: Ump) -> (Offset, Ump) {
+        (Offset::new(k, Samples(k + 1)).unwrap(), ump)
+    }
 
     /// **Draining a full inbox does not allocate**: the out-list was reserved
     /// for the inbox's whole capacity when it was built, and is cleared, not
@@ -540,12 +559,12 @@ mod tests {
             io.out.clear();
             for i in 0..inbox.capacity() as u32 {
                 inbox
-                    .push(MidiEvent::from_ump(i, &[0x2090_3C40]))
+                    .push(wire(Ump([0x2090_3C40, 0, 0, 0]), i))
                     .expect("room");
             }
             assert_no_alloc::assert_no_alloc(|| io.drain_from(0));
             assert_eq!(io.out.len(), 256);
-            assert_eq!(io.out[255].frame_offset, 255, "in order");
+            assert_eq!(io.out[255].offset, 255, "in order");
         }
     }
     /// **A split block's pieces cannot grow the MIDI-out list**: each piece
@@ -563,7 +582,7 @@ mod tests {
             for piece in 0..2usize {
                 for i in 0..inbox.capacity() as u32 {
                     inbox
-                        .push(MidiEvent::from_ump(i, &[0x2090_3C40]))
+                        .push(wire(Ump([0x2090_3C40, 0, 0, 0]), i))
                         .expect("room");
                 }
                 assert_no_alloc::assert_no_alloc(|| io.drain_from(piece * 64));
@@ -580,24 +599,29 @@ mod tests {
 
     #[test]
     fn note_on_off_roundtrip() {
-        let event = MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            midi1_velocity_to_midi2(127),
-        )
-        .with_frame_offset(10);
+        let event = wire(
+            midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                60,
+                midi1_velocity_to_midi2(127),
+            ),
+            10,
+        );
         let api = from_midi(&event).expect("NoteOn should convert");
         assert_eq!(api.midi_data[0], 0x91);
         assert_eq!(api.midi_data[1], 60);
         assert_eq!(api.midi_data[2], 127);
         assert_eq!(api.delta_frames, 10);
 
-        let event = MidiEvent::note_off(
-            MidiGroup::FIRST,
-            MidiChannel::of(9),
-            48,
-            midi1_velocity_to_midi2(64),
+        let event = wire(
+            midi::note_off(
+                MidiGroup::FIRST,
+                MidiChannel::of(9),
+                48,
+                midi1_velocity_to_midi2(64),
+            ),
+            0,
         );
         let api = from_midi(&event).expect("NoteOff should convert");
         assert_eq!(api.midi_data[0], 0x80 | 9);
@@ -607,7 +631,7 @@ mod tests {
 
     /// A frame offset past `i32::MAX` must saturate, not wrap negative.
     ///
-    /// `MidiEvent::frame_offset` is `u32` and VST2's `delta_frames` is `i32`, so
+    /// `WireMidi::offset` is `u32` and VST2's `delta_frames` is `i32`, so
     /// a bare `as i32` turns a large offset into a negative one. The plugin
     /// offsets into its own buffers with that value, so the out-of-bounds access
     /// happens inside the plugin where nothing here can catch it.
@@ -618,13 +642,15 @@ mod tests {
     /// recognise as wrong.
     #[test]
     fn a_huge_frame_offset_saturates_rather_than_going_negative() {
-        let event = MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            midi1_velocity_to_midi2(100),
-        )
-        .with_frame_offset(u32::MAX);
+        let event = wire(
+            midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                midi1_velocity_to_midi2(100),
+            ),
+            u32::MAX,
+        );
         let api = from_midi(&event).expect("NoteOn should convert");
         assert!(
             api.delta_frames >= 0,
@@ -642,16 +668,19 @@ mod tests {
         // negative `delta_frames` to 0, so a round trip would report frame 0
         // for an event scheduled at the end of time. Saturating keeps it there.
         let back = to_midi(&api).expect("the saturated event must parse back");
-        assert_eq!(back.frame_offset, i32::MAX as u32);
+        assert_eq!(back.offset, i32::MAX as u32);
     }
 
     #[test]
     fn cc_roundtrip() {
-        let event = MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            CCNumber::BRIGHTNESS,
-            midi1_cc_to_midi2(100),
+        let event = wire(
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                CCNumber::BRIGHTNESS,
+                midi1_cc_to_midi2(100),
+            ),
+            0,
         );
         let api = from_midi(&event).expect("CC should convert");
         assert_eq!(api.midi_data[0], 0xB1);
@@ -661,10 +690,13 @@ mod tests {
 
     #[test]
     fn pitch_bend_roundtrip() {
-        let event = MidiEvent::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            midi1_pitch_bend_to_midi2(8192),
+        let event = wire(
+            midi::pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                midi1_pitch_bend_to_midi2(8192),
+            ),
+            0,
         );
         let api = from_midi(&event).expect("PitchBend should convert");
         assert_eq!(api.midi_data[0], 0xE1);
@@ -675,19 +707,25 @@ mod tests {
             bend14
         );
 
-        let event = MidiEvent::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            midi1_pitch_bend_to_midi2(0),
+        let event = wire(
+            midi::pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                midi1_pitch_bend_to_midi2(0),
+            ),
+            0,
         );
         let api = from_midi(&event).expect("PitchBend min should convert");
         assert_eq!(api.midi_data[1], 0x00);
         assert_eq!(api.midi_data[2], 0x00);
 
-        let event = MidiEvent::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            midi1_pitch_bend_to_midi2(16383),
+        let event = wire(
+            midi::pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                midi1_pitch_bend_to_midi2(16383),
+            ),
+            0,
         );
         let api = from_midi(&event).expect("PitchBend max should convert");
         assert_eq!(api.midi_data[1], 0x7F);
@@ -696,7 +734,10 @@ mod tests {
 
     #[test]
     fn program_change_roundtrip() {
-        let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 42, None);
+        let event = wire(
+            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 42, None),
+            0,
+        );
         let api = from_midi(&event).expect("ProgramChange should convert");
         assert_eq!(api.midi_data[0], 0xC1);
         assert_eq!(api.midi_data[1], 42);
@@ -705,10 +746,9 @@ mod tests {
 
     #[test]
     fn channel_pressure_roundtrip() {
-        let event = MidiEvent::channel_pressure(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            midi1_cc_to_midi2(100),
+        let event = wire(
+            midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(1), midi1_cc_to_midi2(100)),
+            0,
         );
         let api = from_midi(&event).expect("ChannelPressure should convert");
         assert_eq!(api.midi_data[0], 0xD1);
@@ -718,11 +758,14 @@ mod tests {
 
     #[test]
     fn poly_pressure_roundtrip() {
-        let event = MidiEvent::poly_pressure(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            midi1_cc_to_midi2(80),
+        let event = wire(
+            midi::poly_pressure(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                60,
+                midi1_cc_to_midi2(80),
+            ),
+            0,
         );
         let api = from_midi(&event).expect("PolyPressure should convert");
         assert_eq!(api.midi_data[0], 0xA1);
@@ -760,7 +803,7 @@ mod tests {
 
         // 0xB1 = CC on channel 1, controller 74, value 100.
         let midi = to_midi(&api_from_bytes([0xB1, 74, 100])).expect("CC decodes");
-        match UmpMessage::try_from(midi.data_words()).expect("valid UMP") {
+        match UmpMessage::try_from(midi.ump.words()).expect("valid UMP") {
             UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
                 assert_eq!(u8::from(m.channel()), 1);
                 assert_eq!(u8::from(m.control()), 74);
@@ -780,7 +823,7 @@ mod tests {
         let midi = to_midi(&api_from_bytes([0xF8, 0, 0])).expect("clock decodes");
         assert!(
             matches!(
-                UmpMessage::try_from(midi.data_words()),
+                UmpMessage::try_from(midi.ump.words()),
                 Ok(UmpMessage::SystemCommon(_))
             ),
             "timing clock should stay a System Real-Time message"
@@ -792,15 +835,17 @@ mod tests {
         // After warmup, repeated stage() calls within the pre-sized
         // capacity must not grow the backing buffers.
         let mut buf = MidiSendBuffer::with_capacity(8);
-        let evs: Vec<MidiEvent> = (0..4u32)
+        let evs: Vec<(Offset, Ump)> = (0..4usize)
             .map(|i| {
-                MidiEvent::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::of(1),
-                    60 + i as u8,
-                    midi1_velocity_to_midi2(100),
+                at(
+                    i,
+                    midi::note_on(
+                        MidiGroup::FIRST,
+                        MidiChannel::of(1),
+                        60 + i as u8,
+                        midi1_velocity_to_midi2(100),
+                    ),
                 )
-                .with_frame_offset(i)
             })
             .collect();
 
@@ -823,10 +868,12 @@ mod tests {
     /// What the plugin reads from a staged `api::Events`: per event, its
     /// `delta_frames` and either the MIDI bytes or the SysEx bytes, read
     /// through the pointers it is handed.
-    fn note(frame: u32, key: u8) -> MidiEvent {
+    fn note(frame: u32, key: u8) -> (Offset, Ump) {
         use tutti_ump::{MidiChannel, MidiGroup};
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0x4000)
-            .with_frame_offset(frame)
+        at(
+            frame as usize,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0x4000),
+        )
     }
 
     /// The plugin is handed `deltaFrames` inside the block, in order,
@@ -891,7 +938,7 @@ mod tests {
         assert!(buf.stage_piece(open, 0, 64, 64).is_none());
 
         // Block N, 128 frames in two pieces of 64: the END at frame 100.
-        let end = [end[0].with_frame_offset(100)];
+        let end = [at(100, end[0].1)];
         assert!(
             buf.stage_piece(&end, 0, 64, 128).is_none(),
             "the END is not in the first piece"
@@ -958,12 +1005,10 @@ mod tests {
         out
     }
 
-    fn sysex_packets(payload: &[u8], frame: u32) -> Vec<MidiEvent> {
+    fn sysex_packets(payload: &[u8], frame: u32) -> Vec<(Offset, Ump)> {
         let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
-        out.into_iter()
-            .map(|e| e.with_frame_offset(frame))
-            .collect()
+        tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out.into_iter().map(|e| at(frame as usize, e)).collect()
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {
@@ -979,8 +1024,10 @@ mod tests {
     /// check (the old per-message loop) → a partial bank → fails.
     #[test]
     fn a_banked_program_change_stages_as_three_events() {
-        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085))
-            .with_frame_offset(5);
+        let pc = at(
+            5,
+            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+        );
         let mut buf = MidiSendBuffer::new();
         let staged = read_staged(buf.stage_piece(&[pc], 0, 64, 64).expect("events staged"));
         assert_eq!(
@@ -996,11 +1043,14 @@ mod tests {
         assert!(small.stage_piece(&[pc], 0, 64, 64).is_none());
         assert_eq!(small.events_dropped(), 3);
         // Room for the note and one more: the note stays, the bank does not.
-        let note = MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            midi1_velocity_to_midi2(100),
+        let note = at(
+            0,
+            midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                60,
+                midi1_velocity_to_midi2(100),
+            ),
         );
         let mut tight = MidiSendBuffer::with_capacity(3);
         let staged = read_staged(tight.stage_piece(&[note, pc], 0, 64, 64).expect("the note"));
@@ -1008,7 +1058,7 @@ mod tests {
         assert_eq!(tight.events_dropped(), 3);
         // In a later piece every message of the bank takes that piece's
         // rebased frame (offset 70 of a 128-frame block, piece 64..128: 6).
-        let late = pc.with_frame_offset(70);
+        let late = at(70, pc.1);
         let mut buf = MidiSendBuffer::new();
         let staged = read_staged(buf.stage_piece(&[late], 64, 64, 128).expect("staged"));
         assert_eq!(
@@ -1030,15 +1080,15 @@ mod tests {
     #[test]
     fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         let body: Vec<u8> = (0..40).collect();
-        let note = MidiEvent::note_on(
+        let note = midi::note_on(
             MidiGroup::FIRST,
             MidiChannel::of(0),
             60,
             midi1_velocity_to_midi2(100),
         );
-        let mut midi = vec![note.with_frame_offset(1)];
+        let mut midi = vec![at(1, note)];
         midi.extend(sysex_packets(&body, 3));
-        midi.push(note.with_frame_offset(4));
+        midi.push(at(4, note));
         let mut buf = MidiSendBuffer::new();
         let staged = read_staged(
             buf.stage_piece(&midi, 0, 4096, 4096)
@@ -1078,16 +1128,19 @@ mod tests {
     /// → the lists grow past their room → aborts.
     #[test]
     fn staging_the_whole_cap_does_not_allocate() {
-        let note = MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(0),
-            60,
-            midi1_velocity_to_midi2(100),
+        let note = at(
+            0,
+            midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(0),
+                60,
+                midi1_velocity_to_midi2(100),
+            ),
         );
         let single = sysex_packets(&[1, 2, 3], 0);
         assert_eq!(single.len(), 1);
         // Half notes, half one-packet SysEx, then one past the cap of each.
-        let midi: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY / 2 + 1)
+        let midi: Vec<(Offset, Ump)> = (0..MIDI_STACK_CAPACITY / 2 + 1)
             .flat_map(|_| [note, single[0]])
             .collect();
         let mut buf = MidiSendBuffer::new();
@@ -1112,7 +1165,7 @@ mod tests {
     /// voice packets stage anything.
     ///
     /// Mutation (run): the message-type gate removed from
-    /// `MidiEvent::to_midi1_messages` → a Flex Data or Stream packet reaches the
+    /// `to_midi1_messages` → a Flex Data or Stream packet reaches the
     /// `midi2` decoder and `assert_no_alloc` aborts.
     #[test]
     fn staging_a_packet_of_any_message_type_allocates_nothing() {
@@ -1126,12 +1179,12 @@ mod tests {
             0x0F01_0101,
             0x00E1_0000,
         ];
-        let midi: Vec<MidiEvent> = (0..16u32)
+        let midi: Vec<(Offset, Ump)> = (0..16u32)
             .flat_map(|mt| {
                 BODIES.map(|body| {
-                    MidiEvent::from_ump(
-                        0,
-                        &[mt << 28 | body, 0x0900_0102, 0x0102_0304, 0x0506_0708],
+                    (
+                        Offset::ZERO,
+                        Ump([mt << 28 | body, 0x0900_0102, 0x0102_0304, 0x0506_0708]),
                     )
                 })
             })
@@ -1149,11 +1202,14 @@ mod tests {
     /// Mutation (run): return `words_ptr.byte_add(1)` from `stage_piece` → fails.
     #[test]
     fn the_staged_events_pointer_is_8_aligned() {
-        let note = MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(0),
-            60,
-            midi1_velocity_to_midi2(100),
+        let note = at(
+            0,
+            midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(0),
+                60,
+                midi1_velocity_to_midi2(100),
+            ),
         );
         let mut buf = MidiSendBuffer::new();
         for n in 1..=MIDI_STACK_CAPACITY {

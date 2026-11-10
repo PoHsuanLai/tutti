@@ -5,17 +5,19 @@
 //!
 //! Shows the **ergonomic API**: you build and inspect [`MidiMessage`] — the
 //! "just tell me what it is" view — and never touch UMP words, `midi2`
-//! internals, or the MIDI-1-vs-2 distinction. `MidiEvent::from()` builds the
-//! wire event from a message; `event.message()` decodes one back.
+//! internals, or the MIDI-1-vs-2 distinction. `Ump::try_from` builds the
+//! wire packet from a message; `MidiMessage::from_ump` decodes one back.
 
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use tutti_fixtures::midi::note_on;
+use tutti_graph::Offset;
 use tutti_midi_hardware::{
-    HardwareMidiDrain, HardwareMidiInputs, MidiEvent, MidiMessage, MidiSession, NoteId,
+    HardwareMidiDrain, HardwareMidiInputs, MidiMessage, MidiSession, NoteId,
 };
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
@@ -46,15 +48,18 @@ fn main() {
 
     // --- Send a message, read back exactly one, hand it to `check`. ---
     //
-    // `MidiEvent::try_from(msg)` encodes the wire event (fallible only for the
-    // `Other` catch-all); on the way back in, `event.message()` decodes to a
+    // `Ump::try_from(msg)` encodes the wire packet (fallible only for the
+    // `Other` catch-all); on the way back in, `MidiMessage::from_ump` decodes to a
     // `MidiMessage`. The app speaks messages at both ends — the port and codec
     // handle the wire form, and the MIDI-1-vs-2 distinction never surfaces.
     let mut roundtrip = |label: &str, msg: MidiMessage, check: &dyn Fn(MidiMessage) -> bool| {
-        io.send(&[MidiEvent::try_from(msg).expect("message is encodable")]);
+        io.send(&[(
+            Offset::ZERO,
+            Ump::try_from(msg).expect("message is encodable"),
+        )]);
         thread::sleep(Duration::from_millis(100));
-        let mut first: Option<MidiEvent> = None;
-        drain.cycle_start_read_all_inputs(512, |_, ev| {
+        let mut first: Option<Ump> = None;
+        drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
             if first.is_none() {
                 first = Some(ev);
             }
@@ -62,7 +67,7 @@ fn main() {
         match first {
             None => println!("  FAIL [{label}]: no events received"),
             Some(ev) => {
-                let got = ev.message();
+                let got = MidiMessage::from_ump(ev);
                 println!(
                     "  {} [{label}]: {got:?}",
                     if check(got) { "PASS" } else { "FAIL" }
@@ -76,7 +81,6 @@ fn main() {
         "note-on",
         // Velocity is the full 16-bit MIDI 2.0 value; `u16::MAX` ~= velocity 127.
         MidiMessage::NoteOn {
-            frame_offset: 0,
             id: note_id(MidiChannel::FIRST, 60),
             channel: MidiChannel::FIRST,
             note: 60,
@@ -90,7 +94,6 @@ fn main() {
     roundtrip(
         "note-off",
         MidiMessage::NoteOff {
-            frame_offset: 0,
             id: note_id(MidiChannel::FIRST, 60),
             channel: MidiChannel::FIRST,
             note: 60,
@@ -104,7 +107,6 @@ fn main() {
     roundtrip(
         "cc74",
         MidiMessage::ControlChange {
-            frame_offset: 0,
             channel: MidiChannel::FIRST,
             index: 74,
             value: 0xFFFF_FFFF,
@@ -116,7 +118,6 @@ fn main() {
     roundtrip(
         "pitch-bend",
         MidiMessage::PitchBend {
-            frame_offset: 0,
             channel: MidiChannel::FIRST,
             value: 0x8000_0000, // bipolar center
         },
@@ -125,19 +126,17 @@ fn main() {
 
     println!("\n=== Test 5: Rapid burst (10 notes) ===");
     for n in 60..70u8 {
-        io.send(&[MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            n,
-            0xA000,
+        io.send(&[(
+            Offset::ZERO,
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
         )]);
     }
     thread::sleep(Duration::from_millis(200));
     let mut count = 0usize;
     let mut all_note_on = true;
-    drain.cycle_start_read_all_inputs(512, |_, ev| {
+    drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
         count += 1;
-        all_note_on &= ev.message().is_note_on();
+        all_note_on &= MidiMessage::from_ump(ev).is_note_on();
     });
     println!(
         "  {}: received {count}/10 events, all note_on={all_note_on}",

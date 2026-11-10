@@ -39,6 +39,7 @@ thiserror = "2"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 crossbeam-queue = "0.3"
+tutti-graph = { path = "../tutti-graph" }
 tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }

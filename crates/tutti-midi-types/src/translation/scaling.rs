@@ -12,7 +12,7 @@
 //! These free functions cover places where a tutti consumer has a raw 7/14-bit
 //! value (from a hardware port, a DAW automation knob, or a test helper) and
 //! wants the 16/32-bit UMP value to pass into a constructor like
-//! [`MidiEvent::note_on`](crate::ump::MidiEvent::note_on).
+//! a `Voice2::NoteOn` (`tutti_ump::Voice2`).
 
 /// Spec Min-Center-Max upscale: shift into the high `dst - src` bits, then
 /// bit-repeat the source's fractional bits for values above center. `dst >= src`,
@@ -51,7 +51,7 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
     mcm_up(v as u32, 7, 16) as u16
 }
 
-/// [`Velocity`] → the 16-bit field [`MidiEvent::note_on`] takes.
+/// [`Velocity`] → the 16-bit field a `Voice2::NoteOn` takes.
 ///
 /// Lives here rather than on `Velocity` itself because the widening is the
 /// spec's Min-Center-Max scaler, not a multiply: `0.5` must land on `0x8000`
@@ -105,7 +105,6 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
 ///
 /// [`Velocity`]: tutti_types::Velocity
 /// [`Velocity::CENTER`]: tutti_types::Velocity::CENTER
-/// [`MidiEvent::note_on`]: crate::ump::MidiEvent::note_on
 #[inline]
 pub fn velocity_to_midi2(v: tutti_types::Velocity) -> u16 {
     const CENTER: f32 = 0x8000 as f32;
@@ -121,10 +120,9 @@ pub fn velocity_to_midi2(v: tutti_types::Velocity) -> u16 {
 }
 
 /// [`Velocity`] → a 7-bit MIDI 1.0 velocity, for the wire and for
-/// [`MidiEvent::note_on_7bit`].
+/// a 7-bit MIDI 1.0 note.
 ///
 /// [`Velocity`]: tutti_types::Velocity
-/// [`MidiEvent::note_on_7bit`]: crate::ump::MidiEvent::note_on_7bit
 #[inline]
 pub fn velocity_to_midi1(v: tutti_types::Velocity) -> u8 {
     // `round`, not `as`: truncation maps 1.0 to 126 and loses the top code.

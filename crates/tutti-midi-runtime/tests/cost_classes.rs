@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi::note_on;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, Io, Node,
@@ -14,11 +15,9 @@ use tutti_midi_runtime::{
     ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiOutControls, MidiOutNode,
     MidiQueueNode, TimedMidiEvent, TimedQueueNode,
 };
-use tutti_midi_types::MidiEvent;
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
-use tutti_ump::Ump;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;
@@ -47,8 +46,8 @@ impl<N: Node> Node for Undeclared<N> {
     }
 }
 
-/// `(absolute frame, event)` of every MIDI event a recorder received.
-type Seen = Arc<Mutex<Vec<(u64, MidiEvent)>>>;
+/// `(absolute frame, packet)` of every MIDI event a recorder received.
+type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
 
 /// Logs the MIDI on its event input; a silent mono output. Declares
 /// nothing.
@@ -64,11 +63,7 @@ impl Node for Recorder {
         let mut seen = self.0.lock().unwrap();
         for e in io.events(0) {
             if let EventKind::Midi(Ump(data)) = e.kind {
-                let ev = MidiEvent {
-                    frame_offset: e.offset.get(),
-                    data,
-                };
-                seen.push((cx.env.frame.get() + u64::from(e.offset.get()), ev));
+                seen.push((cx.env.frame.get() + u64::from(e.offset.get()), Ump(data)));
             }
         }
         io.output(0).fill(0.0);
@@ -82,7 +77,7 @@ fn clip(k: u64) -> MidiClipNode {
     MidiClipNode::new((0..20).map(|i| {
         TimedMidiEvent::new(
             Beat(0.02 * i as f64 + 0.000_3 * k as f64),
-            MidiEvent::note_on(
+            note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 (36 + k + i) as u8,
@@ -160,27 +155,21 @@ fn render(exec: &mut Executor) {
 
 /// Everything the graph sent, by absolute frame: each out node's events
 /// (`MidiOutNode` stamps the block's frame plus the offset into
-/// `frame_offset`, wrapping at 2^32), then each recorder's (it adds
+/// the `Offset`, wrapping at 2^32), then each recorder's (it adds
 /// `Env::frame` itself).
 fn sent(outs: &[MidiOutControls], seen: &[Seen]) -> Vec<Vec<(u64, [u32; 4])>> {
     let mut all: Vec<Vec<(u64, [u32; 4])>> = outs
         .iter()
         .map(|o| {
-            let mut buf = vec![MidiEvent::noop(); 1024];
+            let mut buf = vec![(0, Ump([0; 4])); 1024];
             let n = o.poll_into(&mut buf);
-            buf[..n]
-                .iter()
-                .map(|e| (u64::from(e.frame_offset), e.data))
-                .collect()
+            buf[..n].iter().map(|e| (u64::from(e.0), e.1.0)).collect()
         })
         .collect();
-    all.extend(seen.iter().map(|s| {
-        s.lock()
-            .unwrap()
-            .iter()
-            .map(|(f, e)| (*f, e.data))
-            .collect()
-    }));
+    all.extend(
+        seen.iter()
+            .map(|s| s.lock().unwrap().iter().map(|(f, e)| (*f, e.0)).collect()),
+    );
     all
 }
 

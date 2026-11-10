@@ -10,8 +10,11 @@
 use std::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
-use tutti_midi_types::ump::MidiEvent;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_graph::Offset;
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
+use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
+
+use crate::traits::MidiOut;
 
 /// The ring's default capacity, in events.
 pub const MAILBOX_CAPACITY: usize = 256;
@@ -19,7 +22,12 @@ pub const MAILBOX_CAPACITY: usize = 256;
 /// A bounded MIDI ring. Push and pop are lock-free and never allocate, so
 /// either side may be the audio thread.
 pub struct MidiMailbox {
-    events: ArrayQueue<MidiEvent>,
+    /// Each event with a raw `u32` stamp, not an `Offset`: the ring crosses
+    /// threads ahead of any block, and what the stamp means is the reader's
+    /// (the queue node clamps it into the block that plays it; the out node
+    /// writes the graph-clock frame wrapped at 2^32). The types stop here; a
+    /// stamp becomes an `Offset` where a block is known.
+    events: ArrayQueue<(u32, Ump)>,
 }
 
 impl std::fmt::Debug for MidiMailbox {
@@ -55,7 +63,7 @@ impl MidiMailbox {
 /// The push half of a [`MidiMailbox`]. Cheap to clone; every clone pushes into
 /// the same ring.
 ///
-/// Implements [`tutti_midi_types::MidiOut`].
+/// Implements [`MidiOut`].
 #[derive(Clone, Debug)]
 pub struct MidiSender {
     slot: Arc<MidiMailbox>,
@@ -67,7 +75,21 @@ impl MidiSender {
     /// the stream stays in order). Dropping a note-off whose note-on landed is
     /// what leaves a note stuck, so a caller with anywhere to report it must.
     /// Never blocks.
-    pub fn queue(&self, events: &[MidiEvent]) -> usize {
+    pub fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+        let mut accepted = 0;
+        for &(offset, ump) in events {
+            if self.slot.events.push((offset.get(), ump)).is_err() {
+                break;
+            }
+            accepted += 1;
+        }
+        accepted
+    }
+
+    /// [`queue`](Self::queue) for events stamped with a raw `u32` that is not
+    /// an offset into a block (the out node's graph-clock frame, wrapped at
+    /// 2^32). Same prefix semantics: the count accepted, never a gap.
+    pub fn queue_stamped(&self, events: &[(u32, Ump)]) -> usize {
         let mut accepted = 0;
         for &event in events {
             if self.slot.events.push(event).is_err() {
@@ -83,11 +105,17 @@ impl MidiSender {
     pub fn note_on(&self, channel: MidiChannel, note: u8, velocity: u8) -> bool {
         self.slot
             .events
-            .push(MidiEvent::note_on_7bit(
-                MidiGroup::FIRST,
-                channel,
-                note,
-                velocity,
+            .push((
+                0,
+                voice(
+                    channel,
+                    // 7-bit velocity, widened (M2-115).
+                    Voice2::NoteOn {
+                        note: note_number(note),
+                        velocity: midi1_velocity_to_midi2(velocity),
+                        attribute: Attribute::None,
+                    },
+                ),
             ))
             .is_ok()
     }
@@ -97,15 +125,44 @@ impl MidiSender {
     pub fn note_off(&self, channel: MidiChannel, note: u8) -> bool {
         self.slot
             .events
-            .push(MidiEvent::note_off(MidiGroup::FIRST, channel, note, 0))
+            .push((
+                0,
+                voice(
+                    channel,
+                    Voice2::NoteOff {
+                        note: note_number(note),
+                        velocity: 0,
+                        attribute: Attribute::None,
+                    },
+                ),
+            ))
             .is_ok()
     }
 }
 
-impl tutti_midi_types::MidiOut for MidiSender {
-    fn queue(&self, events: &[MidiEvent]) -> usize {
+impl MidiOut for MidiSender {
+    fn queue(&self, events: &[(Offset, Ump)]) -> usize {
         self.queue(events)
     }
+}
+
+/// A group-1 channel voice message as a packet.
+fn voice(channel: MidiChannel, v: Voice2) -> Ump {
+    Message::Midi2(
+        Address {
+            group: MidiGroup::FIRST,
+            channel,
+        },
+        v,
+    )
+    .into()
+}
+
+/// A note number, its high bit masked off as the wire does (a note past 127 is
+/// the caller's bug; a release build never carried it past 7 bits).
+// A note above 127 is masked to 7 bits.
+fn note_number(note: u8) -> NoteNumber {
+    NoteNumber::new(note & 0x7F).expect("masked to 7 bits")
 }
 
 /// The pop half of a [`MidiMailbox`]. One reader at a time: two polling the
@@ -116,8 +173,9 @@ pub struct MidiReceiver {
 }
 
 impl MidiReceiver {
-    /// Pop up to `out.len()` events into `out`, oldest first; return how many.
-    pub fn poll_into(&self, out: &mut [MidiEvent]) -> usize {
+    /// Pop up to `out.len()` events into `out`, oldest first, each with its raw
+    /// stamp; return how many.
+    pub fn poll_into(&self, out: &mut [(u32, Ump)]) -> usize {
         let mut count = 0;
         for slot in out.iter_mut() {
             match self.slot.events.pop() {

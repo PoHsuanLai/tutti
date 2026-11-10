@@ -1,4 +1,4 @@
-//! The legacy MIDI CC a plugin sends to the host, as a `MidiEvent`.
+//! The legacy MIDI CC a plugin sends to the host, as a [`WireMidi`].
 
 use tutti_midi_protocol::widen;
 use tutti_ump::{
@@ -7,7 +7,9 @@ use tutti_ump::{
 use tutti_vst3_ffi::sdk_enum_i32;
 use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 
-use super::{LegacyCcOut, MidiEvent};
+use tutti_plugin_types::WireMidi;
+
+use super::LegacyCcOut;
 
 /// The low 7 bits of a VST3 `i8` data field.
 fn data_byte(raw: i8) -> U7 {
@@ -20,7 +22,7 @@ fn data_byte(raw: i8) -> U7 {
 /// index: 0-127 are real CCs, and the synthetic slots above are pitch bend,
 /// channel pressure and poly-pressure, with `value2` supplying the second data
 /// byte for the first and last.
-pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<MidiEvent> {
+pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<WireMidi> {
     let address = Address {
         group: MidiGroup::FIRST,
         channel: MidiChannel::masked(e.channel as u8),
@@ -47,5 +49,5 @@ pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<MidiEvent> {
         }
     };
     let ump = Ump::from(Message::Midi2(address, widen(voice)));
-    Some(MidiEvent::from_ump(frame, ump.words()))
+    Some(WireMidi { offset: frame, ump })
 }

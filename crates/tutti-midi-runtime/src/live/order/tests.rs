@@ -1,9 +1,22 @@
 use super::*;
+use tutti_fixtures::midi::note_on;
+use tutti_midi_types::MidiMessage;
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_ump::{MidiChannel, MidiGroup};
 
-fn at(note: u8, offset: u32) -> MidiEvent {
-    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, note, 100)
-        .with_frame_offset(offset)
+/// An event at `offset`, which may lie past the 64-frame block the placement
+/// test uses: it is built against a longer one.
+fn at(note: u8, offset: u32) -> (Offset, Ump) {
+    (
+        Offset::new(offset as usize, Samples(1024)).unwrap(),
+        // 7-bit velocity 100, widened (M2-115).
+        note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            note,
+            midi1_velocity_to_midi2(100),
+        ),
+    )
 }
 
 /// Sorted by offset, arrival order kept at one offset; a late offset
@@ -18,7 +31,7 @@ fn sorts_stably_and_places_late_offsets_last() {
     in_offset_order(&mut v);
     let got: Vec<(u8, u32)> = v
         .iter()
-        .map(|e| (e.note().unwrap(), e.frame_offset))
+        .map(|e| (MidiMessage::from_ump(e.1).note().unwrap(), e.0.get()))
         .collect();
     assert_eq!(got, vec![(3, 0), (0, 5), (1, 10), (2, 10), (4, 900)]);
     assert_eq!(offset_of(&v[4], Samples(64)).get(), 63);

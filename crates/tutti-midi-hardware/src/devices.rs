@@ -17,7 +17,7 @@ use tutti_midi_device::{
     DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange,
     OsDevice, Resolved,
 };
-use tutti_midi_types::MidiOut;
+use tutti_midi_runtime::MidiOut;
 
 use crate::backend;
 use crate::capability::{EndpointInfo, UmpCapability};
@@ -617,7 +617,7 @@ impl OpenOutput {
 }
 
 impl MidiOut for OpenOutput {
-    fn queue(&self, events: &[tutti_midi_types::ump::MidiEvent]) -> usize {
+    fn queue(&self, events: &[(tutti_graph::Offset, tutti_ump::Ump)]) -> usize {
         self.sink.queue(events)
     }
 }

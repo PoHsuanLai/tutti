@@ -2,7 +2,7 @@
 //! MIDI-out pump), in at one event port.
 //!
 //! Each block it pushes the MIDI arriving at its event input into a ring
-//! whose [`MidiReceiver`] its controls hold, every event's `frame_offset`
+//! whose [`MidiReceiver`] its controls hold, every event's raw stamp
 //! stamped with its frame on the graph's clock (`Env::frame` plus its offset,
 //! wrapping at 2³², about 25 hours at 48 kHz): a reader on another thread
 //! sees when each was due relative to the others, whatever the blocks were.
@@ -19,7 +19,6 @@ use tutti_graph::{
     Cx, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
 };
-use tutti_midi_types::ump::MidiEvent;
 use tutti_types::ChannelLayout;
 use tutti_ump::Ump;
 
@@ -89,9 +88,9 @@ pub struct MidiOutControls {
 
 impl MidiOutControls {
     /// Pop up to `out.len()` events, oldest first; return how many. Each
-    /// event's `frame_offset` is its frame on the graph's clock, wrapping at
+    /// event's stamp is its frame on the graph's clock, wrapping at
     /// 2³² (see the module docs).
-    pub fn poll_into(&self, out: &mut [MidiEvent]) -> usize {
+    pub fn poll_into(&self, out: &mut [(u32, Ump)]) -> usize {
         self.rx.poll_into(out)
     }
 
@@ -126,11 +125,7 @@ impl Node for MidiOutNode {
             if let EventKind::Midi(Ump(data)) = e.kind {
                 // Truncated on purpose: the frame wraps at 2^32.
                 let at = block.wrapping_add(u64::from(e.offset.get())) as u32;
-                let ev = MidiEvent {
-                    frame_offset: at,
-                    data,
-                };
-                if tx.queue(&[ev]) == 0 {
+                if tx.queue_stamped(&[(at, Ump(data))]) == 0 {
                     self.dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }

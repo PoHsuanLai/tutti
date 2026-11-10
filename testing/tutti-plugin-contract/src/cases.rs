@@ -2,13 +2,15 @@
 //! makes a test of each. Expected figures come from [`spec`].
 
 use crate::active::main_thread;
-use tutti_midi_types::MidiEvent;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
     ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, SampleFormat,
     Samples,
 };
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 use crate::spec::{self, Mode, Param};
 use crate::{
@@ -47,15 +49,16 @@ fn ramp(frames: usize, base: f32) -> Vec<f32> {
     (0..frames).map(|i| base + i as f32 * 0.001).collect()
 }
 
-fn note(offset: u32, on: bool) -> MidiEvent {
+fn note(offset: u32, on: bool) -> (Offset, Ump) {
     let (group, channel) = (MidiGroup::FIRST, MidiChannel::of(0));
-    let mut event = if on {
-        MidiEvent::note_on_7bit(group, channel, 60, 100)
+    let ump = if on {
+        // 7-bit 100, widened (M2-115).
+        midi::note_on(group, channel, 60, midi1_velocity_to_midi2(100))
     } else {
-        MidiEvent::note_off(group, channel, 60, 0)
+        midi::note_off(group, channel, 60, 0)
     };
-    event.frame_offset = offset;
-    event
+    let offset = Offset::new(offset as usize, Samples(BLOCK)).unwrap();
+    (offset, ump)
 }
 
 fn changes(points: &[(Param, i32, f64)]) -> ParameterChanges {

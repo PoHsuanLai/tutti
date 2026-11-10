@@ -61,11 +61,10 @@ pub use component::{AuComponentInfo, AuType};
 pub use error::{AuError, LoadFailedError, LoadStage, PresetFileError, PresetMismatch, Result};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
-// `WindowHandle` is consumed by the GUI bridge; `MidiEvent` is the input type of
-// `AuInstance::send_midi`; `TransportInfo` is the input type of
+// `WindowHandle` is consumed by the GUI bridge; `TransportInfo` is the input type of
 // `AuInstance::set_transport`, which publishes it for the AU's host callbacks to
 // pull during render.
-pub use tutti_plugin_types::{EditorSize, MidiEvent, TransportInfo, WindowHandle};
+pub use tutti_plugin_types::{EditorSize, TransportInfo, WindowHandle};
 
 // Unit types this crate's API hands back: `Samples` from `get_latency`,
 // `Seconds` from `get_tail_time`. Re-exported because a consumer that cannot

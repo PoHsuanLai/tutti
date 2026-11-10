@@ -75,7 +75,9 @@ use support::corpus::{
 };
 
 use tutti_au_host::AuInstance;
-use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
+use tutti_au_host::{AuError, AuMidiMapping, MidiTrigger};
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 /// Serializes instantiate/dispose against component enumeration, for the reason
@@ -784,11 +786,14 @@ fn a_mapped_cc_actually_moves_the_parameter() {
         let mapped_cc = CCNumber::of(20);
         au.add_parameter_midi_mapping(&[AuMidiMapping::control_change(*param, 0, mapped_cc.get())])
             .unwrap_or_else(|e| panic!("{}: add failed: {e:?}", unit.label));
-        au.send_midi(&[MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            mapped_cc,
-            tutti_midi_types::convert::midi1_cc_to_midi2(127),
+        au.send_midi(&[(
+            Offset::ZERO,
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                mapped_cc,
+                tutti_midi_types::convert::midi1_cc_to_midi2(127),
+            ),
         )]);
 
         // Instruments have no input bus, so render with no input buffers.
@@ -841,11 +846,14 @@ fn an_unmapped_cc_does_not_move_the_parameter() {
 
         let before = au.get_parameter(*param).expect("read before");
         // Same CC, same value, same render — but no mapping installed.
-        au.send_midi(&[MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::of(20),
-            tutti_midi_types::convert::midi1_cc_to_midi2(127),
+        au.send_midi(&[(
+            Offset::ZERO,
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::of(20),
+                tutti_midi_types::convert::midi1_cc_to_midi2(127),
+            ),
         )]);
         let mut output = vec![vec![0.0f32; BLOCK as usize]; au.num_outputs() as usize];
         let mut out_refs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
@@ -899,11 +907,14 @@ fn arming_a_hot_map_and_sending_a_cc_completes_the_mapping() {
             unit.label
         );
 
-        au.send_midi(&[MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::EXPRESSION,
-            tutti_midi_types::convert::midi1_cc_to_midi2(64),
+        au.send_midi(&[(
+            Offset::ZERO,
+            midi::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::EXPRESSION,
+                tutti_midi_types::convert::midi1_cc_to_midi2(64),
+            ),
         )]);
 
         let learned = au.hot_mapped_parameter().unwrap_or_else(|| {

@@ -14,9 +14,11 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_plugin_types::{Control, Normalized, ParamId};
-use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst2_host::{MidiEvent, TimeSignature, TransportInfo, Vst2ProcessContext};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext};
 
 #[path = "support/active.rs"]
 mod active;
@@ -193,7 +195,7 @@ mod can_do {
     pub const CUSTOM: i32 = 3;
 }
 
-fn render_block(instance: &mut Active, midi: &[MidiEvent]) -> Vec<Vec<f32>> {
+fn render_block(instance: &mut Active, midi: &[(Offset, Ump)]) -> Vec<Vec<f32>> {
     let inputs = (instance.pins().0.count() as usize).max(1);
     let outputs = (instance.pins().1.count() as usize).max(1);
 
@@ -1183,19 +1185,15 @@ fn process_forwards_midi_without_panicking() {
     let _guard = lock_probe();
     let mut instance = load_probe();
 
-    let note_on = [MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(1),
-        60,
-        100,
+    let note_on = [(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 100),
     )];
     render_block(&mut instance, &note_on);
 
-    let note_off = [MidiEvent::note_off(
-        MidiGroup::FIRST,
-        MidiChannel::of(1),
-        60,
-        0,
+    let note_off = [(
+        Offset::ZERO,
+        midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
     )];
     render_block(&mut instance, &note_off);
 }
@@ -1239,16 +1237,23 @@ fn many_midi_events_in_one_block() {
     let _guard = lock_probe();
     let mut instance = load_probe();
 
-    let events: Vec<MidiEvent> = (0..10u32)
+    let events: Vec<(Offset, Ump)> = (0..10usize)
         .map(|i| {
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 100)
-                .with_frame_offset(i)
+            (
+                Offset::new(i, Samples(BLOCK)).unwrap(),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 100),
+            )
         })
         .collect();
     render_block(&mut instance, &events);
 
-    let note_offs: Vec<MidiEvent> = (0..10)
-        .map(|i| MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 0))
+    let note_offs: Vec<(Offset, Ump)> = (0..10)
+        .map(|i| {
+            (
+                Offset::ZERO,
+                midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 0),
+            )
+        })
         .collect();
     render_block(&mut instance, &note_offs);
 }

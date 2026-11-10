@@ -17,8 +17,7 @@
 #![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
 use crate::types::{
-    ClapNoteExpression, MidiEvent, NoteExpressionType, ParameterChanges, ParameterPoint,
-    ParameterQueue,
+    ClapNoteExpression, NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue,
 };
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_CHOKE,
@@ -32,18 +31,19 @@ use clap_sys::events::{
 };
 use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
+use tutti_graph::Offset;
 use tutti_plugin_types::{
     Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, SysExAssembler,
-    SysExStep, note_id_for, note_id_to_channel_note, push_sysex, unframed,
+    SysExStep, WireMidi, note_id_for, note_id_to_channel_note, push_sysex, unframed,
 };
 
 use crate::types::RtNoteExpressions;
 use tutti_midi_protocol::{midi1, narrow, widen};
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
-use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
+use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity, sysex7_packets};
 use tutti_ump::{
-    Message, Midi1Parser, MidiChannel, MidiGroup, RegisteredPerNoteController, Ump, Unknown,
-    Voice1, Voice2, decode,
+    Address, Attribute, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
+    RegisteredPerNoteController, Ump, Unknown, Voice1, Voice2, decode,
 };
 // Only the tests name it; the conversion code works in raw CC numbers.
 #[cfg(test)]
@@ -53,7 +53,7 @@ use tutti_ump::CCNumber;
 /// struct so a pointer to its `header` field can be cast back by the plugin.
 ///
 /// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
-/// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi`].
+/// helpers, or from an `(Offset, Ump)` event via [`ClapEvent::from_midi`].
 #[derive(Debug)]
 pub enum ClapEvent {
     /// A voice starts. Host→plugin.
@@ -255,6 +255,23 @@ const fn header_size<T>() -> u32 {
 /// recoverable, misaddressing it is not.
 ///
 /// Shared by the note-on, note-off and note-expression paths.
+/// A MIDI 2.0 channel voice packet on group 1 and `channel` (masked to 4 bits).
+fn voice2(channel: u8, voice: Voice2) -> Ump {
+    Message::Midi2(
+        Address {
+            group: MidiGroup::FIRST,
+            channel: MidiChannel::masked(channel),
+        },
+        voice,
+    )
+    .into()
+}
+
+/// A note number, masked to the 7 bits MIDI carries.
+fn note_number(note: u8) -> NoteNumber {
+    NoteNumber::new(note & 0x7F).unwrap_or_default()
+}
+
 fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
     if channel >= 0 && key >= 0 {
         // Both are `>= 0` in this branch (the wildcard case returned above),
@@ -275,7 +292,7 @@ fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
 // live hardware interaction (a physical knob/key) rather than sequencer
 // playback, letting a plugin treat the two differently (e.g. smoothing). The
 // live-vs-playback distinction is not threaded from the caller today — the
-// `MidiEvent` → `ClapEvent` conversion has no such signal, and neither does the
+// `(Offset, Ump)` → `ClapEvent` conversion has no such signal, and neither does the
 // process/flush entry path. Rather than invent a bogus source flag, IS_LIVE
 // stays unset until callers can supply a real live/playback origin.
 impl ClapEvent {
@@ -484,7 +501,8 @@ impl ClapEvent {
         }))
     }
 
-    /// Builds a `ClapEvent` from a Tutti UMP [`MidiEvent`], at the stream
+    /// Builds a `ClapEvent` from a Tutti UMP event (its block [`Offset`] and
+    /// packet), at the stream
     /// state `ranges` holds: a per-note pitch bend is a tuning of the bend
     /// over its channel's per-note bend range, in semitones. An
     /// [`InputEventList`] keeps the ranges across blocks and follows the
@@ -505,8 +523,8 @@ impl ClapEvent {
     /// as MIDI 2.0 (a packet `decode` cannot frame included), and for SysEx,
     /// which [`InputEventList::add_midi`] reassembles into a `MidiSysex`.
     #[must_use]
-    pub fn from_midi(event: &MidiEvent, ranges: &PerNoteBendRanges) -> Option<Self> {
-        Self::from_message(event.frame_offset, Ump(event.data), ranges, false)
+    pub fn from_midi(event: &(Offset, Ump), ranges: &PerNoteBendRanges) -> Option<Self> {
+        Self::from_message(event.0.get(), event.1, ranges, false)
     }
 
     /// [`from_midi`](Self::from_midi) for one packet, with the note port's
@@ -735,7 +753,8 @@ impl ClapEvent {
         }
     }
 
-    /// Converts a `ClapEvent` back to a Tutti UMP [`MidiEvent`].
+    /// Converts a `ClapEvent` back to a Tutti UMP packet with the time the
+    /// plugin reported ([`WireMidi`]: raw, not clamped to a block).
     ///
     /// Typed NoteOn/Off events build a native MIDI-2 Channel Voice event, so the
     /// plugin's `f64` velocity is preserved at MIDI-2's full 16-bit width instead
@@ -747,34 +766,38 @@ impl ClapEvent {
         reason = "CLAP carries velocities and expression values as f64; the MIDI-2 conversion helpers take f32"
     )]
     #[must_use]
-    pub fn to_midi(&self) -> Option<MidiEvent> {
+    pub fn to_midi(&self) -> Option<WireMidi> {
         use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
             ClapEvent::NoteOn(e) => {
                 let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
-                Some(
-                    MidiEvent::note_on(
-                        MidiGroup::FIRST,
-                        MidiChannel::masked(channel),
-                        note,
-                        unit_f32_to_u16(e.velocity as f32),
-                    )
-                    .with_frame_offset(e.header.time),
-                )
+                Some(WireMidi {
+                    offset: e.header.time,
+                    ump: voice2(
+                        channel,
+                        Voice2::NoteOn {
+                            note: note_number(note),
+                            velocity: unit_f32_to_u16(e.velocity as f32),
+                            attribute: Attribute::None,
+                        },
+                    ),
+                })
             }
             ClapEvent::NoteOff(e) => {
                 let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
-                Some(
-                    // Preserve the plugin's release velocity on the way back to
-                    // MIDI-2, mirroring the NoteOn path.
-                    MidiEvent::note_off(
-                        MidiGroup::FIRST,
-                        MidiChannel::masked(channel),
-                        note,
-                        unit_f32_to_u16(e.velocity as f32),
-                    )
-                    .with_frame_offset(e.header.time),
-                )
+                // Preserve the plugin's release velocity on the way back to
+                // MIDI-2, mirroring the NoteOn path.
+                Some(WireMidi {
+                    offset: e.header.time,
+                    ump: voice2(
+                        channel,
+                        Voice2::NoteOff {
+                            note: note_number(note),
+                            velocity: unit_f32_to_u16(e.velocity as f32),
+                            attribute: Attribute::None,
+                        },
+                    ),
+                })
             }
             ClapEvent::NoteExpression(e) => Self::note_expression_to_midi(e),
             // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
@@ -782,16 +805,16 @@ impl ClapEvent {
             // hardware input path. System / SysEx messages pass through unchanged.
             ClapEvent::Midi(e) => {
                 let message = Midi1Parser::message(MidiGroup::FIRST, &e.data)?;
-                Some(MidiEvent::from_ump(
-                    e.header.time,
-                    Ump::from(widened(message)).words(),
-                ))
+                Some(WireMidi {
+                    offset: e.header.time,
+                    ump: Ump::from(widened(message)),
+                })
             }
             _ => None,
         }
     }
 
-    /// Rebuilds the MIDI-2 per-note [`MidiEvent`] a CLAP note-expression stands
+    /// Rebuilds the MIDI-2 per-note [`WireMidi`] a CLAP note-expression stands
     /// for: Tuning → per-note pitch bend, Pressure → poly pressure,
     /// Volume/Pan/Brightness → the matching per-note controller. `(channel, note)`
     /// come from the event's `channel`/`key` when the host stamped them, else
@@ -801,7 +824,7 @@ impl ClapEvent {
         clippy::cast_possible_truncation,
         reason = "CLAP expression values are f64; the MIDI-2 helpers take f32"
     )]
-    fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<MidiEvent> {
+    fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<WireMidi> {
         use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
         let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
@@ -819,36 +842,41 @@ impl ClapEvent {
         let event = match expression_type {
             NoteExpressionType::Tuning => {
                 let signed = (e.value / emitted_bend_range_semitones()) as f32;
-                MidiEvent::per_note_pitch_bend(
-                    MidiGroup::FIRST,
-                    MidiChannel::masked(channel),
-                    note,
-                    signed_f32_to_bend_u32(signed),
+                voice2(
+                    channel,
+                    Voice2::PerNotePitchBend {
+                        note: note_number(note),
+                        value: signed_f32_to_bend_u32(signed),
+                    },
                 )
             }
-            NoteExpressionType::Pressure => MidiEvent::poly_pressure(
-                MidiGroup::FIRST,
-                MidiChannel::masked(channel),
-                note,
-                unit_f32_to_u32(e.value as f32),
+            NoteExpressionType::Pressure => voice2(
+                channel,
+                Voice2::PolyPressure {
+                    note: note_number(note),
+                    value: unit_f32_to_u32(e.value as f32),
+                },
             ),
             other => {
                 let index = expression_to_per_note_controller_index(other)?;
-                MidiEvent::per_note_controller(
-                    MidiGroup::FIRST,
-                    MidiChannel::masked(channel),
-                    note,
-                    index,
-                    // VOLUME arrives as a CLAP gain (`0 < x <= 4`), not a
-                    // unit fraction — convert before the unit encoding, or a
-                    // plugin's unity 1.0 and its +12 dB 4.0 both saturate to
-                    // MIDI full scale indistinguishably.
-                    unit_f32_to_u32(expression_value_to_unit(other, e.value)),
-                    false,
+                voice2(
+                    channel,
+                    Voice2::AssignablePerNote {
+                        note: note_number(note),
+                        controller: index,
+                        // VOLUME arrives as a CLAP gain (`0 < x <= 4`), not a
+                        // unit fraction — convert before the unit encoding, or a
+                        // plugin's unity 1.0 and its +12 dB 4.0 both saturate to
+                        // MIDI full scale indistinguishably.
+                        value: unit_f32_to_u32(expression_value_to_unit(other, e.value)),
+                    },
                 )
             }
         };
-        Some(event.with_frame_offset(time))
+        Some(WireMidi {
+            offset: time,
+            ump: event,
+        })
     }
 
     /// Builds a note-expression event bound to a `(channel, note)` voice via
@@ -1059,7 +1087,7 @@ impl InputEventList {
         self.sysex.reset();
     }
 
-    /// Converts a [`MidiEvent`] to a [`ClapEvent`] and append it, at the
+    /// Converts an `(Offset, Ump)` event to a [`ClapEvent`] and append it, at the
     /// stream's per-note bend ranges ([`ClapEvent::from_midi`]). A per-note
     /// bend sensitivity (RPN #00/07) sets its channel's range and is
     /// consumed: CLAP has no event for it. UMP variants without a MIDI-1
@@ -1070,16 +1098,16 @@ impl InputEventList {
     /// message (which may span blocks) is appended as one
     /// [`ClapEvent::MidiSysex`], `0xF0 … 0xF7`, at its `END` packet's time.
     /// Allocation-free once [`reserve_sysex`](Self::reserve_sysex)ed.
-    pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
-        match self.sysex.push(event) {
+    pub fn add_midi(&mut self, event: &(Offset, Ump)) -> &mut Self {
+        let (offset, ump) = *event;
+        match self.sysex.push(&ump) {
             SysExStep::NotSysEx => {
-                if self.bend_ranges.observe(event) {
+                if self.bend_ranges.observe(&ump) {
                     return self;
                 }
                 // A Program Change with a bank is three MIDI-1 messages (CC 0,
                 // CC 32, PC), each its own event at the same time. All of
                 // them or none, so a bank is not sent without its program.
-                let ump = Ump(event.data);
                 let banked = decode(ump).ok().filter(|message| {
                     matches!(
                         message,
@@ -1094,14 +1122,11 @@ impl InputEventList {
                 if let Some(message) = banked {
                     for bytes in midi1(message) {
                         self.events
-                            .push(ClapEvent::midi(event.frame_offset, 0, bytes.padded()));
+                            .push(ClapEvent::midi(offset.get(), 0, bytes.padded()));
                     }
-                } else if let Some(clap_event) = ClapEvent::from_message(
-                    event.frame_offset,
-                    ump,
-                    &self.bend_ranges,
-                    self.midi_notes,
-                ) {
+                } else if let Some(clap_event) =
+                    ClapEvent::from_message(offset.get(), ump, &self.bend_ranges, self.midi_notes)
+                {
                     self.events.push(clap_event);
                 }
             }
@@ -1116,7 +1141,7 @@ impl InputEventList {
                 let inner = clap_event_midi_sysex {
                     header: clap_event_header {
                         size: header_size::<clap_event_midi_sysex>(),
-                        time: event.frame_offset,
+                        time: offset.get(),
                         space_id: CLAP_CORE_EVENT_SPACE_ID,
                         type_: CLAP_EVENT_MIDI_SYSEX,
                         flags: 0,
@@ -1138,7 +1163,7 @@ impl InputEventList {
     }
 
     /// Batch version of [`add_midi`](Self::add_midi).
-    pub fn add_midi_events(&mut self, events: &[MidiEvent]) -> &mut Self {
+    pub fn add_midi_events(&mut self, events: &[(Offset, Ump)]) -> &mut Self {
         for event in events {
             self.add_midi(event);
         }
@@ -1608,16 +1633,17 @@ impl OutputEventList {
         true
     }
 
-    /// Extracts MIDI events from the output as UMP [`MidiEvent`]s,
+    /// Extracts MIDI events from the output as UMP packets with the time the
+    /// plugin reported ([`WireMidi`]),
     /// dropping non-MIDI events.
     #[must_use]
-    pub fn to_midi_events(&self) -> Vec<MidiEvent> {
+    pub fn to_midi_events(&self) -> Vec<WireMidi> {
         let mut out = Vec::new();
         for e in &self.events {
             match e.sysex_bytes() {
                 Some((bytes, time)) => out.extend(
-                    MidiEvent::sysex7_packets(MidiGroup::FIRST, unframed(bytes))
-                        .map(|p| p.with_frame_offset(time)),
+                    sysex7_packets(MidiGroup::FIRST, unframed(bytes))
+                        .map(|ump| WireMidi { offset: time, ump }),
                 ),
                 None => out.extend(e.to_midi()),
             }
@@ -1920,12 +1946,38 @@ impl EventSink for OutputEventList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_fixtures::midi as fx;
     use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
+    use tutti_types::Samples;
     use tutti_ump::{Data128, Sysex8Packet, SysexStatus, System};
 
+    /// A block long enough for every offset these tests use (the largest is
+    /// 9,999).
+    const BLOCK: usize = 10_000;
+
+    /// The offset `k` frames into the block.
+    fn at(k: u32) -> Offset {
+        Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+    }
+
+    /// The packet of `words`, zero-padded to four, at offset `k`.
+    fn packet(k: u32, words: &[u32]) -> (Offset, Ump) {
+        let mut w = [0u32; 4];
+        w[..words.len()].copy_from_slice(words);
+        (at(k), Ump(w))
+    }
+
+    /// The MIDI 1.0 bytes as a packet at offset 0.
+    fn midi1_event(bytes: &[u8]) -> (Offset, Ump) {
+        (
+            at(0),
+            tutti_midi_types::from_midi1_bytes(bytes).expect("builds"),
+        )
+    }
+
     /// The message `midi` carries.
-    fn message(midi: &MidiEvent) -> Message {
-        decode(Ump(midi.data)).expect("a defined message")
+    fn message(midi: &WireMidi) -> Message {
+        decode(midi.ump).expect("a defined message")
     }
 
     /// A huge event time must saturate, not wrap negative.
@@ -2017,8 +2069,10 @@ mod tests {
     /// and the plain-event bound fail.
     #[test]
     fn a_banked_program_change_is_three_midi_events() {
-        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085))
-            .with_frame_offset(5);
+        let pc = (
+            at(5),
+            fx::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+        );
         let mut list = InputEventList::new();
         list.reserve(8);
         list.add_midi(&pc);
@@ -2039,11 +2093,9 @@ mod tests {
         tight.reserve(2);
         let room = tight.events.capacity();
         for _ in 0..room.saturating_sub(1) {
-            tight.add_midi(&MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                0x8000,
+            tight.add_midi(&(
+                at(0),
+                fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
             ));
         }
         let before = tight.events().len();
@@ -2053,18 +2105,14 @@ mod tests {
         // A plain event past the room is refused too, never grown into.
         let cap = tight.events.capacity();
         while tight.events().len() < cap {
-            tight.add_midi(&MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                61,
-                0x8000,
+            tight.add_midi(&(
+                at(0),
+                fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 61, 0x8000),
             ));
         }
-        tight.add_midi(&MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            62,
-            0x8000,
+        tight.add_midi(&(
+            at(0),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 62, 0x8000),
         ));
         assert_eq!(tight.events().len(), cap);
         assert_eq!(tight.events.capacity(), cap, "did not grow");
@@ -2080,7 +2128,7 @@ mod tests {
     /// CC 32 -> fails.
     #[test]
     fn a_spec_word_banked_program_change_is_three_midi_events() {
-        let pc = MidiEvent::from_ump(5, &[0x40C1_0001, (9 << 24) | (1 << 8) | 5]);
+        let pc = packet(5, &[0x40C1_0001, (9 << 24) | (1 << 8) | 5]);
         let mut list = InputEventList::new();
         list.reserve(8);
         list.add_midi(&pc);
@@ -2105,7 +2153,7 @@ mod tests {
     #[test]
     fn a_midi1_note_on_at_velocity_zero_releases_at_half() {
         let ranges = PerNoteBendRanges::default();
-        let midi1 = MidiEvent::from_ump(0, &[0x2091_3C00]);
+        let midi1 = packet(0, &[0x2091_3C00]);
         let Some(ClapEvent::NoteOff(e)) = ClapEvent::from_midi(&midi1, &ranges) else {
             panic!("a MIDI 1.0 Note On at velocity 0 is a Note Off");
         };
@@ -2116,7 +2164,7 @@ mod tests {
             e.velocity
         );
 
-        let midi2 = MidiEvent::from_ump(0, &[0x4091_3C00, 0]);
+        let midi2 = packet(0, &[0x4091_3C00, 0]);
         let Some(ClapEvent::NoteOff(e)) = ClapEvent::from_midi(&midi2, &ranges) else {
             panic!("a MIDI 2.0 Note On at velocity 0 is a Note Off here");
         };
@@ -2134,7 +2182,7 @@ mod tests {
         let ranges = PerNoteBendRanges::default();
         for attribute_type in [0x00, 0x01, 0x02, 0x03, 0x04, 0x81, 0xFF] {
             for (opcode, on) in [(0x9, true), (0x8, false)] {
-                let midi = MidiEvent::from_ump(
+                let midi = packet(
                     0,
                     &[
                         0x4000_0000 | (opcode << 20) | (2 << 16) | (60 << 8) | attribute_type,
@@ -2170,7 +2218,7 @@ mod tests {
                 [0x4000_0000 | (0x7 << 20), 0, 0, 0],
             ] {
                 assert!(decode(Ump(words)).is_err(), "{words:08x?} is framed");
-                list.add_midi(&MidiEvent::from_ump(3, &words));
+                list.add_midi(&packet(3, &words));
             }
             assert!(list.events().is_empty(), "{:?}", list.events());
             assert_eq!(list.midi_dropped(), 0);
@@ -2187,7 +2235,7 @@ mod tests {
         let midi = ClapEvent::midi(4, 0, [0x93, 61, 0])
             .to_midi()
             .expect("converts");
-        assert_eq!(midi.frame_offset, 4);
+        assert_eq!(midi.offset, 4);
         match message(&midi) {
             Message::Midi2(address, Voice2::NoteOff { note, velocity, .. }) => {
                 assert_eq!((address.channel.get(), note.get()), (3, 61));
@@ -2256,10 +2304,7 @@ mod tests {
             };
             assert_eq!(kind, *claimed, "{words:08x?}");
         }
-        let packets: Vec<MidiEvent> = table
-            .iter()
-            .map(|(_, words)| MidiEvent::from_ump(2, words))
-            .collect();
+        let packets: Vec<(Offset, Ump)> = table.iter().map(|(_, words)| packet(2, words)).collect();
         for midi_notes in [false, true] {
             let mut list = InputEventList::new();
             list.reserve(64);
@@ -2314,7 +2359,7 @@ mod tests {
         let mut list = InputEventList::new();
         list.reserve(8);
         list.set_midi_notes(midi_notes);
-        list.add_midi(&MidiEvent::from_ump(11, words));
+        list.add_midi(&packet(11, words));
         list.events()
             .iter()
             .map(|e| match e {
@@ -2397,7 +2442,7 @@ mod tests {
         let expression = |index: u32, value: u32| {
             let mut list = InputEventList::new();
             list.reserve(4);
-            list.add_midi(&MidiEvent::from_ump(4, &[0x4003_3C00 | index, value]));
+            list.add_midi(&packet(4, &[0x4003_3C00 | index, value]));
             match list.events() {
                 [ClapEvent::NoteExpression(e)] => (e.expression_id, e.value),
                 other => panic!("index {index}: {other:?}"),
@@ -2445,14 +2490,14 @@ mod tests {
             list.reserve(200 * points + 16);
             list.add_param_changes(&changes, &[], false);
             for frame in [0u32, 100, 475] {
-                list.add_midi(
-                    &MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
-                        .with_frame_offset(frame),
-                );
-                list.add_midi(
-                    &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
-                        .with_frame_offset(frame),
-                );
+                list.add_midi(&(
+                    at(frame),
+                    fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+                ));
+                list.add_midi(&(
+                    at(frame),
+                    fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                ));
             }
             list
         };
@@ -2619,10 +2664,10 @@ mod tests {
     #[test]
     fn event_time_past_the_block_is_clamped_to_the_last_sample_h3() {
         let mut list = InputEventList::new();
-        list.add_midi(
-            &MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
-                .with_frame_offset(9_999),
-        );
+        list.add_midi(&(
+            at(9_999),
+            fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+        ));
         assert_eq!(list.len(), 1);
 
         list.clamp_times(64);
@@ -2644,10 +2689,10 @@ mod tests {
     #[test]
     fn clamp_times_leaves_in_range_events_alone_h3() {
         let mut list = InputEventList::new();
-        list.add_midi(
-            &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
-                .with_frame_offset(17),
-        );
+        list.add_midi(&(
+            at(17),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ));
         list.clamp_times(64);
         assert_eq!(first_time(&list), 17);
 
@@ -2664,13 +2709,9 @@ mod tests {
     #[test]
     fn per_note_volume_maps_into_claps_gain_range_l6() {
         // Full-scale MIDI volume is unity gain, not "the top of 0..1".
-        let full = MidiEvent::per_note_controller(
-            MidiGroup::FIRST,
-            MidiChannel::of(2),
-            64,
-            7,
-            u32::MAX,
-            false,
+        let full = (
+            at(0),
+            fx::per_note_controller(MidiGroup::FIRST, MidiChannel::of(2), 64, 7, u32::MAX, false),
         );
         let ClapEvent::NoteExpression(e) =
             ClapEvent::from_midi(&full, &PerNoteBendRanges::default()).expect("converts")
@@ -2685,8 +2726,10 @@ mod tests {
         );
 
         // Zero MIDI volume must stay inside the OPEN interval: `0 < x`.
-        let zero =
-            MidiEvent::per_note_controller(MidiGroup::FIRST, MidiChannel::of(2), 64, 7, 0, false);
+        let zero = (
+            at(0),
+            fx::per_note_controller(MidiGroup::FIRST, MidiChannel::of(2), 64, 7, 0, false),
+        );
         let ClapEvent::NoteExpression(e) =
             ClapEvent::from_midi(&zero, &PerNoteBendRanges::default()).expect("converts")
         else {
@@ -2777,8 +2820,10 @@ mod tests {
     #[test]
     fn per_note_pitch_bend_becomes_tuning_note_expression() {
         let bend = signed_f32_to_bend_u32(0.5);
-        let midi = MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(3), 60, bend)
-            .with_frame_offset(11);
+        let midi = (
+            at(11),
+            fx::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(3), 60, bend),
+        );
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default())
             .expect("per-note bend converts")
         {
@@ -2812,7 +2857,10 @@ mod tests {
         use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
         let half = signed_f32_to_bend_u32(0.5);
         let bend = |channel: u8| {
-            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), 60, half)
+            (
+                at(0),
+                fx::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), 60, half),
+            )
         };
         let tunings = |list: &InputEventList| -> Vec<(i16, f64)> {
             list.events
@@ -2835,12 +2883,15 @@ mod tests {
         };
 
         let mut list = InputEventList::new();
-        list.add_midi(&MidiEvent::registered_controller(
-            MidiGroup::FIRST,
-            MidiChannel::of(3),
-            RPN_BANK_MPE,
-            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::of(12).to_rpn_bits(),
+        list.add_midi(&(
+            at(0),
+            fx::registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::of(3),
+                RPN_BANK_MPE,
+                RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                PitchBendSensitivity::of(12).to_rpn_bits(),
+            ),
         ));
         list.add_midi(&bend(3)).add_midi(&bend(4));
         near(&tunings(&list), &[(3, 6.0), (4, 24.0)]);
@@ -2859,7 +2910,7 @@ mod tests {
             ClapEvent::per_note_expression(7, NoteExpressionType::Tuning, 5, 67, value_semitones)
                 .expect("Tuning is a named CLAP dimension");
         let midi = clap.to_midi().expect("tuning -> midi");
-        assert_eq!(midi.frame_offset, 7);
+        assert_eq!(midi.offset, 7);
         match message(&midi) {
             Message::Midi2(address, Voice2::PerNotePitchBend { note, value }) => {
                 assert_eq!(address.channel.get(), 5);
@@ -2873,11 +2924,14 @@ mod tests {
 
     #[test]
     fn key_pressure_becomes_pressure_note_expression() {
-        let midi = MidiEvent::poly_pressure(
-            MidiGroup::FIRST,
-            MidiChannel::of(2),
-            48,
-            unit_f32_to_u32(0.75),
+        let midi = (
+            at(0),
+            fx::poly_pressure(
+                MidiGroup::FIRST,
+                MidiChannel::of(2),
+                48,
+                unit_f32_to_u32(0.75),
+            ),
         );
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default())
             .expect("poly pressure converts")
@@ -2894,13 +2948,16 @@ mod tests {
     #[test]
     fn assignable_per_note_controller_maps_to_brightness() {
         // Assignable per-note controller index 74 (CC74) → CLAP _BRIGHTNESS.
-        let midi = MidiEvent::per_note_controller(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            64,
-            74,
-            unit_f32_to_u32(0.6),
-            false,
+        let midi = (
+            at(0),
+            fx::per_note_controller(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                64,
+                74,
+                unit_f32_to_u32(0.6),
+                false,
+            ),
         );
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default())
             .expect("per-note cc converts")
@@ -2918,21 +2975,26 @@ mod tests {
     fn per_note_controller_without_counterpart_yields_no_event() {
         // Per-note CC index 20 has no CLAP expression dimension and no MIDI 1.0
         // form, so nothing is sent.
-        let midi = MidiEvent::per_note_controller(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            20,
-            unit_f32_to_u32(0.5),
-            false,
+        let midi = (
+            at(0),
+            fx::per_note_controller(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                20,
+                unit_f32_to_u32(0.5),
+                false,
+            ),
         );
         assert!(ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()).is_none());
     }
 
     #[test]
     fn from_midi_event_note_on_decodes_to_typed_note_on() {
-        let midi = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0x8000)
-            .with_frame_offset(7);
+        let midi = (
+            at(7),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0x8000),
+        );
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()).expect("note on converts")
         {
             ClapEvent::NoteOn(e) => {
@@ -2961,25 +3023,31 @@ mod tests {
         const KEY: u8 = 60;
 
         let on = ClapEvent::from_midi(
-            &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(CH), KEY, 0x8000)
-                .with_frame_offset(0),
+            &(
+                at(0),
+                fx::note_on(MidiGroup::FIRST, MidiChannel::of(CH), KEY, 0x8000),
+            ),
             &PerNoteBendRanges::default(),
         )
         .expect("note on converts");
         let expr = ClapEvent::from_midi(
-            &MidiEvent::poly_pressure(
-                MidiGroup::FIRST,
-                MidiChannel::of(CH),
-                KEY,
-                unit_f32_to_u32(0.5),
-            )
-            .with_frame_offset(1),
+            &(
+                at(1),
+                fx::poly_pressure(
+                    MidiGroup::FIRST,
+                    MidiChannel::of(CH),
+                    KEY,
+                    unit_f32_to_u32(0.5),
+                ),
+            ),
             &PerNoteBendRanges::default(),
         )
         .expect("poly pressure converts");
         let off = ClapEvent::from_midi(
-            &MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(CH), KEY, 0x4000)
-                .with_frame_offset(2),
+            &(
+                at(2),
+                fx::note_off(MidiGroup::FIRST, MidiChannel::of(CH), KEY, 0x4000),
+            ),
             &PerNoteBendRanges::default(),
         )
         .expect("note off converts");
@@ -3029,8 +3097,10 @@ mod tests {
         // CLAP NoteOff's `velocity`, and round-trip back.
         use tutti_midi_types::convert::u16_to_unit_f32;
         let rel = 0x6000u16; // ~0.375 of full scale
-        let midi =
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(4), 55, rel).with_frame_offset(9);
+        let midi = (
+            at(9),
+            fx::note_off(MidiGroup::FIRST, MidiChannel::of(4), 55, rel),
+        );
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()).expect("note off converts")
         {
             ClapEvent::NoteOff(e) => {
@@ -3067,7 +3137,7 @@ mod tests {
     fn from_midi_event_velocity_zero_note_on_becomes_note_off() {
         // The MIDI velocity-0 NoteOn quirk: widening reads it as a NoteOff, so
         // a raw MIDI-1 velocity-0 NoteOn converts to a CLAP NoteOff.
-        let midi = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 0]).expect("builds");
+        let midi = midi1_event(&[0x90, 60, 0]);
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()).expect("converts") {
             ClapEvent::NoteOff(e) => {
                 assert_eq!(e.key, 60);
@@ -3078,11 +3148,14 @@ mod tests {
 
     #[test]
     fn from_midi_event_cc_forwards_as_generic_midi() {
-        let midi = MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::VOLUME,
-            0x8000_0000,
+        let midi = (
+            at(0),
+            fx::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::VOLUME,
+                0x8000_0000,
+            ),
         ); // volume, ~half
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()).expect("cc converts") {
             ClapEvent::Midi(e) => {
@@ -3127,13 +3200,13 @@ mod tests {
 
     #[test]
     fn note_event_round_trips_to_full_width_cv2() {
-        // ClapEvent::NoteOn -> MidiEvent builds a native MIDI-2 NoteOn preserving
+        // ClapEvent::NoteOn -> WireMidi builds a native MIDI-2 NoteOn preserving
         // the note and full-width velocity (no 7-bit squash).
         use tutti_midi_types::convert::u16_to_unit_f32;
 
         let clap = ClapEvent::note_on(3, 2, 64, 0.75);
         let midi = clap.to_midi().expect("note on -> midi");
-        assert_eq!(midi.frame_offset, 3);
+        assert_eq!(midi.offset, 3);
         match message(&midi) {
             Message::Midi2(address, Voice2::NoteOn { note, velocity, .. }) => {
                 assert_eq!(address.channel.get(), 2);
@@ -3212,10 +3285,19 @@ mod tests {
     #[test]
     fn midi_dialect_sends_notes_as_midi_events() {
         let ch = MidiChannel::of(9);
-        let on = MidiEvent::note_on(MidiGroup::FIRST, ch, 60, 0xFFFF);
-        let mid = MidiEvent::note_on_7bit(MidiGroup::FIRST, ch, 62, 64);
-        let quiet = MidiEvent::note_on(MidiGroup::FIRST, ch, 61, 1);
-        let off = MidiEvent::note_off(MidiGroup::FIRST, ch, 60, 0);
+        let on = (at(0), fx::note_on(MidiGroup::FIRST, ch, 60, 0xFFFF));
+        // 7-bit velocity 64, widened (M2-115).
+        let mid = (
+            at(0),
+            fx::note_on(
+                MidiGroup::FIRST,
+                ch,
+                62,
+                tutti_midi_types::convert::midi1_velocity_to_midi2(64),
+            ),
+        );
+        let quiet = (at(0), fx::note_on(MidiGroup::FIRST, ch, 61, 1));
+        let off = (at(0), fx::note_off(MidiGroup::FIRST, ch, 60, 0));
 
         let mut list = InputEventList::new();
         list.set_midi_notes(true);
@@ -3270,7 +3352,7 @@ mod tests {
     /// assertion fails.
     #[test]
     fn midi_dialect_keeps_poly_pressure_as_midi_bytes() {
-        let event = MidiEvent::from_midi1_bytes(0, &[0xA3, 60, 90]).expect("poly pressure");
+        let event = midi1_event(&[0xA3, 60, 90]);
 
         let mut list = InputEventList::new();
         list.set_midi_notes(true);
@@ -3428,10 +3510,10 @@ mod tests {
             .collect()
     }
 
-    fn sysex_packets(payload: &[u8], time: u32) -> Vec<MidiEvent> {
+    fn sysex_packets(payload: &[u8], time: u32) -> Vec<(Offset, Ump)> {
         let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
-        out.into_iter().map(|e| e.with_frame_offset(time)).collect()
+        tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out.into_iter().map(|ump| (at(time), ump)).collect()
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {

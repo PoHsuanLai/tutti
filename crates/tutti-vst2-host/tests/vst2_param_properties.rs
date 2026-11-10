@@ -158,7 +158,7 @@ fn real_world_plugins_decline_these_opcodes() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameter_count() as i32;
+    let count = instance.loaded().parameter_count() as i32;
     assert!(
         count > 0,
         "probe must declare parameters for this test to mean anything"
@@ -166,28 +166,48 @@ fn real_world_plugins_decline_these_opcodes() {
 
     for id in 0..count {
         assert_eq!(
-            instance.parameter_properties(pid(id)),
+            instance.loaded().parameter_properties(pid(id)),
             None,
             "a declining plugin must report absence, not zeroed properties, for param {id}"
         );
     }
 
     // Index-aligned listing: every entry present, every one None.
-    let all = instance.all_parameter_properties();
+    let all = instance.loaded().all_parameter_properties();
     assert_eq!(all.len(), count as usize);
     assert!(all.iter().all(Option::is_none));
 
     // The whole MIDI family declines too.
-    assert_eq!(instance.midi_program(&main_thread(), 0, 0), None);
-    assert_eq!(instance.current_midi_program(&main_thread(), 0), None);
-    assert_eq!(instance.midi_program_category(&main_thread(), 0, 0), None);
-    assert!(!instance.midi_programs_changed(&main_thread(), 0));
+    assert_eq!(instance.loaded().midi_program(&main_thread(), 0, 0), None);
     assert_eq!(
-        instance.midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY),
+        instance.loaded().current_midi_program(&main_thread(), 0),
         None
     );
-    assert!(instance.midi_programs(&main_thread(), 0).is_empty());
-    assert!(instance.midi_key_names(&main_thread(), 0, 0).is_empty());
+    assert_eq!(
+        instance
+            .loaded()
+            .midi_program_category(&main_thread(), 0, 0),
+        None
+    );
+    assert!(!instance.loaded().midi_programs_changed(&main_thread(), 0));
+    assert_eq!(
+        instance
+            .loaded()
+            .midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY),
+        None
+    );
+    assert!(
+        instance
+            .loaded()
+            .midi_programs(&main_thread(), 0)
+            .is_empty()
+    );
+    assert!(
+        instance
+            .loaded()
+            .midi_key_names(&main_thread(), 0, 0)
+            .is_empty()
+    );
 }
 
 /// When a plugin *does* answer, every field arrives at the right offset with
@@ -207,6 +227,7 @@ fn an_answering_plugin_round_trips_every_property_field() {
     set_answer_param_properties(&path, true);
 
     let props = instance
+        .loaded()
         .parameter_properties(pid(PROBE_INT_STEP_PARAM))
         .expect("probe answers once the switch is on");
 
@@ -255,6 +276,7 @@ fn ungated_integer_fields_are_not_reported_as_a_range() {
     // Parameter 0 is not the int-step one, so the probe reports float steps
     // only while leaving garbage in the integer fields.
     let props = instance
+        .loaded()
         .parameter_properties(pid(0))
         .expect("probe answers for every parameter");
 
@@ -290,16 +312,24 @@ fn an_out_of_range_parameter_index_is_refused_before_dispatch() {
     let (instance, path) = load_probe();
     set_answer_param_properties(&path, true);
 
-    let count = instance.parameter_count() as i32;
-    assert!(instance.parameter_properties(pid(count - 1)).is_some());
-    assert_eq!(instance.parameter_properties(pid(count)), None);
-    assert_eq!(instance.parameter_properties(pid(count + 100)), None);
-    assert_eq!(instance.parameter_properties(pid(i32::MAX)), None);
+    let count = instance.loaded().parameter_count() as i32;
+    assert!(
+        instance
+            .loaded()
+            .parameter_properties(pid(count - 1))
+            .is_some()
+    );
+    assert_eq!(instance.loaded().parameter_properties(pid(count)), None);
+    assert_eq!(
+        instance.loaded().parameter_properties(pid(count + 100)),
+        None
+    );
+    assert_eq!(instance.loaded().parameter_properties(pid(i32::MAX)), None);
     // An id past `i32::MAX` is refused by the same guard. The ABI's index is
     // `i32`, so such an id reads as a negative one; the plugin would subscript
     // its table with it.
-    assert_eq!(instance.parameter_properties(pid(-1)), None);
-    assert_eq!(instance.parameter_properties(pid(i32::MIN)), None);
+    assert_eq!(instance.loaded().parameter_properties(pid(-1)), None);
+    assert_eq!(instance.loaded().parameter_properties(pid(i32::MIN)), None);
 
     reset_switches(&path);
 }
@@ -317,6 +347,7 @@ fn midi_program_metadata_round_trips() {
     set_answer_midi_metadata(&path, true, 2);
 
     let (program, serviced) = instance
+        .loaded()
         .midi_program(&main_thread(), 0, 0)
         .expect("probe answers once the switch is on");
     assert_eq!(serviced, 2);
@@ -336,6 +367,7 @@ fn midi_program_metadata_round_trips() {
     // proving the host wrote `this_program_index` before dispatching rather
     // than describing program 0 every time.
     let (drum_kit, _) = instance
+        .loaded()
         .midi_program(&main_thread(), 0, 1)
         .expect("program 1 is serviced");
     assert_eq!(drum_kit.name, "Probe Program 1");
@@ -363,6 +395,7 @@ fn current_midi_program_zero_is_a_valid_answer_not_a_failure() {
     set_answer_midi_metadata(&path, true, 2);
 
     let current = instance
+        .loaded()
         .current_midi_program(&main_thread(), 0)
         .expect("program index 0 is a successful answer, not a refusal");
     assert_eq!(current.index, 0);
@@ -396,7 +429,7 @@ fn a_declining_plugin_is_not_reported_as_sitting_on_program_zero() {
     // The declining probe answers this opcode with 0 — indistinguishable, by
     // return value alone, from "currently on program 0".
     assert_eq!(
-        instance.current_midi_program(&main_thread(), 0),
+        instance.loaded().current_midi_program(&main_thread(), 0),
         None,
         "a plugin that services no MIDI programs has no current program; \
          reporting one invents a nameless entry and a bogus (0, 0) bank"
@@ -406,6 +439,7 @@ fn a_declining_plugin_is_not_reported_as_sitting_on_program_zero() {
     // gate rejects refusals without also rejecting genuine zeros.
     set_answer_midi_metadata(&path, true, 2);
     let current = instance
+        .loaded()
         .current_midi_program(&main_thread(), 0)
         .expect("an answering plugin's program 0 is real");
     assert_eq!(current.index, 0);
@@ -432,11 +466,12 @@ fn an_advertised_program_count_above_the_serviced_one_does_not_produce_blanks() 
     set_answer_midi_metadata(&path, true, 5);
 
     let (_, serviced) = instance
+        .loaded()
         .midi_program(&main_thread(), 0, 0)
         .expect("program 0 is named");
     assert_eq!(serviced, 5, "the plugin advertises five");
 
-    let programs = instance.midi_programs(&main_thread(), 0);
+    let programs = instance.loaded().midi_programs(&main_thread(), 0);
     assert_eq!(
         programs.len(),
         2,
@@ -463,6 +498,7 @@ fn only_named_keys_are_reported() {
     set_answer_midi_metadata(&path, true, 2);
 
     let named = instance
+        .loaded()
         .midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY)
         .expect("the probe names this key");
     assert_eq!(named.name, PROBE_KEY_NAME);
@@ -470,11 +506,13 @@ fn only_named_keys_are_reported() {
 
     // A key the plugin does not name is absent, not empty-named.
     assert_eq!(
-        instance.midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY + 1),
+        instance
+            .loaded()
+            .midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY + 1),
         None
     );
 
-    let all = instance.midi_key_names(&main_thread(), 0, 0);
+    let all = instance.loaded().midi_key_names(&main_thread(), 0, 0);
     assert_eq!(
         all.len(),
         1,
@@ -504,30 +542,51 @@ fn out_of_range_midi_coordinates_are_refused() {
     // switch being off.
     assert!(
         instance
+            .loaded()
             .midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY)
             .is_some()
     );
 
     assert_eq!(
-        instance.midi_key_name(&main_thread(), 16, 0, PROBE_NAMED_KEY),
+        instance
+            .loaded()
+            .midi_key_name(&main_thread(), 16, 0, PROBE_NAMED_KEY),
         None
     );
     assert_eq!(
-        instance.midi_key_name(&main_thread(), -1, 0, PROBE_NAMED_KEY),
+        instance
+            .loaded()
+            .midi_key_name(&main_thread(), -1, 0, PROBE_NAMED_KEY),
         None
     );
     assert_eq!(
-        instance.midi_key_name(&main_thread(), 0, -1, PROBE_NAMED_KEY),
+        instance
+            .loaded()
+            .midi_key_name(&main_thread(), 0, -1, PROBE_NAMED_KEY),
         None
     );
-    assert_eq!(instance.midi_key_name(&main_thread(), 0, 0, 128), None);
-    assert_eq!(instance.midi_key_name(&main_thread(), 0, 0, -1), None);
+    assert_eq!(
+        instance.loaded().midi_key_name(&main_thread(), 0, 0, 128),
+        None
+    );
+    assert_eq!(
+        instance.loaded().midi_key_name(&main_thread(), 0, 0, -1),
+        None
+    );
 
-    assert_eq!(instance.midi_program(&main_thread(), 16, 0), None);
-    assert_eq!(instance.midi_program(&main_thread(), 0, -1), None);
-    assert_eq!(instance.current_midi_program(&main_thread(), 16), None);
-    assert_eq!(instance.midi_program_category(&main_thread(), 16, 0), None);
-    assert!(!instance.midi_programs_changed(&main_thread(), 16));
+    assert_eq!(instance.loaded().midi_program(&main_thread(), 16, 0), None);
+    assert_eq!(instance.loaded().midi_program(&main_thread(), 0, -1), None);
+    assert_eq!(
+        instance.loaded().current_midi_program(&main_thread(), 16),
+        None
+    );
+    assert_eq!(
+        instance
+            .loaded()
+            .midi_program_category(&main_thread(), 16, 0),
+        None
+    );
+    assert!(!instance.loaded().midi_programs_changed(&main_thread(), 16));
 
     reset_switches(&path);
 }
@@ -544,16 +603,22 @@ fn the_change_flag_and_category_query_reach_the_plugin() {
     let (instance, path) = load_probe();
 
     // Default (declining) probe: no change signalled, no category.
-    assert!(!instance.midi_programs_changed(&main_thread(), 0));
-    assert_eq!(instance.midi_program_category(&main_thread(), 0, 0), None);
+    assert!(!instance.loaded().midi_programs_changed(&main_thread(), 0));
+    assert_eq!(
+        instance
+            .loaded()
+            .midi_program_category(&main_thread(), 0, 0),
+        None
+    );
 
     set_answer_midi_metadata(&path, true, 2);
     assert!(
-        instance.midi_programs_changed(&main_thread(), 0),
+        instance.loaded().midi_programs_changed(&main_thread(), 0),
         "the answering probe returns 1"
     );
 
     let (category, serviced) = instance
+        .loaded()
         .midi_program_category(&main_thread(), 0, 0)
         .expect("the answering probe describes category 0");
     assert_eq!(serviced, 1);
@@ -561,7 +626,12 @@ fn the_change_flag_and_category_query_reach_the_plugin() {
     assert_eq!(category.parent_category, None);
 
     // A category the probe does not describe is absent.
-    assert_eq!(instance.midi_program_category(&main_thread(), 0, 1), None);
+    assert_eq!(
+        instance
+            .loaded()
+            .midi_program_category(&main_thread(), 0, 1),
+        None
+    );
 
     reset_switches(&path);
 }
@@ -578,20 +648,20 @@ fn the_probe_switches_gate_the_answers_both_ways() {
     let (instance, path) = load_probe();
 
     assert_eq!(
-        instance.parameter_properties(pid(0)),
+        instance.loaded().parameter_properties(pid(0)),
         None,
         "off by default"
     );
 
     set_answer_param_properties(&path, true);
     assert!(
-        instance.parameter_properties(pid(0)).is_some(),
+        instance.loaded().parameter_properties(pid(0)).is_some(),
         "switching on must change the answer on the same live instance"
     );
 
     set_answer_param_properties(&path, false);
     assert_eq!(
-        instance.parameter_properties(pid(0)),
+        instance.loaded().parameter_properties(pid(0)),
         None,
         "switching off must restore the declining behaviour"
     );
@@ -623,7 +693,7 @@ fn a_declared_integer_range_reaches_the_shared_parameter_info() {
     let (instance, path) = load_probe();
     set_answer_param_properties(&path, true);
 
-    let listed = instance.parameter_list();
+    let listed = instance.loaded().parameter_list();
     assert!(
         listed.len() > PROBE_INT_STEP_PARAM as usize,
         "the probe exposes {} parameters, too few to reach the one that \
@@ -684,7 +754,7 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let listed = instance.parameter_list();
+    let listed = instance.loaded().parameter_list();
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert_eq!(
@@ -720,7 +790,7 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let listed = instance.parameter_list();
+    let listed = instance.loaded().parameter_list();
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert!(
@@ -771,7 +841,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameter_count() as i32;
+    let count = instance.loaded().parameter_count() as i32;
     assert!(count > 0, "the probe exposes no parameters");
 
     for id in [
@@ -790,11 +860,13 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
             "reading out-of-range id {id} must not dispatch"
         );
         assert!(
-            !instance.write_parameter(pid(id), Normalized::of(0.5)),
+            !instance
+                .loaded()
+                .write_parameter(pid(id), Normalized::of(0.5)),
             "writing out-of-range id {id} must not dispatch"
         );
         assert!(
-            instance.parameter_info(pid(id)).is_none(),
+            instance.loaded().parameter_info(pid(id)).is_none(),
             "describing out-of-range id {id} must not dispatch"
         );
     }
@@ -808,7 +880,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
                 .is_some(),
             "in-range id {id} must still read"
         );
-        assert!(instance.parameter_info(pid(id)).is_some());
+        assert!(instance.loaded().parameter_info(pid(id)).is_some());
     }
 }
 
@@ -833,7 +905,7 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameter_count() as i32;
+    let count = instance.loaded().parameter_count() as i32;
     assert!(
         count >= 4,
         "the probe must declare enough params to cycle its labels"
@@ -844,11 +916,14 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
 
     for id in 0..count.min(4) {
         assert!(
-            instance.write_parameter(pid(id), Normalized::of(0.25)),
+            instance
+                .loaded()
+                .write_parameter(pid(id), Normalized::of(0.25)),
             "param {id} should accept a write"
         );
 
         let shown = instance
+            .loaded()
             .parameter_display(pid(id))
             .unwrap_or_else(|| panic!("param {id} should have a display string"));
 
@@ -867,8 +942,13 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     }
 
     // It tracks the parameter rather than caching: a second value reads differently.
-    assert!(instance.write_parameter(pid(0), Normalized::of(0.75)));
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.75))
+    );
     let after = instance
+        .loaded()
         .parameter_display(pid(0))
         .expect("param 0 has a display");
     assert!(
@@ -877,8 +957,8 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     );
 
     // An out-of-range index addresses nothing and must not dispatch.
-    assert_eq!(instance.parameter_display(pid(count)), None);
-    assert_eq!(instance.parameter_display(pid(-1)), None);
+    assert_eq!(instance.loaded().parameter_display(pid(count)), None);
+    assert_eq!(instance.loaded().parameter_display(pid(-1)), None);
 }
 
 /// The probe declines `effString2Parameter`, and a decline is reported as
@@ -900,11 +980,15 @@ fn a_refused_string_parse_reports_none_and_writes_nothing() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    assert!(instance.write_parameter(pid(0), Normalized::of(0.5)));
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.5))
+    );
 
     for text in ["0.75", "-6 dB", "Bandpass", ""] {
         assert_eq!(
-            instance.set_parameter_from_string(pid(0), text),
+            instance.loaded().set_parameter_from_string(pid(0), text),
             None,
             "the probe declines effString2Parameter; {text:?} must not parse"
         );
@@ -920,9 +1004,17 @@ fn a_refused_string_parse_reports_none_and_writes_nothing() {
     );
 
     // Out-of-range indices do not dispatch either.
-    let count = instance.parameter_count() as i32;
-    assert_eq!(instance.set_parameter_from_string(pid(count), "0.5"), None);
-    assert_eq!(instance.set_parameter_from_string(pid(-1), "0.5"), None);
+    let count = instance.loaded().parameter_count() as i32;
+    assert_eq!(
+        instance
+            .loaded()
+            .set_parameter_from_string(pid(count), "0.5"),
+        None
+    );
+    assert_eq!(
+        instance.loaded().set_parameter_from_string(pid(-1), "0.5"),
+        None
+    );
 }
 
 /// The display string is only valid for the value the plugin currently holds,
@@ -942,13 +1034,23 @@ fn the_display_string_describes_only_the_current_value() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    assert!(instance.write_parameter(pid(0), Normalized::of(0.25)));
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.25))
+    );
     let at_quarter = instance
+        .loaded()
         .parameter_display(pid(0))
         .expect("param 0 has a display");
 
-    assert!(instance.write_parameter(pid(0), Normalized::of(0.75)));
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.75))
+    );
     let at_three_quarters = instance
+        .loaded()
         .parameter_display(pid(0))
         .expect("param 0 has a display");
 
@@ -978,8 +1080,12 @@ fn a_plugins_echo_of_a_host_write_is_not_reported() {
         f(true);
     });
 
-    assert!(instance.write_parameter(pid(0), Normalized::of(0.5)));
-    let echoed = instance.drain_param_changes();
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.5))
+    );
+    let echoed = instance.loaded().drain_param_changes();
     reset_switches(&path);
 
     assert_eq!(
@@ -990,7 +1096,11 @@ fn a_plugins_echo_of_a_host_write_is_not_reported() {
         "the write landed"
     );
     assert_eq!(echoed, Vec::new(), "the echo is not an edit");
-    assert_eq!(instance.dropped_param_changes(), 0, "nor a dropped one");
+    assert_eq!(
+        instance.loaded().dropped_param_changes(),
+        0,
+        "nor a dropped one"
+    );
 }
 
 /// This process's main thread. Each test is its own process under nextest, so

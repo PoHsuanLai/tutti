@@ -3,9 +3,11 @@
 //!
 //! The Processor and the Controller are separate values on purpose; most of
 //! these suites want "the active plugin", so [`Active`] holds the pair, derefs
-//! to the Controller (and so to `Vst3Loaded`), and forwards the Processor's
-//! calls. [`Active::reconfigure`] is the deactivate/activate pair a rate or
-//! block-size change is.
+//! to the Controller, and forwards the Processor's calls. It does not deref to
+//! `Vst3Loaded`: a call meant for the loaded plugin names [`Active::loaded`], so
+//! a name both have (`Control::set_parameter`) cannot quietly skip what the Controller tells
+//! the Processor. [`Active::reconfigure`] is the deactivate/activate pair a
+//! rate or block-size change is.
 
 // The error carries the whole plugin back, which is the point of it.
 #![allow(clippy::result_large_err, dead_code)]
@@ -286,9 +288,8 @@ impl<T: Vst3Sample> Active<T> {
 }
 
 impl<T: Vst3Sample> Active<T> {
-    /// The Controller, for what it does and the loaded plugin does not: a
-    /// parameter write or a state load that is also queued to the Processor.
-    /// `Deref` reaches the loaded plugin, whose `Control` impl does neither.
+    /// The Controller, named: a parameter write or a state load that is also
+    /// queued to the Processor. `Deref` reaches it too.
     pub fn controller_mut(&mut self) -> &mut Vst3Controller {
         &mut self.pair_mut().1
     }
@@ -299,17 +300,30 @@ impl<T: Vst3Sample> Active<T> {
     }
 }
 
-impl<T: Vst3Sample> Deref for Active<T> {
-    type Target = Vst3Loaded;
-
-    fn deref(&self) -> &Vst3Loaded {
+impl<T: Vst3Sample> Active<T> {
+    /// The loaded plugin under the Controller. A suite names it on purpose:
+    /// a call through it skips what the Controller tells the Processor.
+    pub fn loaded(&self) -> &Vst3Loaded {
         self.pair().1.loaded()
+    }
+
+    /// [`loaded`](Self::loaded), mutably.
+    pub fn loaded_mut(&mut self) -> &mut Vst3Loaded {
+        self.pair_mut().1.loaded_mut()
+    }
+}
+
+impl<T: Vst3Sample> Deref for Active<T> {
+    type Target = Vst3Controller;
+
+    fn deref(&self) -> &Vst3Controller {
+        &self.pair().1
     }
 }
 
 impl<T: Vst3Sample> DerefMut for Active<T> {
-    fn deref_mut(&mut self) -> &mut Vst3Loaded {
-        self.pair_mut().1.loaded_mut()
+    fn deref_mut(&mut self) -> &mut Vst3Controller {
+        &mut self.pair_mut().1
     }
 }
 

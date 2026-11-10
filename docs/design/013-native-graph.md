@@ -5974,13 +5974,13 @@ the source count changes".
 | `tutti-session/src/general_midi.rs` (`add_general_midi`) | No `sum` node. The strip's port `c` gets sources `[dry c, chorus c, reverb c]` through `set_sources`. `GeneralMidi` loses its `sum` field. The order is by `NodeKey`: the unit's dry strip (inserted first), the chorus, the reverb, the order the node summed in, so the render keeps its bits provided the keys are in creation order; the build checks this against `tests/general_midi.rs` rather than assuming it. |
 | `tutti-spatial/src/vbap/mix.rs` (`VbapMixParts`, `VbapLfeSend`, `build_vbap_mix`) | The main sum and the LFE sum are no longer nodes. The mix has no single output node: it reports, per output channel, the ports that feed it (panner `s` port `c` for channel `c`; the LFE low-pass for the LFE channel), and the caller wires each list into its sink's port (or the root's channel). `VbapMixNode::Sum` and `LfeSum` go; `VbapMixEdge` into them go; the LFE send keeps its low-pass and feeds it from every source's channel 0 through a fan-in. `insert_into` returns those lists instead of "the sum's key". An API change to a public type, so it is in the PR notes. |
 | `tutti-session/src/node.rs` | `impl SessionNode for ChannelSumNode` goes. |
-| `tutti-nodes/src/lib.rs`, `README.md` (lines 39, 66) | Drop the export and the sentence naming it the mixing node. |
+| `tutti-nodes/src/lib.rs`, `README.md` (lines 39, 66), and the READMEs of `tutti-spatial` and `tutti-soundfont` | Drop the export and the sentences naming it the mixing node. |
 | `tutti-nodes/src/strip.rs` | Comment mentions only; no code change. |
 | Tests: `tutti-session/tests/general_midi.rs`, `tutti-export/tests/graph_source.rs`, `tutti-export/tests/surround_export.rs`, `tutti-plugin/tests/clap_pdc_alignment.rs`, `tutti-nodes/tests/reported_latency.rs` (the PDC fan-in case), `tutti-nodes/tests/rt_no_alloc.rs`, `tutti-nodes/tests/isolate_snapshots.rs`, `tutti-spatial/src/vbap/mix/tests.rs`, and the `cost_classes.rs` files of `tutti-polysynth`, `tutti-sampler`, `tutti-spatial` | Each wires the sources straight into the sink. `reported_latency.rs` and `clap_pdc_alignment.rs` are the PDC tests and become tests of the sum's per-source alignment. `isolate_snapshots.rs` and the `cost_classes.rs` files list node kinds and drop the entry. |
 | Benches: `tutti-nodes/benches/node_kernels.rs`, `parallel_render.rs`, `tutti-session/benches/render_load.rs` | The `ChannelSumNode` rows become a graph with a fan-in (the bench measures the op through the graph), which is also the measurement `op_work` needs. |
 | `tutti-soundfont/src/lib.rs`, `tutti-spatial/src/hrtf/mod.rs` | Doc comments that name the node. |
 | `bevy-tutti/tests/graph_value.rs` | Parked; not updated. |
-| Docs: the rows and decisions edited in this document; CLAUDE.md's wiring bullet and the `Dead crate names` list (add `ChannelSumNode` → fan-in); `graph.rs` and `spec.rs` doc comments; `docs/engineering-notes.md` | As point 7. |
+| Docs: the rows and decisions edited in this document; CLAUDE.md's wiring bullet and the `Dead crate names` list (add `ChannelSumNode` → fan-in); `graph.rs` and `spec.rs` doc comments; `docs/engineering-notes.md`; the mentions in docs 015 and 024 | As point 7. |
 
 ##### 9. Tests the build adds
 
@@ -6522,8 +6522,10 @@ the one sum kernel, the one determinism rule and the one PDC rule serve it.
 **`DownmixNode` is deleted.** Its whole job, a per-frame matrix from `Fold`
 with no latency, is the edge. Its users:
 `impl SessionNode for DownmixNode` and the node-catalog test (`tutti-session/src/node.rs`),
-`tutti-nodes/benches/node_kernels.rs`, the `rt_no_alloc` fold gate and
-`isolate_snapshots.rs`; `narrows()`, the reconciler's "do I need this node"
+`tutti-nodes/benches/node_kernels.rs`, the `rt_no_alloc` fold gate,
+`isolate_snapshots.rs`, `tests/fold_digests.rs` (its `DownmixNode` digest becomes
+the bus edge's, which must keep the bits), and the export and README line in
+`tutti-nodes`; `narrows()`, the reconciler's "do I need this node"
 question, has no user and goes with it. A caller that built a `DownmixNode`
 between a 6-wide and a 2-wide node connects the two buses.
 
@@ -6559,6 +6561,55 @@ Mutations: lower a fold with the wrong gain; with source channels swapped;
 drop the identity shortcut (the plan then differs); store the `Fold` in the
 spec.
 
+#### What else is, and is not, a graph primitive
+
+The test this document applies: a **primitive** says where a signal goes, how
+it is combined, or what state a node is in; a **node** computes a signal. With
+the four lanes above, the graph's own surface is:
+
+| Primitive | Status |
+|---|---|
+| Audio fan-in (sum) | This amendment, lane 1 |
+| Edge gain (mixer weights, polarity by a negative weight) | Lane 2 |
+| Bypass, mute | Lane 3 |
+| Buses and coercion between declared layouts | Lane 4 |
+| Latency compensation, tails, feedback edges | Built (the compiler) |
+| Tap and level meter on any port | Built (`Op::Tap`, `Op::Meter`) |
+| Inlet (a thread's ring into the graph) | Built (`Graph::open_inlet`; `InletNode` is its implementation, not a node an author adds) |
+| Event fan-in (merge) | Built (`Op::EventMerge`) |
+| Param modulation and automation on a param port | Built (doc 014: the compiler's lane per param) |
+| Transport and tempo | Built (`Env`) |
+
+**Recommended additions, for the owner to confirm before the build:**
+
+- **Dry/wet mix per node.** Lane 3 already gives every node a dry path
+  delayed by its declared latency, and a crossfade between dry and wet. A
+  continuous mix is the same machinery held at a ratio instead of run to an
+  end: `Editor::set_mix(key, Mix)`, `out = wet * m + dry * (1 - m)` per
+  channel through the bypass mapping, ramped per block like an edge gain, a
+  param target like one (`ModTarget`). `Mix::new(1.0)` is `Active` and skips
+  the dry path, bit for bit. It would be **M4**, after M1. It gives any node,
+  a plugin included, the parallel-processing knob hosts expose per effect,
+  with the latency alignment only the graph can do.
+- **Event tap and event inlet.** Audio has a tap and an inlet; events have
+  neither as a primitive. Copying events out of any event port is done today
+  by MIDI-specific nodes (`MidiOutNode`, the queue nodes), and feeding events
+  in by `MidiInputNode` and `MidiQueueNode`. An event tap (`Op::EventTap`,
+  `TapReader`'s event sibling) and an event inlet (`Graph::open_event_inlet`)
+  would make those nodes users of the primitive. It is the MIDI lanes' work
+  (doc 017 owns the event side) and needs its own amendment there; this
+  document records only that it belongs to the graph.
+
+**Kept as nodes, on purpose:**
+
+- `BusStripNode`'s volume and pan. A pan law computes two gains from one
+  value, so it is a computation, not a weight. A send's level is the edge's
+  gain, and a strip's mute is `NodeMode`.
+- Crossovers, panners and the spatial nodes (VBAP, HRTF). They compute their
+  outputs from their inputs.
+- Solo. It is a mixer's policy, not graph state: the host computes each
+  node's `NodeMode` from its solo set, so the graph needs no solo of its own.
+
 #### Staging across all four
 
 Fan-in comes first, edge gain on it, bypass and mute independent, buses and
@@ -6568,8 +6619,8 @@ itself.
 | Order | Lane | PRs |
 |---|---|---|
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
-| 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API and the strip-and-gain audit. |
-| 3 | Bypass and mute | independent of 1 and 2, in any order after the design merges. **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute, per-node bypass; bit-exact tests replace the tolerance one. |
+| 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
+| 3 | Bypass and mute | independent of 1 and 2, in any order after the design merges. **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
 | 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses

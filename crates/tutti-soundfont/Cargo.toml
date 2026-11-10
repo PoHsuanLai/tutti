@@ -20,7 +20,6 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # `Node`, `ForkSource`: the player as a graph node, and its own way into a

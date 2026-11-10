@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::mpsc;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, split_stream};
 
 #[test]
 fn create_ump_destination() {
@@ -42,7 +42,7 @@ fn packet_words_decode_to_ump_stream_and_channel_voice() {
     packet_words.extend_from_slice(discovery.words());
     packet_words.extend_from_slice(note.words());
 
-    let decoded: Vec<_> = split_ump_stream(&packet_words).collect();
+    let decoded: Vec<_> = split_stream(&packet_words).collect();
     assert_eq!(decoded, vec![discovery, note]);
     assert_eq!(decoded[0].message_type(), 0xF); // UMP Stream
     assert_eq!(decoded[1].message_type(), 0x4); // Channel Voice 2
@@ -64,7 +64,7 @@ fn callback_receives_each_decoded_event() {
     words.extend_from_slice(clock.words());
 
     // The body of the receive callback, verbatim.
-    for event in split_ump_stream(&words) {
+    for event in split_stream(&words) {
         sink(event);
     }
 

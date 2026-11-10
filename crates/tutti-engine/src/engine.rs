@@ -26,6 +26,13 @@
 //! and need no cut, so they are never deferred.) Commands due on one frame
 //! apply in send order.
 //!
+//! **A tempo map of steps cuts the block too** (doc 020, stage 3): each step is
+//! a change on the frame it falls on, taken beside the commands. It is not a
+//! command, so it is never deferred: a block that needs more changes than it
+//! holds ends before the one that does not fit, and the rest renders as the
+//! next block, exactly (the walk is a function of the frame, not of where
+//! blocks begin). A constant map has no step and none of this runs.
+//!
 //! **Untimed state is read once per block.** The tempo, loop and play state
 //! are read at the start of the walk; a store from the control thread during
 //! the block lands at the next one, and only an applied command changes them
@@ -484,8 +491,15 @@ impl Engine {
         while done < frames {
             let (bound, rate) = g.settle();
             let len = (frames - done).min(bound);
-            budget += Samples(len).to_seconds(rate);
             let t = g.transport.begin_block();
+            // The tempo steps inside the block, if the map has any; a block
+            // that would need more than it holds ends before the first that
+            // does not fit, and the loop carries on from there.
+            let ahead = g
+                .transport
+                .tempo_ahead(len, &t, tutti_graph::MAX_TRANSPORT_CHANGES);
+            let len = ahead.limit.unwrap_or(len);
+            budget += Samples(len).to_seconds(rate);
             // Kept current, so a later `process` tells a late beat from one
             // jumped over across this block too.
             g.playhead.observe(&Env {
@@ -493,19 +507,11 @@ impl Engine {
                 sample_rate: rate,
                 block_len: Samples(len),
                 transport: t,
-                changes: TransportChanges::NONE,
+                changes: ahead.changes,
                 play: tutti_graph::PlayClock::ZERO,
             });
             g.transport.advance(len, &t);
-            unplaced |= !g.render(
-                output,
-                &folds,
-                out_ch,
-                done,
-                len,
-                &t,
-                &TransportChanges::NONE,
-            );
+            unplaced |= !g.render(output, &folds, out_ch, done, len, &t, &ahead.changes);
             self.hearing
                 .borrow_mut()
                 .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
@@ -567,7 +573,6 @@ impl Engine {
         while done < frames {
             let (bound, rate) = g.settle();
             let len = (frames - done).min(bound);
-            budget += Samples(len).to_seconds(rate);
             let frame0 = g.exec.frame();
             let mut pieces = GraphPieces {
                 changes: TransportChanges::NONE,
@@ -585,6 +590,10 @@ impl Engine {
                 &mut pieces,
             );
             let changes = pieces.changes;
+            // The walk cut the block short where a tempo step did not fit
+            // its changes; the rest is the next iteration's block.
+            let len = walk.frames;
+            budget += Samples(len).to_seconds(rate);
             unplaced |= !g.render(output, &folds, out_ch, done, len, &walk.start, &changes);
             let mut fader = self.fader.borrow_mut();
             fader.fade = fade_frames(rate);
@@ -613,7 +622,7 @@ impl Engine {
         &self,
         track: Track<'_>,
         frame0: Frame,
-        frames: usize,
+        mut frames: usize,
         rate: SampleRate,
         mut aim: Option<Frame>,
         pieces: &mut impl Pieces,
@@ -626,6 +635,7 @@ impl Engine {
         let mut walk = Walk {
             start: transport.begin_block(),
             gain: GainPlan::new(),
+            frames,
         };
         let mut t = walk.start;
         let mut cursor = 0;
@@ -635,12 +645,21 @@ impl Engine {
         let mut base = *playhead;
         transport.gather();
         loop {
+            // The map's tempo steps from the cursor on, assuming no command
+            // moves the transport first (one that does is followed by a new
+            // look). They cost no more than the block's changes can hold: a
+            // step past that ends the block here, and the rest is the next
+            // one's. A constant map has none, and this is nothing.
+            let ahead = transport.tempo_ahead(frames - cursor, &t, pieces.free());
+            if let Some(end) = ahead.limit {
+                frames = cursor + end;
+            }
             let env = Env {
                 frame: frame0 + Samples(cursor),
                 sample_rate: rate,
                 block_len: Samples(frames - cursor),
                 transport: t,
-                changes: TransportChanges::NONE,
+                changes: ahead.changes,
                 play: tutti_graph::PlayClock::ZERO,
             };
             // The next declicked command ahead, within one fade of the end of
@@ -669,7 +688,29 @@ impl Engine {
                     best = Some((k, i, late));
                 }
             }
-            let Some((k, i, late)) = best else { break };
+            // A tempo step comes first when it is before every command (one on
+            // its frame is taken by the command's own transport).
+            let step = ahead.changes.as_slice().first().map(|c| c.at.index());
+            let (k, i, late) = match (best, step) {
+                (None, None) => break,
+                (Some(cmd), None) => cmd,
+                (Some(cmd), Some(s)) if cmd.0 <= s => cmd,
+                (_, Some(s)) => {
+                    base.observe(&Env {
+                        block_len: Samples(s),
+                        changes: TransportChanges::NONE,
+                        ..env
+                    });
+                    transport.advance(s, &t);
+                    pieces.ran();
+                    cursor += s;
+                    t = transport.restate();
+                    if let Some(o) = Offset::new(cursor, Samples(frames)) {
+                        pieces.change(o, t);
+                    }
+                    continue;
+                }
+            };
             let at = cursor + k;
             if at > cursor {
                 if !pieces.room() {
@@ -708,6 +749,7 @@ impl Engine {
         *playhead = base;
         transport.advance(frames - cursor, &t);
         pieces.ran();
+        walk.frames = frames;
         walk
     }
 
@@ -768,6 +810,10 @@ struct Walk {
     start: GraphTransport,
     /// The declick gain's events in this block.
     gain: GainPlan,
+    /// How many of the block's frames this walk covers: all of them, unless a
+    /// tempo step would have been the block's ninth change, where it ends
+    /// (doc 020, section 2.3).
+    frames: usize,
 }
 
 /// How long a declick fades, out and in: long enough to kill a click, short
@@ -960,8 +1006,12 @@ impl Fader {
 trait Pieces {
     /// A piece of the block has just run.
     fn ran(&mut self) {}
+    /// How many more cuts fit in this block.
+    fn free(&self) -> usize;
     /// Whether another cut fits in this block.
-    fn room(&self) -> bool;
+    fn room(&self) -> bool {
+        self.free() > 0
+    }
     /// Record the transport changing to `t` at `at`.
     fn change(&mut self, at: Offset, t: GraphTransport);
 }
@@ -972,12 +1022,12 @@ struct GraphPieces {
 }
 
 impl Pieces for GraphPieces {
-    fn room(&self) -> bool {
-        !self.changes.is_full()
+    fn free(&self) -> usize {
+        tutti_graph::MAX_TRANSPORT_CHANGES - self.changes.len()
     }
 
     fn change(&mut self, at: Offset, t: GraphTransport) {
-        // Cannot fail: `room` was checked before the cut, cuts come in time
+        // Cannot fail: `free` was checked before the cut, cuts come in time
         // order, and one at the same frame replaces.
         let _ = self.changes.push(at, t);
     }
@@ -1110,8 +1160,8 @@ mod tests {
             self.inner.ran();
             self.settings.set_tempo(Bpm::of(200.0));
         }
-        fn room(&self) -> bool {
-            self.inner.room()
+        fn free(&self) -> usize {
+            self.inner.free()
         }
         fn change(&mut self, at: Offset, t: GraphTransport) {
             self.inner.change(at, t);

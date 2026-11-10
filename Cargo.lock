@@ -3679,6 +3679,7 @@ dependencies = [
  "tutti-metering",
  "tutti-nodes",
  "tutti-rt",
+ "tutti-tempo",
  "tutti-transport",
  "tutti-types",
  "tutti-ump",

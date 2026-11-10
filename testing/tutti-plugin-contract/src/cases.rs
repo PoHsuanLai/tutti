@@ -8,7 +8,7 @@ use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
     ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, SampleFormat,
-    Samples,
+    Samples, TransportChange, TransportInfo,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -320,6 +320,98 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     }
     assert_eq!(t.of(Kind::NoteOn).count(), 2);
     assert_eq!(t.of(Kind::NoteOff).count(), 1);
+}
+
+/// A transport at `tempo` BPM and quarter note `beat`, rolling or not.
+fn transport(playing: bool, tempo: f64, beat: f64) -> TransportInfo {
+    TransportInfo::new()
+        .with_sample_rate(RATE)
+        .with_playing(playing)
+        .with_tempo(tempo)
+        .with_position_quarters(beat)
+}
+
+/// Each block's transport reaches the plugin at its first frame, as the host
+/// was given it: rolling, then stopped, each with its tempo and position, both
+/// flagged valid. The figures are exact in every format's encoding (CLAP's
+/// beat is a fixed point of 2^31 per beat).
+// Mutation (run): the CLAP host sending no transport, the VST3 host sending its
+//   default context (fails vst3 and vst3_cpp), the VST2 host not publishing its
+//   snapshot -> fails; the Rust VST3 plugin declaring no context requirements (the
+//   host then fills nothing, as the SDK says) -> fails; the CLAP shell dividing the
+//   beat by 2^32, or the VST3, VST2 and C++ shells reading the bar start for the
+//   beat -> fails.
+pub fn transport_reaches_the_plugin<F: Format>() {
+    let mut a = active_in::<F>(Mode::Tag);
+    let (rolling, stopped) = (transport(true, 132.0, 6.5), transport(false, 90.0, 12.0));
+    a.render(
+        &silence(BLOCK),
+        BLOCK,
+        &ProcessContext::new().transport(&rolling),
+    );
+    a.render(
+        &silence(BLOCK),
+        BLOCK,
+        &ProcessContext::new().transport(&stopped),
+    );
+    let t = transcript::<F, _>(a.controller_mut());
+    let heads: Vec<_> = t
+        .transports
+        .iter()
+        .filter(|x| x.offset == 0)
+        .map(|x| {
+            (
+                x.call,
+                x.playing,
+                x.tempo_valid,
+                x.tempo,
+                x.beat_valid,
+                x.beat,
+            )
+        })
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            (0, true, true, 132.0, true, 6.5),
+            (1, false, true, 90.0, true, 12.0)
+        ],
+        "the transport at each block's first frame"
+    );
+}
+
+/// A transport change inside a block is told at its frame, after the block's
+/// own: CLAP has an event for it (`CLAP_EVENT_TRANSPORT`); VST3 and VST2 have
+/// none, and are gaps.
+// Mutation (run): the CLAP host sending no transport (so no changes either), or adding
+//   the changes at frame 0 -> fails; the CLAP shell decoding no transport event ->
+//   fails. VST3, VST3 C++ and VST2 fail it with the gap's text.
+pub fn transport_change_is_told_at_its_frame<F: Format>() {
+    let mut a = active_in::<F>(Mode::Tag);
+    let head = transport(true, 120.0, 4.0);
+    let changes = [TransportChange {
+        offset: 32,
+        transport: transport(true, 140.0, 10.0),
+    }];
+    let ctx = ProcessContext::new()
+        .transport(&head)
+        .transport_changes(&changes);
+    a.render(&silence(BLOCK), BLOCK, &ctx);
+    let t = transcript::<F, _>(a.controller_mut());
+    let told: Vec<_> = t
+        .transports
+        .iter()
+        .map(|x| (x.call, x.offset, x.playing, x.tempo, x.beat))
+        .collect();
+    assert!(
+        told.iter().any(|&(_, offset, ..)| offset == 32),
+        "no transport at frame 32: {told:?}"
+    );
+    assert_eq!(
+        told,
+        [(0, 0, true, 120.0, 4.0), (0, 32, true, 140.0, 10.0)],
+        "the block's transport, then the change at its frame"
+    );
 }
 
 /// State round-trips what the plugin persists.

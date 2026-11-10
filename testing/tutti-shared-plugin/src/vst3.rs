@@ -10,7 +10,36 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 
 use vst3::{Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*, uid};
 
-use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample};
+use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample, Transport};
+
+/// An SDK flag as a `u32` (of `ProcessContext::state`, or a context
+/// requirement). The SDK's enum constants are `c_uint` on unix and `c_int` on
+/// Windows; both widen to `i64` losslessly.
+fn state_bit(flag: impl Into<i64>) -> u32 {
+    flag.into() as u32
+}
+
+/// A block's transport, as its `ProcessContext` carries it: a VST3 context
+/// is the block's first frame, so the offset is 0.
+fn told(ctx: &ProcessContext) -> Transport {
+    use ProcessContext_::StatesAndFlags_ as F;
+    let map = [
+        (F::kPlaying, core::T_PLAYING),
+        (F::kRecording, core::T_RECORDING),
+        (F::kCycleActive, core::T_CYCLE),
+        (F::kTempoValid, core::T_TEMPO),
+        (F::kProjectTimeMusicValid, core::T_BEAT),
+    ];
+    Transport {
+        offset: 0,
+        flags: map
+            .iter()
+            .filter(|(sdk, _)| ctx.state & state_bit(*sdk) != 0)
+            .fold(0, |f, (_, ours)| f | ours),
+        tempo: ctx.tempo,
+        beat: ctx.projectTimeMusic,
+    }
+}
 
 const CID: TUID = uid(0x5453_4850, 0x5348_4152, 0x4544_5445, 0x5354_0001);
 
@@ -301,6 +330,9 @@ impl IAudioProcessorTrait for Plugin {
         let mut guard = self.dsp.lock().unwrap_or_else(|e| e.into_inner());
         let dsp = &mut *guard;
 
+        if let Some(ctx) = unsafe { d.processContext.as_ref() } {
+            self.core.log_transport(told(ctx));
+        }
         if let Some(changes) = unsafe { ComRef::from_raw(d.inputParameterChanges) } {
             for q in 0..unsafe { changes.getParameterCount() } {
                 let Some(queue) = (unsafe { ComRef::from_raw(changes.getParameterData(q)) }) else {
@@ -401,8 +433,13 @@ unsafe fn run<S: Sample>(
 }
 
 impl IProcessContextRequirementsTrait for Plugin {
+    /// What the transcript records of a block's transport (core, "State"):
+    /// its tempo, its musical position and its play, record and cycle state.
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        0
+        use IProcessContextRequirements_::Flags_ as F;
+        state_bit(F::kNeedTempo)
+            | state_bit(F::kNeedProjectTimeMusic)
+            | state_bit(F::kNeedTransportState)
     }
 }
 

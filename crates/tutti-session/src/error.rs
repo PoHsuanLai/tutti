@@ -141,12 +141,11 @@ pub enum Error {
     #[error("Sampler: {0}")]
     Sampler(#[from] tutti_sampler::Error),
 
-    /// Spatial-audio subsystem failure. Wraps `tutti_spatial::VbapError`
+    /// Spatial-audio subsystem failure. Wraps `tutti_nodes::VbapError`
     /// (VBAP speaker-layout construction). HRTF has its own error type and
     /// does not route through here.
-    #[cfg(feature = "spatial")]
     #[error("Spatial: {0}")]
-    Spatial(#[from] tutti_spatial::VbapError),
+    Spatial(#[from] tutti_nodes::VbapError),
 
     /// Plugin-host bridge failure (VST2/VST3/CLAP). Wraps
     /// `tutti_plugin::BridgeError`.

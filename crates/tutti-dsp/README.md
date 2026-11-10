@@ -51,7 +51,7 @@ plans lazily, per scratch, on the cold path.
 
 None: `default = []`.
 
-The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler`, `tutti-spatial` and
+The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler` and
 `tutti-export` use it.
 
 ## License

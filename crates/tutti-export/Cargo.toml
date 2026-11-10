@@ -59,9 +59,6 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 # tests, examples and bench. Acyclic: tutti-nodes does NOT depend on
 # tutti-export.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["convolution", "testing"] }
-# Surround producer nodes (SpatialPannerNode + build_surround_mix) for the
-# end-to-end multichannel-export integration test. Also acyclic.
-tutti-spatial = { path = "../tutti-spatial", default-features = false }
 # Voice/VoicePool producers for `sampler_to_export.rs`, which renders a sampler
 # voice through the offline clock and asserts on the exported pitch. Also
 # acyclic: tutti-sampler does NOT depend on tutti-export.

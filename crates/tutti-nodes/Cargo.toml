@@ -16,8 +16,7 @@ workspace = true
 
 [features]
 default = []
-# No `bevy` feature: ECS bindings are host-side. No `spatial` feature: the
-# panners are `tutti-spatial`, which depends on this crate.
+# No `bevy` feature: ECS bindings are host-side.
 # FFT convolution reverb (partitioned IR).
 # (The transforms are `tutti_dsp::RealFft`; the convolution itself is this
 # crate's, so its IR spectra can be stored once and shared.)
@@ -56,6 +55,9 @@ audio-automation = { workspace = true }
 # `ClickNode` reads the count-in flag off a `Transport` and follows a
 # `ProjectMeter`.
 tutti-transport = { path = "../tutti-transport" }
+
+# `VbapError`.
+thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
 # The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call
@@ -113,6 +115,14 @@ harness = false
 
 [[bench]]
 name = "convolver_blocks"
+harness = false
+
+[[bench]]
+name = "vbap_panner"
+harness = false
+
+[[bench]]
+name = "hrtf_binaural"
 harness = false
 
 # docs.rs renders with every feature on. `default = []` keeps the engine

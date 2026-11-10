@@ -48,7 +48,6 @@ tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
-tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-plugin = { path = "../tutti-plugin", optional = true }
 # `assert_main_thread`, the debug-only guard on the calls whose frees are
@@ -75,9 +74,6 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 sampler = ["dep:tutti-sampler"]
 soundfont = ["midi", "dep:tutti-soundfont"]
 synth = ["dep:tutti-polysynth"]
-# The `SessionNode` impls of the panners only.
-spatial = ["dep:tutti-spatial"]
-hrtf = ["spatial", "tutti-spatial/hrtf"]
 convolution = ["tutti-nodes/convolution"]
 # Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
 # AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the

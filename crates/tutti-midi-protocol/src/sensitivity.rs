@@ -1,5 +1,7 @@
 //! Per-note pitch-bend sensitivity as the MIDI 2.0 wire value.
 
+use tutti_ump::Pitch;
+
 /// Per-note pitch bend range as the spec's 7.25 fixed-point semitone value
 /// (M2-104 §7.4.13, RPN #00/07 "Sensitivity of Per-Note Pitch Bend"): 7 integer
 /// bits of semitones in the high word, 25 fractional bits below. This is the wire
@@ -23,7 +25,8 @@ impl Default for PitchBendSensitivity {
 }
 
 impl PitchBendSensitivity {
-    const FRAC_BITS: u32 = crate::fixed::Q7_25_FRAC_BITS;
+    /// Fraction bits of the Q7.25 word (M2-104 section 7.4.13).
+    const FRAC_BITS: u32 = 25;
 
     /// The MPE default per-note bend range: 48 semitones (MPE spec RP-053).
     pub const MPE_DEFAULT: Self = Self(48 << Self::FRAC_BITS);
@@ -77,7 +80,7 @@ impl PitchBendSensitivity {
     #[inline]
     #[must_use]
     pub fn as_semitones_f32(self) -> f32 {
-        crate::q7_25_to_f32(self.0)
+        Pitch::from_q7_25(self.0).note_number()
     }
 }
 

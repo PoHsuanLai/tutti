@@ -39,9 +39,10 @@ use tutti_plugin_types::{
 
 use crate::types::RtNoteExpressions;
 use tutti_midi_protocol::{
-    bend_u32_to_signed_f32, midi1, narrow, u16_to_unit_f32, u32_to_unit_f32, widen, widen_message,
+    PitchBendSensitivity, bend_u32_to_signed_f32, midi1, narrow, u16_to_unit_f32, u32_to_unit_f32,
+    widen, widen_message,
 };
-use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
+use tutti_midi_types::PerNoteBendRanges;
 use tutti_ump::{
     Address, Attribute, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, SysexAssembler, SysexStep, Ump, Unknown, Voice1, Voice2, decode,
@@ -2863,7 +2864,6 @@ mod tests {
     /// fails.
     #[test]
     fn the_input_list_follows_the_per_note_bend_range() {
-        use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
         let half = signed_f32_to_bend_u32(0.5);
         let bend = |channel: u8| {
             (
@@ -2894,11 +2894,10 @@ mod tests {
         let mut list = InputEventList::new();
         list.add_midi(&(
             at(0),
-            fx::registered_controller(
+            fx::registered_rpn(
                 MidiGroup::FIRST,
                 MidiChannel::of(3),
-                RPN_BANK_MPE,
-                RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
                 PitchBendSensitivity::of(12).to_rpn_bits(),
             ),
         ));

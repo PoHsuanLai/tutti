@@ -214,11 +214,10 @@ fn mcm_with_zero_members_disables_the_zone() {
     // only come off the wire — build it directly.)
     let disable = at(
         0,
-        midi::registered_controller(
+        midi::registered_rpn(
             MidiGroup::FIRST,
             MidiChannel::FIRST, // lower-zone master channel
-            tutti_midi_types::ump::RPN_BANK_MPE,
-            tutti_midi_types::ump::RPN_INDEX_MCM,
+            Rpn::MPE_CONFIGURATION,
             0, // 0 members → disable
         ),
     );
@@ -238,7 +237,7 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
             else {
                 panic!("{ev:?} is not a registered controller");
             };
-            assert_eq!(u8::from(m.bank()), RPN_BANK_MPE);
+            assert_eq!(u8::from(m.bank()), Rpn::PITCH_BEND_SENSITIVITY.bank().get());
             let range = PitchBendSensitivity::from_rpn_bits(m.controller_data());
             (
                 u8::from(m.channel()),
@@ -302,11 +301,10 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 
     let disable = at(
         0,
-        midi::registered_controller(
+        midi::registered_rpn(
             MidiGroup::FIRST,
             MidiChannel::of(15),
-            RPN_BANK_MPE,
-            tutti_midi_types::ump::RPN_INDEX_MCM,
+            Rpn::MPE_CONFIGURATION,
             0,
         ),
     );
@@ -336,12 +334,11 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
     at(
         17,
-        midi::registered_controller(
+        midi::registered_rpn(
             MidiGroup::FIRST,
             MidiChannel::of(channel),
-            tutti_midi_types::ump::RPN_BANK_MPE,
-            RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-            tutti_midi_types::PitchBendSensitivity::of(semitones).to_rpn_bits(),
+            Rpn::PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::of(semitones).to_rpn_bits(),
         ),
     )
 }

@@ -1214,8 +1214,8 @@ nothing new: nothing here adds `unsafe` or a lock-free structure.
 
 | Crate | Layer | Holds | Depends on |
 |---|---|---|---|
-| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser` | No tutti crate |
-| `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
+| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser`, `Rpn` (an RPN address) and `SYSEX7_MAX_PAYLOAD` | No tutti crate |
+| `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE, `PitchBendSensitivity` | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
 | `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
@@ -1230,6 +1230,14 @@ already small. Dependencies enforce the layering: `tutti-ump` cannot call the
 translator, so reading cannot translate, and `tutti-midi-hardware` cannot reach
 the graph. The cycle that keeps `ump` and `translation` together today is mostly
 `message()` calling `normalize`, and it ends with that call.
+
+Moved out of `tutti-midi-types` in stage 5b: `SYSEX7_MAX_PAYLOAD` to `tutti-ump`
+(tutti's cap on one SysEx7 message, for sizing a `SysexAssembler`; M2-104 section 7.7
+sets no maximum), the four RPN address constants (`RPN_BANK_MPE`, `RPN_INDEX_MCM`,
+`RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY`, `RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY`)
+to one `tutti_ump::Rpn` with named addresses, and `PitchBendSensitivity` to
+`tutti-midi-protocol` (an optional `serde` feature, because `MpeZoneConfig` persists
+it). `PerNoteBendRanges` moves with the Plugins lane after these.
 
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
 out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and

@@ -152,7 +152,7 @@ case, but without an editor it is not usable for a real VST2. The server's VST2
     note = "implement `InProcess` only if the plugin can be loaded and run here (design 021 §3)"
 )]
 pub trait InProcess: Loaded {
-    fn load_in_process(path: &Path, load: &Load) -> PluginResult<Self>;
+    fn load_in_process(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self>;
 }
 
 /// The format can be served from another process, with its editor elsewhere.
@@ -164,16 +164,22 @@ pub trait OutOfProcess: Loaded {
     /// An editor-only instance in the host process (§5).
     type Editor: Editor;
     /// What the server calls to build the audio instance.
-    fn load_served(path: &Path, load: &Load) -> PluginResult<Self>;
+    fn load_served(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self>;
     /// What the host calls to build the editor instance.
-    fn load_editor(path: &Path) -> PluginResult<Self::Editor>;
+    fn load_editor(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self::Editor>;
 }
 ```
 
-`Load` is the load-time value both need today (sample rate, block, state to
-restore before activation, `prefer_f64`). `Editor` is 016 step 5's safe editor
-trait, plus the three calls the second instance needs: `set_parameter`,
-`set_state`, `poll_edits`.
+`Load` is what a load needs: which plugin of a file that exports several (a
+CLAP plugin id, a VST3 class name; VST2 refuses a choice). The rest of what the
+server's loaders take today belongs to later calls since 016's split: the
+rate, block and sample format are the activation's `Prepare`, and a state to
+restore before activation is `Control::load_state` on the `Loaded`. The loads
+take the `&MainThread` token (CLAUDE.md, "Main-thread entries take a token").
+`Editor` is the editor surface of the second instance (today's `PluginEditor`
+of `tutti-plugin`, moved), with the three calls that keep it faithful:
+`set_parameter`, `set_state`, `poll_edits`. `Reopen::reopen` also takes the
+token. Built in step 1 (§10.1).
 
 ### 2.2 Hostings (in `tutti-plugin-host` and `tutti-plugin-ipc`)
 
@@ -419,8 +425,15 @@ an absent impl has no place to carry a comment.
 ### 3.4 Compile-fail test plan
 
 The repo already uses `compile_fail` doctests (`arc-lend`) and has no
-`trybuild`; stay with doctests. In `tutti-plugin` (the one crate that sees formats
-and hostings; `tutti-vst2-host` is a dev-dependency there):
+`trybuild`; stay with doctests. **As built (step 1):** the refusal is on
+`Vst2Loaded` in `tutti-vst2-host` (`served::<Vst2Loaded>()` with
+`F: OutOfProcess`, `compile_fail,E0277`) beside a twin with the same imports
+that compiles (`F: InProcess`), and the positive twins for CLAP and VST3 are on
+`ClapEditor` and `Vst3Editor`; `contract!`'s `hostings` asserts each listed
+marker at compile time (§8). The `Ipc<Vst2Loaded>` doctest below joins
+`tutti-plugin` with `Ipc` in step 4b. As planned, in `tutti-plugin` (the one
+crate that sees formats and hostings; `tutti-vst2-host` is a dev-dependency
+there):
 
 ```rust
 /// ```compile_fail,E0277
@@ -604,8 +617,13 @@ changes:
   `tests/vst2.rs` loses nothing.
 - The contract builds `plugin-server` first for its `OutOfProcess` modules, like
   `tutti-plugin`'s other server tests (feature `server`).
-- The compile-fail tests of §3.4 stay in `tutti-plugin`, since they need no
-  runtime.
+- The compile-fail tests of §3.4 need no runtime; step 1 put the marker's on
+  `Vst2Loaded` (§3.4) and `Ipc<Vst2Loaded>`'s joins `tutti-plugin` in 4b.
+- **Built in step 1:** `contract!(Fmt, gaps = N, hostings = [..])` with the
+  markers the format implements; each listed one is asserted at compile time
+  (listing `OutOfProcess` for `Vst2` is E0277), and `scripts/check-hosting.sh`
+  fails an impl the list leaves out. The cases still run once, on the format's
+  own `Loaded`; step 6 makes them run per hosting with per-hosting gaps.
 
 ## 9. Behaviour changes
 
@@ -646,6 +664,26 @@ a `Loaded`.
 | 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs` | No | `Backend` gone |
 | 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 3) | -2.1k |
 | 8 | Cleanup: the unused `OpenEditor` message and handler, stale Cargo comments and features, 016 and CLAUDE.md and engineering-notes updates | After 7 | docs |
+
+### 10.1 Steps 1 and 2 as built
+
+- **Step 1 moved the editors.** `OutOfProcess::load_editor` returns the
+  format's editor instance, and the host crates cannot depend on `tutti-plugin`,
+  so the CLAP and VST3 instances moved with step 1: `ClapEditor` and
+  `Vst3Editor` in their host crates implement `Editor` (today's
+  `PluginEditor`, moved to `tutti-plugin-types`; `poll_gui_param_changes` is
+  `poll_edits`). `tutti-plugin`'s `load_gui_instance` dispatches to
+  `F::load_editor`; AU's instance implements `Editor` in place until step 7.
+  `check-plugin-ffi.sh` no longer scans `format/gui/{clap,vst3}.rs`: the
+  host crates' rule covers the editors. No behaviour change, but two details:
+  a bundle directory now resolves through `bundle::native_module_path` with the
+  format's own `ModuleKind` (the GUI loader used `Vst3`'s for CLAP), and an
+  editor's error text says "plugin editor error" where it said "IPC protocol
+  error".
+- **Step 2 is what remains:** the state-back direction on close (Q8) and the
+  `cfg(unix)` revisit (§5). The CLAP editor's timer test moved with its
+  instance, to `tutti-clap-host/tests/clap_editor_instance.rs` (it reaches the
+  probe through `libloading`, which the crate's `src/` forbids).
 
 Steps 1, 2, 4a, 4b, 4c, 5 and 6 (without the AU rows) can start before AU is ready;
 3 should wait only for the AU lane's merge to avoid conflicts; 7 is the only

@@ -164,6 +164,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ("check-plugin-ffi", "", "scripts/check-plugin-ffi.sh"),
     ("check-layout", "", "scripts/check-layout.sh"),
     ("check-range-types", "", "scripts/check-range-types.sh"),
+    ("check-hosting", "", "scripts/check-hosting.sh"),
     (
         "check-paths",
         "[script args]",
@@ -370,6 +371,7 @@ impl Planner<'_> {
             "check-plugin-ffi" => self.lines(&["scripts/check-plugin-ffi.sh"]),
             "check-layout" => self.lines(&["scripts/check-layout.sh"]),
             "check-range-types" => self.lines(&["scripts/check-range-types.sh"]),
+            "check-hosting" => self.lines(&["scripts/check-hosting.sh"]),
             "check-paths" => self.run(Cmd::sh("scripts/check-canonical-paths.sh").args(args)),
             "lint" => self.lines(&[
                 "cargo fmt --all --check",
@@ -407,7 +409,8 @@ impl Planner<'_> {
             "ci" => {
                 for d in [
                     "lint", "deny", "check-paths", "check-bevy-free", "check-adapter", "check-guards",
-                    "check-plugin-ffi", "check-layout", "check-range-types", "check-features",
+                    "check-plugin-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-features",
                     "check-loom", "test", "test-features", "test-editor", "test-doc",
                     "test-release", "doc",
                 ] {

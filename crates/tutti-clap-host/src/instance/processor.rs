@@ -109,7 +109,7 @@ impl ClapProcessor {
     /// # Threading
     /// CLAP marks `reset` `[audio-thread & active]`. The `[audio-thread]` half
     /// is taken here rather than asserted: the call runs under an
-    /// [`AudioThreadClaim`](crate::host::AudioThreadClaim), so the calling OS
+    /// [`AudioClaim`](tutti_clap_ffi::AudioClaim), so the calling OS
     /// thread becomes the audio thread for its duration (which the spec permits
     /// for any thread) and blocks until any in-flight `process` has returned.
     pub fn reset(&mut self) {

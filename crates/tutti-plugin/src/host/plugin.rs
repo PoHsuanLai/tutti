@@ -354,23 +354,6 @@ impl Plugin {
         }
     }
 
-    /// Gives the plugin the project meter; `reader` is unused.
-    ///
-    /// Returns `false` if the plugin declared it does not want a transport
-    /// snapshot.
-    #[deprecated(
-        note = "the transport needs no install (each node reads its block's); use `Plugin::set_meter`"
-    )]
-    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_transport_source(
-        &mut self,
-        reader: tutti_transport::Transport,
-        meter: tutti_transport::ProjectMeter,
-    ) -> bool {
-        let _ = reader;
-        self.set_meter(meter)
-    }
-
     /// Returns whether the plugin takes chord and scale context (it declared
     /// sequencer context).
     ///

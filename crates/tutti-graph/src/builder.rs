@@ -176,7 +176,7 @@ impl GraphBuilder {
     pub fn new(inputs: ChannelLayout, outputs: ChannelLayout) -> Self {
         let mut spec = GraphSpec::default();
         spec.topology.inputs = inputs;
-        spec.topology.outputs = vec![Source::Zero; outputs.count() as usize];
+        spec.topology.outputs = vec![vec![Source::Zero]; outputs.count() as usize];
         Self {
             spec,
             shapes: Vec::new(),
@@ -333,7 +333,10 @@ impl GraphBuilder {
         );
         let at = self.check_in(node, port);
         let source = self.check_source(source);
-        self.spec.topology.edges.insert(at, Edge::Direct(source));
+        self.spec
+            .topology
+            .edges
+            .insert(at, vec![Edge::Direct(source)]);
         self
     }
 
@@ -367,7 +370,7 @@ impl GraphBuilder {
         self.spec
             .topology
             .edges
-            .insert(at, Edge::Feedback(FeedbackFrom::new(from, delay)));
+            .insert(at, vec![Edge::Feedback(FeedbackFrom::new(from, delay))]);
         self
     }
 
@@ -400,7 +403,7 @@ impl GraphBuilder {
             channel < n,
             "the graph has {n} global outputs; output {channel} is out of range"
         );
-        self.spec.topology.outputs[channel] = self.check_source(source);
+        self.spec.topology.outputs[channel] = vec![self.check_source(source)];
         self
     }
 
@@ -489,10 +492,14 @@ impl GraphBuilder {
         } else {
             let outputs = self.spec.topology.outputs.clone();
             for c in 0..self.input_count(key) {
+                // The builder wires one source per output channel.
                 let source = if outputs.is_empty() {
                     Source::Zero
                 } else {
                     outputs[c % outputs.len()]
+                        .first()
+                        .copied()
+                        .unwrap_or(Source::Zero)
                 };
                 self.set_source(key, c, source);
             }

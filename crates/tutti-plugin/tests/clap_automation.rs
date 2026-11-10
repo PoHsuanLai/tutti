@@ -91,7 +91,9 @@ fn automation_reaches_the_plugin_through_its_event_input() {
             port: 0,
         }),
     );
-    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    live.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
@@ -149,10 +151,12 @@ fn render_gain(
             }),
         );
     }
-    live.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: PLUGIN,
-        port: 0,
-    })];
+    live.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: PLUGIN,
+            port: 0,
+        })]);
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()

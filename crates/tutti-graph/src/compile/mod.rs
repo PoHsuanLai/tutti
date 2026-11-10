@@ -60,7 +60,7 @@ pub(crate) mod verify;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::NodeKey;
-use crate::{Edge, FeedbackFrom, InPort, OutPort, Source};
+use crate::{Edge, FeedbackFrom, InPort, OutPort, Sink, Source};
 use tutti_types::{ChannelLayout, Latency, Samples, Tail};
 
 use crate::node::{InPlaceMask, MAX_PORTS, Prepare, Resolution, Shape};
@@ -117,6 +117,15 @@ pub enum CompileError {
         delay: Samples,
         /// The maximum block being compiled for.
         max_block: Samples,
+    },
+    /// A sink has two or more sources, and this compiler does not sum yet.
+    ///
+    /// [`Topology`](crate::Topology) holds a set of sources per sink port and
+    /// per global output channel; the compiler reads one. Removed when the
+    /// sum op lands (doc 013, "Audio fan-in sums").
+    FanInNotCompiled {
+        /// The sink with several sources.
+        at: Sink,
     },
     /// No shape was supplied for a node.
     MissingShape {
@@ -211,6 +220,12 @@ impl std::fmt::Display for CompileError {
                 f,
                 "feedback edge {edge:?} delays {delay} frames, less than the maximum block {max_block}"
             ),
+            Self::FanInNotCompiled { at } => {
+                write!(
+                    f,
+                    "{at:?} has several sources, and fan-in is not compiled yet"
+                )
+            }
             Self::MissingShape { node } => write!(f, "no shape for node {}", node.0),
             Self::WidthMismatch {
                 node,
@@ -549,9 +564,28 @@ pub fn compile(
         }
     }
 
+    // Fan-in: the topology can say it, the compiler cannot sum it yet. Past
+    // this check every sink has at most one source.
+    for (&at, edges) in &topology.edges {
+        if edges.len() > 1 {
+            return Err(CompileError::FanInNotCompiled { at: Sink::Port(at) });
+        }
+    }
+    for (channel, sources) in topology.outputs.iter().enumerate() {
+        if sources.len() > 1 {
+            return Err(CompileError::FanInNotCompiled {
+                at: Sink::Output(channel as u16),
+            });
+        }
+    }
+
     // Feedback delays: at least one block, or a read would need the future.
     let max_block = prepare.max_block().samples();
-    for (&at, e) in &topology.edges {
+    for (&at, e) in topology
+        .edges
+        .iter()
+        .flat_map(|(at, es)| es.iter().map(move |e| (at, e)))
+    {
         if let Edge::Feedback(f) = *e
             && f.delay < max_block
         {
@@ -581,7 +615,11 @@ pub fn compile(
     // error).
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); keys.len()];
     let mut labelled: Vec<(usize, usize, CycleEdge)> = Vec::new();
-    for (&at, edge) in &topology.edges {
+    for (&at, edge) in topology
+        .edges
+        .iter()
+        .flat_map(|(at, es)| es.iter().map(move |e| (at, e)))
+    {
         if let Edge::Direct(Source::Node(p)) = *edge {
             let (s, d) = (dense[&p.node], dense[&at.node]);
             preds[d].push(s);
@@ -662,6 +700,7 @@ pub fn compile(
     let audio_fb: Vec<FeedbackKey> = topology
         .edges
         .values()
+        .flatten()
         .filter_map(|e| match *e {
             Edge::Feedback(f) => Some(audio_fb_key(f)),
             _ => None,
@@ -699,11 +738,12 @@ pub fn compile(
     let used_globals: BTreeSet<u16> = topology
         .edges
         .values()
+        .flatten()
         .filter_map(|e| match *e {
             Edge::Direct(Source::Global(ch)) => Some(ch),
             _ => None,
         })
-        .chain(topology.outputs.iter().filter_map(|s| match *s {
+        .chain(topology.outputs.iter().flatten().filter_map(|s| match *s {
             Source::Global(ch) => Some(ch),
             _ => None,
         }))
@@ -731,7 +771,7 @@ pub fn compile(
         let mut ain = Vec::with_capacity(shape.audio_in.count() as usize);
         for port in 0..shape.audio_in.count() {
             let at = InPort { node: key, port };
-            let r = match topology.edges.get(&at) {
+            let r = match topology.edges.get(&at).and_then(|es| es.first()) {
                 None | Some(Edge::Direct(Source::Zero)) => ARef::Zero,
                 Some(&Edge::Direct(from @ (Source::Global(_) | Source::Node(_)))) => {
                     // A global input arrives at zero: it is a merge-point
@@ -905,8 +945,9 @@ pub fn compile(
         .values()
         .any(|spec| matches!(spec, crate::MeterSpec::Outputs));
     let mut output_refs: Vec<ARef> = Vec::with_capacity(topology.outputs.len());
-    for (channel, source) in topology.outputs.iter().enumerate() {
+    for (channel, sources) in topology.outputs.iter().enumerate() {
         let channel = channel as u16;
+        let source = &sources.first().copied().unwrap_or(Source::Zero);
         let mut src = match *source {
             Source::Node(p) => ARef::Val(audio_out_val[&p]),
             Source::Global(ch) => ARef::Val(global_val[&ch]),

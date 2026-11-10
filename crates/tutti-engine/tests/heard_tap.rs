@@ -41,14 +41,12 @@ fn engine(width: u16) -> Engine {
     let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     ed.insert(NodeKey(1), "ramp", Unforkable(Ramp { width, at: 0 }));
-    ed.spec_mut().topology.outputs = (0..width)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..width).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within limits");
     Box::leak(Box::new((ed, transport)));

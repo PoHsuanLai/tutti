@@ -352,7 +352,9 @@ const PROBE: u64 = 10;
 fn probe_graph(max: usize, cutoff: &Cell, q: &Cell) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(prepare(max));
     ed.insert(NodeKey(PROBE), "probe", Unforkable(Probe::new(cutoff, q)));
-    ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..3).map(|c| Source::Node(port(PROBE, c))));
     (ed, exec)
 }
 
@@ -572,7 +574,9 @@ fn a_node_without_a_base_is_never_modulated() {
     let mut probe = Probe::new(&cutoff, &q);
     probe.answers = false;
     ed.insert(NodeKey(PROBE), "probe", Unforkable(probe));
-    ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..3).map(|c| Source::Node(port(PROBE, c))));
     ed.insert(NodeKey(1), "one", Unforkable(Hold { value: 1.0 }));
     ed.spec_mut()
         .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
@@ -927,14 +931,14 @@ fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
                 node: NodeKey(3),
                 port: 0,
             },
-            Edge::Direct(Source::Node(port(4, 0))),
+            vec![Edge::Direct(Source::Node(port(4, 0)))],
         );
         ed.spec_mut().topology.edges.insert(
             InPort {
                 node: NodeKey(PROBE),
                 port: 0,
             },
-            Edge::Direct(Source::Node(port(3, 0))),
+            vec![Edge::Direct(Source::Node(port(3, 0)))],
         );
         ed.commit().expect("the sibling moves the arrival");
         let delay = ed
@@ -1080,7 +1084,9 @@ fn a_lane_fed_fork_reads_its_value_at_frame_0() {
         "probe",
         ForkByClone(Probe::new(&cutoff, &q)),
     );
-    ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..3).map(|c| Source::Node(port(PROBE, c))));
     ed.insert(
         NodeKey(2),
         "lane",
@@ -2417,18 +2423,18 @@ fn run_differential(g: &Gen) {
             // Fed by the first signal, so the sibling carries something.
             ed.spec_mut().topology.edges.insert(
                 InPort { node: s, port: 0 },
-                Edge::Direct(Source::Node(OutPort {
+                vec![Edge::Direct(Source::Node(OutPort {
                     node: NodeKey(100),
                     port: 0,
-                })),
+                }))],
             );
             ed.spec_mut().topology.edges.insert(
                 InPort { node: k, port: 0 },
-                Edge::Direct(Source::Node(OutPort { node: s, port: 0 })),
+                vec![Edge::Direct(Source::Node(OutPort { node: s, port: 0 }))],
             );
         }
     }
-    ed.spec_mut().topology.outputs = outputs.clone();
+    ed.spec_mut().topology.set_outputs(outputs.clone());
 
     let width = outputs.len();
     for (step, &n) in g.blocks.iter().enumerate() {

@@ -158,7 +158,7 @@ fn stereo_net_widened_then_exports_four_channels() {
     g.spec_mut()
         .topology
         .outputs
-        .resize(4, tutti_graph::Source::Zero);
+        .resize(4, vec![tutti_graph::Source::Zero]);
     assert_eq!(g.outputs(), 4, "graph widened to quad");
     g.pipe_output(mix);
 

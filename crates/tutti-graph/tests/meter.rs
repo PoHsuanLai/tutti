@@ -91,7 +91,7 @@ fn constants(r: &mut Rig, values: &[f32]) {
         );
         outputs.push(out(key));
     }
-    r.ed.spec_mut().topology.outputs = outputs;
+    r.ed.spec_mut().topology.set_outputs(outputs);
 }
 
 fn commit(r: &mut Rig) {
@@ -230,7 +230,7 @@ fn a_spike_is_held_until_read_and_read_once() {
             done: false,
         }),
     );
-    r.ed.spec_mut().topology.outputs = vec![out(1)];
+    r.ed.spec_mut().topology.set_outputs(vec![out(1)]);
     let mut m =
         r.ed.open_meter(MeterId(1), MeterSpec::Outputs)
             .expect("the sources exist");
@@ -302,8 +302,8 @@ fn the_master_follows_the_outputs() {
     block(&mut r, 32);
     assert_eq!(level(&mut m), vec![(0.5, 0.5, 32), (0.25, 0.25, 32)]);
 
-    r.ed.spec_mut().topology.outputs[0] = Source::Zero;
-    r.ed.spec_mut().topology.outputs.push(out(1));
+    r.ed.spec_mut().topology.outputs[0] = vec![Source::Zero];
+    r.ed.spec_mut().topology.outputs.push(vec![out(1)]);
     commit(&mut r);
     assert_eq!(m.channels(), 3);
     block(&mut r, 32);
@@ -491,18 +491,18 @@ fn output_bits(workers: usize, master: bool, track: bool) -> Vec<u32> {
                 node: NodeKey(lag),
                 port: 0,
             },
-            Edge::Direct(Source::Global(0)),
+            vec![Edge::Direct(Source::Global(0))],
         );
         t.edges.insert(
             InPort {
                 node: NodeKey(gain),
                 port: 0,
             },
-            Edge::Direct(out(lag)),
+            vec![Edge::Direct(out(lag))],
         );
         outputs.push(out(gain));
     }
-    r.ed.spec_mut().topology.outputs = outputs.clone();
+    r.ed.spec_mut().topology.set_outputs(outputs.clone());
     let mut readers = Vec::new();
     if master {
         readers.push(
@@ -592,7 +592,7 @@ fn a_narrowed_node_silences_the_lanes_past_its_width_and_commits() {
             port: p,
         })
     };
-    r.ed.spec_mut().topology.outputs = vec![port(0)];
+    r.ed.spec_mut().topology.set_outputs(vec![port(0)]);
     let mut m =
         r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![port(0), port(1)]))
             .expect("the sources exist");
@@ -660,10 +660,10 @@ fn the_master_reads_at_the_outputs_time() {
             node: NodeKey(3),
             port: 0,
         },
-        Edge::Direct(out(2)),
+        vec![Edge::Direct(out(2))],
     );
     // Output 0 is the latent path, output 1 the bare pulse (delayed to meet it).
-    r.ed.spec_mut().topology.outputs = vec![out(3), out(1)];
+    r.ed.spec_mut().topology.set_outputs(vec![out(3), out(1)]);
     let mut master =
         r.ed.open_meter(MeterId(1), MeterSpec::Outputs)
             .expect("the sources exist");
@@ -783,7 +783,9 @@ fn a_meter_cannot_change_its_width_under_its_cells() {
     let _master =
         r.ed.open_meter(MeterId(2), MeterSpec::Outputs)
             .expect("the sources exist");
-    r.ed.spec_mut().topology.outputs = vec![Source::Zero; tutti_graph::MAX_ROOT_CHANNELS + 1];
+    r.ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Zero; tutti_graph::MAX_ROOT_CHANNELS + 1]);
     assert!(matches!(
         r.ed.commit(),
         Err(CommitError::MeterWidth {
@@ -853,9 +855,9 @@ fn run(r: &mut Rig, blocks: usize) -> Vec<Vec<Level>> {
             node: NodeKey(20),
             port: 0,
         },
-        Edge::Direct(out(1)),
+        vec![Edge::Direct(out(1))],
     );
-    r.ed.spec_mut().topology.outputs[5] = out(20);
+    r.ed.spec_mut().topology.outputs[5] = vec![out(20)];
     let mut master =
         r.ed.open_meter(MeterId(1), MeterSpec::Outputs)
             .expect("the sources exist");

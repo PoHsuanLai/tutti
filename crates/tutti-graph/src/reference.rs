@@ -426,7 +426,7 @@ impl Reference {
         // params start over.
         self.params.clear();
         if let Some(graph) = self.graph.clone() {
-            for (&at, e) in &graph.topology().edges {
+            for (&at, e) in flat_edges(graph.topology()) {
                 if let crate::Edge::Feedback(f) = e {
                     assert!(
                         f.delay >= prepare.max_block().samples(),
@@ -643,7 +643,7 @@ impl Reference {
                 return a;
             }
             let mut best = Latency::ZERO;
-            for (at, e) in &g.topology().edges {
+            for (at, e) in flat_edges(g.topology()) {
                 if at.node == k
                     && let Edge::Direct(Source::Node(p)) = e
                 {
@@ -676,7 +676,7 @@ impl Reference {
         let departure = |k: NodeKey| arrival[&k] + lat(k);
 
         let mut delays: BTreeMap<DelayKey, Samples> = BTreeMap::new();
-        for (&at, e) in &t.edges {
+        for (&at, e) in flat_edges(t) {
             let dep = match *e {
                 Edge::Direct(Source::Node(p)) => departure(p.node).samples(),
                 Edge::Direct(Source::Global(_)) => Samples::ZERO,
@@ -721,14 +721,15 @@ impl Reference {
         let arrivals: Vec<Samples> = t
             .outputs
             .iter()
-            .map(|s| match s {
-                Source::Node(p) => departure(p.node).samples(),
+            .map(|s| match single(s) {
+                Some(Source::Node(p)) => departure(p.node).samples(),
                 _ => Samples::ZERO,
             })
             .collect();
         let total = arrivals.iter().copied().max().unwrap_or_default();
         for (ch, (s, a)) in t.outputs.iter().zip(&arrivals).enumerate() {
             let d = total.checked_sub(*a).unwrap_or_default();
+            let s = &single(s).unwrap_or(Source::Zero);
             if !d.is_zero() && *s != Source::Zero {
                 delays.insert(
                     DelayKey::Output {
@@ -863,6 +864,7 @@ impl Reference {
         let audio_fb: BTreeSet<(OutPort, u32, Samples)> = t
             .edges
             .values()
+            .flatten()
             .filter_map(|e| match e {
                 Edge::Feedback(f) => Some((f.from, graph.generation(f.from.node), f.delay)),
                 _ => None,
@@ -1018,7 +1020,8 @@ impl Reference {
                     .edges
                     .iter()
                     .filter(|(at, _)| at.node == k)
-                    .filter_map(|(_, e)| match e {
+                    .flat_map(|(_, es)| es)
+                    .filter_map(|e| match e {
                         Edge::Direct(Source::Node(p)) => Some(p.node),
                         _ => None,
                     })
@@ -1080,7 +1083,8 @@ impl Reference {
                 }
             }
 
-            for (ch, source) in t.outputs.iter().enumerate() {
+            for (ch, sources) in t.outputs.iter().enumerate() {
+                let source = &single(sources).unwrap_or(Source::Zero);
                 let mut buf = match source {
                     Source::Node(p) => audio[p].clone(),
                     Source::Global(g) => inputs[*g as usize][..frames].to_vec(),
@@ -1133,16 +1137,17 @@ impl Reference {
         let mut ins: Vec<Vec<f32>> = Vec::new();
         for port in 0..shape.audio_in.count() {
             let at = InPort { node: key, port };
-            let mut buf = match t.edges.get(&at) {
+            let edge = t.edges.get(&at).and_then(|es| single(es));
+            let mut buf = match edge {
                 None | Some(Edge::Direct(Source::Zero)) => vec![0.0; frames],
-                Some(Edge::Direct(Source::Global(g))) => inputs[*g as usize][..frames].to_vec(),
-                Some(Edge::Direct(Source::Node(p))) => audio[p].clone(),
+                Some(Edge::Direct(Source::Global(g))) => inputs[g as usize][..frames].to_vec(),
+                Some(Edge::Direct(Source::Node(p))) => audio[&p].clone(),
                 Some(Edge::Feedback(f)) => {
                     let line = &self.fb_audio[&(f.from, graph.generation(f.from.node), f.delay)];
                     line.iter().take(frames).copied().collect()
                 }
             };
-            if let Some(&Edge::Direct(from)) = t.edges.get(&at)
+            if let Some(Edge::Direct(from)) = edge
                 && let Some(line) = self.audio_lines.get_mut(&DelayKey::Audio { at, from })
             {
                 delay_line(line, &mut buf);
@@ -1979,4 +1984,21 @@ fn fifo_run(f: &mut RefFifo, input: &[Event], frames: usize) -> Vec<Event> {
         .collect();
     f.clock = end;
     out
+}
+
+/// Every audio edge with its sink port, in port then sorted order.
+fn flat_edges(t: &crate::Topology) -> impl Iterator<Item = (&InPort, &Edge)> {
+    t.edges
+        .iter()
+        .flat_map(|(at, es)| es.iter().map(move |e| (at, e)))
+}
+
+/// The one source of a sink, or none. The interpreter does not sum yet, so a
+/// set of two or more is a bug in the test that wrote it, not a silent pick.
+fn single<T: Copy>(set: &[T]) -> Option<T> {
+    assert!(
+        set.len() <= 1,
+        "the reference interpreter does not sum a fan-in yet"
+    );
+    set.first().copied()
 }

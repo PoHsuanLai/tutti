@@ -55,14 +55,12 @@ fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
             port: 0,
         }),
     );
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            tutti_graph::Source::Node(tutti_graph::OutPort {
-                node: NodeKey(2),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        tutti_graph::Source::Node(tutti_graph::OutPort {
+            node: NodeKey(2),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     (ed, exec)
 }

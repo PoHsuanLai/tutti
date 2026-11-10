@@ -94,17 +94,15 @@ fn render_probes(workers: usize, entry: Entry) {
                 node: NodeKey(k),
                 port: 0,
             },
-            Edge::Direct(Source::Global(0)),
+            vec![Edge::Direct(Source::Global(0))],
         );
     }
-    ed.spec_mut().topology.outputs = (1..=PROBES)
-        .map(|k| {
-            Source::Node(OutPort {
-                node: NodeKey(k),
-                port: 0,
-            })
+    ed.spec_mut().topology.set_outputs((1..=PROBES).map(|k| {
+        Source::Node(OutPort {
+            node: NodeKey(k),
+            port: 0,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     exec.apply_pending();
     assert_eq!(exec.is_parallel(), workers > 1, "{workers} workers");

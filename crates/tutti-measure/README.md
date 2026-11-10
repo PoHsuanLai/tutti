@@ -151,7 +151,7 @@ impl Node for Tone {
 let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
 editor.insert(NodeKey(1), "tone", Unforkable(Tone));
 let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
-editor.spec_mut().topology.outputs = vec![out(0), out(1)];
+editor.spec_mut().topology.set_outputs([out(0), out(1)]);
 let mut tap = editor.open_tap(TapId(0), vec![out(0), out(1)], TapAlign::ToOutput, Samples(256)).expect("the ports exist");
 editor.commit().expect("compiles");
 executor.apply_pending();

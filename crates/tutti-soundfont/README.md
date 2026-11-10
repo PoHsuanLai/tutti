@@ -57,9 +57,8 @@ unit.program_change(MidiChannel::FIRST, U7::of(0)); // channel 0 → program 0
 let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
 let key = NodeKey(1);
 editor.insert(key, "piano", unit);
-editor.spec_mut().topology.outputs = (0..2)
-    .map(|port| Source::Node(OutPort { node: key, port }))
-    .collect();
+editor.spec_mut().topology.set_outputs((0..2)
+    .map(|port| Source::Node(OutPort { node: key, port })));
 editor.commit()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```

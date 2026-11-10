@@ -290,7 +290,7 @@ fn wire_audio(ed: &mut Editor, from: u64, to: u64, ports: u16) {
                 node: NodeKey(to),
                 port,
             },
-            Edge::Direct(out(from, port)),
+            vec![Edge::Direct(out(from, port))],
         );
     }
 }
@@ -315,7 +315,7 @@ fn tap(ed: &mut Editor, from: u64, tap: u64) {
     ed.spec_mut()
         .topology
         .outputs
-        .extend((0..4).map(|p| out(tap, p)));
+        .extend((0..4).map(|p| vec![out(tap, p)]));
 }
 
 fn cutoff(node: u64) -> ParamIn {
@@ -339,7 +339,7 @@ fn lane_to_probe(
     probe: u64,
 ) {
     ed.insert(NodeKey(probe), "probe", ForkByClone(Probe));
-    ed.spec_mut().topology.outputs.push(out(probe, 0));
+    ed.spec_mut().topology.outputs.push(vec![out(probe, 0)]);
     ed.set_param_range(cutoff(probe), ParamRange::new(0.0, 1.0))
         .expect("a probe");
     ed.commit().expect("commits");
@@ -865,7 +865,7 @@ fn a_kick_ducks_the_pad_through_a_lane() {
                 node: NodeKey(2),
                 port: to,
             },
-            Edge::Direct(out(1, from)),
+            vec![Edge::Direct(out(1, from))],
         );
     }
     lane_to_probe(&mut ed, 2, 7, -0.6, 0.8, 3, 4);

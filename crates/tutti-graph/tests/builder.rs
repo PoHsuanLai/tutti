@@ -67,9 +67,16 @@ fn ch(n: usize) -> ChannelLayout {
 /// What the builder feeds `node`'s input `port`. An absent edge reads
 /// silence, as an explicit `Zero` does.
 fn source_of(g: &GraphBuilder, node: NodeKey, port: u16) -> Source {
-    match g.spec().topology.edges.get(&InPort { node, port }) {
-        Some(Edge::Direct(s)) => *s,
-        Some(Edge::Feedback(_)) => panic!("no feedback in these graphs"),
+    match g
+        .spec()
+        .topology
+        .edges
+        .get(&InPort { node, port })
+        .map(Vec::as_slice)
+    {
+        Some([Edge::Direct(s)]) => *s,
+        Some([Edge::Feedback(_)]) => panic!("no feedback in these graphs"),
+        Some(several) => panic!("one source per port here, got {several:?}"),
         None => Source::Zero,
     }
 }
@@ -92,7 +99,11 @@ fn assert_wired(
             );
         }
     }
-    assert_eq!(g.spec().topology.outputs, outputs, "{case}: global outputs");
+    assert_eq!(
+        g.spec().topology.outputs,
+        outputs.iter().map(|s| vec![*s]).collect::<Vec<_>>(),
+        "{case}: global outputs"
+    );
 }
 
 /// Assert `got` holds, on every frame, the constant each output channel of
@@ -311,15 +322,16 @@ fn builder_builds_what_a_hand_written_spec_builds() {
     };
     spec.topology
         .edges
-        .insert(at(0, 0), Edge::Direct(Source::Global(0)));
+        .insert(at(0, 0), vec![Edge::Direct(Source::Global(0))]);
     spec.topology.edges.insert(
         at(0, 1),
-        Edge::Feedback(FeedbackFrom::new(from(1, 0), fb_delay)),
+        vec![Edge::Feedback(FeedbackFrom::new(from(1, 0), fb_delay))],
     );
     spec.topology
         .edges
-        .insert(at(1, 0), Edge::Direct(Source::Node(from(0, 0))));
-    spec.topology.outputs = vec![Source::Node(from(1, 0)), Source::Node(from(3, 0))];
+        .insert(at(1, 0), vec![Edge::Direct(Source::Node(from(0, 0)))]);
+    spec.topology
+        .set_outputs(vec![Source::Node(from(1, 0)), Source::Node(from(3, 0))]);
     spec.connect_events(
         EventIn {
             node: NodeKey(3),
@@ -445,7 +457,10 @@ fn pipe_output_fans_out_as_net_does() {
             })
         })
         .collect();
-    assert_eq!(g.spec().topology.outputs, ports);
+    assert_eq!(
+        g.spec().topology.outputs,
+        ports.iter().map(|s| vec![*s]).collect::<Vec<_>>()
+    );
 }
 
 /// `pipe_input` reads global input `c % inputs`, and silence with no global

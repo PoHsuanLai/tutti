@@ -272,7 +272,7 @@ pub use fork::{
 // latency pass and is exported as `latency_plan`.
 pub use graph::{
     Edge, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec, NodeKey, NodeSpec, OutPort,
-    ParamValue, Source, TapAlign, TapId, TapSpec, Topology, Valid,
+    ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology, Valid,
 };
 pub use history::TransportHistory;
 pub use inlet::InletNode;

@@ -466,7 +466,7 @@ impl Graph {
         let (mut editor, exec) = Editor::new(prepare_for(rate, max_block, quantum));
         let topology = &mut editor.spec_mut().topology;
         topology.inputs = inputs;
-        topology.outputs = vec![Source::Zero; outputs];
+        topology.set_outputs(vec![Source::Zero; outputs]);
         // Declared and on from the start: a host reads the master level
         // without asking for it.
         // `Outputs` names no source, so the open cannot be refused.
@@ -1505,7 +1505,15 @@ impl Graph {
             node,
             port: port as u16,
         };
-        match self.editor.spec().topology.edges.get(&at) {
+        // This graph writes one source per port, so the first is the only.
+        match self
+            .editor
+            .spec()
+            .topology
+            .edges
+            .get(&at)
+            .and_then(|es| es.first())
+        {
             Some(Edge::Direct(source)) => self.lift(*source),
             // This graph writes no feedback edge.
             Some(Edge::Feedback(_)) | None => GraphSource::Silence,
@@ -1536,7 +1544,7 @@ impl Graph {
                 edges.remove(&at);
             }
             source => {
-                edges.insert(at, Edge::Direct(source));
+                edges.insert(at, vec![Edge::Direct(source)]);
             }
         }
         self.edited = true;
@@ -1627,6 +1635,7 @@ impl Graph {
             .topology
             .outputs
             .get(channel)
+            .and_then(|sources| sources.first())
             .map_or(GraphSource::Silence, |s| self.lift(*s))
     }
 
@@ -1636,7 +1645,7 @@ impl Graph {
     ///
     /// If `channel` is past the global outputs.
     pub fn set_output_source(&mut self, channel: usize, source: GraphSource) {
-        self.editor.spec_mut().topology.outputs[channel] = Self::lower(source);
+        self.editor.spec_mut().topology.outputs[channel] = vec![Self::lower(source)];
         self.follow_outputs();
         self.edited = true;
     }
@@ -1674,14 +1683,14 @@ impl Graph {
             .iter_mut()
             .enumerate()
         {
-            *source = if usable == 0 {
+            *source = vec![if usable == 0 {
                 Source::Zero
             } else {
                 Source::Node(OutPort {
                     node,
                     port: port(c) as u16,
                 })
-            };
+            }];
         }
         self.follow_outputs();
         self.edited = true;
@@ -1812,7 +1821,9 @@ impl Graph {
                 // silence, so the reader keeps the lanes it was opened with.
                 tap.sources = outputs
                     .iter()
-                    .copied()
+                    // One source per channel in this graph, so the first is
+                    // the only.
+                    .map(|sources| sources.first().copied().unwrap_or(Source::Zero))
                     .chain(std::iter::repeat(Source::Zero))
                     .take(width)
                     .collect();
@@ -2010,7 +2021,7 @@ impl Graph {
         };
         let outputs = &mut self.editor.spec_mut().topology.outputs;
         if outputs.len() < target {
-            outputs.resize(target, Source::Zero);
+            outputs.resize(target, vec![Source::Zero]);
             self.edited = true;
         }
         refused.map_or(Ok(()), Err)
@@ -2098,7 +2109,7 @@ impl Graph {
         self.widen_refusal = None;
         let outputs = &mut self.editor.spec_mut().topology.outputs;
         if outputs.len() != width {
-            outputs.resize(width, Source::Zero);
+            outputs.resize(width, vec![Source::Zero]);
             self.edited = true;
             self.follow_outputs();
         }

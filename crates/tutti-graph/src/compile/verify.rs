@@ -914,7 +914,7 @@ mod tests {
                 (k, Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO))
             })
             .collect();
-        t.outputs = vec![
+        t.set_outputs(vec![
             Source::Node(OutPort {
                 node: NodeKey(1),
                 port: 0,
@@ -923,7 +923,7 @@ mod tests {
                 node: NodeKey(2),
                 port: 0,
             }),
-        ];
+        ]);
         let valid = GraphSpec::new(t).validate().expect("valid");
         compile(
             &valid,
@@ -961,12 +961,12 @@ mod tests {
                 node: NodeKey(2),
                 port: 0,
             },
-            crate::Edge::Direct(Source::Node(OutPort {
+            vec![crate::Edge::Direct(Source::Node(OutPort {
                 node: NodeKey(1),
                 port: 0,
-            })),
+            }))],
         );
-        t.outputs = vec![
+        t.set_outputs(vec![
             Source::Node(OutPort {
                 node: NodeKey(2),
                 port: 0,
@@ -975,7 +975,7 @@ mod tests {
                 node: NodeKey(4),
                 port: 0,
             }),
-        ];
+        ]);
         let mut spec = GraphSpec::new(t);
         let _ = spec.connect_param(
             ParamIn {
@@ -1117,19 +1117,19 @@ mod tests {
                     node: sink,
                     port: 0,
                 },
-                crate::Edge::Direct(Source::Node(OutPort {
+                vec![crate::Edge::Direct(Source::Node(OutPort {
                     node: from,
                     port: 0,
-                })),
+                }))],
             );
         };
         wire(&mut t, b, a);
         wire(&mut t, w, b);
         wire(&mut t, c, a);
-        t.outputs = vec![
+        t.set_outputs(vec![
             Source::Node(OutPort { node: w, port: 0 }),
             Source::Node(OutPort { node: c, port: 0 }),
-        ];
+        ]);
         let shapes: Shapes = t
             .nodes
             .iter()
@@ -1411,15 +1411,15 @@ mod tests {
                 node: thru,
                 port: 0,
             },
-            crate::Edge::Direct(Source::Node(OutPort {
+            vec![crate::Edge::Direct(Source::Node(OutPort {
                 node: generator,
                 port: 0,
-            })),
+            }))],
         );
-        t.outputs = vec![Source::Node(OutPort {
+        t.set_outputs(vec![Source::Node(OutPort {
             node: thru,
             port: 0,
-        })];
+        })]);
         let shapes: Shapes = [(generator, sg), (thru, st)].into_iter().collect();
         let valid = GraphSpec::new(t).validate().expect("valid");
         let prep =
@@ -1466,13 +1466,13 @@ mod tests {
         for port in 0..2 {
             t.edges.insert(
                 crate::InPort { node: thru, port },
-                crate::Edge::Direct(Source::Node(OutPort {
+                vec![crate::Edge::Direct(Source::Node(OutPort {
                     node: generator,
                     port,
-                })),
+                }))],
             );
         }
-        t.outputs = vec![
+        t.set_outputs(vec![
             Source::Node(OutPort {
                 node: thru,
                 port: 0,
@@ -1481,7 +1481,7 @@ mod tests {
                 node: thru,
                 port: 1,
             }),
-        ];
+        ]);
         let shapes: Shapes = [(generator, sg), (thru, st)].into_iter().collect();
         let valid = GraphSpec::new(t).validate().expect("valid");
         let prep =
@@ -1643,7 +1643,7 @@ mod tests {
                     (k, s)
                 })
                 .collect();
-            t.outputs = vec![Source::Node(OutPort { node: a, port: 0 })];
+            t.set_outputs(vec![Source::Node(OutPort { node: a, port: 0 })]);
             let mut spec = GraphSpec::new(t);
             spec.generations.insert(a, gen_a);
             let prepare = crate::node::Prepare::new(

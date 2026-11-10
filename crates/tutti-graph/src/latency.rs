@@ -64,10 +64,10 @@
 //! g.nodes.insert(b, NodeSpec::new("src", ChannelLayout::EMPTY, mono));
 //! g.nodes.insert(limiter, NodeSpec::new("limiter", mono, mono).with_latency(Samples(512)));
 //! g.nodes.insert(mixer, NodeSpec::new("mixer", stereo, mono));
-//! g.edges.insert(InPort { node: limiter, port: 0 }, out(a));
-//! g.edges.insert(InPort { node: mixer, port: 0 }, out(limiter));
-//! g.edges.insert(InPort { node: mixer, port: 1 }, out(b));
-//! g.outputs = vec![Source::Node(OutPort { node: mixer, port: 0 })];
+//! g.connect(InPort { node: limiter, port: 0 }, out(a));
+//! g.connect(InPort { node: mixer, port: 0 }, out(limiter));
+//! g.connect(InPort { node: mixer, port: 1 }, out(b));
+//! g.set_outputs([Source::Node(OutPort { node: mixer, port: 0 })]);
 //!
 //! let d = delays(&g);
 //! assert_eq!(d.inputs(), &[(mixer, 1, Samples(512))]);

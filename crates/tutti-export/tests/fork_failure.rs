@@ -89,10 +89,12 @@ fn fork() -> (RenderGraph, Arc<Crashed>, Editor) {
     let probe = Arc::new(Crashed(AtomicBool::new(false)));
     let (mut live, _exec) = Editor::new(RenderGraph::prepare(RATE));
     live.insert(NodeKey(1), "watched", Watched(Arc::clone(&probe)));
-    live.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(1),
-        port: 0,
-    })];
+    live.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })]);
     let graph = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, RATE)
         .expect("the node forks");
     (graph, probe, live)

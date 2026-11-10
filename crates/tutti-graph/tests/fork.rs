@@ -347,7 +347,7 @@ fn a_value_set_after_insert_reaches_the_fork() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
     let key = NodeKey(1);
     let controls = ed.insert(key, "level", Level::new(0.5));
-    ed.spec_mut().topology.outputs = vec![out(key, 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(key, 0)]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -392,9 +392,9 @@ fn a_node_without_a_fork_source_is_not_forkable() {
             node: NodeKey(1),
             port: 0,
         },
-        Edge::Direct(out(NodeKey(2), 0)),
+        vec![Edge::Direct(out(NodeKey(2), 0))],
     );
-    t.outputs = vec![out(NodeKey(1), 0)];
+    t.set_outputs(vec![out(NodeKey(1), 0)]);
     let pre = prepare(64);
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
@@ -411,7 +411,7 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     // (`a_master_fork_holds_only_what_the_outputs_reach`).
     let (mut ed, _exec) = Editor::new(pre);
     ed.insert(NodeKey(1), "boxed", Unforkable(gain().into_node().0));
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(NodeKey(1), 0)]);
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
         Some(ForkError::NotForkable { key: NodeKey(1) })
@@ -419,7 +419,7 @@ fn a_node_without_a_fork_source_is_not_forkable() {
 
     let (mut ed, _exec) = Editor::new(pre);
     ed.insert(NodeKey(3), "gain", gain());
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(3), 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(NodeKey(3), 0)]);
     assert!(ed.fork(ForkTarget::Master, ForkMode::Live, pre).is_ok());
     ed.insert(NodeKey(3), "boxed", Unforkable(gain().into_node().0));
     assert_eq!(
@@ -504,7 +504,9 @@ fn a_forked_unit_that_fails_while_rendering_is_a_fork_fault() {
     let (mut ed, _exec) = Editor::new(pre);
     ed.insert(NodeKey(1), "gain", gain());
     ed.insert(NodeKey(4), "watched", Watched(Arc::clone(&flag)));
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(4), 0)];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![out(NodeKey(1), 0), out(NodeKey(4), 0)]);
 
     let (fork, _fork_exec) = ed
         .fork(ForkTarget::Master, ForkMode::Live, pre)
@@ -585,7 +587,9 @@ fn a_failing_fork_source_is_a_named_error_with_its_cause() {
     let (mut ed, _exec) = Editor::new(pre);
     ed.insert(NodeKey(1), "gain", gain());
     ed.insert(NodeKey(5), "plugin-like", Failing);
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(5), 0)];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![out(NodeKey(1), 0), out(NodeKey(5), 0)]);
 
     let err = ed
         .fork(ForkTarget::Master, ForkMode::Live, pre)
@@ -633,7 +637,9 @@ fn a_node_fork_fans_out_as_clone_isolated_does() {
             let (mut ed, _exec) = Editor::new(prepare(64));
             let key = NodeKey(7);
             ed.insert(key, "consts", ForkByClone(unit));
-            ed.spec_mut().topology.outputs = vec![Source::Zero; graph_outs];
+            ed.spec_mut()
+                .topology
+                .set_outputs(vec![Source::Zero; graph_outs]);
             let (fe, fx) = ed
                 .fork(ForkTarget::Node(key), ForkMode::Live, prepare(64))
                 .expect("forks");
@@ -697,29 +703,29 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
     let spec = ed.spec_mut();
     let t = &mut spec.topology;
     t.edges
-        .insert(InPort { node: a, port: 0 }, Edge::Direct(out(osc, 0)));
+        .insert(InPort { node: a, port: 0 }, vec![Edge::Direct(out(osc, 0))]);
     t.edges.insert(
         InPort { node: a, port: 1 },
-        Edge::Feedback(FeedbackFrom::new(
+        vec![Edge::Feedback(FeedbackFrom::new(
             OutPort { node: fb, port: 0 },
             Samples(64),
-        )),
+        ))],
     );
     t.edges.insert(
         InPort {
             node: target,
             port: 0,
         },
-        Edge::Direct(out(a, 0)),
+        vec![Edge::Direct(out(a, 0))],
     );
     t.edges.insert(
         InPort {
             node: after,
             port: 0,
         },
-        Edge::Direct(out(target, 0)),
+        vec![Edge::Direct(out(target, 0))],
     );
-    t.outputs = vec![out(after, 0), out(side, 0)];
+    t.set_outputs(vec![out(after, 0), out(side, 0)]);
     spec.connect_events(
         EventIn {
             node: target,
@@ -743,7 +749,7 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
         "a's two inputs and the target's"
     );
     assert_eq!(fe.spec().events, ed.spec().events);
-    assert_eq!(fe.spec().topology.outputs, vec![out(target, 0); 2]);
+    assert_eq!(fe.spec().topology.outputs, vec![vec![out(target, 0)]; 2]);
     let got = render(fe, fx, 256);
     assert!(got[0].iter().any(|&x| x != 0.0), "not vacuous");
 }
@@ -776,7 +782,9 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
             },
         );
         let controls = ed.insert(NodeKey(2), "level", level);
-        ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(2), 0)];
+        ed.spec_mut()
+            .topology
+            .set_outputs(vec![out(NodeKey(1), 0), out(NodeKey(2), 0)]);
         ed.commit().expect("commits");
         exec.apply_pending();
         ed.collect();
@@ -831,7 +839,7 @@ fn a_replace_moves_forking_to_the_new_unit() {
     let key = NodeKey(1);
     let (mut ed, mut exec) = Editor::new(prepare(64));
     ed.insert(key, "consts", consts(1, 0.5));
-    ed.spec_mut().topology.outputs = vec![out(key, 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(key, 0)]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -870,7 +878,7 @@ fn a_fork_source_from_an_older_generation_is_refused() {
     let pre = prepare(64);
     let (mut ed, _exec) = Editor::new(pre);
     ed.insert(NodeKey(1), "consts", consts(1, 0.5));
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(NodeKey(1), 0)]);
     assert!(ed.fork(ForkTarget::Master, ForkMode::Live, pre).is_ok());
     ed.spec_mut().generations.insert(NodeKey(1), 7);
     assert_eq!(
@@ -909,7 +917,7 @@ fn a_fork_carries_params_event_capacity_and_its_own_marks() {
     ed.insert(emit2, "emit", emitter());
     ed.insert(fold2, "fold", Forkable(Kind::Consumer { inputs: 1 }));
     let spec = ed.spec_mut();
-    spec.topology.outputs = vec![out(fold, 0), out(fold2, 0)];
+    spec.topology.set_outputs(vec![out(fold, 0), out(fold2, 0)]);
     for (e, f) in [(emit, fold), (emit2, fold2)] {
         let at = EventIn { node: f, port: 0 };
         let from = EventOut { node: e, port: 0 };
@@ -1021,7 +1029,7 @@ fn a_fork_by_clone_node_forks_from_reset() {
         "ramp",
         tutti_graph::ForkByClone(Ramp { n: 7.0 }),
     );
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(NodeKey(1), 0)]);
     ed.commit().unwrap();
     let mut live = Renderer::new(ed, exec);
     let before = live.render(300);
@@ -1038,7 +1046,10 @@ fn a_fork_by_clone_node_forks_from_reset() {
 
     let (mut plain, _exec) = Editor::new(prepare(256));
     plain.insert(NodeKey(1), "ramp", Unforkable(Ramp { n: 0.0 }));
-    plain.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    plain
+        .spec_mut()
+        .topology
+        .set_outputs(vec![out(NodeKey(1), 0)]);
     assert_eq!(
         plain
             .fork(ForkTarget::Master, ForkMode::Live, prepare(256))
@@ -1068,14 +1079,16 @@ fn a_master_fork_holds_only_what_the_outputs_reach() {
         "idle",
         tutti_graph::ForkByClone(Ramp { n: 0.0 }),
     );
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(NodeKey(1), 0)]);
     let (fork, _fork_exec) = ed
         .fork(ForkTarget::Master, ForkMode::Live, prepare(256))
         .expect("the unrouted, unforkable node is not asked");
     let keys: Vec<NodeKey> = fork.spec().topology.nodes.keys().copied().collect();
     assert_eq!(keys, vec![NodeKey(1)]);
 
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(2), 0)];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![out(NodeKey(1), 0), out(NodeKey(2), 0)]);
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, prepare(256))
             .err(),
@@ -1229,7 +1242,7 @@ fn witness(ed: &mut Editor, key: NodeKey, how: How, value: u32) -> (Arc<AtomicU3
             threads: Arc::clone(&threads),
         }),
     );
-    ed.spec_mut().topology.outputs.push(out(key, 0));
+    ed.spec_mut().topology.outputs.push(vec![out(key, 0)]);
     (cell, threads)
 }
 
@@ -1251,7 +1264,7 @@ fn a_gathered_fork_is_the_live_graph_at_the_gather() {
     let pre = prepare(64);
     let (mut ed, mut exec) = Editor::new(pre);
     let level = ed.insert(NodeKey(1), "level", Level::new(0.5));
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    ed.spec_mut().topology.set_outputs(vec![out(NodeKey(1), 0)]);
     let (cell, _) = witness(&mut ed, NodeKey(2), How::Deferred, 3);
     ed.insert(NodeKey(3), "other", consts(1, 100.0));
     ed.commit().expect("commits");
@@ -1267,7 +1280,9 @@ fn a_gathered_fork_is_the_live_graph_at_the_gather() {
     // Every kind of live edit, after the gather.
     assert!(level.set(UnitParam::Volume, 0.9));
     cell.store(7, Ordering::SeqCst);
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(3), 0), out(NodeKey(3), 0)];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![out(NodeKey(3), 0), out(NodeKey(3), 0)]);
     ed.commit().expect("the live rewire commits");
     exec.apply_pending();
     ed.collect();
@@ -1503,7 +1518,7 @@ fn a_build_whose_commit_fails_hands_back_the_graph() {
             node: NodeKey(1),
             port: 0,
         },
-        Edge::Direct(Source::Zero),
+        vec![Edge::Direct(Source::Zero)],
     );
     let pending = ed
         .fork_gather(ForkTarget::Master, ForkMode::Live, pre)

@@ -1,7 +1,7 @@
 //! The audio graph as a **value**: build it, fold over it, compare it, hash it.
 //!
-//! [`Topology`] **is** the graph: nodes by stable [`NodeKey`], edges keyed by
-//! the sink port they feed, and the global outputs. A compiler interprets it (a
+//! [`Topology`] **is** the graph: nodes by stable [`NodeKey`], the set of edges
+//! feeding each sink port, and the global outputs. A compiler interprets it (a
 //! `Topology` in, an immutable plan out), and nothing reads a topology back out
 //! of a plan. Because it is a plain value, `Eq` compares two
 //! graphs, `Hash` keys a cache on one, and every static property is a pure
@@ -28,11 +28,11 @@
 //! let mut g = Topology::default();
 //! g.nodes.insert(osc, NodeSpec::new("osc", ChannelLayout::EMPTY, ChannelLayout::MONO));
 //! g.nodes.insert(gain, NodeSpec::new("gain", ChannelLayout::MONO, ChannelLayout::MONO));
-//! g.edges.insert(
+//! g.connect(
 //!     InPort { node: gain, port: 0 },
 //!     Edge::Direct(Source::Node(OutPort { node: osc, port: 0 })),
 //! );
-//! g.outputs = vec![Source::Node(OutPort { node: gain, port: 0 })];
+//! g.set_outputs([Source::Node(OutPort { node: gain, port: 0 })]);
 //!
 //! let valid = g.validate().expect("well formed");
 //! assert_eq!(valid.get().topo_order(), Ok(vec![osc, gain]));
@@ -91,10 +91,22 @@ pub struct InPort {
     pub port: u16,
 }
 
+/// Where signals arrive: an input port of a node, or a global output channel.
+/// Both are sinks, and both take a set of sources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Sink {
+    /// An input port of a node.
+    Port(InPort),
+    /// A global output channel.
+    Output(u16),
+}
+
 /// What feeds one sink port.
 ///
-/// Fan-in is unrepresentable: an [`InPort`] is a map *key*, so it has at most
-/// one source. Summing is a node, never a property of an edge.
+/// An [`InPort`] is a map *key* and its value is a list of sources
+/// ([`Topology::edges`]), so the representation holds several. This crate does
+/// not compile that yet: a port with two or more sources is a
+/// `CompileError::FanInNotCompiled`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
     /// An output port of another node in this topology.
@@ -311,10 +323,19 @@ pub struct Topology {
     /// Nodes by stable key. `BTreeMap` so iteration order — and therefore the
     /// hash, and therefore every derived answer — is deterministic.
     pub nodes: BTreeMap<NodeKey, NodeSpec>,
-    /// **Keyed on the sink port.** This is what makes fan-in unrepresentable.
-    pub edges: BTreeMap<InPort, Edge>,
-    /// What feeds each global output channel, in channel order.
-    pub outputs: Vec<Source>,
+    /// The sources of each sink port, keyed on the sink port: a set, held as
+    /// a `Vec` in sorted order ([`connect`](Self::connect) keeps it so).
+    ///
+    /// An absent key and an empty `Vec` mean the same (nothing feeds the
+    /// port); [`disconnect`](Self::disconnect) removes the key when the last
+    /// edge goes, so the derived `Eq` and `Hash` agree. A raw write is legal
+    /// and [`validate`](Self::validate) checks it: the same edge twice is
+    /// [`Invalid::DuplicateEdge`], and `Source::Zero` beside another source is
+    /// [`Invalid::SilenceBesideSources`].
+    pub edges: BTreeMap<InPort, Vec<Edge>>,
+    /// The sources of each global output channel, in channel order, with the
+    /// same rules as [`edges`](Self::edges) (a sink is a sink).
+    pub outputs: Vec<Vec<Source>>,
     /// The topology's own global input width — [`ChannelLayout::EMPTY`] for a
     /// master graph, which has none.
     pub inputs: ChannelLayout,
@@ -374,12 +395,13 @@ impl MeterSpec {
         }
     }
 
-    /// The sources, one per lane; `outputs` is the topology's own.
+    /// The number of lanes; `outputs` is the topology's global output count
+    /// (one lane per channel, whatever feeds it).
     #[must_use]
-    pub fn sources<'a>(&'a self, outputs: &'a [Source]) -> &'a [Source] {
+    pub fn lanes(&self, outputs: usize) -> usize {
         match self {
             Self::Outputs => outputs,
-            Self::Ports { sources, .. } => sources,
+            Self::Ports { sources, .. } => sources.len(),
         }
     }
 
@@ -483,6 +505,23 @@ pub enum Invalid {
         /// The topology's declared input width.
         width: ChannelLayout,
     },
+    /// The same edge twice at one sink.
+    ///
+    /// A source wired twice is a weight of 2, and a weight is written as one;
+    /// a duplicate is a mistake.
+    DuplicateEdge {
+        /// The sink: an input port or a global output channel.
+        at: Sink,
+        /// The edge listed more than once (a global output's source is a
+        /// `Direct` edge).
+        edge: Edge,
+    },
+    /// A `Source::Zero` beside another source at one sink: it adds nothing,
+    /// and would make two equal wirings compare unequal.
+    SilenceBesideSources {
+        /// The sink: an input port or a global output channel.
+        at: Sink,
+    },
     /// A global output channel is sourced from a node port that does not exist.
     OutputOutOfRange {
         /// Which output channel.
@@ -560,7 +599,7 @@ impl Topology {
     pub fn validate(&self) -> Result<Valid, Vec<Invalid>> {
         let mut errs = Vec::new();
 
-        for (&at, edge) in &self.edges {
+        for (&at, edges) in &self.edges {
             let Some(sink) = self.nodes.get(&at.node) else {
                 errs.push(Invalid::UnknownNode {
                     at,
@@ -574,48 +613,71 @@ impl Topology {
                     width: sink.inputs,
                 });
             }
-            let from = match *edge {
-                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p, .. }) => {
-                    Some(p)
+            if edges.len() > 1 && edges.contains(&Edge::Direct(Source::Zero)) {
+                errs.push(Invalid::SilenceBesideSources { at: Sink::Port(at) });
+            }
+            for (n, edge) in edges.iter().enumerate() {
+                if edges[..n].contains(edge) {
+                    errs.push(Invalid::DuplicateEdge {
+                        at: Sink::Port(at),
+                        edge: *edge,
+                    });
                 }
-                Edge::Direct(Source::Global(ch)) => {
-                    if ch >= self.inputs.count() {
-                        errs.push(Invalid::GlobalInputOutOfRange {
-                            at,
-                            channel: ch,
-                            width: self.inputs,
-                        });
+                let from = match *edge {
+                    Edge::Direct(Source::Node(p))
+                    | Edge::Feedback(FeedbackFrom { from: p, .. }) => Some(p),
+                    Edge::Direct(Source::Global(ch)) => {
+                        if ch >= self.inputs.count() {
+                            errs.push(Invalid::GlobalInputOutOfRange {
+                                at,
+                                channel: ch,
+                                width: self.inputs,
+                            });
+                        }
+                        None
                     }
-                    None
-                }
-                Edge::Direct(Source::Zero) => None,
-            };
-            if let Some(from) = from {
-                match self.nodes.get(&from.node) {
-                    None => errs.push(Invalid::UnknownNode {
-                        at,
-                        missing: from.node,
-                    }),
-                    Some(src) if from.port >= src.outputs.count() => {
-                        errs.push(Invalid::SourcePortOutOfRange {
+                    Edge::Direct(Source::Zero) => None,
+                };
+                if let Some(from) = from {
+                    match self.nodes.get(&from.node) {
+                        None => errs.push(Invalid::UnknownNode {
                             at,
-                            from,
-                            width: src.outputs,
-                        });
+                            missing: from.node,
+                        }),
+                        Some(src) if from.port >= src.outputs.count() => {
+                            errs.push(Invalid::SourcePortOutOfRange {
+                                at,
+                                from,
+                                width: src.outputs,
+                            });
+                        }
+                        Some(_) => {}
                     }
-                    Some(_) => {}
                 }
             }
         }
 
-        for (channel, src) in self.outputs.iter().enumerate() {
-            if let Source::Node(from) = *src {
-                let resolves = self
-                    .nodes
-                    .get(&from.node)
-                    .is_some_and(|n| from.port < n.outputs.count());
-                if !resolves {
-                    errs.push(Invalid::OutputOutOfRange { channel, from });
+        for (channel, sources) in self.outputs.iter().enumerate() {
+            if sources.len() > 1 && sources.contains(&Source::Zero) {
+                errs.push(Invalid::SilenceBesideSources {
+                    at: Sink::Output(channel as u16),
+                });
+            }
+            for (n, src) in sources.iter().enumerate() {
+                if sources[..n].contains(src) {
+                    errs.push(Invalid::DuplicateEdge {
+                        at: Sink::Output(channel as u16),
+                        edge: Edge::Direct(*src),
+                    });
+                }
+                if let Source::Node(from) = *src {
+                    let resolves = self
+                        .nodes
+                        .get(&from.node)
+                        .is_some_and(|n| from.port < n.outputs.count());
+                    if !resolves {
+                        errs.push(Invalid::OutputOutOfRange { channel, from });
+                    }
                 }
             }
         }
@@ -635,6 +697,41 @@ impl Topology {
         }
     }
 
+    /// Adds `edge` to the sources of `at`, keeping the list sorted and free of
+    /// duplicates: the same edge twice is one edge.
+    ///
+    /// Two topologies that wire the same sources compare and hash equal
+    /// whatever order they were wired in.
+    pub fn connect(&mut self, at: InPort, edge: Edge) {
+        let list = self.edges.entry(at).or_default();
+        if let Err(i) = list.binary_search(&edge) {
+            list.insert(i, edge);
+        }
+    }
+
+    /// Removes `edge` from the sources of `at`, and the key itself when it was
+    /// the last, so the derived `Eq` and `Hash` see an unfed port as one.
+    /// Returns whether it was there.
+    pub fn disconnect(&mut self, at: InPort, edge: Edge) -> bool {
+        let Some(list) = self.edges.get_mut(&at) else {
+            return false;
+        };
+        let Ok(i) = list.binary_search(&edge) else {
+            return false;
+        };
+        list.remove(i);
+        if list.is_empty() {
+            self.edges.remove(&at);
+        }
+        true
+    }
+
+    /// Sets the global outputs to one source per channel, in order, replacing
+    /// every channel's set: the one-source wiring.
+    pub fn set_outputs(&mut self, sources: impl IntoIterator<Item = Source>) {
+        self.outputs = sources.into_iter().map(|s| vec![s]).collect();
+    }
+
     /// Returns every declared input port nothing feeds, in key order.
     ///
     /// Not a fault (see [`validate`](Self::validate)) — exposed so a caller that
@@ -644,7 +741,7 @@ impl Topology {
         self.nodes.iter().flat_map(move |(&node, spec)| {
             (0..spec.inputs.count())
                 .map(move |port| InPort { node, port })
-                .filter(move |at| !self.edges.contains_key(at))
+                .filter(move |at| self.edges.get(at).is_none_or(Vec::is_empty))
         })
     }
 
@@ -654,7 +751,8 @@ impl Topology {
         self.edges
             .iter()
             .filter(move |(at, _)| at.node == node)
-            .filter_map(|(_, e)| match e {
+            .flat_map(|(_, es)| es)
+            .filter_map(|e| match e {
                 Edge::Direct(Source::Node(p)) => Some(p.node),
                 _ => None,
             })
@@ -741,22 +839,32 @@ impl LatencyGraph for Topology {
     /// [`Feed::Outside`] (aligned at a merge point, as the compiler aligns
     /// it), and an unconnected or silent port [`Feed::None`].
     ///
+    /// A port with several sources reads as its first (in sorted order): this
+    /// view has one feed per port, and `compile` refuses a set of two or more
+    /// (`CompileError::FanInNotCompiled`), so nothing renders from it yet.
+    ///
     /// A feedback edge yields `Feed::None`: it carries last block's value, so
     /// it contributes no latency along this block's path, and reporting it as
     /// a live predecessor would put the walk back in the cycle the edge kind
     /// exists to cut.
     fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
         let width = self.nodes.get(&node).map_or(0, |n| n.inputs.count());
-        (0..width).map(move |port| match self.edges.get(&InPort { node, port }) {
-            Some(Edge::Direct(Source::Node(p))) => Feed::Node(p.node),
-            Some(Edge::Direct(Source::Global(_))) => Feed::Outside,
-            _ => Feed::None,
+        (0..width).map(move |port| {
+            match self
+                .edges
+                .get(&InPort { node, port })
+                .and_then(|es| es.first())
+            {
+                Some(Edge::Direct(Source::Node(p))) => Feed::Node(p.node),
+                Some(Edge::Direct(Source::Global(_))) => Feed::Outside,
+                _ => Feed::None,
+            }
         })
     }
 
     fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
-        self.outputs.iter().map(|s| match s {
-            Source::Node(p) => Some(p.node),
+        self.outputs.iter().map(|s| match s.first() {
+            Some(Source::Node(p)) => Some(p.node),
             _ => None,
         })
     }

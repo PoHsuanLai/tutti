@@ -55,14 +55,12 @@ fn graph(frame: u64) -> (Editor, Executor) {
             port: 0,
         }),
     );
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(2),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(2),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     (ed, exec)
 }

@@ -196,7 +196,7 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
         };
         match edge {
             Some(e) => {
-                desc.spec.topology.edges.insert(at, e);
+                desc.spec.topology.edges.insert(at, vec![e]);
             }
             None => {
                 desc.spec.topology.edges.remove(&at);
@@ -246,13 +246,13 @@ fn wire_outputs(desc: &mut Desc, rng: &mut Rng) {
     let all = desc.order.clone();
     let outs = audio_outs(desc, &all);
     let width = u64::from(desc.spec.topology.inputs.count());
-    desc.spec.topology.outputs = (0..1 + rng.below(4))
-        .map(|_| match rng.below(10) {
+    desc.spec
+        .topology
+        .set_outputs((0..1 + rng.below(4)).map(|_| match rng.below(10) {
             0 => Source::Zero,
             1 => Source::Global(rng.below(width) as u16),
             _ => rng.pick(&outs).map_or(Source::Zero, Source::Node),
-        })
-        .collect();
+        }));
 }
 
 fn fresh_key(desc: &mut Desc, rng: &mut Rng) -> NodeKey {
@@ -320,18 +320,20 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
         d.spec.generations.remove(&victim);
         let t = &mut d.spec.topology;
         t.nodes.remove(&victim);
-        t.edges.retain(|at, e| {
-            let from = match *e {
-                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p, .. }) => {
-                    Some(p.node)
-                }
-                Edge::Direct(_) => None,
-            };
-            at.node != victim && from != Some(victim)
+        t.edges.retain(|at, es| {
+            es.retain(|e| {
+                let from = match *e {
+                    Edge::Direct(Source::Node(p))
+                    | Edge::Feedback(FeedbackFrom { from: p, .. }) => Some(p.node),
+                    Edge::Direct(_) => None,
+                };
+                from != Some(victim)
+            });
+            at.node != victim && !es.is_empty()
         });
         for s in &mut t.outputs {
-            if matches!(s, Source::Node(p) if p.node == victim) {
-                *s = Source::Zero;
+            if matches!(s[..], [Source::Node(p)] if p.node == victim) {
+                s[0] = Source::Zero;
             }
         }
         d.spec.events.retain(|at, _| at.node != victim);
@@ -530,7 +532,7 @@ proptest! {
     fn an_aligned_tap_of_the_outputs_is_the_output(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
             let desc = random_graph(seed);
-            let outputs = desc.spec.topology.outputs.clone();
+            let outputs: Vec<Source> = desc.spec.topology.outputs.iter().map(|s| s[0]).collect();
             let mut spec = desc.spec.clone();
             spec.topology.taps.insert(
                 TapId(1),
@@ -1043,7 +1045,13 @@ fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {
                 if !seen.insert(k) {
                     continue;
                 }
-                for (at, e) in &d.spec.topology.edges {
+                for (at, e) in d
+                    .spec
+                    .topology
+                    .edges
+                    .iter()
+                    .flat_map(|(at, es)| es.iter().map(move |e| (at, e)))
+                {
                     if let Edge::Direct(Source::Node(p)) = e
                         && p.node == k
                     {
@@ -1069,10 +1077,10 @@ fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {
                     node: early,
                     port: 0,
                 },
-                Edge::Direct(Source::Node(OutPort {
+                vec![Edge::Direct(Source::Node(OutPort {
                     node: late,
                     port: 0,
-                })),
+                }))],
             );
             return true;
         }
@@ -1240,18 +1248,18 @@ fn an_unrelated_edit_does_not_disturb_the_running_graph() {
         t.nodes.insert(k, spec_for(kind));
     }
     let src = |node| Edge::Direct(Source::Node(OutPort { node, port: 0 }));
-    t.edges.insert(InPort { node: b, port: 0 }, src(a));
-    t.edges.insert(InPort { node: c, port: 0 }, src(a));
-    t.edges.insert(InPort { node: mix, port: 0 }, src(b));
-    t.edges.insert(InPort { node: mix, port: 1 }, src(c));
+    t.edges.insert(InPort { node: b, port: 0 }, vec![src(a)]);
+    t.edges.insert(InPort { node: c, port: 0 }, vec![src(a)]);
+    t.edges.insert(InPort { node: mix, port: 0 }, vec![src(b)]);
+    t.edges.insert(InPort { node: mix, port: 1 }, vec![src(c)]);
     t.edges.insert(
         InPort { node: mix, port: 2 },
-        Edge::Feedback(FeedbackFrom::one_block(
+        vec![Edge::Feedback(FeedbackFrom::one_block(
             OutPort { node: c, port: 0 },
             Samples(MAX_BLOCK),
-        )),
+        ))],
     );
-    t.outputs = vec![Source::Node(OutPort { node: mix, port: 0 })];
+    t.set_outputs(vec![Source::Node(OutPort { node: mix, port: 0 })]);
     let before = GraphSpec::new(t.clone());
     let mut after_t = t;
     let mut kinds_after = kinds.clone();
@@ -1435,7 +1443,8 @@ fn every_borrow_form_matches_the_reference() {
     }
     let out = |node, port| Source::Node(OutPort { node, port });
     let mut wire = |node, port, from| {
-        t.edges.insert(InPort { node, port }, Edge::Direct(from));
+        t.edges
+            .insert(InPort { node, port }, vec![Edge::Direct(from)]);
     };
     wire(split, 0, Source::Global(0));
     wire(inplace, 0, out(split, 0));
@@ -1551,7 +1560,8 @@ fn every_borrow_form_matches_the_reference() {
         kinds.insert(k, kind);
     }
     let mut wire = |node, port, from| {
-        t.edges.insert(InPort { node, port }, Edge::Direct(from));
+        t.edges
+            .insert(InPort { node, port }, vec![Edge::Direct(from)]);
     };
     wire(fan12, 0, Source::Global(1));
     wire(sum2, 0, out(st_src, 0));
@@ -1569,7 +1579,7 @@ fn every_borrow_form_matches_the_reference() {
     for c in 0..3 {
         wire(w3, c, Source::Global(c % 2));
     }
-    t.outputs = vec![
+    t.set_outputs(vec![
         out(sum, 0),
         out(inplace, 0),
         out(twenty, 19),
@@ -1584,7 +1594,7 @@ fn every_borrow_form_matches_the_reference() {
         out(half, 0),
         out(half, 1),
         out(w3, 2),
-    ];
+    ]);
     let mut g = GraphSpec::new(t);
     let ev = |node, port| EventOut { node, port };
     let mut connect = |node, port, from| {

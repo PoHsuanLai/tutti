@@ -273,7 +273,10 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(7);
     let _controls = editor.insert(key, "plugin", probe.client.bind());
-    editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    editor
+        .spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
     match editor.fork(ForkTarget::Node(key), ForkMode::Offline, prepare) {
         Err(ForkError::Source { key: at, cause }) => {
             assert_eq!(at, key);
@@ -327,7 +330,10 @@ fn a_graph_holding_a_plugin_forks_and_renders_offline() {
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(1);
     let _controls = editor.insert(key, "plugin", probe.client.bind());
-    editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    editor
+        .spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
 
     let (fork_ed, fork_exec) = editor
         .fork(ForkTarget::Node(key), ForkMode::Offline, prepare)
@@ -353,7 +359,10 @@ fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(3);
     let _controls = editor.insert(key, "plugin", client.bind());
-    editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    editor
+        .spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
     let (fork_ed, fork_exec) = editor
         .fork(ForkTarget::Node(key), ForkMode::Offline, prepare)
         .expect("forks");
@@ -549,7 +558,9 @@ fn live_graph(client: PluginClient) -> (Editor, tutti_graph::Executor) {
     let (mut live, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
     let key = NodeKey(9);
     let _controls = live.insert(key, "plugin", client.bind());
-    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    live.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
     (live, exec)
 }
 
@@ -845,7 +856,9 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
         let key = NodeKey(9);
         let _controls = live.insert(key, "plugin", probe.client.bind());
         feed_note(&mut live, key, NOTE_FRAME);
-        live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+        live.spec_mut()
+            .topology
+            .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
             ..Default::default()
@@ -922,7 +935,9 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
             port: 0,
         }),
     );
-    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    live.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
@@ -1037,13 +1052,13 @@ fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
             },
             EventEdge::Direct(EventOut { node: key, port: 0 }),
         );
-        live.spec_mut().topology.outputs = vec![
+        live.spec_mut().topology.set_outputs(vec![
             Source::Node(OutPort { node: key, port: 0 }),
             Source::Node(OutPort {
                 node: sink,
                 port: 0,
             }),
-        ];
+        ]);
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
             ..Default::default()
@@ -1145,10 +1160,15 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
                 node: key,
                 port: port as u16,
             },
-            tutti_graph::Edge::Direct(Source::Node(OutPort { node: src, port: 0 })),
+            vec![tutti_graph::Edge::Direct(Source::Node(OutPort {
+                node: src,
+                port: 0,
+            }))],
         );
     }
-    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    live.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
 
     let graph = tutti_export::RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, rate)
         .expect("the graph forks");
@@ -1210,7 +1230,7 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
     let (mut live, _exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
     let _ = live.insert(NodeKey(9), "a", a.client.bind());
     let _ = live.insert(NodeKey(10), "b", b.client.bind());
-    live.spec_mut().topology.outputs = vec![
+    live.spec_mut().topology.set_outputs(vec![
         Source::Node(OutPort {
             node: NodeKey(9),
             port: 0,
@@ -1219,7 +1239,7 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
             node: NodeKey(10),
             port: 0,
         }),
-    ];
+    ]);
     let export = |pooled: bool| {
         let rate = SampleRate(SAMPLE_RATE);
         let mut graph =
@@ -1336,7 +1356,10 @@ fn a_fork_of_a_refused_rate_is_silent_at_once_and_a_failed_fault() {
     let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
     let key = NodeKey(3);
     let _controls = editor.insert(key, "plugin", probe.client.bind());
-    editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    editor
+        .spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
     let (fork_ed, fork_exec) = editor
         .fork(ForkTarget::Node(key), ForkMode::Offline, prepare)
         .expect("forks");

@@ -90,9 +90,8 @@ let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samp
 // only its block's `Env`, so a clone of it is a fork.
 let beats = NodeKey(1);
 editor.insert(beats, "beats", ForkByClone(Beats));
-editor.spec_mut().topology.outputs = (0..2)
-    .map(|port| Source::Node(OutPort { node: beats, port }))
-    .collect();
+editor.spec_mut().topology.set_outputs((0..2)
+    .map(|port| Source::Node(OutPort { node: beats, port })));
 editor.commit().expect("the graph compiles");
 
 let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");

@@ -124,12 +124,10 @@ fn wire_clock(ed: &mut Editor, sink: impl IntoNode<Controls = ()>, width: u16) {
     for port in 0..2 {
         topology.edges.insert(
             InPort { node: SINK, port },
-            Edge::Direct(Source::Node(OutPort { node: CLOCK, port })),
+            vec![Edge::Direct(Source::Node(OutPort { node: CLOCK, port }))],
         );
     }
-    topology.outputs = (0..width)
-        .map(|port| Source::Node(OutPort { node: SINK, port }))
-        .collect();
+    topology.set_outputs((0..width).map(|port| Source::Node(OutPort { node: SINK, port })));
     ed.commit().expect("commits");
 }
 
@@ -334,9 +332,9 @@ fn click_clicks_on_the_model_beats() {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     const CLICK: NodeKey = NodeKey(1);
     ed.insert(CLICK, "click", click);
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: CLICK, port }))
-        .collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: CLICK, port })));
     ed.commit().expect("commits");
     let graph = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let m = &transport.motion;
@@ -411,10 +409,12 @@ impl Node for EnvLog {
 fn env_graph(max_block: usize, log: &Arc<Mutex<Vec<Env>>>) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(max_block)));
     ed.insert(NodeKey(1), "env", Unforkable(EnvLog(Arc::clone(log))));
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(1),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     (ed, exec)
 }

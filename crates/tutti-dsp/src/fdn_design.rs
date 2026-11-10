@@ -60,7 +60,7 @@ pub struct FdnControls {
     /// the low band (1) and the high band (2): `[mid, low, high]`.
     pub decay: [Seconds; 3],
     /// The room size, `0..1`: scales every line, from half to one and a half
-    /// times the table. **A move lands over seconds, by design**: the kernel
+    /// times the table. **A move lands over seconds, by design**: the realization
     /// moves a line half a frame per 32-frame chunk (a pitch bend of 27 cents),
     /// so the longest line going from size 0 to 1 takes about 6 s, to keep a
     /// size sweep free of pitch artefacts.
@@ -199,7 +199,7 @@ fn finite_secs(v: Seconds, default: Seconds) -> Seconds {
 
 impl Design for FdnDesign {
     type Controls = FdnControls;
-    type Kernel = FdnKernel;
+    type Realization = FdnKernel;
 
     fn channels(&self) -> Channels {
         Channels {
@@ -208,7 +208,7 @@ impl Design for FdnDesign {
         }
     }
 
-    fn kernel(&self) -> FdnKernel {
+    fn realization(&self) -> FdnKernel {
         FdnKernel::new()
     }
 
@@ -359,8 +359,8 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use super::*;
-    use crate::network::contract::{DesignCase, design_contract};
-    use crate::network::kernel_contract::{KernelCase, kernel_contract};
+    use crate::contract::design::{DesignCase, design_contract};
+    use crate::contract::realization::{RealizationCase, realization_contract};
     use crate::network::{Band, Fdn, Matrix, Network, Stage};
 
     fn freezable() -> FdnDesign {
@@ -518,7 +518,7 @@ mod tests {
         design_contract!(FdnDesign::default());
     }
 
-    impl KernelCase for FdnDesign {
+    impl RealizationCase for FdnDesign {
         fn tolerance(&self) -> f32 {
             0.15
         }
@@ -647,9 +647,9 @@ mod tests {
         }
     }
 
-    kernel_contract!(freezable());
+    realization_contract!(freezable());
 
-    use crate::network::kernel_contract::{Defect, Defective, cases};
+    use crate::contract::realization::{Defect, Defective, cases};
 
     fn defective(defect: Defect) -> Defective<FdnDesign> {
         Defective {
@@ -661,11 +661,11 @@ mod tests {
 
     #[track_caller]
     fn fails(result: Result<(), String>, why: &str) {
-        let e = result.expect_err("the case should fail on the defective kernel");
+        let e = result.expect_err("the case should fail on the defective realization");
         assert!(e.contains(why), "{e}");
     }
 
-    /// Each case of the kernel contract fails on an FDN with the defect its
+    /// Each case of the realization contract fails on an FDN with the defect its
     /// mutation names, the cases Freeverb cannot run (pre-delay, size,
     /// diffusion, freeze, width, wet gain) included.
     #[test]
@@ -702,7 +702,7 @@ mod tests {
             "jump",
         );
         // A modest step too: 1.5 times fails the 3 times allowance (measured
-        // margins of the clean kernels: Freeverb 1.98, the FDN 1.51 times the
+        // margins of the clean realizations: Freeverb 1.98, the FDN 1.51 times the
         // steady jump).
         fails(
             cases::click_free(&defective(Defect::UnslewedGain(1.5))),
@@ -748,9 +748,9 @@ mod tests {
     #[test]
     fn no_hook_of_the_fdn_is_vacuous() {
         let d = freezable();
-        assert!(!KernelCase::freeze_pairs(&d).is_empty());
-        assert!(!KernelCase::width_pairs(&d).is_empty());
-        assert!(!KernelCase::wet_pairs(&d).is_empty());
+        assert!(!RealizationCase::freeze_pairs(&d).is_empty());
+        assert!(!RealizationCase::width_pairs(&d).is_empty());
+        assert!(!RealizationCase::wet_pairs(&d).is_empty());
         assert!(!DesignCase::pre_delay_pairs(&d).is_empty());
         assert!(!DesignCase::size_pairs(&d).is_empty());
         assert!(!DesignCase::diffusion_pairs(&d).is_empty());
@@ -883,10 +883,10 @@ mod tests {
     /// `FdnKernel::begin_chunk` loses 0.25 dB and fails.
     #[test]
     fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
-        use crate::network::{Kernel, Setup};
+        use crate::network::{Realization, Setup};
         let rate = SampleRate(48_000.0);
         let d = freezable();
-        let mut k = d.kernel();
+        let mut k = d.realization();
         k.prepare(
             &d.bounds(&Ceiling::at(rate).unwrap()),
             &Setup {

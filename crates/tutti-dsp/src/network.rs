@@ -5,8 +5,8 @@
 //! feedback delay network: delay lines whose outputs are mixed by a matrix,
 //! filtered by per-line absorption and fed back. It is a description for design
 //! and analysis, never an instruction stream: no code interprets every network,
-//! so an algorithm's kernel stays free to run its own shape. Everything here is
-//! a pure function of the value (no kernel, no signal, no clock), fixed in
+//! so an algorithm's realization stays free to run its own shape. Everything here is
+//! a pure function of the value (no realization, no signal, no clock), fixed in
 //! capacity and allocation-free to build.
 //!
 //! **A `Network` is a control-side value.** It holds room for [`MAX_STAGES`]
@@ -28,19 +28,14 @@
 mod design;
 mod gain;
 mod inline;
-mod kernel;
 mod queries;
-
-#[cfg(test)]
-pub(crate) mod contract;
-#[cfg(test)]
-pub(crate) mod kernel_contract;
+mod realization;
 
 pub use design::{Bounds, Ceiling, Channels, Design};
 pub use gain::{loop_gain, rt60_from_gain};
 pub use inline::{Full, Inline};
-pub use kernel::{Effort, Kernel, Setup};
 pub use queries::Ring;
+pub use realization::{Effort, Realization, Setup};
 
 use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
 
@@ -431,7 +426,7 @@ impl Absorption {
 }
 
 /// What the analysis needs of a dense impulse response; the response itself
-/// stays with the kernel that convolves it.
+/// stays with the realization that convolves it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FirSummary {
     /// The response's length.

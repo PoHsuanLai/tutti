@@ -6,7 +6,7 @@
 //! sound of a General MIDI one needs what its sends were for. [`Session::add_general_midi`]
 //! wires them: the chorus is a `ModDelayNode` with
 //! [`ModDelayConfig::GENERAL_MIDI_CHORUS`] (wet only), the reverb a
-//! [`ReverbNode`], a [`ChannelSumNode`] sums the dry pair and both effects'
+//! [`FreeverbNode`], a [`ChannelSumNode`] sums the dry pair and both effects'
 //! pairs into one stereo mix, and a [`BusStripNode`] after the sum is the
 //! setup's fader, whose output is [`out`](GeneralMidi::out). The sends are
 //! post-fader, as a mixer channel's are: the strip's gain and mute act on the
@@ -17,7 +17,7 @@
 
 use tutti_graph::NodeKey;
 use tutti_graph::ParamSet;
-use tutti_nodes::{BusStripNode, ChannelSumNode, ModDelayConfig, ModDelayNode, ReverbNode};
+use tutti_nodes::{BusStripNode, ChannelSumNode, FreeverbNode, ModDelayConfig, ModDelayNode};
 use tutti_soundfont::SoundFontUnit;
 use tutti_types::{Amplitude, ChannelLayout, UnitParam};
 
@@ -115,7 +115,7 @@ impl Session {
     /// The wiring is the unit's dry pair (through the handle's strip) into the
     /// sum's source 0, its chorus send pair through a wet-only
     /// [`ModDelayConfig::GENERAL_MIDI_CHORUS`] into source 1, and its reverb
-    /// send through a [`ReverbNode`] into source 2. Each effect declares its
+    /// send through a [`FreeverbNode`] into source 2. Each effect declares its
     /// own tail, so an export that ends at the last note-off keeps the release
     /// and then the room's ring-out.
     ///
@@ -132,7 +132,7 @@ impl Session {
             ChannelLayout::STEREO,
             ModDelayConfig::GENERAL_MIDI_CHORUS,
         ));
-        let (reverb, _) = graph.insert(ReverbNode::general_midi());
+        let (reverb, _) = graph.insert(FreeverbNode::general_midi());
         let (sum, ()) = graph.insert(ChannelSumNode::new(3, ChannelLayout::STEREO));
         let (strip, strip_params) = graph.add(BusStripNode::new());
         // The unit's outputs: dry L/R, chorus send L/R, reverb send.

@@ -612,17 +612,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
   (`DitherNoise`), the Freeverb reverb (`Freeverb`, which is also the
-  `Kernel` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
+  `Realization` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
   `FdnKernel`: its kernel ramps between `retarget`s, in 32-frame chunks counted
   from the last reset, so the output does not depend on the block length), the
-  reverb model of doc 022 (`Network`, `Design`, `Kernel`, `Setup`, `Bounds`,
+  reverb model of doc 022 (`Network`, `Design`, `Realization`, `Setup`, `Bounds`,
   `FreeverbDesign`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
-  a kernel must follow, and the kernel that runs it, moved to each network by
+  a realization must follow, and the realization that runs it, moved to each network by
   `retarget`; a `Design` writes its network in place, `design_into`, because a
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
-  them (shape, prepare, process, params, fork; `ReverbNode<D: ReverbDesign>` is
+  them (shape, prepare, process, params, fork; `DesignNode<D: NodeDesign>` is
   the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
   its two instances and `ReverbKind` the choice between them), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,

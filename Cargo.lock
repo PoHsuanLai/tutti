@@ -3918,6 +3918,7 @@ dependencies = [
  "tutti-plugin-ipc",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-tempo",
  "tutti-transport",
  "tutti-types",
  "tutti-ump",

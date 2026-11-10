@@ -83,7 +83,13 @@ fn automation_reaches_the_plugin_through_its_event_input() {
     let (mut live, _exec) = Editor::new(prepare);
     let (auto_key, key) = (NodeKey(1), NodeKey(9));
     let _automation = live.insert(auto_key, "automation", automation);
-    let _controls = live.insert(key, "plugin", probe.client.bind());
+    let _controls = live.insert(
+        key,
+        "plugin",
+        probe.client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+    );
     live.spec_mut().connect_events(
         EventIn { node: key, port: 0 },
         EventEdge::Direct(EventOut {
@@ -135,7 +141,13 @@ fn render_gain(
     let probe = load_probe(SAMPLE_RATE);
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
     let (mut live, _exec) = Editor::new(prepare);
-    let _controls = live.insert(PLUGIN, "plugin", probe.client.bind());
+    let _controls = live.insert(
+        PLUGIN,
+        "plugin",
+        probe.client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+    );
     if let Some(lane) = feeder {
         live.insert(NodeKey(1), "lane", lane);
         live.spec_mut().connect_events(

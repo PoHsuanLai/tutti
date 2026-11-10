@@ -41,8 +41,8 @@ enum Backend {
 /// landed in does not change this API: where one cannot do something, the
 /// accessor answers `false` or `None`.
 ///
-/// `Plugin` is a [`tutti_graph::IntoNode`], so inserting it into a graph is
-/// `editor.insert(key, kind, plugin)`. Keep a clone of [`handle`](Self::handle)
+/// A plugin becomes a graph node by binding it to the project's tempo map
+/// ([`bind`](Self::bind)): `editor.insert(key, kind, plugin.bind(tempo))`. Keep a clone of [`handle`](Self::handle)
 /// first if you need the control surface afterwards; the plugin stays alive
 /// while either the node or a handle does.
 ///
@@ -370,6 +370,23 @@ impl Plugin {
 
     // ---- The graph node ---------------------------------------------------
 
+    /// Binds the plugin to the reader of the project's tempo map it tells the
+    /// plugin the tempo from (and CLAP its slope), whichever backend it
+    /// landed in: [`PluginClient::bind`] for a subprocess plugin,
+    /// `InProcessVst2Client::bind` for a VST2 one. The result is the graph
+    /// node ([`BoundPlugin`]); `Session::add_plugin` binds every plugin with
+    /// the session's reader, and a host with no session passes a
+    /// [`TempoReader::fixed`](tutti_transport::TempoReader::fixed) one.
+    #[must_use]
+    pub fn bind(self, tempo: tutti_transport::TempoReader) -> BoundPlugin {
+        let backend = match self.backend {
+            Backend::Subprocess(c) => BoundBackend::Subprocess(Box::new(c.bind(tempo))),
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(c) => BoundBackend::InProcessVst2(Box::new(c.bind(tempo))),
+        };
+        BoundPlugin { backend }
+    }
+
     /// Returns the node as the concrete out-of-process [`PluginClient`],
     /// unbound.
     ///
@@ -385,11 +402,10 @@ impl Plugin {
     /// # Errors
     ///
     /// Returns the plugin itself, unchanged (boxed, as the client is), when it
-    /// is not a `PluginClient` — an in-process VST2 instance. Insert it through
-    /// its own
-    /// [`IntoNode`](tutti_graph::IntoNode) (`editor.insert(key, kind, plugin)`),
-    /// which hands the editor its fork source (a fork by state transfer, in
-    /// this process).
+    /// is not a `PluginClient` — an in-process VST2 instance. Bind it with
+    /// [`bind`](Self::bind) and insert the [`BoundPlugin`]
+    /// (`editor.insert(key, kind, plugin.bind(tempo))`), which hands the
+    /// editor its fork source (a fork by state transfer, in this process).
     pub fn into_client(self) -> std::result::Result<Box<PluginClient>, Box<Self>> {
         match self.backend {
             Backend::Subprocess(c) => Ok(c),
@@ -399,26 +415,41 @@ impl Plugin {
     }
 }
 
-/// A loaded plugin as a graph node, whichever backend it landed in:
-/// `editor.insert(key, kind, plugin)`.
+/// A [`Plugin`] bound to the project's tempo map ([`Plugin::bind`]): the graph
+/// node, whichever backend it landed in: `editor.insert(key, kind,
+/// plugin.bind(tempo))`.
 ///
 /// Consuming and explicit: a plugin *has* a node, it is not one. Wire the
-/// per-block inputs before inserting — they are installed on shared cells, so
-/// an install afterwards through the returned controls still reaches the
-/// node, but keeping the order obvious is the point of the API. The
-/// [`PluginHandle`] survives independently; clone it from
-/// [`handle`](Plugin::handle) first if the control surface is needed after
-/// the node moves into the graph.
+/// per-block inputs before inserting. The [`PluginHandle`] survives
+/// independently; clone it from [`handle`](Plugin::handle) first if the
+/// control surface is needed after the node moves into the graph.
 ///
 /// The controls are the subprocess node's [`PluginControls`]; `None` for an
 /// in-process VST2 plugin, whose meter is reached through [`Plugin::meter`]
-/// (take it before insertion; its own `IntoNode` hands back its
-/// `InProcessVst2Controls`, which carry its parameter counters too). Either hands the editor its fork source: a fork
-/// by state transfer, into a new `plugin-server` for a subprocess plugin, and a
-/// second instance in this process for an in-process VST2 one.
+/// (take it before binding; its own `IntoNode` hands back its
+/// `InProcessVst2Controls`, which carry its parameter counters too). Either
+/// hands the editor its fork source: a fork by state transfer, into a new
+/// `plugin-server` for a subprocess plugin, and a second instance in this
+/// process for an in-process VST2 one.
 ///
 /// [`PluginControls`]: crate::host::node::PluginControls
-impl tutti_graph::IntoNode for Plugin {
+pub struct BoundPlugin {
+    backend: BoundBackend,
+}
+
+enum BoundBackend {
+    Subprocess(Box<PluginClient<crate::host::node::Bound>>),
+    #[cfg(feature = "vst2")]
+    InProcessVst2(Box<crate::format::vst2_in_process::BoundInProcessVst2Client>),
+}
+
+impl std::fmt::Debug for BoundPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundPlugin").finish_non_exhaustive()
+    }
+}
+
+impl tutti_graph::IntoNode for BoundPlugin {
     type Controls = Option<crate::host::node::PluginControls>;
 
     fn into_node(self) -> (Box<dyn tutti_graph::Node>, Self::Controls) {
@@ -428,8 +459,8 @@ impl tutti_graph::IntoNode for Plugin {
 
     fn into_parts(self) -> tutti_graph::NodeParts<Self::Controls> {
         match self.backend {
-            Backend::Subprocess(c) => {
-                let parts = tutti_graph::IntoNode::into_parts(c.bind());
+            BoundBackend::Subprocess(c) => {
+                let parts = tutti_graph::IntoNode::into_parts(*c);
                 tutti_graph::NodeParts {
                     node: parts.node,
                     controls: Some(parts.controls),
@@ -437,7 +468,7 @@ impl tutti_graph::IntoNode for Plugin {
                 }
             }
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => {
+            BoundBackend::InProcessVst2(c) => {
                 let parts = tutti_graph::IntoNode::into_parts(*c);
                 tutti_graph::NodeParts {
                     node: parts.node,

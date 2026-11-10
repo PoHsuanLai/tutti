@@ -130,13 +130,13 @@ mod dry_align;
 // The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
-pub use reverb::{FreeverbNode, FreeverbParams, ReverbDesign, ReverbNode, ReverbParams};
+pub use reverb::{ControlParams, DesignNode, FreeverbNode, FreeverbParams, NodeDesign};
 
-// The feedback delay network as a `ReverbNode`, and the choice between the two.
+// The feedback delay network as a `DesignNode`, and the choice between the two.
 mod reverb_fdn;
 pub use reverb_fdn::{FdnNode, FdnParams, ReverbKind, SpawnedReverb};
 
-// The designs and controls that sit in a `ReverbNode<D>`'s signature.
+// The designs and controls that sit in a `DesignNode<D>`'s signature.
 pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 
 // Spatial panners (VBAP, binaural) are `tutti-spatial`'s, which depends on

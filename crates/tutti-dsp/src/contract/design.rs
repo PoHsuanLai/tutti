@@ -1,5 +1,5 @@
 //! The design contract (design 022 section 8.1): cases every [`Design`] must
-//! pass, with no kernel and no audio.
+//! pass, with no realization and no audio.
 //!
 //! A design implements [`DesignCase`] (the controls to sweep and the figures it
 //! promises, each from physics or the spec, never from another render) and
@@ -23,10 +23,10 @@ use tutti_types::{
     Amplitude, ChannelLayout, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth,
 };
 
-use super::{
+use crate::network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Channels, Design, Fdn, Gains, Inline,
-    Kernel, Line, MAX_LINES, Matrix, Modulation, Network, OutputMap, Ring, Setup, Stage, loop_gain,
-    pre_delay_frames,
+    Line, MAX_LINES, Matrix, Modulation, Network, OutputMap, Realization, Ring, Setup, Stage,
+    loop_gain, pre_delay_frames,
 };
 
 /// A design plus what the contract needs to know to test it.
@@ -472,47 +472,47 @@ macro_rules! design_contract {
     ($design:expr) => {
         #[test]
         fn contract_stable() {
-            $crate::network::contract::cases::stable(&$design).unwrap();
+            $crate::contract::design::cases::stable(&$design).unwrap();
         }
         #[test]
         fn contract_rt60_matches() {
-            $crate::network::contract::cases::rt60_matches(&$design).unwrap();
+            $crate::contract::design::cases::rt60_matches(&$design).unwrap();
         }
         #[test]
         fn contract_band_order() {
-            $crate::network::contract::cases::band_order(&$design).unwrap();
+            $crate::contract::design::cases::band_order(&$design).unwrap();
         }
         #[test]
         fn contract_tail_monotone() {
-            $crate::network::contract::cases::tail_monotone(&$design).unwrap();
+            $crate::contract::design::cases::tail_monotone(&$design).unwrap();
         }
         #[test]
         fn contract_lossless_iff_frozen() {
-            $crate::network::contract::cases::lossless_iff_frozen(&$design).unwrap();
+            $crate::contract::design::cases::lossless_iff_frozen(&$design).unwrap();
         }
         #[test]
         fn contract_density() {
-            $crate::network::contract::cases::density(&$design).unwrap();
+            $crate::contract::design::cases::density(&$design).unwrap();
         }
         #[test]
         fn contract_bounds_dominate() {
-            $crate::network::contract::cases::bounds_dominate(&$design).unwrap();
+            $crate::contract::design::cases::bounds_dominate(&$design).unwrap();
         }
         #[test]
         fn contract_stable_refuses_hostile() {
-            $crate::network::contract::cases::stable_refuses_hostile(&$design).unwrap();
+            $crate::contract::design::cases::stable_refuses_hostile(&$design).unwrap();
         }
         #[test]
         fn contract_pure() {
-            $crate::network::contract::cases::pure(&$design).unwrap();
+            $crate::contract::design::cases::pure(&$design).unwrap();
         }
         #[test]
         fn contract_no_direct_path() {
-            $crate::network::contract::cases::no_direct_path(&$design).unwrap();
+            $crate::contract::design::cases::no_direct_path(&$design).unwrap();
         }
         #[test]
         fn contract_pre_delay() {
-            $crate::network::contract::cases::pre_delay(&$design).unwrap();
+            $crate::contract::design::cases::pre_delay(&$design).unwrap();
         }
     };
 }
@@ -538,7 +538,7 @@ impl<D> Mutant<D> {
 
 impl<D: Design> Design for Mutant<D> {
     type Controls = D::Controls;
-    type Kernel = D::Kernel;
+    type Realization = D::Realization;
 
     fn channels(&self) -> Channels {
         self.inner.channels()
@@ -549,8 +549,8 @@ impl<D: Design> Design for Mutant<D> {
         (self.network)(out);
     }
 
-    fn kernel(&self) -> D::Kernel {
-        self.inner.kernel()
+    fn realization(&self) -> D::Realization {
+        self.inner.realization()
     }
 
     fn bounds(&self, ceiling: &Ceiling) -> Bounds {
@@ -663,12 +663,12 @@ impl ToyFdn {
     }
 }
 
-/// The kernel of a design that is never run: [`ToyFdn`] is analysed, not
+/// The realization of a design that is never run: [`ToyFdn`] is analysed, not
 /// heard.
 #[derive(Clone, Debug)]
 pub(crate) struct Unrun;
 
-impl Kernel for Unrun {
+impl Realization for Unrun {
     fn prepare(&mut self, _: &Bounds, _: &Setup) {}
     fn retarget(&mut self, _: &Network) {}
     fn process(&mut self, _: &[&[f32]], output: &mut [&mut [f32]]) {
@@ -682,7 +682,7 @@ impl Kernel for Unrun {
 
 impl Design for ToyFdn {
     type Controls = ToyControls;
-    type Kernel = Unrun;
+    type Realization = Unrun;
 
     fn channels(&self) -> Channels {
         Channels {
@@ -691,7 +691,7 @@ impl Design for ToyFdn {
         }
     }
 
-    fn kernel(&self) -> Unrun {
+    fn realization(&self) -> Unrun {
         Unrun
     }
 

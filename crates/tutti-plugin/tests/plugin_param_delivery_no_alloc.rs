@@ -62,7 +62,13 @@ fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
     let (knobs, lanes) = knobs(PARAMS, |_| 0.5);
     let prepare =
         Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)).with_quantum(Samples(QUANTUM));
-    let mut rig = Rig::prepared_with(client.bind(), prepare, lanes);
+    let mut rig = Rig::prepared_with(
+        client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+        prepare,
+        lanes,
+    );
 
     let silence = vec![0.0f32; BLOCK];
     let inputs: Vec<&[f32]> = (0..rig.inputs()).map(|_| &silence[..]).collect();

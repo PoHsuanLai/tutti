@@ -3,10 +3,10 @@
 
 use tutti_types::{ChannelLayout, Db, SampleRate, Samples, Seconds};
 
-use super::{Kernel, Network, Ring, Stage};
+use super::{Network, Realization, Ring, Stage};
 
 /// The channel widths a [`Design`] is made for: what its node's ports and its
-/// kernel's [`Setup`](super::Setup) are.
+/// realization's [`Setup`](super::Setup) are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channels {
     /// The input width.
@@ -16,19 +16,19 @@ pub struct Channels {
 }
 
 /// An algorithm of reverb (design 022 section 4): its controls, the function
-/// from controls to a [`Network`], and the [`Kernel`] that runs the sound.
+/// from controls to a [`Network`], and the [`Realization`] that runs the sound.
 ///
 /// The pure half is [`design_into`](Self::design_into) and
 /// [`bounds`](Self::bounds): no audio, no state and no graph type. The network
-/// is the description the kernel is held to ([`Kernel::retarget`] reads it, and
-/// the kernel contract measures the kernel against its queries); nothing here
-/// forces a runtime shape on the kernel.
+/// is the description the realization is held to ([`Realization::retarget`] reads it, and
+/// the realization contract measures the realization against its queries); nothing here
+/// forces a runtime shape on the realization.
 pub trait Design: Clone + Send {
     /// Plain values in tutti units, one struct per algorithm.
     type Controls: Copy + PartialEq + Send;
 
     /// What runs this design's networks.
-    type Kernel: Kernel;
+    type Realization: Realization;
 
     /// The widths of the signal this design takes and gives.
     fn channels(&self) -> Channels;
@@ -56,12 +56,12 @@ pub trait Design: Clone + Send {
     }
 
     /// The worst case of [`design_into`](Self::design_into) over the controls'
-    /// declared ranges (and the ceilings in `ceiling`): what a kernel allocates
+    /// declared ranges (and the ceilings in `ceiling`): what a realization allocates
     /// for and what the node declares as its tail ceiling.
     fn bounds(&self, ceiling: &Ceiling) -> Bounds;
 
-    /// An unprepared kernel for this design. Control side; allocates.
-    fn kernel(&self) -> Self::Kernel;
+    /// An unprepared realization for this design. Control side; allocates.
+    fn realization(&self) -> Self::Realization;
 }
 
 /// The limits a node builds a reverb to: the rate, the longest decay a control
@@ -77,7 +77,7 @@ impl Ceiling {
     /// The default longest decay a control may ask for.
     pub const MAX_DECAY: Seconds = Seconds(8.0);
     /// The most [`new`](Self::new) accepts for the longest decay: bounds sized
-    /// from it become a kernel's allocations, so it is capped (a 60 s decay at
+    /// from it become a realization's allocations, so it is capped (a 60 s decay at
     /// 192 kHz is already some 11.5 M frames of line to hold).
     pub const MAX_DECAY_CAP: Seconds = Seconds(60.0);
     /// The default tail floor.
@@ -131,7 +131,7 @@ impl Ceiling {
 }
 
 /// The size of a [`Network`], or the worst case over a design's controls: every
-/// figure a kernel allocates from.
+/// figure a realization allocates from.
 ///
 /// [`Bounds::of`] measures one network; [`dominates`](Self::dominates) says one
 /// bound holds another.

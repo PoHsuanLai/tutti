@@ -285,6 +285,7 @@ fn convert_transport(transport: &SharedTransport, sample_rate: f64) -> Transport
         .with_playing(transport.state.playing)
         .with_recording(transport.state.recording)
         .with_tempo(transport.timing.tempo)
+        .with_tempo_inc(transport.timing.tempo_inc)
         .with_time_signature(transport.timing.signature)
         .with_position_beats(transport.position.quarters, seconds)
         .with_loop(
@@ -338,5 +339,27 @@ impl Processor for ClapProcessor {
 
     fn reset(&mut self) {
         ClapProcessor::reset(self);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The plugin server hands the CLAP host the wire's snapshot, and the
+    /// host's own copy keeps the slope with the tempo: `tempo_inc` is what
+    /// CLAP's transport event sends.
+    ///
+    /// Mutation (run): drop `.with_tempo_inc(..)` in `convert_transport` ->
+    /// the slope is 0.0 -> fails.
+    #[test]
+    fn the_wires_slope_survives_the_conversion() {
+        let wire = SharedTransport::new()
+            .with_playing(true)
+            .with_tempo(133.0)
+            .with_tempo_inc(0.002);
+        let got = convert_transport(&wire, 48_000.0);
+        assert_eq!(got.timing.tempo, 133.0);
+        assert_eq!(got.timing.tempo_inc, 0.002);
     }
 }

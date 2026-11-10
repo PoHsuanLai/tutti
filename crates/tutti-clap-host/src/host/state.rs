@@ -530,12 +530,6 @@ pub struct HostState {
     pub resources: ResourceState,
 }
 
-/// RAII claim on the `[audio-thread]` role for one plugin instance: while it
-/// is alive `is_audio_thread()` answers `true` on the claiming thread and
-/// `false` everywhere else, and `is_main_thread()` answers `false` on it even
-/// when it is the OS main thread. See [`HostState::claim_audio_thread`].
-pub type AudioThreadClaim<'a> = AudioClaim<'a>;
-
 impl HostState {
     /// Builds an unclaimed `HostState`. The thread `main` proves is taken as
     /// the `[main-thread]` role for the instance's whole life; it is recorded
@@ -580,8 +574,8 @@ impl HostState {
     ///
     /// Not re-entrant — the mutex is not recursive, so a claim held on this
     /// thread must be threaded into the inner call, not re-taken. That is why
-    /// `ensure_processing` / `stop_processing_claimed` take `&AudioThreadClaim`.
-    pub fn claim_audio_thread(&self) -> AudioThreadClaim<'_> {
+    /// `ensure_processing` / `stop_processing_claimed` take `&AudioClaim`.
+    pub fn claim_audio_thread(&self) -> AudioClaim<'_> {
         self.roles.claim()
     }
 
@@ -595,7 +589,7 @@ impl HostState {
     /// **Exclusive with [`is_audio_thread`](Self::is_audio_thread)**: the
     /// spec lets a host mark the OS main thread as the audio thread, but the
     /// two symbolic roles are alternatives, not simultaneous identities. While
-    /// an [`AudioThreadClaim`] is held on this thread, this answers `false`,
+    /// an [`AudioClaim`] is held on this thread, this answers `false`,
     /// so a plugin asserting `!is_main_thread()` inside an `[audio-thread]`
     /// call is not silently defeated by a host that claims to be both.
     ///

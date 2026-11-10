@@ -108,14 +108,21 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "decode-wav", "decode-flac"] }
 # An independent reader for the WAV files the recorder tests write.
 hound = "3.5"
-# `test-support`'s hand-stepped streamer.
-tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support"] }
+# `test-support`'s hand-stepped streamer, and the WAV reader the disk voice's
+# fork reads its file with (`export_fork_sampler`).
+tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support", "wav"] }
 # `ManualStreamDriver`, `OutputSpec`: the device-free device tests.
 tutti-cpal = { path = "../tutti-cpal", default-features = false }
 # The reference CLAP plugin `tests/plugin.rs` loads, in a
 # `plugin-server` (built first: `cargo build -p tutti-plugin-server`; it is
 # not a dev-dependency, which would be a cycle through `tutti-plugin`).
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+# The reference VST2 plugin the `vst2_*` suites load in process (`vst2`), and
+# `libloading` re-opens the image the host loaded to read what it captured and
+# to flip its switches: the linked rlib is a separate image with separate
+# statics. The same pair, for the same reason, as `tutti-plugin`'s.
+tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
+libloading = "0.8"
 # Finds both beside the running binary (`tests/support`).
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # The shared test plugin the instrument contract hosts in `Notes` mode, and
@@ -130,11 +137,25 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 # The device-free device tests (`ManualStreamDriver`): `device` is a feature,
-# so this suite runs under it (a workspace run unifies it in through
-# `bevy-tutti`).
+# so this suite runs under it (CI's dark-features job names it; a workspace run
+# no longer turns it on).
 [[test]]
 name = "device"
 required-features = ["device"]
+
+# A restart onto another rate, width or block (the session halves of
+# `bevy-tutti`'s `engine::restart` tests), and the MIDI clock's re-rate.
+[[test]]
+name = "device_restart"
+required-features = ["device"]
+
+[[test]]
+name = "device_listing"
+required-features = ["device"]
+
+[[test]]
+name = "device_midi_clock"
+required-features = ["device", "midi"]
 
 # The recorder: its thread, and the pump over a tap and a decoded file.
 [[test]]
@@ -159,6 +180,18 @@ required-features = ["plugin"]
 name = "modulation"
 required-features = ["modulation"]
 
+# Modulation on control lanes through the session: renders, takes, refusals
+# and the node-side declarations (`export` and `synth` gate two cases inside
+# the file).
+[[test]]
+name = "mod_lanes"
+required-features = ["modulation"]
+
+# The insertion paths address a node's params, so a lane's knob is its cell.
+[[test]]
+name = "params_at_insert"
+required-features = ["modulation"]
+
 # Indexed param addresses through the session: a graph write and a modulation
 # route to a node's second param of one kind.
 [[test]]
@@ -175,6 +208,16 @@ required-features = ["midi"]
 name = "midi"
 required-features = ["midi"]
 
+# A clip's velocity keeps its 16 bits to the event input.
+[[test]]
+name = "midi_velocity"
+required-features = ["midi"]
+
+# Route rules: the union of two on one target, and a disabled one.
+[[test]]
+name = "midi_routes"
+required-features = ["midi"]
+
 # Stopping an export and reading its progress (`ExportHandle`).
 [[test]]
 name = "export_cancel"
@@ -185,11 +228,73 @@ required-features = ["export"]
 name = "export_parallel"
 required-features = ["export"]
 
+# What an export renders and forks: the graph's own latency and tail, a
+# prepare hook's edit and timeline, a fork's isolation from live playback,
+# and where a fork is built and dropped (the session halves of the
+# `bevy-tutti` export suites).
+[[test]]
+name = "export_fork"
+required-features = ["export"]
+
+# A SoundFont, a polysynth and their clip, exported through a fork.
+[[test]]
+name = "export_fork_synth"
+required-features = ["export", "midi", "synth", "soundfont"]
+
+# A sampler voice (memory and disk) exported through a fork.
+[[test]]
+name = "export_fork_sampler"
+required-features = ["export", "sampler"]
+
+# A hosted plugin exported through a fork of its own server: fails without
+# `plugin-server`, by design.
+[[test]]
+name = "export_fork_plugin"
+required-features = ["export", "clap"]
+
 # Hosted plugins, their render mode and exports, over the reference CLAP
 # plugin in a real `plugin-server`: fails without the server, by design.
 [[test]]
 name = "plugin"
 required-features = ["clap", "export"]
+
+# A hosted plugin's latency is the session's, across a crossfade and a
+# restart (the session halves of `bevy-tutti`'s `plugin_capture` and restart
+# tests): the reference CLAP plugin in a real `plugin-server`.
+[[test]]
+name = "plugin_latency"
+required-features = ["clap", "device"]
+
+# What `Phase::Plugins` does with a hosted plugin's health, over a fake
+# backend (no `plugin-server`): the session half of `bevy-tutti`'s
+# `plugin_host::health` tests.
+[[test]]
+name = "plugin_health"
+required-features = ["plugin"]
+
+# Modulation lanes on a hosted plugin's parameters: across a recovery and a
+# crossfade, and an export equal to the live render (the session halves of
+# `bevy-tutti`'s `plugin_recovery`, `plugin_capture` and `mod_plugin`).
+[[test]]
+name = "plugin_modulation"
+required-features = ["clap", "modulation", "export"]
+
+# The reference VST2 plugin, in process: the project meter it is given, and
+# modulation lanes on its parameters (the session halves of `bevy-tutti`'s
+# `plugin_vst2_meter` and `mod_plugin` VST2 tests).
+[[test]]
+name = "vst2_meter"
+required-features = ["vst2"]
+
+[[test]]
+name = "vst2_modulation"
+required-features = ["vst2", "modulation"]
+
+# MIDI into a SoundFont unit, rendered: a clip on its beat, a live preview
+# beside it, a routed hardware note.
+[[test]]
+name = "midi_soundfont"
+required-features = ["soundfont"]
 
 # The General MIDI setup of a SoundFont unit (`Session::add_general_midi`).
 [[test]]

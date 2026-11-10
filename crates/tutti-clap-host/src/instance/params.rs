@@ -230,7 +230,7 @@ impl ClapLoaded {
     ///   main-thread flush is what the spec asks for. This is the GUI-only /
     ///   setup path.
     /// - **Active** (`flags.active`) — the flush runs under an
-    ///   [`AudioThreadClaim`](crate::host::AudioThreadClaim), so the calling
+    ///   [`AudioClaim`](tutti_clap_ffi::AudioClaim), so the calling
     ///   thread *becomes* the audio thread for the duration (which the spec
     ///   explicitly permits for any OS thread) and **blocks** until any
     ///   in-flight `process` on the real audio thread has returned.

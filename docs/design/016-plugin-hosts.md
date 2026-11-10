@@ -2332,6 +2332,16 @@ trait method; see the next subsection.
 
 ### 6.2 Defect: a reset never reaches a plugin in the plugin-server
 
+> **Fixed (2026-11-10).** `Processor::reset` exists (CLAP `plugin.reset`; VST3
+> `setProcessing(false)`, restarted by the next block; VST2 drops the host's
+> SysEx reassembly only), the server's `PluginAudio::reset` routes to it (AU:
+> `AudioUnitReset`), and `Session::handle` sends `M::Reset` there in order with
+> `M::ProcessAudio`. Tests: the contract case `reset_clears_the_delay_line`
+> (VST2 is its `Gap`) and `a_reset_reaches_the_plugin_between_two_blocks` in
+> the server's session tests, against the CLAP probe's call counts rather than
+> a `FakePlugin` (the session is not generic over the plugin). The text below
+> is the finding as recorded.
+
 **Finding (verified in the tree).**
 
 - `Session::handle` in `crates/tutti-plugin-server/src/session.rs` answers

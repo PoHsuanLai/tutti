@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 #
 # The adapter rules of design 015 §8 (checks 3 and 4) and a third (5), which
-# no compile can make:
+# no compile can make.
+#
+# PARKED: `bevy-tutti` is out of the workspace (CLAUDE.md, "bevy-tutti is
+# parked"), so checks 3 and 5, which scan its source, are skipped with a note
+# while `ADAPTER_PARKED` is 1 (the default below). Check 4 (the session
+# re-exports no crate whole) is not about the adapter and always runs. To
+# un-park, set `ADAPTER_PARKED=0` (or flip the default); the scans and the
+# exception list are kept as they were so they come back unchanged.
 #
 # 3. `bevy-tutti` holds no engine composition. Its source
 #    (`crates/bevy-tutti/src`), tests and comments excluded, names none of the
@@ -159,9 +166,13 @@ cd "$(dirname "$0")/.."
 
 readonly ADAPTER_SRC=crates/bevy-tutti/src
 readonly SESSION_SRC=crates/tutti-session/src
+# 1: bevy-tutti is parked and its checks (3 and 5) are skipped; 0: scan it.
+readonly ADAPTER_PARKED=${ADAPTER_PARKED:-1}
 
 # A moved crate must fail here rather than leave both scans reading nothing.
-for dir in "$ADAPTER_SRC" "$SESSION_SRC"; do
+dirs=("$SESSION_SRC")
+[[ $ADAPTER_PARKED -eq 0 ]] && dirs+=("$ADAPTER_SRC")
+for dir in "${dirs[@]}"; do
   if [ -z "$(find "$dir" -name '*.rs' -print -quit 2>/dev/null)" ]; then
     echo "FAIL: $dir holds no .rs file; was the crate moved?"
     exit 1
@@ -306,6 +317,9 @@ readonly adapter_pl
 
 fail=0
 
+if [[ $ADAPTER_PARKED -eq 1 ]]; then
+  echo "NOTE: bevy-tutti is parked; checks 3 and 5 (the adapter's composition and policy) are skipped."
+else
 # 3. The adapter's source. Perl: one pass to collect the out-of-line test
 #    modules, one to blank and scan.
 hits=$(DENY="$deny_list" perl -e "$prelude_pl$adapter_pl"'
@@ -345,6 +359,7 @@ if [[ -n $hits ]]; then
   echo "      windows. Move the composition into tutti-session and call it from here."
   fail=1
 fi
+fi  # ADAPTER_PARKED
 
 # 4. Whole-crate re-exports in the session. Each file is lexed (comments
 #    and literals blanked), and each `pub use ... ;` is parsed as a use
@@ -426,6 +441,7 @@ if [[ -n $hits ]]; then
   fail=1
 fi
 
+if [[ $ADAPTER_PARKED -eq 0 ]]; then
 # 5. Policy in the adapter. Same lexing and test exclusions as (3).
 hits=$(EXCEPTIONS="$exceptions" perl -e "$prelude_pl$adapter_pl"'
 my $root = shift @ARGV;
@@ -558,8 +574,13 @@ if [[ -n $hits ]]; then
   echo "      lane that removes it; a stale exception fails here and is deleted."
   fail=1
 fi
+fi  # ADAPTER_PARKED
 
 if [[ $fail -ne 0 ]]; then
   exit 1
 fi
-echo "OK: bevy-tutti names no engine composition or policy, and tutti-session re-exports no crate whole."
+if [[ $ADAPTER_PARKED -eq 1 ]]; then
+  echo "OK: tutti-session re-exports no crate whole (bevy-tutti is parked: its checks were skipped)."
+else
+  echo "OK: bevy-tutti names no engine composition or policy, and tutti-session re-exports no crate whole."
+fi

@@ -22,7 +22,7 @@
 //! (`config.rs`), runtime behaviour from `extern "C"` switches
 //! (`switches.rs`); each file documents why its half falls on that side.
 
-extern crate vst_tutti as vst;
+extern crate tutti_vst2_author as vst;
 
 pub mod capture;
 pub mod config;

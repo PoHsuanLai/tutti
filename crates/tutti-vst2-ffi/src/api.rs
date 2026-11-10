@@ -2,7 +2,6 @@
 
 use std::fmt;
 use std::os::raw::c_void;
-use std::sync::Arc;
 
 /// Why an `effGetChunk` produced no usable buffer.
 ///
@@ -36,11 +35,6 @@ impl fmt::Display for ChunkError {
 impl std::error::Error for ChunkError {}
 
 use self::consts::*;
-use crate::{
-    editor::Editor,
-    plugin::{Info, Plugin, PluginParameters},
-};
-
 /// Constant values
 #[allow(missing_docs)] // For obvious constants
 pub mod consts {
@@ -72,7 +66,7 @@ pub mod consts {
 /// undefined behaviour (it agrees with the C one only by coincidence on x86-64).
 ///
 /// ```compile_fail
-/// # use vst_tutti::api::{AEffect, HostCallbackProc, PluginMain};
+/// # use tutti_vst2_ffi::api::{AEffect, HostCallbackProc, PluginMain};
 /// // Mutation (run): declare `PluginMain` as a plain `fn` again and this compiles,
 /// // so the doctest fails.
 /// fn rust_abi_main(_: HostCallbackProc) -> *mut AEffect {
@@ -177,7 +171,7 @@ pub struct AEffect {
     /// Bitmask made of values from `api::PluginFlags`.
     ///
     /// ```no_run
-    /// use vst_tutti::api::PluginFlags;
+    /// use tutti_vst2_ffi::api::PluginFlags;
     /// let flags = PluginFlags::CAN_REPLACING | PluginFlags::CAN_DOUBLE_REPLACING;
     /// // ...
     /// ```
@@ -235,77 +229,6 @@ pub struct AEffect {
 
     /// Reserved for future use (please zero).
     pub future: [u8; 56],
-}
-
-// `AEffect` is the C struct the *host* owns and hands back to us on every
-// call, so these accessors have to conjure `&mut` out of `&self`
-// (`clippy::mut_from_ref`). That is upstream's design and reworking it would
-// mean changing the shape of every plugin-side entry point in `interfaces.rs`;
-// the invariant that makes it sound is the documented one on each method — the
-// host serialises its calls per instance. Scoped here rather than left to a
-// crate-wide `allow(clippy::all)`, which is what hid the *host*-side bugs.
-#[allow(clippy::mut_from_ref)]
-impl AEffect {
-    /// Return handle to Plugin object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.object` must point at the `Box<Box<dyn Plugin>>` this library
-    /// installed, and the caller must not invoke this concurrently with any
-    /// other accessor on the same `AEffect` — the returned `&mut` aliases the
-    /// same plugin every other entry point reaches.
-    // Suppresses warning about returning a reference to a box
-    #[allow(clippy::borrowed_box)]
-    pub unsafe fn get_plugin(&self) -> &mut Box<dyn Plugin> {
-        //FIXME: find a way to do this without resorting to transmuting via a box
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `object` is the
-        // leaked `Box<Box<dyn Plugin>>` this library installed, with no concurrent accessor.
-        unsafe { &mut *(self.object as *mut Box<dyn Plugin>) }
-    }
-
-    /// Return handle to Info object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.user` must point at the `PluginCache` this library installed.
-    pub unsafe fn get_info(&self) -> &Info {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
-        // `PluginCache` this library installed and it has not been dropped.
-        unsafe { &(*(self.user as *mut super::PluginCache)).info }
-    }
-
-    /// Return handle to PluginParameters object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.user` must point at the `PluginCache` this library installed.
-    pub unsafe fn get_params(&self) -> &Arc<dyn PluginParameters> {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
-        // `PluginCache` this library installed and it has not been dropped.
-        unsafe { &(*(self.user as *mut super::PluginCache)).params }
-    }
-
-    /// Return handle to Editor object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.user` must point at the `PluginCache` this library installed, and
-    /// the caller must not invoke this concurrently with any other accessor on
-    /// the same `AEffect`.
-    pub unsafe fn get_editor(&self) -> &mut Option<Box<dyn Editor>> {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
-        // `PluginCache` this library installed, with no concurrent accessor.
-        unsafe { &mut (*(self.user as *mut super::PluginCache)).editor }
-    }
-
-    /// Drop the Plugin object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// Must be called exactly once, from `effClose`, after which neither
-    /// `self.object` nor `self.user` may be dereferenced again.
-    pub unsafe fn drop_plugin(&mut self) {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `object` came from
-        // `Box::into_raw` of a `Box<Box<dyn Plugin>>` and is freed exactly once here.
-        drop(unsafe { Box::from_raw(self.object as *mut Box<dyn Plugin>) });
-        // SAFETY: as above for `user`, which came from `Box::into_raw` of a `PluginCache`.
-        drop(unsafe { Box::from_raw(self.user as *mut super::PluginCache) });
-    }
 }
 
 /// What a plugin reports about one parameter through
@@ -734,11 +657,11 @@ impl Events {
     ///
     /// # Example
     /// ```no_run
-    /// # use vst_tutti::plugin::{Info, Plugin, HostCallback};
-    /// # use vst_tutti::buffer::{AudioBuffer, SendEventBuffer};
-    /// # use vst_tutti::host::Host;
-    /// # use vst_tutti::api;
-    /// # use vst_tutti::event::{Event, MidiEvent};
+    /// # use tutti_vst2_ffi::plugin::{Info, Plugin, HostCallback};
+    /// # use tutti_vst2_ffi::buffer::{AudioBuffer, SendEventBuffer};
+    /// # use tutti_vst2_ffi::host::Host;
+    /// # use tutti_vst2_ffi::api;
+    /// # use tutti_vst2_ffi::event::{Event, MidiEvent};
     /// # struct ExamplePlugin { host: HostCallback, send_buf: SendEventBuffer }
     /// # impl Plugin for ExamplePlugin {
     /// #     fn new(host: HostCallback) -> Self { Self { host, send_buf: Default::default() } }
@@ -799,7 +722,7 @@ pub enum EventType {
 /// via `mem::transmute()` while leveraging pointers, e.g.
 ///
 /// ```
-/// # use vst_tutti::api::{Event, EventType, MidiEvent, SysExEvent};
+/// # use tutti_vst2_ffi::api::{Event, EventType, MidiEvent, SysExEvent};
 /// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };
 /// // let event: *const Event = ...;
 /// let midi_event: &MidiEvent = unsafe { std::mem::transmute(event) };
@@ -812,7 +735,7 @@ pub struct Event {
     /// # Example
     ///
     /// ```
-    /// # use vst_tutti::api::{Event, EventType, MidiEvent, SysExEvent};
+    /// # use tutti_vst2_ffi::api::{Event, EventType, MidiEvent, SysExEvent};
     /// #
     /// # // Valid for test
     /// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };

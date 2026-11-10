@@ -260,7 +260,7 @@ impl<'a, T> Outputs<'a, T> {
     /// The slice borrows `self`, so two live slices of one channel cannot exist:
     ///
     /// ```compile_fail
-    /// # use vst_tutti::host::HostBuffer;
+    /// # use tutti_vst2_ffi::host::HostBuffer;
     /// // Mutation (run): return `&'a mut [T]` from `get_mut` again and this
     /// // compiles, so the doctest fails.
     /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(0, 1);
@@ -491,10 +491,10 @@ impl SendEventBuffer {
     ///
     /// # Example
     /// ```no_run
-    /// # use vst_tutti::plugin::{Info, Plugin, HostCallback};
-    /// # use vst_tutti::buffer::{AudioBuffer, SendEventBuffer};
-    /// # use vst_tutti::host::Host;
-    /// # use vst_tutti::event::*;
+    /// # use tutti_vst2_ffi::plugin::{Info, Plugin, HostCallback};
+    /// # use tutti_vst2_ffi::buffer::{AudioBuffer, SendEventBuffer};
+    /// # use tutti_vst2_ffi::host::Host;
+    /// # use tutti_vst2_ffi::event::*;
     /// # struct ExamplePlugin { host: HostCallback, send_buffer: SendEventBuffer }
     /// # impl Plugin for ExamplePlugin {
     /// #     fn new(host: HostCallback) -> Self { Self { host, send_buffer: Default::default() } }

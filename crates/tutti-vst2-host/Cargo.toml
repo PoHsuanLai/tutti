@@ -3,7 +3,7 @@ name = "tutti-vst2-host"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "VST2 plugin hosting (audio + native editor) via the vst-tutti crate"
+description = "VST2 plugin hosting (audio + native editor) via the tutti-vst2-ffi crate"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-vst2-host"
@@ -33,7 +33,7 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 # Tutti fork of the `vst` crate: adds the host-side audioMaster callbacks
 # (get_sample_rate / size_window / io_changed / latency / process_level /
 # automation_state) that upstream vst-rs's host_dispatch swallowed.
-vst-tutti = { path = "../vst-tutti" }
+tutti-vst2-ffi = { path = "../tutti-vst2-ffi" }
 
 [dev-dependencies]
 # Finds the reference plugins and the plugin-server beside the test binary.

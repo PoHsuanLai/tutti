@@ -36,7 +36,10 @@ impl SoundFont {
             return Err(Error::RiffChunkNotFound);
         }
 
-        let _size = reader.read_i32()?;
+        // The RIFF size counts the form type and the lists after it: nothing
+        // past it is read, and a list that claims more than it is a short read.
+        let size = reader.read_u32()?;
+        let reader = &mut reader.take(u64::from(size));
 
         let form_type = reader.read_four_cc()?;
         if form_type != b"sfbk" {

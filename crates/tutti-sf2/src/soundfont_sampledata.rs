@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
+use crate::chunk::{next_chunk, skip_pad};
 use crate::error::Error;
 use crate::read_counter::ReadCounter;
 
@@ -30,14 +31,14 @@ impl SoundFontSampleData {
         let mut wave_data: Option<Vec<i16>> = None;
 
         while reader.bytes_read() < end {
-            let id = reader.read_four_cc()?;
-            let size = reader.read_u32()? as usize;
+            let (id, size) = next_chunk(reader, end)?;
 
             match id.as_bytes() {
                 b"smpl" => wave_data = Some(reader.read_wave_data(size)?),
-                b"sm24" => reader.discard_data(size)?,
-                _ => return Err(Error::ListContainsUnknownId(*id.as_bytes())),
+                // A reader ignores what it does not know (section 4).
+                _ => reader.discard_data(size)?,
             }
+            skip_pad(reader, size, end)?;
         }
 
         let Some(wave_data) = wave_data else {

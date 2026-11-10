@@ -26,10 +26,6 @@ pub(crate) trait ReadExt: Read {
         self.read_fixed().map(u16::from_le_bytes)
     }
 
-    fn read_i32(&mut self) -> io::Result<i32> {
-        self.read_fixed().map(i32::from_le_bytes)
-    }
-
     fn read_u32(&mut self) -> io::Result<u32> {
         self.read_fixed().map(u32::from_le_bytes)
     }
@@ -58,7 +54,9 @@ pub(crate) trait ReadExt: Read {
     /// read and dropped.
     fn read_wave_data(&mut self, size: usize) -> io::Result<Vec<i16>> {
         const CHUNK: usize = 8192;
-        let mut samples = Vec::with_capacity(size / 2);
+        // Not sized by `size`: it is the file's claim, and the stream may be
+        // shorter than it.
+        let mut samples = Vec::with_capacity((size / 2).min(CHUNK));
         let mut buffer = [0; CHUNK];
         let mut remaining = size;
         while remaining > 0 {
@@ -77,8 +75,13 @@ pub(crate) trait ReadExt: Read {
     }
 
     fn read_bytes(&mut self, size: usize) -> io::Result<Vec<u8>> {
-        let mut data = vec![0; size];
-        self.read_exact(&mut data)?;
+        // Read up to `size` and check what came, instead of allocating `size`
+        // up front: it is the file's claim, up to 4 GiB.
+        let mut data = Vec::new();
+        self.take(size as u64).read_to_end(&mut data)?;
+        if data.len() < size {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
         Ok(data)
     }
 }

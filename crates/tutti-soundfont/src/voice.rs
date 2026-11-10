@@ -4,6 +4,8 @@
 
 use std::f32::consts;
 
+use tutti_sf2::Side;
+
 /// The longest an exclusive class's quick release takes, in seconds, to fall
 /// 100 dB as every release time does (section 8.1.2, generator 38): the floor
 /// every release is given at its start, to avoid a pop. The spec says "rapidly"
@@ -131,6 +133,16 @@ impl Voice {
     }
 
     pub(crate) fn start(&mut self, region: &RegionPair, channel: i32, key: i32, velocity: i32) {
+        // Generators 46 and 47 (SF2 2.04 section 8.1.2) force the key and the
+        // velocity of the zone: everything keyed on either reads the forced one.
+        let key = region
+            .instrument
+            .forced_key()
+            .map_or(key, |k| i32::from(k.get()));
+        let velocity = region
+            .instrument
+            .forced_velocity()
+            .map_or(velocity, |v| i32::from(v.get()));
         self.channel = channel;
         self.key = key;
         self.velocity = velocity;
@@ -162,7 +174,13 @@ impl Voice {
         self.mod_lfo_to_volume = region.modulation_lfo_to_volume();
         self.dynamic_volume = self.mod_lfo_to_volume > 0.05_f32;
 
-        self.instrument_pan = SoundFontMath::clamp(region.pan(), -50_f32, 50_f32);
+        // A sample of a stereo pair sounds on its own side (section 7.10); any
+        // other takes the zone's pan.
+        self.instrument_pan = match region.instrument.sample_side() {
+            Some(Side::Left) => -50_f32,
+            Some(Side::Right) => 50_f32,
+            None => SoundFontMath::clamp(region.pan(), -50_f32, 50_f32),
+        };
         // Tenths of a percent to a fraction of full level (section 8.1.2,
         // generators 15 and 16).
         self.instrument_reverb = 0.001_f32 * region.reverb_effects_send() as f32;

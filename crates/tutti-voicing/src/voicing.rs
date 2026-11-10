@@ -1049,6 +1049,50 @@ mod tests {
         assert!(matches!(c[0], Command::Start { steal: Some(v), .. } if v == id(1)));
     }
 
+    /// A patch that starts `.0` voices for every note.
+    struct Layers(u32);
+    impl Patch for Layers {
+        fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
+            for tag in 0..self.0 {
+                spec(VoiceSpec {
+                    group: 0,
+                    scope: 0,
+                    tag,
+                });
+            }
+        }
+    }
+
+    /// A strike starts at most `MAX_SPECS` (32) voices, and a patch that asks
+    /// for more is cut short, in the order it named them. The figure is tutti's
+    /// (the SoundFont 2.04 specification sets no limit on the layers of a note;
+    /// the largest note of the TimGM6mb font is 6, measured). A patch of 32
+    /// layers is whole.
+    ///
+    /// Mutation (run): `MAX_SPECS` at 64 starts 40 and fails the first
+    /// assertion; at 16 fails the second.
+    #[test]
+    fn a_strike_starts_at_most_the_cap_and_a_patch_within_it_is_whole() {
+        let rules = Rules {
+            polyphony: 64,
+            ..POLY
+        };
+        let tags = |c: &[Command]| -> Vec<u32> {
+            c.iter()
+                .filter_map(|c| match c {
+                    Command::Start { spec, .. } => Some(spec.tag),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut s = Sim::new(rules);
+        let started = tags(&s.on_with(0, 60, &Layers(40)));
+        assert_eq!(started, (0..32).collect::<Vec<_>>());
+        let mut s = Sim::new(rules);
+        let started = tags(&s.on_with(0, 60, &Layers(32)));
+        assert_eq!(started.len(), 32);
+    }
+
     /// Mutation (run): dropping the released-first class makes the 62 (held)
     /// go instead of the released 63.
     #[test]

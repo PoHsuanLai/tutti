@@ -4,6 +4,7 @@
 
 mod bank;
 mod binary_reader;
+mod chunk;
 mod error;
 mod four_cc;
 mod generator;
@@ -35,7 +36,7 @@ pub use instrument_region::InstrumentRegion;
 pub use loop_mode::LoopMode;
 pub use preset::Preset;
 pub use preset_region::PresetRegion;
-pub use sample_header::SampleHeader;
+pub use sample_header::{SampleHeader, Side};
 pub use soundfont::SoundFont;
 pub use soundfont_info::SoundFontInfo;
 pub use soundfont_version::SoundFontVersion;

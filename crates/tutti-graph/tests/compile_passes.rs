@@ -13,7 +13,9 @@ use tutti_graph::{
     CompileError, CycleEdge, DelayKey, EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, Op,
     PortKind, Shape, Shapes, Sink, Unforkable, compile,
 };
-use tutti_graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, Source};
+use tutti_graph::{
+    Edge, Feed, FeedbackFrom, InPort, InputDelay, Invalid, NodeSpec, OutPort, Source,
+};
 use tutti_graph::{NodeKey, Topology, delays, latency_plan};
 use tutti_types::{ChannelLayout, Latency, Samples, Tail};
 
@@ -359,8 +361,8 @@ fn pdc_delays_equal_latency_delays() {
         let mut want_in: Vec<(DelayKey, Samples)> = rec
             .inputs()
             .iter()
-            .map(|&(n, p, by)| {
-                let sink = at(n, p as u16);
+            .map(|d| {
+                let (sink, by) = (at(d.node, d.port), d.by);
                 let [Edge::Direct(from)] = t.edges[&sink][..] else {
                     unreachable!("latency::plan delays only direct edges")
                 };
@@ -380,13 +382,13 @@ fn pdc_delays_equal_latency_delays() {
         let want_out: Vec<(DelayKey, Samples)> = rec
             .outputs()
             .iter()
-            .filter(|&&(ch, _)| !t.outputs[ch].is_empty())
-            .map(|&(ch, by)| {
+            .filter(|d| !t.outputs[d.channel].is_empty())
+            .map(|d| {
                 let key = DelayKey::Output {
-                    channel: ch as u16,
-                    from: t.outputs[ch][0],
+                    channel: d.channel as u16,
+                    from: t.outputs[d.channel][0],
                 };
-                (key, by)
+                (key, d.by)
             })
             .collect();
         let got_out: Vec<(DelayKey, Samples)> = plan
@@ -923,7 +925,12 @@ fn a_global_input_merging_with_a_latent_path_is_delayed() {
     // The pure pass agrees.
     assert_eq!(
         delays(&t).inputs(),
-        &[(C, 1, Samples(48))],
+        &[InputDelay {
+            node: C,
+            port: 1,
+            feed: Feed::Outside,
+            by: Samples(48)
+        }],
         "latency::delays aligns the global input as the plan does"
     );
 
@@ -1003,7 +1010,12 @@ fn an_event_source_counts_toward_arrival_in_both_solves() {
     assert_eq!(plan.compensation(), comp.channels());
     assert_eq!(
         delays(&g).inputs(),
-        &[(C, 0, Samples(64))],
+        &[InputDelay {
+            node: C,
+            port: 0,
+            feed: Feed::Node(B),
+            by: Samples(64)
+        }],
         "and the pass puts the delay on the same port"
     );
     // Over the topology alone the event path is invisible.

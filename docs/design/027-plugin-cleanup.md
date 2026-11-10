@@ -167,6 +167,7 @@ became one `tutti_plugin_types::Locator` with a `Helper`. What remains:
 | M6 | `SysExAssembler`'s input becomes `decode` to `Sysex7Packet`. Which reassembler survives, the checked `SysexMessage` and the frame swap are 017 stage 3c (the MIDI lane's) | `tutti-ump` | P3, now. **Done**: `tutti-plugin-types` keeps no assembler: every plugin path names `tutti_ump::{SysexAssembler, SysexStep, SysexRef}` and builds the assembler with `tutti_plugin_types::sysex_assembler()` (`SysexAssembler<Box<[u8]>>` sized by `room_for(SYSEX_MESSAGE_CAPACITY, MIDI_STACK_CAPACITY)`); `is_framed` is `SysexMessage::new`, and `sysex_packets` stays the one lenient bridge from a plugin's unchecked bytes (delimiters optional) |
 | M7 | `midi_intake` uses `Ump::group()`, `message_type()`, `channel()` and `address()` | the MIDI lane's field-constructor PR | when that merges. **Done** for notes and groups: `push_displacing` reads `Ump::key_event` (an off matches an on by group, channel and number, whichever protocol), `group_bit` reads `Ump::group`. The SysEx status reads wait for stage 3c's `SysexMessage` |
 | M8 | The two note-id encodings become one `NoteId`, and per-note expression becomes `Ump` with a table per format | 017 stage 3c (decided 2026-11-10) | stage 3c, with §5.1 |
+| M9 | No plugin crate depends on `tutti-midi-types` (it blocks deleting that crate, 017 stage 5b). Its one type the hosts used, `PerNoteBendRanges`, moves to `tutti-plugin-types`, reading the RPN through `tutti_ump::decode` | `tutti-ump` | **Done** (2026-11-11): the ten plugin manifests drop the edge; `tutti-plugin` still reaches the crate through `tutti-midi-runtime`, which is the MIDI lane's |
 
 Nothing changes the hosts' input edge.
 
@@ -175,7 +176,7 @@ Nothing changes the hosts' input edge.
 ### 5.1 One note translation (new: P7, before 023 steps 4 and 7)
 
 Each format translates `Voice2` into its note events by hand: CLAP
-`events.rs`, VST3 `events/midi.rs`, VST2 through `tutti-midi-types`, and AU
+`events.rs`, VST3 `events/midi.rs`, VST2 through `tutti-midi-types` (now `midi1()`, M4), and AU
 with hand-assembled status bytes. CLAP and VST3 also translate back by hand.
 The CLAP and VST3 copies share byte-identical helpers:
 

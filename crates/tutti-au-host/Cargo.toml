@@ -50,7 +50,6 @@ coreaudio-sys = "0.2"
 
 [dev-dependencies]
 # The tests build SysEx and MIDI 1.0 fixtures with its helpers.
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # The tests that build their own raw calls beside the safe API.
 tutti-au-host = { path = ".", features = ["test-support"] }
 tutti-au-ffi = { path = "../tutti-au-ffi", features = ["test-support"] }

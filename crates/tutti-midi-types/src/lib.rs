@@ -39,8 +39,7 @@ pub use message::{
     ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage,
 };
 pub use mpe::{
-    MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator, PerNoteBendRanges,
-    ZoneInfo,
+    MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
 pub use translation::{
     Midi1Messages, MidiParseError, from_midi1_bytes, normalize, parse_midi1_bytes, to_midi1_bytes,

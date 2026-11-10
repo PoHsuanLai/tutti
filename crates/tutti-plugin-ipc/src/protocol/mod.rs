@@ -29,7 +29,7 @@ pub(crate) mod wire;
 /// - An **enum variant** is a varint discriminant over declaration order, so a
 ///   peer receiving a tag it has no arm for fails the decode mid-stream rather
 ///   than at a message boundary.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -141,7 +141,8 @@ pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, ContentScale, LoadedPlugin,
     Normalized, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
     ParamId, ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginDescriptor,
-    PluginTail, Preset, PresetId, RenderMode, Samples, ScaleChanges, TransportInfo,
+    PluginTail, Preset, PresetId, RenderMode, Samples, ScaleChanges, TransportChanges,
+    TransportInfo,
 };
 
 #[cfg(test)]

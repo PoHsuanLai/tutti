@@ -3,6 +3,7 @@
 
 mod automation;
 mod automation_mode;
+mod bend_ranges;
 pub mod bundle;
 mod channels;
 mod classification;
@@ -60,6 +61,7 @@ pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, Seconds, TimeSignature}
 
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
+pub use bend_ranges::PerNoteBendRanges;
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
 pub use classification::{
     ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories, clap_features_role,
@@ -119,6 +121,6 @@ pub use sysex::{
     SYSEX_MESSAGE_CAPACITY, push_sysex, push_sysex_stack, sysex_assembler, sysex_packets,
 };
 pub use transport::{
-    BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportFlags, TransportInfo,
-    TransportPosition, is_usable,
+    BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportChange, TransportChanges,
+    TransportFlags, TransportInfo, TransportPosition, is_usable,
 };

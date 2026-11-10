@@ -17,7 +17,7 @@ use tutti_plugin::server::{
     AudioBufferMut, ChordChanges, ExpressiveContext, Features, MIDI_STACK_CAPACITY, MidiEventVec,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
     PluginInstance, ProcessContext, ProcessOutput, SampleFormat, Samples, ScaleChanges, SlabWriter,
-    TransportInfo, WireMidi,
+    TransportChange, TransportInfo, WireMidi,
 };
 use tutti_ump::Ump;
 
@@ -160,6 +160,10 @@ pub(crate) struct ProcessExtras<'a> {
     /// Tempo, time signature, playhead and loop region. Gated on
     /// `Features::TRANSPORT`.
     pub transport: &'a TransportInfo,
+    /// The transport changes inside the block, each at its frame. Gated on
+    /// `Features::TRANSPORT`; only a format with an inter-block transport event
+    /// (CLAP) reads them.
+    pub transport_changes: &'a [TransportChange],
 }
 
 /// One inbound block: which block it is, how many samples, MIDI, and (optional)
@@ -397,7 +401,9 @@ impl AudioPipeline {
                     ctx = ctx.note_expression(ex.note_expression);
                 }
                 if features.contains(Features::TRANSPORT) {
-                    ctx = ctx.transport(ex.transport);
+                    ctx = ctx
+                        .transport(ex.transport)
+                        .transport_changes(ex.transport_changes);
                 }
                 if features.contains(Features::SEQUENCER_CONTEXT) {
                     ctx = ctx.expressive(ExpressiveContext {

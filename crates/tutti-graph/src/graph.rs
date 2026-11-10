@@ -40,7 +40,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::latency::{Feed, LatencyGraph};
+use crate::latency::{ChannelFeed, Feed, LatencyGraph, PortFeed};
 use crate::spec::EventOut;
 use crate::tail::TailGraph;
 use tutti_types::ChannelLayout;
@@ -878,37 +878,58 @@ impl LatencyGraph for Topology {
         self.nodes.get(&node).map_or(Samples::ZERO, |n| n.latency)
     }
 
-    /// In **port order**: a node's output is [`Feed::Node`], a global input
-    /// [`Feed::Outside`] (aligned at a merge point, as the compiler aligns
-    /// it), and an unconnected or silent port [`Feed::None`].
-    ///
-    /// A port with several sources reads as its first (in sorted order): this
-    /// view has one feed per port, and `compile` refuses a set of two or more
-    /// (`CompileError::FanInNotCompiled`), so nothing renders from it yet.
+    /// In **port order**, one [`PortFeed`] per source: a node's output is
+    /// [`Feed::Node`], a global input [`Feed::Outside`] (aligned at a merge
+    /// point, as the compiler aligns it). A port with several sources yields
+    /// one per source, in sorted (compile) order; an unconnected port yields
+    /// one whose feed is `Feed::None`.
     ///
     /// A feedback edge yields `Feed::None`: it carries last block's value, so
     /// it contributes no latency along this block's path, and reporting it as
     /// a live predecessor would put the walk back in the cycle the edge kind
     /// exists to cut.
-    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = PortFeed<NodeKey>> {
         let width = self.nodes.get(&node).map_or(0, |n| n.inputs.count());
-        (0..width).map(move |port| {
-            match self
+        (0..width).flat_map(move |port| {
+            let edges = self
                 .edges
                 .get(&InPort { node, port })
-                .and_then(|es| es.first())
-            {
-                Some(Edge::Direct(Source::Node(p))) => Feed::Node(p.node),
-                Some(Edge::Direct(Source::Global(_))) => Feed::Outside,
+                .map_or(&[][..], Vec::as_slice);
+            let feed = |e: &Edge| match e {
+                Edge::Direct(Source::Node(p)) => Feed::Node(p.node),
+                Edge::Direct(Source::Global(_)) => Feed::Outside,
                 _ => Feed::None,
-            }
+            };
+            let empty = edges.is_empty().then_some(PortFeed {
+                port,
+                feed: Feed::None,
+            });
+            empty.into_iter().chain(edges.iter().map(move |e| PortFeed {
+                port,
+                feed: feed(e),
+            }))
         })
     }
 
-    fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
-        self.outputs.iter().map(|s| match s.first() {
-            Some(Source::Node(p)) => Some(p.node),
-            _ => None,
+    /// In channel order, one [`ChannelFeed`] per source; a channel with none
+    /// yields one whose feed is `Feed::None`.
+    fn outputs(&self) -> impl Iterator<Item = ChannelFeed<NodeKey>> {
+        self.outputs.iter().enumerate().flat_map(|(ch, sources)| {
+            let feed = |s: &Source| match s {
+                Source::Node(p) => Feed::Node(p.node),
+                Source::Global(_) => Feed::Outside,
+                Source::Zero => Feed::None,
+            };
+            let empty = sources.is_empty().then_some(ChannelFeed {
+                channel: ch,
+                feed: Feed::None,
+            });
+            empty
+                .into_iter()
+                .chain(sources.iter().map(move |s| ChannelFeed {
+                    channel: ch,
+                    feed: feed(s),
+                }))
         })
     }
 }

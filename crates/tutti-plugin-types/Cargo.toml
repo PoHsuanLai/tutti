@@ -36,7 +36,6 @@ test-support = []
 arrayvec = "0.7"
 # Plugin capability flag set (`Features`) — wgpu-style bitflags.
 bitflags = "2"
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # The engine's unit vocabulary (`Samples`, `Tail`).
 tutti-types = { path = "../tutti-types" }

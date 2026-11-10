@@ -214,6 +214,7 @@ impl Session {
                     expr_texts: &data.expr_texts,
                     expr_ints: &data.expr_ints,
                     transport: &data.transport,
+                    transport_changes: &data.transport_changes,
                 };
                 self.handle_process(AudioBlock {
                     seq: data.seq,

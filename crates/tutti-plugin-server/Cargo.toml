@@ -49,7 +49,6 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
 
 # MIDI support
-tutti-midi-types = { path = "../tutti-midi-types" }
 
 # Serialization for IPC
 serde = { version = "1", features = ["derive"] }

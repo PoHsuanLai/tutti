@@ -61,8 +61,13 @@ pub enum SvfType {
 /// coefficients feed is `v3 = v0 - ic2; v1 = a1*ic1 + a2*v3;
 /// v2 = ic2 + a2*ic1 + a3*v3; ic1 = 2*v1 - ic1; ic2 = 2*v2 - ic2;
 /// y = m0*v0 + m1*v1 + m2*v2` (Simper's trapezoidal SVF).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SvfCoeffs {
+    /// The prewarped integrator gain, `tan(pi * fc / sr)` (a shelf's divided or
+    /// multiplied by `sqrt(A)`): where the response's frequency axis sits.
+    pub g: f64,
+    /// The damping, `1 / Q` (a bell's `1 / (Q * A)`).
+    pub k: f64,
     /// `1 / (1 + g*(g + k))`, with `g = tan(pi * fc / sr)` and `k = 1 / Q`.
     /// A bell uses `k = 1 / (Q * A)`; a low (high) shelf divides (multiplies)
     /// `g` by `sqrt(A)`, `A = 10^(dB / 40)`.
@@ -146,6 +151,8 @@ impl SvfCoeffs {
         };
 
         SvfCoeffs {
+            g,
+            k,
             a1,
             a2,
             a3,

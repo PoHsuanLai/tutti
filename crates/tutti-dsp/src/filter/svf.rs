@@ -80,6 +80,11 @@ pub struct SvfCoeffs {
 }
 
 impl SvfCoeffs {
+    /// The largest gain, in dB either way, [`new`](Self::new) solves for. A
+    /// gain further out is this one: 200 dB is a factor of 10^10 in
+    /// amplitude, past anything audible, and keeps every coefficient finite.
+    pub const MAX_GAIN_DB: f32 = 200.0;
+
     /// Computes SVF filter coefficients from parameters (pure function, no state).
     ///
     /// The three tuning parameters are three different units, and taking them as
@@ -100,6 +105,15 @@ impl SvfCoeffs {
         let fc = (freq as f64).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
         let g0 = (core::f64::consts::PI * fc / sample_rate.get()).tan();
         let q = (q as f64).max(0.01);
+        // A gain past `MAX_GAIN_DB` either way is that gain: `10^(dB / 40)`
+        // underflows to 0 far out (`k = 1 / (Q * A)` is then infinite and the
+        // set NaN), and overflows to infinity the other way. A NaN gain is
+        // unity (0 dB).
+        let gain_db = if gain_db.is_nan() {
+            0.0
+        } else {
+            gain_db.clamp(-Self::MAX_GAIN_DB, Self::MAX_GAIN_DB)
+        };
         let a = 10.0_f64.powf(gain_db as f64 / 40.0);
 
         // RBJ cookbook shapes: a bell's damping is `1/(Q*A)`, and a shelf's
@@ -365,6 +379,30 @@ mod tests {
             let at_fc = measured_db(ty, fc, core::f64::consts::FRAC_1_SQRT_2, 12.0, rate, fc);
             assert!((at_fc - 6.0).abs() < 0.05, "{ty:?} at fc: {at_fc}");
         }
+    }
+
+    /// A gain far outside any audible range, or not a number, still solves to
+    /// a finite set (it was NaN at -1e30 dB: `10^(dB / 40)` underflows to 0
+    /// and `k = 1 / (Q * A)` is infinite), and a gain past the cap is the cap's.
+    ///
+    /// Mutation (run): dropping the clamp makes the `-1e30` and `1e30` cases
+    /// non-finite; dropping the NaN arm makes the NaN case NaN.
+    #[test]
+    fn an_absurd_gain_solves_finite_and_saturates() {
+        for ty in [SvfType::Bell, SvfType::LowShelf, SvfType::HighShelf] {
+            for db in [f32::NAN, -1e30, 1e30, f32::NEG_INFINITY, f32::INFINITY] {
+                let c = SvfCoeffs::new(ty, 1000.0, 1.0, db, 48_000.0);
+                for v in [c.a1, c.a2, c.a3, c.m0, c.m1, c.m2] {
+                    assert!(v.is_finite(), "{ty:?} at {db} dB: {c:?}");
+                }
+            }
+            let cap = SvfCoeffs::new(ty, 1000.0, 1.0, SvfCoeffs::MAX_GAIN_DB, 48_000.0);
+            let past = SvfCoeffs::new(ty, 1000.0, 1.0, 1e30, 48_000.0);
+            assert_eq!((cap.m0, cap.m1, cap.m2), (past.m0, past.m1, past.m2));
+        }
+        let nan = SvfCoeffs::new(SvfType::Bell, 1000.0, 1.0, f32::NAN, 48_000.0);
+        let flat = SvfCoeffs::new(SvfType::Bell, 1000.0, 1.0, 0.0, 48_000.0);
+        assert_eq!(nan.m1, flat.m1);
     }
 
     #[test]

@@ -313,6 +313,27 @@ fn dry_and_wet_leave_together_at_every_blend() {
     }
 }
 
+/// A blend that is NaN (`Mix::new_clamped` passes a NaN through) renders as
+/// the blend it replaced, never as NaN output.
+///
+/// Mutation (run): reading `self.controls.blend.load()` in `process` without
+/// the `hold_finite` makes the NaN case render NaN (it failed that way before the fix).
+#[test]
+fn a_nan_blend_holds_the_last_one() {
+    let mut node = make_node();
+    node.controls()
+        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    node.controls().set_blend(Mix(0.5));
+    let (l0, _) = impulse_response(&mut node, 0, 4 * crate::hrtf::panner::STEP);
+    node.controls().set_blend(Mix(f32::NAN));
+    let (l, r) = impulse_response(&mut node, 0, 4 * crate::hrtf::panner::STEP);
+    assert!(
+        l.iter().chain(&r).all(|s| s.is_finite()),
+        "NaN blend reached the output"
+    );
+    assert_eq!(l, l0, "the blend should have held at 0.5");
+}
+
 /// Same contract as the VBAP panner's: `reset` clears the streaming
 /// buffers and the de-zipper ramp, never the caller's placement. A fork is
 /// reset before it renders, and a clone shares these atomics, so a reset

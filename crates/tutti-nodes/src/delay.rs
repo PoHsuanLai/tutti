@@ -150,6 +150,10 @@ impl DelayLineNode {
     /// self-oscillates and grows without bound. `mix` starts fully wet
     /// ([`Mix::WET`]); set it for a parallel send.
     ///
+    /// A `max_delay_secs` that is not finite or not positive is an empty
+    /// line (zero frames, as [`Seconds::to_samples_ceil`] reads it), and a
+    /// NaN `delay_secs` is zero.
+    ///
     /// The lines are sized at the rate [`Node::prepare`] hands it, which is
     /// what makes `max_delay_secs` hold at whatever rate the graph runs at.
     /// Allocates, and `prepare` reallocates.
@@ -201,8 +205,22 @@ impl DelayLineNode {
         feedback: impl Into<Feedback>,
     ) -> Self {
         let n = usize::from(channels.into().count()).max(1);
-        let max_delay = max_delay_secs.into();
-        let delay_secs = Seconds(delay_secs.into().get().clamp(0.0, max_delay.get()));
+        // A maximum that is not a finite positive span is an empty line, as
+        // `Seconds::to_samples_ceil` already reads it (`f32::clamp` panics on
+        // a negative or NaN bound); a NaN initial time is zero.
+        let max_delay = Seconds(
+            Some(max_delay_secs.into().get())
+                .filter(|s| s.is_finite() && *s > 0.0)
+                .unwrap_or(0.0),
+        );
+        let delay_secs = delay_secs.into().get();
+        let delay_secs = Seconds(if delay_secs.is_finite() {
+            delay_secs.clamp(0.0, max_delay.get())
+        } else if delay_secs > 0.0 {
+            max_delay.get()
+        } else {
+            0.0
+        });
         let feedback = Feedback::new_clamped(feedback.into().get());
         let mut cross_routing = vec![0.0; n * n];
         if n == 2 {

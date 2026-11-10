@@ -289,17 +289,18 @@ impl Clock {
         self.next = None;
     }
 
-    /// The block `env` describes, and where it leaves the playhead for the
-    /// next. Call once per block, before reading it.
+    /// [`observe_with`](Self::observe_with) with no tempo map, for the tests.
     #[cfg(test)]
     pub(crate) fn observe<'e>(&mut self, env: &'e Env) -> BlockClock<'e> {
         self.observe_with(env, None)
     }
 
-    /// [`observe`](Self::observe) with the project's tempo map in force for
-    /// the block, which the readers ask how long the playhead took between
-    /// two beats ([`BlockClock::seconds`]). The map does not decide whether
-    /// the playhead jumped: that is the transport's, as it always was.
+    /// The block `env` describes, and where it leaves the playhead for the
+    /// next. Call once per block, before reading it. `tempo` is the project's
+    /// tempo map in force for the block, which the readers ask how long the
+    /// playhead took between two beats ([`BlockClock::seconds`]). The map does
+    /// not decide whether the playhead jumped: that is the transport's, as it
+    /// always was.
     pub(crate) fn observe_with<'e>(
         &mut self,
         env: &'e Env,
@@ -378,7 +379,7 @@ fn continuation(run: &Run, t: &Transport) -> Next {
     }
 }
 
-/// One block's transport, as [`Clock::observe`] hands it to the readers.
+/// One block's transport, as [`Clock::observe_with`] hands it to the readers.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BlockClock<'e> {
     env: &'e Env,

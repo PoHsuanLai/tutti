@@ -350,7 +350,11 @@ fn handle_stream_file(
     // `ChannelPlan::start_streaming`) so it releases when streaming stops.
     let cache_pin = Some(shared.cache.pin(&file_path));
 
+    // A stream already on the channel is replaced: its region goes with its
+    // link, as on `StopStreaming`, or its writer and decoder live on.
+    let mut replaced = None;
     if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
+        replaced = plan.link.as_ref().map(|link| link.region_id);
         plan.start_streaming(
             consumer,
             cache_pin,
@@ -367,6 +371,9 @@ fn handle_stream_file(
         // holds the plan, which is what `SessionRate::set` relies on.
         plan.rt_state
             .set_src_ratio(SrcRatio::for_rates(file_sr, shared.session_rate.get()));
+    }
+    if let Some(region_id) = replaced {
+        local.regions.remove(region_id);
     }
 }
 

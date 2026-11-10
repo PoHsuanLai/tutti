@@ -3,9 +3,11 @@
 //!
 //! The Processor and the Controller are separate values on purpose; most of these
 //! suites want "the active plugin", so [`Active`] holds the pair, derefs to the
-//! Controller (and so to `Vst2Loaded`), and forwards the Processor's calls.
-//! [`Active::reconfigure`] is the deactivate/activate pair a rate or block-size
-//! change is.
+//! Controller, and forwards the Processor's calls. It does not deref to
+//! `Vst2Loaded`: a call meant for the loaded plugin names [`Active::loaded`], so
+//! a name both have (`Control::set_parameter`) cannot quietly skip what the
+//! Controller tells the Processor. [`Active::reconfigure`] is the
+//! deactivate/activate pair a rate or block-size change is.
 
 // The error carries the whole plugin back, which is the point of it.
 #![allow(clippy::result_large_err, dead_code)]
@@ -219,21 +221,34 @@ impl Active {
     }
 }
 
-impl Deref for Active {
-    type Target = Vst2Loaded;
-
-    fn deref(&self) -> &Vst2Loaded {
+impl Active {
+    /// The loaded plugin under the Controller. A suite names it on purpose:
+    /// a call through it skips what the Controller tells the Processor.
+    pub fn loaded(&self) -> &Vst2Loaded {
         self.pair.as_ref().expect("the pair is whole").1.loaded()
     }
-}
 
-impl DerefMut for Active {
-    fn deref_mut(&mut self) -> &mut Vst2Loaded {
+    /// [`loaded`](Self::loaded), mutably.
+    pub fn loaded_mut(&mut self) -> &mut Vst2Loaded {
         self.pair
             .as_mut()
             .expect("the pair is whole")
             .1
             .loaded_mut()
+    }
+}
+
+impl Deref for Active {
+    type Target = Vst2Controller;
+
+    fn deref(&self) -> &Vst2Controller {
+        &self.pair.as_ref().expect("the pair is whole").1
+    }
+}
+
+impl DerefMut for Active {
+    fn deref_mut(&mut self) -> &mut Vst2Controller {
+        &mut self.pair.as_mut().expect("the pair is whole").1
     }
 }
 

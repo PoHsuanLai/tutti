@@ -114,7 +114,7 @@ fn read_capture(path: &PathBuf) -> ProcessCapture {
 fn host_loads_probe_and_reports_declared_metadata() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
-    let meta = instance.metadata();
+    let meta = instance.loaded().metadata();
 
     // The exact string, not "non-empty": that is what catches a host reading
     // `AEffect::uniqueId` at the wrong offset or with the wrong signedness.
@@ -122,9 +122,9 @@ fn host_loads_probe_and_reports_declared_metadata() {
     assert_eq!(meta.name, "Tutti VST2 Probe");
     assert_eq!(meta.vendor, "Tutti");
     // The probe's defaults: stereo in, stereo out, four parameters.
-    assert_eq!(instance.pins().0.count(), 2);
-    assert_eq!(instance.pins().1.count(), 2);
-    assert_eq!(instance.parameter_count(), 4);
+    assert_eq!(instance.loaded().pins().0.count(), 2);
+    assert_eq!(instance.loaded().pins().1.count(), 2);
+    assert_eq!(instance.loaded().parameter_count(), 4);
     assert_eq!(
         instance.wiring(&main_thread()).latency_samples,
         Samples::ZERO

@@ -396,7 +396,7 @@ fn a_task_that_logs_does_not_allocate() {
     inst.set_task_pool(Some(gated(4)));
     block(&mut inst);
     switch_bool(b"tutti_test_plugin_set_thread_pool_log\0", true);
-    let dropped = inst.log_lines_dropped();
+    let dropped = inst.loaded().log_lines_dropped();
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..200 {
             block(&mut inst);
@@ -406,5 +406,5 @@ fn a_task_that_logs_does_not_allocate() {
     let cap = capture();
     assert_eq!(cap.accepted, 201);
     assert!(cap.spread > 0, "no task reached a helper: {cap:?}");
-    assert_eq!(inst.log_lines_dropped() - dropped, 200 * 16);
+    assert_eq!(inst.loaded().log_lines_dropped() - dropped, 200 * 16);
 }

@@ -100,7 +100,7 @@ fn report_host_capability_score() {
     // unreachable on purpose — see `types/transport.rs:134-204`: no upstream
     // producer exists, and advertising a field the host cannot fill would be
     // worse than saying nothing. They are a deliberate ceiling on this score.
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let transport = TransportInfo::default()
         .with_tempo(128.0)
         .with_playing(true)
@@ -172,11 +172,15 @@ fn restart_component_requests_reach_the_host() {
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
     // Drain anything latched during load so the assertion is about our trigger.
-    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    let _ = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
 
     inst.set_parameter(K_RESTART_PARAM_VALUES_TAG, 1.0);
     inst.set_parameter(K_RESTART_PARAM_TITLES_TAG, 1.0);
-    let restart = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    let restart = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
 
     assert!(
         restart.param_values_changed || restart.param_titles_changed,
@@ -205,15 +209,19 @@ fn progress_reports_are_accepted() {
     let path = require_host_checker();
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
-    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    let _ = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
 
     inst.set_parameter(K_TRIGGER_PROGRESS_TAG, 1.0);
     let mut progress = 0;
-    let _ = inst.poll_plugin_notifications(&main_thread(), |n| {
-        if matches!(n, tutti_vst3_host::PluginNotification::Progress(_)) {
-            progress += 1;
-        }
-    });
+    let _ = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |n| {
+            if matches!(n, tutti_vst3_host::PluginNotification::Progress(_)) {
+                progress += 1;
+            }
+        });
     eprintln!(
         "IProgress: {} event(s) observed (0 is expected headless — the plugin \
          drives progress from an editor timer)",
@@ -221,7 +229,9 @@ fn progress_reports_are_accepted() {
     );
 
     inst.set_parameter(K_TRIGGER_PROGRESS_TAG, 0.0);
-    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    let _ = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
 }
 
 /// `IPrefetchableSupport` must be queryable without upsetting the plugin.
@@ -239,7 +249,7 @@ fn prefetchable_support_is_queryable() {
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
-    match inst.prefetchable_support(&main_thread()) {
+    match inst.loaded().prefetchable_support(&main_thread()) {
         Some(v) => {
             eprintln!("IPrefetchableSupport reports {v:?}");
             assert!(
@@ -267,12 +277,12 @@ fn midi_learn_forwards_from_the_main_thread() {
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
-    inst.arm_midi_learn(&main_thread(), true);
-    assert!(inst.is_midi_learn_armed());
+    inst.loaded_mut().arm_midi_learn(&main_thread(), true);
+    assert!(inst.loaded().is_midi_learn_armed());
 
     // Feed CCs through the *audio* path; the host must capture them there and
     // forward on the next main-thread poll, not call the plugin inline.
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     // MIDI 2.0 CC values are 32-bit; 0x8000_0000 is mid-scale.
     let cc = [
         (
@@ -319,9 +329,11 @@ fn midi_learn_forwards_from_the_main_thread() {
     );
 
     // The forward happens here, on this (main) thread.
-    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
-    inst.arm_midi_learn(&main_thread(), false);
-    assert!(!inst.is_midi_learn_armed());
+    let _ = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
+    inst.loaded_mut().arm_midi_learn(&main_thread(), false);
+    assert!(!inst.loaded().is_midi_learn_armed());
 }
 
 /// Pin [`K_PROCESS_WARN_TAG`] against the plugin's actual parameter layout.
@@ -343,6 +355,7 @@ fn warn_tag_block_is_isolated() {
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
     let declared: Vec<u32> = inst
+        .loaded()
         .parameter_ids(&main_thread())
         .into_iter()
         .map(|id| id.get())
@@ -389,7 +402,7 @@ fn host_checker_reports_no_errors_through_output_params() {
         Ok(i) => i,
         Err(e) => panic!("host-checker failed to load: {e:?}"),
     };
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
 
     // Drive several blocks: the plugin latches state-machine observations
     // across calls, and only reports once it has something to say.

@@ -21,8 +21,9 @@ use tutti_plugin_types::{
 };
 use tutti_vst2_host::{Vst2Error, Vst2Loaded, Vst2Processor};
 
-use crate::loaders::common::{Meta, standing};
+use crate::loaders::common::Meta;
 use crate::plugin::AsyncEvent;
+use tutti_plugin_types::standing;
 
 /// A VST2 plugin as the server sees it.
 pub struct Vst2Instance {

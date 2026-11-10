@@ -170,12 +170,12 @@ fn test_load_tal_noisemaker() {
     let plugin = Active::<f32>::load(Path::new(TAL_NOISEMAKER), 44100.0, 512);
     match plugin {
         Ok(p) => {
-            println!("Loaded: {}", p.plugin_info().name);
-            println!("Vendor: {}", p.plugin_info().vendor);
-            println!("Version: {}", p.plugin_info().version);
-            println!("Audio inputs: {}", p.plugin_info().num_inputs);
-            println!("Audio outputs: {}", p.plugin_info().num_outputs);
-            println!("Supports f64: {}", p.plugin_info().supports_f64);
+            println!("Loaded: {}", p.loaded().plugin_info().name);
+            println!("Vendor: {}", p.loaded().plugin_info().vendor);
+            println!("Version: {}", p.loaded().plugin_info().version);
+            println!("Audio inputs: {}", p.loaded().plugin_info().num_inputs);
+            println!("Audio outputs: {}", p.loaded().plugin_info().num_outputs);
+            println!("Supports f64: {}", p.loaded().plugin_info().supports_f64);
         }
         Err(e) => {
             panic!("Failed to load TAL-NoiseMaker: {:?}", e);
@@ -198,7 +198,7 @@ fn test_load_any_available_plugin() {
     println!("Testing with: {}", path);
     let plugin = Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
-    let info = plugin.plugin_info();
+    let info = plugin.loaded().plugin_info();
     assert!(!info.name.is_empty(), "Plugin name should not be empty");
     println!("Successfully loaded: {} by {}", info.name, info.vendor);
 }
@@ -226,7 +226,7 @@ fn a_plugins_flat_channel_counts_match_its_bus_zero() {
             eprintln!("skipping {} (failed to load)", path.display());
             continue;
         };
-        let info = plugin.plugin_info();
+        let info = plugin.loaded().plugin_info();
         println!(
             "{}: in={} out={} in_buses={:?} out_buses={:?}",
             info.name,
@@ -287,7 +287,7 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
         let Ok(plugin) = Active::<f32>::load(&library, 48_000.0, 64) else {
             continue;
         };
-        let info = plugin.plugin_info();
+        let info = plugin.loaded().plugin_info();
         println!(
             "{}: version={:?} vendor={:?}",
             info.name, info.version, info.vendor
@@ -337,7 +337,7 @@ fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
         let Ok(plugin) = Active::<f32>::load(&library, 48_000.0, 64) else {
             continue;
         };
-        let info = plugin.plugin_info();
+        let info = plugin.loaded().plugin_info();
         println!("{}: sub_categories={:?}", info.name, info.sub_categories);
         loaded += 1;
         if info
@@ -379,7 +379,7 @@ fn corpus_subcategories_parse_into_named_facets() {
         let Ok(plugin) = Active::<f32>::load(&library, 48_000.0, 64) else {
             continue;
         };
-        let info = plugin.plugin_info();
+        let info = plugin.loaded().plugin_info();
         let Some(raw) = info.sub_categories.as_deref().filter(|s| !s.is_empty()) else {
             continue;
         };
@@ -606,12 +606,12 @@ fn test_get_parameters() {
 
     let plugin = Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
-    let param_count = plugin.parameter_count(&main_thread());
+    let param_count = plugin.loaded().parameter_count(&main_thread());
     println!("Plugin has {} parameters", param_count);
 
     // The ids are the plugin's own, not list positions: read each through the
     // id it reported.
-    let ids = plugin.parameter_ids(&main_thread());
+    let ids = plugin.loaded().parameter_ids(&main_thread());
     assert_eq!(
         ids.len(),
         param_count as usize,
@@ -645,10 +645,11 @@ fn test_set_parameter() {
     let mut plugin =
         Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
-    if plugin.parameter_count(&main_thread()) > 0 {
+    if plugin.loaded().parameter_count(&main_thread()) > 0 {
         // The first listed parameter, by the id it reported: ParamID 0 need
         // not be the first parameter (or exist at all).
         let id = *plugin
+            .loaded()
             .parameter_ids(&main_thread())
             .first()
             .expect("a nonzero count lists a parameter");
@@ -661,12 +662,17 @@ fn test_set_parameter() {
         println!("Read back value: {value}");
 
         // An id the plugin never listed has no descriptor.
-        let listed = plugin.parameter_ids(&main_thread());
+        let listed = plugin.loaded().parameter_ids(&main_thread());
         let unlisted = (0..=u32::MAX)
             .map(ParamId::new)
             .find(|c| !listed.contains(c))
             .expect("some id is unlisted");
-        assert!(plugin.parameter_info(&main_thread(), unlisted).is_none());
+        assert!(
+            plugin
+                .loaded()
+                .parameter_info(&main_thread(), unlisted)
+                .is_none()
+        );
         // Not silently written: it reads as `None` (`getParamNormalized`
         // answers 0 for an unknown id), and a write to it must leave every
         // listed parameter and that read unchanged.

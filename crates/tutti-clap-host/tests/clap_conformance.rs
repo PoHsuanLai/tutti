@@ -145,7 +145,7 @@ fn reference_plugin_loads_and_identifies() {
     let inst = load_plugin();
     // The host read the plugin's descriptor id from the factory.
     assert_eq!(
-        inst.info().id,
+        inst.loaded().info().id,
         PROBE_ID,
         "host should instantiate our reference plugin by its advertised id"
     );
@@ -325,7 +325,8 @@ fn host_callback_round_trips() {
     let _ = drive_once(&mut inst, 64, &ctx);
 
     let mut requests = Vec::new();
-    inst.take_requests(&main_thread(), &mut requests);
+    inst.loaded_mut()
+        .take_requests(&main_thread(), &mut requests);
     assert!(
         requests.contains(&tutti_plugin_types::Request::Callback),
         "host must record the plugin's request_callback() in HostState: {requests:?}"

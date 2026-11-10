@@ -169,7 +169,7 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
         Ok(i) => i,
         Err(e) => panic!("host-checker failed to load: {e:?}"),
     };
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
 
     assert_eq!(
         inst.process_mode(),
@@ -189,7 +189,7 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
         .collect();
     let event_in = info.has_midi_input as c_int;
     let event_out = info.has_midi_output as c_int;
-    for id in inst.parameter_ids(&main_thread()) {
+    for id in inst.loaded().parameter_ids(&main_thread()) {
         let _hc = hostcheck_lock();
         unsafe { hc_add_parameter(id.get() as c_uint) };
     }
@@ -348,7 +348,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
     else {
         panic!("host-checker failed to load offline");
     };
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let transport = TransportInfo::default();
 
     // The plugin emits the tag only when the mode *changed* since the last

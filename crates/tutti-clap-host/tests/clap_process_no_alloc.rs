@@ -795,7 +795,7 @@ fn param_output_burst_does_not_allocate() {
     reset_probe();
     let mut inst = load_probe();
     assert!(
-        inst.parameter_count(&main_thread()) <= OUTPUT_QUEUES as usize,
+        inst.loaded().parameter_count(&main_thread()) <= OUTPUT_QUEUES as usize,
         "the probe's parameter count sets the reservation; the burst assumes the floor"
     );
     let mut bufs = StereoBufs::new();
@@ -936,7 +936,7 @@ fn output_events_past_the_room_are_refused_not_grown() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     reset_probe();
     let mut inst = load_probe();
-    assert!(inst.parameter_count(&main_thread()) <= OUTPUT_QUEUES as usize);
+    assert!(inst.loaded().parameter_count(&main_thread()) <= OUTPUT_QUEUES as usize);
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
     let ctx = ClapProcessContext {
@@ -1127,13 +1127,13 @@ fn audio_thread_logging_does_not_allocate() {
 
     // A few blocks outside the gate for the host's one-off post-activation setup.
     drive(&mut inst, &mut bufs, 8, &ctx).expect("process");
-    let before = inst.log_lines_dropped();
+    let before = inst.loaded().log_lines_dropped();
 
     assert_no_alloc::assert_no_alloc(|| {
         drive(&mut inst, &mut bufs, GATED_BLOCKS as usize, &ctx).expect("process");
     });
 
-    let after = inst.log_lines_dropped();
+    let after = inst.loaded().log_lines_dropped();
     assert_eq!(
         after - before,
         LINES_PER_BLOCK * GATED_BLOCKS,
@@ -1277,7 +1277,7 @@ fn exactly_sixteen_channels_per_side_does_not_allocate() {
     set_wide_layout(WideLayout::Exactly16);
     let mut inst = load_probe();
     assert_eq!(
-        inst.num_input_channels(&main_thread()),
+        inst.loaded().num_input_channels(&main_thread()),
         16,
         "the host must see the wide layout the plugin reported"
     );
@@ -1301,7 +1301,7 @@ fn twenty_channels_per_side_does_not_allocate() {
     set_wide_layout(WideLayout::Wide20);
     let mut inst = load_probe();
     assert_eq!(
-        inst.num_input_channels(&main_thread()),
+        inst.loaded().num_input_channels(&main_thread()),
         20,
         "the host must see the wide layout the plugin reported"
     );
@@ -1321,7 +1321,7 @@ fn two_twelve_channel_ports_per_side_do_not_allocate() {
     set_wide_layout(WideLayout::Split12Plus12);
     let mut inst = load_probe();
     assert_eq!(
-        inst.num_input_channels(&main_thread()),
+        inst.loaded().num_input_channels(&main_thread()),
         24,
         "two 12-channel ports must sum to 24 on the host side"
     );

@@ -278,14 +278,15 @@ pub fn sample_plugins() -> Vec<(String, PathBuf)> {
 /// is legal for a host to send it MIDI at all.
 pub fn accepts_midi(path: &Path) -> bool {
     Active::<f32>::load(path, 48_000.0, 512)
-        .map(|i| i.plugin_info().has_midi_input)
+        .map(|i| i.loaded().plugin_info().has_midi_input)
         .unwrap_or(false)
 }
 
 /// The plugin's first declared ParamID, if it has any parameters.
 pub fn first_parameter_id(path: &Path) -> Option<u32> {
     let inst = Active::<f32>::load(path, 48_000.0, 512).ok()?;
-    inst.parameter_ids(&main_thread())
+    inst.loaded()
+        .parameter_ids(&main_thread())
         .first()
         .map(|id| id.get())
 }
@@ -471,7 +472,7 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     let mut inst = Active::<T>::load_with_mode(path, sample_rate, block_size, mode)
         .map_err(|e| format!("load failed: {e:?}"))?;
 
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let n = unsafe { hc_num_log_events() } as usize;
 
     // The per-bus channel lists come straight from the plugin: collapsing them
@@ -492,7 +493,7 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     // Register the plugin's parameter ids so unknown-id and out-of-range
     // param queues are reported. `hc_configure` (below, per block) resets only
     // the event log, not the parameter table, so registering once is enough.
-    for id in inst.parameter_ids(&main_thread()) {
+    for id in inst.loaded().parameter_ids(&main_thread()) {
         let _hc = hostcheck_lock();
         unsafe { hc_add_parameter(id.get() as c_uint) };
     }
@@ -682,7 +683,7 @@ pub fn require_host_checker() -> PathBuf {
 /// Whether the plugin advertises `kSample64` processing.
 pub fn supports_f64(path: &Path) -> bool {
     Active::<f32>::load(path, 48_000.0, 512)
-        .map(|i| i.plugin_info().supports_f64)
+        .map(|i| i.loaded().plugin_info().supports_f64)
         .unwrap_or(false)
 }
 

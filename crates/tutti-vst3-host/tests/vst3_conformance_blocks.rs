@@ -147,7 +147,7 @@ fn every_audio_class_survives_a_block() {
         for name in names {
             match Active::<f32>::load_class(&path, &name, 48_000.0, 512) {
                 Ok(mut inst) => {
-                    let info = inst.plugin_info().clone();
+                    let info = inst.loaded().plugin_info().clone();
                     // The class actually instantiated must be the one asked
                     // for. Without this the sweep counts *attempts*: a
                     // `load_class` that ignored its argument would load the
@@ -259,7 +259,7 @@ fn sidechain_input_buses_are_staged() {
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
-    let buses = &inst.plugin_info().input_bus_channels;
+    let buses = &inst.loaded().plugin_info().input_bus_channels;
     eprintln!("host-checker input buses: {buses:?}");
 
     // The premise: this plugin must actually declare a sidechain, or the test

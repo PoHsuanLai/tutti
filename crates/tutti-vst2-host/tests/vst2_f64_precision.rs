@@ -149,8 +149,8 @@ fn load_probe(declares_f64: bool, precision: Precision) -> (Active, PathBuf) {
 /// Render one f64 block of `input_value` on every channel, returning the
 /// per-channel output.
 fn render_f64(instance: &mut Active, input_value: f64) -> Vec<Vec<f64>> {
-    let inputs = instance.pins().0.count() as usize;
-    let outputs = instance.pins().1.count() as usize;
+    let inputs = instance.loaded().pins().0.count() as usize;
+    let outputs = instance.loaded().pins().1.count() as usize;
 
     let input_data = vec![vec![input_value; BLOCK]; inputs];
     let mut output_data = vec![vec![0.0f64; BLOCK]; outputs];
@@ -175,7 +175,7 @@ fn f64_capable_plugin_is_entered_through_the_f64_slot() {
     let _guard = lock_probe();
     let (mut instance, path) = load_probe(true, Precision::Double);
     assert!(
-        instance.metadata().supports_f64,
+        instance.loaded().metadata().supports_f64,
         "the probe was asked to declare effFlagsCanDoubleReplacing but the \
          host did not read it back — the rest of this test would be vacuous"
     );
@@ -207,7 +207,7 @@ fn f64_render_preserves_precision_f32_cannot_carry() {
     // Guard the fixture, per channel, against the tag rounding the difference
     // back off. Checking only the bare round trip is not enough: a narrowing
     // host can pass it.
-    for ch in 0..instance.pins().1.count() as usize {
+    for ch in 0..instance.loaded().pins().1.count() as usize {
         let tag = tutti_vst2_test_plugin::channel_tag(ch) as f64;
         assert_ne!(
             NEEDS_F64 + tag,
@@ -248,7 +248,7 @@ fn plugin_without_f64_support_falls_back_to_the_f32_slot() {
     let _guard = lock_probe();
     let (mut instance, path) = load_probe(false, Precision::Double);
     assert!(
-        !instance.metadata().supports_f64,
+        !instance.loaded().metadata().supports_f64,
         "the default probe must not declare effFlagsCanDoubleReplacing"
     );
 
@@ -332,7 +332,7 @@ fn set_process_precision_announces_the_width_the_host_will_use() {
 fn a_plugin_told_32_bit_is_entered_through_the_f32_slot() {
     let _guard = lock_probe();
     let (mut instance, path) = load_probe(true, Precision::Single);
-    assert!(instance.metadata().supports_f64, "fixture");
+    assert!(instance.loaded().metadata().supports_f64, "fixture");
 
     let _ = render_f64(&mut instance, 0.0);
 

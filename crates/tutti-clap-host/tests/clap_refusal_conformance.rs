@@ -289,7 +289,7 @@ fn a_refused_activation_leaves_the_accepted_configuration_reported() {
         .expect("the same instance activates at the accepted configuration");
     assert_eq!(activate_accepts(), 2);
     assert_eq!(last_accepted_activation(), Some((BASE_RATE, BASE_FRAMES)),);
-    assert_eq!(active.sample_rate(), BASE_RATE);
+    assert_eq!(active.loaded().sample_rate(), BASE_RATE);
 }
 
 /// A refused block-size growth leaves the block size the plugin accepted, so
@@ -375,7 +375,7 @@ fn accepted_sample_rate_change_reaches_the_plugin() {
         Some((96_000.0, BASE_FRAMES)),
         "the new rate must reach the plugin's `activate`"
     );
-    assert_eq!(active.sample_rate(), 96_000.0);
+    assert_eq!(active.loaded().sample_rate(), 96_000.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +525,7 @@ fn a_refused_plugin_is_not_deactivated() {
         .activate_at::<f32>(BASE_RATE, BASE_FRAMES)
         .map_err(|(_, e)| e)
         .expect("the plugin accepts again");
-    assert!(active.is_active());
+    assert!(active.loaded().is_active());
     drop(active);
     assert_eq!(inactive_deactivations(), 0);
 }

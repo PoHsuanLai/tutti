@@ -14,10 +14,10 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-# VST2 shell: `vst-tutti` for the authoring side. VST3 shell: the `vst3` crate's
+# VST2 shell: `tutti-vst2-author` for the authoring side. VST3 shell: the `vst3` crate's
 # COM wrappers.
 [dependencies]
 clap-sys = "0.5"
-vst-tutti = { path = "../../crates/vst-tutti" }
+tutti-vst2-author = { path = "../tutti-vst2-author" }
 num-traits = "0.2"
 vst3 = "0.3"

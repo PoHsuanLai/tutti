@@ -155,6 +155,53 @@ pub enum Key {
     Equals,
 }
 
+/// A plugin's editor, movable to the thread that runs the GUI.
+///
+/// The editor is one object on the plugin's `AEffect`: the host calls its `open`, `close` and
+/// `idle` from the main thread, one at a time, and never from the audio thread. A host moves it
+/// together with the instance it belongs to. `Send` is that contract, claimed here where the
+/// raw `AEffect` it reaches lives.
+///
+/// # Thread rules
+///
+/// `Send` permits moving the editor to another thread; it does not make any thread a valid
+/// caller. VST2's rules are the holder's to keep: the editor calls (`open`, `close`, `idle`,
+/// `size`) are main-thread calls, and so is the `effClose` the editor's instance sends when
+/// its last share drops. Nothing here checks the thread. The typed handles of the next change
+/// (a main-thread handle that is `!Sync`, an audio-thread handle with the render entries only)
+/// enforce them in the types.
+pub struct SendEditor(Box<dyn Editor>);
+
+impl std::fmt::Debug for SendEditor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendEditor").finish_non_exhaustive()
+    }
+}
+
+impl SendEditor {
+    pub(crate) fn new(editor: Box<dyn Editor>) -> Self {
+        Self(editor)
+    }
+}
+
+// SAFETY: see the type's docs: the editor is reached from one thread at a time, the one that
+// holds it, and the audio thread never touches it.
+unsafe impl Send for SendEditor {}
+
+impl std::ops::Deref for SendEditor {
+    type Target = dyn Editor;
+
+    fn deref(&self) -> &(dyn Editor + 'static) {
+        &*self.0
+    }
+}
+
+impl std::ops::DerefMut for SendEditor {
+    fn deref_mut(&mut self) -> &mut (dyn Editor + 'static) {
+        &mut *self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Rect;

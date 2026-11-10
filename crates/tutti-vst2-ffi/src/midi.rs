@@ -1,4 +1,4 @@
-//! MIDI wire codec between `tutti_midi_types::MidiEvent` and `vst::api::MidiEvent`.
+//! MIDI wire codec between `tutti_midi_types::MidiEvent` and `crate::api::MidiEvent`.
 //!
 //! VST2's on-the-wire format is plain 3-byte MIDI-1 plus a `delta_frames`
 //! sample offset — `tutti_midi_types::MidiEvent` already knows how to encode
@@ -17,26 +17,31 @@
 //! [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY) is
 //! dropped whole and counted.
 
-use crate::types::{MidiEvent, MidiEventVec};
+use tutti_plugin_types::MidiEvent;
+
+/// A block's plugin-to-host MIDI, reserved once and reused.
+pub type MidiEventVec = Vec<MidiEvent>;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
+
+use crate::host::RenderHandle;
 use tutti_midi_types::UmpMessageType;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, SysExAssembler, SysExRef, SysExStep};
 
-/// Per-block MIDI plumbing for one [`crate::Vst2Processor`]: the host→plugin
+/// Per-block MIDI plumbing for one `Vst2Processor` (in `tutti-vst2-host`): the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned
 /// to callers. All RT-reused so steady-state processing never allocates.
-pub(crate) struct MidiIo {
+pub struct MidiIo {
     /// Host→plugin staging: rebuilt in place each `process` call.
-    pub(crate) send: MidiSendBuffer,
+    pub send: MidiSendBuffer,
     /// Plugin→host inbox, fed by the `process_events` callback.
     ///
     /// Bounded: the callback runs on the audio thread, so the push must
     /// neither allocate nor grow. See `host.rs`'s *Why the queues are
     /// bounded* for the drop policy and the counter that reports it.
-    pub(crate) out_rx: Arc<ArrayQueue<MidiEvent>>,
+    pub out_rx: Arc<ArrayQueue<MidiEvent>>,
     /// Pooled drain of `out_rx`, refilled and borrowed back each block.
-    pub(crate) out: MidiEventVec,
+    pub out: MidiEventVec,
     /// What `out` was reserved for: the inbox's capacity. A block's pieces all
     /// drain into it, so a split block could ask for more; it never grows.
     room: usize,
@@ -44,10 +49,19 @@ pub(crate) struct MidiIo {
     out_overflow: u64,
 }
 
+impl std::fmt::Debug for MidiIo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiIo")
+            .field("send", &self.send)
+            .field("room", &self.room)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MidiIo {
     /// Constructs with the inbox queue; pre-sizes both reusable buffers so
     /// the audio thread never allocates.
-    pub(crate) fn new(out_rx: Arc<ArrayQueue<MidiEvent>>) -> Self {
+    pub fn new(out_rx: Arc<ArrayQueue<MidiEvent>>) -> Self {
         // Reserved from the queue's own capacity, not a constant that happens
         // to match it: `drain_midi_out` empties the queue into this buffer in
         // one pass, so anything smaller reallocates on the audio thread the
@@ -64,7 +78,7 @@ impl MidiIo {
 
     /// Plugin MIDI-out events dropped because a split block's pieces filled
     /// the block's list (reserved for one inbox's worth).
-    pub(crate) fn out_overflow(&self) -> u64 {
+    pub fn out_overflow(&self) -> u64 {
         self.out_overflow
     }
 }
@@ -75,7 +89,7 @@ impl MidiIo {
     /// plugin's offsets are relative to its call, the returned ones to the
     /// block. Allocation-free: `out` is reserved for the inbox's whole
     /// capacity at construction, so draining a full inbox cannot grow it.
-    pub(crate) fn drain_from(&mut self, start: usize) {
+    pub fn drain_from(&mut self, start: usize) {
         let start = u32::try_from(start).unwrap_or(u32::MAX);
         while let Some(ev) = self.out_rx.pop() {
             // Never past the reservation: a split block drains once a piece,
@@ -90,9 +104,9 @@ impl MidiIo {
     }
 }
 
-/// Parses a VST2 `vst::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
+/// Parses a VST2 `crate::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
 /// UMP [`MidiEvent`]. Tags the event with the original `delta_frames`.
-pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
+pub fn to_midi(event: &crate::api::MidiEvent) -> Option<MidiEvent> {
     let bytes = event.midi_data;
     let frame = event.delta_frames.max(0) as u32;
     // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the engine
@@ -101,28 +115,27 @@ pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
     MidiEvent::from_midi1_bytes(frame, &bytes).map(|e| tutti_midi_types::normalize(&e))
 }
 
-/// Serializes a Tutti UMP [`MidiEvent`] to a VST2 `vst::api::MidiEvent`.
+/// Serializes a Tutti UMP [`MidiEvent`] to a VST2 `crate::api::MidiEvent`.
 ///
 /// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `to_midi1_bytes` performs the
 /// spec Min-Center-Max downscale (16-bit velocity / 32-bit CC / bend → 7/14-bit;
 /// `convert.rs`), so no precision is lost beyond MIDI-1's inherent width.
 /// Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
 /// program change (everything with a 3-byte MIDI-1 form). SysEx is not a
-/// `MidiEvent` in VST2: [`MidiSendBuffer::stage`] reassembles it into a
+/// `MidiEvent` in VST2: [`MidiSendBuffer::stage_piece`] reassembles it into a
 /// `SysExEvent`.
 /// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
 /// controllers, per-note management (Detach/Reset), and any resolution beyond
 /// 7/14 bits.
-#[cfg(test)]
-pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
+pub fn from_midi(event: &MidiEvent) -> Option<crate::api::MidiEvent> {
     let (midi_data, len) = event.to_midi1_bytes()?;
     Some(midi_event(event.frame_offset, midi_data, len))
 }
 
 /// One MIDI-1 message as a VST2 event at `frame_offset`.
-fn midi_event(frame_offset: u32, midi_data: [u8; 3], len: u8) -> vst::api::MidiEvent {
+fn midi_event(frame_offset: u32, midi_data: [u8; 3], len: u8) -> crate::api::MidiEvent {
+    use crate::api;
     use std::mem;
-    use vst::api;
 
     // VST2's `midi_data` is a fixed `[u8; 3]`. `to_midi1_bytes` already
     // zero-pads shorter messages into that fixed array, so `midi_data` is
@@ -171,17 +184,17 @@ fn midi_event(frame_offset: u32, midi_data: [u8; 3], len: u8) -> vst::api::MidiE
 /// ([`MIDI_STACK_CAPACITY`]: no caller hands it more) and never grows: an
 /// event past it is refused and counted
 /// ([`events_dropped`](Self::events_dropped)), so staging never allocates.
-pub(crate) struct MidiSendBuffer {
+pub struct MidiSendBuffer {
     /// The most events one block stages; every list below holds this many.
     room: usize,
     /// Events refused past `room` since the buffer was made.
     events_dropped: u64,
     /// Plugin-side `api::MidiEvent` storage (the structs the pointer
     /// table points at).
-    api_events: Vec<vst::api::MidiEvent>,
+    api_events: Vec<crate::api::MidiEvent>,
     /// Reassembled SysEx messages, whose `system_data` points into
     /// `sysex`'s buffer.
-    sysex_events: Vec<vst::api::SysExEvent>,
+    sysex_events: Vec<crate::api::SysExEvent>,
     /// The block's events in staging order, as indices into `api_events`
     /// or `sysex_events`: the pointer table is built from it once every
     /// event is in place, so a growing Vec cannot move an event a pointer
@@ -197,11 +210,20 @@ pub(crate) struct MidiSendBuffer {
     completed: Vec<(usize, usize, SysExRef)>,
     /// Pointer table — one `*mut api::Event` per event, laid out into
     /// the trailing flexible-array region of `header`.
-    event_ptrs: Vec<*mut vst::api::Event>,
+    event_ptrs: Vec<*mut crate::api::Event>,
     /// Backing storage for the `api::Events` header + flexible-array
     /// tail. `Vec<u64>` for 8-byte alignment (`api::Events` requires
     /// `isize` alignment).
     header: Vec<u64>,
+}
+
+impl std::fmt::Debug for MidiSendBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiSendBuffer")
+            .field("room", &self.room)
+            .field("events_dropped", &self.events_dropped)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Where one staged event lives.
@@ -217,16 +239,22 @@ enum Staged {
 // (a `Vec`'s heap block does not move). Not `Sync`: nothing shares one.
 unsafe impl Send for MidiSendBuffer {}
 
+impl Default for MidiSendBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MidiSendBuffer {
     /// A buffer for a block's whole MIDI cap: every event a plugin node
     /// delivers (out of process, the wire adapter refuses a longer list).
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::with_capacity(MIDI_STACK_CAPACITY)
     }
 
     /// A buffer staging at most `events` events a block. Control thread:
     /// allocates.
-    pub(crate) fn with_capacity(events: usize) -> Self {
+    pub fn with_capacity(events: usize) -> Self {
         let mut buf = Self {
             room: events,
             events_dropped: 0,
@@ -263,19 +291,23 @@ impl MidiSendBuffer {
     /// Returns `None` if no events convert successfully (in which case
     /// the caller skips dispatch entirely).
     ///
+    /// # Panics
+    /// Never in practice: the one assertion is on the header's size, which
+    /// `with_capacity` fixed for the buffer's whole room.
+    ///
     /// # Safety
     /// The returned pointer is valid until the next
     /// [`Self::stage_piece`] call. Caller must hand it to
     /// `vst::plugin::Plugin::process_events` and not retain it past
     /// that call.
-    pub(crate) fn stage_piece(
+    pub fn stage_piece(
         &mut self,
         midi_events: &[MidiEvent],
         start: usize,
         len: usize,
         total: usize,
-    ) -> Option<*mut vst::api::Events> {
-        use vst::api;
+    ) -> Option<*mut crate::api::Events> {
+        use crate::api;
 
         if midi_events.is_empty() {
             return None;
@@ -428,26 +460,45 @@ impl MidiSendBuffer {
 }
 
 impl MidiSendBuffer {
+    /// Stages the piece (see [`stage_piece`](Self::stage_piece)) and hands it to the plugin
+    /// through `render`, if any event is in it.
+    pub fn send_piece(
+        &mut self,
+        render: &mut RenderHandle,
+        midi_events: &[MidiEvent],
+        start: usize,
+        len: usize,
+        total: usize,
+    ) {
+        if let Some(events_ptr) = self.stage_piece(midi_events, start, len, total) {
+            // SAFETY: `stage_piece` returns a pointer valid until the next
+            // `stage` call or `drop`. It is used immediately and never
+            // retained. The VST2 spec requires the plugin to copy any event
+            // data it needs before `process_events` returns.
+            render.process_events(unsafe { &*events_ptr });
+        }
+    }
+
     /// SysEx messages dropped whole since this buffer was made: longer than
     /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
     /// or left without their `END` by a later `START`.
-    pub(crate) fn sysex_dropped(&self) -> u64 {
+    pub fn sysex_dropped(&self) -> u64 {
         self.sysex.dropped()
     }
 
     /// Events refused since this buffer was made because a block staged more
     /// than its room ([`MIDI_STACK_CAPACITY`]); a refused SysEx is a whole
     /// message.
-    pub(crate) fn events_dropped(&self) -> u64 {
+    pub fn events_dropped(&self) -> u64 {
         self.events_dropped
     }
 
     /// The `SysExEvent` for a reassembled message, at `end`'s frame.
-    fn sysex_event(&self, delta_frames: i32, message: SysExRef) -> vst::api::SysExEvent {
+    fn sysex_event(&self, delta_frames: i32, message: SysExRef) -> crate::api::SysExEvent {
         let bytes = self.sysex.message(message);
-        vst::api::SysExEvent {
-            event_type: vst::api::EventType::SysEx,
-            byte_size: std::mem::size_of::<vst::api::SysExEvent>() as i32,
+        crate::api::SysExEvent {
+            event_type: crate::api::EventType::SysEx,
+            byte_size: std::mem::size_of::<crate::api::SysExEvent>() as i32,
             // Already clamped to the block and rebased to the piece.
             delta_frames,
             _flags: 0,
@@ -465,9 +516,9 @@ impl MidiSendBuffer {
 /// Number of `u64` words required to hold a flexible `api::Events`
 /// struct with `events` trailing pointers.
 fn header_words(events: usize) -> usize {
-    let events_offset = std::mem::offset_of!(vst::api::Events, events);
-    let needed = events_offset + events * std::mem::size_of::<*mut vst::api::Event>();
-    let alloc_size = needed.max(std::mem::size_of::<vst::api::Events>());
+    let events_offset = std::mem::offset_of!(crate::api::Events, events);
+    let needed = events_offset + events * std::mem::size_of::<*mut crate::api::Event>();
+    let alloc_size = needed.max(std::mem::size_of::<crate::api::Events>());
     alloc_size.div_ceil(8)
 }
 
@@ -680,9 +731,9 @@ mod tests {
     }
 
     /// Builds a raw VST2 `api::MidiEvent` from 3 MIDI-1 status/data bytes.
-    fn api_from_bytes(data: [u8; 3]) -> vst::api::MidiEvent {
+    fn api_from_bytes(data: [u8; 3]) -> crate::api::MidiEvent {
+        use crate::api;
         use std::mem;
-        use vst::api;
         api::MidiEvent {
             event_type: api::EventType::Midi,
             byte_size: mem::size_of::<api::MidiEvent>() as i32,
@@ -878,8 +929,8 @@ mod tests {
         assert_eq!(staged[1].1[1], 60, "then the note");
     }
 
-    fn read_staged(events: *mut vst::api::Events) -> Vec<(i32, Vec<u8>)> {
-        use vst::api;
+    fn read_staged(events: *mut crate::api::Events) -> Vec<(i32, Vec<u8>)> {
+        use crate::api;
         let mut out = Vec::new();
         // SAFETY: test helper; `events` comes from `stage_piece`, which points
         // at the buffer's live header and event pointers (valid until the next
@@ -1109,7 +1160,7 @@ mod tests {
             let midi = vec![note; n];
             let events = buf.stage_piece(&midi, 0, 64, 64).expect("events staged");
             assert_eq!(
-                events as usize % align_of::<vst::api::Events>(),
+                events as usize % align_of::<crate::api::Events>(),
                 0,
                 "n = {n}"
             );

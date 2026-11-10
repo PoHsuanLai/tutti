@@ -225,7 +225,12 @@ pub trait Host {
         (1, "vendor string".to_owned(), "product string".to_owned())
     }
 
-    /// Handle incoming events from the plugin.
+    /// Handle incoming events from the plugin: what the host callback hands the host for
+    /// `audioMasterProcessEvents`, as a view only the callback can make.
+    fn process_plugin_events(&self, events: api::PluginEvents<'_>) {}
+
+    /// Send events to the host. This is the plugin's call, on a [`HostCallback`]; the host
+    /// side is [`process_plugin_events`](Self::process_plugin_events).
     fn process_events(&self, events: &api::Events) {}
 
     /// Get time information.
@@ -366,6 +371,16 @@ pub struct MidiChannelCounts {
 /// [`get_editor`](Plugin::get_editor), [`render_handle`](PluginInstance::render_handle))
 /// hold the same core, and `effClose` runs when the last of them drops, so none can
 /// reach the plugin after it is closed.
+///
+/// # Thread rules
+///
+/// The instance is `Send`, not `Sync`: `Send` permits moving it, and it is not a claim that any
+/// thread may call it. VST2's rules are the holder's to keep: `effOpen`, `effClose`,
+/// `effMainsChanged`, the state and editor opcodes are main-thread calls, `process` and its
+/// siblings the audio thread's (through a [`RenderHandle`]), and `setParameter` either's.
+/// Nothing here checks the thread. The typed handles of the next change enforce them in the
+/// types: a main-thread handle that is `!Sync`, and an audio-thread handle with the render
+/// entries only.
 #[allow(dead_code)] // To keep `lib` around.
 #[derive(Debug)]
 pub struct PluginInstance {
@@ -663,7 +678,7 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     /// ```no_run
     /// # use std::path::Path;
     /// # use std::sync::Arc;
-    /// # use vst_tutti::host::{Host, PluginLoader};
+    /// # use tutti_vst2_ffi::host::{Host, PluginLoader};
     /// # let path = Path::new(".");
     /// # struct MyHost;
     /// # impl MyHost { fn new() -> MyHost { MyHost } }
@@ -1818,6 +1833,26 @@ impl RenderHandle {
     }
 }
 
+// SAFETY: the instance is a pointer to the plugin's `AEffect`, an `Arc` of its core (which is
+// `Send + Sync`) and a library handle. The plugin has no thread affinity beyond "the main
+// thread opens and closes it", which the holder keeps (the host crate's `Shell` invariant);
+// the instance is driven from one thread at a time, so it is `Send` and not `Sync`: a shared
+// reference would let two threads reach the dispatcher at once.
+unsafe impl Send for PluginInstance {}
+
+impl PluginInstance {
+    /// The plugin's editor, once, as an object that moves with the instance: the same as
+    /// [`Plugin::get_editor`], for a caller that stores it.
+    ///
+    /// # Thread rules
+    ///
+    /// Main thread, like `get_editor`. The [`SendEditor`](crate::editor::SendEditor) it returns
+    /// may be moved, but its calls are main-thread calls the holder keeps; see its docs.
+    pub fn take_editor(&mut self) -> Option<crate::editor::SendEditor> {
+        self.get_editor().map(crate::editor::SendEditor::new)
+    }
+}
+
 impl Plugin for PluginInstance {
     fn get_info(&self) -> plugin::Info {
         self.info.clone()
@@ -2151,8 +2186,8 @@ impl PluginParameters for PluginParametersInstance {
 /// be allocation free even if `AudioBuffer` instances are repeatedly created.
 ///
 /// ```rust
-/// # use vst_tutti::host::HostBuffer;
-/// # use vst_tutti::plugin::Plugin;
+/// # use tutti_vst2_ffi::host::HostBuffer;
+/// # use tutti_vst2_ffi::plugin::Plugin;
 /// # fn test<P: Plugin>(plugin: &mut P) {
 /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(2, 2);
 /// let inputs = vec![vec![0.0; 1000]; 2];
@@ -2188,7 +2223,7 @@ impl<T: Float> HostBuffer<T> {
     /// be dropped or reused while a plugin can still read or write them through it:
     ///
     /// ```compile_fail
-    /// # use vst_tutti::host::HostBuffer;
+    /// # use tutti_vst2_ffi::host::HostBuffer;
     /// // Mutation (run): give `bind` the old signature (`&'a mut self`, `&[I]`, `&mut [O]`,
     /// // `I: 'a`, `O: 'a`) and this compiles, so the doctest fails.
     /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(1, 1);
@@ -2968,11 +3003,17 @@ mod tests {
         );
 
         // A real pointer still reads as present — the guard rejects null, not
-        // everything.
+        // everything. (Any `extern "C"` fn of the right shape will do; it is never called.)
+        extern "C" fn present_process(
+            _: *mut AEffect,
+            _: *const *const f32,
+            _: *mut *mut f32,
+            _: i32,
+        ) {
+        }
         // SAFETY: `process_replacing` is an `extern "C"` fn of `ProcessProc`'s shape, so its address as a pointer-sized word is a valid `Some(ProcessProc)`; it is only compared, never called.
-        let present: Option<ProcessProc> = unsafe {
-            std::mem::transmute(crate::interfaces::process_replacing as *const () as usize)
-        };
+        let present: Option<ProcessProc> =
+            unsafe { std::mem::transmute(present_process as *const () as usize) };
         assert!(present.is_some());
 
         // ABI unchanged: null pointer optimization keeps `Option<fn>` one pointer

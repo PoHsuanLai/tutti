@@ -125,7 +125,7 @@ crates/             everything shipped, directory name = package name
   tutti-midi-types / -runtime / -hardware / -file, tutti-alsa-ump-sys
   tutti-plugin / -types / -server
   tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
-  vst-tutti         # Our fork of the vst crate (VST2 bindings)
+  tutti-vst2-ffi    # Host half of our fork of the vst crate (all VST2 unsafe)
 testing/            never shipped
   tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures
   tutti-shared-plugin    # test plugin: core + a shell per format

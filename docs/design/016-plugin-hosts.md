@@ -2170,6 +2170,38 @@ recorded path. State changed since the last snapshot is lost. An export
 started while the plugin is being replaced is refused (the fork of a dead
 plugin cannot save its state).
 
+**As built (the VST2 FFI crate).** The fourth format moved to the rule of §2.9, as a
+mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2.9a, the
+`Dispatcher`, owned process buffers) are the next change.
+
+- `tutti-vst2-ffi` (layer 4; `tutti-vst2-host` is now layer 5) is the host half of the
+  vst-rs fork: the `AEffect` and ABI types, `PluginLoader` and `PluginInstance`, the
+  `audioMaster` callback (`callback_wrapper`, under `catch_unwind`, checked by
+  `scripts/check-guards.sh`), `HostBuffer`, `RenderHandle`, and from the host crate the
+  event buffers (`MidiSendBuffer`, `MidiIo`, `to_midi`) and `RenderScratch`. It keeps the
+  `Plugin`, `PluginParameters` and `Editor` traits, because `PluginInstance` implements
+  them; they leave with the typed handles. MIT, derived from vst-rs 0.3.0 (`LICENSE`).
+- `tutti-vst2-host` is `#![forbid(unsafe_code)]`, checked by
+  `scripts/check-plugin-ffi.sh`. What its `unsafe` did is a safe API of the FFI crate:
+  `PluginEvents` and `SysExMessage` (a view of a plugin's event list that only
+  `host_dispatch` can make, handed to the new `Host::process_plugin_events`; the raw `Events`
+  keeps its public ABI fields and dereferences nothing),
+  `RenderScratch::render_f32_piece` / `render_f64_piece` / `render_f64_as_f32_piece` (stage,
+  length-check, render and copy out in one call; the pointer tables are private) and
+  `MidiSendBuffer::send_piece` (the pointer tables behind a safe call),
+  `PluginInstance::take_editor` (a `SendEditor`), `Send` on `PluginInstance`, and
+  `ControlCell` / `ControlKey`: the shell's cell, opened by a key the Controller alone
+  holds, which replaces `Shell`'s `UnsafeCell` and `unsafe impl Sync` and makes the
+  Processor, Controller and `Vst2Loaded` `Send` by their fields. It is in the FFI crate and
+  not in `tutti-rt` because it is a type-level capability around an `UnsafeCell`, not a
+  lock-free structure: there is no protocol between threads, so nothing for loom to model. The server loader's
+  `unsafe impl Send for Vst2Instance` is gone for the same reason. The two
+  `WindowHandle::from_ptr` decodes in the callers stay pinned.
+- The plugin-authoring half (`plugin_main!`, `main`, the plugin-side dispatcher,
+  `PluginCache`, `util`) is `testing/tutti-vst2-author`, used only by the VST2 test
+  plugins; it re-exports the FFI crate's ABI modules, so a plugin names `vst::api` from one
+  place. Nothing under `crates/` depends on it.
+
 **As built (the AU FFI crate).** The third format moved to the rule of §2.9.
 It is staged: this change moves the `unsafe` in; the cleanliness pass over the
 FFI crate follows as its own change.

@@ -14,10 +14,10 @@ Most applications do not use this crate directly: `tutti-plugin` (with its
 interface. Use it directly when you want a VST2 host without the rest of the
 engine.
 
-Built on the `vst-tutti` fork of the [`vst`](https://docs.rs/vst) crate,
+Built on `tutti-vst2-ffi`, the host half of the fork of the [`vst`](https://docs.rs/vst) crate,
 which handles the AEffect-level FFI and adds back the host-side `audioMaster`
 callbacks upstream swallowed. This crate adds what a host actually needs on top:
-pre-allocated render scratch buffers, the MIDI codec, callback wiring,
+callback wiring,
 transport-info bookkeeping, state save/restore, and editor lifecycle.
 
 A plugin is three types, as in the other three hosts (design 016): [`Vst2Loaded`]

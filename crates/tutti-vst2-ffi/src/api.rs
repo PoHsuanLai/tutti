@@ -2,7 +2,6 @@
 
 use std::fmt;
 use std::os::raw::c_void;
-use std::sync::Arc;
 
 /// Why an `effGetChunk` produced no usable buffer.
 ///
@@ -36,11 +35,6 @@ impl fmt::Display for ChunkError {
 impl std::error::Error for ChunkError {}
 
 use self::consts::*;
-use crate::{
-    editor::Editor,
-    plugin::{Info, Plugin, PluginParameters},
-};
-
 /// Constant values
 #[allow(missing_docs)] // For obvious constants
 pub mod consts {
@@ -72,7 +66,7 @@ pub mod consts {
 /// undefined behaviour (it agrees with the C one only by coincidence on x86-64).
 ///
 /// ```compile_fail
-/// # use vst_tutti::api::{AEffect, HostCallbackProc, PluginMain};
+/// # use tutti_vst2_ffi::api::{AEffect, HostCallbackProc, PluginMain};
 /// // Mutation (run): declare `PluginMain` as a plain `fn` again and this compiles,
 /// // so the doctest fails.
 /// fn rust_abi_main(_: HostCallbackProc) -> *mut AEffect {
@@ -177,7 +171,7 @@ pub struct AEffect {
     /// Bitmask made of values from `api::PluginFlags`.
     ///
     /// ```no_run
-    /// use vst_tutti::api::PluginFlags;
+    /// use tutti_vst2_ffi::api::PluginFlags;
     /// let flags = PluginFlags::CAN_REPLACING | PluginFlags::CAN_DOUBLE_REPLACING;
     /// // ...
     /// ```
@@ -235,77 +229,6 @@ pub struct AEffect {
 
     /// Reserved for future use (please zero).
     pub future: [u8; 56],
-}
-
-// `AEffect` is the C struct the *host* owns and hands back to us on every
-// call, so these accessors have to conjure `&mut` out of `&self`
-// (`clippy::mut_from_ref`). That is upstream's design and reworking it would
-// mean changing the shape of every plugin-side entry point in `interfaces.rs`;
-// the invariant that makes it sound is the documented one on each method — the
-// host serialises its calls per instance. Scoped here rather than left to a
-// crate-wide `allow(clippy::all)`, which is what hid the *host*-side bugs.
-#[allow(clippy::mut_from_ref)]
-impl AEffect {
-    /// Return handle to Plugin object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.object` must point at the `Box<Box<dyn Plugin>>` this library
-    /// installed, and the caller must not invoke this concurrently with any
-    /// other accessor on the same `AEffect` — the returned `&mut` aliases the
-    /// same plugin every other entry point reaches.
-    // Suppresses warning about returning a reference to a box
-    #[allow(clippy::borrowed_box)]
-    pub unsafe fn get_plugin(&self) -> &mut Box<dyn Plugin> {
-        //FIXME: find a way to do this without resorting to transmuting via a box
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `object` is the
-        // leaked `Box<Box<dyn Plugin>>` this library installed, with no concurrent accessor.
-        unsafe { &mut *(self.object as *mut Box<dyn Plugin>) }
-    }
-
-    /// Return handle to Info object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.user` must point at the `PluginCache` this library installed.
-    pub unsafe fn get_info(&self) -> &Info {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
-        // `PluginCache` this library installed and it has not been dropped.
-        unsafe { &(*(self.user as *mut super::PluginCache)).info }
-    }
-
-    /// Return handle to PluginParameters object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.user` must point at the `PluginCache` this library installed.
-    pub unsafe fn get_params(&self) -> &Arc<dyn PluginParameters> {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
-        // `PluginCache` this library installed and it has not been dropped.
-        unsafe { &(*(self.user as *mut super::PluginCache)).params }
-    }
-
-    /// Return handle to Editor object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// `self.user` must point at the `PluginCache` this library installed, and
-    /// the caller must not invoke this concurrently with any other accessor on
-    /// the same `AEffect`.
-    pub unsafe fn get_editor(&self) -> &mut Option<Box<dyn Editor>> {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
-        // `PluginCache` this library installed, with no concurrent accessor.
-        unsafe { &mut (*(self.user as *mut super::PluginCache)).editor }
-    }
-
-    /// Drop the Plugin object. Only works for plugins created using this library.
-    ///
-    /// # Safety
-    /// Must be called exactly once, from `effClose`, after which neither
-    /// `self.object` nor `self.user` may be dereferenced again.
-    pub unsafe fn drop_plugin(&mut self) {
-        // SAFETY: the caller upholds this fn's `# Safety` contract: `object` came from
-        // `Box::into_raw` of a `Box<Box<dyn Plugin>>` and is freed exactly once here.
-        drop(unsafe { Box::from_raw(self.object as *mut Box<dyn Plugin>) });
-        // SAFETY: as above for `user`, which came from `Box::into_raw` of a `PluginCache`.
-        drop(unsafe { Box::from_raw(self.user as *mut super::PluginCache) });
-    }
 }
 
 /// What a plugin reports about one parameter through
@@ -703,6 +626,173 @@ pub struct Events {
     pub events: [*mut Event; 2],
 }
 
+/// The events of one `audioMasterProcessEvents` call, as the host callback received them.
+///
+/// Raw [`Events`] is the ABI struct: its fields are public, so safe code can build one with
+/// any count and any pointers, and nothing on it dereferences them. This is the view that
+/// does. Only the host callback (`host_dispatch`) makes one, from the plugin's `VstEvents`
+/// after it has checked it is non-null and aligned, and it borrows that list for the
+/// callback, so a handler cannot keep it. A handler reads the events with
+/// [`iter`](Self::iter).
+///
+/// Safe code cannot construct a view, nor read a list through the raw struct:
+///
+/// ```compile_fail,E0624
+/// # use tutti_vst2_ffi::api::{Events, PluginEvents};
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = PluginEvents::new(&raw);
+/// ```
+///
+/// ```compile_fail,E0451
+/// # use tutti_vst2_ffi::api::{Events, PluginEvents};
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = PluginEvents { events: &raw };
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use tutti_vst2_ffi::api::Events;
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = raw.plugin_events();
+/// ```
+///
+/// Mutation (run): make `PluginEvents::new` or its field `pub`, or put an `iter` back on
+/// `Events`: the matching doctest compiles and fails.
+#[derive(Debug)]
+pub struct PluginEvents<'a> {
+    events: &'a Events,
+}
+
+/// An event a plugin sent the host, copied out of its list by [`PluginEvents::iter`].
+#[derive(Debug)]
+pub enum PluginEvent<'a> {
+    /// A MIDI event.
+    Midi(MidiEvent),
+    /// A SysEx message, whose bytes are the plugin's, valid for the callback.
+    SysEx(SysExMessage<'a>),
+}
+
+/// A SysEx message in a plugin's event list: its frame and its bytes, which still lie in the
+/// plugin's buffer and are readable only for the callback that handed the list over (`'a`).
+///
+/// Only [`PluginEvents::iter`] makes one (the raw [`SysExEvent`] has no accessor for its
+/// pointer):
+///
+/// ```compile_fail,E0451
+/// # use tutti_vst2_ffi::api::SysExMessage;
+/// let _ = SysExMessage { delta_frames: 0, payload: &[] };
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use tutti_vst2_ffi::api::SysExEvent;
+/// fn go(e: &SysExEvent) { let _ = e.payload(); }
+/// ```
+///
+/// Mutation (run): make the fields `pub`, or give `SysExEvent` a `payload` again: the matching
+/// doctest compiles and fails.
+#[derive(Debug)]
+pub struct SysExMessage<'a> {
+    delta_frames: i32,
+    payload: &'a [u8],
+}
+
+impl SysExMessage<'_> {
+    /// The frame, in the block, the message lands on (negative as the plugin wrote it).
+    pub fn delta_frames(&self) -> i32 {
+        self.delta_frames
+    }
+
+    /// The payload bytes, empty for a null pointer or a non-positive size.
+    pub fn payload(&self) -> &[u8] {
+        self.payload
+    }
+}
+
+impl<'a> PluginEvents<'a> {
+    /// The view of a list the host callback has checked is non-null and aligned, and which the
+    /// VST2 contract has the plugin keep valid for the call.
+    pub(crate) fn new(events: &'a Events) -> Self {
+        Self { events }
+    }
+
+    /// A view of any `Events`, for the host crate's tests, which craft lists of null entries,
+    /// negative counts and short events.
+    ///
+    /// Not sound for arbitrary input: the caller must point every entry at memory it owns.
+    /// It exists behind `test-support` only, as the other FFI crates' raw builders do.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn for_test(events: &'a Events) -> Self {
+        Self::new(events)
+    }
+
+    /// The events, each copied out.
+    ///
+    /// A negative count is no events, a null entry is skipped, and an entry is read as a
+    /// struct only when its own `byte_size` says it is that big; the header is read as raw
+    /// integers, never as the [`EventType`] enum, because the plugin's memory can hold a value
+    /// that is no variant. An event of another type is skipped.
+    pub fn iter(&self) -> impl Iterator<Item = PluginEvent<'a>> + use<'a> {
+        let events: &'a Events = self.events;
+        // A negative count is no events; it must not become `usize::MAX`.
+        let num = usize::try_from(events.num_events).unwrap_or(0);
+        let base = events.events.as_ptr();
+        (0..num).filter_map(move |i| {
+            // SAFETY: the VST2 contract has the plugin supply `num_events` valid event
+            // pointers in the flexible array for the duration of the callback; a view is made
+            // only by the callback, for that call. Not checked here (the declared `[_; 2]`
+            // type is only the header's view of that array).
+            let event_ptr = unsafe { *base.add(i) };
+            if event_ptr.is_null() {
+                return None;
+            }
+            // `read_unaligned`: the header's alignment (4) does not prove the plugin's
+            // event type's.
+            //
+            // SAFETY: `event_ptr` is non-null and one of the plugin-supplied pointers,
+            // each to an event whose header (type and byte size, two `i32`) is readable for
+            // this callback.
+            let (event_type, declared) = unsafe {
+                let header = event_ptr.cast::<i32>();
+                (
+                    std::ptr::read_unaligned(header),
+                    std::ptr::read_unaligned(header.add(1)),
+                )
+            };
+            // Read a whole struct only if the plugin says it is that big.
+            let declared = usize::try_from(declared).unwrap_or(0);
+            if event_type == EventType::Midi as i32 && declared >= std::mem::size_of::<MidiEvent>()
+            {
+                // SAFETY: the event type is Midi and `byte_size` declares at least
+                // `size_of::<MidiEvent>()` readable bytes at `event_ptr`; the type field was
+                // just checked to be the `Midi` discriminant, and every other field is an
+                // integer. The struct holds no owned data, so the copy needs no drop.
+                let midi = unsafe { std::ptr::read_unaligned(event_ptr.cast::<MidiEvent>()) };
+                Some(PluginEvent::Midi(midi))
+            } else if event_type == EventType::SysEx as i32
+                && declared >= std::mem::size_of::<SysExEvent>()
+            {
+                // SAFETY: as above for SysEx; the struct holds no owned data.
+                let sysex = unsafe { std::ptr::read_unaligned(event_ptr.cast::<SysExEvent>()) };
+                let len = usize::try_from(sysex.data_size).unwrap_or(0);
+                let payload: &'a [u8] = if sysex.system_data.is_null() || len == 0 {
+                    &[]
+                } else {
+                    // SAFETY: non-null and sized above; the VST2 contract has the plugin keep
+                    // `data_size` readable bytes at `system_data` for the callback, which `'a`
+                    // is.
+                    unsafe { std::slice::from_raw_parts(sysex.system_data, len) }
+                };
+                Some(PluginEvent::SysEx(SysExMessage {
+                    delta_frames: sysex.delta_frames,
+                    payload,
+                }))
+            } else {
+                None
+            }
+        })
+    }
+}
+
 impl Events {
     #[inline]
     pub(crate) fn events_raw(&self) -> &[*const Event] {
@@ -734,11 +824,11 @@ impl Events {
     ///
     /// # Example
     /// ```no_run
-    /// # use vst_tutti::plugin::{Info, Plugin, HostCallback};
-    /// # use vst_tutti::buffer::{AudioBuffer, SendEventBuffer};
-    /// # use vst_tutti::host::Host;
-    /// # use vst_tutti::api;
-    /// # use vst_tutti::event::{Event, MidiEvent};
+    /// # use tutti_vst2_ffi::plugin::{Info, Plugin, HostCallback};
+    /// # use tutti_vst2_ffi::buffer::{AudioBuffer, SendEventBuffer};
+    /// # use tutti_vst2_ffi::host::Host;
+    /// # use tutti_vst2_ffi::api;
+    /// # use tutti_vst2_ffi::event::{Event, MidiEvent};
     /// # struct ExamplePlugin { host: HostCallback, send_buf: SendEventBuffer }
     /// # impl Plugin for ExamplePlugin {
     /// #     fn new(host: HostCallback) -> Self { Self { host, send_buf: Default::default() } }
@@ -799,7 +889,7 @@ pub enum EventType {
 /// via `mem::transmute()` while leveraging pointers, e.g.
 ///
 /// ```
-/// # use vst_tutti::api::{Event, EventType, MidiEvent, SysExEvent};
+/// # use tutti_vst2_ffi::api::{Event, EventType, MidiEvent, SysExEvent};
 /// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };
 /// // let event: *const Event = ...;
 /// let midi_event: &MidiEvent = unsafe { std::mem::transmute(event) };
@@ -812,7 +902,7 @@ pub struct Event {
     /// # Example
     ///
     /// ```
-    /// # use vst_tutti::api::{Event, EventType, MidiEvent, SysExEvent};
+    /// # use tutti_vst2_ffi::api::{Event, EventType, MidiEvent, SysExEvent};
     /// #
     /// # // Valid for test
     /// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };

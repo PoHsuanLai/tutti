@@ -147,10 +147,9 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
-  `tutti-vst3-ffi` and `tutti-au-ffi`); host crates forbid `unsafe`
-  (`scripts/check-plugin-ffi.sh`, design 016 §2.9). VST2 has no `-ffi` crate yet:
-  its `unsafe` is `vst-tutti` and `tutti-vst2-host`, which deny
-  `undocumented_unsafe_blocks` and `missing_safety_doc`, with the callers pinned.
+  `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
+  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The VST2 loaders'
+  `WindowHandle` decodes are the callers still pinned.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.
@@ -350,9 +349,11 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
   tutti-au-ffi (all AU unsafe; macOS only, empty elsewhere),
-  vst-tutti (our fork of the vst crate; its split is a later lane)
+  tutti-vst2-ffi (all VST2 unsafe: the host half of our fork of the vst crate)
 testing/         never shipped
   tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
+  tutti-vst2-author (the plugin-authoring half of the vst fork: `plugin_main!`, the
+  `AEffect` builder, the plugin-side dispatcher; only the VST2 test plugins use it),
   tutti-shared-plugin (the test plugin: a format-free core, a shell per
   format), tutti-plugin-contract (the cases every format's host runs against
   it), tutti-shm-model (loom), arc-lend-compare
@@ -364,17 +365,17 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
+0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-midi-types`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
-   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-host`,
+   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
    `tutti-plugin-db`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
-   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`
+   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
 6. `tutti-plugin`
 7. `tutti-plugin-server`, `tutti-session`
 8. `tutti`, `bevy-tutti`
@@ -384,7 +385,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   dependency on `testing/`; a test reaches `testing/` through a
   dev-dependency.
 - `vendor/` holds third-party code we never edit and no workspace member.
-  Our own forks (`tutti-sf2`, `vst-tutti`) are crates, not vendored.
+  Our own forks (`tutti-sf2`, `tutti-vst2-ffi`) are crates, not vendored.
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
   them.
 
@@ -808,8 +809,8 @@ only ways out of a case.
 - A plugin that cannot share the core (the C++ VST3 plugin, an in-process AU
   unit) follows the spec in `core`'s docs (and `core.hpp` mirrors it) and runs
   the same cases. A change to the spec changes both cores.
-- The VST2 shell uses `vst-tutti`'s authoring side as a dependency; when that
-  half moves out of `vst-tutti`, the shell's one dependency line changes.
+- The VST2 shell uses `testing/tutti-vst2-author` (the plugin-authoring half of the
+  old `vst-tutti`, re-exporting `tutti-vst2-ffi`'s ABI modules) as a dependency.
 
 ## Check the constraint before designing around it
 
@@ -837,7 +838,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti-rustysynth` → `tutti-soundfont` (the voice
+- **Dead crate names:** `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
+  host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
   render; the note logic went to `tutti-voicing`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`

@@ -1,4 +1,4 @@
-# vst-tutti — a Tutti fork of the `vst` crate (vst-rs 0.3.0).
+# tutti-vst2-ffi — the host half of the Tutti fork of the `vst` crate (vst-rs 0.3.0).
 #
 # The fork adds host-side `audioMaster` query callbacks upstream vst-rs
 # swallows in its `host_dispatch` `_ =>` arm (GetSampleRate, SizeWindow,
@@ -6,12 +6,13 @@
 # GetAutomationState): the opcodes already exist in `host::OpCode`, so the
 # fork only adds the matching `Host`-trait methods + dispatch arms.
 [package]
-name = "vst-tutti"
+name = "tutti-vst2-ffi"
 version = "0.3.0"
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 resolver = "2"
-description = "VST 2.4 API implementation in Rust (Tutti fork with host-side audioMaster callbacks). Create plugins or hosts."
+description = "VST 2.4 host FFI: the ABI types, the plugin loader and the audioMaster callback (all VST2 unsafe)"
 readme = "README.md"
 keywords = ["vst", "vst2", "plugin"]
 license = "MIT"
@@ -36,6 +37,11 @@ authors = [
     "Frederik Halkjær",
 ]
 
+[features]
+# `PluginEvents::for_test`: a view of a crafted event list, for the host crate's tests. Off in
+# a production build.
+test-support = []
+
 [dependencies]
 bitflags = "1"
 libc = "0.2"
@@ -43,13 +49,12 @@ libloading = "0.7"
 log = "0.4"
 num-traits = "0.2"
 num_enum = "0.5.2"
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+tutti-midi-types = { path = "../tutti-midi-types" }
+tutti-plugin-types = { path = "../tutti-plugin-types" }
 
-# `util::parameter_transfer`'s test module has always done `extern crate rand`,
-# but upstream's dev-dependency was dropped when the crate was vendored — so
-# `cargo test -p vst-tutti` failed to compile the test target at all. That is
-# how a fork with "no failing tests" also had no *running* ones.
 [dev-dependencies]
-rand = "0.8"
+tutti-ump = { path = "../tutti-ump", default-features = false }
 # Test-only global allocator: the grown-pins refusal must not allocate.
 assert_no_alloc = { version = "1", default-features = false }
 

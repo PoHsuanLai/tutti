@@ -11,7 +11,7 @@ use tutti_plugin_types::Control;
 use crate::Format;
 use crate::spec::Mode;
 pub use tutti_shared_plugin::transcript::{
-    Kind, Logged, MAGIC, Transcript, find_blob, replace_blob,
+    Kind, Logged, MAGIC, Told, Transcript, find_blob, replace_blob,
 };
 
 /// The transcript of what `c`'s plugin has been sent.
@@ -83,10 +83,20 @@ mod tests {
         b.extend_from_slice(&(2u64 << 32 | 7).to_le_bytes());
         b.extend_from_slice(&60u64.to_le_bytes());
         b.extend_from_slice(&0f64.to_bits().to_le_bytes());
+        // One transport: call 3, frame 32, playing (1) with tempo (8) and beat
+        // (16) valid, 132 BPM at quarter 6.5.
+        b.extend_from_slice(&1u32.to_le_bytes());
+        for w in [3u32, 32, 1 | 8 | 16, 0] {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        b.extend_from_slice(&132f64.to_bits().to_le_bytes());
+        b.extend_from_slice(&6.5f64.to_bits().to_le_bytes());
         b
     }
 
-    // Mutation (run): reading the fields one word early fails every assertion.
+    // Mutation (run): reading the fields one word early fails every assertion;
+    // `parse` reading the transport's tempo and beat swapped, or its flags one
+    // bit off, fails the last.
     #[test]
     fn a_blob_parses_to_what_it_holds() {
         let t = Transcript::parse(&blob(0, &[64, 1])).complete();
@@ -103,6 +113,21 @@ mod tests {
                 offset: 7,
                 id: 60,
                 value: 0.0
+            }]
+        );
+        assert_eq!(t.transports_sent, 1);
+        assert_eq!(
+            t.transports,
+            [Told {
+                call: 3,
+                offset: 32,
+                playing: true,
+                recording: false,
+                cycle: false,
+                tempo_valid: true,
+                beat_valid: true,
+                tempo: 132.0,
+                beat: 6.5,
             }]
         );
     }

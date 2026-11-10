@@ -14,6 +14,9 @@ constexpr uint32_t kLevel = 0, kAux = 1, kMode = 2, kParams = 3, kModes = 5;
 constexpr uint32_t kLatency = 137, kTail = 8191;
 constexpr uint32_t kMagic = 0x31505354; // "TSP1"
 constexpr size_t kStateHead = 24;
+// A transport's flags (core.rs, "State"), and how many the log keeps.
+constexpr uint32_t kPlaying = 1, kRecording = 2, kCycle = 4, kTempoValid = 8, kBeatValid = 16;
+constexpr uint32_t kLogTransports = 16;
 
 inline float tag (uint32_t bus, size_t ch) { return float (bus * 1000 + ch + 1); }
 
@@ -32,6 +35,9 @@ struct Core
 	std::array<Log, 32> log;
 	std::atomic<uint32_t> logN {0};
 	std::atomic<uint32_t> overflow {0};
+	struct Told { std::atomic<uint64_t> head {0}; std::atomic<uint32_t> flags {0}; std::atomic<double> tempo {0}, beat {0}; };
+	std::array<Told, kLogTransports> told;
+	std::atomic<uint32_t> toldN {0};
 
 	// audio side
 	uint32_t dspMode = 0; double dspLevel = 0.5; int held = -1; size_t pos = 0;
@@ -58,7 +64,7 @@ struct Core
 		dspMode = mode; held = -1; pos = 0;
 		delay.assign (8, std::vector<double> (kLatency, 0.0));
 		events.clear (); events.reserve (128);
-		calls = 0; frames = 0; blocksN = 0; logN = 0; overflow = 0; rate = r; maxBlock = uint32_t (maxB); prepares++;
+		calls = 0; frames = 0; blocksN = 0; logN = 0; toldN = 0; overflow = 0; rate = r; maxBlock = uint32_t (maxB); prepares++;
 	}
 	void reset ()
 	{
@@ -78,6 +84,18 @@ struct Core
 		if (events.size () < 128) events.push_back (e);
 		else
 			overflow = 1;
+	}
+
+	// A transport the host sent with the block about to be processed, as sent.
+	void logTransport (uint32_t offset, uint32_t flags, double tempo, double beat)
+	{
+		uint32_t n = toldN;
+		if (n < kLogTransports)
+		{
+			told[n].head = (std::min<uint64_t> (calls, UINT32_MAX) << 32) | offset;
+			told[n].flags = flags; told[n].tempo = tempo; told[n].beat = beat;
+		}
+		if (n < UINT32_MAX) toldN = n + 1;
 	}
 
 	template <typename S>
@@ -138,6 +156,13 @@ struct Core
 		for (uint32_t k = 0; k < kept; ++k) put<uint32_t> (b, blocks[(nb - kept + k) % 16]);
 		uint32_t ne = logN; put<uint32_t> (b, ne);
 		for (uint32_t k = 0; k < ne; ++k) { put<uint64_t> (b, log[k].head); put<uint64_t> (b, log[k].id); put<double> (b, log[k].value); }
+		uint32_t nt = toldN; put<uint32_t> (b, nt);
+		for (uint32_t k = 0; k < std::min (nt, kLogTransports); ++k)
+		{
+			uint64_t h = told[k].head;
+			put<uint32_t> (b, uint32_t (h >> 32)); put<uint32_t> (b, uint32_t (h)); put<uint32_t> (b, told[k].flags);
+			put<uint32_t> (b, 0); put<double> (b, told[k].tempo); put<double> (b, told[k].beat);
+		}
 		return b;
 	}
 	bool load (const uint8_t* p, size_t n)

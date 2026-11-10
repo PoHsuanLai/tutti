@@ -32,7 +32,7 @@ use tutti_vst2_test_plugin::ProcessCapture;
 #[path = "support/active.rs"]
 mod active;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 // Not redundant with `src/lib.rs`: that declaration is `#[cfg(test)]`, which
 // covers unit tests only, not integration-test binaries. Without this the

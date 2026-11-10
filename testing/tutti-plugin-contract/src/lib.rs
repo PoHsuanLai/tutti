@@ -19,7 +19,7 @@ mod plugin;
 pub mod spec;
 mod transcript;
 
-pub use active::{Active, BLOCK, RATE, Width, prepare};
+pub use active::{Active, BLOCK, RATE, Render, Width, prepare};
 pub use assert_no_alloc::AllocDisabler;
 pub use cases::*;
 pub use format::{Format, Gap, ParamTiming, run};

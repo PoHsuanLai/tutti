@@ -25,7 +25,7 @@ use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext}
 #[path = "support/active.rs"]
 mod active;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 /// The id of the parameter at `index`.
 fn pid(index: i32) -> ParamId {

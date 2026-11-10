@@ -49,7 +49,7 @@ fn at(k: u32) -> Offset {
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, LoadError, ParamExt, StateExt};
+use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

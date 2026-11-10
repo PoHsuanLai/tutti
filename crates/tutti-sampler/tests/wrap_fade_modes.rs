@@ -69,7 +69,6 @@ fn graph(wave: &Arc<Wave>, workers: usize, host: Host) -> Executor {
                     Voice {
                         source: VoiceSource::Memory(source),
                         play: Playback::default(),
-                        channel_index: None,
                     },
                 );
                 ed.insert(key, "pool", pool);

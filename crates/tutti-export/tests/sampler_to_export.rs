@@ -122,7 +122,6 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
         Voice {
             source: VoiceSource::Memory(source),
             play,
-            channel_index: None,
         },
     );
 

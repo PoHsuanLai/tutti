@@ -832,7 +832,6 @@ fn placed_pool(cents: f32) -> tutti_sampler::VoicePool {
                 pitch: tutti_types::Cents::new(cents),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
     pool

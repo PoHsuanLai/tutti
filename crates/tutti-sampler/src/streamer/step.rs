@@ -1,10 +1,12 @@
 //! One streamer cycle, synchronously.
 //!
-//! The streamer's work is a loop over two pure steps — apply direction changes
+//! The streamer's work is a loop over two steps — apply direction changes
 //! to each ring's mapping, refill the rings
-//! (following each reader to where it plays). None of them is asynchronous:
-//! they read a `DashMap`, decode from a file, and write into a ring. The only async in the streamer is the *pacing* —
-//! the timer the loop parks on when there is nothing urgent to do.
+//! (following each reader to where it plays). Neither is asynchronous: they
+//! walk the stream table, decode from a file, and write into a ring. The only
+//! async in the streamer is the *pacing* — the timer the loop parks on when
+//! there is nothing urgent to do. (What a *command* does to the table is the
+//! pure [`step`](super::record::step), not this.)
 //!
 //! This module is that work with the pacing removed. [`StreamerCycle::step`]
 //! drains the command queue, runs the two steps, and reports what the pacing
@@ -23,7 +25,7 @@
 //! than by waiting — `step` returns only after the work is done.
 //!
 //! It is the same seam the production loop uses, not a parallel test path:
-//! `streamer_loop_async` is written in terms of `StreamerCycle::step`, so a
+//! `streamer_loop` is written in terms of `StreamerCycle::step`, so a
 //! divergence between what tests drive and what ships is not representable.
 
 use super::command::StreamerCommand;
@@ -31,6 +33,7 @@ use super::config::BufferConfig;
 use super::handlers::{Handles, Local, handle_command};
 use super::io::refill::{refill_all, refill_all_parallel};
 use super::loops::{Mapping, apply_mapping};
+use super::record::Streams;
 
 /// What the pacing layer should do after one streamer cycle.
 ///
@@ -67,8 +70,8 @@ pub enum StepOutcome {
 
 /// The streamer's per-cycle state and the step over it.
 ///
-/// Owns [`Local`] (streamer-thread-local: producers, scratch, the region-id
-/// source) and borrows nothing. Both the async loop and a test driver build one
+/// Owns [`Local`] (streamer-thread-local: the stream table, scratch) and
+/// borrows nothing. Both the async loop and a test driver build one
 /// and call [`step`](Self::step) repeatedly; the only difference between them is
 /// what happens *between* the calls.
 pub(crate) struct StreamerCycle {
@@ -77,6 +80,12 @@ pub(crate) struct StreamerCycle {
 }
 
 impl StreamerCycle {
+    /// The stream table (tests).
+    #[cfg(test)]
+    pub(crate) fn streams(&self) -> &Streams {
+        &self.local.streams
+    }
+
     /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill.
     pub(crate) fn new(config: BufferConfig) -> Self {
         Self {
@@ -111,33 +120,31 @@ impl StreamerCycle {
         // one: the streamer is their only publisher, and its cycle is the
         // control-side tick they get. A lock and a length check per ring
         // when nothing is retired.
-        for writer in self.local.regions.writers() {
-            writer.ring().reclaim_maps();
+        for record in self.local.streams.records() {
+            record.out.ring().reclaim_maps();
         }
 
-        if shared.plans.is_empty() {
+        if self.local.streams.is_empty() {
             return StepOutcome::Idle;
         }
 
-        self.apply_directions(shared);
+        self.apply_directions();
 
         // Frames resident across every streaming ring, sampled before the
         // refill so the outcome can say whether the refill actually achieved
         // anything. See [`StepOutcome::Stalled`].
-        let buffered_before = total_buffered(&shared.plans, &self.local.regions);
+        let buffered_before = total_buffered(&self.local.streams);
 
-        if self.config.parallel_io && shared.plans.len() >= 3 {
+        if self.config.parallel_io && self.local.streams.len() >= 3 {
             refill_all_parallel(
-                &shared.plans,
-                &mut self.local.regions,
+                self.local.streams.records_mut(),
                 &shared.metrics,
                 self.config.chunk_size,
                 self.local.buffer_margin,
             );
         } else {
             refill_all(
-                &shared.plans,
-                &mut self.local.regions,
+                self.local.streams.records_mut(),
                 &shared.metrics,
                 self.config.chunk_size,
                 self.local.buffer_margin,
@@ -145,40 +152,30 @@ impl StreamerCycle {
             );
         }
 
-        if buffers_healthy(&shared.plans, self.local.buffer_margin) {
+        if buffers_healthy(&self.local.streams, self.local.buffer_margin) {
             StepOutcome::Healthy
-        } else if total_buffered(&shared.plans, &self.local.regions) > buffered_before {
+        } else if total_buffered(&self.local.streams) > buffered_before {
             StepOutcome::Busy
         } else {
             StepOutcome::Stalled
         }
     }
 
-    /// Turn each ring whose channel changed direction (`RtState`'s, set by the
+    /// Turn each ring whose stream changed direction (`RtState`'s, set by the
     /// voice): reverse is a mapping (the file mirrored,
     /// loop ignored), so the change is `apply_mapping`'s — a switch the reader
     /// crossfades across just past the block it is in.
-    ///
-    /// The plans are read and released before any ring is touched, since a
-    /// switch reads the file for its fade.
-    fn apply_directions(&mut self, shared: &Handles) {
-        let turned: Vec<(super::command::RegionId, bool, f64)> = shared
-            .plans
-            .iter()
-            .filter_map(|entry| {
-                let plan = entry.value();
-                let link = plan.link.as_ref()?;
-                Some((
-                    link.region_id,
-                    plan.rt_state.is_reverse(),
-                    plan.rt_state.read_rate().get(),
-                ))
-            })
-            .collect();
-        for (region_id, reverse, rate) in turned {
-            let Some(writer) = self.local.regions.get_mut(region_id) else {
-                continue;
-            };
+    fn apply_directions(&mut self) {
+        for record in self
+            .local
+            .streams
+            .records_mut()
+            .iter_mut()
+            .filter(|r| r.is_live())
+        {
+            let reverse = record.rt_state.is_reverse();
+            let rate = record.rt_state.read_rate().get();
+            let writer = &mut record.out;
             if writer.content().current.reverse == reverse {
                 continue;
             }
@@ -191,43 +188,32 @@ impl StreamerCycle {
     }
 }
 
-/// Frames currently resident across every streaming ring.
+/// Frames currently resident across every live stream's ring.
 ///
-/// Summed rather than compared per channel because the question it answers is
-/// about the cycle as a whole: did *any* refill land? A per-channel comparison
+/// Summed rather than compared per stream because the question it answers is
+/// about the cycle as a whole: did *any* refill land? A per-stream comparison
 /// would report a stall for a stream at EOF even while its neighbours were
 /// still filling, and the pacing layer must keep running for those.
-fn total_buffered(
-    plans: &dashmap::DashMap<usize, super::plan::ChannelPlan>,
-    regions: &super::region_map::RegionMap,
-) -> usize {
-    plans
+fn total_buffered(streams: &Streams) -> usize {
+    streams
+        .records()
         .iter()
-        .filter_map(|entry| {
-            let link = entry.value().link.as_ref()?;
-            let writer = regions.get(link.region_id)?;
-            Some(writer.buffered().get())
-        })
+        .filter(|r| r.is_live())
+        .map(|r| r.out.buffered().get())
         .sum()
 }
 
 /// True when no stream needs a refill — i.e. the loop can safely park on a
 /// short timer instead of spinning.
-fn buffers_healthy(
-    plans: &dashmap::DashMap<usize, super::plan::ChannelPlan>,
-    buffer_margin: f64,
-) -> bool {
+fn buffers_healthy(streams: &Streams, buffer_margin: f64) -> bool {
     let fill_threshold = (0.75 / buffer_margin) as f32;
 
-    // Every streaming channel must be at or above its refill threshold. A
-    // channel with no active link imposes no refill work.
-    plans.iter().all(|entry| {
-        let plan = entry.value();
-        if plan.link.is_none() {
-            return true;
-        }
-        plan.rt_state.buffer_fill() >= fill_threshold
-    })
+    // Every live stream must be at or above its refill threshold.
+    streams
+        .records()
+        .iter()
+        .filter(|r| r.is_live())
+        .all(|r| r.rt_state.buffer_fill() >= fill_threshold)
 }
 
 #[cfg(test)]
@@ -235,20 +221,19 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use dashmap::DashMap;
     use tutti_types::SampleRate;
 
     use super::super::cache::LruCache;
-    use super::super::command::RegionId;
+    use super::super::command::StreamId;
     use super::super::handlers::SessionRate;
     use super::super::loops::{Arrangement, RingMap};
     use super::super::metrics::Metrics;
-    use super::super::prefetch::RegionBuffer;
+    use super::super::record::{Cmd, step};
     use super::*;
 
     /// A map the reader held across the streamer's last publish is freed by
-    /// the streamer's next cycle, with no further publish, while no channel
-    /// streams (the cycle returns `Idle`).
+    /// the streamer's next cycle, with no further publish, whether or not a
+    /// stream is live (this one's reader was never delivered).
     ///
     /// Mutation (run): the cycle's per-ring `reclaim_maps` loop removed → the
     /// map is still retired after the step, fails.
@@ -256,7 +241,6 @@ mod tests {
     fn a_cycle_frees_a_map_the_reader_held_across_its_replacement() {
         let config = BufferConfig::default();
         let shared = Handles {
-            plans: Arc::new(DashMap::new()),
             cache: Arc::new(LruCache::new(
                 config.cache_max_entries,
                 config.cache_max_bytes,
@@ -265,10 +249,10 @@ mod tests {
             session_rate: SessionRate::new(SampleRate(48_000.0)),
         };
         let mut cycle = StreamerCycle::new(config);
-        let id = RegionId(1);
-        let (writer, _reader) = RegionBuffer::with_capacity(id, PathBuf::from("t.wav"), 1024, 1u16);
-        let ring = Arc::clone(writer.ring());
-        cycle.local.regions.register(id, writer);
+        let id = StreamId(1);
+        let (record, ring, _pos) =
+            super::super::record::tests::record(id, PathBuf::from("t.wav"), 1024, 1u16);
+        let _ = step(&mut cycle.local.streams, Cmd::Open(Box::new(record)));
 
         let mut map = ring.map_reader();
         {
@@ -277,7 +261,9 @@ mod tests {
             ring.publish_map(RingMap::plain(Arrangement::plain(64), 1));
         }
         assert_eq!(ring.retired_maps(), 1, "pinned until a scan");
-        assert!(matches!(cycle.step(&shared, || None), StepOutcome::Idle));
+        // The stream is still `Opening` (its reader never delivered), so the
+        // cycle refills nothing, but it still sweeps the ring's maps.
+        let _ = cycle.step(&shared, || None);
         assert_eq!(ring.retired_maps(), 0, "freed by the cycle");
     }
 }

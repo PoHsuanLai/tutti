@@ -278,7 +278,6 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
                             }
                         }
                     },
-                    channel_index: None,
                 },
             );
         }

@@ -59,7 +59,7 @@ whatever else its code is waiting for.
 | D13 | **`SetSampleRate` takes any `f64` from the wire.** A NaN, zero or negative rate reaches the clock and the plugin. (Storing a rate the plugin then refuses is benign: `rate_refused` silences every block until a rate is accepted.) | `session.rs` `SetSampleRate` | P2 |
 | D14 | **The scratch reallocates whenever the block length changes**, on the audio thread, against the crate's "no allocation after warm-up". | `audio_pipeline.rs` `reshape` | P2 |
 | D15 | **The VST2 callback wrapper drops the panic payload**, unlike the other four guards. | `tutti-vst2-ffi` | P5 |
-| D16 | **AU drops the bank of a banked Program Change** (VST2 sends bank MSB, bank LSB, then the program), and passes the event offset unclamped. | `tutti-au-host` `instance.rs` MIDI path | P3 (MIDI item 6) |
+| D16 | **AU drops the bank of a banked Program Change** (VST2 sends bank MSB, bank LSB, then the program), and passes the event offset unclamped. | `tutti-au-host` `instance.rs` MIDI path | P3 (MIDI item 6). **Bank fixed** by M5 (AU sends what `midi1()` gives). The offset clamp waits for P7's one clamp function (§5.1) |
 | D17 | **`HostRenderMode` is not exported**, so a backend outside the crate cannot implement it. | `tutti-plugin` `lib.rs` `backend` | P5 |
 | D18 | **`publish_with_extension(real, ext)` replaces `real` with a link to itself when `real` already has `ext`.** This happened to the Linux `.so` cdylib in #406. | `tutti-fixtures` | P4 |
 
@@ -160,12 +160,12 @@ became one `tutti_plugin_types::Locator` with a `Helper`. What remains:
 | # | Item | Uses | When |
 |---|---|---|---|
 | M1 | `Midi1Decoder` and `Midi1Splitter` go to `tutti_ump::Midi1Parser` (one behaviour change: a status byte that cuts a SysEx short emits no End) | `tutti-ump` | P3, now |
-| M2 | `convert`'s integer scaling goes to `tutti_midi_protocol::widen` / `narrow_*`. The float helpers (`unit_f32_to_u32`, `u16_to_unit_f32`, `signed_f32_to_bend_u32`) stay until 017 stage 3b | `tutti-midi-protocol` | P3, now |
-| M3 | The `fn widened` copies in the CLAP and VST3 event code become direct `widen` calls | `tutti-midi-protocol` | P3, now |
-| M4 | VST2's `to_midi1_bytes` goes to `midi1()`, `Voice1::bytes` and `System::bytes`, with `tutti_ump::frame`; `sysex7_fragments` stays | `tutti-ump`, `tutti-midi-protocol` | P3, now |
-| M5 | AU's hand-built MIDI goes to `narrow`. This fixes D16. Tell the MIDI lane when it lands | `tutti-midi-protocol` | P3, now |
+| M2 | `convert`'s integer scaling goes to `tutti_midi_protocol::widen` / `narrow_*`. The float helpers (`unit_f32_to_u32`, `u16_to_unit_f32`, `signed_f32_to_bend_u32`) stay until 017 stage 3b | `tutti-midi-protocol` | P3, now. **No production call site was left**: the plugin crates' only integer scaling is in test fixtures (`midi1_velocity_to_midi2(100)` building a MIDI 2.0 packet), which stay with `convert` until the MIDI lane retires it, and `midi1_decoder.rs`'s, which goes with M1 |
+| M3 | The `fn widened` copies in the CLAP and VST3 event code become direct `widen` calls | `tutti-midi-protocol` | P3, now. **Done**: `widen_message` |
+| M4 | VST2's `to_midi1_bytes` goes to `midi1()`, `Voice1::bytes` and `System::bytes`, with `tutti_ump::frame`; `sysex7_fragments` stays | `tutti-ump`, `tutti-midi-protocol` | P3, now. **Done**: `from_midi` and `stage_piece` read `midi1()`; `from_midi` is `None` for a banked Program Change (three messages), and a MIDI 2.0 Note On at velocity 0 goes out at velocity 1 (M2-104) |
+| M5 | AU's hand-built MIDI goes to `narrow`. This fixes D16. Tell the MIDI lane when it lands | `tutti-midi-protocol` | P3, now. **Done**: `send_midi` sends `midi1()`'s messages; the bank is CC 0, CC 32, then the program |
 | M6 | `SysExAssembler`'s input becomes `decode` to `Sysex7Packet`. Which reassembler survives, the checked `SysexMessage` and the frame swap are 017 stage 3c (the MIDI lane's) | `tutti-ump` | P3, now; the rest is stage 3c |
-| M7 | `midi_intake` uses `Ump::group()`, `message_type()`, `channel()` and `address()` | the MIDI lane's field-constructor PR | when that merges |
+| M7 | `midi_intake` uses `Ump::group()`, `message_type()`, `channel()` and `address()` | the MIDI lane's field-constructor PR | when that merges. **Done** for notes and groups: `push_displacing` reads `Ump::key_event` (an off matches an on by group, channel and number, whichever protocol), `group_bit` reads `Ump::group`. The SysEx status reads wait for stage 3c's `SysexMessage` |
 | M8 | The two note-id encodings become one `NoteId`, and per-note expression becomes `Ump` with a table per format | 017 stage 3c (decided 2026-11-10) | stage 3c, with §5.1 |
 
 Nothing changes the hosts' input edge.

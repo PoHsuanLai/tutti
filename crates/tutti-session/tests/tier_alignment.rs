@@ -30,10 +30,11 @@ use std::time::Duration;
 
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
-use tutti_sampler::{Command, MemorySource};
+use tutti_sampler::testing::settle_threaded;
+use tutti_sampler::{DiskVoice, MemorySource, Placement};
 use tutti_session::{GraphSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, ChannelLayout, Db, InterleavedMut, SamplePosition, SampleRate, Samples};
+use tutti_types::{Beat, ChannelLayout, Db, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 /// Beat 1 at 120 BPM and `RATE`.
@@ -93,29 +94,16 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     s.graph().set_output_source(2, GraphSource::Node(eff, 0));
 
     // The voice, on outputs 0 and 1.
-    let voice = match tier {
+    // The stream's handle is held for the whole render: dropping it would end
+    // the stream.
+    let (voice, _stream) = match tier {
         Tier::Disk => {
             let streamer = s.disk_streamer().expect("an offline session streams");
-            streamer
-                .commands()
-                .send(Command::Stream {
-                    channel_index: 0,
-                    file_path: path.clone(),
-                    offset: SamplePosition(0.0),
-                })
-                .expect("the streamer is alive");
             // The streamer opens the stream on its own thread.
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let voice = loop {
-                match streamer.status().take_disk_voice(0, Beat(1.0), None) {
-                    Ok(voice) => break voice,
-                    Err(e) if std::time::Instant::now() > deadline => {
-                        panic!("the stream did not open in 10 s: {e:?}")
-                    }
-                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
-                }
-            };
-            s.graph().insert(voice).0
+            let (stream, reader) =
+                settle_threaded(streamer.open(&path, Placement::HEAD)).expect("the stream opens");
+            let voice = DiskVoice::from_reader(reader, Beat(1.0), None);
+            (s.graph().insert(voice).0, Some(stream))
         }
         Tier::Memory => {
             let mut wave = tutti_codec::Wave::new(2, RATE);
@@ -124,7 +112,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             }
             let source = MemorySource::placed(std::sync::Arc::new(wave), Beat(1.0), None)
                 .expect("a placeable wave");
-            s.graph().insert(source).0
+            (s.graph().insert(source).0, None)
         }
     };
     s.graph().set_output_source(0, GraphSource::Node(voice, 0));

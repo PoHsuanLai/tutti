@@ -2475,8 +2475,8 @@ the default. Now a forked disk voice plays its file:
 - **Its file, as the stream's record says when the fork is taken.** Each
   butler stream keeps a small `StreamRecord` (the path, the file's rate, the
   loop, whether it has ended, a weak handle on the butler's wave cache), held
-  by its `Link`; `Status::take_disk_voice` hands the voice a read-only handle
-  on it (`StreamOrigin`). The loop has one writer, `Link::set_loop`, which
+  by its `Link`; the stream's `StreamReader` (the reply of its open, doc 025 cut
+  3) hands the voice a read-only handle on it (`StreamOrigin`). The loop has one writer, `Link::set_loop`, which
   tells the record as it changes the butler's own; the record ends when its
   `Link` drops (stopped, or the channel restarted on another file). The
   record is deliberately small: a live voice may be its last holder, and that
@@ -2746,8 +2746,9 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   `PosRing::new` returns a `PosWriter` (its methods `&mut self`) and a
   `PosReader` whose `claim` returns a `PosClaim` borrowing it — samples are
   read only through a claim, and a claim ends before the next. The ring's
-  reader waits in the stream's `Ring` until a voice takes it, so
-  `TakeVoiceError::ReaderTaken` is an empty slot, not a flag. A voice's
+  reader is handed out by value, once, as the reply of the stream's open
+  (`Opening::poll`, doc 025 cut 3); it used to wait in the stream's `Ring`
+  until a voice took it (`TakeVoiceError::ReaderTaken`, an empty slot). A voice's
   clones shared its reader by a `try_lock` no block waits on, because
   `Net::commit` rendered from a clone; since the sampler block render the
   reader is the voice's own and a clone has none ("Sampler block render and
@@ -2812,9 +2813,10 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   `Command::Seek` the butler relays (`Ring::request_seek`), including one
   made before it was taken. A placed voice follows its clock: seek the clock;
   a `Command::Seek` on its stream moves nothing.
-- **One live reader per stream**: `take_disk_voice` refuses a second
-  with `TakeVoiceError::ReaderTaken`, since two readers would pull the one
-  window two ways.
+- **One live reader per stream**: the reader is the reply of the stream's
+  open (`Opening::poll`, by value; `StreamReader` is not `Clone`), since two
+  readers would pull the one window two ways. (It was `take_disk_voice`
+  refusing a second with `TakeVoiceError::ReaderTaken` until doc 025 cut 3.)
 - Removed: `LoopStatus`, `check_loop_status`, `handle_loops`, the reset and
   seek-request epochs and the seeking flag in `RtState`, the seek and loop
   crossfaders (`butler::crossfader`), `reposition_click_free`, the reader's
@@ -8204,12 +8206,12 @@ by width alone.
     carries the file's `ChannelTopology` (`FileIn::topology()`, or the
     resident wave's when the format cannot seek). The voice places it: the
     same `Place`, built by `Place::for_topology` on the control side when the
-    voice is taken (`Status::take_disk_voice`, at the file's width;
-    `take_disk_voice_into` for another), applied in `LiveRead`'s read and in an
+    stream is opened (`DiskStreamer::open`, at the file's width;
+    `open_into` for another; the voice is `DiskVoice::from_reader`), applied in `LiveRead`'s read and in an
     offline fork's own read of the file (`OfflineRead`, handed the voice's
     `Place`). A refusal (an `Unknown` channel, an unordered narrowing) is
-    `TakeVoiceError::Place`, raised before the stream's one reader is taken, so
-    the stream can be taken again at another width. It is the voice, not the
+    `OpenError::Placement`, raised by the open before the stream exists, so
+    the file can be opened again at another width. It is the voice, not the
     butler, because the ring is also read at file width by the loop crossfade's
     lead-in, the preroll and the fork, and a permutation in the butler would be
     a second copy of the placement; the voice's is one `Place::frame` per

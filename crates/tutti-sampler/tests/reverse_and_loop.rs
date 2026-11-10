@@ -149,7 +149,6 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
                 gain: Amplitude::new(1.0),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
     (pool, clock)
@@ -624,7 +623,6 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
                 gain: Amplitude::new(1.0),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
 

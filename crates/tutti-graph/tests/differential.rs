@@ -1040,6 +1040,57 @@ proptest! {
     }
 }
 
+/// The generator reaches what the fan-in op is held to: across the seeds,
+/// plans with a sum on an input port, a sum on an output channel and a sum
+/// with a feedback addend, and a sum op in a plan exactly where a sink has
+/// several sources. (A chain past `MAX_PORTS` needs more nodes than a generated
+/// graph has; `tests/fan_in.rs` renders it against the reference and the
+/// parallel executor.)
+///
+/// Mutations: make the fan-in choice in `wire_node` never fire (`chance(0)`)
+/// -> no plan has a sum; drop the output half in `wire_outputs` -> no output
+/// sum; make `sum_chain` return the first source only -> a sum op is missing
+/// where a sink has several.
+#[test]
+fn the_fan_in_generator_covers_the_sum_op() {
+    let (mut ports, mut outputs, mut feedback) = (0, 0, 0);
+    for seed in 0..600u64 {
+        let desc = random_graph(seed);
+        let valid = desc.spec.validate().expect("valid");
+        let (plan, _) = tutti_graph::compile(
+            &valid,
+            &common::shapes_of(&desc.kinds),
+            &common::prepare(MAX_BLOCK),
+            None,
+        )
+        .expect("compiles");
+        let t = &desc.spec.topology;
+        ports += t.edges.values().filter(|es| es.len() > 1).count().min(1);
+        outputs += t.outputs.iter().filter(|s| s.len() > 1).count().min(1);
+        feedback += t
+            .edges
+            .values()
+            .filter(|es| es.len() > 1 && es.iter().any(|e| matches!(e, Edge::Feedback(_))))
+            .count()
+            .min(1);
+        let has_sum = plan
+            .ops()
+            .iter()
+            .any(|o| matches!(o, tutti_graph::Op::Sum { .. }));
+        assert_eq!(
+            has_sum,
+            t.edges.values().any(|es| es.len() > 1) || t.outputs.iter().any(|s| s.len() > 1),
+            "seed {seed}: a sum op exactly where a sink has several sources"
+        );
+    }
+    assert!(ports > 60, "only {ports} graphs sum at a port");
+    assert!(outputs > 30, "only {outputs} graphs sum at an output");
+    assert!(
+        feedback > 10,
+        "only {feedback} graphs sum a feedback addend"
+    );
+}
+
 /// `coarsened_plans_are_bit_identical` exercises what it claims: over 512
 /// seeds, declared costs pack plans further than the same graphs
 /// undeclared, and many of those packed plans still spread on a pool of

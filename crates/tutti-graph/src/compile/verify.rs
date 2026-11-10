@@ -214,6 +214,7 @@ fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
 
 /// Checks `plan` (see the [module docs](self) for the rules).
 pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
+    verify_sums(plan)?;
     let n = plan.ops.len();
     let rows: Vec<Vec<u32>> = (0..n).map(|i| plan.op_succ.row(i).to_vec()).collect();
     for (a, row) in rows.iter().enumerate() {
@@ -406,7 +407,6 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
     }
 
     verify_params(plan)?;
-    verify_sums(plan)?;
     verify_in_place(plan)?;
     verify_tasks(plan)?;
     verify_tables(plan)?;
@@ -1217,6 +1217,88 @@ mod tests {
         }
         let err = verify(&bad).expect_err("W may overwrite A while C reads it");
         assert!(err.0.contains("concurrently"), "{err}");
+    }
+
+    /// Two generators summed at one output channel: the plan holds one
+    /// `Op::Sum` of two addends, the first aliased.
+    fn summed_pair() -> Plan {
+        let mut t = Topology::default();
+        let shapes: Shapes = [NodeKey(1), NodeKey(2)]
+            .into_iter()
+            .map(|k| {
+                t.nodes.insert(
+                    k,
+                    NodeSpec::new("gen", ChannelLayout::EMPTY, ChannelLayout::MONO),
+                );
+                (k, Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO))
+            })
+            .collect();
+        t.outputs = vec![
+            [NodeKey(1), NodeKey(2)]
+                .into_iter()
+                .map(|node| Source::Node(OutPort { node, port: 0 }))
+                .collect(),
+        ];
+        let valid = GraphSpec::new(t).validate().expect("valid");
+        compile(
+            &valid,
+            &shapes,
+            &crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64)),
+            None,
+        )
+        .expect("compiles")
+        .0
+    }
+
+    /// A sum op adds two to `MAX_PORTS` addends, and writes only its first
+    /// addend's slot among the slots it reads.
+    ///
+    /// Mutations (each run, each failed this test): delete `verify_sums` ->
+    /// the one-addend and 65-addend cases pass; make the `Op::Sum` arm of
+    /// rule 4's `declared` accept any write (`true`) -> the aliased-second-
+    /// addend case passes.
+    #[test]
+    fn the_verifier_rejects_a_malformed_sum() {
+        let good = summed_pair();
+        verify(&good).expect("sound");
+        let i = good
+            .ops
+            .iter()
+            .position(|o| matches!(o, Op::Sum { .. }))
+            .expect("a sum");
+        let Op::Sum { srcs, dst } = good.ops[i] else {
+            unreachable!()
+        };
+        assert_eq!(srcs.len, 2);
+        assert_eq!(dst, good.audio_list[srcs.start as usize], "in place");
+
+        // One addend is an alias, never an op.
+        let mut bad = good.clone();
+        bad.ops[i] = Op::Sum {
+            srcs: crate::plan::Span {
+                start: srcs.start,
+                len: 1,
+            },
+            dst,
+        };
+        assert!(verify(&bad).unwrap_err().0.contains("addends"));
+
+        // 65 addends: more than the executor's table holds.
+        let mut bad = good.clone();
+        let start = bad.audio_list.len() as u32;
+        let first = good.audio_list[srcs.start as usize];
+        bad.audio_list.extend(std::iter::repeat_n(first, 65));
+        bad.ops[i] = Op::Sum {
+            srcs: crate::plan::Span { start, len: 65 },
+            dst,
+        };
+        assert!(verify(&bad).unwrap_err().0.contains("addends"));
+
+        // A write that aliases the second read, not the first.
+        let mut bad = good.clone();
+        let second = good.audio_list[srcs.start as usize + 1];
+        bad.ops[i] = Op::Sum { srcs, dst: second };
+        assert!(verify(&bad).unwrap_err().0.contains("without declaring"));
     }
 
     /// A read the DAG does not order after its write is reported.

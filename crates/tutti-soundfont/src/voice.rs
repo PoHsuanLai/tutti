@@ -4,7 +4,9 @@
 
 use std::f32::consts;
 
+use tutti_dsp::{Biquad, DirectForm1, SOLVE_CEILING, SvfControls, SvfModel, SvfType};
 use tutti_sf2::Side;
+use tutti_types::{Db, Hz, Q, SampleRate};
 
 /// The longest an exclusive class's quick release takes, in seconds, to fall
 /// 100 dB as every release time does (section 8.1.2, generator 38): the floor
@@ -13,7 +15,6 @@ use tutti_sf2::Side;
 /// the shortest release a voice can have.
 pub(crate) const QUICK_RELEASE: f32 = 0.01;
 
-use crate::bi_quad_filter::BiQuadFilter;
 use crate::channel::Channel;
 use crate::lfo::Lfo;
 use crate::modulation_envelope::ModulationEnvelope;
@@ -23,6 +24,31 @@ use crate::region_pair::RegionPair;
 use crate::render::Render;
 use crate::soundfont_math::SoundFontMath;
 use crate::volume_envelope::VolumeEnvelope;
+
+/// The voice's low-pass for a cutoff in hertz and a resonance as a linear peak
+/// height above the DC gain (SF2 2.04 section 8.1.3, generators 8 and 9: the
+/// cutoff is the filter's corner and the Q is the height of the resonant peak
+/// in decibels, here already converted). `None` from [`SOLVE_CEILING`] of the
+/// rate up: the filter would do nothing there.
+///
+/// The `Q` handed to the design is not the peak height: a 2-pole low-pass of
+/// quality `q` peaks a little above `q`, so the figure is lowered by
+/// rustysynth's fit, whose peak is within 3% of the one asked for. A resonance
+/// of 1 (0 dB) lands on Butterworth.
+fn low_pass(cutoff: f32, resonance: f32, rate: SampleRate) -> Option<Biquad> {
+    const PEAK_OFFSET: f32 = 1.0 - core::f32::consts::FRAC_1_SQRT_2;
+    if f64::from(cutoff) >= SOLVE_CEILING * rate.get() {
+        return None;
+    }
+    let q = resonance - PEAK_OFFSET / (1.0 + 6.0 * (resonance - 1.0));
+    let controls = SvfControls {
+        ty: SvfType::LowPass,
+        freq: Hz(cutoff),
+        q: Q(q),
+        gain: Db(0.0),
+    };
+    Some(SvfModel::new(controls, rate).biquad())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum VoiceState {
@@ -40,7 +66,10 @@ pub(crate) struct Voice {
     mod_lfo: Lfo,
 
     oscillator: Oscillator,
-    filter: BiQuadFilter,
+    rate: SampleRate,
+    /// The low-pass, or `None` while the cutoff is too near Nyquist to filter.
+    low_pass: Option<Biquad>,
+    history: DirectForm1,
 
     block: Vec<f32>,
 
@@ -99,7 +128,9 @@ impl Voice {
             vib_lfo: Lfo::new(settings),
             mod_lfo: Lfo::new(settings),
             oscillator: Oscillator::new(settings),
-            filter: BiQuadFilter::new(settings),
+            rate: SampleRate(f64::from(settings.hz())),
+            low_pass: None,
+            history: DirectForm1::default(),
             block: vec![0_f32; settings.block_len()],
             previous_mix_gain_left: 0_f32,
             previous_mix_gain_right: 0_f32,
@@ -191,8 +222,8 @@ impl Voice {
         RegionEx::start_vibrato(&mut self.vib_lfo, region, key, velocity);
         RegionEx::start_modulation(&mut self.mod_lfo, region, key, velocity);
         RegionEx::start_oscillator(&mut self.oscillator, region);
-        self.filter.clear_buffer();
-        self.filter.set_low_pass_filter(self.cutoff, self.resonance);
+        self.history.reset();
+        self.low_pass = low_pass(self.cutoff, self.resonance, self.rate);
 
         self.smoothed_cutoff = self.cutoff;
 
@@ -264,10 +295,12 @@ impl Voice {
             let upper_limit = 2_f32 * self.smoothed_cutoff;
             self.smoothed_cutoff = SoundFontMath::clamp(new_cutoff, lower_limit, upper_limit);
 
-            self.filter
-                .set_low_pass_filter(self.smoothed_cutoff, self.resonance);
+            self.low_pass = low_pass(self.smoothed_cutoff, self.resonance, self.rate);
         }
-        self.filter.process(&mut self.block[..]);
+        match &self.low_pass {
+            Some(section) => self.history.process(section, &mut self.block[..]),
+            None => self.history.hold(&self.block[..]),
+        }
 
         self.previous_mix_gain_left = self.current_mix_gain_left;
         self.previous_mix_gain_right = self.current_mix_gain_right;
@@ -321,5 +354,119 @@ impl Voice {
 
     pub(crate) fn block(&self) -> &[f32] {
         &self.block
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: SampleRate = SampleRate(44_100.0);
+    const CUTOFF: f32 = 500.0;
+
+    /// The steady-state gain of the voice's low-pass at `hz`, measured by
+    /// running a sine through the section the voice runs.
+    fn gain(resonance: f32, hz: f32) -> f64 {
+        let section = low_pass(CUTOFF, resonance, RATE).expect("below Nyquist");
+        let mut state = DirectForm1::default();
+        let w = core::f64::consts::TAU * f64::from(hz) / RATE.get();
+        let mut peak = 0.0f64;
+        for chunk in 0..1_000 {
+            let mut block: Vec<f32> = (0..8)
+                .map(|n| (w * f64::from(chunk * 8 + n)).sin() as f32)
+                .collect();
+            state.process(&section, &mut block);
+            if chunk >= 800 {
+                peak = block.iter().fold(peak, |p, &y| p.max(f64::from(y).abs()));
+            }
+        }
+        peak
+    }
+
+    /// The RBJ low-pass closed form, from the analog prototype
+    /// `1 / (s^2 + s / q + 1)` under the bilinear map: `|H|` at `hz` for a
+    /// quality `q`, independent of the code under test.
+    fn closed_form(q: f64, hz: f64) -> f64 {
+        let s = (core::f64::consts::PI * hz / RATE.get()).tan()
+            / (core::f64::consts::PI * f64::from(CUTOFF) / RATE.get()).tan();
+        1.0 / ((1.0 - s * s).powi(2) + (s / q).powi(2)).sqrt()
+    }
+
+    /// The `q` the voice asks for at a resonance, SF2 2.04 section 8.1.3.
+    fn q_of(resonance: f64) -> f64 {
+        resonance - (1.0 - 0.5f64.sqrt()) / (1.0 + 6.0 * (resonance - 1.0))
+    }
+
+    /// SF2 2.04 section 8.1.3, initialFilterFc and initialFilterQ: the filter is
+    /// a 2-pole low-pass whose gain at DC is 0 dB whatever the Q.
+    ///
+    /// Mutations (run, failed): `SvfType::HighPass` or `SvfType::BandPass` in
+    /// `low_pass` (DC gain 0).
+    #[test]
+    fn the_low_pass_has_unity_gain_at_dc_whatever_the_resonance() {
+        for db in [0.0f32, 6.0, 12.0, 24.0] {
+            let g = gain(SoundFontMath::decibels_to_linear(db), 10.0);
+            assert!((g - 1.0).abs() < 0.01, "{db} dB: {g}");
+        }
+    }
+
+    /// At the cutoff the 2-pole response is `q` (RBJ: `|H(w0)| = Q`), and the
+    /// resonant peak is the spec's initialFilterQ above DC, within the 3% the
+    /// fit promises.
+    ///
+    /// Mutations (run, failed): the cutoff doubled in `low_pass` (the gain at
+    /// `CUTOFF` is no longer `q`); `q` taken as the resonance with no peak
+    /// offset (the gain at the cutoff and the peak are both off the fit).
+    #[test]
+    fn the_gain_at_the_cutoff_is_q_and_the_peak_is_the_spec_peak_height() {
+        for db in [0.0f32, 6.0, 12.0, 24.0] {
+            let resonance = SoundFontMath::decibels_to_linear(db);
+            let at_cutoff = gain(resonance, CUTOFF);
+            let q = q_of(f64::from(resonance));
+            assert!(
+                (at_cutoff / q - 1.0).abs() < 0.02,
+                "{db} dB: {at_cutoff} vs {q}"
+            );
+            let peak = (300..700)
+                .step_by(5)
+                .map(|hz| gain(resonance, hz as f32))
+                .fold(0.0f64, f64::max);
+            let want = f64::from(resonance);
+            let peak_db = 20.0 * peak.log10();
+            // 0 dB asks for no peak: the Butterworth maximum is 1.
+            assert!(
+                (peak / want - 1.0).abs() < 0.03 || (db == 0.0 && (peak_db < 0.1)),
+                "{db} dB: peak {peak_db:.2} dB"
+            );
+        }
+    }
+
+    /// Above the cutoff the response follows the closed form and falls at
+    /// 12 dB an octave (a 2-pole low-pass).
+    ///
+    /// Mutations (run, failed): `q` scaled by 0.1 (every figure far off the
+    /// closed form); the cutoff doubled (6 dB off); a high-pass or a band-pass
+    /// in place of the low-pass.
+    #[test]
+    fn the_stopband_follows_the_closed_form_at_twelve_db_per_octave() {
+        let resonance = SoundFontMath::decibels_to_linear(6.0);
+        let q = q_of(f64::from(resonance));
+        for hz in [2_000.0f32, 4_000.0, 8_000.0] {
+            let got = gain(resonance, hz);
+            let want = closed_form(q, f64::from(hz));
+            assert!((got / want - 1.0).abs() < 0.02, "{hz} Hz: {got} vs {want}");
+        }
+        let octave = 20.0 * (gain(resonance, 4_000.0) / gain(resonance, 2_000.0)).log10();
+        assert!((octave + 12.0).abs() < 1.0, "{octave} dB per octave");
+    }
+
+    /// A cutoff at the solve ceiling or above is a bypass.
+    ///
+    /// Mutation (run, failed): the ceiling raised from `SOLVE_CEILING` to 0.6 of
+    /// the rate (a cutoff at half the rate is filtered).
+    #[test]
+    fn a_cutoff_near_nyquist_is_no_filter() {
+        assert!(low_pass(0.4 * RATE.get() as f32, 1.0, RATE).is_some());
+        assert!(low_pass(0.5 * RATE.get() as f32, 1.0, RATE).is_none());
     }
 }

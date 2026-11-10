@@ -11,7 +11,6 @@
 //! - [`enum@Error`] and [`Result`]: this crate's failure type.
 
 mod array_math;
-mod bi_quad_filter;
 mod channel;
 mod envelope_stage;
 mod error;

@@ -2189,11 +2189,19 @@ impl PluginInstance {
 
     /// The real `effGetChunk` answer for the current preset, with a failed save
     /// distinguishable from an empty one — what the [`ChunkError`] split exists for.
+    ///
+    /// # Errors
+    ///
+    /// [`ChunkError`] when the plugin attempted the save and failed.
     pub fn try_get_preset_data(&self, _main: &MainThread) -> Result<Vec<u8>, ChunkError> {
         self.core.get_chunk(1 /*preset*/)
     }
 
     /// Bank counterpart of [`try_get_preset_data`](Self::try_get_preset_data).
+    ///
+    /// # Errors
+    ///
+    /// As [`try_get_preset_data`](Self::try_get_preset_data).
     pub fn try_get_bank_data(&self, _main: &MainThread) -> Result<Vec<u8>, ChunkError> {
         self.core.get_chunk(0 /*bank*/)
     }
@@ -2210,6 +2218,10 @@ impl PluginInstance {
     /// crate; until then this is the named exception, and
     /// [`try_get_preset_data`](Self::try_get_preset_data) is the entry for a caller on the
     /// main thread.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_get_preset_data`](Self::try_get_preset_data).
     pub fn chunk_off_main_thread(&self) -> Result<Vec<u8>, ChunkError> {
         self.core.get_chunk(1 /*preset*/)
     }

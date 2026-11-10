@@ -116,6 +116,10 @@ impl Vst2Loaded {
     /// health snapshot is a job on the task pool) behind the backend's lock. Closing it is a
     /// main-thread route for the snapshot, a change to `tutti-session` and `bevy-tutti`; see
     /// `PluginInstance::chunk_off_main_thread`.
+    ///
+    /// # Errors
+    ///
+    /// As [`read_state`](Self::read_state).
     pub fn read_state_off_main_thread(&self) -> Result<Vec<u8>> {
         self.read_state_with(|| self.instance.chunk_off_main_thread())
     }

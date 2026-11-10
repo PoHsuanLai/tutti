@@ -318,9 +318,13 @@ Today CLAP uses `max(0)` plus `clamp_times`, VST3 uses
   with its `Mutex`.
 - **Host policy files with no user in the crate:**
   - **Decided:** `render_mode.rs` (`needs_announcement`) and `liveness.rs`
-    (the debounce) move to `tutti-session`, their only consumer (P5). This
-    **amends 021 §6.1**, which placed them in `tutti-plugin-host`, a crate
-    that would not use them.
+    (the debounce) move to `tutti-session` (P5). They are the session's
+    policy over a hosted plugin, which is when to announce a render-mode
+    change and when a silent plugin counts as hung. Neither is the host's
+    mechanism: no node or format calls them. This **amends 021 §6.1**, which
+    placed them in `tutti-plugin-host`. `Liveness::observe` keeps taking
+    `now` as an argument. The session's phases receive the clock, and no
+    `Instant::now()` goes inside.
   - `param_values.rs` stays until the `Control` change.
 - **Three liveness enums** (`Verdict`, `PluginLiveness`, `PluginStatus`) and
   the bridge's two `AtomicBool`s become one state (task 0b-6). They land with

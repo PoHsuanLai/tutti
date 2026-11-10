@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A socket path no other bridge in this process will pick.
+/// A socket path no other bridge will pick, and no other user can guess.
 ///
 /// Every bridge needs its own: the path is a rendezvous point for exactly one
 /// host/server pair, and `bind` unlinks whatever is already there. Two bridges
@@ -15,15 +15,38 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// under it. The symptom is a plugin that dies when an unrelated plugin is
 /// unloaded — far from the cause.
 ///
-/// The pid keeps it unique across concurrent hosts; the counter keeps it unique
-/// within one.
+/// The pid and the counter keep it unique; the random part keeps it secret.
+/// The directory is the shared temporary one, so a name another local user
+/// can predict is a name they can claim first: a socket of theirs there is a
+/// plugin wire they speak.
+///
+/// # Panics
+///
+/// If the operating system has no random source to read (`getrandom` fails).
+#[must_use]
 pub fn unique_socket_path() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
-        "tutti-bridge-{}-{}.sock",
+        "tutti-bridge-{}-{}-{}.sock",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed),
+        unguessable(),
     ))
+}
+
+/// Sixteen hex digits from the operating system's random source, for a name in
+/// a shared directory that must not be predictable (the control socket here,
+/// the audio slab in `subprocess::launch`). Sixty-four bits: enough that
+/// guessing is not an attack, short enough that a macOS socket path (104 bytes,
+/// under a long per-user temporary directory) still fits.
+///
+/// # Panics
+///
+/// If the operating system has no random source to read.
+pub(crate) fn unguessable() -> String {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("the operating system's random source is readable");
+    format!("{:016x}", u64::from_ne_bytes(bytes))
 }
 
 /// Low-level settings for one plugin-server connection.
@@ -92,6 +115,26 @@ mod tests {
             "two default configs share a socket path: the second bridge to bind \
              will unlink the first's live socket"
         );
+    }
+
+    /// The socket's name carries sixty-four random bits, so another local user
+    /// cannot predict it and bind it first (doc 027 D3). The pid and the
+    /// counter alone keep names unique, which is why
+    /// `each_default_config_gets_its_own_socket_path` cannot see this.
+    ///
+    /// Mutation (run): drop `unguessable()` from the name → the last field is
+    /// the counter, not sixteen hex digits → fails.
+    #[test]
+    fn the_socket_name_has_an_unguessable_part() {
+        let path = unique_socket_path();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("a UTF-8 name");
+        let random = stem.rsplit('-').next().expect("a last field");
+        assert_eq!(random.len(), 16, "{stem}");
+        assert!(random.chars().all(|c| c.is_ascii_hexdigit()), "{stem}");
+        assert_ne!(unguessable(), unguessable(), "two draws should differ");
     }
 
     /// A partial-update construction is the exact shape `to_bridge_config` uses,

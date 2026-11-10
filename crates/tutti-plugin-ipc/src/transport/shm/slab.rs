@@ -43,21 +43,39 @@
 //!
 //! # Lifecycle
 //!
-//! One side [`create`s](AudioSlab::create) the slab (the `Owner`, which
-//! unlinks the backing file on drop) and stamps its header; the other
+//! The host [`create`s](AudioSlab::create) the slab (the `Owner`, which
+//! unlinks the backing file on drop) and stamps its header; the server
 //! [`open`s](AudioSlab::open) it (a `View`) using a matching [`SlabLayout`]
-//! and validates that header before trusting a byte. [`Clone`] reopens the same
-//! backing file as a fresh view so a cloned audio node points at the same pages.
+//! and validates that header before trusting a byte.
+//!
+//! # One writer per direction
+//!
+//! Each call hands back a [`SlabWriter`], the only way to write: `create`'s
+//! writes the inputs (the host's direction), `open`'s the outputs (the
+//! server's). It is not `Clone` and writes through `&mut self`, so within a
+//! process a direction has one writer, and the [`AudioSlab`] everyone else
+//! shares (`writer.slab()`, an `Arc`) can only read. Across processes the two
+//! directions are disjoint regions, so the two writers never meet.
+//!
+//! # A read is evidence
+//!
+//! A `read_*_into` copies a slot only between two loads of its sequence that
+//! both name the block asked for. If either does not, the peer had not
+//! published that block or was rewriting the slot during the copy, and the
+//! read fills the destination with silence and returns 0. So a non-zero count
+//! means "these are block `seq`'s samples", and torn audio cannot leak out.
 //!
 
 use crate::error::{BridgeError, Result};
 use crate::protocol::SlabLayout;
+use bytemuck::Pod;
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
+use std::sync::Arc;
 use tutti_plugin_types::Sample;
 
 use super::header::{Direction, RING_SLOTS, SLAB_HEADER_BYTES, slot_for};
-use super::mmap::{MmapCell, as_bytes, as_bytes_mut};
+use super::mmap::MmapCell;
 
 /// Who is responsible for the backing file's lifetime.
 #[derive(Debug)]
@@ -84,22 +102,25 @@ pub struct AudioSlab {
 impl AudioSlab {
     // ---- Construction: one side creates, the other opens ----
 
-    /// Creates the slab: allocates the named backing file, sizes it to hold
-    /// the header and both rings, maps it, and stamps the header.
+    /// Creates the slab, the host's end: allocates the named backing file,
+    /// sizes it to hold the header and both rings, maps it, and stamps the
+    /// header. Returns the writer of the inputs.
     ///
     /// This side is the owner and unlinks the file on drop. Exactly one side
     /// calls this; the other calls [`open`](Self::open) with a matching
-    /// `layout`.
+    /// `layout`. The file is created exclusively: a name that already exists
+    /// (a symlink included) is an error, never a file to truncate, since
+    /// another process could hold that file mapped, or have planted it.
     ///
     /// # Errors
     ///
     /// Returns an error if `layout` names no bus in a direction or a ring depth
-    /// other than [`RING_SLOTS`], or if the backing file cannot be created,
-    /// sized or mapped.
-    pub fn create(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
+    /// other than [`RING_SLOTS`], or if the backing file exists or cannot be
+    /// created, sized or mapped.
+    pub fn create(name: impl Into<String>, layout: SlabLayout) -> Result<SlabWriter> {
         check_layout(&layout)?;
         let name = name.into();
-        let mmap = open_mmap(&name, byte_size(&layout), Open::Create)?;
+        let mmap = open_mmap(&name, byte_size(&layout)?, Open::Create)?;
         let slab = Self {
             mmap: MmapCell::new(mmap),
             name,
@@ -110,14 +131,16 @@ impl AudioSlab {
         // after this returns, and `initialize` releases the magic last so an
         // opener that sees the magic sees a fully written header.
         slab.mmap.header().initialize();
-        Ok(slab)
+        Ok(SlabWriter::new(slab, Direction::Input))
     }
 
-    /// Opens an existing slab as a view, validating its header.
+    /// Opens an existing slab as a view, the server's end, validating its
+    /// header. Returns the writer of the outputs.
     ///
     /// The `layout` must match the one the owner created it with; both sides
     /// agree on the shape over the control channel before mapping. Detaches on
-    /// drop without deleting the backing file.
+    /// drop without deleting the backing file. On unix a symlink at the name is
+    /// refused (`O_NOFOLLOW`).
     ///
     /// # Errors
     ///
@@ -125,10 +148,10 @@ impl AudioSlab {
     /// [`create`](Self::create)), the file cannot be opened or mapped, or it is
     /// too short, is not a tutti slab, or was written with a different header
     /// version.
-    pub fn open(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
+    pub fn open(name: impl Into<String>, layout: SlabLayout) -> Result<SlabWriter> {
         check_layout(&layout)?;
         let name = name.into();
-        let expected = byte_size(&layout);
+        let expected = byte_size(&layout)?;
         let mmap = open_mmap(&name, expected, Open::Existing)?;
         // Length first: `header()` asserts on a short mapping, and an assert is
         // the wrong failure mode for "the peer created a slab of another shape".
@@ -145,7 +168,7 @@ impl AudioSlab {
             ownership: Ownership::View,
         };
         slab.mmap.header().validate()?;
-        Ok(slab)
+        Ok(SlabWriter::new(slab, Direction::Output))
     }
 
     // ---- Accessors ----
@@ -168,50 +191,23 @@ impl AudioSlab {
         &self.layout
     }
 
-    // ---- Per-block transfer: the hot path ----
+    // ---- Per-block reads: the hot path ----
     //
-    // Each is a bounds check plus a `memcpy` into/out of the mapped region — no
-    // syscall, no allocation, safe on the audio thread. The `write_*` /
-    // `publish_*` split is not a convenience: publishing must happen exactly
-    // once, after the last channel, or a reader can observe a slot marked valid
-    // while later channels are still being copied.
-
-    /// Copies `data` into one channel of the input ring's slot for block `seq`.
-    ///
-    /// Host side. Call once per channel, then
-    /// [`publish_input`](Self::publish_input) once. Allocation-free.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `channel` is out of range or `data` is longer than
-    /// the channel's capacity.
-    pub fn write_input<T: Sample>(&self, seq: u64, channel: usize, data: &[T]) -> Result<()> {
-        self.write_region(Direction::Input, seq, channel, data)
-    }
-
-    /// Copies `data` into one channel of the output ring's slot for block `seq`.
-    ///
-    /// Server side. Call once per channel, then
-    /// [`publish_output`](Self::publish_output) once. Allocation-free.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `channel` is out of range or `data` is longer than
-    /// the channel's capacity.
-    pub fn write_output<T: Sample>(&self, seq: u64, channel: usize, data: &[T]) -> Result<()> {
-        self.write_region(Direction::Output, seq, channel, data)
-    }
+    // Each is a bounds check plus a `memcpy` out of the mapped region, between
+    // two sequence loads: no syscall, no allocation, safe on the audio thread.
+    // Writing is `SlabWriter`'s.
 
     /// Copies one channel of the input ring's slot for block `seq` into
     /// `output`.
     ///
-    /// Server side. Returns how many samples were copied — **not** whether they
-    /// are this block's. Check [`input_sequence`](Self::input_sequence) first.
+    /// Server side. Returns how many samples were copied, which are block
+    /// `seq`'s; 0, with `output` silenced, when the slot does not hold that
+    /// block for the whole copy (module docs, "A read is evidence").
     ///
     /// # Errors
     ///
     /// Returns an error if `channel` is out of range.
-    pub fn read_input_into<T: Sample>(
+    pub fn read_input_into<T: Sample + Pod>(
         &self,
         seq: u64,
         channel: usize,
@@ -223,39 +219,20 @@ impl AudioSlab {
     /// Copies one channel of the output ring's slot for block `seq` into
     /// `output`.
     ///
-    /// Host side. Returns how many samples were copied — **not** whether they
-    /// are this block's. Check [`output_sequence`](Self::output_sequence) first.
+    /// Host side. Returns how many samples were copied, which are block
+    /// `seq`'s; 0, with `output` silenced, when the slot does not hold that
+    /// block for the whole copy (module docs, "A read is evidence").
     ///
     /// # Errors
     ///
     /// Returns an error if `channel` is out of range.
-    pub fn read_output_into<T: Sample>(
+    pub fn read_output_into<T: Sample + Pod>(
         &self,
         seq: u64,
         channel: usize,
         output: &mut [T],
     ) -> Result<usize> {
         self.read_region(Direction::Output, seq, channel, output)
-    }
-
-    /// Announces that block `seq`'s inputs are complete.
-    ///
-    /// Host side, once per block, after the last
-    /// [`write_input`](Self::write_input).
-    #[inline]
-    pub fn publish_input(&self, seq: u64) {
-        self.mmap
-            .header()
-            .publish(Direction::Input, slot_for(seq), seq);
-    }
-
-    /// Announce that block `seq`'s outputs are complete. Server side, once per
-    /// block, after the last [`write_output`](Self::write_output).
-    #[inline]
-    pub fn publish_output(&self, seq: u64) {
-        self.mmap
-            .header()
-            .publish(Direction::Output, slot_for(seq), seq);
     }
 
     /// Which block currently occupies the input slot that `seq` maps to.
@@ -291,7 +268,9 @@ impl AudioSlab {
 
     // ---- Internal helpers ----
 
-    fn write_region<T: Sample>(
+    /// Only [`SlabWriter`] calls this, through `&mut self`: that is what makes
+    /// the region's writer unique in this process.
+    fn write_region<T: Sample + Pod>(
         &self,
         direction: Direction,
         seq: u64,
@@ -303,24 +282,53 @@ impl AudioSlab {
         if data.len() > self.layout.samples_per_channel {
             return Err(oob("data length exceeds buffer capacity"));
         }
-        let bytes = as_bytes(data);
-        self.mmap.as_mut_slice()[offset..offset + bytes.len()].copy_from_slice(bytes);
+        self.mmap.write(offset, bytemuck::cast_slice(data));
         Ok(())
     }
 
-    fn read_region<T: Sample>(
+    fn read_region<T: Sample + Pod>(
         &self,
         direction: Direction,
         seq: u64,
         channel: usize,
         output: &mut [T],
     ) -> Result<usize> {
+        self.read_region_then(direction, seq, channel, output, || {})
+    }
+
+    /// [`read_region`](Self::read_region), running `between` after the copy
+    /// and before the recheck: the window a peer's rewrite of the slot falls
+    /// in. Production passes nothing; a test republishes there, which is how
+    /// the recheck is pinned without a race.
+    fn read_region_then<T: Sample + Pod>(
+        &self,
+        direction: Direction,
+        seq: u64,
+        channel: usize,
+        output: &mut [T],
+        between: impl FnOnce(),
+    ) -> Result<usize> {
         self.check_width::<T>()?;
         let offset = self.offset_of(direction, seq, channel)?;
         let copy_samples = self.layout.samples_per_channel.min(output.len());
-        let copy_bytes = copy_samples * std::mem::size_of::<T>();
-        let src = &self.mmap.as_slice()[offset..offset + copy_bytes];
-        as_bytes_mut(&mut output[..copy_samples]).copy_from_slice(src);
+        let slot = slot_for(seq);
+        let header = self.mmap.header();
+        // The recheck is what makes the count evidence: with two slots, the
+        // peer reuses this one two blocks later, and a reader preempted
+        // between the first load and the end of the copy would otherwise
+        // return half of one block and half of the next.
+        let held = header.sequence(direction, slot) == seq;
+        if held {
+            self.mmap.read(
+                offset,
+                bytemuck::cast_slice_mut(&mut output[..copy_samples]),
+            );
+        }
+        between();
+        if !held || header.sequence(direction, slot) != seq {
+            output.fill(T::default());
+            return Ok(0);
+        }
         Ok(copy_samples)
     }
 
@@ -340,6 +348,10 @@ impl AudioSlab {
     /// Slot-major within each region, so a whole block's write stays
     /// sequential — one slot's channels are contiguous rather than strided
     /// across the ring.
+    ///
+    /// Cannot overflow: the layout's whole size was computed with checked
+    /// arithmetic when the slab was mapped (`byte_size`), and this offset is
+    /// below it.
     fn offset_of(&self, direction: Direction, seq: u64, channel: usize) -> Result<usize> {
         let channels = match direction {
             Direction::Input => self.layout.input_channels(),
@@ -357,9 +369,93 @@ impl AudioSlab {
     }
 }
 
-/// Total mapping size for `layout`, header included.
-fn byte_size(layout: &SlabLayout) -> usize {
-    layout.byte_size_with_header(SLAB_HEADER_BYTES)
+/// The one writer of a slab's direction in this process: the inputs for the
+/// host ([`AudioSlab::create`]), the outputs for the server
+/// ([`AudioSlab::open`]).
+///
+/// Not `Clone`, and it writes through `&mut self`, so two threads of this
+/// process cannot write one region (module docs, "One writer per direction").
+/// It reads through [`Deref`](std::ops::Deref) to the shared [`AudioSlab`],
+/// which is also what [`slab`](Self::slab) hands to readers elsewhere.
+///
+/// A second writer cannot be made by copying this one:
+///
+/// ```compile_fail
+/// fn second(w: &tutti_plugin_ipc::SlabWriter) -> tutti_plugin_ipc::SlabWriter {
+///     w.clone()
+/// }
+/// ```
+///
+/// and the shared slab cannot write at all:
+///
+/// ```compile_fail
+/// fn write(slab: &tutti_plugin_ipc::AudioSlab) {
+///     let _ = slab.write(1, 0, &[0.0f32]);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct SlabWriter {
+    slab: Arc<AudioSlab>,
+    direction: Direction,
+}
+
+impl SlabWriter {
+    fn new(slab: AudioSlab, direction: Direction) -> Self {
+        Self {
+            slab: Arc::new(slab),
+            direction,
+        }
+    }
+
+    /// The shared, read-only slab, for the readers that do not write.
+    #[must_use]
+    pub fn slab(&self) -> &Arc<AudioSlab> {
+        &self.slab
+    }
+
+    /// Copies `data` into one channel of this direction's slot for block `seq`.
+    ///
+    /// Call once per channel, then [`publish`](Self::publish) once.
+    /// Allocation-free.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `channel` is out of range, `data` is longer than the
+    /// channel's capacity, or `T` is not the slab's sample width.
+    pub fn write<T: Sample + Pod>(&mut self, seq: u64, channel: usize, data: &[T]) -> Result<()> {
+        self.slab.write_region(self.direction, seq, channel, data)
+    }
+
+    /// Announces that block `seq` is complete in this direction.
+    ///
+    /// Once per block, after the last [`write`](Self::write). Publishing must
+    /// happen exactly once, after the last channel, or a reader can observe a
+    /// slot marked valid while later channels are still being copied.
+    #[inline]
+    pub fn publish(&mut self, seq: u64) {
+        self.slab
+            .mmap
+            .header()
+            .publish(self.direction, slot_for(seq), seq);
+    }
+}
+
+impl std::ops::Deref for SlabWriter {
+    type Target = AudioSlab;
+
+    fn deref(&self) -> &AudioSlab {
+        &self.slab
+    }
+}
+
+/// Total mapping size for `layout`, header included, or an error when it
+/// does not fit in `usize`. The layout comes over the wire on the server's
+/// side, so a peer can name any shape; every later offset is below this
+/// figure, which is why only it is checked.
+fn byte_size(layout: &SlabLayout) -> Result<usize> {
+    layout
+        .checked_byte_size_with_header(SLAB_HEADER_BYTES)
+        .ok_or_else(|| oob("slab layout's size overflows usize"))
 }
 
 /// Reject a layout this build cannot address before it becomes a mapping.
@@ -382,17 +478,6 @@ fn check_layout(layout: &SlabLayout) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-impl Clone for AudioSlab {
-    /// Reopen the same backing file as a fresh `View`, so a cloned audio
-    /// node still points at the same physical pages. The clone never owns
-    /// the file, regardless of this side's ownership.
-    ///
-    fn clone(&self) -> Self {
-        Self::open(self.name.clone(), self.layout.clone())
-            .expect("failed to reopen shared-memory slab for clone")
-    }
 }
 
 impl Drop for AudioSlab {
@@ -424,14 +509,24 @@ fn open_mmap(name: &str, size: usize, mode: Open) -> Result<MmapMut> {
     opts.read(true).write(true);
     match mode {
         Open::Create => {
-            opts.create(true).truncate(true);
+            // Exclusive (`O_CREAT | O_EXCL`): an existing name, a symlink
+            // included, is refused. Truncating one would shrink a file that
+            // another process may have mapped, which faults it (SIGBUS), and a
+            // planted file or link would put our audio where its owner chose.
+            opts.create_new(true);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
                 opts.mode(0o600);
             }
         }
-        Open::Existing => {}
+        Open::Existing => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.custom_flags(libc::O_NOFOLLOW);
+            }
+        }
     }
     let file = opts.open(&path).map_err(|e| {
         BridgeError::SharedMemoryError(format!("failed to open shared memory file: {e}"))
@@ -440,6 +535,12 @@ fn open_mmap(name: &str, size: usize, mode: Open) -> Result<MmapMut> {
         file.set_len(size as u64)
             .map_err(|e| BridgeError::SharedMemoryError(format!("failed to set file size: {e}")))?;
     }
+    // SAFETY: `memmap2`'s contract is that the file is not truncated or
+    // resized by anyone while mapped. Ours is created exclusively at 0600 and
+    // only sized here, before the map; the peer opens it without `truncate`
+    // and never sizes it. A process with write access to the file could still
+    // shrink it; that is a fault of a trusted peer, as is scribbling on it
+    // (`mmap.rs`, the `Sync` argument).
     unsafe { MmapMut::map_mut(&file) }
         .map_err(|e| BridgeError::SharedMemoryError(format!("failed to map shared memory: {e}")))
 }
@@ -498,6 +599,15 @@ mod tests {
         )
     }
 
+    /// Both ends of one slab in this process: the host's input writer
+    /// (`create`) and the server's output writer (`open`).
+    fn pair(tag: &str, l: SlabLayout) -> (SlabWriter, SlabWriter) {
+        let n = name(tag);
+        let host = AudioSlab::create(n.clone(), l.clone()).unwrap();
+        let server = AudioSlab::open(n, l).unwrap();
+        (host, server)
+    }
+
     /// A caller's sample type must be the slab's width: a mismatch is an error
     /// both ways and touches nothing.
     ///
@@ -506,71 +616,70 @@ mod tests {
     /// next channel) and the assertion fails.
     #[test]
     fn a_sample_type_of_the_wrong_width_is_refused() {
-        let slab = AudioSlab::create(name("width32"), layout(32, SampleFormat::Float32)).unwrap();
-        assert!(slab.write_input(1, 0, &[0.5f64; 32]).is_err());
-        assert!(slab.read_input_into(1, 0, &mut [0.0f64; 32]).is_err());
-        assert!(slab.write_input(1, 0, &[0.5f32; 32]).is_ok());
+        let (mut host, _server) = pair("width32", layout(32, SampleFormat::Float32));
+        assert!(host.write(1, 0, &[0.5f64; 32]).is_err());
+        assert!(host.read_input_into(1, 0, &mut [0.0f64; 32]).is_err());
+        assert!(host.write(1, 0, &[0.5f32; 32]).is_ok());
 
-        let wide = AudioSlab::create(name("width64"), layout(32, SampleFormat::Float64)).unwrap();
-        assert!(wide.write_output(1, 0, &[0.5f32; 32]).is_err());
+        let (_host, mut wide) = pair("width64", layout(32, SampleFormat::Float64));
+        assert!(wide.write(1, 0, &[0.5f32; 32]).is_err());
         assert!(wide.read_output_into(1, 0, &mut [0.0f32; 32]).is_err());
-        assert!(wide.write_output(1, 0, &[0.5f64; 32]).is_ok());
+        assert!(wide.write(1, 0, &[0.5f64; 32]).is_ok());
     }
 
     #[test]
     fn roundtrip_f32() {
-        let l = layout(128, SampleFormat::Float32);
-        let n = name("f32");
-        let writer = AudioSlab::create(n.clone(), l.clone()).unwrap();
+        let (mut host, server) = pair("f32", layout(128, SampleFormat::Float32));
 
         let data: Vec<f32> = (0..128).map(|i| i as f32 * 0.1).collect();
-        writer.write_input(1, 0, &data).unwrap();
-        writer.publish_input(1);
+        host.write(1, 0, &data).unwrap();
+        host.publish(1);
 
-        let reader = AudioSlab::open(n, l).unwrap();
-        assert!(reader.has_input(1));
+        assert!(server.has_input(1));
         let mut out = vec![0.0f32; 128];
-        let got = reader.read_input_into(1, 0, &mut out).unwrap();
+        let got = server.read_input_into(1, 0, &mut out).unwrap();
         assert_eq!(got, 128);
         assert_eq!(data, out);
     }
 
     #[test]
     fn roundtrip_f64() {
-        let l = layout(64, SampleFormat::Float64);
-        let n = name("f64");
-        let writer = AudioSlab::create(n.clone(), l.clone()).unwrap();
+        let (host, mut server) = pair("f64", layout(64, SampleFormat::Float64));
         let data: Vec<f64> = (0..64).map(|i| (i as f64).sin()).collect();
-        writer.write_output(1, 0, &data).unwrap();
-        writer.publish_output(1);
+        server.write(1, 0, &data).unwrap();
+        server.publish(1);
 
-        let reader = AudioSlab::open(n, l).unwrap();
         let mut out = vec![0.0f64; 64];
-        reader.read_output_into(1, 0, &mut out).unwrap();
+        assert_eq!(host.read_output_into(1, 0, &mut out).unwrap(), 64);
         assert_eq!(data, out);
     }
 
     /// **Guards against a silent bypass.** The host writes its input and the
-    /// server never answers; the output region must not hand that input back,
-    /// including for a plugin with one bus per direction — the common case.
+    /// server publishes block 1's output without writing a sample; reading
+    /// that output must not hand the host's input back, including for a
+    /// plugin with one bus per direction — the common case.
+    ///
+    /// The server publishes so the read is not refused on the sequence: with
+    /// aliased regions, the published "output" would be the input.
+    ///
+    /// Mutation (run): give the output region the input's base in
+    /// `offset_of` → the read returns the input → fails.
     #[test]
     fn the_output_region_never_aliases_the_input_region() {
-        let l = stereo_layout(64, SampleFormat::Float32);
-        let n = name("alias");
-        let slab = AudioSlab::create(n, l).unwrap();
+        let (mut host, mut server) = pair("alias", stereo_layout(64, SampleFormat::Float32));
 
         let input: Vec<f32> = (0..64).map(|i| i as f32 + 1.0).collect();
         for ch in 0..2 {
-            slab.write_input(1, ch, &input).unwrap();
+            host.write(1, ch, &input).unwrap();
         }
-        slab.publish_input(1);
+        host.publish(1);
 
-        // Nobody published an output for block 1.
-        assert!(!slab.has_output(1), "no output was published");
+        assert!(!host.has_output(1), "no output was published");
+        server.publish(1);
 
         let mut out = vec![0.0f32; 64];
         for ch in 0..2 {
-            slab.read_output_into(1, ch, &mut out).unwrap();
+            assert_eq!(host.read_output_into(1, ch, &mut out).unwrap(), 64);
             assert!(
                 out.iter().all(|&s| s == 0.0),
                 "ch {ch}: reading the output region returned the host's own input — \
@@ -579,48 +688,108 @@ mod tests {
         }
     }
 
-    /// Reading a slot that holds a *different* block must be detectable. The
-    /// sequence is the only evidence; the bytes themselves are as plausible as
-    /// any other block's.
+    /// Reading a slot that holds a *different* block must be detectable, and
+    /// the read must not hand back its bytes: they are real audio, just the
+    /// wrong block's.
+    ///
+    /// Mutation (run): both sequence loads removed (`held = true` and the
+    /// recheck's `||` clause) → the read of block 3 returns block 1's samples
+    /// → fails. Either load alone catches a slot that stays stale; the first
+    /// one has a test of its own below.
     #[test]
-    fn a_stale_slot_is_detectable_by_sequence_alone() {
-        let l = stereo_layout(64, SampleFormat::Float32);
-        let n = name("stale");
-        let slab = AudioSlab::create(n, l).unwrap();
+    fn a_stale_slot_is_detectable_and_never_read() {
+        let (host, mut server) = pair("stale", stereo_layout(64, SampleFormat::Float32));
 
-        let old: Vec<f32> = (0..64).map(|i| i as f32).collect();
-        slab.write_output(1, 0, &old).unwrap();
-        slab.publish_output(1);
+        let old: Vec<f32> = (0..64).map(|i| i as f32 + 1.0).collect();
+        server.write(1, 0, &old).unwrap();
+        server.publish(1);
 
-        // Block 3 maps to the same slot as block 1 (depth 2), and the bytes
-        // there are real audio — just the wrong block's.
+        // Block 3 maps to the same slot as block 1 (depth 2).
         assert_eq!(slot_for(3), slot_for(1));
-        assert!(!slab.has_output(3), "slot holds block 1, not block 3");
-        assert!(slab.has_output(1));
+        assert!(!host.has_output(3), "slot holds block 1, not block 3");
+        assert!(host.has_output(1));
+
+        let mut out = vec![9.0f32; 64];
+        assert_eq!(host.read_output_into(3, 0, &mut out).unwrap(), 0);
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "a refused read leaves silence, not block 1's audio or the caller's old bytes"
+        );
+    }
+
+    /// **The recheck (D4).** A slot republished for a later block while it was
+    /// being copied (the peer is two blocks ahead; with two slots it reuses
+    /// this one) is a torn read: half of each block. It must be discarded,
+    /// with silence in its place, though the first sequence load matched.
+    ///
+    /// Deterministic: the republish runs in the window between the copy and
+    /// the recheck, through `read_region_then`'s seam.
+    ///
+    /// Mutation (run): drop the second sequence load (the `||` clause in
+    /// `read_region_then`) → the read returns 64 and block 1's samples →
+    /// fails.
+    #[test]
+    fn a_slot_republished_during_the_copy_is_discarded() {
+        let (host, mut server) = pair("torn", stereo_layout(64, SampleFormat::Float32));
+        server.write(1, 0, &[1.0f32; 64]).unwrap();
+        server.publish(1);
+        assert_eq!(slot_for(3), slot_for(1));
+
+        let mut out = vec![9.0f32; 64];
+        let got = host
+            .read_region_then(Direction::Output, 1, 0, &mut out, || {
+                server.publish(3);
+            })
+            .unwrap();
+        assert_eq!(got, 0, "a copy the peer overtook is not block 1");
+        assert!(out.iter().all(|&s| s == 0.0), "and leaves silence");
+    }
+
+    /// **The first sequence load.** A block the peer publishes while the copy
+    /// runs was being written during it, so the copy is half the old block and
+    /// half the new; the recheck alone would see the right sequence and pass it.
+    /// The load before the copy refuses it: the slot did not hold the block
+    /// when the copy began.
+    ///
+    /// Mutation (run): `let held = true;` (no load before the copy) → the read
+    /// returns 64 with block 1's samples → fails.
+    #[test]
+    fn a_block_published_during_the_copy_is_not_read() {
+        let (host, mut server) = pair("late", stereo_layout(64, SampleFormat::Float32));
+        server.write(1, 0, &[1.0f32; 64]).unwrap();
+        server.publish(1);
+        assert_eq!(slot_for(3), slot_for(1));
+
+        let mut out = vec![9.0f32; 64];
+        let got = host
+            .read_region_then(Direction::Output, 3, 0, &mut out, || {
+                server.publish(3);
+            })
+            .unwrap();
+        assert_eq!(got, 0, "the slot did not hold block 3 when the copy began");
+        assert!(out.iter().all(|&s| s == 0.0), "and the read leaves silence");
     }
 
     /// Consecutive blocks occupy different slots, which is what lets one be read
     /// while the next is written.
     #[test]
     fn consecutive_blocks_do_not_share_a_slot() {
-        let l = stereo_layout(64, SampleFormat::Float32);
-        let n = name("ring");
-        let slab = AudioSlab::create(n, l).unwrap();
+        let (host, mut server) = pair("ring", stereo_layout(64, SampleFormat::Float32));
 
         let a = vec![1.0f32; 64];
         let b = vec![2.0f32; 64];
-        slab.write_output(1, 0, &a).unwrap();
-        slab.publish_output(1);
-        slab.write_output(2, 0, &b).unwrap();
-        slab.publish_output(2);
+        server.write(1, 0, &a).unwrap();
+        server.publish(1);
+        server.write(2, 0, &b).unwrap();
+        server.publish(2);
 
-        assert!(slab.has_output(1), "block 1 survived block 2's write");
-        assert!(slab.has_output(2));
+        assert!(host.has_output(1), "block 1 survived block 2's write");
+        assert!(host.has_output(2));
 
         let mut out = vec![0.0f32; 64];
-        slab.read_output_into(1, 0, &mut out).unwrap();
+        host.read_output_into(1, 0, &mut out).unwrap();
         assert_eq!(out, a);
-        slab.read_output_into(2, 0, &mut out).unwrap();
+        host.read_output_into(2, 0, &mut out).unwrap();
         assert_eq!(out, b);
     }
 
@@ -631,20 +800,22 @@ mod tests {
     #[test]
     fn every_region_is_distinct() {
         let l = layout(16, SampleFormat::Float32);
-        let n = name("distinct");
-        let slab = AudioSlab::create(n, l.clone()).unwrap();
+        let (mut host, mut server) = pair("distinct", l.clone());
 
-        // Stamp each region with a unique constant.
+        // Stamp each region with a unique constant, and publish each block in
+        // both directions so the reads below are not refused.
         let mut tag = 0.0f32;
         for seq in 1..=RING_SLOTS as u64 {
             for ch in 0..l.input_channels() {
                 tag += 1.0;
-                slab.write_input(seq, ch, &[tag; 16]).unwrap();
+                host.write(seq, ch, &[tag; 16]).unwrap();
             }
             for ch in 0..l.output_channels() {
                 tag += 1.0;
-                slab.write_output(seq, ch, &[tag; 16]).unwrap();
+                server.write(seq, ch, &[tag; 16]).unwrap();
             }
+            host.publish(seq);
+            server.publish(seq);
         }
 
         // Read every region back; each must still hold its own stamp.
@@ -653,7 +824,7 @@ mod tests {
         for seq in 1..=RING_SLOTS as u64 {
             for ch in 0..l.input_channels() {
                 expect += 1.0;
-                slab.read_input_into(seq, ch, &mut out).unwrap();
+                assert_eq!(server.read_input_into(seq, ch, &mut out).unwrap(), 16);
                 assert!(
                     out.iter().all(|&s| s == expect),
                     "input seq={seq} ch={ch} was overwritten by another region"
@@ -661,7 +832,7 @@ mod tests {
             }
             for ch in 0..l.output_channels() {
                 expect += 1.0;
-                slab.read_output_into(seq, ch, &mut out).unwrap();
+                assert_eq!(host.read_output_into(seq, ch, &mut out).unwrap(), 16);
                 assert!(
                     out.iter().all(|&s| s == expect),
                     "output seq={seq} ch={ch} was overwritten by another region"
@@ -670,48 +841,45 @@ mod tests {
         }
     }
 
+    /// The writer's direction is its constructor's: `create` writes inputs and
+    /// `open` writes outputs. A writer of the wrong direction would let the
+    /// host overwrite the plugin's answer.
+    ///
+    /// Mutation (run): `open` returning `Direction::Input` → the server's
+    /// write lands in the input region → `has_output` is false → fails.
     #[test]
-    fn clone_preserves_layout() {
-        let l = layout(32, SampleFormat::Float64);
-        let original = AudioSlab::create(name("clone"), l.clone()).unwrap();
-        let cloned = original.clone();
-        assert_eq!(cloned.layout(), l);
-    }
-
-    /// A clone points at the same pages, sequences included — so a node cloned
-    /// on graph commit still sees what the original published.
-    #[test]
-    fn clone_shares_the_header() {
-        let l = stereo_layout(64, SampleFormat::Float32);
-        let original = AudioSlab::create(name("clone_hdr"), l).unwrap();
-        original.publish_output(5);
-        let cloned = original.clone();
-        assert!(cloned.has_output(5));
+    fn create_writes_inputs_and_open_writes_outputs() {
+        let (mut host, mut server) = pair("dirs", stereo_layout(8, SampleFormat::Float32));
+        host.write(1, 0, &[1.0f32; 8]).unwrap();
+        host.publish(1);
+        server.write(1, 0, &[2.0f32; 8]).unwrap();
+        server.publish(1);
+        let mut out = [0.0f32; 8];
+        assert!(server.has_input(1) && host.has_output(1));
+        server.read_input_into(1, 0, &mut out).unwrap();
+        assert_eq!(out, [1.0; 8]);
+        host.read_output_into(1, 0, &mut out).unwrap();
+        assert_eq!(out, [2.0; 8]);
     }
 
     #[test]
     fn channel_out_of_bounds() {
-        let l = layout(64, SampleFormat::Float32);
-        let slab = AudioSlab::create(name("oob"), l).unwrap();
+        let (mut host, mut server) = pair("oob", layout(64, SampleFormat::Float32));
         let data = vec![0.0f32; 64];
         // 3 input channels, 2 output channels — the asymmetry matters: an index
         // valid for one direction may not be valid for the other.
-        assert!(slab.write_input(1, 3, &data).is_err());
-        assert!(slab.write_output(1, 2, &data).is_err());
-        assert!(
-            slab.write_input(1, 2, &data).is_ok(),
-            "sidechain is in range"
-        );
+        assert!(host.write(1, 3, &data).is_err());
+        assert!(server.write(1, 2, &data).is_err());
+        assert!(host.write(1, 2, &data).is_ok(), "sidechain is in range");
         let mut out = vec![0.0f32; 64];
-        assert!(slab.read_output_into(1, 5, &mut out).is_err());
+        assert!(host.read_output_into(1, 5, &mut out).is_err());
     }
 
     #[test]
     fn data_exceeds_capacity() {
-        let l = stereo_layout(32, SampleFormat::Float32);
-        let slab = AudioSlab::create(name("exceed"), l).unwrap();
+        let (mut host, _server) = pair("exceed", stereo_layout(32, SampleFormat::Float32));
         let data = vec![0.0f32; 64];
-        assert!(slab.write_input(1, 0, &data).is_err());
+        assert!(host.write(1, 0, &data).is_err());
     }
 
     /// An empty bus list is the shape that meant "share one region in place".
@@ -732,6 +900,67 @@ mod tests {
         assert!(AudioSlab::create(name("depth"), l).is_err());
     }
 
+    /// A layout whose size does not fit in `usize` is an error, from either
+    /// end: the server sizes its mapping from a layout the peer sent, and a
+    /// wrapped size would map a small file the layout's offsets run past.
+    ///
+    /// Mutation (run): `byte_size` with unchecked arithmetic → the
+    /// multiplication overflows (a panic under test) → fails.
+    #[test]
+    fn a_layout_too_large_to_address_is_refused() {
+        // 2 slots x 2 channels x 2^62 frames: each ring's byte count wraps to
+        // exactly 0, so a wrapping size would map just the header.
+        let l = stereo_layout(1 << (usize::BITS - 2), SampleFormat::Float32);
+        let create = AudioSlab::create(name("huge"), l.clone()).expect_err("must not map");
+        assert!(format!("{create}").contains("overflows"), "got: {create}");
+        let open = AudioSlab::open(name("huge_open"), l).expect_err("must not map");
+        assert!(format!("{open}").contains("overflows"), "got: {open}");
+    }
+
+    /// **`create` is exclusive (D3).** A name that exists is refused rather
+    /// than truncated: truncating a file another process has mapped faults
+    /// that process (SIGBUS), and a planted file would carry our audio.
+    ///
+    /// Mutation (run): `create(true).truncate(true)` in `open_mmap` → the
+    /// second create succeeds → fails.
+    #[test]
+    fn create_refuses_a_name_that_exists() {
+        let n = name("exists");
+        let l = stereo_layout(8, SampleFormat::Float32);
+        let mut first = AudioSlab::create(n.clone(), l.clone()).unwrap();
+        first.write(1, 0, &[3.0f32; 8]).unwrap();
+        first.publish(1);
+        assert!(
+            AudioSlab::create(n, l).is_err(),
+            "a second create must not reuse the name"
+        );
+        let mut out = [0.0f32; 8];
+        assert_eq!(first.read_input_into(1, 0, &mut out).unwrap(), 8);
+        assert_eq!(out, [3.0; 8], "the first slab is untouched");
+    }
+
+    /// A symlink planted at the name is refused by both ends: `create` does
+    /// not follow it into the file it names, and `open` (`O_NOFOLLOW`) does not
+    /// map whatever it points at.
+    ///
+    /// Mutation (run): drop `custom_flags(O_NOFOLLOW)` → the open through the
+    /// link succeeds → fails. (`create` is covered by `create_new`: `O_EXCL`
+    /// refuses an existing link, dangling or not.)
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_name_is_refused() {
+        let l = stereo_layout(8, SampleFormat::Float32);
+        let real = name("real");
+        let _owner = AudioSlab::create(real.clone(), l.clone()).unwrap();
+        let link = name("link");
+        std::os::unix::fs::symlink(shm_path(&real), shm_path(&link)).unwrap();
+        let opened = AudioSlab::open(link.clone(), l.clone());
+        let created = AudioSlab::create(link.clone(), l);
+        let _ = std::fs::remove_file(shm_path(&link));
+        assert!(opened.is_err(), "open followed a link");
+        assert!(created.is_err(), "create followed a link");
+    }
+
     /// Opening a file that is not a slab must fail on the magic, not produce a
     /// mapping full of someone else's bytes read as audio.
     #[test]
@@ -739,7 +968,7 @@ mod tests {
         let l = stereo_layout(64, SampleFormat::Float32);
         let n = name("foreign");
         let path = shm_path(&n);
-        std::fs::write(&path, vec![0xABu8; byte_size(&l)]).unwrap();
+        std::fs::write(&path, vec![0xABu8; byte_size(&l).unwrap()]).unwrap();
 
         let err = AudioSlab::open(n, l).expect_err("a foreign file must not open");
         assert!(
@@ -763,15 +992,28 @@ mod tests {
         assert!(format!("{err}").contains("bytes"), "got: {err}");
     }
 
+    /// The mapping's copies refuse the header's bytes: the header is only ever
+    /// stored through its atomics, while `header()` hands out a shared
+    /// reference to them.
+    ///
+    /// Mutation (run): drop the `offset >= SLAB_HEADER_BYTES` term in
+    /// `check_range` → the write lands → no panic → fails.
+    #[test]
+    #[should_panic(expected = "outside the data region")]
+    fn a_copy_into_the_header_panics() {
+        let (host, _server) = pair("hdr", stereo_layout(8, SampleFormat::Float32));
+        host.slab().mmap.write(0, &[0u8; 8]);
+    }
+
     /// Read the mapping's raw bytes and check the layout *without* going through
     /// the offset helper that produced it.
     ///
-    /// Every other test here writes with `write_input` and reads with
-    /// `read_input_into`, so both sides share `offset_of`. A consistent
-    /// error in it — a dropped slot term, a swapped channel/slot factor, the
-    /// wrong region base — cancels out and round-trips perfectly. This test
-    /// recomputes each address from the layout arithmetic independently, so such
-    /// an error shows up as a value in the wrong place rather than not at all.
+    /// Every other test here writes and reads through `offset_of`, so a
+    /// consistent error in it — a dropped slot term, a swapped channel/slot
+    /// factor, the wrong region base — cancels out and round-trips perfectly.
+    /// This test recomputes each address from the layout arithmetic
+    /// independently, so such an error shows up as a value in the wrong place
+    /// rather than not at all.
     ///
     /// The `#[repr(C)]` header is checked here too: `magic` sits at offset 0 of
     /// the mapping, which is what the opening side keys on before trusting a
@@ -792,7 +1034,7 @@ mod tests {
             "this test's arithmetic assumes the asymmetric helper layout"
         );
 
-        let slab = AudioSlab::create(name("hexdump"), l.clone()).unwrap();
+        let (mut host, mut server) = pair("hexdump", l.clone());
 
         // A distinct constant per (direction, slot, channel). Every sample in a
         // channel carries the same value, so a misaddressed *channel* is
@@ -807,19 +1049,17 @@ mod tests {
             // sequence value and the slot coincide for 0..RING_SLOTS.
             let seq = slot as u64;
             for ch in 0..in_channels {
-                slab.write_input(seq, ch, &[tag(0, slot, ch); SAMPLES])
-                    .unwrap();
+                host.write(seq, ch, &[tag(0, slot, ch); SAMPLES]).unwrap();
             }
             for ch in 0..out_channels {
-                slab.write_output(seq, ch, &[tag(1, slot, ch); SAMPLES])
-                    .unwrap();
+                server.write(seq, ch, &[tag(1, slot, ch); SAMPLES]).unwrap();
             }
         }
 
-        let bytes = slab.mmap.as_slice();
+        let bytes = host.slab().mmap.snapshot();
         assert_eq!(
             bytes.len(),
-            byte_size(&l),
+            byte_size(&l).unwrap(),
             "mapping is not the sized length"
         );
 

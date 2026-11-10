@@ -3954,9 +3954,12 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "bincode",
+ "bytemuck",
  "crossbeam",
  "crossbeam-channel",
+ "getrandom 0.3.4",
  "interprocess",
+ "libc",
  "memmap2",
  "parking_lot",
  "serde",
@@ -3994,6 +3997,7 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "bincode",
+ "bytemuck",
  "interprocess",
  "libc",
  "libloading 0.8.9",

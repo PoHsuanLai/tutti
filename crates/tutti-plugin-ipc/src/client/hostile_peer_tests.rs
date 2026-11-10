@@ -231,8 +231,11 @@ impl MockServer {
             .create_sync()
             .expect("listen");
 
-        let slab = Arc::new(
-            AudioSlab::create(unique_shm_name(label), stereo_layout()).expect("create slab"),
+        // The peer writes no audio here: only the shared, read-only slab is kept.
+        let slab = Arc::clone(
+            AudioSlab::create(unique_shm_name(label), stereo_layout())
+                .expect("create slab")
+                .slab(),
         );
         let (bridge, thread) = PluginBridge::new_with_state_progress_timeout(
             path.clone(),

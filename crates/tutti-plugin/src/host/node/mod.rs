@@ -142,7 +142,9 @@ use tutti_types::{SampleRate, Samples};
 /// [`PluginClient::new`] returns this state; [`PluginClient::bind`] leaves it.
 #[derive(Debug)]
 pub struct Unbound {
-    _private: (),
+    /// The slab's input writer, until [`PluginClient::bind`] gives it to the
+    /// node's batcher, the one thing that writes a chunk.
+    slab: tutti_plugin_ipc::SlabWriter,
 }
 
 /// The typestate of a [`PluginClient`] that owns its audio path and can go into
@@ -356,7 +358,7 @@ impl PluginClient<Unbound> {
 
         let (bridge, bridge_thread) = PluginBridge::new(
             config.socket_path.clone(),
-            server.audio_buffer,
+            std::sync::Arc::clone(server.slab.slab()),
             plugin_path,
             crate::format::gui::load_gui_instance,
             sample_rate,
@@ -454,7 +456,7 @@ impl PluginClient<Unbound> {
             origin,
             fork_watch: None,
             params,
-            state: Unbound { _private: () },
+            state: Unbound { slab: server.slab },
         };
         Ok((client, state_restore))
     }
@@ -476,7 +478,8 @@ impl PluginClient<Unbound> {
         self.controls
             .delivery_counters()
             .attach_bridge_midi(self.bridge.dropped_midi_cell());
-        let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling)
+        let Unbound { slab } = self.state;
+        let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling, slab)
             .with_counters(chunks);
         // A slot per parameter: every parameter can move in one chunk. The
         // chunk's point room, here and in the bridge's buffers, is sized in
@@ -502,7 +505,7 @@ impl PluginClient<Unbound> {
             origin,
             fork_watch,
             params: addresses,
-            state: Unbound { _private: () },
+            state: _,
         } = self;
         PluginClient {
             bridge,

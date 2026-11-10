@@ -76,7 +76,8 @@ fn handle_with_mock_server(
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
-    let buffer = Arc::new(
+    // The test writes no audio: only the shared, read-only slab is kept.
+    let buffer = Arc::clone(
         AudioSlab::create(
             unique_shm_name("handle"),
             SlabLayout {
@@ -87,7 +88,8 @@ fn handle_with_mock_server(
                 outputs: vec![ChannelLayout::STEREO],
             },
         )
-        .unwrap(),
+        .unwrap()
+        .slab(),
     );
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
@@ -179,7 +181,8 @@ fn handle_with_multi_reply_server(
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
-    let buffer = Arc::new(
+    // The test writes no audio: only the shared, read-only slab is kept.
+    let buffer = Arc::clone(
         AudioSlab::create(
             unique_shm_name("handle-multi"),
             SlabLayout {
@@ -190,7 +193,8 @@ fn handle_with_multi_reply_server(
                 outputs: vec![ChannelLayout::STEREO],
             },
         )
-        .unwrap(),
+        .unwrap()
+        .slab(),
     );
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),

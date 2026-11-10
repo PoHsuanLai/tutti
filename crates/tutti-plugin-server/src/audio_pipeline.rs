@@ -2,7 +2,7 @@
 //!
 //! Everything the audio path owns lives here: the format-tagged
 //! scratch buffers, the sample-rate/format [`Clock`], and the `process`
-//! driver that takes an explicit `&mut dyn PluginInstance` + `&mut AudioSlab`
+//! driver that takes an explicit `&mut dyn PluginInstance` + `&mut SlabWriter`
 //! so the server doesn't have to weave field borrows.
 //!
 //! Input/output cross this layer as value types ([`AudioBlock`],
@@ -14,10 +14,10 @@ use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_plugin::Result;
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MIDI_STACK_CAPACITY,
-    MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
-    ParameterChanges, PluginInstance, ProcessContext, ProcessOutput, SampleFormat, Samples,
-    ScaleChanges, TransportInfo, WireMidi,
+    AudioBufferMut, ChordChanges, ExpressiveContext, Features, MIDI_STACK_CAPACITY, MidiEventVec,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
+    PluginInstance, ProcessContext, ProcessOutput, SampleFormat, Samples, ScaleChanges, SlabWriter,
+    TransportInfo, WireMidi,
 };
 use tutti_ump::Ump;
 
@@ -315,7 +315,7 @@ impl AudioPipeline {
     pub(crate) fn process(
         &mut self,
         plugin: &mut dyn PluginInstance,
-        shm: &mut AudioSlab,
+        shm: &mut SlabWriter,
         clock: &Clock,
         block: AudioBlock<'_>,
     ) -> Result<AudioOutput> {
@@ -444,10 +444,7 @@ impl AudioPipeline {
                                     *s = 0.0;
                                 }
                             }
-                            if shm
-                                .write_output::<f32>(seq, ch, &chan[..num_samples])
-                                .is_err()
-                            {
+                            if shm.write::<f32>(seq, ch, &chan[..num_samples]).is_err() {
                                 all_channels_written = false;
                             }
                         }
@@ -483,10 +480,7 @@ impl AudioPipeline {
                                     *s = 0.0;
                                 }
                             }
-                            if shm
-                                .write_output::<f64>(seq, ch, &chan[..num_samples])
-                                .is_err()
-                            {
+                            if shm.write::<f64>(seq, ch, &chan[..num_samples]).is_err() {
                                 all_channels_written = false;
                             }
                         }
@@ -514,7 +508,7 @@ impl AudioPipeline {
             // Either way the host reads a stale sequence and substitutes silence,
             // which is the designed failure mode.
             if inputs_ready && all_channels_written {
-                shm.publish_output(seq);
+                shm.publish(seq);
             }
 
             // The plugin's MIDI-out travels back to the host so it can re-enter
@@ -892,8 +886,8 @@ mod tests {
         }
     }
 
-    use tutti_plugin::server::RING_SLOTS;
     use tutti_plugin::server::SampleFormat as SF;
+    use tutti_plugin::server::{AudioSlab, RING_SLOTS};
 
     /// A slab layout with real bus lists in both directions.
     ///
@@ -961,7 +955,7 @@ mod tests {
             &[ChannelLayout::STEREO],
         );
         let name = format!("tutti_multibus_test_{}", std::process::id());
-        let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
+        let mut host = AudioSlab::create(name.clone(), layout.clone()).unwrap();
         let mut shm = AudioSlab::open(name, layout).unwrap();
 
         // Write a distinct marker into each of the 3 input channels, then
@@ -969,9 +963,9 @@ mod tests {
         // the region and the plugin would see silence.
         let markers = [11.0f32, 22.0, 33.0];
         for (ch, &m) in markers.iter().enumerate() {
-            shm.write_input::<f32>(SEQ, ch, &[m; N]).unwrap();
+            host.write::<f32>(SEQ, ch, &[m; N]).unwrap();
         }
-        shm.publish_input(SEQ);
+        host.publish(SEQ);
 
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
         let mut plugin = EchoProbe {
@@ -1065,8 +1059,7 @@ mod tests {
         // a previous occupant would have. `publish_input` is NOT called for
         // STALE_SEQ — that is precisely what "the host recycled this slot" means.
         for ch in 0..CH {
-            shm.write_output::<f32>(STALE_SEQ, ch, &[0.5f32; N])
-                .unwrap();
+            shm.write::<f32>(STALE_SEQ, ch, &[0.5f32; N]).unwrap();
         }
 
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);

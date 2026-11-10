@@ -12,7 +12,7 @@ use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
     AudioSlab, BridgeMessage, ContentScale, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
-    ParameterQueue, SampleFormat, StagedState, WindowHandle,
+    ParameterQueue, SampleFormat, SlabWriter, StagedState, WindowHandle,
 };
 use tutti_plugin::{BridgeError, Result};
 use tutti_plugin_types::MainThread;
@@ -94,7 +94,7 @@ pub(crate) struct Session {
     pub(crate) plugin: Option<Plugin>,
     /// The shared-memory audio slab, established during the handshake phase.
     /// `None` until then, and cleared on unload alongside `plugin`.
-    pub(crate) shm: Option<AudioSlab>,
+    pub(crate) shm: Option<SlabWriter>,
     /// Per-block scratch and the process driver. Outlives individual plugins so
     /// its buffers survive a reload without re-allocating.
     pub(crate) pipeline: AudioPipeline,
@@ -997,7 +997,7 @@ mod tests {
     /// Returns (session, shm_guard). The guard keeps the creator-side mmap
     /// alive while the session holds its own mapping.
     #[cfg(feature = "clap")]
-    fn load_clap(name: &str, preferred_format: SampleFormat) -> (Session, AudioSlab) {
+    fn load_clap(name: &str, preferred_format: SampleFormat) -> (Session, SlabWriter) {
         let mut s = Session::new();
         s.handle(
             &main_thread(),
@@ -1029,12 +1029,11 @@ mod tests {
 
     /// Run one block of `input` on both channels through `s`'s slab.
     #[cfg(feature = "clap")]
-    fn process_block(s: &mut Session, shm: &AudioSlab, seq: u64, input: f64) {
+    fn process_block(s: &mut Session, shm: &mut SlabWriter, seq: u64, input: f64) {
         for ch in 0..2 {
-            shm.write_input::<f64>(seq, ch, &[input; F64_FRAMES])
-                .unwrap();
+            shm.write::<f64>(seq, ch, &[input; F64_FRAMES]).unwrap();
         }
-        shm.publish_input(seq);
+        shm.publish(seq);
         let reply = s
             .handle(
                 &main_thread(),
@@ -1075,7 +1074,7 @@ mod tests {
         let _render = crate::test_utils::clap_probe_render_mode(
             tutti_clap_test_plugin::RenderMode::TagPassthrough as u32,
         );
-        let (mut s, shm) = load_clap("rate_refusal_cycle", SampleFormat::Float64);
+        let (mut s, mut shm) = load_clap("rate_refusal_cycle", SampleFormat::Float64);
         assert_eq!(s.clock.format, SampleFormat::Float64, "fixture");
         let set = |s: &mut Session, rate: f64| {
             s.handle(
@@ -1098,7 +1097,7 @@ mod tests {
             s.drain_async_events(&main_thread()).is_empty(),
             "nothing changed"
         );
-        process_block(&mut s, &shm, 1, 0.5);
+        process_block(&mut s, &mut shm, 1, 0.5);
         assert!(shm.has_output(1), "a running plugin publishes");
 
         // The plugin drops its 64-bit ports: the next rate is refused.
@@ -1120,7 +1119,7 @@ mod tests {
                 .any(|m| matches!(m, BridgeMessage::PluginIoChanged)),
             "the host is told the instance can no longer run"
         );
-        process_block(&mut s, &shm, 2, 0.5);
+        process_block(&mut s, &mut shm, 2, 0.5);
         assert!(!shm.has_output(2), "a refused plugin publishes nothing");
 
         // Refused again at the same rate: still silent.
@@ -1128,7 +1127,7 @@ mod tests {
             set(&mut s, 96000.0),
             BridgeMessage::SampleRateSet { error: Some(_), .. }
         ));
-        process_block(&mut s, &shm, 3, 0.5);
+        process_block(&mut s, &mut shm, 3, 0.5);
         assert!(!shm.has_output(3), "still silent");
 
         // The ports come back: the next rate revives it.
@@ -1141,7 +1140,7 @@ mod tests {
         );
         assert!(s.rate_refused.is_none());
         assert_eq!(s.clock.sample_rate, 88200.0);
-        process_block(&mut s, &shm, 4, 0.5);
+        process_block(&mut s, &mut shm, 4, 0.5);
         assert!(shm.has_output(4), "a revived plugin publishes again");
         let mut out = vec![0.0f64; F64_FRAMES];
         shm.read_output_into::<f64>(4, 0, &mut out).unwrap();
@@ -1175,18 +1174,18 @@ mod tests {
     #[cfg(feature = "clap")]
     fn clap_round_trip<T>(name: &str, mask: u32, format: SampleFormat, input: T) -> RoundTrip<T>
     where
-        T: tutti_plugin::server::Sample + Copy + Default,
+        T: tutti_plugin::server::Sample + bytemuck::Pod,
     {
         const SEQ: u64 = 1;
         let _ports = crate::test_utils::clap_probe_ports_64bit(mask);
         let _render = crate::test_utils::clap_probe_render_mode(
             tutti_clap_test_plugin::RenderMode::TagPassthrough as u32,
         );
-        let (mut s, shm) = load_clap(name, format);
+        let (mut s, mut shm) = load_clap(name, format);
         for ch in 0..2 {
-            shm.write_input::<T>(SEQ, ch, &[input; F64_FRAMES]).unwrap();
+            shm.write::<T>(SEQ, ch, &[input; F64_FRAMES]).unwrap();
         }
-        shm.publish_input(SEQ);
+        shm.publish(SEQ);
         let reply = s
             .handle(
                 &main_thread(),
@@ -1259,16 +1258,16 @@ mod tests {
         use tutti_clap_test_plugin::Site;
 
         let _lock = crate::test_utils::plugin_load_lock();
-        let (mut s, shm) = load_clap("reset_reaches_the_plugin", SampleFormat::Float32);
+        let (mut s, mut shm) = load_clap("reset_reaches_the_plugin", SampleFormat::Float32);
         let visits = |site: Site| clap_probe_sites().sites[site as usize].visits;
         let resets_at_load = visits(Site::Reset);
         let processes_at_load = visits(Site::Process);
 
-        let block = |s: &mut Session, seq: u64| {
+        let mut block = |s: &mut Session, seq: u64| {
             for ch in 0..2 {
-                shm.write_input::<f32>(seq, ch, &[0.0; F64_FRAMES]).unwrap();
+                shm.write::<f32>(seq, ch, &[0.0; F64_FRAMES]).unwrap();
             }
-            shm.publish_input(seq);
+            shm.publish(seq);
             let reply = s
                 .handle(
                     &main_thread(),
@@ -2013,7 +2012,7 @@ mod tests {
     /// The probe bundle `Plugin::load` picks the format from, as a session
     /// loads it, with a slab sized to what the plugin declared.
     #[cfg(feature = "vst3")]
-    fn load_vst3_probe(name: &str) -> (Session, AudioSlab) {
+    fn load_vst3_probe(name: &str) -> (Session, SlabWriter) {
         let bundle = std::path::Path::new(crate::test_utils::vst3_probe_path())
             .ancestors()
             .find(|p| p.extension().is_some_and(|e| e == "vst3"))
@@ -2049,12 +2048,12 @@ mod tests {
     /// One block of `frames` silent frames through `s`'s slab, and whether it
     /// was published.
     #[cfg(any(feature = "vst3", feature = "clap"))]
-    fn run_silent_block(s: &mut Session, shm: &AudioSlab, seq: u64, frames: usize) -> bool {
+    fn run_silent_block(s: &mut Session, shm: &mut SlabWriter, seq: u64, frames: usize) -> bool {
         let layout = shm.layout_ref().clone();
         for ch in 0..layout.input_channels() {
-            shm.write_input::<f32>(seq, ch, &vec![0.0; frames]).unwrap();
+            shm.write::<f32>(seq, ch, &vec![0.0; frames]).unwrap();
         }
-        shm.publish_input(seq);
+        shm.publish(seq);
         let reply = s
             .handle(
                 &main_thread(),
@@ -2089,11 +2088,11 @@ mod tests {
             // SAFETY: `plugin_load_lock` is held, as every loader test that reads
             // this variable holds it. `kMisbehaveProcessFails`.
             unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "4") };
-            let (mut s, shm) = load_vst3_probe("fails_vst3");
+            let (mut s, mut shm) = load_vst3_probe("fails_vst3");
             unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") };
             for seq in 1..=3 {
                 assert!(
-                    !run_silent_block(&mut s, &shm, seq, 128),
+                    !run_silent_block(&mut s, &mut shm, seq, 128),
                     "a failed block publishes nothing, so the host reads silence"
                 );
             }
@@ -2103,8 +2102,8 @@ mod tests {
         };
         assert_eq!(failing, 3);
         // The same server code with a plugin that behaves renders and publishes.
-        let (mut s, shm) = load_vst3_probe("renders_vst3");
-        assert!(run_silent_block(&mut s, &shm, 1, 128));
+        let (mut s, mut shm) = load_vst3_probe("renders_vst3");
+        assert!(run_silent_block(&mut s, &mut shm, 1, 128));
         assert_eq!(s.pipeline.failed_blocks(), 0);
     }
 
@@ -2117,12 +2116,12 @@ mod tests {
     #[cfg(feature = "clap")]
     fn a_clap_block_the_plugin_fails_is_silence_and_the_server_goes_on() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let (mut s, shm) = load_clap("fails_clap", SampleFormat::Float32);
+        let (mut s, mut shm) = load_clap("fails_clap", SampleFormat::Float32);
         // The plugin was activated for blocks of up to 512 frames.
-        assert!(!run_silent_block(&mut s, &shm, 1, 600));
+        assert!(!run_silent_block(&mut s, &mut shm, 1, 600));
         assert_eq!(s.pipeline.failed_blocks(), 1);
         assert!(
-            run_silent_block(&mut s, &shm, 2, 64),
+            run_silent_block(&mut s, &mut shm, 2, 64),
             "the next block renders"
         );
         assert_eq!(s.pipeline.failed_blocks(), 1);

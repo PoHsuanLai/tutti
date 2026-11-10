@@ -1,4 +1,4 @@
-//! MIDI-CI Discovery, Invalidate MUID, and NAK — the mandatory core (M2-101 §5.2/§5.5/§5.6).
+//! MIDI-CI Discovery, Invalidate MUID, and NAK: the bodies and sub-IDs (M2-101 §5.5, §5.9, §5.11).
 //!
 //! Discovery is the opening handshake: an initiator broadcasts its identity and
 //! the CI categories it supports, and each responder replies in kind. The reply
@@ -8,18 +8,18 @@ use std::vec::Vec;
 
 use bitflags::bitflags;
 
-/// Sub-ID#2: Discovery message (M2-101 §5.2).
+/// Sub-ID#2: Discovery message (M2-101 §5.5).
 pub const SUB_ID2_DISCOVERY: u8 = 0x70;
 /// Sub-ID#2: Discovery Reply message.
 pub const SUB_ID2_DISCOVERY_REPLY: u8 = 0x71;
-/// Sub-ID#2: Invalidate MUID message (M2-101 §5.5).
+/// Sub-ID#2: Invalidate MUID message (M2-101 §5.9).
 pub const SUB_ID2_INVALIDATE_MUID: u8 = 0x7E;
-/// Sub-ID#2: NAK message (M2-101 §5.6).
+/// Sub-ID#2: NAK message (M2-101 §5.11).
 pub const SUB_ID2_NAK: u8 = 0x7F;
 
 bitflags! {
     /// The CI capability categories a device advertises in Discovery
-    /// (M2-101 §5.2, the "CI Category Supported" bitmap).
+    /// (M2-101 §5.5.2, the "CI Category Supported" bitmap).
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct CiCategories: u8 {
         /// Supports Protocol Negotiation (deprecated in CI 1.2, kept for the bit).
@@ -124,7 +124,7 @@ impl DiscoveryData {
     /// Encode the body. `is_reply` selects Table 8's trailer (path instance id +
     /// function block) over Table 6's (path id alone) — the one place the two
     /// directions differ on the wire.
-    pub(super) fn encode_body(&self, is_reply: bool, out: &mut Vec<u8>) {
+    pub(crate) fn encode_body(&self, is_reply: bool, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.manufacturer);
         out.push((self.family & 0x7F) as u8);
         out.push(((self.family >> 7) & 0x7F) as u8);
@@ -146,11 +146,11 @@ impl DiscoveryData {
     /// Decode a Discovery or Reply body.
     ///
     /// The Version-2 trailer is read when present and defaulted when absent, so
-    /// a Message Format Version 1 peer still decodes: §5.4 requires a receiver
+    /// a Message Format Version 1 peer still decodes: §5.3 requires a receiver
     /// to "process the fields, values, and bits defined in the received version"
     /// when it is lower than its own. A missing Function Block reads as
     /// [`NO_FUNCTION_BLOCK`] rather than block 0, which would be a lie.
-    pub(super) fn decode_body(is_reply: bool, b: &[u8]) -> Option<DiscoveryData> {
+    pub(crate) fn decode_body(is_reply: bool, b: &[u8]) -> Option<DiscoveryData> {
         if b.len() < Self::BODY_LEN {
             return None;
         }
@@ -249,7 +249,7 @@ impl Nak {
         self
     }
 
-    pub(super) fn encode_body(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode_body(&self, out: &mut Vec<u8>) {
         out.push(self.nak_sub_id2);
         out.push(self.status_code);
         out.push(self.status_data);
@@ -267,7 +267,7 @@ impl Nak {
         out.extend_from_slice(&text[..len as usize]);
     }
 
-    pub(super) fn decode_body(b: &[u8]) -> Option<Nak> {
+    pub(crate) fn decode_body(b: &[u8]) -> Option<Nak> {
         // Every field past `nak_sub_id2` is Version-2, and a pre-1.2 peer sends
         // an empty NAK — so each is defaulted rather than required.
         let mut details = [0u8; 5];

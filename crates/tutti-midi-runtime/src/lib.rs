@@ -10,7 +10,6 @@
 
 mod ledger;
 mod live;
-mod negotiate;
 mod outbound;
 mod schedule;
 mod traits;
@@ -22,10 +21,6 @@ pub use live::{
     MidiMailbox, MidiOutControls, MidiOutNode, MidiQueueNode, MidiReceiver, MidiSender, Moment,
     RouteRule, TIMED_QUEUE_CAPACITY, TimedQueueNode, TimedSendError, TimedSender, compile_routes,
     input_port_of, input_ports,
-};
-pub use negotiate::{
-    CiInitiator, CiProperty, CiResponder, DeviceIdentity, DiscoveredCiDevice, DiscoveredEndpoint,
-    EndpointInquiry, EndpointNegotiator, FunctionBlock, ProfileSwitch,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,

@@ -45,9 +45,9 @@ marked as read.
 
 | The specification | Today | Consequence |
 |---|---|---|
-| Endpoint, Function Block, Group (M2-100 §7, M2-104 App. H) | `PortId` and a name; `EndpointId` is ALSA's client and port | Identity changes across restarts; `UmpCapability::function_blocks` is never filled |
+| Endpoint, Function Block, Group (M2-100 §7, M2-104 App. H) | `PortId` and a name; `EndpointId` is ALSA's client and port | Identity changes across restarts; `UmpCapability::function_blocks` was never filled, and is deleted (stage 4a) |
 | Connection steps 2 to 5 (M2-100 Table 4) | Never run on connect | Protocol is guessed, and JR timestamps are a host boolean, against M2-104 §7.1.6.2 |
-| `FunctionBlock` is a device concept | Defined in `tutti-midi-runtime`'s `negotiate` | `tutti-midi-hardware` depends on the runtime, and so on `tutti-graph`, for one struct |
+| `FunctionBlock` is a device concept | Was defined in `tutti-midi-runtime`'s `negotiate`, deleted in stage 4a | The `Endpoint` model of stage 4b defines it in `tutti-midi-device`, so `tutti-midi-hardware` needs no runtime type for it |
 | A translator bridges MIDI 1.0 connections (M2-104 §6.2) | One per input node, keyed by channel | RPN state crosses groups; output is forced to group 0 |
 | Decoding and translating are separate | `MidiEvent::message()` calls `normalize` | A MIDI 2.0 Note On at velocity 0 becomes a Note Off (M2-104 §7.4.2 says it does not), while `clip_node` counts it as a note-on |
 | Messages have a scope | One flat `MidiEvent` | An endpoint message can be routed like a note |
@@ -152,8 +152,7 @@ event output port carries, so an edge that ends can close them. They have
 different owners, keys and failure modes; unifying them would give one of them a
 question it does not ask.
 
-**`tutti-midi-types` is still about 12,000 lines of pre-017 vocabulary:** `ci/`,
-`mpe/`, `translation/`, `clip_file`, `cc/mapping`, `sync/`, and the `MidiIn` and
+**`tutti-midi-types` is still about 9,000 lines of pre-017 vocabulary:** `mpe/`, `translation/`, `clip_file`, `cc/mapping`, `sync/`, and the `MidiIn` and
 `MidiOut` traits, beside the `MidiEvent` above.
 
 ## 2. The hierarchy
@@ -299,8 +298,8 @@ Rules:
 - **Name limits are not in the codec.** They apply to a reassembled string, so
   they are checked where strings are reassembled. Nothing checks them today: the
   `endpoint_name`, `function_block_name` and `product_instance_id` constructors
-  in `tutti-midi-types` and `EndpointNegotiator::with_names` (and
-  `FunctionBlock::name`) in `tutti-midi-runtime` take any `&str` or `String`, and
+  in `tutti-midi-types` (and, before stage 4a deleted them,
+  `EndpointNegotiator::with_names` and `FunctionBlock::name`) take any `&str`, and
   the `midi2` crate adds no limit. The limits, from M2-104 v1.1.2 §7.1:
   - **Endpoint Name:** at most 98 bytes of UTF-8 (seven packets).
   - **Function Block Name:** at most 91 bytes (seven packets). Version 1.1.2
@@ -615,19 +614,52 @@ sounding until the node that tracks notes exists.
 
 ### MIDI-CI
 
-`ci/*` and `negotiate` are about 2,400 production lines with no production path:
-no inbound SysEx reaches them (`bevy-tutti`'s `negotiation.rs` says its inbound
-message types have no producer, and `CiRes` is inserted by no plugin). They also
-miss current requirements: no ACK, no Invalidate MUID response (M2-101 App. F),
-profile bodies without Message Version 2 fields (18 bytes against 20), and
-Property Exchange built for v1.1.
+**Stage 4a, done.** `ci/*` and `negotiate` were about 2,400 production lines with
+no production path: no inbound SysEx reached them (`bevy-tutti`'s `negotiation.rs`
+says its inbound message types have no producer, and `CiRes` is inserted by no
+plugin). They also missed current requirements: no ACK, no Invalidate MUID response
+(M2-101 App. F), profile bodies without Message Version 2 fields (18 bytes against
+20), and Property Exchange built for v1.1.
 
-Keep the header, MUID, Discovery, NAK and Invalidate codec and the Stream
-constructors, about 400 lines, moved to `tutti-midi-device`. Delete the state
-machines and profile and property bodies. Rebuild the App. F minimum with a real
-inbound path, in one change, when a stage needs it (an estimated 650 to 750
-lines). Property Exchange waits for a named peer and for M2-105, which is not in
-the core set.
+What was kept moved to `tutti-midi-device` (about 640 lines and 320 of tests, a private
+`ci` module): the header, `Muid`, `Destination`, Discovery and its Reply, Invalidate
+MUID and NAK, as `CiMessage::encode` and `decode` over SysEx payload bytes. `Muid`
+is checked (`Muid::new` refuses the reserved range and the broadcast value;
+broadcast is `Destination::Broadcast`) and `Muid::from_seed` is gone; a MUID is
+drawn from an OS random source when the rebuild lands. The codec needs no
+`tutti-ump` type, so `tutti-midi-device` takes no dependency on it; the caller
+frames the payload (`tutti_ump::frame`, or SysEx7 packets) and reassembles with
+`tutti_ump::SysexAssembler` (`tutti-midi-hardware/tests/midi1_wire_ci.rs` runs the
+whole MIDI 1.0 wire path). The UMP Stream constructors (`endpoint_info` and the
+rest in `tutti-midi-types`' `ump/stream.rs`) were not part of that move: they sit
+in the `ump/` layer that stage 4b rebuilds into the `Connection`, and they keep
+their tests until then.
+
+Deleted: the state machines (`CiInitiator`, `CiResponder`, `capability_inquiry`,
+`DiscoveredCiDevice`, `CiProperty`, `ProfileSwitch`), the profile and property
+bodies, and `EndpointNegotiator` with `EndpointInquiry`, `DiscoveredEndpoint`,
+`FunctionBlock` and `DeviceIdentity` (`tutti_ump::DeviceIdentity` is the type), and
+`UmpCapability::function_blocks`. The re-exports of all of it from
+`tutti-midi-types`, `tutti-midi-runtime` and `tutti-midi-hardware` are gone.
+
+What the deleted `EndpointNegotiator` did, as a checklist for the `Connection` of
+stage 4b (which is rebuilt from M2-104 §7.1 and M2-100 Table 4, not from that
+code): it was the responder half only. It held one endpoint's declared UMP version,
+capabilities, active protocol and JR timestamps, identity, name, Product Instance
+Id and Function Blocks. On an inbound Endpoint Discovery it replied in order
+Endpoint Info, Device Identity, Endpoint Name, Product Instance Id, Stream
+Configuration, then Function Block Info and Function Block Name per block, each
+only if the request's filter bits asked for it, and on a Function Block Discovery
+it replied for one block or for all (`ALL_FUNCTION_BLOCKS`). Its discoverer half
+sent the request, folded each reply into a `DiscoveredEndpoint`, and never retried,
+timed out, requested a Stream Configuration or confirmed the active protocol. A
+connection also owes the steps of Table 4 after discovery (request a protocol and
+JR timestamps, wait for the notification, fall back to MIDI 1.0), with time as a
+value.
+
+The App. F minimum below is the rebuild, for the stage that needs MIDI-CI, with a
+real inbound path, in one change (an estimated 650 to 750 lines). Property Exchange
+waits for a named peer and for M2-105, which is not in the core set.
 
 The rebuild is done when each requirement below holds and its test fails with the
 requirement broken. Section numbers are M2-101 v1.2.1 unless named. Every test
@@ -711,6 +743,10 @@ Stale spec citations in the CI code. Stage 4 fixes each when it moves the code
 (the corrected numbers are those of M2-101 v1.2.1; a citation that is already right
 is not listed):
 
+Fixed in stage 4a in the code that moved or stayed: `ci/discovery.rs`, `ci/mod.rs`
+(now `tutti-midi-device`'s `ci.rs`), `message.rs` and `midi_group.rs`, and the receiver rule that `discovery.rs` cites as §5.4, which is §5.3. The rest
+described code that is deleted and is kept here as the record for the rebuild.
+
 - `ci/discovery.rs`: the module title and the Discovery constants cite §5.2/5.5/5.6,
   they are §5.5 (Discovery, the category bitmap in §5.5.2), §5.9 (Invalidate MUID)
   and §5.11 (NAK; the `Nak` doc already says §5.11.1);
@@ -787,14 +823,14 @@ the graph. The cycle that keeps `ump` and `translation` together today is mostly
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
 out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and
 routes (stage 3b deleted `gather_midi` and `BlockSplitter`), about 3,100 of its 5,700 production lines. Its
-layout flattens to match. `negotiate` and `jr_timestamp` move to `tutti-midi-device`,
+layout flattens to match. `jr_timestamp` moves to `tutti-midi-device` (`negotiate` was deleted in stage 4a),
 `mpe_ingest` to `tutti-midi-protocol`, and the SysEx reassemblers are gone (stage 3c:
 `tutti_ump::SysexAssembler` is the one, and `Sysex8PacketReassembler` had no production
 caller). `outbound` goes away, along with the re-exports from
 `tutti-midi-types`, and `pub mod` inside a private parent becomes `mod`.
 
 `tutti-midi-hardware` is a transport and nothing else. Its re-exports go: `midi2`,
-`midly`, `ci`, the translator, the Clip File codec, MPE, `CCMapping`, the sync
+`midly`, the translator, the Clip File codec, MPE, `CCMapping`, the sync
 decoders, the graph nodes, and a prelude that hands out `MidiInputNode`. A consumer
 names the owner. So does its vocabulary: one crate says port, endpoint, connection
 and device for overlapping things, and `MidiSession` reads as if it were
@@ -1084,7 +1120,7 @@ translator, which speaks `MidiEvent`, is deleted rather than ported. The dedup i
 not cheaper first: the AU decoder and the SysEx reassemblers both produce and take
 `MidiEvent`, so moving them before 5a means converting them twice, and the AU side
 cannot be exercised on Linux. Stage 4 does not depend on this order and can land
-at any point; its CI codec move and `ci`/`negotiate` deletion shrink
+at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
 `tutti-midi-types` the same way.
 
 - **Stage 5a. One event shape.** Done (§1.4 lists what replaced `MidiEvent` where).
@@ -1178,8 +1214,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
      caller) and their types and tests are deleted from `tutti-midi-runtime`.
      Differences: a type-3 packet that does not decode (length past six, a reserved
      status, a data byte of 128 or more) is `Held` and ignored, as a length past six
-     already was; `SysexRef::new` is gone. `ci::sysex7_to_ci` stays: `tutti-midi-types`'
-     own tests round-trip through it.
+     already was; `SysexRef::new` is gone. `ci::sysex7_to_ci` is gone with the
+     rest of `ci/` (stage 4a): the codec takes the bytes the assembler completes.
    - **A checked SysEx type. Done:** `tutti_ump::SysexMessage<'a>`. `tutti-plugin-types`' `sysex.rs` has `unframed` and
      `is_framed`, which accept a message with or without `F0` and `F7`. A
      `SysexMessage<'a>` newtype (checked `F0` to `F7`, every interior byte 7-bit)
@@ -1230,9 +1266,12 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    done, except the flush (§5, "Built").
    Then model, connection, identity, device loss, timing (§5), and the backends
    with no `unsafe` of their own.
-   Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves
-   here and the rest of `ci`/`negotiate` is deleted, and the rebuilt MIDI-CI
-   minimum (§5, "MIDI-CI") lands with the citation fixes listed there.
+   Behaviour change: real hot-plug, timestamps, output scheduling.
+   **Stage 4a, MIDI-CI. Done:** the CI codec moved to `tutti-midi-device` and the rest of
+   `ci`/`negotiate` is deleted (§5, "MIDI-CI", which says what was kept and
+   what the deleted negotiator did); the citations in kept code are fixed. The
+   rebuilt MIDI-CI minimum (App. F, items 1 to 9 there) lands with the stage that
+   needs MIDI-CI.
    Residue for this stage:
    - **`clock_out.rs` doc is false.** The module doc of `bevy-tutti`'s
      `midi/hardware/clock_out.rs` says the drain cadence does not affect tick

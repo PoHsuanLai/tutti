@@ -27,14 +27,13 @@ mod note_id;
 
 // Public, each for a stated reason:
 //
-// - `cc` / `ci` / `ump` are large const-and-function namespaces (cc alone is
+// - `cc` / `ump` are large const-and-function namespaces (cc alone is
 //   ~28 CCNumber consts). Flattened into the root they would drown it, and the
 //   prefix is what makes `cc::MOD_WHEEL` readable.
-// - `cc`, `mpe`, `sync`, `translation` and `ci` all have `pub mod` children that
+// - `cc`, `mpe`, `sync` and `translation` all have `pub mod` children that
 //   callers reach (`cc::mapping`, `sync::clock`, `translation::wire`), and a
 //   used two-level path is evidence the namespace is doing real work.
 pub mod cc;
-pub mod ci;
 pub mod mpe;
 pub mod sync;
 pub mod translation;

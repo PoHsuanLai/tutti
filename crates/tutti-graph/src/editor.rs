@@ -55,7 +55,7 @@ use std::sync::Arc;
 
 use crate::MAX_NODE_LATENCY;
 use crate::{Edge, FeedbackFrom, NodeSpec, Source};
-use crate::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
+use crate::{EventTapId, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::{Latency, Samples};
 
@@ -64,6 +64,7 @@ use tutti_types::At;
 use crate::command::{CommandId, CommandTx, ScheduleError, command_channel};
 use crate::compile::{CompileError, Shapes, VerifyError, compile};
 use crate::event::EventKind;
+use crate::event_tap::{EventTapReader, EventTapWriter};
 use crate::exec::Opened;
 use crate::exec::{
     Channels, Commit, DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY, channels,
@@ -74,7 +75,7 @@ use crate::meter::{MeterReader, MeterWriter};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
 use crate::plan::{Delta, Placement, Plan};
-use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
+use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec};
 use crate::tap::{TapReader, TapWriter};
 
 /// Why [`Editor::commit`] failed.
@@ -300,7 +301,8 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
-/// Why [`Editor::open_tap`] or [`Editor::open_meter`] refused: a source that
+/// Why [`Editor::open_tap`], [`Editor::open_event_tap`] or
+/// [`Editor::open_meter`] refused: a source that
 /// does not exist in the spec **at the time of the call**, edits not yet
 /// committed included. Nothing was opened.
 ///
@@ -331,6 +333,15 @@ pub enum MissingSource {
         /// The graph's input width.
         width: usize,
     },
+    /// The node has no such event output port.
+    EventPort {
+        /// The node.
+        node: NodeKey,
+        /// The port asked for.
+        port: u16,
+        /// The node's event output width.
+        width: usize,
+    },
 }
 
 impl std::fmt::Display for MissingSource {
@@ -343,6 +354,11 @@ impl std::fmt::Display for MissingSource {
             Self::Global { channel, width } => {
                 write!(f, "no global input {channel} (the graph has {width})")
             }
+            Self::EventPort { node, port, width } => write!(
+                f,
+                "node {} has no event output {port} (it has {width})",
+                node.0
+            ),
         }
     }
 }
@@ -405,8 +421,8 @@ impl std::error::Error for MissingSource {}
 /// editor.insert(half, "half", ForkByClone(Half));
 /// let topology = &mut editor.spec_mut().topology;
 /// topology.inputs = ChannelLayout::MONO;
-/// topology.edges.insert(InPort { node: half, port: 0 }, Edge::Direct(Source::Global(0)));
-/// topology.outputs = vec![Source::Node(OutPort { node: half, port: 0 })];
+/// topology.connect(InPort { node: half, port: 0 }, Edge::Direct(Source::Global(0)));
+/// topology.set_outputs([Source::Node(OutPort { node: half, port: 0 })]);
 /// editor.commit().expect("compiles");
 ///
 /// // On the audio thread:
@@ -440,6 +456,10 @@ pub struct Editor {
     pending_taps: Vec<(TapId, TapWriter)>,
     /// Each open tap's reader, to see which were dropped.
     tap_readers: BTreeMap<TapId, (usize, std::sync::Weak<()>)>,
+    /// Event tap producers opened since the last commit, sent with the next.
+    pending_event_taps: Vec<(EventTapId, EventTapWriter)>,
+    /// Each open event tap's reader, to see which were dropped.
+    event_tap_readers: BTreeMap<EventTapId, std::sync::Weak<()>>,
     /// Meter writers opened since the last commit, sent with the next.
     pending_meters: Vec<(MeterId, MeterWriter)>,
     /// Each open meter's lane capacity and reader, to see which were dropped.
@@ -655,6 +675,98 @@ impl Editor {
         gone.len()
     }
 
+    /// Declares a tap on one event output (`source`) and returns its reader.
+    /// It takes effect at the next [`commit`](Self::commit), which compiles
+    /// the tap's op and hands the executor its producer; until then the
+    /// reader sees nothing. `capacity` is a count of events: a
+    /// non-note-off is refused once that many are held, a note-off is kept up
+    /// to [`note_off_room`](crate::note_off_room) of it, and each refusal is
+    /// counted ([`EventTapReader::take_lost`]).
+    ///
+    /// What the reader gets is the MIDI events the port carries, each with the
+    /// frame it was due on ([`TapEvent`](crate::TapEvent)); ramps, segments,
+    /// harmony and resync are not copied. `align` is as for
+    /// [`open_tap`](Self::open_tap): [`TapAlign::ToOutput`] delays the port by
+    /// the compensation an output of the same node gets (the frames are then
+    /// the output's time), [`TapAlign::Raw`] reads it as it leaves its node.
+    /// The frames are on the clock of [`EventTapReader::rate`], the rate the
+    /// graph is prepared at now.
+    ///
+    /// Opening an id again replaces it. A tap the topology does not name
+    /// compiles to nothing. The port must exist now, in the spec as edited
+    /// (uncommitted edits included): a key no node has or a port past the
+    /// node's event outputs is refused with [`MissingSource`] and nothing is
+    /// opened. A port that narrows or vanishes **later** reads no events, the
+    /// commit succeeds, the reader is not told and nothing counts as lost (the
+    /// writer is kept, so the stream resumes if a node with that port
+    /// returns under the same key by [`replace`](Self::replace); a removed
+    /// node's key is not read again). A tap sees the port before the engine's
+    /// declick, as an audio tap does.
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource::Node`] or [`MissingSource::EventPort`].
+    pub fn open_event_tap(
+        &mut self,
+        id: EventTapId,
+        source: EventOut,
+        align: TapAlign,
+        capacity: usize,
+    ) -> Result<EventTapReader, MissingSource> {
+        let t = &self.spec.topology;
+        if !t.nodes.contains_key(&source.node) {
+            return Err(MissingSource::Node { node: source.node });
+        }
+        let width = self
+            .shapes
+            .get(&source.node)
+            .map_or(0, |s| usize::from(s.event_out));
+        if usize::from(source.port) >= width {
+            return Err(MissingSource::EventPort {
+                node: source.node,
+                port: source.port,
+                width,
+            });
+        }
+        let (reader, writer) = EventTapReader::pair(id, capacity, self.prepare.sample_rate());
+        self.pending_event_taps.retain(|(k, _)| *k != id);
+        self.pending_event_taps.push((id, writer));
+        self.event_tap_readers.insert(id, reader.watch());
+        self.spec_mut().topology.event_taps.insert(
+            id,
+            EventTapSpec {
+                source: Some(source),
+                align,
+            },
+        );
+        Ok(reader)
+    }
+
+    /// Removes an event tap: its op leaves the plan at the next commit and
+    /// its producer is freed on the control side.
+    pub fn close_event_tap(&mut self, id: EventTapId) {
+        self.pending_event_taps.retain(|(k, _)| *k != id);
+        self.event_tap_readers.remove(&id);
+        self.spec_mut().topology.event_taps.remove(&id);
+    }
+
+    /// Closes every event tap whose [`EventTapReader`] was dropped, and
+    /// returns how many. A dropped reader leaves its tap open (the audio
+    /// thread then writes nothing for it); this is the control-side tick that
+    /// takes it out of the plan. Moves the spec only when it closes one.
+    pub fn reap_event_taps(&mut self) -> usize {
+        let gone: Vec<EventTapId> = self
+            .event_tap_readers
+            .iter()
+            .filter(|(_, alive)| alive.strong_count() == 0)
+            .map(|(&id, _)| id)
+            .collect();
+        for &id in &gone {
+            self.close_event_tap(id);
+        }
+        gone.len()
+    }
+
     /// Declares a level meter and returns its reader, **off** until
     /// [`MeterReader::enable`]. It takes effect at the next
     /// [`commit`](Self::commit), which compiles the meter's op and hands the
@@ -716,7 +828,7 @@ impl Editor {
     fn check_meter_widths(&self) -> Result<(), CommitError> {
         let t = &self.spec.topology;
         for (&meter, spec) in &t.meters {
-            let sources = spec.sources(&t.outputs).len();
+            let sources = spec.lanes(t.outputs.len());
             match self.meter_readers.get(&meter) {
                 Some(&(capacity, _)) if sources > capacity => {
                     return Err(CommitError::MeterWidth {
@@ -787,6 +899,8 @@ impl Editor {
             latency_cuts: BTreeSet::new(),
             pending_taps: Vec::new(),
             tap_readers: BTreeMap::new(),
+            pending_event_taps: Vec::new(),
+            event_tap_readers: BTreeMap::new(),
             pending_meters: Vec::new(),
             meter_readers: BTreeMap::new(),
             next_gen: BTreeMap::new(),
@@ -1373,24 +1487,29 @@ impl Editor {
     }
 
     /// Removes `key` and every edge that touches it. Output channels it fed
-    /// become [`Source::Zero`].
+    /// are left empty (silence).
     pub fn remove(&mut self, key: NodeKey) {
         self.touch();
         let t = &mut self.spec.topology;
         t.nodes.remove(&key);
-        t.edges.retain(|at, e| {
-            let from = match *e {
-                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p, .. }) => {
-                    Some(p.node)
-                }
-                Edge::Direct(_) => None,
-            };
-            at.node != key && from != Some(key)
-        });
-        for s in &mut t.outputs {
-            if matches!(s, Source::Node(p) if p.node == key) {
-                *s = Source::Zero;
+        t.edges.retain(|at, edges| {
+            if at.node == key {
+                return false;
             }
+            edges.retain(|e| {
+                let from = match *e {
+                    Edge::Direct(Source::Node(p))
+                    | Edge::Feedback(FeedbackFrom { from: p, .. }) => Some(p.node),
+                    Edge::Direct(_) => None,
+                };
+                from != Some(key)
+            });
+            // A port left with no edge is an unfed port: no key.
+            !edges.is_empty()
+        });
+        for sources in &mut t.outputs {
+            // A channel that lost its only source is empty: silence.
+            sources.retain(|s| !matches!(s, Source::Node(p) if p.node == key));
         }
         // A key is the author's and can be inserted again after a removal, so
         // a tap left naming it would read the new node.
@@ -1399,6 +1518,12 @@ impl Editor {
                 if matches!(s, Source::Node(p) if p.node == key) {
                     *s = Source::Zero;
                 }
+            }
+        }
+        // And an event tap, which then reads nothing.
+        for spec in t.event_taps.values_mut() {
+            if spec.source.is_some_and(|s| s.node == key) {
+                spec.source = None;
             }
         }
         // A key is the author's and can be inserted again after a removal, so
@@ -1786,6 +1911,7 @@ impl Editor {
         self.check_meter_widths()?;
         if self.pending.is_empty()
             && self.pending_taps.is_empty()
+            && self.pending_event_taps.is_empty()
             && self.pending_meters.is_empty()
             && self.fades.is_empty()
             && self.latency_cuts.is_empty()
@@ -2035,6 +2161,7 @@ impl Editor {
             ParamState::new(ports, max, Some(Arc::clone(cells)))
         };
         let taps = std::mem::take(&mut self.pending_taps);
+        let event_taps = std::mem::take(&mut self.pending_event_taps);
         let meters = std::mem::take(&mut self.pending_meters);
         let commit = Commit::build(
             self.sent + 1,
@@ -2042,7 +2169,11 @@ impl Editor {
             delta,
             units,
             params,
-            Opened { taps, meters },
+            Opened {
+                taps,
+                event_taps,
+                meters,
+            },
         );
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
         if self.channels.to_executor.try_push(commit).is_err() {

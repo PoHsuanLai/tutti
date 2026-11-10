@@ -5643,10 +5643,16 @@ two instruments to the master without a mix node.
 
 - **One source** is aliased: the sink reads the source's slot. No op, no
   copy, as today. A one-source port is bit-for-bit what it was.
-- **No source** is silence (`ARef::Zero`), as today.
-- **A source is an `Edge`** (`Edge::Direct(Source)` or `Edge::Feedback`). A
-  `Source::Zero` is refused beside any other source: it adds nothing and
-  would make two equal wirings compare unequal.
+- **No source** is silence (`ARef::Zero`), as today. The empty set is the one
+  representation of silence: an absent key for an input port, an empty `Vec`
+  for an output channel.
+- **A source is an `Edge`** (`Edge::Direct(Source)` or `Edge::Feedback`).
+  `Source::Zero` is **never stored in a set**, alone or beside others: two
+  representations of silence (`[]` and `[Zero]`) would make equal wirings
+  compare unequal, and the rebuild's diff and `topology::disagreements`
+  compare these sets. `Zero` stays a value a caller may pass to a one-source
+  setter and a one-source getter may return for an empty set; the setter
+  stores the empty set.
 - **Sources are distinct.** The same `Edge` twice at one sink is
   `Invalid::DuplicateEdge` (**new**), as events refuse a duplicate. A source
   wired twice at the same gain is a weight of 2, written as a weight.
@@ -5887,8 +5893,16 @@ pub struct Topology {
   `GraphSpec::connect_events`. `GraphSpec` re-exposes them. A raw write to
   `edges` is still legal and is canonicalised by compile's sort, as for
   events.
+- **Every writer normalises silence to the empty set:** `Topology::connect`
+  given `Edge::Direct(Source::Zero)` stores nothing, `Topology::set_outputs`
+  (**new**: one source per channel) stores `[]` for a `Zero`, the builder's
+  per-channel default is `[]`, `set_source`/`set_output` with `Zero` clear the
+  port or channel, the session's `set_source`/`set_output_source` with
+  `GraphSource::Silence` do the same, and `Editor::remove` leaves a channel
+  that lost its only source `[]`.
 - `Topology::validate` adds `Invalid::DuplicateEdge`, and
-  `Invalid::SilenceBesideSources` for a `Source::Zero` that is not alone; the
+  `Invalid::StoredSilence` for any `Source::Zero` found in a set (alone or
+  beside others; `Sink` names an input port or an output channel); the
   existing range checks run per edge. `Invalid::Cycle` ignores nothing new.
 - **Why one map and not a `GraphSpec.sums` beside it.** A second map would
   keep a "normal" single edge and a "sum" edge as two things for the same
@@ -5927,8 +5941,8 @@ of `graph.rs` carry the same sentence and change with it. So does
 | `output_source` / `set_output_source` | `output_sources(channel)` / `set_output_sources(channel, &[GraphSource])`, with `set_output_source` as exactly one |
 | `set_outputs_from(node)` | unchanged: it replaces every output's set with the one source |
 
-`GraphSource::Silence` in a set of several is refused (as `Source::Zero`
-beside others); in a set of one it clears the port, as now. `GraphBuilder::connect`
+`GraphSource::Silence` is never stored: in a set of several it is refused
+(`StoredSilence`), in a set of one it clears the port (the empty set), as now. `GraphBuilder::connect`
 adds a source (it replaced); `connect_output` likewise; `disconnect(node,
 port)` clears the port and `disconnect_from` (**new**) removes one. This
 changes the meaning of `connect` for a caller that wired a port twice to
@@ -6031,7 +6045,7 @@ mutation in a comment.
 - **Plan tests.** `verify` rejects an `Op::Sum` with one source, 65 sources,
   or a write that aliases a non-first read. A feedback addend sorts last and
   has no ring. A fan-in with a feedback edge and a direct edge sums both.
-- **Compile refusals.** `Invalid::DuplicateEdge` and `SilenceBesideSources`.
+- **Compile refusals.** `Invalid::DuplicateEdge` and `StoredSilence`.
 
 ##### 10. Staging of the fan-in
 
@@ -6052,7 +6066,11 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    hand-built `Topology`.
 4. **Session API.** `sources`, `set_sources`, `add_source`, `remove_source`,
    the output forms, the builder's `connect` and `disconnect_from`. `ChannelSumNode`
-   still exists. Before `connect` starts adding, the PR lists every caller in
+   still exists. `Graph::follow_outputs` snapshots each output channel's
+   sources into an output tap's `sources`; with fan-in on an output that
+   cannot express the sum, so this PR gives `TapSpec` an outputs variant
+   (post-sum and aligned, like `MeterSpec::Outputs`), or `open_output_tap`
+   reads only the first source. Before `connect` starts adding, the PR lists every caller in
    the workspace (code, tests, examples, doc comments) that connects one port
    twice, and decides each: a caller that meant to replace moves to
    `set_source` in the same PR, so no render changes silently.
@@ -6575,6 +6593,7 @@ the four lanes above, the graph's own surface is:
 | Buses and coercion between declared layouts | Lane 4 |
 | Latency compensation, tails, feedback edges | Built (the compiler) |
 | Tap and level meter on any port | Built (`Op::Tap`, `Op::Meter`) |
+| Event tap (any event output, out to a thread) | Built (`Op::EventTap`, `EventTapReader`, `Graph::open_event_tap`; doc 017, stage E1) |
 | Inlet (a thread's ring into the graph) | Built (`Graph::open_inlet`; `InletNode` is its implementation, not a node an author adds) |
 | Event fan-in (merge) | Built (`Op::EventMerge`) |
 | Param modulation and automation on a param port | Built (doc 014: the compiler's lane per param) |
@@ -6594,14 +6613,19 @@ the four lanes above, the graph's own surface is:
   they mean. It is **M4**, after M1. It gives any node,
   a plugin included, the parallel-processing knob hosts expose per effect,
   with the latency alignment only the graph can do.
-- **Event tap and event inlet.** Audio has a tap and an inlet; events have
-  neither as a primitive. Copying events out of any event port is done today
-  by MIDI-specific nodes (`MidiOutNode`, the queue nodes), and feeding events
-  in by `MidiInputNode` and `MidiQueueNode`. An event tap (`Op::EventTap`,
-  `TapReader`'s event sibling) and an event inlet (`Graph::open_event_inlet`)
-  would make those nodes users of the primitive. It is the MIDI lanes' work
-  (doc 017 owns the event side) and gets its own amendment there; this
-  document records only that it belongs to the graph.
+- **Event tap and event inlet.** Audio has a tap and an inlet; events had
+  neither as a primitive. Copying events out of any event port was done by
+  MIDI-specific nodes (`MidiOutNode`, the queue nodes), and feeding events
+  in by `MidiInputNode` and `MidiQueueNode`. The **event tap is built**
+  (doc 017 stage E1): `Op::EventTap`, `TapReader`'s event sibling, a plan op of
+  the `EVENTS` cost class that claims its `EventTapWriter` like `Op::Tap`
+  claims its lanes, `DelayKey::EventTap` for `TapAlign::ToOutput`, carried
+  across plans by `EventTapId` (a port that goes missing keeps its table entry
+  and gets no op), and not in a fork. The reference interpreter knows no taps,
+  audio or event, so the serial/pooled comparison and analytic figures hold it
+  (`tests/event_tap.rs`). The event inlet (`Graph::open_event_inlet`) is E2.
+  It is the MIDI lanes' work (doc 017 owns the event side); this document
+  records only that it belongs to the graph.
 
 **Kept as nodes, on purpose:**
 
@@ -7059,15 +7083,14 @@ fourth.
   arena at `addEvent` or the pool at `fill_midi_events` refused it; VST2 in
   `dropped_midi_out`), since a `START` without its `END` would corrupt the
   stream after it. VST2's check assumes one producer, as
-  `audioMasterProcessEvents` being an audio-thread callback gives it. AU's MIDI-output callback delivers it too: `tutti_plugin_types::Midi1Decoder`
-  reassembles the bytes (a message may span packets and calls) in a buffer
-  reserved at `install` and hands the sink UMP SysEx7 packets contiguous in
-  one batch, at the frame offset of the packet holding its `0xF0`; a message
-  past `SYSEX_OUT_CAPACITY` (1538 bytes, 256 packets: one batch) or ended by
-  another status byte is dropped whole and counted
-  (`AuMidiOutput::sysex_dropped`). The decoder is platform independent and
-  unit-tested; the macOS code only walks the `MIDIPacketList`. Nothing wires
-  that callback into the server today. The AU input side reassembles
+  `audioMasterProcessEvents` being an audio-thread callback gives it. AU's MIDI-output callback reads the bytes with
+  `tutti_ump::Midi1Parser` (a message may span packets and calls) and hands
+  the sink UMP SysEx7 packets as the parser completes them, each at the frame
+  offset of the packet holding its `0xF0`, in batches that may split a
+  message: the receiver's intake (`MidiIntake`) skips the rest of a message
+  that lost a packet. A SysEx ended by another status byte gets no `END`, and
+  the receiver drops the open message. Nothing wires that callback into the
+  server today. The AU input side reassembles
   with the `SysExAssembler`, reserved by `AuInstance::initialize`, so
   `send_midi` allocates nothing and counts what it drops
   (`AuInstance::sysex_dropped`); it hands `MusicDeviceSysEx` the complete

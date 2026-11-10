@@ -54,9 +54,8 @@ let synth = PolySynth::new(SynthConfig {
 let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
 let synth_key = NodeKey(1);
 let params = editor.insert(synth_key, "synth", synth);
-editor.spec_mut().topology.outputs = (0..2)
-    .map(|port| Source::Node(OutPort { node: synth_key, port }))
-    .collect();
+editor.spec_mut().topology.set_outputs((0..2)
+    .map(|port| Source::Node(OutPort { node: synth_key, port })));
 editor.commit().expect("a one-node graph commits");
 
 // Its controls: the live params, by address.

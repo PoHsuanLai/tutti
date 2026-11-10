@@ -450,6 +450,21 @@ Today CLAP uses `max(0)` plus `clamp_times`, VST3 uses
   `tutti-plugin-types`' one constant (P5).
 - The plugin-server's `--features au`-only clippy failure (the dead
   `standing`; plan item 4) goes with P5.
+- **A block's side band moves into the slab (decided 2026-11-10).** Today
+  `HostMessage::ProcessAudio` carries the block's MIDI, parameter,
+  note-expression, chord, scale and transport changes over the socket,
+  about 5 KB inline, and `BridgeMessage::AudioProcessed` and the client's
+  `AudioResponse` carry the plugin's MIDI out back. Each block is
+  serialized, written, read and decoded, and the three enums carry
+  `#[allow(clippy::large_enum_variant)]`, because a box would be an
+  allocation at each end per block (P2b). The side band goes into the
+  block's slab slot, beside its audio, as a fixed-capacity area with a
+  plain fixed-layout encoding and a version. The socket then carries
+  `ProcessAudio { seq, frames }` and a reply as small, so all three
+  allows go, and so does the per-block encode. It lands with step 5,
+  which rewrites the server's per-block loop anyway, with a
+  `PROTOCOL_VERSION` bump. P2b's kept frame buffers stay, for state
+  transfer and the control messages.
 
 ## 10. Tests
 

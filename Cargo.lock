@@ -3525,6 +3525,7 @@ dependencies = [
  "coreaudio-sys",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
+ "tutti-midi-protocol",
  "tutti-plugin-types",
  "tutti-types",
  "tutti-ump",
@@ -3645,7 +3646,10 @@ dependencies = [
  "libm",
  "rand 0.8.8",
  "rustfft",
+ "serde",
  "thiserror 2.0.21",
+ "tutti-dsp",
+ "tutti-fixtures",
  "tutti-types",
 ]
 
@@ -3803,11 +3807,14 @@ dependencies = [
  "bytemuck",
  "criterion",
  "crossbeam-queue",
+ "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-rt",
+ "tutti-tempo",
+ "tutti-transport",
  "tutti-types",
  "tutti-ump",
 ]

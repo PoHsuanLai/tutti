@@ -212,7 +212,7 @@ fn executor_for(shape: &Topo) -> Executor {
         ed.spec_mut()
             .topology
             .edges
-            .insert(InPort { node: sink, port }, Edge::Direct(from));
+            .insert(InPort { node: sink, port }, vec![Edge::Direct(from)]);
     };
     let node = |k: NodeKey| Source::Node(OutPort { node: k, port: 0 });
     let last = match *shape {
@@ -257,7 +257,7 @@ fn executor_for(shape: &Topo) -> Executor {
             last
         }
     };
-    ed.spec_mut().topology.outputs = vec![node(last)];
+    ed.spec_mut().topology.set_outputs(vec![node(last)]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -386,13 +386,15 @@ fn form_executor(n: usize, nop: impl Fn() -> FormNop) -> Executor {
             ed.spec_mut()
                 .topology
                 .edges
-                .insert(InPort { node: k, port: c }, Edge::Direct(from));
+                .insert(InPort { node: k, port: c }, vec![Edge::Direct(from)]);
         }
     }
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(n as u64 - 1),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(n as u64 - 1),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

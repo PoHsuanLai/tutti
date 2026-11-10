@@ -133,7 +133,7 @@ fn graph(workers: usize, declared: bool) -> (Executor, Vec<MidiOutControls>, Vec
         }
         connect(&mut ed, source, sink);
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

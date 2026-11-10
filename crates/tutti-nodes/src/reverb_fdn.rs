@@ -9,6 +9,7 @@ use tutti_types::{
     Db, Depth, Hz, Mix, Param, ParamCell, ParamRaw, Seconds, StereoWidth, Unit, UnitAddr, UnitParam,
 };
 
+use crate::blend::DryWet;
 use crate::ramp::{LastGood, block_driven};
 use crate::reverb::{ControlParams, DesignNode, FreeverbNode, NodeDesign};
 
@@ -216,6 +217,7 @@ impl ControlParams for FdnParams {
 
 impl NodeDesign for FdnDesign {
     type Params = FdnParams;
+    type Blend = DryWet;
 
     fn params(&self, c: FdnControls) -> FdnParams {
         let d = FdnControls::DEFAULT;

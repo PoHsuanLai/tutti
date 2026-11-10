@@ -69,10 +69,12 @@ fn rig(node: HarmonyNode, max: usize) -> (Editor, Executor, HarmonyControls, See
             port: 0,
         }),
     );
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(2),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(2),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     (ed, exec, controls, seen)
 }

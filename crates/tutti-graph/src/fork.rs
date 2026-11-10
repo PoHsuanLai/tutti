@@ -603,9 +603,9 @@ impl Error for ForkError {
 /// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
 /// let (mut editor, _exec) = Editor::new(prepare);
 /// editor.insert(NodeKey(1), "silence", ForkByClone(Silence));
-/// editor.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(
+/// editor.spec_mut().topology.set_outputs([tutti_graph::Source::Node(
 ///     tutti_graph::OutPort { node: NodeKey(1), port: 0 },
-/// )];
+/// )]);
 /// assert!(editor.fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, prepare).is_ok());
 /// ```
 #[derive(Clone, Debug)]
@@ -681,9 +681,9 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
 /// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
 /// let (mut editor, _exec) = Editor::new(prepare);
 /// editor.insert(NodeKey(1), "silence", Unforkable(Silence));
-/// editor.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(
+/// editor.spec_mut().topology.set_outputs([tutti_graph::Source::Node(
 ///     tutti_graph::OutPort { node: NodeKey(1), port: 0 },
-/// )];
+/// )]);
 /// assert_eq!(
 ///     editor.fork(ForkTarget::Master, ForkMode::Live, prepare).err(),
 ///     Some(ForkError::NotForkable { key: NodeKey(1) }),
@@ -891,39 +891,44 @@ impl Editor {
         prepare: Prepare,
     ) -> Result<PendingFork, ForkError> {
         let live = self.spec();
-        let (keys, outputs) = match target {
-            // What the global outputs hear, and nothing else: a node no
-            // output reaches renders nothing into the fork, so it is neither
-            // copied nor asked to be forkable (an unrouted mic monitor does
-            // not refuse the export; an unrouted plugin launches no server).
-            // The same reachability `graph_tail` folds over.
-            ForkTarget::Master => (
-                self.upstream(live.topology.outputs.iter().filter_map(|s| match s {
-                    Source::Node(p) => Some(p.node),
-                    _ => None,
-                })),
-                live.topology.outputs.clone(),
-            ),
-            ForkTarget::Node(key) => {
-                let Some(shape) = self.shapes().get(&key) else {
-                    return Err(ForkError::NoSuchNode { key });
-                };
-                let outs = shape.audio_out.count();
-                if outs == 0 || live.topology.outputs.is_empty() {
-                    return Err(ForkError::NoOutputs { key });
+        let (keys, outputs) =
+            match target {
+                // What the global outputs hear, and nothing else: a node no
+                // output reaches renders nothing into the fork, so it is neither
+                // copied nor asked to be forkable (an unrouted mic monitor does
+                // not refuse the export; an unrouted plugin launches no server).
+                // The same reachability `graph_tail` folds over.
+                ForkTarget::Master => {
+                    (
+                        self.upstream(live.topology.outputs.iter().flatten().filter_map(
+                            |s| match s {
+                                Source::Node(p) => Some(p.node),
+                                _ => None,
+                            },
+                        )),
+                        live.topology.outputs.clone(),
+                    )
                 }
-                // Clamp, not wrap (see `Editor::fork`'s docs).
-                let outputs = (0..live.topology.outputs.len())
-                    .map(|c| {
-                        Source::Node(OutPort {
-                            node: key,
-                            port: (c as u16).min(outs - 1),
+                ForkTarget::Node(key) => {
+                    let Some(shape) = self.shapes().get(&key) else {
+                        return Err(ForkError::NoSuchNode { key });
+                    };
+                    let outs = shape.audio_out.count();
+                    if outs == 0 || live.topology.outputs.is_empty() {
+                        return Err(ForkError::NoOutputs { key });
+                    }
+                    // Clamp, not wrap (see `Editor::fork`'s docs).
+                    let outputs = (0..live.topology.outputs.len())
+                        .map(|c| {
+                            vec![Source::Node(OutPort {
+                                node: key,
+                                port: (c as u16).min(outs - 1),
+                            })]
                         })
-                    })
-                    .collect();
-                (self.upstream([key]), outputs)
-            }
-        };
+                        .collect();
+                    (self.upstream([key]), outputs)
+                }
+            };
         // Every source first, so a refusal forks nothing (a fork may clone a
         // large unit, and would be thrown away).
         let mut sources = Vec::with_capacity(keys.len());
@@ -967,14 +972,15 @@ impl Editor {
                     .edges
                     .iter()
                     .filter(|(at, _)| keys.contains(&at.node))
-                    .map(|(at, e)| (*at, *e))
+                    .map(|(at, e)| (*at, e.clone()))
                     .collect(),
                 outputs,
                 inputs: live.topology.inputs,
-                // A fork carries no tap and no meter: the live consumer's ring
-                // and cells are the live executor's, and an export opens its
-                // own on the fork.
+                // A fork carries no tap (audio or event) and no meter: the live
+                // consumer's ring and cells are the live executor's, and an
+                // export opens its own on the fork.
                 taps: BTreeMap::new(),
+                event_taps: BTreeMap::new(),
                 meters: BTreeMap::new(),
             },
             events: live
@@ -1069,7 +1075,8 @@ impl Editor {
                         port: u16::MAX,
                     },
                 )
-                .filter_map(|(_, e)| match *e {
+                .flat_map(|(_, es)| es)
+                .filter_map(|e| match *e {
                     Edge::Direct(Source::Node(p))
                     | Edge::Feedback(FeedbackFrom { from: p, .. }) => Some(p.node),
                     Edge::Direct(_) => None,

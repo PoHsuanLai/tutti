@@ -27,9 +27,8 @@
 
 use tutti_types::Samples;
 
-use crate::network::{
-    Absorption, Band, Bounds, Effort, Matrix, Network, Realization, Setup, Stage,
-};
+use crate::network::{Absorption, Band, Bounds, Matrix, Network, Stage};
+use crate::{Effect, Effort, Realization, Setup};
 
 /// The frames between control updates: every ramp advances once a chunk.
 const CHUNK: usize = 32;
@@ -98,9 +97,26 @@ impl Slew {
     }
 }
 
+/// A deliberate flaw the contract's mutation records plant in a kernel (design
+/// 024 section 6.1): test-only.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Flaw {
+    #[default]
+    None,
+    /// `reset` empties the lines and leaves every ramp where it was.
+    ResetKeepsRamps,
+    /// `process` restarts its chunk count at every call, so a ramp's clock is
+    /// the block's, not the stream's.
+    RestartClock,
+}
+
 /// The realization of a feedback delay network.
 #[derive(Clone, Debug)]
 pub struct FdnKernel {
+    #[cfg(test)]
+    flaw: Flaw,
+
     rate: f64,
     ramp_chunks: u32,
     max_lines: usize,
@@ -152,6 +168,8 @@ pub struct FdnKernel {
 impl FdnKernel {
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(test)]
+            flaw: Flaw::None,
             rate: 48_000.0,
             ramp_chunks: 1,
             max_lines: 0,
@@ -210,6 +228,12 @@ impl FdnKernel {
             .sum()
     }
 
+    /// Plants `flaw` (for the contract's mutation records).
+    #[cfg(test)]
+    pub(crate) fn flawed(&mut self, flaw: Flaw) {
+        self.flaw = flaw;
+    }
+
     fn start_phase(&self, j: usize) -> f64 {
         std::f64::consts::TAU * j as f64 / self.max_lines.max(1) as f64
     }
@@ -217,28 +241,36 @@ impl FdnKernel {
     /// Back to silence with every ramp landed: what a fresh realization is after its
     /// first retarget.
     fn settle(&mut self) {
+        self.settle_with(true);
+    }
+
+    /// [`settle`](Self::settle), with the ramps landed only if `land` (a test-only
+    /// flaw leaves them where they were).
+    fn settle_with(&mut self, land: bool) {
         self.buf.fill(0.0);
         self.pre.fill(0.0);
         self.w = 0;
         self.pre_w = 0;
         self.pos = 0;
         self.state.fill([0.0; 4]);
-        for s in &mut self.len {
-            s.snap();
-        }
-        self.pre_len.snap();
-        self.v_len.snap();
-        self.depth.snap();
-        self.wet.snap();
-        self.width.snap();
-        for g in &mut self.gain {
-            g.iter_mut().for_each(Slew::snap);
-        }
-        for s in self.v.iter_mut().chain(&mut self.input) {
-            s.snap();
-        }
-        for o in &mut self.out {
-            o.iter_mut().for_each(Slew::snap);
+        if land {
+            for s in &mut self.len {
+                s.snap();
+            }
+            self.pre_len.snap();
+            self.v_len.snap();
+            self.depth.snap();
+            self.wet.snap();
+            self.width.snap();
+            for g in &mut self.gain {
+                g.iter_mut().for_each(Slew::snap);
+            }
+            for s in self.v.iter_mut().chain(&mut self.input) {
+                s.snap();
+            }
+            for o in &mut self.out {
+                o.iter_mut().for_each(Slew::snap);
+            }
         }
         for j in 0..self.max_lines {
             self.phase[j] = self.start_phase(j);
@@ -262,46 +294,7 @@ impl FdnKernel {
     /// above 1.
     fn absorption_gains(&self, a: Absorption) -> [f32; 3] {
         let g = [Band::Low, Band::Mid, Band::High].map(|b| a.gain(b).get());
-        if !g.iter().all(|x| x.is_finite() && *x >= 0.0) {
-            return [0.0; 3];
-        }
-        let peak = self.peak_response(g);
-        if peak > 1.0 {
-            g.map(|x| (f64::from(x) * 0.9999 / peak) as f32)
-        } else {
-            g
-        }
-    }
-
-    /// The largest `|y(w)|` of the absorption with gains `g = [low, mid,
-    /// high]`, over a grid of frequencies.
-    fn peak_response(&self, g: [f32; 3]) -> f64 {
-        let (low, mid, high) = (f64::from(g[0]), f64::from(g[1]), f64::from(g[2]));
-        let (c2, c1) = (mid - high, low - mid);
-        // |L1|, |L2| <= 1, so the response is at most the sum of the magnitudes
-        // of its three terms: when that is under 1 (every gain falling with
-        // frequency, the usual case) there is nothing to measure.
-        let bound = high.abs() + c2.abs() + c1.abs();
-        if bound <= 1.0 {
-            return bound;
-        }
-        let pole = self.pole.map(f64::from);
-        // |L(w)|: ((1 - p) / (1 - p e^-jw))^2.
-        let l = |p: f64, w: f64| -> (f64, f64) {
-            let (re, im) = (1.0 - p * libm::cos(w), p * libm::sin(w));
-            let den = re * re + im * im;
-            let (hr, hi) = ((1.0 - p) * re / den, -(1.0 - p) * im / den);
-            (hr * hr - hi * hi, 2.0 * hr * hi)
-        };
-        let mut peak = 0.0f64;
-        for k in 0..=96 {
-            let w = std::f64::consts::PI * (f64::from(k) / 96.0).powi(2);
-            let (a, b) = l(pole[0], w);
-            let (c, d) = l(pole[1], w);
-            let (re, im) = (high + c2 * c + c1 * a, c2 * d + c1 * b);
-            peak = peak.max(libm::hypot(re, im));
-        }
-        peak
+        rescale_bands(g, self.pole)
     }
 
     fn begin_chunk(&mut self) {
@@ -343,6 +336,54 @@ impl FdnKernel {
     }
 }
 
+/// The gains `g = [low, mid, high]` of a three-band absorption whose one-poles are
+/// `pole` (`exp(-2 pi fc / fs)` for the two crossovers), scaled to peak at 0.9999
+/// if their response would exceed 1 anywhere; NaN, infinite or negative gains
+/// are silence. The model's design applies it too, so the gains a network
+/// carries are the ones this kernel runs.
+pub(crate) fn rescale_bands(g: [f32; 3], pole: [f32; 2]) -> [f32; 3] {
+    if !g.iter().all(|x| x.is_finite() && *x >= 0.0) {
+        return [0.0; 3];
+    }
+    let peak = peak_response(g, pole);
+    if peak > 1.0 {
+        g.map(|x| (f64::from(x) * 0.9999 / peak) as f32)
+    } else {
+        g
+    }
+}
+
+/// The largest `|y(w)|` of the absorption with gains `g = [low, mid, high]`,
+/// over a grid of frequencies.
+pub(crate) fn peak_response(g: [f32; 3], pole: [f32; 2]) -> f64 {
+    let (low, mid, high) = (f64::from(g[0]), f64::from(g[1]), f64::from(g[2]));
+    let (c2, c1) = (mid - high, low - mid);
+    // |L1|, |L2| <= 1, so the response is at most the sum of the magnitudes
+    // of its three terms: when that is under 1 (every gain falling with
+    // frequency, the usual case) there is nothing to measure.
+    let bound = high.abs() + c2.abs() + c1.abs();
+    if bound <= 1.0 {
+        return bound;
+    }
+    let pole = pole.map(f64::from);
+    // |L(w)|: ((1 - p) / (1 - p e^-jw))^2.
+    let l = |p: f64, w: f64| -> (f64, f64) {
+        let (re, im) = (1.0 - p * libm::cos(w), p * libm::sin(w));
+        let den = re * re + im * im;
+        let (hr, hi) = ((1.0 - p) * re / den, -(1.0 - p) * im / den);
+        (hr * hr - hi * hi, 2.0 * hr * hi)
+    };
+    let mut peak = 0.0f64;
+    for k in 0..=96 {
+        let w = std::f64::consts::PI * (f64::from(k) / 96.0).powi(2);
+        let (a, b) = l(pole[0], w);
+        let (c, d) = l(pole[1], w);
+        let (re, im) = (high + c2 * c + c1 * a, c2 * d + c1 * b);
+        peak = peak.max(libm::hypot(re, im));
+    }
+    peak
+}
+
 /// `buf[(w - delay) mod cap]` interpolated to a fractional `delay` of at least 0.
 #[inline]
 fn read(buf: &[f32], w: usize, delay: f32) -> f32 {
@@ -357,7 +398,9 @@ fn read(buf: &[f32], w: usize, delay: f32) -> f32 {
     a * (1.0 - frac) + b * frac
 }
 
-impl Realization for FdnKernel {
+impl Realization<Network> for FdnKernel {
+    type Bounds = Bounds;
+
     fn prepare(&mut self, bounds: &Bounds, setup: &Setup) {
         let rate = setup.rate.get();
         self.rate = rate;
@@ -496,6 +539,32 @@ impl Realization for FdnKernel {
         }
     }
 
+    fn reset(&mut self) {
+        #[cfg(test)]
+        if self.flaw == Flaw::ResetKeepsRamps {
+            // Everything goes but the ramps, which stay where they were.
+            self.settle_with(false);
+            return;
+        }
+        self.settle();
+    }
+
+    fn latency(&self) -> Samples {
+        Samples::ZERO
+    }
+
+    fn effort(&self) -> Effort {
+        Effort::Moderate
+    }
+
+    fn fresh(&self) -> Self {
+        let mut fresh = self.clone();
+        fresh.settle();
+        fresh
+    }
+}
+
+impl Effect<Network> for FdnKernel {
     // The per-line arrays (`c_len`, `c_out`, `state`, `buf` rows) are indexed by
     // one line number with the loop's scratch `d`; an iterator over any one of
     // them would only hide the others.
@@ -507,6 +576,10 @@ impl Realization for FdnKernel {
             return;
         }
         let n = self.n;
+        #[cfg(test)]
+        if self.flaw == Flaw::RestartClock {
+            self.pos = 0;
+        }
         let scale = 1.0 / input.len().max(1) as f32;
         let p = self.pole.map(|x| 1.0 - x);
         let mut d = [0.0f32; 16];
@@ -564,23 +637,5 @@ impl Realization for FdnKernel {
             }
             self.pos = (self.pos + 1) % CHUNK;
         }
-    }
-
-    fn reset(&mut self) {
-        self.settle();
-    }
-
-    fn latency(&self) -> Samples {
-        Samples::ZERO
-    }
-
-    fn effort(&self) -> Effort {
-        Effort::Moderate
-    }
-
-    fn fresh(&self) -> Self {
-        let mut fresh = self.clone();
-        fresh.settle();
-        fresh
     }
 }

@@ -66,6 +66,17 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
     (`tutti-engine/src/hearing.rs`).
   Both count what a slow reader loses (`TapReader::take_lost`, and
   `Source::take_lost` through `Recorder::lost`).
+- Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
+  and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
+  `Editor::open_event_tap` / `Graph::open_event_tap` on one event output, read
+  through `EventTapReader` (its own type, not a `TapReader`: no lanes, no
+  layout). MIDI only, each event a `TapEvent { frame, ump }` on the graph's
+  absolute clock (a `u64`, after any `TapAlign` delay), the ring `note_off_room`
+  of the capacity named at open so a note-off outlives the others, loss counted
+  in events (`take_lost`). A port that goes missing later reads nothing and
+  counts nothing; a closed tap compiles to no op and a fork carries none. Its
+  frames are on the rate the reader was opened at (`EventTapReader::rate`), so
+  whoever re-prepares at another rate reopens it (`Graph::reopen_event_taps`).
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
   `InletNode` (`tutti-graph`) copies a standalone ring (`TapReader::standalone`)
   a thread of your own fills (a capture callback) into the graph, and
@@ -342,8 +353,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  `is_note_off` read the type, status and velocity bits a queue
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
                  `frame` and `Midi1Parser`, the status bytes the hosts use
-                 (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
-                 until VST2 and AU move), `NoteId` (`channel * 128 + note`), and
+                 (`tutti-midi-types`' `wire.rs` holds its own until the MIDI
+                 lane deletes it), `NoteId` (`channel * 128 + note`), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
                  (SysEx7 packets to whole messages over a caller's buffer) and its
                  inverse `sysex7_packets` (`SysexMessage::packets`,
@@ -600,9 +611,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, libm and thiserror), keeps every
-  module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
-  the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
+  rustfft, libm and thiserror, and `rand` under the `contract` feature only), keeps every
+  module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
+  the per-module path gate on it; `contract`, behind the off-by-default `contract`
+  feature, is the one public module: the cases a `Design` and its `Realization` are
+  held to, `design_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
@@ -615,16 +628,24 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Realization` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
   `FdnKernel`: its kernel ramps between `retarget`s, in 32-frame chunks counted
   from the last reset, so the output does not depend on the block length), the
-  reverb model of doc 022 (`Network`, `Design`, `Realization`, `Setup`, `Bounds`,
-  `FreeverbDesign`: a plain
+  model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
+  to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
+  one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
+  and a stability test, all bounds stated as such); a `Realization<M>` is one
+  realization of a model and an `Effect<M>` its planar block shape, prepared from a
+  `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
+  over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` are the
+  engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
+  a `System` and an `Lti`, with `Bounds` and `FreeverbDesign`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
-  a realization must follow, and the realization that runs it, moved to each network by
-  `retarget`; a `Design` writes its network in place, `design_into`, because a
+  a realization must follow; a `Design` writes its model in place, `design_into`, because a
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork; `DesignNode<D: NodeDesign>` is
   the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
-  its two instances and `ReverbKind` the choice between them), and re-exports only the
+  its two instances and `ReverbKind` the choice between them; a `NodeDesign` names
+  its `Blend`, `DryWet` for an insert with a mix port and `NoBlend` for a
+  wet-only family), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
   `FdnDesign`, `FreeverbControls`, `FreeverbDesign`).

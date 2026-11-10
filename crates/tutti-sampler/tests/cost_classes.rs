@@ -111,7 +111,7 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executo
                 ed.spec_mut()
                     .topology
                     .edges
-                    .insert(port, Edge::Direct(from));
+                    .insert(port, vec![Edge::Direct(from)]);
             } else {
                 outputs.push(from);
             }
@@ -122,7 +122,7 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executo
             .map(|port| Source::Node(OutPort { node: SUM, port }))
             .collect();
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

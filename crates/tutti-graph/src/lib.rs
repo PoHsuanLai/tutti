@@ -224,6 +224,7 @@ mod controls;
 mod cost;
 mod editor;
 mod event;
+mod event_tap;
 mod exec;
 mod fade;
 mod fork;
@@ -262,6 +263,7 @@ pub use event::{
     HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,
     SegmentShape, SortedEvents, SubBlocks, UmpAt, note_off_room,
 };
+pub use event_tap::{EventTapReader, EventTapWriter, TapEvent};
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
 pub use fork::{
@@ -271,8 +273,8 @@ pub use fork::{
 // The audio graph as a value, and the two passes over it. `plan` is the
 // latency pass and is exported as `latency_plan`.
 pub use graph::{
-    Edge, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec, NodeKey, NodeSpec, OutPort,
-    ParamValue, Source, TapAlign, TapId, TapSpec, Topology, Valid,
+    Edge, EventTapId, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec, NodeKey,
+    NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology, Valid,
 };
 pub use history::TransportHistory;
 pub use inlet::InletNode;

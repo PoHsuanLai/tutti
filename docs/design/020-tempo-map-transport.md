@@ -438,6 +438,22 @@ published. What landed:
 - Not done here: the readers of section 5 (stage 5), and `Timeline::tempo()`
   as a tempo at a beat (stage 6).
 
+**As built, stage 5, the MIDI clock reader.** `ClockNode` already ticks its
+`ClockMaster` once per transport segment, and a ramp's or step's cell edge is a
+segment seated on the map's beat, so the clock needed no code change: a cell
+edge differs from the previous end by an ulp, under `SEEK_EPSILON_BEATS`, and
+is a continuation, not a locate. `tutti-midi-runtime`'s `tests/clock_tempo_map.rs`
+renders a `ClockNode` into a `MidiOutNode` through the live engine over a
+published map and pins, against the map's definition written in the test:
+`a_step_map_puts_every_tick_on_the_maps_frame` (exact frames, a step mid-cell),
+`a_ramp_puts_every_tick_within_the_grid_bound_of_the_maps_frame` (within one
+frame, exact unless the exact position is within 0.04 frame of an integer: the
+section 4 bound), `a_ramp_or_step_boundary_is_not_a_locate` (no Song Position,
+exactly 24 ticks a beat), `the_ticks_do_not_depend_on_the_block_size` (1, 64,
+100, 512, 1 000, 4 096), `a_locate_inside_a_ramp_sends_one_song_position_then_the_maps_ticks`
+and `mtc_keeps_wall_clock_time_across_a_ramp`. A loop wrap inside a ramp is not
+rendered there. The sampler's reader remains; the plugin hosts' is 5a, below.
+
 **As built, stage 5a (the plugin hosts).** A plugin is told the map's tempo,
 not the graph's chord, and CLAP its slope.
 

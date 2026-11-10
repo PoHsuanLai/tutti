@@ -89,7 +89,7 @@ const MAX_PER_OCTAVE: usize = 48;
 const MAX_SPECTROGRAM_CELLS: usize = 1 << 22;
 
 /// The longest time constant, hold or release accepted, in seconds.
-const MAX_SECONDS: f32 = 3600.0;
+const MAX_SECONDS: f64 = 3600.0;
 
 /// The steepest peak decay accepted, in dB per second.
 const MAX_DECAY: f32 = 10_000.0;
@@ -383,7 +383,7 @@ impl SpectrumConfig {
     #[must_use]
     pub fn frame_interval(&self) -> Seconds {
         let hop = self.geometry.hop().get() as f64;
-        Seconds((hop / self.geometry.sample_rate().get()) as f32)
+        Seconds(hop / self.geometry.sample_rate().get())
     }
 
     /// Whole frames a peak is held for: the hold rounded up to the hop.
@@ -395,7 +395,7 @@ impl SpectrumConfig {
     #[must_use]
     pub fn peak_hold_frames(&self) -> FrameCount {
         let hop = self.geometry.hop().get() as f64;
-        let frames = f64::from(self.peak_hold.get()) * self.geometry.sample_rate().get() / hop;
+        let frames = self.peak_hold.get() * self.geometry.sample_rate().get() / hop;
         FrameCount((frames * (1.0 - 1e-6)).ceil() as usize)
     }
 
@@ -665,7 +665,8 @@ impl SpectrumState {
         let first = self.frames == 0;
         // Validated to fit by `with_peak_hold`.
         let hold = cfg.peak_hold_frames().get() as u32;
-        let decay = cfg.peak_decay.get() * dt.get();
+        // One product per call: exact, then rounded once to the `f32` the loop runs in.
+        let decay = (f64::from(cfg.peak_decay.get()) * dt.get()) as f32;
         let floor = cfg.floor;
 
         for i in 0..self.power.len() {
@@ -1133,8 +1134,7 @@ mod tests {
             assert!((at(k) - want).abs() < FFT_TOL, "frame {k}: {}", at(k));
         }
 
-        let step = 10.0 * std::f64::consts::E.log10() * f64::from(cfg.frame_interval().get())
-            / f64::from(tau.get());
+        let step = 10.0 * std::f64::consts::E.log10() * cfg.frame_interval().get() / tau.get();
         let first_silent = loud_end.div_ceil(hop);
         let mut checked = 0;
         for k in first_silent..frames.len() - 1 {
@@ -1178,7 +1178,7 @@ mod tests {
             .unwrap();
         let dt = cfg.frame_interval().get();
         let held = cfg.peak_hold_frames().get();
-        assert!(held as f32 * dt >= hold.get() && (held - 1) as f32 * dt < hold.get());
+        assert!(held as f64 * dt >= hold.get() && (held - 1) as f64 * dt < hold.get());
         assert_eq!(held, 24);
 
         let top = series[anchor].1;
@@ -1186,7 +1186,7 @@ mod tests {
             assert_eq!(series[anchor + j].1, top, "held frame {j}");
         }
         for m in 1..30 {
-            let want = top - decay.get() * dt * m as f32;
+            let want = top - decay.get() * dt as f32 * m as f32;
             let got = series[anchor + held + m].1;
             assert!(
                 (got - want).abs() < 1e-3,
@@ -1417,7 +1417,7 @@ mod tests {
     fn the_hold_is_a_whole_number_of_frames_without_over_holding() {
         let cfg = config(1920, 480);
         let frames = |hold: f32| {
-            cfg.with_peak_hold(Seconds(hold), Db(20.0))
+            cfg.with_peak_hold(Seconds::from_f32(hold), Db(20.0))
                 .unwrap()
                 .peak_hold_frames()
                 .get()
@@ -1466,14 +1466,17 @@ mod tests {
         let cfg = config(1024, 256);
         for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 3601.0] {
             assert!(
-                bad(cfg.with_smoothing(Smoothing::Release(Seconds(v)))),
+                bad(cfg.with_smoothing(Smoothing::Release(Seconds::from_f32(v)))),
                 "{v}"
             );
             assert!(
-                bad(cfg.with_smoothing(Smoothing::Average(Seconds(v)))),
+                bad(cfg.with_smoothing(Smoothing::Average(Seconds::from_f32(v)))),
                 "{v}"
             );
-            assert!(bad(cfg.with_peak_hold(Seconds(v), Db(10.0))), "{v}");
+            assert!(
+                bad(cfg.with_peak_hold(Seconds::from_f32(v), Db(10.0))),
+                "{v}"
+            );
         }
         for v in [f32::NAN, f32::INFINITY, -1.0, 10_001.0] {
             assert!(bad(cfg.with_peak_hold(Seconds(1.0), Db(v))), "{v}");

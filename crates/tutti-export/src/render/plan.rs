@@ -5,8 +5,8 @@
 
 use crate::ConfigError;
 use crate::config::RenderConfig;
-use tutti_types::SampleRate;
 use tutti_types::{BeatDuration, Bpm, Samples};
+use tutti_types::{SampleRate, Seconds};
 
 /// Fixed scheduling parameters for one render.
 ///
@@ -41,7 +41,7 @@ impl RenderPlan {
     /// frame at all: neither is a render anyone meant, and a silent empty file
     /// reported as success hides which one it was.
     pub fn new(config: &RenderConfig) -> Result<Self, ConfigError> {
-        if !config.duration_seconds.is_finite() || config.duration_seconds < 0.0 {
+        if !config.duration_seconds.get().is_finite() || config.duration_seconds.get() < 0.0 {
             return Err(ConfigError::InvalidDuration);
         }
         let duration = duration_to_frames(config.duration_seconds, config.sample_rate);
@@ -74,15 +74,11 @@ impl RenderPlan {
 /// length; a render refuses such a span before it gets here
 /// ([`ConfigError::InvalidDuration`]), so this is for a caller sizing one.
 ///
-/// # Why `f64` and not [`Seconds`](tutti_types::Seconds)
-///
-/// The crate's one stop short of a unit type, and CLAUDE.md names the case:
-/// *"`Seconds` is f32, so SMPTE timecode and hour-long render durations stay
-/// f64."* Concretely, `Seconds` resolves individual frames only to ~256 s at
-/// 48 kHz. Round lengths survive anyway (`3600.0` is exact), but a *derived* one
-/// does not — 2000 beats at 93 bpm lands 2 frames off, 8000 at 111 bpm lands 6.
-/// Small, silent, and every hand-written test would use a round number and pass.
-pub fn duration_to_frames(seconds: f64, rate: SampleRate) -> Samples {
+/// A [`Seconds`] is an `f64`, so a *derived* length keeps
+/// its frame: 2000 beats at 93 bpm and 8000 at 111 bpm land on the frame they
+/// name, where an `f32` span landed 2 and 6 frames off.
+pub fn duration_to_frames(seconds: Seconds, rate: SampleRate) -> Samples {
+    let seconds = seconds.get();
     if !seconds.is_finite() || seconds <= 0.0 {
         return Samples(0);
     }
@@ -92,15 +88,15 @@ pub fn duration_to_frames(seconds: f64, rate: SampleRate) -> Samples {
 /// Seconds covering `len` beats at `tempo` — the musical-vocabulary form.
 ///
 /// Routed through [`beats_per_sample`](tutti_types::beats_per_sample)
-/// rather than `BeatDuration::to_seconds`, which returns `f32` `Seconds` and
-/// would reintroduce the narrowing above. `(tempo / 60) / rate` is the one
-/// spelling of the rate — see that function.
-pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> f64 {
+/// rather than `BeatDuration::to_seconds`, which groups the arithmetic
+/// differently and would round a frame differently. `(tempo / 60) / rate` is
+/// the one spelling of the rate — see that function.
+pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> Seconds {
     let bps = tutti_types::beats_per_sample(tempo, rate).get();
     if bps <= 0.0 {
-        return 0.0;
+        return Seconds(0.0);
     }
-    (len.get() / bps) / rate.get()
+    Seconds((len.get() / bps) / rate.get())
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 use tutti_graph::{Io, ParamSetBuilder};
 use tutti_types::{
-    AtomicF32, Db, Depth, Hz, Mix, Param, Seconds, StereoWidth, Unit, UnitAddr, UnitParam,
+    Db, Depth, Hz, Mix, Param, ParamCell, ParamRaw, Seconds, StereoWidth, Unit, UnitAddr, UnitParam,
 };
 
 use crate::ramp::{LastGood, block_driven};
@@ -16,30 +16,43 @@ use crate::reverb::{FreeverbNode, ReverbDesign, ReverbNode, ReverbParams};
 /// when the graph modulates it and the cell otherwise, and a non-finite write
 /// reads as unchanged.
 #[derive(Clone, Debug)]
-struct Knob<U: Unit<Raw = f32>> {
+struct Knob<U: Unit>
+where
+    U::Raw: ParamRaw,
+{
     param: Param<U>,
     good: LastGood,
 }
 
-impl<U: Unit<Raw = f32>> Knob<U> {
+/// A knob works in the `f32` the ports carry; an `f64` unit's cell is narrowed
+/// at the read and widened back (exactly) into the controls.
+impl<U: Unit> Knob<U>
+where
+    U::Raw: ParamRaw,
+    Arc<<U::Raw as ParamRaw>::Atomic>: Into<ParamCell>,
+{
     fn new(value: U, fallback: f32) -> Self {
         Self {
-            good: LastGood::new(value.to_raw(), fallback),
+            good: LastGood::new(value.to_raw().to_f32(), fallback),
             param: Param::new(value),
         }
     }
 
-    fn cell(&self) -> Arc<AtomicF32> {
-        self.param.as_atomic()
+    fn cell(&self) -> ParamCell {
+        self.param.cell()
     }
 
     fn base(&self) -> f32 {
-        self.param.load().to_raw()
+        self.param.load().to_raw().to_f32()
+    }
+
+    fn of(v: f32) -> U {
+        U::from_raw(<U::Raw as ParamRaw>::from_f32(v))
     }
 
     fn read(&mut self, io: &Io<'_>, port: usize) -> U {
         let v = block_driven(io, port).unwrap_or_else(|| self.base());
-        U::from_raw(self.good.read(v))
+        Self::of(self.good.read(v))
     }
 
     /// The largest value the port takes in the block, or the cell's when nothing
@@ -51,7 +64,7 @@ impl<U: Unit<Raw = f32>> Knob<U> {
             .copied()
             .filter(|v| v.is_finite())
             .fold(f32::NEG_INFINITY, f32::max);
-        Some(U::from_raw(if top.is_finite() { top } else { self.base() }))
+        Some(Self::of(if top.is_finite() { top } else { self.base() }))
     }
 
     fn detach(&mut self) {
@@ -164,10 +177,10 @@ impl ReverbParams for FdnParams {
         }
         let p = self;
         let base = FdnControls {
-            decay: [0, 1, 2].map(|k| Seconds::from_raw(p.decay[k].base())),
+            decay: [0, 1, 2].map(|k| Seconds::from_f32(p.decay[k].base())),
             size: Mix::from_raw(p.size.base()),
             diffusion: Mix::from_raw(p.diffusion.base()),
-            pre_delay: Seconds::from_raw(p.pre_delay.base()),
+            pre_delay: Seconds::from_f32(p.pre_delay.base()),
             modulation: Depth::from_raw(p.depth.base()),
             rate: Hz::from_raw(p.rate.base()),
             width: StereoWidth::from_raw(p.width.base()),
@@ -207,7 +220,7 @@ impl ReverbDesign for FdnDesign {
     fn params(&self, c: FdnControls) -> FdnParams {
         let d = FdnControls::DEFAULT;
         FdnParams {
-            decay: [0, 1, 2].map(|k| Knob::new(c.decay[k], d.decay[k].get())),
+            decay: [0, 1, 2].map(|k| Knob::new(c.decay[k], d.decay[k].to_f32())),
             size: Knob::new(c.size, d.size.get()),
             diffusion: Knob::new(c.diffusion, d.diffusion.get()),
             pre_delay: Knob::new(c.pre_delay, 0.0),

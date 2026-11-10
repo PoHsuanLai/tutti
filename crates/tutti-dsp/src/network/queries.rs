@@ -197,7 +197,7 @@ impl Fdn {
                 .map(|(m, l)| decay_seconds(m, l, rate))
                 .fold(0.0, f64::max)
         };
-        Seconds(seconds as f32)
+        Seconds(seconds)
     }
 
     /// The slowest line's per-frame figures in `band`: `(log10 ρ, log10 σ,
@@ -260,15 +260,15 @@ impl Fdn {
             return Seconds(0.0);
         }
         let Some((log_rho, log_sigma, _)) = self.slowest(band) else {
-            return Seconds(f32::INFINITY);
+            return Seconds(f64::INFINITY);
         };
         let per_frame = log_rho + log_sigma;
         Seconds(if per_frame >= 0.0 {
-            f32::INFINITY
+            f64::INFINITY
         } else if per_frame == f64::NEG_INFINITY {
             0.0
         } else {
-            (-3.0 / (rate * per_frame)) as f32
+            -3.0 / (rate * per_frame)
         })
     }
 
@@ -362,16 +362,16 @@ impl Network {
     #[must_use]
     pub fn rt60(&self, band: Band) -> Seconds {
         let rate = self.rate.get();
-        let mut slowest = 0.0f32;
+        let mut slowest = Seconds(0.0);
         for stage in self.stages.iter() {
             let r = match stage {
-                Stage::Fdn(f) => f.rt60(band, rate).get(),
-                Stage::Fir(s) => s.rt60[band.index()].get(),
-                _ => 0.0,
+                Stage::Fdn(f) => f.rt60(band, rate),
+                Stage::Fir(s) => s.rt60[band.index()],
+                _ => Seconds(0.0),
             };
             slowest = slowest.max(r);
         }
-        Seconds(slowest)
+        slowest
     }
 
     /// The slowest recirculating stage's [`Fdn::rt60_bound`] in `band`, which
@@ -380,16 +380,16 @@ impl Network {
     #[must_use]
     pub fn rt60_bound(&self, band: Band) -> Seconds {
         let rate = self.rate.get();
-        let mut slowest = 0.0f32;
+        let mut slowest = Seconds(0.0);
         for stage in self.stages.iter() {
             let r = match stage {
-                Stage::Fdn(f) => f.rt60_bound(band, rate).get(),
-                Stage::Fir(s) => s.rt60[band.index()].get(),
-                _ => 0.0,
+                Stage::Fdn(f) => f.rt60_bound(band, rate),
+                Stage::Fir(s) => s.rt60[band.index()],
+                _ => Seconds(0.0),
             };
             slowest = slowest.max(r);
         }
-        Seconds(slowest)
+        slowest
     }
 
     /// How long the wet signal rings after the input stops, until it is `floor`
@@ -434,7 +434,7 @@ impl Network {
                     }
                     for band in Band::ALL {
                         let rate = self.rate.get();
-                        let seconds = f64::from(f.rt60_bound(band, rate).get()) * depth / 60.0
+                        let seconds = f.rt60_bound(band, rate).get() * depth / 60.0
                             + f.lag_extra_frames(band) / rate;
                         decay = decay.max(seconds);
                     }
@@ -445,7 +445,7 @@ impl Network {
         if !frames.is_finite() || !decay.is_finite() {
             return Ring::Unbounded;
         }
-        Ring::Finite(Seconds((frames / self.rate.get() + decay) as f32))
+        Ring::Finite(Seconds(frames / self.rate.get() + decay))
     }
 
     /// Whether no loop can grow. Every recirculating stage must be stable
@@ -498,7 +498,7 @@ impl Network {
                 Stage::Taps(_) => 0.0,
             })
             .sum();
-        Seconds((frames / self.rate.get()) as f32)
+        Seconds(frames / self.rate.get())
     }
 
     /// Echoes per second `at` this long after an impulse, from the loops alone.
@@ -512,7 +512,7 @@ impl Network {
     #[must_use]
     pub fn echo_density(&self, at: Seconds) -> Hz {
         let rate = self.rate.get();
-        let t = f64::from(at.get().max(0.0));
+        let t = at.get().max(0.0);
         let mut total = 0.0f64;
         for stage in self.stages.iter() {
             match stage {
@@ -705,7 +705,7 @@ mod tests {
         let mixed = network(&[Stage::Fdn(fdn(&[slow, fast], Matrix::Hadamard))]);
         let want = 60_000.0 / (40_000.0 / 3.0 + 20_000.0);
         assert!(
-            (f64::from(mixed.rt60(Band::High).get()) - want).abs() < 1e-4,
+            (mixed.rt60(Band::High).get() - want).abs() < 1e-4,
             "{:?}",
             mixed.rt60(Band::High)
         );
@@ -868,7 +868,7 @@ mod tests {
         ))]);
         assert!(frozen.is_lossless() && frozen.is_stable());
         assert_eq!(frozen.tail(Db(-60.0)), Ring::Unbounded);
-        assert_eq!(frozen.rt60(Band::Mid).get(), f32::INFINITY);
+        assert_eq!(frozen.rt60(Band::Mid).to_f32(), f32::INFINITY);
         let almost = Absorption::Bands {
             low: Amplitude(1.0),
             mid: Amplitude(1.0),
@@ -887,7 +887,7 @@ mod tests {
     /// Modal density is the total delay in seconds. Echo density at 1 kHz: a
     /// diagonal of lines 10 and 20 frames long has nothing before 10 ms, 100 per
     /// second from then, 150 from 20 ms (the times are a little past the line
-    /// lengths, as `Seconds` is `f32`); a Hadamard of the same lines multiplies
+    /// lengths, so a delay never ties the probe); a Hadamard of the same lines multiplies
     /// each trip (mean 15 ms): `2^1 / 0.015` at 10 ms, `2^3 / 0.015` at 45 ms,
     /// capped at the rate.
     ///
@@ -905,7 +905,7 @@ mod tests {
             .push(Stage::Fdn(fdn(&ls, Matrix::Diagonal)))
             .unwrap();
         assert!((diag.modal_density().get() - 0.03).abs() < 1e-7);
-        let e = |n: &Network, t: f32| n.echo_density(Seconds(t)).get();
+        let e = |n: &Network, t: f32| n.echo_density(Seconds::from_f32(t)).get();
         assert_eq!(e(&diag, 0.005), 0.0);
         assert!((e(&diag, 0.0105) - 100.0).abs() < 1e-3);
         assert!((e(&diag, 0.0205) - 150.0).abs() < 1e-3);
@@ -1124,7 +1124,7 @@ mod tests {
             }
             assert!(!stable(a), "damp {damp}");
             let n = network(&[Stage::Fdn(fdn(&[line(100.0, a)], Matrix::Diagonal))]);
-            assert_eq!(n.rt60_bound(Band::Mid).get(), f32::INFINITY);
+            assert_eq!(n.rt60_bound(Band::Mid).to_f32(), f32::INFINITY);
             assert_eq!(n.tail(Db(-60.0)), Ring::Unbounded);
         }
         // A valid low-pass pole is stable; a valid negative pole at gain 0.9
@@ -1237,14 +1237,18 @@ mod tests {
     #[test]
     fn the_tail_covers_a_mixing_network_whose_lines_decay_differently() {
         let rate = SampleRate(1_000.0);
-        let lines = [(40.0f32, 3.0f32), (70.0, 1.0)]
-            .map(|(m, t)| line(m, Absorption::Gain(loop_gain(m, Seconds(t), rate))));
+        let lines = [(40.0f32, 3.0f32), (70.0, 1.0)].map(|(m, t)| {
+            line(
+                m,
+                Absorption::Gain(loop_gain(m, Seconds::from_f32(t), rate)),
+            )
+        });
         let mut mixed = Network::new(rate);
         mixed
             .stages
             .push(Stage::Fdn(fdn(&lines, Matrix::Hadamard)))
             .unwrap();
-        let estimate = mixed.rt60(Band::Mid).get();
+        let estimate = mixed.rt60(Band::Mid).to_f32();
         assert!((estimate - 1.32).abs() < 1e-3, "{estimate}");
         assert!((mixed.rt60_bound(Band::Mid).get() - 3.0).abs() < 1e-3);
         let Ring::Finite(tail) = mixed.tail(Db(-60.0)) else {
@@ -1278,7 +1282,7 @@ mod tests {
             "the estimate {estimate} s undercuts the {actual} s the state needs"
         );
         assert!(
-            actual <= tail.get(),
+            actual <= tail.to_f32(),
             "the tail {tail:?} must cover {actual} s"
         );
 

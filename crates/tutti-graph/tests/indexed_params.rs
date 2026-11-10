@@ -193,7 +193,7 @@ fn set_and_get_address_each_index_independently() {
     let cell = set.cell(BAND1).expect("index 1 has a cell");
     assert!(set.set(BAND1, -40.0));
     assert_eq!(cell.load(std::sync::atomic::Ordering::Acquire), -40.0);
-    assert!(!std::sync::Arc::ptr_eq(&cell, &set.cell(BAND0).unwrap()));
+    assert!(!cell.ptr_eq(&set.cell(BAND0).unwrap()));
 
     // Both addresses are listed, in the order added.
     assert_eq!(set.params().collect::<Vec<_>>(), [BAND0, BAND1]);

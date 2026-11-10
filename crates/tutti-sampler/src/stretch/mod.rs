@@ -126,7 +126,7 @@ impl FftSize {
     /// The delay this window imposes: one whole window must arrive before the
     /// first frame can be analyzed.
     pub fn latency(self, sample_rate: impl Into<SampleRate>) -> Seconds {
-        Seconds(self.0 as f32 / sample_rate.into().get() as f32)
+        Seconds(self.0 as f64 / sample_rate.into().get())
     }
 }
 

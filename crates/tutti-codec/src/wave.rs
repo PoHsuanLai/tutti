@@ -121,8 +121,8 @@ impl Wave {
     /// Creates an all-zero wave `duration` seconds long, rounded to the
     /// nearest frame.
     ///
-    /// `duration` is `f64` rather than [`Seconds`](tutti_types::Seconds)
-    /// (an `f32`) so a frame count in a long file stays exact.
+    /// A [`Seconds`](tutti_types::Seconds) is an `f64`, so a frame count in a
+    /// long file stays exact.
     ///
     /// # Panics
     ///
@@ -130,10 +130,10 @@ impl Wave {
     pub fn zero(
         channels: usize,
         sample_rate: impl Into<tutti_types::SampleRate>,
-        duration: f64,
+        duration: impl Into<tutti_types::Seconds>,
     ) -> Self {
         let sample_rate = sample_rate.into();
-        let length = (duration * sample_rate.get()).round() as usize;
+        let length = (duration.into().get() * sample_rate.get()).round() as usize;
         assert!(channels > 0 || length == 0);
         Self {
             vec: vec![vec![0.0; length]; channels],
@@ -219,11 +219,11 @@ impl Wave {
         self.len == 0
     }
 
-    /// Returns the duration in seconds. `f64` for the reason
+    /// Returns the duration, exact to the frame for the reason
     /// [`zero`](Self::zero) gives.
     #[inline]
-    pub fn duration(&self) -> f64 {
-        self.len as f64 / self.sample_rate.get()
+    pub fn duration(&self) -> tutti_types::Seconds {
+        tutti_types::Seconds(self.len as f64 / self.sample_rate.get())
     }
 
     /// The backing vector of one channel, for the decoder's batch append.

@@ -67,7 +67,7 @@ mod off_thread {
             ExportConfig {
                 render: RenderConfig {
                     sample_rate: SampleRate(RATE),
-                    duration_seconds: (BLOCKS * 1024) as f64 / RATE,
+                    duration_seconds: tutti_types::Seconds((BLOCKS * 1024) as f64 / RATE),
                     ..Default::default()
                 },
                 encode: EncodeConfig {

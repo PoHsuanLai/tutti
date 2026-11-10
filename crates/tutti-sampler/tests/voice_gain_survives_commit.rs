@@ -35,8 +35,8 @@ use tutti_modulation::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId,
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
 use tutti_types::{
-    Amplitude, AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, NodeKey,
-    PhaseIncrement, SampleRate, Samples, UnitParam,
+    Amplitude, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, NodeKey, PhaseIncrement,
+    SampleRate, Samples, UnitParam,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -267,7 +267,12 @@ fn a_lane_drives_the_voice_gain_around_its_cell() {
 /// Wires a control lane onto `at` (a `Volume` port) whose knob is `knob`
 /// and whose one layer adds a constant `depth` of a 0..1 range, and
 /// commits it.
-fn drive_volume(ed: &mut tutti_graph::Editor, at: ParamIn, knob: Arc<AtomicF32>, depth: f32) {
+fn drive_volume(
+    ed: &mut tutti_graph::Editor,
+    at: ParamIn,
+    knob: tutti_types::ParamCell,
+    depth: f32,
+) {
     ed.set_param_range(at, ParamRange::new(0.0, 1.0))
         .expect("the node is placed");
     let range = ed

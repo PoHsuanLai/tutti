@@ -17,6 +17,7 @@
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph};
 use tutti_graph::GraphBuilder;
 use tutti_types::NodeKey;
+use tutti_types::Seconds;
 
 /// The rate [`export`] renders at, and so the rate every graph is built for.
 const RATE: tutti_types::SampleRate = tutti_types::SampleRate(48_000.0);
@@ -32,7 +33,7 @@ fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::P
         &ExportConfig {
             render: RenderConfig {
                 sample_rate: RATE,
-                duration_seconds: secs,
+                duration_seconds: Seconds(secs),
                 ..Default::default()
             },
             encode: EncodeConfig {

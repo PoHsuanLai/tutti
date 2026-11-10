@@ -95,6 +95,15 @@ pub enum Error {
     #[error("cannot select those inputs: {0}")]
     Inputs(#[from] tutti_types::FoldError),
 
+    /// [`AudioEngine::start`](crate::AudioEngine::start) or
+    /// [`start_with`](crate::AudioEngine::start_with) was called while a
+    /// stream is running.
+    ///
+    /// The new state is not adopted and the running stream is untouched; stop
+    /// the engine first to replace it.
+    #[error("the audio stream is already running; stop it before starting another")]
+    AlreadyRunning,
+
     /// I/O failure while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),

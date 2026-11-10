@@ -34,6 +34,7 @@ use tutti_export::{
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
+use tutti_types::Seconds;
 
 const SR: f64 = 44_100.0;
 const DUR: f64 = 0.1;
@@ -71,7 +72,7 @@ fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
-            duration_seconds: DUR,
+            duration_seconds: Seconds(DUR),
             ..Default::default()
         },
         encode: EncodeConfig {
@@ -333,7 +334,7 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
         let path = d.path().join(format!("rs_{target}.wav"));
         let mut cfg = config(Format::Wav(Pcm::Int24));
         cfg.resample = Some(tutti_export::Resample::to(tutti_types::SampleRate(target)));
-        cfg.render.duration_seconds = 0.25;
+        cfg.render.duration_seconds = Seconds(0.25);
 
         render_to_file(dc_graph(0.4), &cfg, &FrozenClock, &path).unwrap();
 

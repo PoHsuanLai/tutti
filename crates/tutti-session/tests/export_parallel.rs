@@ -122,7 +122,7 @@ fn export(workers: usize) -> (Rendered, usize) {
     let config = ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: 0.5,
+            duration_seconds: tutti_types::Seconds(0.5),
             ..Default::default()
         },
         encode: EncodeConfig {

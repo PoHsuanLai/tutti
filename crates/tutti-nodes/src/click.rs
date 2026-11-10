@@ -340,19 +340,21 @@ impl ClickNode {
         } else {
             Amplitude(0.7)
         };
-        let release_len = CLICK_LEN - HOLD_END;
+        // The envelope is `f32` arithmetic over `f32` times.
+        let (attack, hold_end) = (ATTACK.to_f32(), HOLD_END.to_f32());
+        let release_len = CLICK_LEN.to_f32() - hold_end;
         let phase_inc = PhaseIncrement::per_sample(freq, sample_rate);
 
         let mut phase = Phase::START;
         (0..num_samples)
             .map(|i| {
-                let t = Samples(i).to_seconds(sample_rate);
-                let env = if t < ATTACK {
-                    t.get() / ATTACK.get()
-                } else if t < HOLD_END {
+                let t = Samples(i).to_seconds(sample_rate).to_f32();
+                let env = if t < attack {
+                    t / attack
+                } else if t < hold_end {
                     1.0
                 } else {
-                    1.0 - (t - HOLD_END).get() / release_len.get()
+                    1.0 - (t - hold_end) / release_len
                 };
                 let sample = phase.to_radians().sin() * env * accent_volume.get();
                 phase = phase.advance(phase_inc);

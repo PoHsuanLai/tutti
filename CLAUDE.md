@@ -19,8 +19,8 @@ holds the `Editor`; PDC is the compiler's, export forks the live graph with
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
 the numeric tower are deleted; the engine and `tutti-session` key a node by
 `NodeKey` (`AudioNode` is `bevy-tutti`'s component, wrapping one), and
-`tutti_types::latency` is a pure pass that is the compiler's own solve. A
-block's tasks can run on a worker pool (below); a cost model decides when
+`tutti_types::latency` is a pure pass that is the compiler's own solve (`compile`
+calls `latency::delays`; one copy). A block's tasks can run on a worker pool (below); a cost model decides when
 that pays, and the compiler packs tasks too cheap to dispatch alone.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
@@ -511,8 +511,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `#![forbid(unsafe_code)]` and has no `bevy` feature; `serde` is optional and
   only on `CellGrid`. A `TempoMap` is an immutable value built on the control
   side: its constructors refuse a tempo that is not finite and positive
-  themselves, whatever `Bpm` accepts, and no query allocates. Seconds are `f64`
-  (`Seconds` is `f32`). A map reaches a constant-tempo reader as `Cell`s on one
+  themselves, whatever `Bpm` accepts, and no query allocates. Time is `Seconds`,
+  an `f64`. A map reaches a constant-tempo reader as `Cell`s on one
   fixed `CellGrid`, also cut at every point's frame (`TempoMap::next_change`);
   `chord_cell` is a pure function of the absolute frame, a cell inside a step
   has that step's tempo to the bit, and the crate derives no grid from a block.
@@ -671,8 +671,11 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
 - **Measurements are not controls.** `Confidence`, `Correlation` and `Pan`
   are readings. Do not swap them for `Mix` or `Depth`.
 - **Where the types stop:** C ABI, IPC and WIT boundaries, and precision the
-  unit cannot carry (`Seconds` is f32, so SMPTE and hour-long durations stay
-  f64). Say why in a comment.
+  unit cannot carry. Say why in a comment. `Seconds` is `f64` (short or long);
+  a DSP kernel that runs in `f32` narrows once at its edge (`Seconds::to_f32`),
+  and a modulation lane's value is an `f32` (`ParamCell`). A frame count or a
+  coefficient is computed from the exact `Seconds`, never from a value rounded
+  through `f32` first.
 - **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
   names for the same behaviour is not a type.
 

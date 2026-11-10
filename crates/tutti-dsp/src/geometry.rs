@@ -267,7 +267,7 @@ impl StftGeometry {
     #[inline]
     #[must_use]
     pub fn latency(self) -> Seconds {
-        Seconds(self.window.get() as f32 / self.sample_rate.get() as f32)
+        Seconds(self.window.get() as f64 / self.sample_rate.get())
     }
 
     /// The analysis window's coefficients, `window` points of `window_fn`.
@@ -477,5 +477,17 @@ mod tests {
     fn latency_is_one_window() {
         let g = geo(4410, 1102);
         assert!((g.latency().get() - 0.1).abs() < 1e-6);
+    }
+
+    /// The latency is the window over the rate in `f64`, with no `f32` on the
+    /// way: 2048 / 44100 = 0.046439909297052155 s, where an `f32` round trip
+    /// reads 0.04643991.
+    ///
+    /// Mutation (run): `latency` computed as
+    /// `Seconds::from_f32(window as f32 / rate as f32)` fails.
+    #[test]
+    fn latency_is_exact() {
+        let g = geo(2048, 512);
+        assert_eq!(g.latency(), Seconds(2048.0 / 44_100.0));
     }
 }

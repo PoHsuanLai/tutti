@@ -145,7 +145,7 @@ pub(crate) mod cases {
                     if let Some(want) = d.requested_rt60(&c, rate, band) {
                         asked += 1;
                         let got = n.rt60(band);
-                        if !close(got.get(), want.get(), 1e-3) {
+                        if !close(got.to_f32(), want.to_f32(), 1e-3) {
                             return Err(format!(
                                 "{band:?} at {rate:?}: rt60 {got:?}, asked {want:?}"
                             ));
@@ -177,8 +177,8 @@ pub(crate) mod cases {
                 if want.iter().any(Option::is_none) {
                     continue;
                 }
-                let want: Vec<f32> = want.iter().map(|w| w.unwrap().get()).collect();
-                let got: Vec<f32> = Band::ALL.iter().map(|&b| n.rt60(b).get()).collect();
+                let want: Vec<f32> = want.iter().map(|w| w.unwrap().to_f32()).collect();
+                let got: Vec<f32> = Band::ALL.iter().map(|&b| n.rt60(b).to_f32()).collect();
                 for (i, j) in [(0, 1), (1, 2), (0, 2)] {
                     checked += 1;
                     let ordered = |v: &[f32]| {
@@ -232,9 +232,9 @@ pub(crate) mod cases {
                 else {
                     return Err("an unbounded tail in a pre-delay pair".into());
                 };
-                let added = f64::from(y.get()) - f64::from(x.get());
+                let added = y.get() - x.get();
                 let want = f64::from(by.to_samples(rate).get() as u32) / rate.get();
-                if (added - want).abs() > 2e-6 + 1e-6 * f64::from(y.get()) {
+                if (added - want).abs() > 2e-6 + 1e-6 * y.get() {
                     return Err(format!("pre-delay added {added} s, not {want} s"));
                 }
             }
@@ -273,7 +273,7 @@ pub(crate) mod cases {
     /// Mutations: line lengths made independent of size; a mixing matrix made
     /// diagonal.
     pub(crate) fn density<D: DesignCase>(d: &D) -> Result<(), String> {
-        let at = |s: f32| Seconds(s);
+        let at = |s: f32| Seconds::from_f32(s);
         for rate in d.rates() {
             for c in d.reachable() {
                 let n = d.design(&c, rate);
@@ -450,7 +450,7 @@ pub(crate) mod cases {
                 let n = d.design(&c, rate);
                 let asked = d.pre_delay(&c);
                 let want = if asked.get().is_finite() && asked.get() > 0.0 {
-                    Samples((f64::from(asked.get()) * rate.get()).round() as usize)
+                    Samples((asked.get() * rate.get()).round() as usize)
                 } else {
                     Samples::ZERO
                 };
@@ -653,13 +653,13 @@ const TOY_LENGTHS: [f32; 8] = [
 const TOY_MAX_PRE_DELAY: Seconds = Seconds(1.0);
 
 impl ToyFdn {
-    fn decay(s: Seconds) -> f32 {
+    fn decay(s: Seconds) -> Seconds {
         let v = s.get();
-        if v.is_nan() {
+        Seconds(if v.is_nan() {
             1.0
         } else {
             v.clamp(0.05, Ceiling::MAX_DECAY.get())
-        }
+        })
     }
 }
 
@@ -712,9 +712,9 @@ impl Design for ToyFdn {
             Seconds(c.pre_delay.get().clamp(0.0, TOY_MAX_PRE_DELAY.get()))
         };
         let rt60 = if c.freeze {
-            [Seconds(f32::INFINITY); 3]
+            [Seconds(f64::INFINITY); 3]
         } else {
-            c.decay.map(|s| Seconds(Self::decay(s)))
+            c.decay.map(Self::decay)
         };
         let scale = (0.5 + size) * (rate.get() / 44_100.0) as f32;
         let mut lines: Inline<Line, MAX_LINES> = Inline::new();
@@ -826,10 +826,10 @@ impl DesignCase for ToyFdn {
         nasty
             .iter()
             .map(|&v| ToyControls {
-                decay: [Seconds(v); 3],
+                decay: [Seconds::from_f32(v); 3],
                 size: Mix(v),
                 diffusion: Mix(v),
-                pre_delay: Seconds(v),
+                pre_delay: Seconds::from_f32(v),
                 freeze: false,
             })
             .collect()
@@ -837,7 +837,7 @@ impl DesignCase for ToyFdn {
 
     fn requested_rt60(&self, c: &ToyControls, _rate: SampleRate, band: Band) -> Option<Seconds> {
         Some(if c.freeze {
-            Seconds(f32::INFINITY)
+            Seconds(f64::INFINITY)
         } else {
             c.decay[band.index()]
         })

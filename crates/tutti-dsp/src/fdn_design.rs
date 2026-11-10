@@ -170,10 +170,8 @@ impl FdnDesign {
     /// 0.5% at 8 s and 44.1 kHz, 11% at 192 kHz.
     fn rounding_margin(&self, ceiling: &Ceiling) -> f32 {
         let e = 2.0 * f64::from(f32::EPSILON);
-        let x = 2.0 * e / std::f64::consts::LN_10
-            * f64::from(self.max_decay.get())
-            * ceiling.rate().get()
-            / 3.0;
+        let x =
+            2.0 * e / std::f64::consts::LN_10 * self.max_decay.get() * ceiling.rate().get() / 3.0;
         (1.0 / (1.0 - x.min(0.5))) as f32
     }
 }
@@ -192,6 +190,11 @@ impl Default for FdnDesign {
 /// `v` if finite, else `default`.
 fn finite(v: f32, default: f32) -> f32 {
     if v.is_finite() { v } else { default }
+}
+
+/// `v` if finite, else `default`, exactly: a time is not narrowed.
+fn finite_secs(v: Seconds, default: Seconds) -> Seconds {
+    if v.get().is_finite() { v } else { default }
 }
 
 impl Design for FdnDesign {
@@ -218,17 +221,17 @@ impl Design for FdnDesign {
             c.decay[2], // high
         ]
         .map(|s| {
-            let v = finite(s.get(), d.decay[0].get());
-            Seconds(v.clamp(MIN_DECAY.get(), self.max_decay.get()))
+            let v = finite_secs(s, d.decay[0]);
+            v.clamp(MIN_DECAY, self.max_decay)
         });
         let rt60 = if freeze {
-            [Seconds(f32::INFINITY); 3]
+            [Seconds(f64::INFINITY); 3]
         } else {
             rt60
         };
         let size = finite(c.size.get(), d.size.get()).clamp(0.0, 1.0);
         let diffusion = finite(c.diffusion.get(), d.diffusion.get()).clamp(0.0, 1.0);
-        let pre = finite(c.pre_delay.get(), 0.0).clamp(0.0, MAX_PRE_DELAY.get());
+        let pre = finite_secs(c.pre_delay, Seconds(0.0)).clamp(Seconds(0.0), MAX_PRE_DELAY);
         let depth = finite(c.modulation.get(), 0.0).abs().min(1.0);
         let mod_rate = finite(c.rate.get(), d.rate.get()).clamp(RATES.0, RATES.1);
         let width = finite(c.width.get(), 1.0).clamp(0.0, MAX_WIDTH);
@@ -312,7 +315,7 @@ impl Design for FdnDesign {
         let _ = rows.push(right);
 
         out.clear(rate);
-        out.pre_delay = pre_delay_frames(Seconds(pre), rate);
+        out.pre_delay = pre_delay_frames(pre, rate);
         let _ = out.stages.push(Stage::Fdn(Fdn {
             lines,
             matrix,
@@ -341,7 +344,9 @@ impl Design for FdnDesign {
         let mut b = Bounds::of(&network, ceiling.floor());
         b.tail = match b.tail {
             _ if self.freezable => Ring::Unbounded,
-            Ring::Finite(t) => Ring::Finite(Seconds(t.get() * self.rounding_margin(ceiling))),
+            Ring::Finite(t) => {
+                Ring::Finite(Seconds(t.get() * f64::from(self.rounding_margin(ceiling))))
+            }
             other => other,
         };
         b
@@ -419,10 +424,10 @@ mod tests {
             nasty
                 .iter()
                 .map(|&v| FdnControls {
-                    decay: [Seconds(v); 3],
+                    decay: [Seconds::from_f32(v); 3],
                     size: Mix(v),
                     diffusion: Mix(v),
-                    pre_delay: Seconds(v),
+                    pre_delay: Seconds::from_f32(v),
                     modulation: Depth(v),
                     rate: Hz(v),
                     width: StereoWidth(v),
@@ -434,7 +439,7 @@ mod tests {
 
         fn requested_rt60(&self, c: &FdnControls, _: SampleRate, band: Band) -> Option<Seconds> {
             Some(if self.freezable && c.freeze {
-                Seconds(f32::INFINITY)
+                Seconds(f64::INFINITY)
             } else {
                 c.decay[match band {
                     Band::Mid => 0,
@@ -859,7 +864,10 @@ mod tests {
             assert!(FdnDesign::new(lines, ok, false).is_none(), "{lines}");
         }
         for bad in [0.0, 0.01, 60.001, f32::NAN, f32::INFINITY] {
-            assert!(FdnDesign::new(8, Seconds(bad), false).is_none(), "{bad}");
+            assert!(
+                FdnDesign::new(8, Seconds::from_f32(bad), false).is_none(),
+                "{bad}"
+            );
         }
     }
 

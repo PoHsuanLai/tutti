@@ -29,8 +29,15 @@ impl AttackRelease {
         self.release.detach();
     }
 
-    /// An attack or release time as the setters store it: floored at 0.
-    /// Shared by the setters and a driven port's value.
+    /// An attack or release time as the setters store it, at full width:
+    /// floored at 0.
+    #[inline]
+    pub(crate) fn floor(secs: Seconds) -> Seconds {
+        Seconds(secs.get().max(0.0))
+    }
+
+    /// An attack or release time as a driven port gives it: floored at 0.
+    /// The setters floor at full width with [`floor`](Self::floor).
     #[inline]
     pub(crate) fn clamp_time(secs: f32) -> f32 {
         secs.max(0.0)

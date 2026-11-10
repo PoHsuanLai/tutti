@@ -60,7 +60,6 @@ pub(crate) mod verify;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
 use crate::node::{InPlaceMask, MAX_PORTS, Prepare, Resolution, Shape};
@@ -629,31 +628,23 @@ pub fn compile(
     let order = order::kahn(&keys, &preds);
 
     // ---- 4. latency -------------------------------------------------------
-    let latency: Vec<Latency> = node_shapes
+    // One solve: `tutti_types::latency::delays` over the checked graph. The
+    // compiler places its delays itself (event and param edges included) from
+    // the solve's arrivals.
+    let solved = tutti_types::latency::delays(graph);
+    let arrival: Vec<Latency> = keys
         .iter()
-        .map(|s| s.latency.min(Latency::new(MAX_NODE_LATENCY)))
+        .map(|&k| Latency::new(solved.arrival(k)))
         .collect();
-    let mut arrival = vec![Latency::ZERO; keys.len()];
-    for &n in &order {
-        arrival[n] = preds[n]
-            .iter()
-            .map(|&p| arrival[p] + latency[p])
-            .max()
-            .unwrap_or_default();
-    }
-    let departure = |n: usize| arrival[n] + latency[n];
-    // Per output channel, exactly as `latency::plan`: a non-node source
-    // contributes no internal latency and arrives at zero.
-    let channel_arrivals: Vec<Latency> = topology
-        .outputs
+    let departures: Vec<Latency> = keys
         .iter()
-        .map(|s| match s {
-            Source::Node(p) => departure(dense[&p.node]),
-            _ => Latency::ZERO,
-        })
+        .map(|&k| Latency::new(solved.departure(k)))
         .collect();
-    let total = channel_arrivals.iter().copied().max().unwrap_or_default();
-    let compensation: Vec<Samples> = channel_arrivals.iter().map(|&a| a.gap_to(total)).collect();
+    let departure = |n: usize| departures[n];
+    let total = Latency::new(solved.compensation().total());
+    let compensation: Vec<Samples> = (0..topology.outputs.len())
+        .map(|ch| solved.compensation().for_channel(ch))
+        .collect();
 
     // ---- 5. emit ----------------------------------------------------------
     let audio_fb_key = |f: FeedbackFrom| FeedbackKey::Audio {

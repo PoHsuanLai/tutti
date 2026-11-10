@@ -220,6 +220,8 @@ so the `Network` never carries an `Arc` into the audio thread.
 
 All are pure functions of the `Network`, with no kernel and no signal.
 
+They are design-time figures and are computed in `f64`: every query that returns a time (`rt60`, `rt60_bound`, `tail`, `modal_density`, `ring_out`) returns the exact `Seconds`, with no `f32` rounding on the way. Only the `Network`'s own entries and the kernel's per-sample state are `f32`.
+
 | Query | Definition |
 |---|---|
 | `rt60(band)` | Per line, `g = 10^(-3·m/(RT60·fs))` inverted: `RT60 = -3·m / (fs·log10 g)` for the band's gain `g` and effective length `m`. For a diagonal `A` the slowest line governs. For a mixing `A` (orthogonal) the length-weighted figure `-3·Σm / (fs·Σ log10 g_i)`, exact when the design sets every line from one RT60. A `Fir` stage reports its summary. Series all-passes add none |

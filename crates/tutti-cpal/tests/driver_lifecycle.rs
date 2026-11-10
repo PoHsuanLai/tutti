@@ -72,20 +72,26 @@ fn an_engine_over_a_manual_driver_starts_renders_and_stops() {
     );
 }
 
-/// **`start` is idempotent and `stop` can be called twice.**
+/// **A second start is refused, and `stop` can be called twice.**
+///
+/// Mutation (run): `start_with` returning `Ok(())` for a running engine fails
+/// the `AlreadyRunning` match.
 #[test]
-fn start_is_idempotent_and_stop_is_repeatable() {
+fn a_second_start_is_refused_and_stop_is_repeatable() {
     let (mut engine, state) = engine_and_state();
     let (driver, _stream) = ManualStreamDriver::new();
 
     engine.start_with(Arc::clone(&state), driver).unwrap();
-    // A second start with a fresh driver must be refused as a no-op rather
-    // than opening a second stream over the same state.
+    // A second start with a fresh driver is an error, not a second stream
+    // over the same state.
     let (driver2, stream2) = ManualStreamDriver::new();
-    engine.start_with(Arc::clone(&state), driver2).unwrap();
+    let err = engine
+        .start_with(Arc::clone(&state), driver2)
+        .expect_err("a running engine refuses a second start");
+    assert!(matches!(err, tutti_cpal::Error::AlreadyRunning), "{err}");
     assert!(
         !stream2.is_open(),
-        "starting a running engine must be a no-op, not a second stream"
+        "starting a running engine must not open a second stream"
     );
 
     engine.stop();

@@ -174,7 +174,7 @@ impl DelayLine {
 /// `f32` precision, which is coarser than the fractional read can resolve.
 #[inline]
 pub fn fractional_samples(secs: Seconds, sample_rate: SampleRate) -> f32 {
-    (secs.get() as f64 * sample_rate.get()) as f32
+    (secs.get() * sample_rate.get()) as f32
 }
 
 /// One sample of one uncoupled channel: read the feedback tap, write the line,
@@ -196,6 +196,18 @@ pub fn delay_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line for 0.1 s at 48 kHz holds 4800 frames: `0.1 * 48000` is 4800 in
+    /// `f64`, so its `_ceil` is 4800, where the `f32` nearest 0.1 times 48000
+    /// is 4800.00007 and rounds up to 4801.
+    ///
+    /// Mutation (run): rounding `max_delay_secs` through `f32` (`Seconds::from_f32(s.to_f32())`) before `to_samples_ceil`
+    /// (the old `f32` detour) makes the line 4801 frames and fails.
+    #[test]
+    fn a_line_is_sized_from_the_exact_seconds() {
+        let from_secs = DelayLine::from_seconds(Seconds(0.1), SampleRate(48_000.0));
+        assert_eq!(from_secs.buffer.len(), DelayLine::new(4800).buffer.len());
+    }
 
     #[test]
     fn test_delay_line_basic() {

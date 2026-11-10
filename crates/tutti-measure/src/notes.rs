@@ -88,7 +88,7 @@ const MAX_OVERLAP: usize = 64;
 const MAX_SMOOTHING_FRAMES: usize = 1024;
 
 /// The longest time setting accepted, in seconds.
-const MAX_SECONDS: f32 = 60.0;
+const MAX_SECONDS: f64 = 60.0;
 
 /// Input whose peak is below this is silence, as in tempo estimation.
 const SILENCE_FLOOR: Db = Db(-90.0);
@@ -341,7 +341,7 @@ impl NoteConfig {
     }
 }
 
-fn seconds(s: f32, rate: SampleRate) -> Samples {
+fn seconds(s: f64, rate: SampleRate) -> Samples {
     Seconds(s).to_samples(rate)
 }
 
@@ -1487,7 +1487,7 @@ mod tests {
         assert!(bad(c.with_hop(Samples(frame / 64 - 1)).unwrap_err()));
         assert!(c.with_hop(Samples(frame)).is_ok());
         assert!(c.with_hop(Samples(frame.div_ceil(64))).is_ok());
-        for v in [-1.0, f32::NAN, f32::INFINITY, 61.0] {
+        for v in [-1.0, f64::NAN, f64::INFINITY, 61.0] {
             assert!(bad(c.with_min_length(Seconds(v)).unwrap_err()), "{v}");
             assert!(bad(c.with_smoothing(Seconds(v)).unwrap_err()), "{v}");
             assert!(bad(c.with_hold(Seconds(v)).unwrap_err()), "{v}");

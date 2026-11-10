@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::AtomicF32;
+use tutti_types::{AtomicF32, AtomicF64};
 use tutti_types::{ChannelLayout, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate, Seconds};
 use tutti_types::{Tail, UnitParam};
 
@@ -71,7 +71,19 @@ impl ModDelayConfig {
     /// whose `depth_min` exceeds its `depth_max`; this is read on the audio
     /// thread. For a well-formed config the two agree.
     pub fn clamp_depth(&self, secs: f32) -> f32 {
-        secs.max(self.depth_min.get()).min(self.depth_max.get())
+        secs.max(self.depth_min.to_f32())
+            .min(self.depth_max.to_f32())
+    }
+
+    /// [`clamp_depth`](Self::clamp_depth) for a depth set as [`Seconds`], at
+    /// full width.
+    #[inline]
+    pub fn clamp_depth_secs(&self, secs: Seconds) -> Seconds {
+        Seconds(
+            secs.get()
+                .max(self.depth_min.get())
+                .min(self.depth_max.get()),
+        )
     }
 
     /// Chorus: 10 ms base delay, a quarter-cycle stagger between channels, 1 Hz
@@ -317,7 +329,7 @@ impl ModDelayNode {
 
     /// The shared sweep-depth cell in [`Seconds`] — how far the delay time
     /// moves either side of the base delay. Read once per block and ramped.
-    pub fn depth(&self) -> Arc<AtomicF32> {
+    pub fn depth(&self) -> Arc<AtomicF64> {
         self.controls.depth.as_atomic()
     }
 
@@ -351,7 +363,7 @@ impl ModDelayNode {
     pub fn set_depth(&self, secs: impl Into<Seconds>) {
         self.controls
             .depth
-            .store(Seconds(self.config.clamp_depth(secs.into().get())));
+            .store(self.config.clamp_depth_secs(secs.into()));
     }
 
     /// Sets the [`Feedback`], clamped to the stable range.
@@ -415,7 +427,7 @@ impl ModDelayNode {
             // they keep their fraction rather than going through
             // `Seconds::to_samples`.
             sr: self.sample_rate.get() as f32,
-            base_delay: self.config.base_delay.get(),
+            base_delay: self.config.base_delay.to_f32(),
         };
         if depth_r.is_flat() && fb_r.is_flat() && mix_r.is_flat() {
             // Nothing moved since the last block: constants in the loop.
@@ -499,7 +511,7 @@ impl Node for ModDelayNode {
     fn param_base(&self, k: usize) -> Option<f32> {
         match k {
             0 => Some(self.lfo.rate.load().get()),
-            1 => Some(self.controls.depth.load().get()),
+            1 => Some(self.controls.depth.load().to_f32()),
             2 => Some(self.controls.feedback.load().get()),
             3 => Some(self.controls.mix.load().get()),
             _ => None,
@@ -631,7 +643,7 @@ mod tests {
                 depth_min: Seconds(0.0),
                 depth_max: Seconds(0.04),
                 rate: Hz(TRAJ_RATE),
-                depth: Seconds(depth),
+                depth: Seconds::from_f32(depth),
                 feedback: Feedback(0.0),
                 mix: Mix(1.0),
                 feedback_max: Feedback::MAX_STABLE,

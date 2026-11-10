@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::AtomicF32;
+use tutti_types::{AtomicF32, AtomicF64};
 use tutti_types::{ChannelLayout, UnitParam};
 
 use super::params::AttackRelease;
@@ -59,9 +59,9 @@ impl GateCore {
             good: [
                 LastGood::new(threshold_db.get(), 0.0),
                 LastGood::fixed(-80.0),
-                LastGood::new(attack.get(), 0.0),
-                LastGood::new(hold.get(), 0.0),
-                LastGood::new(release.get(), 0.0),
+                LastGood::new(attack.to_f32(), 0.0),
+                LastGood::new(hold.to_f32(), 0.0),
+                LastGood::new(release.to_f32(), 0.0),
             ],
         }
     }
@@ -105,13 +105,13 @@ impl GateCore {
     #[inline]
     fn times(&mut self, [attack, release]: [Option<f32>; 2]) -> (Seconds, Seconds, Seconds) {
         (
-            Seconds(AttackRelease::clamp_time(self.good[2].read(
-                attack.unwrap_or_else(|| self.timing.attack.load().get()),
-            ))),
-            Seconds(self.good[3].read(self.hold.load().get())),
-            Seconds(AttackRelease::clamp_time(self.good[4].read(
-                release.unwrap_or_else(|| self.timing.release.load().get()),
-            ))),
+            Seconds::from_f32(AttackRelease::clamp_time(
+                self.good[2].read(attack.unwrap_or_else(|| self.timing.attack.load().to_f32())),
+            )),
+            Seconds::from_f32(self.good[3].read(self.hold.load().to_f32())),
+            Seconds::from_f32(AttackRelease::clamp_time(
+                self.good[4].read(release.unwrap_or_else(|| self.timing.release.load().to_f32())),
+            )),
         )
     }
 
@@ -281,7 +281,7 @@ impl GateNode {
     ///
     /// Very short attacks can click on low-frequency material; longer ones
     /// soften the onset.
-    pub fn attack_time(&self) -> Arc<AtomicF32> {
+    pub fn attack_time(&self) -> Arc<AtomicF64> {
         self.core.timing.attack.as_atomic()
     }
 
@@ -290,13 +290,13 @@ impl GateNode {
     ///
     /// This is what stops chatter on a signal hovering at the threshold. The
     /// release only begins once hold expires.
-    pub fn hold_time(&self) -> Arc<AtomicF32> {
+    pub fn hold_time(&self) -> Arc<AtomicF64> {
         self.core.hold.as_atomic()
     }
 
     /// The shared release-time cell in [`Seconds`] — how fast the gate closes
     /// after the hold expires.
-    pub fn release_time(&self) -> Arc<AtomicF32> {
+    pub fn release_time(&self) -> Arc<AtomicF64> {
         self.core.timing.release.as_atomic()
     }
 
@@ -341,7 +341,7 @@ impl GateNode {
         self.core
             .timing
             .attack
-            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
+            .store(AttackRelease::floor(seconds.into()));
     }
 
     /// Sets the release time in [`Seconds`], floored at 0.
@@ -351,7 +351,7 @@ impl GateNode {
         self.core
             .timing
             .release
-            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
+            .store(AttackRelease::floor(seconds.into()));
     }
 }
 
@@ -406,8 +406,8 @@ impl Node for GateNode {
     fn param_base(&self, k: usize) -> Option<f32> {
         match k {
             0 => Some(self.core.threshold_db.load().get()),
-            1 => Some(self.core.timing.attack.load().get()),
-            2 => Some(self.core.timing.release.load().get()),
+            1 => Some(self.core.timing.attack.load().to_f32()),
+            2 => Some(self.core.timing.release.load().to_f32()),
             _ => None,
         }
     }

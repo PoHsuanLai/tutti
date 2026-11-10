@@ -17,7 +17,7 @@ use tutti_types::{Amplitude, SampleRate, Seconds};
 /// one never decays and gives 1.
 #[must_use]
 pub fn loop_gain(delay: f32, rt60: Seconds, rate: SampleRate) -> Amplitude {
-    let trips = f64::from(rt60.get()) * rate.get();
+    let trips = rt60.get() * rate.get();
     if trips.is_nan() || trips <= 0.0 {
         return Amplitude::SILENT;
     }
@@ -35,7 +35,7 @@ pub fn rt60_from_gain(gain: Amplitude, delay: f32, rate: SampleRate) -> Seconds 
         f64::from(delay),
         libm::log10(f64::from(gain.get())),
         rate.get(),
-    ) as f32)
+    ))
 }
 
 /// RT60 in seconds of a loop set (`delay_sum` frames in all, `log10_gain_sum`
@@ -76,15 +76,30 @@ mod tests {
         for rate in [44_100.0, 48_000.0, 96_000.0] {
             for delay in [1.0f32, 37.5, 1116.0, 40_000.0] {
                 for rt60 in [0.05f32, 0.5, 2.0, 8.0] {
-                    let g = loop_gain(delay, Seconds(rt60), SampleRate(rate));
+                    let g = loop_gain(delay, Seconds::from_f32(rt60), SampleRate(rate));
                     if g.get() <= 1e-6 {
                         continue; // below f32's resolution of a gain
                     }
-                    let back = rt60_from_gain(g, delay, SampleRate(rate)).get();
+                    let back = rt60_from_gain(g, delay, SampleRate(rate)).to_f32();
                     assert!((back - rt60).abs() <= 2e-3 * rt60, "{back} vs {rt60}");
                 }
             }
         }
+    }
+
+    /// The RT60 is the formula in `f64`, returned exact: delay 100 at gain 0.5
+    /// and 48 kHz is `-3 * 100 / (48000 * log10 0.5)` = 0.020763936...  s, to the
+    /// bit. An `f32` rounding of the result differs.
+    ///
+    /// Mutation (run): `Seconds::from_f32(... as f32)` around `decay_seconds`
+    /// fails.
+    #[test]
+    fn rt60_from_gain_is_exact() {
+        let want = -3.0 * 100.0 / (48_000.0 * libm::log10(0.5));
+        assert_eq!(
+            rt60_from_gain(Amplitude(0.5), 100.0, SampleRate(48_000.0)),
+            Seconds(want)
+        );
     }
 
     /// The edges: no memory is gain 0, never decaying is gain 1 and the inverse
@@ -95,28 +110,28 @@ mod tests {
     #[test]
     fn the_edges_of_the_formula() {
         assert_eq!(loop_gain(100.0, Seconds(0.0), RATE), Amplitude::SILENT);
-        assert_eq!(loop_gain(100.0, Seconds(f32::NAN), RATE), Amplitude::SILENT);
+        assert_eq!(loop_gain(100.0, Seconds(f64::NAN), RATE), Amplitude::SILENT);
         assert_eq!(
-            loop_gain(100.0, Seconds(f32::INFINITY), RATE),
+            loop_gain(100.0, Seconds(f64::INFINITY), RATE),
             Amplitude::UNITY
         );
-        assert_eq!(rt60_from_gain(Amplitude(0.0), 100.0, RATE).get(), 0.0);
+        assert_eq!(rt60_from_gain(Amplitude(0.0), 100.0, RATE).to_f32(), 0.0);
         assert_eq!(
-            rt60_from_gain(Amplitude(1.0), 100.0, RATE).get(),
+            rt60_from_gain(Amplitude(1.0), 100.0, RATE).to_f32(),
             f32::INFINITY
         );
         assert_eq!(
-            rt60_from_gain(Amplitude(1.2), 100.0, RATE).get(),
+            rt60_from_gain(Amplitude(1.2), 100.0, RATE).to_f32(),
             f32::INFINITY
         );
         assert_eq!(
-            rt60_from_gain(Amplitude(f32::NAN), 100.0, RATE).get(),
+            rt60_from_gain(Amplitude(f32::NAN), 100.0, RATE).to_f32(),
             f32::INFINITY
         );
         assert_eq!(
-            rt60_from_gain(Amplitude(-0.5), 100.0, RATE).get(),
+            rt60_from_gain(Amplitude(-0.5), 100.0, RATE).to_f32(),
             f32::INFINITY
         );
-        assert_eq!(rt60_from_gain(Amplitude(0.5), 0.0, RATE).get(), 0.0);
+        assert_eq!(rt60_from_gain(Amplitude(0.5), 0.0, RATE).to_f32(), 0.0);
     }
 }

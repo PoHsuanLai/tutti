@@ -237,7 +237,7 @@ impl Freeverb {
         // the n-th has the room's fraction to the power n - 1: falling to `floor`
         // takes one trip more than the power does.
         let loops = (floor.to_amplitude().get().ln() / Self::ROOM_FEEDBACK.ln()).ceil() + 1_f32;
-        Seconds((loops * longest as f32 + chain as f32) / self.rate.get() as f32)
+        Seconds((f64::from(loops) * longest as f64 + chain as f64) / self.rate.get())
     }
 }
 

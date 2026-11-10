@@ -50,6 +50,7 @@ use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
 use tutti_types::Amplitude;
 use tutti_types::Hz;
+use tutti_types::Seconds;
 
 const IN_RATE: f64 = 48_000.0;
 const OUT_RATE: f64 = 44_100.0;
@@ -78,7 +79,7 @@ fn config(freq_target: SampleRateTarget) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(IN_RATE),
-            duration_seconds: 1.0,
+            duration_seconds: Seconds(1.0),
             ..Default::default()
         },
         encode: EncodeConfig {

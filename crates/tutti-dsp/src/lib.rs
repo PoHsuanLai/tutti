@@ -120,9 +120,9 @@ pub use fdn::FdnKernel;
 pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
-    Biquad, Crossover, CrossoverError, CrossoverModel, LadderCoefficients, LadderCoeffs,
-    LadderModel, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoefficients, SvfCoeffs,
-    SvfControls, SvfModel, SvfType, fit_to_rate, ladder_step, svf_step,
+    Biquad, Crossover, CrossoverError, CrossoverModel, DirectForm1, LadderCoefficients,
+    LadderCoeffs, LadderModel, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoefficients,
+    SvfCoeffs, SvfControls, SvfModel, SvfType, fit_to_rate, ladder_step, svf_step,
 };
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
@@ -141,7 +141,10 @@ pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;
-pub use spatial::{MAX_SPEAKERS, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple};
+pub use spatial::{
+    HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPEAKERS,
+    MAX_SPHERE_RATE, MIN_SPHERE_RATE, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple,
+};
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

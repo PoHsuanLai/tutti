@@ -213,7 +213,7 @@ fn smf_bytes_decode_to_tracks() {
 /// name would decode half its inputs with the wrong decoder.
 #[test]
 fn a_clip_file_is_recognised_by_its_magic() {
-    let bytes = tutti_midi_types::write_clip_file(960, &[]);
+    let bytes = tutti_midi_file::write_clip_file(960, &[]);
     let file = MidiFile::from_bytes(&bytes).expect("decodes");
     assert!(
         matches!(file, MidiFile::Clip(_)),

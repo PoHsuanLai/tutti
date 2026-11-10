@@ -1,6 +1,6 @@
 use super::*;
-use crate::from_midi1_bytes;
 use tutti_fixtures::midi;
+use tutti_midi_types::from_midi1_bytes;
 use tutti_ump::{CCNumber, MidiChannel};
 
 #[test]
@@ -293,8 +293,8 @@ fn header_round_trips_tempo_and_time_signature() {
         .iter()
         .map(|ce| {
             (
-                crate::ump::flex_tempo_bpm(&ce.event).is_some(),
-                crate::ump::flex_time_signature(&ce.event).is_some(),
+                tutti_midi_types::ump::flex_tempo_bpm(&ce.event).is_some(),
+                tutti_midi_types::ump::flex_time_signature(&ce.event).is_some(),
             )
         })
         .collect();

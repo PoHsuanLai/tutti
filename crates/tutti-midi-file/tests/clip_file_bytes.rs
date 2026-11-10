@@ -39,9 +39,9 @@
 //! content rule.
 
 use tutti_fixtures::midi;
-use tutti_midi_types::{
-    Beat, Bpm, ClipEvent, ClipHeader, ParsedClipFile, flex_set_tempo, write_clip_file_with_header,
-};
+use tutti_midi_file::{ClipEvent, ClipHeader, ParsedClipFile, write_clip_file_with_header};
+use tutti_midi_types::flex_set_tempo;
+use tutti_types::{Beat, Bpm};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const TPQ: u16 = 96;
@@ -190,7 +190,7 @@ fn delta_clockstamps_accumulate_to_the_reported_beats() {
     // No header: `write_clip_file_with_header` would prepend Flex Data tempo
     // and time-signature events, which `timed()` reports alongside the notes
     // and which would offset every index below.
-    let bytes = tutti_midi_types::write_clip_file(TPQ, &events);
+    let bytes = tutti_midi_file::write_clip_file(TPQ, &events);
     let clip = ParsedClipFile::from_bytes(&bytes).expect("a clip we just wrote must parse");
 
     let got: Vec<f64> = clip.iter().map(|(b, _)| b.get()).collect();
@@ -226,7 +226,7 @@ fn parse_write_parse_is_byte_stable() {
     let first = sample_clip();
     let clip = ParsedClipFile::from_bytes(&first).expect("parses");
 
-    let reencoded = tutti_midi_types::write_clip_file(clip.ticks_per_quarter, &clip.events);
+    let reencoded = tutti_midi_file::write_clip_file(clip.ticks_per_quarter, &clip.events);
 
     assert_eq!(
         first, reencoded,
@@ -238,7 +238,7 @@ fn parse_write_parse_is_byte_stable() {
     let twice = ParsedClipFile::from_bytes(&reencoded).expect("the re-encode parses");
     assert_eq!(
         reencoded,
-        tutti_midi_types::write_clip_file(twice.ticks_per_quarter, &twice.events),
+        tutti_midi_file::write_clip_file(twice.ticks_per_quarter, &twice.events),
         "the round trip must reach a fixed point on the first pass, not drift"
     );
 }
@@ -325,7 +325,7 @@ fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
     );
 
     let clip = ParsedClipFile::from_bytes(&original).expect("parses");
-    let tempo_events = |c: &tutti_midi_types::ParsedClipFile| {
+    let tempo_events = |c: &tutti_midi_file::ParsedClipFile| {
         c.events
             .iter()
             .filter(|ce| tutti_midi_types::ump::flex_tempo_bpm(&ce.event).is_some())
@@ -371,7 +371,7 @@ fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
 /// correct in every test that uses the default header — which is most of them.
 #[test]
 fn a_clip_with_no_header_reports_absent_rather_than_default() {
-    let bytes = tutti_midi_types::write_clip_file(
+    let bytes = tutti_midi_file::write_clip_file(
         TPQ,
         &[
             ClipEvent::new(0, note_on(60, 0x4000)),

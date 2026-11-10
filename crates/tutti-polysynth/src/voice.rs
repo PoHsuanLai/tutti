@@ -8,7 +8,7 @@
 //! the id is `NoteId::from_channel_note(channel, note)`, so behaviour is unchanged;
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
-use tutti_midi_types::PerNoteMap;
+use crate::note_id::PerNoteMap;
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};

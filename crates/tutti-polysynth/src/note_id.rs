@@ -9,7 +9,7 @@ use tutti_ump::NoteId;
 /// allocation, only a linear probe over `N` slots. `N` is the max simultaneous
 /// notes (e.g. 128); [`insert`](Self::insert) returns `false` when full.
 #[derive(Clone, Debug)]
-pub struct PerNoteMap<T, const N: usize> {
+pub(crate) struct PerNoteMap<T, const N: usize> {
     ids: [Option<NoteId>; N],
     vals: [T; N],
 }

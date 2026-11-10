@@ -13,9 +13,9 @@
 //! pick by what your source sends. Neither is wired to hardware for you; route
 //! the matching inbound packets from your MIDI input into the decoder.
 
-pub mod clock;
-pub mod mtc;
-pub mod smpte;
+mod clock;
+mod mtc;
+mod smpte;
 
 pub use clock::{ClockTransportState, MidiClockDecoder};
 pub use mtc::{MtcDecoder, SmpteTimecode};

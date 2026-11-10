@@ -26,7 +26,7 @@ pub use format::{Format, Gap, ParamTiming, run};
 pub use formats::{Clap, Vst2, Vst3, Vst3Cpp};
 pub use plugin::{bundle_of, clap as clap_path, library, vst3_cpp_module, vst3_module};
 pub use transcript::{
-    Kind, Logged, Transcript, find_blob, patch_level, patch_mode, replace_blob, set_level,
+    Kind, Logged, Told, Transcript, find_blob, patch_level, patch_mode, replace_blob, set_level,
     set_mode, transcript,
 };
 pub use tutti_plugin_types::{InProcess, OutOfProcess};
@@ -57,6 +57,8 @@ macro_rules! contract {
             automation_point_offset,
             note_at_offset,
             arrival_is_ordered_and_sized,
+            transport_reaches_the_plugin,
+            transport_change_is_told_at_its_frame,
             state_round_trip,
             loaded_write_reaches_the_audio,
             loaded_write_survives_a_save,

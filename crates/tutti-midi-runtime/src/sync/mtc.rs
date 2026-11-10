@@ -5,11 +5,11 @@
 //! function — [`MtcDecoder`] holds the partial frame between bytes.
 //!
 //! This is the *wall-clock* half of MIDI sync; the musical half (beat position
-//! and inferred tempo) is [`crate::sync::clock`]. A device sends one or the
+//! and inferred tempo) is [`MidiClockDecoder`](crate::MidiClockDecoder). A device sends one or the
 //! other, and which you decode is decided by the source, not by preference.
 
-use crate::sync::SmpteFrameRate;
-use tutti_types::Bpm;
+use super::SmpteFrameRate;
+use tutti_types::{Beat, Bpm, Seconds};
 
 /// An assembled SMPTE position: `HH:MM:SS:FF` plus the rate that gives the frame
 /// count meaning.
@@ -48,17 +48,13 @@ impl core::fmt::Display for SmpteTimecode {
 impl SmpteTimecode {
     /// Elapsed time from `00:00:00:00`, in seconds.
     ///
-    /// `f64` rather than `Seconds`, which is `f32`: an hour-scale position at
-    /// 29.97 fps needs more mantissa than `f32` has, and this is the documented
-    /// precision carve-out from the units rule.
-    ///
     /// Counts through [`frame_count`](Self::frame_count), so drop-frame labels
     /// are mapped to the frames that elapsed. Non-drop 29.97 labels are counted
     /// at face value, at 30000/1001 frames per second.
     #[must_use]
-    pub fn to_seconds(&self) -> f64 {
+    pub fn to_seconds(&self) -> Seconds {
         let (num, den) = self.frame_rate.ratio();
-        self.frame_count() as f64 * den as f64 / num as f64
+        Seconds::new(self.frame_count() as f64 * den as f64 / num as f64)
     }
 
     /// Frames elapsed since `00:00:00:00`.
@@ -114,12 +110,8 @@ impl SmpteTimecode {
     /// Assumes the tempo held for the whole span — there is no tempo map here, so
     /// this is exact only for a fixed-tempo project.
     ///
-    /// The tempo is a [`Bpm`]; the return stays `f64`, like
-    /// [`to_seconds`](Self::to_seconds), because SMPTE timecode is the
-    /// documented precision carve-out — `Beat` would carry it, but the
-    /// hour-scale seconds it is derived from would not survive `Seconds`.
-    pub fn to_beats(&self, tempo: Bpm) -> f64 {
-        self.to_seconds() * tempo.get() / 60.0
+    pub fn to_beats(&self, tempo: Bpm) -> Beat {
+        Beat::new(self.to_seconds().get() * tempo.get() / 60.0)
     }
 }
 

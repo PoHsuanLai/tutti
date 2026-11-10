@@ -22,6 +22,17 @@ impl Format for Clap {
     }
 }
 
+/// The format has no event that moves the transport inside a block: a
+/// plugin reads one transport per block, at its first frame.
+const NO_TRANSPORT_EVENT: (&str, Gap) = (
+    "transport_change_is_told_at_its_frame",
+    Gap {
+        why: "the format carries one transport per block (VST3's ProcessContext, \
+              VST2's audioMasterGetTime) and has no event for a change inside it",
+        fails_with: "no transport at frame 32",
+    },
+);
+
 /// VST2.
 pub struct Vst2;
 
@@ -31,14 +42,17 @@ impl Format for Vst2 {
     /// VST2 has no sample offset on a parameter: the host's changes land at the
     /// block head.
     const PARAM_TIMING: ParamTiming = ParamTiming::BlockHead;
-    const GAPS: &'static [(&'static str, Gap)] = &[(
-        "reset_clears_the_delay_line",
-        Gap {
-            why: "VST 2.4 has no opcode that clears a plugin's DSP state; \
-                  `Processor::reset` drops only the host's SysEx reassembly",
-            fails_with: "the impulse came out after the reset",
-        },
-    )];
+    const GAPS: &'static [(&'static str, Gap)] = &[
+        (
+            "reset_clears_the_delay_line",
+            Gap {
+                why: "VST 2.4 has no opcode that clears a plugin's DSP state; \
+                      `Processor::reset` drops only the host's SysEx reassembly",
+                fails_with: "the impulse came out after the reset",
+            },
+        ),
+        NO_TRANSPORT_EVENT,
+    ];
 
     fn load() -> Self::L {
         tutti_vst2_host::Vst2Loaded::load(&main_thread(), plugin::library())
@@ -59,7 +73,7 @@ impl Format for Vst3 {
     const NAME: &'static str = "vst3";
     type L = tutti_vst3_host::Vst3Loaded;
     const PARAM_TIMING: ParamTiming = ParamTiming::SampleAccurate;
-    const GAPS: &'static [(&'static str, Gap)] = &[];
+    const GAPS: &'static [(&'static str, Gap)] = &[NO_TRANSPORT_EVENT];
 
     fn load() -> Self::L {
         vst3(plugin::vst3_module())
@@ -75,7 +89,7 @@ impl Format for Vst3Cpp {
     const NAME: &'static str = "vst3-cpp";
     type L = tutti_vst3_host::Vst3Loaded;
     const PARAM_TIMING: ParamTiming = ParamTiming::SampleAccurate;
-    const GAPS: &'static [(&'static str, Gap)] = &[];
+    const GAPS: &'static [(&'static str, Gap)] = &[NO_TRANSPORT_EVENT];
 
     fn load() -> Self::L {
         vst3(plugin::vst3_cpp_module())

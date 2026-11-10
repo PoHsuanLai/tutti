@@ -53,6 +53,48 @@ impl Biquad {
     }
 }
 
+/// A [`Biquad`]'s direct form I history: the last two inputs and outputs, in
+/// `f64`. The history is the filter's whole state and is independent of the
+/// coefficients, so a caller may change them between blocks (the SoundFont voice
+/// does, every chunk) or hold the history while it bypasses the section
+/// ([`hold`](Self::hold)).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DirectForm1 {
+    x: [f64; 2],
+    y: [f64; 2],
+}
+
+impl DirectForm1 {
+    /// Filter `block` in place through `c`.
+    pub fn process(&mut self, c: &Biquad, block: &mut [f32]) {
+        for sample in block {
+            let x = f64::from(*sample);
+            let y = c.b0 * x + c.b1 * self.x[0] + c.b2 * self.x[1]
+                - c.a1 * self.y[0]
+                - c.a2 * self.y[1];
+            self.x = [x, self.x[0]];
+            self.y = [y, self.y[0]];
+            *sample = y as f32;
+        }
+    }
+
+    /// Pass `block` through untouched, leaving the history as the filter's would
+    /// be had its output been its input, so the section can take over without a
+    /// step. A block shorter than two frames keeps what the history held.
+    pub fn hold(&mut self, block: &[f32]) {
+        for &sample in block.iter().rev().take(2).rev() {
+            let x = f64::from(sample);
+            self.x = [x, self.x[0]];
+            self.y = [x, self.y[0]];
+        }
+    }
+
+    /// Clear the history.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// `Ring` of a system whose slowest pole has modulus `radius` and whose response
 /// is `n^(m - 1) radius^n` at its slowest (a pole of multiplicity `m`): the
 /// frames until that falls to `floor`, which is the figure of a model that knows
@@ -124,5 +166,42 @@ mod tests {
             assert!((p * p + c.a1 * p + c.a2).norm() < 1e-12, "{p}");
         }
         assert!((c.spectral_radius() - 0.5f64.sqrt()).abs() < 1e-12);
+    }
+
+    /// `process` runs the difference equation, `hold` leaves the history of a
+    /// pass-through, and `reset` clears it.
+    ///
+    /// Mutations (run, each failed): the two `y` taps swapped in `process`
+    /// (the impulse); `hold` taking the first two samples instead of the last
+    /// two, and `hold` leaving `y` alone (the hand-over).
+    #[test]
+    fn direct_form_i_runs_the_difference_equation_and_holds_a_pass_through() {
+        let c = Biquad {
+            b0: 0.5,
+            b1: 0.25,
+            b2: -0.125,
+            a1: -0.5,
+            a2: 0.25,
+        };
+        let mut f = DirectForm1::default();
+        let mut out = [1.0f32, 0.0, 0.0, 0.0];
+        f.process(&c, &mut out);
+        // y0 = b0; y1 = b1 - a1 y0; y2 = b2 - a1 y1 - a2 y0; y3 = -a1 y2 - a2 y1.
+        let y1 = 0.25 + 0.5 * 0.5;
+        let y2 = -0.125 + 0.5 * y1 - 0.25 * 0.5;
+        let y3 = 0.5 * y2 - 0.25 * y1;
+        for (got, want) in out.iter().zip([0.5, y1, y2, y3]) {
+            assert!((f64::from(*got) - want).abs() < 1e-7, "{got} vs {want}");
+        }
+        // Held over [9, 1, 2], then a section fed 0 answers as if 1 then 2 had
+        // passed through it unchanged.
+        let mut held = DirectForm1::default();
+        held.hold(&[9.0, 1.0, 2.0]);
+        let mut after = [0.0f32];
+        held.process(&c, &mut after);
+        let want = c.b1 * 2.0 + c.b2 * 1.0 - c.a1 * 2.0 - c.a2 * 1.0;
+        assert!((f64::from(after[0]) - want).abs() < 1e-7);
+        held.reset();
+        assert_eq!(held, DirectForm1::default());
     }
 }

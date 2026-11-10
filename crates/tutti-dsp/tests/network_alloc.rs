@@ -146,3 +146,77 @@ fn design_into_needs_no_network_sized_stack() {
         .unwrap();
     assert_eq!(handle.join().unwrap(), 5);
 }
+
+/// The FDN's `design_into`, `retarget` and `process` allocate nothing, with a
+/// different network every block (a decay, a size, a diffusion, a pre-delay, a
+/// width, a wet gain and a freeze all move), after the one `prepare` that sizes
+/// the kernel from the bounds. The ramps the kernel starts are the work of the
+/// following blocks, which allocate nothing either.
+///
+/// Mutation (run): a `Vec` built inside `FdnKernel::retarget`, or in
+/// `begin_chunk`, fails with "the block allocated"; a `Vec::new()` in the
+/// design's line loop fails the first.
+#[test]
+fn the_fdn_retargets_and_renders_without_allocating() {
+    use tutti_dsp::{Ceiling, ChannelLayout, FdnControls, FdnDesign, Kernel, Network, Setup};
+    use tutti_types::{Db, Depth, Hz, MaxBlock, Samples, Seconds, StereoWidth};
+
+    let rate = SampleRate(48_000.0);
+    let design = FdnDesign::new(8, Seconds(8.0), true).unwrap();
+    let mut kernel = design.kernel();
+    kernel.prepare(
+        &design.bounds(&Ceiling::at(rate).unwrap()),
+        &Setup {
+            rate,
+            max_block: MaxBlock::of(Samples(64)),
+            input: ChannelLayout::MONO,
+            output: ChannelLayout::STEREO,
+        },
+    );
+    let mut network = Box::new(Network::new(rate));
+    let input = vec![0.25f32; 64];
+    let (mut left, mut right) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+    for block in 0..200u32 {
+        let k = (block % 7) as f32 / 6.0;
+        let c = FdnControls {
+            decay: [
+                Seconds(0.2 + 7.0 * k),
+                Seconds(1.0 + k),
+                Seconds(0.5 + 3.0 * k),
+            ],
+            size: Mix(k),
+            diffusion: Mix(1.0 - k),
+            pre_delay: Seconds(0.05 * k),
+            modulation: Depth(k),
+            rate: Hz(0.1 + k),
+            width: StereoWidth(2.0 * k),
+            wet: Db(-12.0 * k),
+            freeze: block % 11 == 0,
+        };
+        let n = allocations(|| {
+            design.design_into(&c, rate, &mut network);
+            kernel.retarget(&network);
+            Kernel::process(&mut kernel, &[&input], &mut [&mut left, &mut right]);
+        });
+        assert_eq!(n, 0, "the block allocated");
+    }
+}
+
+/// The FDN's `design_into` runs on a 96 KiB stack, like Freeverb's.
+///
+/// Mutation (run): `out.clear(rate)` replaced by `*out = Network::new(rate)`
+/// overflows it.
+#[test]
+fn the_fdns_design_into_needs_no_network_sized_stack() {
+    use tutti_dsp::{FdnControls, FdnDesign};
+    let rate = SampleRate(44_100.0);
+    let mut network = Box::new(tutti_dsp::Network::new(rate));
+    let handle = std::thread::Builder::new()
+        .stack_size(96 * 1024)
+        .spawn(move || {
+            FdnDesign::default().design_into(&FdnControls::DEFAULT, rate, &mut network);
+            network.stages.len()
+        })
+        .unwrap();
+    assert_eq!(handle.join().unwrap(), 1);
+}

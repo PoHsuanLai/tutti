@@ -335,6 +335,13 @@ pub enum Matrix {
     Householder,
     /// The Hadamard matrix over `sqrt(N)`, orthogonal; `N` a power of two.
     Hadamard,
+    /// `I - 2 v v^T` for the vector `v`, one entry a line: a reflection, O(N)
+    /// to apply. Orthogonal when `v` is a unit vector (checked, to a
+    /// tolerance, not by construction); a `v` shorter than a unit vector is a
+    /// contraction (`|1 - 2 |v|^2| <= 1`), never a gain. `v` along one axis
+    /// couples no lines, and `v` along `1/sqrt(N)` is [`Householder`](Self::Householder):
+    /// the vectors between are how much the lines mix.
+    Reflection(Gains),
     /// A circulant matrix from its first row (checked orthogonal by
     /// [`Fdn::is_stable`], not by construction).
     Circulant(Gains),

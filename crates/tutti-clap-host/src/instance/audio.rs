@@ -392,7 +392,7 @@ impl ClapProcessor {
         self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
         self.scratch
             .last_process_status
-            .store(status, Ordering::Relaxed);
+            .store(status.raw(), Ordering::Relaxed);
 
         let AudioScratch {
             output_events,

@@ -6079,6 +6079,39 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    `verify.rs`; the refusal goes. The analytic, order, differential, flag,
    PDC, add/remove, plan and no-alloc tests of point 9, written against a
    hand-built `Topology`.
+   *As built:* `Op::Sum { srcs, dst }` and `sum_op` (in `exec.rs`, over
+   `AudioSlots` and `SlotFlags`, called by the serial walk and by
+   `par.rs::run_op`) are as specified. `sum_chain` drops `ARef::Zero` (a raw
+   write's stored silence adds nothing, bit for bit), returns none as `Zero`
+   and one as the ref itself, and cuts a wide fan-in so the first op folds 64
+   addends and each next one the last result plus 63 (a chain of `1 +
+   ceil((n - 64) / 63)` ops). Each input port and each summed output channel
+   sorts its sources by `Edge`'s (`Source`'s) `Ord` itself, and delays each on
+   its own with `align_audio` (`DelayKey::Audio` or `DelayKey::Output`); a
+   summed channel's delay is `departure.gap_to(total)` per source (the
+   channel's `compensation` is the latest source's, so it is not used) and
+   its `Output` op carries no ring, while a one-source channel keeps the old
+   path (ring in the op, or its own op under a master meter). The in-place
+   form is offered to the colouring as `in_place[dst] = srcs[0]` and the
+   colouring's own legality rule decides. The kernel is source-major, borrows
+   through `AudioSlots::borrow` with a stack table sorted by slot, writes
+   `+0.0 + a_0` (or `dst += +0.0` in place), and zero-fills and flags a
+   sum of only silent addends `SILENT | CONSTANT`; it does not rely on a
+   silent-flagged slot holding zeros. `op_work` is `fixed: COPY.fixed`,
+   `per_frame: addends`. The verifier gains `verify_sums` (2 to `MAX_PORTS`
+   addends, checked first) and the in-place declaration of rule 4. The
+   refusal and `CompileError::FanInNotCompiled` are gone. Tests:
+   `tests/fan_in.rs` (analytic, wide, `-0.0`, alias, order, feedback, global,
+   PDC, add and remove, flags, each serial against parallel against the
+   reference), the generators of `tests/differential.rs` wire fan-in at ports
+   and output channels (a chain past 64 needs more nodes than they have, so
+   `fan_in.rs` holds it), `rt_no_alloc.rs`'s fan-in gates (8, 64, 100;
+   live, silent, pulses; serial and parallel) and the verifier's unit test.
+   Two differences from the plan: the `GatedPool` suites of other crates are
+   unchanged (the gate lives in `tutti-graph`'s `rt_no_alloc`), and the
+   generated-graph test of a summed output tap compares only unsummed
+   channels (a tap names ports, not sums; `TapSpec` gets its outputs variant
+   in PR 4).
 4. **Session API.** `sources`, `set_sources`, `add_source`, `remove_source`,
    the output forms, the builder's `connect` and `disconnect_from`. `ChannelSumNode`
    still exists. `Graph::follow_outputs` snapshots each output channel's

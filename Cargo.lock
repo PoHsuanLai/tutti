@@ -4091,6 +4091,7 @@ dependencies = [
  "tutti-nodes",
  "tutti-rt",
  "tutti-sampler",
+ "tutti-tempo",
  "tutti-transport",
  "tutti-types",
 ]
@@ -4128,6 +4129,7 @@ dependencies = [
  "tutti-shared-plugin",
  "tutti-soundfont",
  "tutti-spatial",
+ "tutti-tempo",
  "tutti-transport",
  "tutti-types",
  "tutti-ump",

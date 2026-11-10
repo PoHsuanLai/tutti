@@ -143,6 +143,10 @@ pub struct AuParameter {
     pub range: ParamRange,
     /// Unit classification (dB, Hz, %, …) for display formatting.
     pub unit: ParameterUnit,
+    /// The raw `kAudioUnitParameterUnit_*` code `unit` was decoded from, whole:
+    /// [`unit`](Self::unit) keeps a few codes, this keeps all 27
+    /// ([`crate::unit_measures`] reads it).
+    pub unit_code: u32,
     /// Whether the AU advertises the `IsWritable` flag for this parameter.
     /// A parameter that is readable but not writable maps to `read_only`.
     pub writable: bool,
@@ -568,6 +572,7 @@ pub fn info_at(unit: &Unit, addr: ParamAddress, param_id: u32) -> Result<AuParam
             default: raw.defaultValue,
         },
         unit: ParameterUnit::from_raw(raw.unit),
+        unit_code: raw.unit,
         writable: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_IS_WRITABLE != 0,
         display: DisplayCurve::from_flags(raw.flags),
         meter_read_only: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_METER_READ_ONLY != 0,

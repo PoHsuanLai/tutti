@@ -381,7 +381,7 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
         // `AudioUnitParameterID`. The shared type names all three.
         id: tutti_plugin_types::ParamId::new(info.id),
         name: info.name,
-        // CLAP carries no unit string.
+        // CLAP carries no unit string, so no unit is typed from one.
         unit: String::new(),
         // CLAP values are in the plugin's native plain range.
         range: ParamRange::Plain {
@@ -399,7 +399,26 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
         // vocabulary does not model, and three of the four hosted formats
         // could not fill.
         group: info.module,
+        measures: None,
+        role: None,
     }
+    .with_measures(declared_measures(info.flags))
+    .with_role(declared_role(info.flags))
+}
+
+/// What a CLAP parameter's flags say it measures: an enumerated choice, and
+/// nothing else, because `clap.params` carries no unit (doc 023 §5.2).
+fn declared_measures(flags: ClapParamFlags) -> Option<tutti_plugin_types::ParamUnit> {
+    flags
+        .contains(ClapParamFlags::IS_ENUM)
+        .then_some(tutti_plugin_types::ParamUnit::Choice)
+}
+
+/// The role a CLAP parameter's flags declare: the bypass switch.
+fn declared_role(flags: ClapParamFlags) -> Option<tutti_types::UnitParam> {
+    flags
+        .contains(ClapParamFlags::BYPASS)
+        .then_some(tutti_types::UnitParam::Bypass)
 }
 
 #[cfg(test)]
@@ -431,5 +450,61 @@ mod grouping_tests {
         let projected = project_param_info(ClapParamInfo::new(1, "Cutoff"));
         assert!(projected.group.is_empty());
         assert_eq!(projected.qualified_name(), "Cutoff");
+    }
+}
+
+#[cfg(test)]
+mod measures_tests {
+    use super::*;
+    use tutti_plugin_types::ParamUnit;
+    use tutti_types::UnitParam;
+
+    fn projected(flags: ClapParamFlags) -> tutti_plugin_types::ParameterInfo {
+        let mut info = ClapParamInfo::new(1, "p");
+        info.min_value = 0.0;
+        info.max_value = 3.0;
+        info.flags = flags;
+        project_param_info(info)
+    }
+
+    /// The enum flag is a `Choice`, over a plain range; no unit is declared by
+    /// anything else, so a parameter without the flag measures nothing.
+    ///
+    /// Mutation (run, 2026-11-11): `declared_measures` returning `None`
+    /// whatever the flags → the `Choice` row fails.
+    #[test]
+    fn the_enum_flag_gives_choice() {
+        let choice = projected(ClapParamFlags::IS_ENUM | ClapParamFlags::STEPPED);
+        assert_eq!(choice.measures, Some(ParamUnit::Choice));
+        assert_eq!(projected(ClapParamFlags::STEPPED).measures, None);
+        assert_eq!(projected(ClapParamFlags::empty()).measures, None);
+    }
+
+    /// The bypass flag is the `Bypass` role; no other flag gives a role.
+    ///
+    /// Mutation (run): `.then_some(UnitParam::Bypass)` changed to
+    /// `.then_some(UnitParam::Mute)` → the `Bypass` row fails.
+    #[test]
+    fn the_bypass_flag_gives_bypass() {
+        assert_eq!(
+            projected(ClapParamFlags::BYPASS).role,
+            Some(UnitParam::Bypass)
+        );
+        assert_eq!(projected(ClapParamFlags::AUTOMATABLE).role, None);
+        assert_eq!(projected(ClapParamFlags::IS_ENUM).role, None);
+    }
+
+    /// `IS_ENUM` is the spec's bit 16 (`CLAP_PARAM_IS_ENUM`, clap/ext/params.h),
+    /// read from the plugin's raw flag word rather than truncated away.
+    ///
+    /// Mutation (run, 2026-11-11): `IS_ENUM` defined as
+    /// `CLAP_PARAM_IS_STEPPED` → fails.
+    #[test]
+    fn the_raw_enum_bit_is_read() {
+        assert_eq!(ClapParamFlags::IS_ENUM.bits(), 1 << 16);
+        assert_eq!(
+            ClapParamFlags::from_bits_truncate(1 << 16),
+            ClapParamFlags::IS_ENUM
+        );
     }
 }

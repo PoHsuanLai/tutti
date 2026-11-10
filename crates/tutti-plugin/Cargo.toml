@@ -58,11 +58,14 @@ tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime" }
 
 # Shared value vocabulary used across host crates + IPC protocol.
-tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
 
 # Discovery: the scanner, the catalog and its records. This crate supplies the
 # subprocess probe.
 tutti-plugin-db = { path = "../tutti-plugin-db" }
+
+# The probe's private result directory (pure Rust; removed on drop, panic included).
+tempfile = "3"
 
 # Serialization for IPC
 serde = { version = "1", features = ["derive"] }
@@ -140,7 +143,6 @@ tutti-modulation = { path = "../tutti-modulation", default-features = false }
 criterion.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
-tempfile = "3"
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types" }
 # The reference VST2 plugin the in-process lifecycle tests load, plus

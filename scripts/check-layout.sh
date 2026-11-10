@@ -169,7 +169,7 @@ LAYERS = [
     ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-spatial", "tutti-sampler",
      "tutti-polysynth", "tutti-soundfont", "tutti-midi-hardware",
      "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host"],
-    ["tutti-plugin"],
+    ["tutti-plugin", "tutti-plugin-probe"],
     ["tutti-plugin-server", "tutti-session"],
     ["tutti", "bevy-tutti"],
 ]
@@ -378,6 +378,17 @@ if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
 if "tutti-plugin-db" in pkgs:
     only("tutti-plugin-db", ["tutti-plugin-types"])
+# The probe binary (design 021 section 2.5) links the format hosts and the
+# descriptor types, and no hosting: not the facade, not the server, and the
+# `-ipc` and `-host` crates it will never gain. Nothing depends on it (a binary).
+if "tutti-plugin-probe" in pkgs:
+    only("tutti-plugin-probe", ["tutti-plugin-types", "tutti-clap-host", "tutti-vst3-host",
+                                "tutti-vst2-host", "tutti-au-host"])
+    if "tutti-plugin" in deps_of("tutti-plugin-probe"):
+        fail("tutti-plugin-probe depends on tutti-plugin, even as a dev-dependency")
+    for name in pkgs:
+        if "tutti-plugin-probe" in deps_of(name):
+            fail(f"{name} depends on tutti-plugin-probe; nothing does, it is a binary")
 for n in ("tutti-dsp", "tutti-modulation"):
     if n in pkgs:
         only(n, ["tutti-types"])

@@ -19,7 +19,7 @@
 # binary by running it with `--list --format terse`; these ignore the flag, run
 # their whole suite and exit non-zero, so nextest fails at *list* time having
 # already executed them. `just test-editor` runs them properly.
-test *ARGS: plugin-server
+test *ARGS: plugin-server plugin-probe
     cargo nextest run --locked --workspace {{ARGS}} \
         -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
 
@@ -89,7 +89,9 @@ test-all: test test-features test-editor test-au-installed test-doc test-release
 #   tutti-session/clap  — hosted plugins and the plugin half of export
 #                         (tests/plugin.rs); `export,modulation` beside it
 #   tutti-plugin-contract/server — the shared plugin's mode and transcript
-#                         through a real plugin-server (tests/server.rs)
+#                         through a real plugin-server (tests/server.rs), and
+#                         each format's descriptor through a real plugin-probe
+#                         (tests/probe.rs)
 #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
 #                         (`plugin_midi_export` runs as a test) and its
 #                         prelude's request types
@@ -137,16 +139,21 @@ check-features:
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-probe --no-default-features --features vst2 --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-probe --no-default-features --features vst3 --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-probe --no-default-features --features clap --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
 # The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs,
 # `tutti-session/clap`'s plugin suite, `tutti`'s §5.2 example and
-# `tutti-plugin-contract`'s server suite, which spawn it; it needs the VST3 SDK
+# `tutti-plugin-contract`'s server and probe suites, which spawn it (and
+# `plugin-probe`, which the probe suite spawns); it needs the VST3 SDK
 # submodules, as in CI.
 test-features:
     # Empty off macOS; on a Mac with the units installed it runs the AU claim.
     cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass
     cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+    cargo build --locked -p tutti-plugin-probe
     cargo nextest run --locked -p tutti-cpal --features capture
     cargo nextest run --locked -p bevy-tutti --features audio-io
     cargo nextest run --locked -p bevy-tutti --features soundfont
@@ -341,6 +348,13 @@ profile-bench BENCH="engine_render" PKG="tutti-nodes" SECS="10":
 plugin-server:
     cargo build --locked -p tutti-plugin-server --bin plugin-server
 
+# Build the plugin probe, `plugin-probe`: what a scan spawns to read a plugin's
+# descriptor. Nothing in a test run builds it (a dev-dependency builds a library,
+# not a binary). `tutti-plugin-contract`'s `probe` suite (`--features server`)
+# needs it, and fails with this command's name when it is missing.
+plugin-probe:
+    cargo build --locked -p tutti-plugin-probe --bin plugin-probe
+
 plugin-server-release:
     cargo build --locked --release -p tutti-plugin-server --bin plugin-server
 
@@ -452,7 +466,7 @@ check-windows:
     win() { cargo clippy --locked --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
     win --workspace --all-targets \
         --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude bevy-tutti \
-        --exclude tutti-vst3-host --exclude tutti-plugin-server \
+        --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe \
         --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract
     win -p tutti-shared-plugin --all-targets
     # tutti-export's library with the pure-Rust formats (--lib skips its dev edge,
@@ -463,7 +477,7 @@ check-windows:
     win -p tutti-plugin-db --features json --all-targets
     win -p tutti-clap-host --features clap-extras --all-targets
     win -p tutti-vst2-host --all-targets
-    win -p tutti-vst3-host -p tutti-plugin-server --lib --bins
+    win -p tutti-vst3-host -p tutti-plugin-server -p tutti-plugin-probe --lib --bins
 
 # The rustdoc gate. The workspace sets broken_intra_doc_links and
 # private_intra_doc_links to deny, but a plain build never runs rustdoc, so this

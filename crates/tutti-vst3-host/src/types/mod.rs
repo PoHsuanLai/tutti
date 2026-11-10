@@ -351,8 +351,42 @@ impl PluginInfo {
 /// process buffers.
 ///
 /// This is the host's own seam: the FFI crate's process path is not generic
-/// over the sample type.
-pub trait Vst3Sample: tutti_plugin_types::Sample {
+/// over the sample type. It is sealed: `f32` and `f64` are the two widths the
+/// SDK defines, and the constants below must agree with the buffers the FFI
+/// crate binds for each, so an outside impl could only get one wrong.
+///
+/// ```compile_fail,E0277
+/// use tutti_plugin_types::Sample;
+/// use tutti_plugin_types::SampleFormat;
+/// use tutti_vst3_ffi::{BoundBuses, BusBuffers, SampleWidth, Vst3Error};
+/// use tutti_vst3_host::Vst3Sample;
+///
+/// #[derive(Clone, Copy, Default)]
+/// struct Half(u16);
+/// impl Sample for Half {}
+///
+/// // The trait is sealed: `Half` cannot implement it, whatever it defines.
+/// impl Vst3Sample for Half {
+///     const FORMAT: SampleFormat = SampleFormat::Float32;
+///     const WIDTH: SampleWidth = SampleWidth::F32;
+///     const VST3_SYMBOLIC_SIZE: i32 = 0;
+///     fn bind_inputs<'a>(
+///         _: &'a mut BusBuffers,
+///         _: &'a [&'a [Self]],
+///     ) -> Result<BoundBuses<'a>, Vst3Error> {
+///         unimplemented!()
+///     }
+///     fn bind_outputs<'a, 'b: 'a>(
+///         _: &'a mut BusBuffers,
+///         _: &'a mut [&'b mut [Self]],
+///     ) -> Result<BoundBuses<'a>, Vst3Error> {
+///         unimplemented!()
+///     }
+/// }
+/// ```
+// Mutation (type-level): delete the `sealed::Sealed` supertrait and the doctest
+// above compiles (given the paths resolve), so it fails as a doctest.
+pub trait Vst3Sample: tutti_plugin_types::Sample + sealed::Sealed {
     /// The format of this sample type.
     const FORMAT: SampleFormat;
     /// The width of this sample type.
@@ -373,6 +407,13 @@ pub trait Vst3Sample: tutti_plugin_types::Sample {
         buses: &'a mut BusBuffers,
         channels: &'a mut [&'b mut [Self]],
     ) -> Result<BoundBuses<'a>, FfiError>;
+}
+
+mod sealed {
+    /// Implemented for the two widths the SDK defines, here and nowhere else.
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
 }
 
 impl Vst3Sample for f32 {

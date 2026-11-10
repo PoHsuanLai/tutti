@@ -328,7 +328,7 @@ fn warn_tag_block_is_isolated() {
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
     let declared: Vec<u32> = inst
-        .parameter_ids()
+        .parameter_ids(&main_thread())
         .into_iter()
         .map(|id| id.get())
         .collect();

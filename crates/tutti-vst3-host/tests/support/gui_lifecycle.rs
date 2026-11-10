@@ -333,7 +333,7 @@ fn editor_resize_respects_capabilities() {
         return;
     };
 
-    let caps = inst.editor_capabilities();
+    let caps = inst.editor_capabilities(&main_thread());
     eprintln!(
         "editor {}x{}, resize hints: {:?}",
         initial.width, initial.height, caps.resize
@@ -631,7 +631,7 @@ fn has_editor_agrees_with_opening_one() {
             continue;
         };
 
-        let claims = inst.has_editor();
+        let claims = inst.has_editor(&main_thread());
         let opened = inst.open_editor(&main_thread(), handle, ContentScale::IDENTITY).is_ok();
         if opened {
             inst.close_editor(&main_thread());
@@ -687,7 +687,7 @@ fn a_closed_editor_reports_no_resize_request() {
     };
 
     assert!(
-        inst.poll_editor_resize_request().is_none(),
+        inst.poll_editor_resize_request(&main_thread()).is_none(),
         "an editor that was never opened reported a pending resize"
     );
 
@@ -695,11 +695,11 @@ fn a_closed_editor_reports_no_resize_request() {
         .expect("host-checker opens an editor");
     // Drain whatever the plugin queued during open, so the post-close assertion
     // is about the close and not about start-up traffic.
-    let _ = inst.poll_editor_resize_request();
+    let _ = inst.poll_editor_resize_request(&main_thread());
     inst.close_editor(&main_thread());
 
     assert!(
-        inst.poll_editor_resize_request().is_none(),
+        inst.poll_editor_resize_request(&main_thread()).is_none(),
         "a closed editor still reported a pending resize request — it would be \
          applied to whichever editor is opened next"
     );
@@ -779,7 +779,7 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     // The editor must still be alive and answering after all of that — the
     // failure this catches is a plugin left in a broken state by input it was
     // handed at the wrong time, which a crash-free run alone would not show.
-    let caps = inst.editor_capabilities();
+    let caps = inst.editor_capabilities(&main_thread());
     eprintln!(
         "editor still responsive after input: {}x{}, resize hints {:?}",
         size.width, size.height, caps.resize

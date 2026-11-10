@@ -165,7 +165,7 @@ impl<T: Vst3Sample> Staged<T> {
         // Capped so a controller reporting a negative or absurd count (read
         // back through `as u32`) cannot reserve gigabytes.
         const MAX_PRESIZED_QUEUES: u32 = 1 << 14;
-        let param_queues = (loaded.parameter_count().min(MAX_PRESIZED_QUEUES) as usize)
+        let param_queues = (loaded.parameter_count(main).min(MAX_PRESIZED_QUEUES) as usize)
             .max(OUTPUT_PARAM_QUEUE_RESERVE);
         // The host's chunk adds its spare queues to the parameter count.
         let chunk_queues = param_queues + ParameterChanges::SPARE_QUEUES;
@@ -222,7 +222,7 @@ impl<T: Vst3Sample> Staged<T> {
                 loaded.midi_cc.reader(),
                 // Only a plugin with an `IMidiMapping` can publish a mapping
                 // later, so only it reserves the routing scratch.
-                loaded.plugin.has_midi_mapping(),
+                loaded.plugin.has_midi_mapping(main),
                 chunk_queues,
                 chunk_room,
             ),
@@ -239,10 +239,10 @@ impl<T: Vst3Sample> Staged<T> {
         // plugin has decided its channel layout before the scratch is sized and
         // processing is set up.
         let activated = instance
-            .negotiate_bus_arrangements()
-            .and_then(|()| instance.apply_process_setup())
-            .and_then(|()| instance.activate_buses())
-            .and_then(|()| instance.set_active(true));
+            .negotiate_bus_arrangements(main)
+            .and_then(|()| instance.apply_process_setup(main))
+            .and_then(|()| instance.activate_buses(main))
+            .and_then(|()| instance.set_active(main, true));
         if let Err(error) = activated {
             return Err((instance.loaded, error));
         }
@@ -290,7 +290,7 @@ impl<T: Vst3Sample> Staged<T> {
     /// ran another. Reconciling on the accepting branch too is not belt-and-
     /// braces: a plugin may accept the arrangement and still restructure its
     /// buses in the same call, and one exit path is one thing to keep true.
-    fn negotiate_bus_arrangements(&mut self) -> Result<()> {
+    fn negotiate_bus_arrangements(&mut self, main: &MainThread) -> Result<()> {
         let plugin = &self.loaded.plugin;
 
         // A bus whose width has no canonical arrangement makes the whole
@@ -300,35 +300,35 @@ impl<T: Vst3Sample> Staged<T> {
         // layout it already has, and the reconcile below reports it. Proposing
         // a made-up mask for that bus would name the wrong speakers.
         let proposals = plugin
-            .audio_bus_channels(BusDirection::Input)
+            .audio_bus_channels(main, BusDirection::Input)
             .into_iter()
             .map(|c| default_arrangement_for(bus_layout(c)))
             .collect::<Option<Vec<_>>>()
             .zip(
                 plugin
-                    .audio_bus_channels(BusDirection::Output)
+                    .audio_bus_channels(main, BusDirection::Output)
                     .into_iter()
                     .map(|c| default_arrangement_for(bus_layout(c)))
                     .collect::<Option<Vec<_>>>(),
             );
 
         let Some((mut inputs, mut outputs)) = proposals else {
-            self.loaded.reconcile_bus_counts();
+            self.loaded.reconcile_bus_counts(main);
             return Ok(());
         };
 
-        let result = plugin.set_bus_arrangements(&mut inputs, &mut outputs);
+        let result = plugin.set_bus_arrangements(main, &mut inputs, &mut outputs);
 
         // Anything but `kResultTrue`/`kResultOk` (typically `kResultFalse`):
         // the plugin kept its own layout. Read it back and re-resolve scratch
         // to match. Not an error.
         if result.is_err() {
-            let in_layouts = self
-                .loaded
-                .read_back_arrangements(BusDirection::Input, inputs.len());
-            let out_layouts = self
-                .loaded
-                .read_back_arrangements(BusDirection::Output, outputs.len());
+            let in_layouts =
+                self.loaded
+                    .read_back_arrangements(main, BusDirection::Input, inputs.len());
+            let out_layouts =
+                self.loaded
+                    .read_back_arrangements(main, BusDirection::Output, outputs.len());
             let widths = |ls: &[ChannelTopology]| -> Vec<usize> {
                 ls.iter().map(|t| t.layout().count() as usize).collect()
             };
@@ -341,7 +341,7 @@ impl<T: Vst3Sample> Staged<T> {
         // `getBusArrangement` reports only the buses that existed at proposal
         // time, and a refusal is exactly when a plugin may have restructured
         // them.
-        self.loaded.reconcile_bus_counts();
+        self.loaded.reconcile_bus_counts(main);
         Ok(())
     }
 
@@ -372,12 +372,12 @@ impl<T: Vst3Sample> Staged<T> {
     /// receives and what the conformance observer is told cannot drift — a
     /// second, hand-built copy for the observer would agree with `ProcessData`
     /// by construction and hide exactly the mismatch the check exists to find.
-    fn apply_process_setup(&mut self) -> Result<()> {
+    fn apply_process_setup(&mut self, main: &MainThread) -> Result<()> {
         let setup = self.audio.config.process_setup(T::VST3_SYMBOLIC_SIZE);
         // `Ok(false)` is `kResultFalse`, which the SDK lets a plugin answer.
         self.loaded
             .plugin
-            .setup_processing(setup)
+            .setup_processing(main, setup)
             .map(drop)
             .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Setup,
@@ -395,7 +395,7 @@ impl<T: Vst3Sample> Staged<T> {
     /// all — leaves event buses inactive: a plugin that honours the inactive
     /// default then receives no events while one that ignores it works, which
     /// presents as a plugin quirk rather than a host bug.
-    fn activate_buses(&mut self) -> Result<()> {
+    fn activate_buses(&mut self, main: &MainThread) -> Result<()> {
         let plugin = &self.loaded.plugin;
         for (media, direction) in [
             (MediaType::Audio, BusDirection::Input),
@@ -403,8 +403,8 @@ impl<T: Vst3Sample> Staged<T> {
             (MediaType::Event, BusDirection::Input),
             (MediaType::Event, BusDirection::Output),
         ] {
-            for i in 0..plugin.bus_count(media, direction) {
-                let info = plugin.bus_info(media, direction, i);
+            for i in 0..plugin.bus_count(main, media, direction) {
+                let info = plugin.bus_info(main, media, direction, i);
                 // A bus whose info cannot be read is activated anyway. That
                 // restores the pre-policy behaviour for exactly the plugins
                 // that cannot answer the question the policy asks, rather than
@@ -414,7 +414,7 @@ impl<T: Vst3Sample> Staged<T> {
                     Err(_) => true,
                 };
                 if wants {
-                    let _ = plugin.activate_bus(media, direction, i);
+                    let _ = plugin.activate_bus(main, media, direction, i);
                 }
             }
         }
@@ -429,8 +429,8 @@ impl<T: Vst3Sample> Staged<T> {
         // pre-activation value when its query fails — reinstating the stale
         // layout this re-resolve exists to replace, at exactly the moment the
         // live read said it could not be trusted.
-        let in_counts = plugin.audio_bus_channels(BusDirection::Input);
-        let out_counts = plugin.audio_bus_channels(BusDirection::Output);
+        let in_counts = plugin.audio_bus_channels(main, BusDirection::Input);
+        let out_counts = plugin.audio_bus_channels(main, BusDirection::Output);
         let num_in = bus_layout(in_counts.first().copied().unwrap_or(0));
         let num_out = bus_layout(out_counts.first().copied().unwrap_or(0));
         let block_size = self.audio.config.block_size;
@@ -444,8 +444,8 @@ impl<T: Vst3Sample> Staged<T> {
         Ok(())
     }
 
-    fn set_active(&mut self, active: bool) -> Result<()> {
-        let result = self.loaded.plugin.set_active(active);
+    fn set_active(&mut self, main: &MainThread, active: bool) -> Result<()> {
+        let result = self.loaded.plugin.set_active(main, active);
         // `kResultFalse` is a *refusal*, not a "didn't implement it". A plugin
         // whose licence check, dongle, or device claim fails reports it here,
         // and it is the only way it can. Accepting it as success would leave the

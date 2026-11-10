@@ -65,8 +65,16 @@ impl Stager {
     /// after the room check, so a dropped event spends none of it. Events end up
     /// in frame order, stably: on one frame they keep the order of the sources
     /// above and each source's own. Never allocates.
-    pub fn stage(&mut self, list: &EventList, src: &InputEvents<'_>) {
-        let mut stage = list.begin();
+    ///
+    /// A plugin thread inside a call on `list` leaves it unstaged, counted
+    /// ([`EventList::busy`]), never waited on, and this returns `false`: the
+    /// list still holds the last block, so the caller must not hand it to the
+    /// plugin.
+    #[must_use = "a list that was not staged still holds the last block"]
+    pub fn stage(&mut self, list: &EventList, src: &InputEvents<'_>) -> bool {
+        let Some(mut stage) = list.try_begin() else {
+            return false;
+        };
         // In frame order, so a per-note bend sensitivity applies to the bends after it.
         for event in src.midi {
             self.stage_midi(&mut stage, event);
@@ -96,6 +104,7 @@ impl Stager {
             stage_with_text(&mut stage, |s| text.to_event(s));
         }
         stage.finish();
+        true
     }
 
     /// Stages one MIDI event: a SysEx7 packet through the reassembler (a
@@ -148,7 +157,7 @@ fn stage_with_text(stage: &mut Staging<'_>, make: impl FnOnce(&mut Staging<'_>) 
 /// whole and counted in the list's [`dropped`](EventList::dropped).
 pub fn drain_midi(list: &EventList, out: &mut RtMidiEvents) {
     out.clear();
-    let refused = list.with_events(|staged| {
+    let Some(refused) = list.try_with_events(|staged| {
         let mut refused = 0;
         for event in staged.events {
             if let Payload::SysEx(message) = event.payload {
@@ -163,7 +172,9 @@ pub fn drain_midi(list: &EventList, out: &mut RtMidiEvents) {
             }
         }
         refused
-    });
+    }) else {
+        return;
+    };
     list.add_dropped(refused);
 }
 

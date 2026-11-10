@@ -122,7 +122,8 @@ impl<T: Vst3Sample> Active<T> {
         frames: usize,
         mode: ProcessMode,
     ) -> Result<Self, LoadError> {
-        let loaded = Vst3Loaded::load(path, LoadOptions::new()).map_err(LoadError::Load)?;
+        let loaded =
+            Vst3Loaded::load(&main_thread(), path, LoadOptions::new()).map_err(LoadError::Load)?;
         loaded
             .activate_in::<T>(rate, frames, mode)
             .map_err(|(_, reason)| LoadError::Activate(reason))
@@ -135,8 +136,8 @@ impl<T: Vst3Sample> Active<T> {
         rate: f64,
         frames: usize,
     ) -> Result<Self, LoadError> {
-        let loaded =
-            Vst3Loaded::load(path, LoadOptions::new().class(name)).map_err(LoadError::Load)?;
+        let loaded = Vst3Loaded::load(&main_thread(), path, LoadOptions::new().class(name))
+            .map_err(LoadError::Load)?;
         loaded
             .activate_at::<T>(rate, frames)
             .map_err(|(_, reason)| LoadError::Activate(reason))

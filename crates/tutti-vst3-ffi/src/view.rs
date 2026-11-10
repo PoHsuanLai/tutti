@@ -116,7 +116,7 @@ pub fn platform_type_refused(result: i32) -> bool {
 /// Split out of `close_editor_unchecked` so the ordering is reachable from a
 /// test without a loaded plugin: the state this runs on can only be built by
 /// `open_editor`, but the sequence itself is what needs pinning.
-pub fn detach_view(view: &ComPtr<IPlugView>) {
+pub fn detach_view(_main: &MainThread, view: &ComPtr<IPlugView>) {
     // SAFETY: `view` is a live view; null is the documented "no frame" argument.
     unsafe {
         view.setFrame(std::ptr::null_mut());
@@ -192,26 +192,31 @@ pub fn send_wheel(_main: &MainThread, view: &ComPtr<IPlugView>, distance: f32) -
 ///
 /// Unlike the key forwarders this has no consumed/not-consumed answer — it is
 /// a notification, and the spec defines no meaning for a refusal.
-pub fn set_view_focus(view: &ComPtr<IPlugView>, focused: bool) {
+pub fn set_view_focus(_main: &MainThread, view: &ComPtr<IPlugView>, focused: bool) {
     // SAFETY: a plain call on a live view.
     unsafe {
         view.onFocus(u8::from(focused));
     }
 }
 
-fn size_of_rect(rect: &ViewRect) -> EditorSize {
-    EditorSize {
-        width: (rect.right - rect.left) as u32,
-        height: (rect.bottom - rect.top) as u32,
-    }
+/// The extent of a rect a plugin filled in, or `None` for one that is not a
+/// size: a negative extent, or one whose subtraction overflows.
+fn size_of_rect(rect: &ViewRect) -> Option<EditorSize> {
+    let extent = |high: i32, low: i32| high.checked_sub(low).and_then(|n| u32::try_from(n).ok());
+    Some(EditorSize {
+        width: extent(rect.right, rect.left)?,
+        height: extent(rect.bottom, rect.top)?,
+    })
 }
 
+/// The rect for `size`, each extent saturating at `i32::MAX` (a rect cannot
+/// hold more, and a wrap would be negative).
 fn rect_of_size(size: EditorSize) -> ViewRect {
     ViewRect {
         left: 0,
         top: 0,
-        right: size.width as i32,
-        bottom: size.height as i32,
+        right: i32::try_from(size.width).unwrap_or(i32::MAX),
+        bottom: i32::try_from(size.height).unwrap_or(i32::MAX),
     }
 }
 
@@ -238,7 +243,8 @@ impl Editor {
             .unwrap_or(std::ptr::null_mut());
         // SAFETY: `frame_ptr` is the frame `plug_frame` keeps alive, and the
         // editor stores that wrapper beside the view. It is withdrawn
-        // (`setFrame(nullptr)`) before the view is released, in `close`.
+        // (`setFrame(nullptr)`) before the view is released: in `close`, or
+        // below when `attached` fails.
         unsafe {
             let _ = view.setFrame(frame_ptr);
         }
@@ -255,7 +261,16 @@ impl Editor {
         // SAFETY: `parent` is a valid window handle by `WindowHandle`'s
         // constructor contract, and outlives the editor.
         let result = unsafe { view.attached(parent.as_ptr(), platform_type) };
-        check(result).map_err(EditorError::Attach)?;
+        if let Err(error) = check(result) {
+            // The view was never attached, but it holds the frame: withdraw it
+            // so a plugin that kept the pointer does not keep a frame nothing
+            // will pump.
+            // SAFETY: a plain call on a live view; null is "no frame".
+            unsafe {
+                let _ = view.setFrame(std::ptr::null_mut());
+            }
+            return Err(EditorError::Attach(error));
+        }
 
         let size = {
             let mut rect = ViewRect {
@@ -266,14 +281,14 @@ impl Editor {
             };
             // SAFETY: `rect` is a valid out-parameter.
             let result = unsafe { view.getSize(&mut rect) };
-            (result == kResultOk).then(|| size_of_rect(&rect))
+            (result == kResultOk).then(|| size_of_rect(&rect)).flatten()
         };
         Ok((Self { view, plug_frame }, size))
     }
 
     /// Withdraws the frame and removes the view.
-    pub(crate) fn close(self) {
-        detach_view(&self.view);
+    pub(crate) fn close(self, main: &MainThread) {
+        detach_view(main, &self.view);
     }
 
     /// Whether the view says it can be resized (`kResultOk`).
@@ -288,7 +303,11 @@ impl Editor {
         let mut rect = rect_of_size(requested);
         // SAFETY: `rect` is a valid in/out parameter.
         let snapped = unsafe { self.view.checkSizeConstraint(&mut rect) } == kResultTrue;
-        (size_of_rect(&rect), snapped)
+        // A rect that is not a size is no answer: keep the request, unsnapped.
+        match size_of_rect(&rect) {
+            Some(size) => (size, snapped),
+            None => (requested, false),
+        }
     }
 
     /// Resizes the view to `requested`, or to what it snaps to.
@@ -300,7 +319,7 @@ impl Editor {
         let mut rect = if snapped { constrained } else { requested_rect };
         // SAFETY: `rect` is a valid in-parameter for the call.
         check(unsafe { self.view.onSize(&mut rect) })?;
-        Ok(size_of_rect(&rect))
+        size_of_rect(&rect).ok_or(Vst3Error::InvalidArgument)
     }
 }
 
@@ -331,5 +350,149 @@ mod content_scale_tests {
         assert_eq!(content_scale_for(kPlatformTypeNSView, two), None);
         assert_eq!(content_scale_for(kPlatformTypeUIView, two), None);
         assert_eq!(content_scale_for(std::ptr::null(), two), None);
+    }
+}
+
+#[cfg(test)]
+mod rect_tests {
+    use super::*;
+
+    const fn rect(left: i32, top: i32, right: i32, bottom: i32) -> ViewRect {
+        ViewRect {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// **A rect a plugin fills in is a size only if both extents are
+    /// non-negative and their subtraction fits.** A negative extent used to
+    /// become about four billion, and a wide span overflowed (a panic in debug,
+    /// a wrap in release).
+    ///
+    /// Mutation: return to `(right - left) as u32` -> the negative and the
+    /// overflowing rect fail (the latter panics in a debug build).
+    #[test]
+    fn a_rect_that_is_not_a_size_is_refused() {
+        assert_eq!(
+            size_of_rect(&rect(10, 20, 110, 70)),
+            Some(EditorSize {
+                width: 100,
+                height: 50
+            })
+        );
+        assert_eq!(size_of_rect(&rect(100, 0, 10, 10)), None, "negative width");
+        assert_eq!(size_of_rect(&rect(0, 100, 10, 10)), None, "negative height");
+        assert_eq!(
+            size_of_rect(&rect(i32::MIN, 0, i32::MAX, 10)),
+            None,
+            "the span overflows"
+        );
+    }
+
+    /// **A size past `i32::MAX` saturates; it does not wrap negative.**
+    ///
+    /// Mutation: `size.width as i32` -> the right edge is negative -> fails.
+    #[test]
+    fn a_size_past_the_rect_saturates() {
+        let r = rect_of_size(EditorSize {
+            width: u32::MAX,
+            height: 3,
+        });
+        assert_eq!((r.right, r.bottom), (i32::MAX, 3));
+    }
+}
+
+#[cfg(test)]
+mod attach_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use vst3::Class;
+    use vst3::Steinberg::{TBool, char16, int16, tresult};
+
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    enum Call {
+        SetFrame,
+        ClearFrame,
+        Removed,
+    }
+
+    /// A view whose `attached` fails, recording the frame calls.
+    struct Refusing(Arc<Mutex<Vec<Call>>>);
+
+    impl Class for Refusing {
+        type Interfaces = (IPlugView,);
+    }
+
+    impl IPlugViewTrait for Refusing {
+        unsafe fn isPlatformTypeSupported(&self, _t: FIDString) -> tresult {
+            kResultTrue
+        }
+        unsafe fn attached(&self, _p: *mut std::ffi::c_void, _t: FIDString) -> tresult {
+            kInvalidArgument
+        }
+        unsafe fn removed(&self) -> tresult {
+            self.0.lock().unwrap().push(Call::Removed);
+            kResultOk
+        }
+        unsafe fn onWheel(&self, _d: f32) -> tresult {
+            kResultFalse
+        }
+        unsafe fn onKeyDown(&self, _k: char16, _c: int16, _m: int16) -> tresult {
+            kResultFalse
+        }
+        unsafe fn onKeyUp(&self, _k: char16, _c: int16, _m: int16) -> tresult {
+            kResultFalse
+        }
+        unsafe fn getSize(&self, _s: *mut ViewRect) -> tresult {
+            kResultFalse
+        }
+        unsafe fn onSize(&self, _s: *mut ViewRect) -> tresult {
+            kResultOk
+        }
+        unsafe fn onFocus(&self, _s: TBool) -> tresult {
+            kResultOk
+        }
+        unsafe fn setFrame(&self, frame: *mut IPlugFrame) -> tresult {
+            self.0.lock().unwrap().push(if frame.is_null() {
+                Call::ClearFrame
+            } else {
+                Call::SetFrame
+            });
+            kResultOk
+        }
+        unsafe fn canResize(&self) -> tresult {
+            kResultFalse
+        }
+        unsafe fn checkSizeConstraint(&self, _r: *mut ViewRect) -> tresult {
+            kResultFalse
+        }
+    }
+
+    /// **A view that refuses `attached` is not left holding the host's frame.**
+    /// The frame is set before `attached`; on the failure path nothing used to
+    /// withdraw it, so a plugin that kept the pointer held a frame nothing
+    /// would ever pump.
+    ///
+    /// Mutation: delete the `setFrame(nullptr)` in `Editor::open`'s failure
+    /// branch -> the log ends `[SetFrame]` and the assertion fails.
+    #[test]
+    fn a_failed_attach_withdraws_the_frame() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let view = ComWrapper::new(Refusing(calls.clone()))
+            .to_com_ptr::<IPlugView>()
+            .expect("the view implements IPlugView");
+        let frame = HostPlugFrame::new(
+            #[cfg(target_os = "linux")]
+            crate::com::RunLoop::new(),
+            #[cfg(target_os = "linux")]
+            None,
+        );
+        // SAFETY: the handle is never dereferenced by the stub view.
+        let parent = unsafe { WindowHandle::from_raw(std::ptr::NonNull::dangling().as_ptr()) };
+        let result = Editor::open(view, parent, ContentScale::default(), frame);
+        assert!(matches!(result, Err(EditorError::Attach(_))));
+        assert_eq!(*calls.lock().unwrap(), [Call::SetFrame, Call::ClearFrame]);
     }
 }

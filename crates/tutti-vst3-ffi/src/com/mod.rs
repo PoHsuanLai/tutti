@@ -40,14 +40,15 @@ pub use component_handler::{
     ComponentHandler, NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterEditEvent,
     PluginNotification, ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
 };
+pub(crate) use event_list::event_list_ptr;
 pub use event_list::{
     EVENT_CAPACITY, EventList, NOTE_EXPRESSION_ROOM, SYSEX_OUT_ROOM, Staged, Staging,
-    event_list_ptr,
 };
 pub(crate) use host_application::HostApplication;
-pub use param_changes::{ParameterChangesImpl, param_changes_ptr};
+pub use param_changes::ParameterChangesImpl;
+pub(crate) use param_changes::param_changes_ptr;
 pub use param_queue::MIN_POINT_ROOM;
 pub(crate) use plug_frame::HostPlugFrame;
 #[cfg(target_os = "linux")]
-pub(crate) use run_loop::RunLoop;
+pub(crate) use run_loop::{OwnedScope, Owner, RunLoop};
 pub(crate) use stream::BStream;

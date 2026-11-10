@@ -46,6 +46,11 @@ pub(crate) struct HostApplication {
     /// registered through either object land in one pumped loop.
     #[cfg(target_os = "linux")]
     run_loop: Arc<RunLoop>,
+    /// The plugin this object was made for, if one: its registrations are
+    /// taken back when its editor closes or it drops. `None` for the module's
+    /// own host context, whose registrations take the run loop's scope.
+    #[cfg(target_os = "linux")]
+    owner: Option<super::run_loop::Owner>,
 }
 
 #[cfg(target_os = "linux")]
@@ -64,6 +69,7 @@ impl HostApplication {
     pub(crate) fn new(
         name: &str,
         #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
+        #[cfg(target_os = "linux")] owner: Option<super::run_loop::Owner>,
     ) -> ComWrapper<Self> {
         let mut name_utf16 = [0u16; 128];
         for (i, c) in name.encode_utf16().take(127).enumerate() {
@@ -73,6 +79,8 @@ impl HostApplication {
             name: name_utf16,
             #[cfg(target_os = "linux")]
             run_loop,
+            #[cfg(target_os = "linux")]
+            owner,
         })
     }
 }
@@ -86,6 +94,8 @@ impl HostApplication {
             name,
             #[cfg(target_os = "linux")]
             super::run_loop::RunLoop::new(),
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 }
@@ -100,7 +110,10 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
         guard(vst3::Steinberg::kInternalError, || {
             // SAFETY: the plugin passes a handler it keeps alive until it
             // unregisters it, and calls from the UI thread (the `IRunLoop` contract).
-            unsafe { self.run_loop.register_event_handler(handler, fd) }
+            unsafe {
+                self.run_loop
+                    .register_event_handler(handler, fd, self.owner)
+            }
         })
     }
 
@@ -118,7 +131,10 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
         guard(vst3::Steinberg::kInternalError, || {
             // SAFETY: as for `registerEventHandler`: alive until unregistered, UI
             // thread.
-            unsafe { self.run_loop.register_timer(handler, milliseconds) }
+            unsafe {
+                self.run_loop
+                    .register_timer(handler, milliseconds, self.owner)
+            }
         })
     }
 

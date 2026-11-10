@@ -45,23 +45,24 @@ impl ApplicationHandler for App {
 
         // Load plugin first to get editor size
         println!("Loading plugin: {}", PLUGIN_PATH);
-        let plugin = match Vst3Loaded::load(Path::new(PLUGIN_PATH), LoadOptions::new()) {
-            Ok(p) => {
-                println!(
-                    "Loaded: {} by {}",
-                    p.plugin_info().name,
-                    p.plugin_info().vendor
-                );
-                p
-            }
-            Err(e) => {
-                eprintln!("Failed to load plugin: {:?}", e);
-                event_loop.exit();
-                return;
-            }
-        };
+        let plugin =
+            match Vst3Loaded::load(&main_thread(), Path::new(PLUGIN_PATH), LoadOptions::new()) {
+                Ok(p) => {
+                    println!(
+                        "Loaded: {} by {}",
+                        p.plugin_info().name,
+                        p.plugin_info().vendor
+                    );
+                    p
+                }
+                Err(e) => {
+                    eprintln!("Failed to load plugin: {:?}", e);
+                    event_loop.exit();
+                    return;
+                }
+            };
 
-        if !plugin.has_editor() {
+        if !plugin.has_editor(&main_thread()) {
             eprintln!("Plugin has no editor");
             event_loop.exit();
             return;

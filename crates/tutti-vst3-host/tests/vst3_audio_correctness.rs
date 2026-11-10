@@ -1313,7 +1313,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
     // parameter changes, so a static value produces nothing.
     let info = inst.plugin_info().clone();
     let param_ids: Vec<u32> = inst
-        .parameter_ids()
+        .parameter_ids(&main_thread())
         .into_iter()
         .map(|id| id.get())
         .collect();
@@ -1374,7 +1374,8 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 #[test]
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
-    let loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
+    let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
 
     let want = Some(tutti_vst3_host::process_context_flags::NEED_TEMPO);
     assert_eq!(
@@ -1495,15 +1496,16 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
     use tutti_plugin_types::{Control, Normalized};
 
     let _guard = plugin_guard();
-    let mut loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
+    let mut loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
 
-    let listed = loaded.parameter_ids();
+    let listed = loaded.parameter_ids(&main_thread());
     let unlisted = (0..=u32::MAX)
         .map(ParamId::new)
         .find(|c| !listed.contains(c))
         .expect("some id is unlisted");
 
-    assert!(loaded.parameter_info(unlisted).is_none());
+    assert!(loaded.parameter_info(&main_thread(), unlisted).is_none());
     assert_eq!(Control::parameter(&loaded, &main_thread(), unlisted), None);
 
     let before: Vec<_> = listed
@@ -1540,7 +1542,8 @@ mod loaded_writes {
     const RAMP_LEVEL: f64 = 0.75;
 
     fn load() -> Vst3Loaded {
-        Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads")
+        Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+            .expect("audio-probe loads")
     }
 
     fn write(loaded: &mut Vst3Loaded, id: u32, value: f64) {
@@ -1756,7 +1759,7 @@ mod loaded_writes {
         write(&mut source, PARAM_GAIN, 0.25);
         let blob = Control::save_state(&mut source, &main_thread()).expect("the probe saves");
 
-        let listed = source.parameter_ids();
+        let listed = source.parameter_ids(&main_thread());
         let unlisted = (0..=u32::MAX)
             .find(|c| !listed.contains(&ParamId::new(*c)))
             .expect("some id is unlisted");

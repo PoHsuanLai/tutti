@@ -15,6 +15,7 @@
 //! dropped whole and counted ([`EventList::sysex_dropped`]).
 
 use crate::guard::guard;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use vst3::Steinberg::{
     Vst::{IEventList, IEventListTrait},
     kInvalidArgument, kResultFalse, kResultOk, tresult,
@@ -176,6 +177,9 @@ impl Inner {
 /// The host's `IEventList`.
 pub struct EventList {
     inner: AudioThreadCell<Inner>,
+    /// Calls the audio thread skipped because a plugin thread held the list
+    /// ([`busy`](Self::busy)).
+    busy: AtomicU64,
 }
 
 impl Class for EventList {
@@ -199,35 +203,92 @@ impl EventList {
     fn with_sysex(sysex: SysExAssembler, sysex_out_room: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             inner: AudioThreadCell::new(Inner::new(sysex, sysex_out_room)),
+            busy: AtomicU64::new(0),
         })
     }
 
-    /// Empties the list and opens it for staging a block.
-    pub fn begin(&self) -> Staging<'_> {
-        let mut inner = self.inner.borrow_mut();
+    /// Empties the list and opens it for staging a block, or `None` (counted in
+    /// [`busy`](Self::busy)) while a plugin thread is inside one of its calls
+    /// (`getEventCount`, `getEvent`): the one case a borrow is refused, and
+    /// the audio thread skips the block rather than wait or panic.
+    pub fn try_begin(&self) -> Option<Staging<'_>> {
+        let Some(mut inner) = self.inner.try_borrow_mut() else {
+            self.busy.fetch_add(1, Relaxed);
+            return None;
+        };
         inner.clear();
-        Staging(inner)
+        Some(Staging(inner))
     }
 
-    /// Empties the list, ready for the next block.
-    pub fn clear(&self) {
-        self.inner.borrow_mut().clear();
+    /// [`try_begin`](Self::try_begin) for a caller that owns the list's every
+    /// reader (a test, or a plugin that is not running).
+    ///
+    /// # Panics
+    ///
+    /// If a plugin thread is inside a call on the list.
+    pub fn begin(&self) -> Staging<'_> {
+        self.try_begin().expect("the list is not in use")
     }
 
-    /// Reads what is staged, for the host to read what the plugin wrote.
-    pub fn with_events<R>(&self, read: impl FnOnce(&Staged<'_>) -> R) -> R {
-        let inner = self.inner.borrow();
-        read(&Staged {
+    /// Empties the list, ready for the next block. While a plugin thread holds
+    /// it the list is left as it is, counted in [`busy`](Self::busy), and this
+    /// returns `false`: a caller that is about to hand the list to the plugin
+    /// must not, for it still holds the last block's events.
+    #[must_use = "a list that was not cleared still holds the last block"]
+    pub fn clear(&self) -> bool {
+        if let Some(mut inner) = self.inner.try_borrow_mut() {
+            inner.clear();
+            true
+        } else {
+            self.busy.fetch_add(1, Relaxed);
+            false
+        }
+    }
+
+    /// Reads what is staged, for the host to read what the plugin wrote, or
+    /// `None` (counted in [`busy`](Self::busy)) while the plugin is writing.
+    pub fn try_with_events<R>(&self, read: impl FnOnce(&Staged<'_>) -> R) -> Option<R> {
+        let Some(inner) = self.inner.try_borrow() else {
+            self.busy.fetch_add(1, Relaxed);
+            return None;
+        };
+        Some(read(&Staged {
             events: &inner.events,
             capacity: inner.events.capacity(),
             sysex: inner.sysex_bytes(),
             text: &inner.text_arena,
-        })
+        }))
+    }
+
+    /// [`try_with_events`](Self::try_with_events) for a caller that owns the
+    /// list's every reader (a test).
+    ///
+    /// # Panics
+    ///
+    /// If a plugin thread is inside a call on the list.
+    pub fn with_events<R>(&self, read: impl FnOnce(&Staged<'_>) -> R) -> R {
+        self.try_with_events(read).expect("the list is not in use")
+    }
+
+    /// A hold on the list as a plugin thread inside `getEvent` has one, for a
+    /// conformance test of what the host does while the plugin holds it.
+    #[cfg(feature = "conformance")]
+    pub fn hold_as_plugin(&self) -> impl Sized + '_ {
+        self.inner.borrow()
+    }
+
+    /// How many calls the host skipped because a plugin thread held the list.
+    pub fn busy(&self) -> u64 {
+        self.busy.load(Relaxed)
     }
 
     /// Counts `n` more events dropped ([`dropped`](Self::dropped)).
     pub fn add_dropped(&self, n: u64) {
-        self.inner.borrow_mut().dropped += n;
+        if let Some(mut inner) = self.inner.try_borrow_mut() {
+            inner.dropped += n;
+        } else {
+            self.busy.fetch_add(1, Relaxed);
+        }
     }
 
     /// The SysEx messages staged for the plugin, each as the bytes `getEvent`
@@ -273,13 +334,21 @@ impl EventList {
     /// counted, so its later packets are not spliced onto it. Call it after
     /// staging.
     pub fn lose_sysex_tail(&self) {
-        self.inner.borrow_mut().sysex.lost_tail();
+        if let Some(mut inner) = self.inner.try_borrow_mut() {
+            inner.sysex.lost_tail();
+        } else {
+            self.busy.fetch_add(1, Relaxed);
+        }
     }
 
     /// The plugin is being (re-)activated: drops the open SysEx, counted, so
     /// the message is not completed across the reset.
     pub fn reset_sysex(&self) {
-        self.inner.borrow_mut().sysex.reset();
+        if let Some(mut inner) = self.inner.try_borrow_mut() {
+            inner.sysex.reset();
+        } else {
+            self.busy.fetch_add(1, Relaxed);
+        }
     }
 
     #[cfg(test)]
@@ -447,8 +516,9 @@ impl IEventListTrait for EventList {
 }
 
 /// Raw `IEventList*` for `ProcessData`, or null if the wrapper can't expose the
-/// interface.
-pub fn event_list_ptr(list: &ComWrapper<EventList>) -> *mut IEventList {
+/// interface. Crate-private: the pointer carries no lifetime, and `process` is
+/// the one place that hands it to a plugin, under the borrow it holds.
+pub(crate) fn event_list_ptr(list: &ComWrapper<EventList>) -> *mut IEventList {
     list.as_com_ref::<IEventList>()
         .map(|r| r.as_ptr())
         .unwrap_or(std::ptr::null_mut())

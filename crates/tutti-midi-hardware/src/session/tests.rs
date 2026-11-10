@@ -7,6 +7,7 @@ use crate::test_support::FakeBackend;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_graph::{Offset, UmpAt};
 use tutti_midi_device::EndpointId;
+use tutti_types::SampleRate;
 
 // The fake backend is in `crate::test_support` so `bevy-tutti` can test
 // its own session wiring against it: a headless CI box has no MIDI port.
@@ -18,7 +19,7 @@ use tutti_midi_device::EndpointId;
 /// this one is about opens.
 fn session() -> (MidiSession, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let (backend, counters) = FakeBackend::build();
-    let ports = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
+    let ports = Arc::new(HardwareMidiInputs::new(64, SampleRate::new(44_100.0)));
     (
         MidiSession::open_over(backend, ports).unwrap(),
         counters.sent,
@@ -82,8 +83,11 @@ fn by_name_matching_is_case_insensitive_substring() {
 #[test]
 fn connecting_an_absent_device_is_an_error_not_a_silent_noop() {
     let (backend, counters) = FakeBackend::build();
-    let s =
-        MidiSession::open_over(backend, Arc::new(HardwareMidiInputs::new(64, 44_100.0))).unwrap();
+    let s = MidiSession::open_over(
+        backend,
+        Arc::new(HardwareMidiInputs::new(64, SampleRate::new(44_100.0))),
+    )
+    .unwrap();
     assert!(s.connect_input_by_name("nonexistent").is_err());
     // An id that was listed and is gone: the shape of a stale id.
     let gone = input(&s, "IAC Bus 1");
@@ -145,7 +149,7 @@ fn sending_reaches_a_connected_output() {
 fn a_refusing_output_reports_zero_accepted() {
     let (backend, counters) = FakeBackend::build_accepting(0);
     let sent = counters.sent;
-    let ports = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
+    let ports = Arc::new(HardwareMidiInputs::new(64, SampleRate::new(44_100.0)));
     let s = MidiSession::open_over(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
 
@@ -162,7 +166,7 @@ fn a_refusing_output_reports_zero_accepted() {
 #[test]
 fn a_partial_accept_reports_what_landed() {
     let (backend, _counters) = FakeBackend::build_accepting(1);
-    let ports = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
+    let ports = Arc::new(HardwareMidiInputs::new(64, SampleRate::new(44_100.0)));
     let s = MidiSession::open_over(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
 
@@ -300,7 +304,7 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
         log: Arc::clone(&log),
         refuse,
     };
-    let ports = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
+    let ports = Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
     (
         MidiSession::open_over(Box::new(backend), ports).unwrap(),
         log,

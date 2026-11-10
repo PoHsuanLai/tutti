@@ -83,9 +83,9 @@ use tutti_measure::{
     OnsetConfig, PeakConfig, YinConfig,
 };
 use tutti_dsp::{FftScratch, StftGeometry};
-use tutti_types::{ChannelLayout, Interleaved, Samples, StereoPlanes};
+use tutti_types::{ChannelLayout, Interleaved, SampleRate, Samples, StereoPlanes};
 
-let sample_rate = 44100.0;
+let sample_rate = SampleRate::new(44100.0);
 let samples: Vec<f32> = vec![0.0; 44100];
 let mut fft = FftScratch::new();
 

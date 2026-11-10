@@ -70,7 +70,9 @@ fn a_signed_zero_gain_change_takes_the_ramp() {
 #[test]
 fn vbap_panner_tick() {
     let mut panner = prep(VbapPannerNode::stereo().unwrap());
-    panner.controls().set_position(0.0, 0.0);
+    panner
+        .controls()
+        .set_position(Azimuth::new(0.0), Elevation::new(0.0));
 
     let input = [1.0f32, 1.0f32];
     let mut output = [0.0f32; 2];
@@ -272,7 +274,9 @@ fn vbap_clone_shares_atomics() {
     let cloned = panner.clone();
 
     // -- target: azimuth + elevation, set on the original.
-    panner.controls().set_position(90.0, 45.0);
+    panner
+        .controls()
+        .set_position(Azimuth::new(90.0), Elevation::new(45.0));
     assert!(
         (cloned.controls().azimuth().get() - 90.0).abs() < 0.001,
         "the clone did not see the original's bearing: {}",
@@ -285,7 +289,9 @@ fn vbap_clone_shares_atomics() {
     );
 
     // And vice versa.
-    cloned.controls().set_position(-60.0, 10.0);
+    cloned
+        .controls()
+        .set_position(Azimuth::new(-60.0), Elevation::new(10.0));
     assert!(
         (panner.controls().azimuth().get() - (-60.0)).abs() < 0.001,
         "the original did not see the clone's bearing: {}",

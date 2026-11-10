@@ -141,7 +141,7 @@ fn render(engine: &Engine, frames: usize) {
 /// The live engine over `map` from beat `start`, rendered in `blocks` (a
 /// pattern repeated until `total` frames).
 fn live(map: &Arc<TempoMap>, start: f64, blocks: &[usize], total: usize) -> Seen {
-    let transport = Transport::new(SR);
+    let transport = Transport::new(SampleRate::new(SR));
     let log = Log::default();
     let (mut ed, exec) = graph(&log);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
@@ -479,7 +479,7 @@ fn an_offline_render_is_the_live_render_with_a_ramp() {
 /// -> fails.
 #[test]
 fn a_seek_into_the_middle_of_a_ramp_seats_on_the_exact_beat() {
-    let transport = Transport::new(SR);
+    let transport = Transport::new(SampleRate::new(SR));
     let log = Log::default();
     let (mut ed, exec) = graph(&log);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
@@ -543,7 +543,7 @@ fn a_seek_into_the_middle_of_a_ramp_seats_on_the_exact_beat() {
 /// 1.32 -> fails.
 #[test]
 fn a_loop_wrap_inside_a_ramp_takes_the_cell_where_it_lands() {
-    let transport = Transport::new(SR);
+    let transport = Transport::new(SampleRate::new(SR));
     let log = Log::default();
     let (mut ed, exec) = graph(&log);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
@@ -552,7 +552,7 @@ fn a_loop_wrap_inside_a_ramp_takes_the_cell_where_it_lands() {
         .motion
         .schedule(
             At::NextBlock,
-            LoopEdit::over(LoopRange::new(1.0, 3.0).expect("ordered")),
+            LoopEdit::over(LoopRange::new(Beat::new(1.0), Beat::new(3.0)).expect("ordered")),
         )
         .expect("room");
     transport

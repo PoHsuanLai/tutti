@@ -39,8 +39,8 @@ use tutti_nodes::{
     SvfType,
 };
 use tutti_types::{
-    Amplitude, AtomicF32, BeatDuration, ChannelLayout, Depth, PhaseIncrement, SampleRate, Samples,
-    UnitParam,
+    Amplitude, AtomicF32, BeatDuration, ChannelLayout, CompressionRatio, Db, Depth, Drive,
+    Feedback, Hz, Mix, PhaseIncrement, Q, Resonance, SampleRate, Samples, Seconds, UnitParam,
 };
 
 const FRAMES: usize = 24_000;
@@ -162,39 +162,51 @@ fn cases() -> Vec<Case> {
         SvfFilterNode::with_channels(
             ChannelLayout::try_from(w).expect("a test width is small"),
             SvfType::LowPass,
-            1_000.0,
-            0.707,
+            Hz::new(1_000.0),
+            Q::new(0.707),
         )
     }
     fn ladder(w: usize) -> LadderFilterNode<f64> {
         LadderFilterNode::with_channels(
             ChannelLayout::try_from(w).expect("a test width is small"),
             LadderType::LP24,
-            1_000.0,
-            0.3,
+            Hz::new(1_000.0),
+            Resonance::new(0.3),
         )
     }
     fn delay(w: usize) -> DelayLineNode {
         let d = DelayLineNode::with_channels(
             ChannelLayout::try_from(w).expect("a test width is small"),
-            0.01,
-            0.0003,
-            0.5,
+            Seconds::new(0.01),
+            Seconds::new(0.0003),
+            Feedback::new(0.5),
         );
-        d.set_mix(0.5);
+        d.set_mix(Mix::new(0.5));
         d
     }
     fn comp(w: usize) -> CompressorNode {
-        CompressorNode::with_channels(-20.0, 8.0, 0.001, 0.05, w as u8)
+        CompressorNode::with_channels(
+            Db::new(-20.0),
+            CompressionRatio::new(8.0),
+            Seconds::new(0.001),
+            Seconds::new(0.05),
+            w as u8,
+        )
     }
     fn gate(w: usize) -> GateNode {
-        GateNode::with_channels(-30.0, 0.001, 0.004, 0.02, w as u8)
+        GateNode::with_channels(
+            Db::new(-30.0),
+            Seconds::new(0.001),
+            Seconds::new(0.004),
+            Seconds::new(0.02),
+            w as u8,
+        )
     }
     fn lim(w: usize) -> LimiterNode {
         LimiterNode::with_channels(
             ChannelLayout::try_from(w).expect("a test width is small"),
-            -6.0,
-            -0.3,
+            Db::new(-6.0),
+            Db::new(-0.3),
         )
     }
     let mut cases = vec![
@@ -204,7 +216,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = svf(w);
                 if let Some(v) = v {
-                    n.set_frequency(v);
+                    n.set_frequency(Hz::new(v));
                 }
                 parts_of(n)
             },
@@ -217,7 +229,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = svf(w);
                 if let Some(v) = v {
-                    n.set_q(v);
+                    n.set_q(Q::new(v));
                 }
                 parts_of(n)
             },
@@ -230,7 +242,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = ladder(w);
                 if let Some(v) = v {
-                    n.set_frequency(v);
+                    n.set_frequency(Hz::new(v));
                 }
                 parts_of(n)
             },
@@ -243,7 +255,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = ladder(w);
                 if let Some(v) = v {
-                    n.set_resonance(v);
+                    n.set_resonance(Resonance::new(v));
                 }
                 parts_of(n)
             },
@@ -256,7 +268,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = ladder(w);
                 if let Some(v) = v {
-                    n.set_drive(v);
+                    n.set_drive(Drive::new(v));
                 }
                 parts_of(n)
             },
@@ -269,7 +281,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = delay(w);
                 if let Some(v) = v {
-                    n.set_feedback(v);
+                    n.set_feedback(Feedback::new(v));
                 }
                 parts_of(n)
             },
@@ -296,10 +308,10 @@ fn cases() -> Vec<Case> {
                 let n = DistortionNode::with_channels(
                     ChannelLayout::try_from(w).expect("a test width is small"),
                     ShapeKind::Tanh,
-                    1.0,
+                    Drive::new(1.0),
                 );
                 if let Some(v) = v {
-                    n.set_drive(v);
+                    n.set_drive(Drive::new(v));
                 }
                 parts_of(n)
             },
@@ -312,7 +324,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_threshold(v);
+                    n.set_threshold(Db::new(v));
                 }
                 parts_of(n)
             },
@@ -325,7 +337,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = gate(w);
                 if let Some(v) = v {
-                    n.set_threshold(v);
+                    n.set_threshold(Db::new(v));
                 }
                 parts_of(n)
             },
@@ -339,7 +351,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = lim(w);
                 if let Some(v) = v {
-                    n.set_ceiling(v);
+                    n.set_ceiling(Db::new(v));
                 }
                 parts_of(n)
             },
@@ -352,7 +364,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = lim(w);
                 if let Some(v) = v {
-                    n.set_threshold(v);
+                    n.set_threshold(Db::new(v));
                 }
                 parts_of(n)
             },
@@ -365,10 +377,10 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let mut n = BrickwallLimiterNode::with_channels(
                     ChannelLayout::try_from(w).expect("a test width is small"),
-                    0.0,
+                    Db::new(0.0),
                 );
                 if let Some(v) = v {
-                    n.set_ceiling(v);
+                    n.set_ceiling(Db::new(v));
                 }
                 parts_of(n)
             },
@@ -416,12 +428,24 @@ fn cases() -> Vec<Case> {
 /// (its last frame per block).
 fn block_rate_cases() -> Vec<Case> {
     fn comp(w: usize) -> CompressorNode {
-        CompressorNode::with_channels(-20.0, 8.0, 0.001, 0.05, w as u8)
+        CompressorNode::with_channels(
+            Db::new(-20.0),
+            CompressionRatio::new(8.0),
+            Seconds::new(0.001),
+            Seconds::new(0.05),
+            w as u8,
+        )
     }
     // Near the noise's peak, no hold: the gate opens and shuts all the
     // time, so its times are heard.
     fn gate(w: usize) -> GateNode {
-        GateNode::with_channels(-3.0, 0.001, 0.0, 0.02, w as u8)
+        GateNode::with_channels(
+            Db::new(-3.0),
+            Seconds::new(0.001),
+            Seconds::new(0.0),
+            Seconds::new(0.02),
+            w as u8,
+        )
     }
     fn chorus(w: usize) -> ModDelayNode {
         ModDelayNode::chorus(ChannelLayout::try_from(w).expect("a test width is small"))
@@ -440,11 +464,11 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = DelayLineNode::with_channels(
                     ChannelLayout::try_from(w).expect("a test width is small"),
-                    0.01,
-                    0.0003,
-                    0.5,
+                    Seconds::new(0.01),
+                    Seconds::new(0.0003),
+                    Feedback::new(0.5),
                 );
-                n.set_mix(v.unwrap_or(0.5));
+                n.set_mix(Mix::new(v.unwrap_or(0.5)));
                 parts_of(n)
             },
             lo: 0.1,
@@ -457,11 +481,11 @@ fn block_rate_cases() -> Vec<Case> {
                 let n = SvfFilterNode::<f64>::with_channels(
                     ChannelLayout::try_from(w).expect("a test width is small"),
                     SvfType::Bell,
-                    1_000.0,
-                    0.707,
+                    Hz::new(1_000.0),
+                    Q::new(0.707),
                 );
                 if let Some(v) = v {
-                    n.set_gain_db(v);
+                    n.set_gain_db(Db::new(v));
                 }
                 parts_of(n)
             },
@@ -474,7 +498,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_ratio(v);
+                    n.set_ratio(CompressionRatio::new(v));
                 }
                 parts_of(n)
             },
@@ -513,7 +537,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_makeup(v);
+                    n.set_makeup(Db::new(v));
                 }
                 parts_of(n)
             },
@@ -554,8 +578,8 @@ fn block_rate_cases() -> Vec<Case> {
                 // lets go between peaks, so its release is heard.
                 let n = LimiterNode::with_channels(
                     ChannelLayout::try_from(w).expect("a test width is small"),
-                    -3.0,
-                    -2.5,
+                    Db::new(-3.0),
+                    Db::new(-2.5),
                 );
                 if let Some(v) = v {
                     n.set_release(tutti_types::Seconds::from_f32(v));
@@ -571,7 +595,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = chorus(w);
                 if let Some(v) = v {
-                    n.set_rate(v);
+                    n.set_rate(Hz::new(v));
                 }
                 parts_of(n)
             },
@@ -597,7 +621,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = chorus(w);
                 if let Some(v) = v {
-                    n.set_feedback(v);
+                    n.set_feedback(Feedback::new(v));
                 }
                 parts_of(n)
             },
@@ -610,7 +634,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = chorus(w);
                 if let Some(v) = v {
-                    n.set_mix(v);
+                    n.set_mix(Mix::new(v));
                 }
                 parts_of(n)
             },
@@ -638,7 +662,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_rate(v);
+                    n.set_rate(Hz::new(v));
                 }
                 parts_of(n)
             },
@@ -651,7 +675,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_depth(v);
+                    n.set_depth(Depth::new(v));
                 }
                 parts_of(n)
             },
@@ -664,7 +688,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_feedback(v);
+                    n.set_feedback(Feedback::new(v));
                 }
                 parts_of(n)
             },
@@ -677,7 +701,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_mix(v);
+                    n.set_mix(Mix::new(v));
                 }
                 parts_of(n)
             },
@@ -696,7 +720,7 @@ fn block_rate_cases() -> Vec<Case> {
                 64,
             );
             if let Some(v) = v {
-                n.set_mix(v);
+                n.set_mix(Mix::new(v));
             }
             parts_of(n)
         },
@@ -774,7 +798,11 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
 /// output of a modulated drive, from the unmodulated node.
 fn plain_distortion(d: f32) -> Vec<f32> {
     render(
-        parts_of(DistortionNode::with_channels(1u16, ShapeKind::Tanh, d)),
+        parts_of(DistortionNode::with_channels(
+            1u16,
+            ShapeKind::Tanh,
+            Drive::new(d),
+        )),
         None,
     )
     .remove(0)
@@ -794,7 +822,7 @@ fn plain_distortion(d: f32) -> Vec<f32> {
 /// never reaches the driven drive → fails.
 #[test]
 fn an_authored_write_moves_the_base_under_modulation() {
-    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
     let cell = node.drive();
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
@@ -838,7 +866,7 @@ fn an_authored_write_moves_the_base_under_modulation() {
 /// `f32::clamp` panics on the crossed bounds → fails.
 #[test]
 fn a_crossed_range_is_survivable() {
-    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -870,7 +898,7 @@ fn a_crossed_range_is_survivable() {
 /// connection was heard" fails.
 #[test]
 fn an_unmodulated_param_adds_nothing_to_the_plan() {
-    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -949,7 +977,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 /// in `ParamState::port`) → the first frames fade in from drive 1 → fails.
 #[test]
 fn a_fork_modulates_as_the_live_graph_does() {
-    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);

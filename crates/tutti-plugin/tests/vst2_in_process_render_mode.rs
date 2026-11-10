@@ -117,8 +117,9 @@ struct Loaded {
 fn load() -> Loaded {
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
-    let (unit, handle) = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
-        .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
+    let (unit, handle) =
+        in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
+            .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded { unit, handle, path }
 }
 

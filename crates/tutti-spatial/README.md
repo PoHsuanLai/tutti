@@ -83,7 +83,7 @@ N-wide node.
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Const;
 use tutti_spatial::{build_vbap_mix, VbapSource};
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{Azimuth, ChannelLayout, SampleRate, Samples};
 
 let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
@@ -96,8 +96,8 @@ let mix = build_vbap_mix(
     &mut g,
     ChannelLayout::QUAD,
     &[
-        VbapSource::at(front, 45.0),   // front-left
-        VbapSource::at(rear, 135.0),   // rear-left
+        VbapSource::at(front, Azimuth::new(45.0)),   // front-left
+        VbapSource::at(rear, Azimuth::new(135.0)),   // rear-left
     ],
 )?;
 g.pipe_output(mix);

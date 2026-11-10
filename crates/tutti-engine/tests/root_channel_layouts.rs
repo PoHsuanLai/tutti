@@ -43,7 +43,8 @@ fn root(outputs: usize, wire: &[usize]) -> (Editor, tutti_graph::Executor) {
 /// interleaved buffer. `wire` feeds the source to the root outputs it picks.
 fn render_root_to(outputs: usize, target: usize, wire: &[usize]) -> Vec<f32> {
     let (mut ed, exec) = root(outputs, wire);
-    let engine = Engine::new(&Transport::new(48_000.0), &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&Transport::new(SampleRate::new(48_000.0)), &mut ed, exec)
+        .expect("within the limits");
     let frames = 256;
     let mut out = vec![0.0f32; frames * target];
     // `target` stays a plain count in the assertions below — they read as
@@ -135,7 +136,7 @@ fn center_root_folds_symmetrically_to_stereo() {
 fn over_wide_root_is_refused_before_it_can_render() {
     let wide = 12;
     let (mut ed, exec) = root(wide, &(0..wide).collect::<Vec<_>>());
-    let refused = Engine::new(&Transport::new(48_000.0), &mut ed, exec).err();
+    let refused = Engine::new(&Transport::new(SampleRate::new(48_000.0)), &mut ed, exec).err();
     assert_eq!(
         refused,
         Some(GraphEngineError::Limits(CommitError::TooManyOutputs {

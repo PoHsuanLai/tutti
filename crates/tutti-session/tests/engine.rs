@@ -24,7 +24,7 @@ use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::{Const, assert_golden};
 use tutti_session::{GraphSource, MissingSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -85,7 +85,7 @@ fn render_click(frames: usize) -> Vec<f32> {
     let mut s = offline();
     let settings = Arc::clone(s.click_settings());
     settings.set_mode(MetronomeMode::Always);
-    settings.set_volume(1.0);
+    settings.set_volume(Amplitude::new(1.0));
     let click = s.click_node().expect("the builder inserts the click");
     for port in 0..2 {
         s.graph()
@@ -177,7 +177,7 @@ fn tone_at(i: usize) -> f32 {
 /// by `cents`. It reads the transport from its blocks' `Env`.
 fn voice(cents: f32) -> tutti_sampler::VoicePool {
     use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-    let mut wave = tutti_codec::Wave::new(1, RATE);
+    let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
     for i in 0..RATE as usize {
         wave.push_frame(&[tone_at(i)]);
     }

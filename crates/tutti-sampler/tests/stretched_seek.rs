@@ -29,7 +29,7 @@ fn render(frames: usize, seek_at: usize) -> Vec<f32> {
     let (pool, handle) = VoicePool::new().with_handle();
     let mut pool = contract::prepared(pool, SampleRate(SR), BLOCK);
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let mut wave = Wave::new(1, SR);
+    let mut wave = Wave::new(1, SampleRate::new(SR));
     for i in 0..frames * 4 {
         wave.push_frame(&[(TAU * 440.0 * i as f32 / SR as f32).sin()]);
     }
@@ -55,10 +55,16 @@ fn render(frames: usize, seek_at: usize) -> Vec<f32> {
         if out.len() == seek_at {
             transport.seek(Beat::new(5.0));
         }
-        let block =
-            contract::drive_input(&mut pool, &transport.env(BLOCK, SR), &[], &[], &[]).audio;
+        let block = contract::drive_input(
+            &mut pool,
+            &transport.env(BLOCK, SampleRate::new(SR)),
+            &[],
+            &[],
+            &[],
+        )
+        .audio;
         out.extend_from_slice(&block[0]);
-        transport.advance(BLOCK as i64, SR);
+        transport.advance(BLOCK as i64, SampleRate::new(SR));
     }
     out
 }

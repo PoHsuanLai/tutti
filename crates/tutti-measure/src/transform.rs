@@ -644,7 +644,11 @@ mod tests {
         let mut fft = FftScratch::new();
         let result = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            ),
             &mut fft,
         )
         .unwrap();
@@ -673,7 +677,11 @@ mod tests {
         let mut fft = FftScratch::new();
         let transform = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            ),
             &mut fft,
         )
         .unwrap();
@@ -698,7 +706,11 @@ mod tests {
         let mut fft = FftScratch::new();
         let rect = stft(
             &samples,
-            StftRequest::new(44100.0, 1024usize, 256usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(1024usize),
+                Samples::new(256usize),
+            ),
             &mut fft,
         )
         .unwrap();
@@ -715,8 +727,12 @@ mod tests {
     fn a_decimated_request_is_refused_by_the_invertible_path() {
         let samples = tone(200_000, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let request =
-            StftRequest::new(44100.0, 2048usize, 512usize).decimated_to(FrameCount(64), 1usize);
+        let request = StftRequest::new(
+            SampleRate::new(44100.0),
+            Samples::new(2048usize),
+            Samples::new(512usize),
+        )
+        .decimated_to(FrameCount(64), Samples::new(1usize));
 
         // The hop this resolves to is far wider than the window.
         assert!(matches!(
@@ -736,8 +752,12 @@ mod tests {
     #[test]
     fn a_requests_window_shape_reaches_its_geometry() {
         let len = Samples(200_000);
-        let request =
-            StftRequest::new(44100.0, 2048usize, 512usize).with_window(CosineWindow::HAMMING);
+        let request = StftRequest::new(
+            SampleRate::new(44100.0),
+            Samples::new(2048usize),
+            Samples::new(512usize),
+        )
+        .with_window(CosineWindow::HAMMING);
 
         assert_eq!(
             request.resolve(len).expect("valid").window_fn(),
@@ -761,8 +781,12 @@ mod tests {
     fn a_window_that_needs_more_overlap_is_refused_only_where_it_matters() {
         let samples = tone(200_000, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let request =
-            StftRequest::new(44100.0, 2048usize, 512usize).with_window(CosineWindow::BLACKMAN);
+        let request = StftRequest::new(
+            SampleRate::new(44100.0),
+            Samples::new(2048usize),
+            Samples::new(512usize),
+        )
+        .with_window(CosineWindow::BLACKMAN);
 
         assert!(matches!(
             stft(&samples, request, &mut fft),
@@ -776,8 +800,12 @@ mod tests {
         assert!(stft_magnitude(&samples, request, &mut fft).is_ok());
 
         // And at the overlap Blackman asks for, it inverts.
-        let deeper =
-            StftRequest::new(44100.0, 2048usize, 256usize).with_window(CosineWindow::BLACKMAN);
+        let deeper = StftRequest::new(
+            SampleRate::new(44100.0),
+            Samples::new(2048usize),
+            Samples::new(256usize),
+        )
+        .with_window(CosineWindow::BLACKMAN);
         assert!(stft(&samples, deeper, &mut fft).is_ok());
     }
 
@@ -787,7 +815,11 @@ mod tests {
         let mut fft = FftScratch::new();
         let polar = stft_polar(
             &samples,
-            StftRequest::new(44100.0, 1024usize, 256usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(1024usize),
+                Samples::new(256usize),
+            ),
             &mut fft,
         )
         .unwrap();
@@ -812,13 +844,22 @@ mod tests {
 
         let whole = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            ),
             &mut fft,
         )
         .unwrap();
         let part = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize).over(0usize, 8192usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            )
+            .over(Samples::new(0usize), Samples::new(8192usize)),
             &mut fft,
         )
         .unwrap();
@@ -827,7 +868,12 @@ mod tests {
         // A span past the end clamps rather than panicking.
         let clamped = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize).over(0usize, 99_999usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            )
+            .over(Samples::new(0usize), Samples::new(99_999usize)),
             &mut fft,
         )
         .unwrap();
@@ -840,7 +886,11 @@ mod tests {
         let mut fft = FftScratch::new();
         let transform = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            ),
             &mut fft,
         )
         .unwrap();
@@ -870,7 +920,11 @@ mod tests {
         let mut fft = FftScratch::new();
         let transform = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            ),
             &mut fft,
         )
         .unwrap();
@@ -892,7 +946,11 @@ mod tests {
         let mut fft = FftScratch::new();
         let result = stft(
             &samples,
-            StftRequest::new(44100.0, 2048usize, 512usize),
+            StftRequest::new(
+                SampleRate::new(44100.0),
+                Samples::new(2048usize),
+                Samples::new(512usize),
+            ),
             &mut fft,
         )
         .unwrap();

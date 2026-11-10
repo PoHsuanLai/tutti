@@ -20,8 +20,12 @@ use tutti_plugin_contract::{
 fn through_server<F: Format>(path: PathBuf) {
     // SAFETY: set before any thread of this test reads it.
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", tutti_fixtures::plugin_server()) };
-    let client = PluginClient::new(BridgeConfig::default(), path, 48_000.0)
-        .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));
+    let client = PluginClient::new(
+        BridgeConfig::default(),
+        path,
+        tutti_plugin_types::SampleRate::new(48_000.0),
+    )
+    .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));
     let handle = PluginHandle::from_client(&client);
     let pid = handle.server_pid().expect("the plugin lives in a server");
     assert_ne!(pid, std::process::id(), "a process other than this one");

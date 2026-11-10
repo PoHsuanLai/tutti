@@ -91,7 +91,7 @@ fn onsets(engine: &Engine, blocks: &[usize]) -> [Vec<u64>; 2] {
 #[test]
 fn beat_notes_after_a_timed_start_leave_both_paths_on_one_frame() {
     for start in [768u64, 769, 900, 1_023] {
-        let transport = Transport::new(SR);
+        let transport = Transport::new(SampleRate::new(SR));
         let (engine, mut ed, direct, pdc) = engine(&transport, 256);
         let beats = [0.0, 0.001, 0.5];
         for node in [direct, pdc] {

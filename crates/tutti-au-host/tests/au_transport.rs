@@ -147,7 +147,7 @@ fn a_reverb_tail_is_large_and_distinct_from_its_latency() {
     // The two properties are genuinely different numbers, which is the whole
     // point of reading tail separately.
     assert_ne!(
-        tail.to_samples_ceil(RATE),
+        tail.to_samples_ceil(tutti_types::SampleRate::new(RATE)),
         latency,
         "tail and latency must not be the same read"
     );
@@ -176,7 +176,7 @@ fn a_unit_with_both_latency_and_tail_reports_them_separately() {
         "AUDynamicsProcessor's 256-sample lookahead is what makes this test's \
          tail-vs-latency contrast meaningful; re-measure if it moved"
     );
-    let tail_samples = tail.to_samples_ceil(RATE);
+    let tail_samples = tail.to_samples_ceil(tutti_types::SampleRate::new(RATE));
     // `ceil(0.2 * 48000) = 9600`: the AU's `Float64` 0.2 times 48000 is
     // 9600.0 in f64. This read 9601 while `Seconds` was `f32`: the nearest
     // `f32` to 0.2 is 0.200000003, and 0.200000003 * 48000 = 9600.00014,

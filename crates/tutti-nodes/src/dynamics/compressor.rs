@@ -559,7 +559,15 @@ mod tests {
     /// live write reached the fork" for `Ratio` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
-        assert_param_fork(CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1).with_makeup(3.0));
+        assert_param_fork(
+            CompressorNode::stereo(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.001),
+                Seconds::new(0.1),
+            )
+            .with_makeup(Db::new(3.0)),
+        );
     }
 
     /// The block reads a raw ratio cell below 1 as 1 and a knee below 0 as 0,
@@ -570,7 +578,12 @@ mod tests {
     /// the knee reads -6 → fails.
     #[test]
     fn begin_block_clamps_a_raw_ratio_and_knee() {
-        let mut core = CompressorCore::new(-20.0, 4.0, 0.001, 0.1);
+        let mut core = CompressorCore::new(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.001),
+            Seconds::new(0.1),
+        );
         core.ratio.store(CompressionRatio(0.25));
         core.threshold.knee.store(Db(-6.0));
         let block = core.begin_block([None, None, None]);
@@ -585,7 +598,15 @@ mod tests {
     /// 1024-frame block panics indexing past it → fails.
     #[test]
     fn a_block_up_to_the_prepared_maximum_renders() {
-        let mut comp = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut comp = prepared_at(
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
         let audio = vec![0.5f32; 1024];
         let sc = vec![0.9f32; 1024];
         let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
@@ -602,7 +623,12 @@ mod tests {
     #[test]
     fn a_nan_ratio_at_construction_is_finite_and_recovers() {
         let mut comp = prepared_at(
-            CompressorNode::mono(-20.0, CompressionRatio(f32::NAN), 0.0001, 0.1),
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio(f32::NAN),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
             RATE_44K,
         );
         let audio = vec![0.5f32; 256];
@@ -626,7 +652,15 @@ mod tests {
 
     #[test]
     fn test_compressor_mono_reduces_gain_on_loud_sidechain() {
-        let mut comp = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut comp = prepared_at(
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32];
 
@@ -640,7 +674,15 @@ mod tests {
 
     #[test]
     fn test_compressor_mono_no_reduction_below_threshold() {
-        let mut comp = prepared_at(CompressorNode::mono(-10.0, 4.0, 0.001, 0.1), RATE_44K);
+        let mut comp = prepared_at(
+            CompressorNode::mono(
+                Db::new(-10.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32];
 
@@ -653,10 +695,24 @@ mod tests {
 
     #[test]
     fn test_compressor_soft_knee_differs_from_hard_knee() {
-        let mut hard = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut hard = prepared_at(
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut soft = prepared_at(
-            CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_soft_knee(12.0),
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            )
+            .with_soft_knee(Db::new(12.0)),
             RATE_44K,
         );
 
@@ -679,12 +735,25 @@ mod tests {
     #[test]
     fn test_compressor_makeup_gain() {
         let mut comp = prepared_at(
-            CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_makeup(6.0),
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            )
+            .with_makeup(Db::new(6.0)),
             RATE_44K,
         );
 
-        let mut comp_no_makeup =
-            prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut comp_no_makeup = prepared_at(
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32];
         let mut output_no_makeup = [0.0f32];
@@ -699,7 +768,15 @@ mod tests {
 
     #[test]
     fn test_compressor_reset() {
-        let mut comp = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut comp = prepared_at(
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32];
         for _ in 0..1000 {
@@ -714,14 +791,27 @@ mod tests {
 
     #[test]
     fn test_compressor_ratio_clamps_to_minimum() {
-        let comp = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
-        comp.set_ratio(0.5);
+        let comp = CompressorNode::mono(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.001),
+            Seconds::new(0.1),
+        );
+        comp.set_ratio(CompressionRatio::new(0.5));
         assert_eq!(comp.ratio().load(Ordering::Acquire), 1.0);
     }
 
     #[test]
     fn test_compressor_stereo_reduces_on_loud_sidechain() {
-        let mut comp = prepared_at(CompressorNode::stereo(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut comp = prepared_at(
+            CompressorNode::stereo(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut output = [0.0f32; 2];
 
@@ -735,17 +825,33 @@ mod tests {
 
     #[test]
     fn test_compressor_stereo_channel_count() {
-        let mono = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
+        let mono = CompressorNode::mono(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.001),
+            Seconds::new(0.1),
+        );
         assert_eq!(mono.channels(), 1);
         assert_eq!(mono.shape().audio_in.count(), 2);
         assert_eq!(mono.shape().audio_out.count(), 1);
 
-        let stereo = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
+        let stereo = CompressorNode::stereo(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.001),
+            Seconds::new(0.1),
+        );
         assert_eq!(stereo.channels(), 2);
         assert_eq!(stereo.shape().audio_in.count(), 4);
         assert_eq!(stereo.shape().audio_out.count(), 2);
 
-        let quad = CompressorNode::with_channels(-20.0, 4.0, 0.001, 0.1, 4);
+        let quad = CompressorNode::with_channels(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.001),
+            Seconds::new(0.1),
+            4,
+        );
         assert_eq!(quad.channels(), 4);
         assert_eq!(quad.shape().audio_in.count(), 8);
         assert_eq!(quad.shape().audio_out.count(), 4);
@@ -763,7 +869,12 @@ mod tests {
     /// cell → fails.
     #[test]
     fn compressor_declares_its_params() {
-        let m = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
+        let m = CompressorNode::mono(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.0001),
+            Seconds::new(0.1),
+        );
         assert_eq!(
             m.shape().params.as_slice(),
             &[
@@ -784,7 +895,12 @@ mod tests {
         assert_eq!(m.param_base(2), Some(0.0001), "the attack's base");
         assert_eq!(m.param_base(3), Some(0.1), "the release's base");
         assert_eq!(m.param_base(4), Some(0.0), "the makeup's base");
-        let s = CompressorNode::stereo(-20.0, 4.0, 0.0001, 0.1);
+        let s = CompressorNode::stereo(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.0001),
+            Seconds::new(0.1),
+        );
         assert_eq!(s.shape().audio_in.count(), 4);
     }
 
@@ -792,9 +908,25 @@ mod tests {
     fn compressor_unmodulated_matches_held_constant() {
         // A modulated mono compressor whose fed threshold is held at the same
         // value as a plain compressor's atomic must produce identical output.
-        let mut plain = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut plain = prepared_at(
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
-        let mut modn = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let mut modn = prepared_at(
+            CompressorNode::mono(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            ),
+            RATE_44K,
+        );
 
         let mut plain_out = [0.0f32];
         let mut mod_out = [0.0f32];

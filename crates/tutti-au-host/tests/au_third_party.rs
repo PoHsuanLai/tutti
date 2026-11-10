@@ -500,7 +500,7 @@ fn an_infinite_tail_survives_the_host_and_collapses_in_conversion() {
          host could not report an infinite tail at all"
     );
     assert_eq!(
-        inf.to_samples(RATE).get(),
+        inf.to_samples(tutti_types::SampleRate::new(RATE)).get(),
         0,
         "Seconds::to_samples must map non-finite to zero (its documented \
          behaviour). If this changes, the bounce-truncation hazard this test \
@@ -533,7 +533,7 @@ fn an_infinite_tail_survives_the_host_and_collapses_in_conversion() {
 
     // And the downstream consequence, on the real value rather than a literal.
     assert_eq!(
-        tail.to_samples(RATE).get(),
+        tail.to_samples(tutti_types::SampleRate::new(RATE)).get(),
         0,
         "{}: an infinite tail converts to zero tail samples — a bounce that does \
          not check is_finite() first truncates this reverb completely",

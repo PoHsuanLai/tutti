@@ -26,6 +26,7 @@ use tutti_midi_types::ump::{
     RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
+use tutti_types::Hz;
 use tutti_types::{Amplitude, Param, Tail};
 use tutti_ump::NoteId;
 use tutti_ump::{
@@ -853,7 +854,7 @@ impl PolySynth {
         self.bends = [tutti_types::Semitones(0.0); 16];
         self.set_mpe_pitch_bend_range(self.mpe_range_default);
         if let Some(ref mut porta) = self.portamento {
-            porta.reset(440.0);
+            porta.reset(Hz::new(440.0));
         }
     }
 

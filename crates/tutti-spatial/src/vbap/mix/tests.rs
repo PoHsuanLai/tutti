@@ -47,8 +47,8 @@ fn surround_graph_places_front_and_rear_sources() {
         &mut g,
         ChannelLayout::QUAD,
         &[
-            VbapSource::at(src_front, 45.0),
-            VbapSource::at(src_rear, 135.0),
+            VbapSource::at(src_front, Azimuth::new(45.0)),
+            VbapSource::at(src_rear, Azimuth::new(135.0)),
         ],
     )
     .expect("build quad surround mix");

@@ -30,7 +30,7 @@ const BLOCK: usize = 64;
 
 /// A 440 Hz sine, the reference tone every case is measured against.
 fn tone(freq: f32, frames: usize) -> Arc<Wave> {
-    let mut w = Wave::new(1, SR);
+    let mut w = Wave::new(1, SampleRate::new(SR));
     for i in 0..frames {
         w.push_frame(&[(TAU * freq * i as f32 / SR as f32).sin()]);
     }
@@ -93,13 +93,19 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
                 transport.seek(Beat::new(5.0));
             }
         }
-        let block =
-            contract::drive_input(&mut pool, &transport.env(BLOCK, SR), &[], &[], &[]).audio;
+        let block = contract::drive_input(
+            &mut pool,
+            &transport.env(BLOCK, SampleRate::new(SR)),
+            &[],
+            &[],
+            &[],
+        )
+        .audio;
         for (&l, &r) in block[0].iter().zip(&block[1]) {
             out.push(l);
             out.push(r);
         }
-        transport.advance(BLOCK as i64, SR);
+        transport.advance(BLOCK as i64, SampleRate::new(SR));
         rendered += BLOCK;
     }
     out.truncate(FRAMES * 2);

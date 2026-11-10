@@ -8,6 +8,11 @@ use super::*;
 /// - `Db / Db` — a quotient of logarithms is not a quantity.
 /// - `Amplitude + Amplitude` — cascading gains multiply; summing is what
 ///   the *signals* do, not their gains.
+/// - `From<raw> for Unit`, `From<Unit> for raw`, so `.into()` between a unit and
+///   its bare number — a bare float must not become a unit unnamed at the call
+///   site, and a unit must not leave as a float by an `.into()` that hides which
+///   quantity it was. Build with `new`, read with `get` (generic code: the
+///   `Unit` trait's `from_raw` / `to_raw`).
 ///
 /// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
 #[test]

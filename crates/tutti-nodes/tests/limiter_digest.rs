@@ -5,7 +5,7 @@ use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::assert_golden;
-use tutti_types::{Frame, SampleRate, Samples, UnitParam};
+use tutti_types::{Db, Frame, SampleRate, Samples, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -37,7 +37,7 @@ fn noise(seed: u32, frames: usize, gain: f32) -> Vec<f32> {
 /// changes the digest and fails.
 #[test]
 fn the_limiter_renders_what_it_always_did() {
-    let mut node = prepared(LimiterNode::new(-6.0, -0.3), SR, BLOCK);
+    let mut node = prepared(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), SR, BLOCK);
     let set = node.param_set();
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |samples: &[f32]| {

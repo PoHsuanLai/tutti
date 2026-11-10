@@ -395,18 +395,18 @@ mod tests {
     #[test]
     fn an_inverted_range_is_refused_at_construction() {
         assert_eq!(
-            YinConfig::new(44100.0, Hz(2000.0), Hz(50.0)),
+            YinConfig::new(SampleRate::new(44100.0), Hz(2000.0), Hz(50.0)),
             Err(Error::EmptyFrequencyRange {
                 min: Hz(2000.0),
                 max: Hz(50.0),
             })
         );
         assert!(matches!(
-            YinConfig::new(44100.0, Hz(50.0), Hz(50.0)),
+            YinConfig::new(SampleRate::new(44100.0), Hz(50.0), Hz(50.0)),
             Err(Error::EmptyFrequencyRange { .. })
         ));
         assert!(matches!(
-            YinConfig::new(44100.0, Hz(-10.0), Hz(2000.0)),
+            YinConfig::new(SampleRate::new(44100.0), Hz(-10.0), Hz(2000.0)),
             Err(Error::EmptyFrequencyRange { .. })
         ));
     }
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn a_maximum_above_nyquist_is_refused() {
         assert_eq!(
-            YinConfig::new(8000.0, Hz(50.0), Hz(5000.0)),
+            YinConfig::new(SampleRate::new(8000.0), Hz(50.0), Hz(5000.0)),
             Err(Error::AboveNyquist {
                 freq: Hz(5000.0),
                 nyquist: Hz(4000.0),
@@ -425,7 +425,7 @@ mod tests {
     /// A short buffer is an error, not a silent "unvoiced".
     #[test]
     fn a_short_buffer_reports_why() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();
         let samples = vec![0.0f32; 64];
 
         assert_eq!(
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn silence_is_unvoiced() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();
         let samples = vec![0.0f32; cfg.buffer_size().get() * 2];
 
         let estimate = yin(&cfg, &samples).unwrap();
@@ -455,7 +455,7 @@ mod tests {
     /// both fail with a panic on `InputValues`.
     #[test]
     fn a_non_finite_sample_is_unvoiced_not_a_panic() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();
         for bad in [f32::NAN, f32::INFINITY] {
             let mut samples = sine(44100.0, 440.0, 1.0);
             samples.truncate(cfg.buffer_size().get() + 10);
@@ -474,7 +474,7 @@ mod tests {
     /// was unpinned.
     #[test]
     fn a_reused_detector_matches_fresh_ones() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();
         let frame = cfg.buffer_size().get();
 
         // A sweep, so successive frames differ and a leaked carry would show.
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn the_same_input_always_gives_the_same_estimate() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();
         let a = sine(44100.0, 440.0, 0.1);
         let b = sine(44100.0, 220.0, 0.1);
 
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn a_track_is_voiced_throughout_a_steady_tone() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();
         let samples = sine(44100.0, 440.0, 0.5);
 
         let track = yin_track(&cfg, &samples, Samples(512)).unwrap();
@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn periods_derive_from_the_range_and_cannot_contradict_it() {
-        let cfg = YinConfig::new(44100.0, Hz(100.0), Hz(1000.0)).unwrap();
+        let cfg = YinConfig::new(SampleRate::new(44100.0), Hz(100.0), Hz(1000.0)).unwrap();
         assert_eq!(cfg.min_period(), Samples(44)); // 44100 / 1000
         assert_eq!(cfg.max_period(), Samples(441)); // 44100 / 100
         assert_eq!(cfg.buffer_size(), Samples(882));
@@ -574,7 +574,7 @@ mod tests {
     /// Accuracy across the range, not just at A440.
     #[test]
     fn tracks_frequencies_across_the_range() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
+        let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();
 
         for freq in [100.0f32, 220.0, 440.0, 880.0, 1000.0] {
             let samples = sine(44100.0, freq, 0.1);
@@ -596,7 +596,7 @@ mod tests {
     /// soprano C. Both need the range widened past the standard default.
     #[test]
     fn reaches_the_ends_of_a_widened_range() {
-        let cfg = YinConfig::new(44100.0, Hz(40.0), Hz(2000.0)).unwrap();
+        let cfg = YinConfig::new(SampleRate::new(44100.0), Hz(40.0), Hz(2000.0)).unwrap();
 
         // E2, the guitar's low string.
         let low = yin(&cfg, &sine(44100.0, 82.41, 0.2)).unwrap();

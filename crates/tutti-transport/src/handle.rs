@@ -16,11 +16,11 @@ use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 /// ```
 /// # use tutti_types::{At, Bpm};
 /// # use tutti_transport::{LoopEdit, MotionEvent, Transport};
-/// # let transport = Transport::new(48_000.0);
+/// # let transport = Transport::new(tutti_types::SampleRate(48_000.0));
 /// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
 /// transport.settings.set_tempo(Bpm::of(140.0));      // a value; cannot fail
 /// // Loop beats 0 to 4 from the next block; the engine owns the region.
-/// let range = tutti_types::LoopRange::new(0.0, 4.0).expect("ordered");
+/// let range = tutti_types::LoopRange::new(tutti_types::Beat(0.0), tutti_types::Beat(4.0)).expect("ordered");
 /// transport.motion.schedule(At::NextBlock, LoopEdit::over(range))?;
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn clone_shares_both_halves() {
-        let a = Transport::new(48000.0);
+        let a = Transport::new(SampleRate::new(48000.0));
         let b = a.clone();
 
         a.settings.set_tempo(Bpm::of(140.0));
@@ -184,17 +184,17 @@ mod tests {
     /// keeps 44.1 kHz and its `samples_per_beat` stays 22 050 → fails.
     #[test]
     fn a_rate_change_reaches_every_clone() {
-        let a = Transport::new(44_100.0);
+        let a = Transport::new(SampleRate::new(44_100.0));
         let b = a.clone();
-        a.set_sample_rate(48_000.0);
+        a.set_sample_rate(SampleRate::new(48_000.0));
         assert_eq!(b.sample_rate(), SampleRate(48_000.0));
         assert_eq!(b.samples_per_beat(), Samples(24_000), "120 BPM at 48 kHz");
     }
 
     #[test]
     fn read_view_spans_both_halves() {
-        let t = Transport::new(48000.0);
-        t.settings.set_beat(8.0);
+        let t = Transport::new(SampleRate::new(48000.0));
+        t.settings.set_beat(Beat::new(8.0));
         t.settings.set_tempo(Bpm::of(90.0));
         let _ = t.motion.try_send(MotionEvent::Play);
         Audio::of(&t.motion).drain();
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn clock_inputs_track_live_edits() {
-        let t = Transport::new(48000.0);
+        let t = Transport::new(SampleRate::new(48000.0));
         let inputs = t.links();
 
         t.settings.set_tempo(Bpm::of(160.0));
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn samples_per_beat_follows_tempo() {
-        let t = Transport::new(44100.0);
+        let t = Transport::new(SampleRate::new(44100.0));
         assert_eq!(t.samples_per_beat(), Samples(22050), "120 BPM");
 
         t.settings.set_tempo(Bpm::of(60.0));
@@ -247,7 +247,7 @@ mod tests {
     /// the zero is let through to `set_tempo` and the tempo assertion fails.
     #[test]
     fn a_refused_tempo_never_reaches_the_clock() {
-        let t = Transport::new(44100.0);
+        let t = Transport::new(SampleRate::new(44100.0));
         t.settings.set_tempo(Bpm::of(90.0));
         for raw in [0.0, -120.0, f64::NAN, f64::INFINITY] {
             let asked = Bpm::try_from(raw);

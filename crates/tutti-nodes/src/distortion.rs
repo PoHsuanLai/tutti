@@ -267,19 +267,19 @@ mod tests {
     /// write reached the fork" for `Drive` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
-        assert_param_fork(DistortionNode::new(ShapeKind::Tanh, 2.0));
+        assert_param_fork(DistortionNode::new(ShapeKind::Tanh, Drive::new(2.0)));
     }
 
     #[test]
     fn distortion_is_two_in_two_out() {
-        let n = DistortionNode::new(ShapeKind::Tanh, 1.0);
+        let n = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
         assert_eq!(n.shape().audio_in.count(), 2);
         assert_eq!(n.shape().audio_out.count(), 2);
     }
 
     #[test]
     fn with_channels_reports_arity_and_shapes_every_channel() {
-        let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, 1.0);
+        let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, Drive::new(1.0));
         assert_eq!(n.shape().audio_in.count(), 6);
         assert_eq!(n.shape().audio_out.count(), 6);
 
@@ -299,8 +299,8 @@ mod tests {
 
     #[test]
     fn with_channels_2_is_bit_identical_to_new() {
-        let mut a = DistortionNode::new(ShapeKind::Tanh, 1.7);
-        let mut b = DistortionNode::with_channels(2u16, ShapeKind::Tanh, 1.7);
+        let mut a = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.7));
+        let mut b = DistortionNode::with_channels(2u16, ShapeKind::Tanh, Drive::new(1.7));
         for i in 0..256 {
             let x = (i as f32 / 128.0) - 1.0;
             let mut oa = [0.0f32; 2];
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn hardclip_clamps_to_unity() {
-        let mut n = DistortionNode::new(ShapeKind::HardClip, 1.0);
+        let mut n = DistortionNode::new(ShapeKind::HardClip, Drive::new(1.0));
         let input = vec![-4.0, -1.0, 0.0, 1.0, 4.0];
         let out = process_mono_through(&mut n, &input);
         for y in out {
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn tanh_is_monotonic_and_bounded() {
-        let mut n = DistortionNode::new(ShapeKind::Tanh, 2.0);
+        let mut n = DistortionNode::new(ShapeKind::Tanh, Drive::new(2.0));
         let input: Vec<f32> = (0..200).map(|i| (i as f32 / 100.0) - 1.0).collect();
         let out = process_mono_through(&mut n, &input);
         // tanh saturates within (-1, 1) and is strictly increasing for increasing input.
@@ -351,8 +351,8 @@ mod tests {
         let signal: Vec<f32> = (0..512).map(|i| 0.3 * (i as f32 * 0.05).sin()).collect();
         let rms = |v: &[f32]| (v.iter().map(|x| x * x).sum::<f32>() / v.len() as f32).sqrt();
 
-        let mut low = DistortionNode::new(ShapeKind::Tanh, 1.0);
-        let mut high = DistortionNode::new(ShapeKind::Tanh, 8.0);
+        let mut low = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
+        let mut high = DistortionNode::new(ShapeKind::Tanh, Drive::new(8.0));
         let out_low = process_mono_through(&mut low, &signal);
         let out_high = process_mono_through(&mut high, &signal);
         assert!(
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn drive_settable_via_unit_param() {
         use std::sync::atomic::Ordering;
-        let n = DistortionNode::new(ShapeKind::Tanh, 1.0);
+        let n = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
         let set = n.param_set();
         assert!(set.set(UnitParam::Drive, 5.0));
         assert!((n.drive().load(Ordering::Acquire) - 5.0).abs() < 1e-3);
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn channels_are_independent() {
-        let mut n = DistortionNode::new(ShapeKind::HardClip, 1.0);
+        let mut n = DistortionNode::new(ShapeKind::HardClip, Drive::new(1.0));
         let mut o = [0.0f32; 2];
         tick(&mut n, &[4.0, 0.5], &mut o);
         assert!(
@@ -400,7 +400,7 @@ mod tests {
     /// fails.
     #[test]
     fn distortion_declares_its_drive_param() {
-        let d = DistortionNode::new(ShapeKind::Tanh, 1.0);
+        let d = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
         assert_eq!(d.shape().params.as_slice(), &[UnitParam::Drive][..]);
         assert_eq!(
             (d.shape().audio_in.count(), d.shape().audio_out.count()),
@@ -417,10 +417,10 @@ mod tests {
         // divergence would show.
         let signal: Vec<f32> = (0..512).map(|i| 0.6 * (i as f32 * 0.05).sin()).collect();
 
-        let mut plain = DistortionNode::new(ShapeKind::Tanh, 5.0);
+        let mut plain = DistortionNode::new(ShapeKind::Tanh, Drive::new(5.0));
         let plain_out = process_mono_through(&mut plain, &signal);
 
-        let mut modn = DistortionNode::new(ShapeKind::Tanh, 5.0);
+        let mut modn = DistortionNode::new(ShapeKind::Tanh, Drive::new(5.0));
         let held = vec![5.0f32; signal.len()];
         let mod_out = drive(&mut modn, RATE, &[&signal, &signal], &[Some(&held)]);
         for i in 0..signal.len() {
@@ -444,7 +444,7 @@ mod tests {
     /// block is still driven hard → fails.
     #[test]
     fn a_fed_drive_shapes_every_channel_of_a_wide_node() {
-        let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, 1.0);
+        let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, Drive::new(1.0));
         assert_eq!(
             (n.shape().audio_in.count(), n.shape().audio_out.count()),
             (6, 6)
@@ -483,7 +483,7 @@ mod tests {
     fn a_block_is_the_curve_of_each_sample() {
         use crate::test_support::noise;
         for kind in KINDS {
-            let mut n = DistortionNode::with_channels(3u16, kind, 2.5);
+            let mut n = DistortionNode::with_channels(3u16, kind, Drive::new(2.5));
             let ins: Vec<Vec<f32>> = (0..3).map(|c| noise(c + 7, 64)).collect();
             let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
             let out = drive(&mut n, RATE, &refs, &[None]);
@@ -508,7 +508,7 @@ mod tests {
         use crate::test_support::noise;
         let fed: Vec<f32> = (0..64).map(|i| 1.0 + 0.125 * i as f32).collect();
         for kind in KINDS {
-            let mut n = DistortionNode::with_channels(3u16, kind, 1.0);
+            let mut n = DistortionNode::with_channels(3u16, kind, Drive::new(1.0));
             let ins: Vec<Vec<f32>> = (0..3).map(|c| noise(c + 11, 64)).collect();
             let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
             let out = drive(&mut n, RATE, &refs, &[Some(&fed)]);
@@ -536,7 +536,7 @@ mod tests {
                 _ => Cost::Moderate,
             };
             assert_eq!(
-                DistortionNode::new(kind, 1.0).shape().cost,
+                DistortionNode::new(kind, Drive::new(1.0)).shape().cost,
                 want,
                 "{kind:?}"
             );

@@ -431,7 +431,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-cpal     device
   tutti-export   offline render
-  tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
+  tutti-nodes (the `Node` adapters, the VBAP and HRTF panners among them), tutti-sampler, tutti-polysynth,
   tutti-soundfont (the SoundFont player: the node, the voices, the patch that
                  turns a note into voices; it executes `tutti-voicing`'s
                  commands), tutti-sf2 (the SoundFont 2 file as data)
@@ -479,7 +479,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
    `tutti-plugin-db`, `tutti-plugin-ipc`
-5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
+5. `tutti-cpal`, `tutti-export`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
    `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
 6. `tutti-plugin`, `tutti-plugin-probe`
@@ -663,7 +663,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   whose `render_channel` ramps one output channel), the HRTF
   convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`
   and the sphere-rate constants; it takes the aimed direction per call, `HRTF_STEP` frames at a
-  time, so the de-zipper is the caller's; the nodes, the `Param` reads and the smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  time, so the de-zipper is the caller's; the nodes, the `Param` reads and the smoother stay in `tutti-nodes`' `spatial` module), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the realizations
@@ -748,7 +748,6 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
-- `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free. It holds the MIDI 2.0 Clip File codec (`ParsedClipFile`,
   `write_clip_file*`, `ClipFileError`) beside SMF.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
@@ -1069,7 +1068,10 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti_types::{Topology, NodeKey, Valid, TapId, TapSpec, TapAlign,
+- **Dead crate names:** `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
+  and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
+  `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output
+  channels, the graph sums the fan-in); `tutti_types::{Topology, NodeKey, Valid, TapId, TapSpec, TapAlign,
   MeterId, MeterSpec, graph, latency, tail, Compensation, Delays, Feed, LatencyGraph, delays,
   GraphTail, TailGraph, graph_tail}` → `tutti_graph::` (`latency::plan` is
   `tutti_graph::latency_plan`), `tutti-io` → dissolved: `TapIn` is gone (`TapReader` is a

@@ -221,12 +221,9 @@ fn convolved_at(ir: &[f32], n: usize) -> f64 {
 }
 
 /// Quad VBAP: a source at front-left and one at rear-left, each panned and
-/// summed into a 4-wide master — `build_vbap_mix`'s quad graph (no LFE send),
-/// written out. (The builder form of the helper, `tutti_spatial::VbapMixParts::new`,
-/// is pinned against it in tutti-spatial's `tests/vbap_mix_parts.rs`, and
-/// `surround_export.rs` renders through it.)
+/// summed (by fan-in) into a 4-wide master.
 fn quad_vbap() -> GraphBuilder {
-    use tutti_spatial::VbapPannerNode;
+    use tutti_nodes::VbapPannerNode;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
     for (az, f) in [(45.0, 300.0), (135.0, 500.0)] {
         let src = g.add(

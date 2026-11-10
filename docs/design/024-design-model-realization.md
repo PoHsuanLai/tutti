@@ -94,7 +94,7 @@ already measured.
   are a trajectory with a law (section 4.5a); the planned `Ltv`, `Variation` and
   `Scheduled` are not built. (A3) `Fold` and `ChannelTopology` carry a basis and a
   metric (section 4.2, order 0); the planned `GainMatrix` trait and the separate
-  `Ambisonic` topology are not built. (A4, optional) the periodic view of class 6
+  `Ambisonic` topology are not built. (A4) the periodic view of class 6, theory only
   (section 4.2). (A5) a cap that bounds a design is a `Bounds` field (section 4.4).
   Steps 2b0 and 7a of section 10 carry them.
 - **The contract is written once per class** (section 6): every LTI realization
@@ -665,10 +665,9 @@ How each class answers through its own structure, and what it is **not**:
   prototype and the aliasing terms are the other components, whose norm is the stopband of a
   resampler and the wrap error that doc 028 §3.8 calls `Fidelity` for `StftEffect`. A
   critically sampled filter bank reconstructs perfectly iff its polyphase matrix is
-  paraunitary, which is the isometry query again, on the lifted system. The only addition is two
-  defaulted queries on `Lti`, `period() -> Option<Cadence>` (`Cadence::stream(P)` for a
-  frame-based model) and `alias_norm()` (0 by default), landing with the first consumer (the
-  oversampler or the STFT effect, doc 028). A block FIR whose block grid is a realization detail
+  paraunitary, which is the isometry query again, on the lifted system. No query is added ahead of a
+  consumer: the aliasing norm lands with its first consumer, the STFT effect's `Fidelity`
+  (doc 028 §3.8), and a periodic model then states its period as `Cadence::stream(P)`. A block FIR whose block grid is a realization detail
   (the partitioned convolver) is plain LTI, not periodic. Realizations are untouched.
 
 **Why a trait per class, with queries hanging from it.** A fat `Queries` trait

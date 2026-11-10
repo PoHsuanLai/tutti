@@ -27,9 +27,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_midi_runtime::{MidiInputNode, TimedMidiEvent};
-use tutti_midi_types::MidiIn;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::{Offset, UmpAt};
+use tutti_midi_runtime::{MidiIn, MidiInputNode, TimedMidiEvent};
 use tutti_session::{MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
@@ -49,11 +49,11 @@ fn note(number: u8, start: Beat, duration: BeatDuration) -> Vec<TimedMidiEvent> 
     vec![
         TimedMidiEvent::new(
             start,
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, u16::MAX),
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, u16::MAX),
         ),
         TimedMidiEvent::new(
             start + duration,
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+            note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
         ),
     ]
 }
@@ -196,11 +196,9 @@ fn preview_still_sounds_under_an_installed_clip() {
         .live_input(synth)
         .expect("a synth takes a live input");
     s.update();
-    live.queue(&[MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        67,
-        0xFFFF,
+    live.queue(&[(
+        Offset::ZERO,
+        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
     )]);
 
     let previewed = rms(&render(&s, 12_000));
@@ -214,10 +212,10 @@ fn preview_still_sounds_under_an_installed_clip() {
 /// is another handle on the same wire: the node owns one, the test pushes
 /// through another.
 #[derive(Default, Clone)]
-struct Wire(Arc<Mutex<Vec<MidiEvent>>>);
+struct Wire(Arc<Mutex<Vec<UmpAt>>>);
 
 impl MidiIn for Wire {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
         let mut pending = self.0.lock().unwrap();
         let n = pending.len().min(buffer.len());
         buffer[..n].copy_from_slice(&pending[..n]);
@@ -242,11 +240,9 @@ fn routed_level(channel: MidiChannel) -> f32 {
         .expect("one declarer");
     s.update();
 
-    wire.0.lock().unwrap().push(MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(1),
-        60,
-        u16::MAX,
+    wire.0.lock().unwrap().push((
+        Offset::ZERO,
+        note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, u16::MAX),
     ));
     rms(&render(&s, 12_000))
 }

@@ -7,16 +7,16 @@
 //! caught exactly that once: a `note_on_7bit` that crushed the value and
 //! widened it back).
 //!
-//! Mutation (run): `MidiClipNode` sending `MidiEvent::note_on_7bit` of the
+//! Mutation (run): `MidiClipNode` sending a 7-bit note on (`note_on_7bit`, since deleted) of the
 //! event's note and velocity >> 9 → the two velocities come out equal and
 //! the assertion fails.
 
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_session::{Session, SessionNode};
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -25,7 +25,7 @@ use tutti_ump::{MidiChannel, MidiGroup, Ump};
 /// The mezzo-forte default: MIDI 2.0's center velocity.
 const MF: u16 = 0x8000;
 
-type Seen = Arc<Mutex<Vec<MidiEvent>>>;
+type Seen = Arc<Mutex<Vec<(u32, Ump)>>>;
 
 /// A stand-in synth: one MIDI event input, logged.
 struct Tap(Seen);
@@ -39,10 +39,7 @@ impl Node for Tap {
         let mut seen = self.0.lock().unwrap();
         for e in io.events(0) {
             if let EventKind::Midi(Ump(data)) = e.kind {
-                seen.push(MidiEvent {
-                    frame_offset: e.offset.get(),
-                    data,
-                });
+                seen.push((e.offset.get(), Ump(data)));
             }
         }
         Status::Modified
@@ -63,11 +60,11 @@ fn note(number: u8, velocity: u16) -> [TimedMidiEvent; 2] {
     [
         TimedMidiEvent::new(
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
         ),
         TimedMidiEvent::new(
             Beat(0.0) + BeatDuration(1.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+            note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
         ),
     ]
 }
@@ -94,7 +91,7 @@ fn velocity_keeps_its_full_width() {
         .lock()
         .unwrap()
         .iter()
-        .map(MidiEvent::message)
+        .map(|(_, e)| MidiMessage::from_ump(*e))
         .filter_map(|m| match m {
             MidiMessage::NoteOn { velocity, .. } => Some(velocity),
             _ => None,

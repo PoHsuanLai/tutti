@@ -10,10 +10,10 @@
 use std::sync::Arc;
 
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
 use tutti_midi_runtime::TimedMidiEvent;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_nodes::testing::assert_golden;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 use tutti_session::{
@@ -23,7 +23,7 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples, Seconds, UnitParam};
-use tutti_ump::{MidiChannel, MidiGroup, U7};
+use tutti_ump::{MidiChannel, MidiGroup, U7, Ump};
 
 const RATE: f64 = 48_000.0;
 /// A beat at 90 BPM and 48 kHz, in frames.
@@ -125,16 +125,16 @@ fn session_with<N: tutti_graph::IntoNode>(unit: N) -> (Session, NodeKey) {
 /// Middle C from beat 1 to beat 2.
 fn clip() -> Vec<TimedMidiEvent> {
     vec![
-        TimedMidiEvent::new(Beat(1.0), note_on()),
+        TimedMidiEvent::new(Beat(1.0), clip_note_on()),
         TimedMidiEvent::new(
             Beat(2.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
     ]
 }
 
-fn note_on() -> MidiEvent {
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+fn clip_note_on() -> Ump {
+    note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
 }
 
 fn install_clip(session: &mut Session, synth: NodeKey) {
@@ -177,7 +177,7 @@ fn request(source: ExportSource, rate: f64) -> ExportRequest {
 fn reference<N: Node>(unit: N, rate: f64) -> Vec<f32> {
     let mut unit = Direct::new(unit, SampleRate(rate), 64);
     let at = Offset::new(0, Samples(64)).expect("inside");
-    unit.events(0, &[Event::midi(at, note_on().data)]);
+    unit.events(0, &[Event::midi(at, clip_note_on().0)]);
     let mut out = Vec::with_capacity(NOTE);
     while out.len() < NOTE {
         unit.block();

@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use support::{clap_probe, plugin_server};
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_nodes::testing::Const;
 use tutti_plugin::PluginForkError;
 use tutti_plugin::catalog::PluginId;
@@ -273,9 +273,9 @@ fn instrument_at(rate: f64) {
     let (mut session, probe) = session_with_probe(NOTES);
     let note = |beat: f64, on: bool| {
         let event = if on {
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
         } else {
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+            note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
         };
         TimedMidiEvent::new(Beat(beat), event)
     };

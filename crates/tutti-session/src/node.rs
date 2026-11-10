@@ -123,6 +123,10 @@ param_session_node!(
     tutti_nodes::LfoNode,
 );
 
+// The Freeverb reverb: its mix by address, and its room and damping unless it is
+// the fixed General MIDI send.
+param_session_node!(tutti_nodes::FreeverbNode);
+
 // The convolution reverb: its mix by address.
 #[cfg(feature = "convolution")]
 param_session_node!(tutti_nodes::ConvolverNode);

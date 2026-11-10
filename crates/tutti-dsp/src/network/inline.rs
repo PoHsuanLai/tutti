@@ -76,6 +76,12 @@ impl<T: Default, const N: usize> Inline<T, N> {
         Some(list)
     }
 
+    /// Empties the list in place. The slots keep their old values, which are
+    /// never read.
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
     /// The live items.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {

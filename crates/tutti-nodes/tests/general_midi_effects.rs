@@ -145,11 +145,11 @@ fn a_recirculating_chorus_keeps_an_unknown_tail() {
 /// Mutation (run): `Shape::audio(STEREO, STEREO)` fails the shape.
 #[test]
 fn the_reverb_is_mono_in_stereo_out_and_wet_only() {
-    let node = ReverbNode::new();
+    let node = ReverbNode::general_midi();
     let shape = node.shape();
     assert_eq!(shape.audio_in, ChannelLayout::MONO);
     assert_eq!(shape.audio_out, ChannelLayout::STEREO);
-    let out = impulse_response(ReverbNode::new(), 2_000);
+    let out = impulse_response(ReverbNode::general_midi(), 2_000);
     assert_eq!(out.len(), 2);
     // 1116 frames at 44.1 kHz is 1215 at 48 kHz (Freeverb's tuning, scaled).
     assert!(out[0][..1215].iter().all(|&s| s == 0.0));
@@ -163,11 +163,11 @@ fn the_reverb_is_mono_in_stereo_out_and_wet_only() {
 /// Mutation (run): the tail halved fails.
 #[test]
 fn the_reverbs_tail_covers_its_ring_out() {
-    let node = prepared(ReverbNode::new(), SR, BLOCK);
+    let node = prepared(ReverbNode::general_midi(), SR, BLOCK);
     let Tail::Finite(tail) = node.shape().tail else {
         panic!("a finite tail, not {:?}", node.shape().tail)
     };
-    let out = impulse_response(ReverbNode::new(), tail.get() + 20_000);
+    let out = impulse_response(ReverbNode::general_midi(), tail.get() + 20_000);
     let peak = out.iter().flatten().fold(0.0f32, |m, s| m.max(s.abs()));
     let rang = out
         .iter()
@@ -193,7 +193,7 @@ fn the_reverbs_tail_covers_its_ring_out() {
 /// Mutation (run): `reset` doing nothing fails.
 #[test]
 fn reset_empties_the_room() {
-    let mut node = prepared(ReverbNode::new(), SR, BLOCK);
+    let mut node = prepared(ReverbNode::general_midi(), SR, BLOCK);
     let burst = vec![1.0f32; BLOCK];
     for _ in 0..40 {
         drive(&mut node, SR, &[&burst], &[]);

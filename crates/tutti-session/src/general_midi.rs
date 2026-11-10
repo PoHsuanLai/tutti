@@ -131,7 +131,7 @@ impl Session {
             ChannelLayout::STEREO,
             ModDelayConfig::GENERAL_MIDI_CHORUS,
         ));
-        let (reverb, _) = graph.insert(ReverbNode::new());
+        let (reverb, _) = graph.insert(ReverbNode::general_midi());
         let (sum, ()) = graph.insert(ChannelSumNode::new(3, ChannelLayout::STEREO));
         let (strip, strip_params) = graph.add(BusStripNode::new());
         // The unit's outputs: dry L/R, chorus send L/R, reverb send.

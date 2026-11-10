@@ -5,10 +5,10 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, BusChannels, ContentScale, Control, EditorPresence, EditorSize, Features,
-    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError,
-    PluginResult, PluginTail, Preset, PresetId, Request, RescanScope, Samples, Vst3SubCategories,
-    WindowHandle,
+    AutomationMode, BusChannels, ContentScale, Control, EditorPresence, EditorSize, EditorWindow,
+    Features, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor,
+    PluginError, PluginResult, PluginTail, Preset, PresetId, RenderMode, Request, RescanScope,
+    Samples, Vst3SubCategories, WindowHandle,
 };
 
 use crate::error::Vst3Error;
@@ -425,11 +425,19 @@ impl Control for Vst3Loaded {
         out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
     }
 
-    // `set_render_mode` keeps the default (`false`): VST3 reads the mode only at
-    // activation (`setupProcessing`'s `kOffline`), so a live change is a
-    // reconfigure through the Lifecycle, whose `Prepare::mode` the next
-    // activation carries.
+    /// `false`: VST3 reads the mode only at activation (`setupProcessing`'s
+    /// `kOffline`), so a live change is a reconfigure through the Lifecycle,
+    /// whose `Prepare::mode` the next activation carries.
+    fn set_render_mode(&mut self, _main: &MainThread, _mode: RenderMode) -> bool {
+        false
+    }
 
+    /// Nothing: VST3 reports the edits a plugin's own editor makes in the
+    /// block's `ProcessOutput`.
+    fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<(ParamId, Normalized)>) {}
+}
+
+impl EditorWindow for Vst3Loaded {
     /// Returns `true` if the plugin actually publishes an editor view.
     ///
     /// **Asks `createView`, not `controller.is_some()`.** Those are different

@@ -8,9 +8,9 @@
 use std::path::Path;
 
 use tutti_plugin_types::{
-    ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, InProcess, Load,
-    MainThread, Normalized, ParamId, ParamRange, PluginError, PluginResult, Request, RescanScope,
-    WindowHandle,
+    ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, EditorWindow,
+    InProcess, Load, MainThread, Normalized, ParamId, ParamRange, PluginError, PluginResult,
+    Request, RescanScope, WindowHandle,
 };
 
 use super::ClapLoaded;
@@ -133,65 +133,6 @@ fn read_param_ranges(main: &MainThread, inner: &ClapLoaded) -> Vec<(u32, (f64, f
 }
 
 impl Editor for ClapEditor {
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let size = self
-            .inner
-            .embed_editor(main, parent, scale)
-            .map_err(|e| editor_error(format!("CLAP open_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
-    }
-
-    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
-        // No transient parent: this crate does not hold the host's window, and
-        // `set_transient` is a stacking hint the plugin may ignore anyway. The
-        // title is what the host would have put on a window it owned.
-        let title = std::ffi::CString::new(self.inner.info().name.as_str())
-            .unwrap_or_else(|_| c"Plugin Editor".to_owned());
-        self.inner
-            .open_floating_editor_with(main, None, &title)
-            .map_err(|e| editor_error(format!("CLAP floating open failed: {e}")))
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        Control::close_editor(&mut self.inner, main);
-    }
-
-    fn editor_idle(&mut self, main: &MainThread) {
-        // The editor's timers (a UI toolkit's repaint tick), its callbacks to
-        // the main thread and its file descriptors are all served from here:
-        // this is the only main-thread tick the instance has.
-        let mut requests = Vec::new();
-        Control::take_requests(&mut self.inner, main, &mut requests);
-        let mut reread = false;
-        for request in requests {
-            match request {
-                Request::Callback => self.inner.run_main_thread(main),
-                Request::Timer(id) => self.inner.run_timer(main, id),
-                Request::Fd(id) => self.inner.service_fd(main, id),
-                // A rescan that re-described the parameters re-reads their bounds.
-                Request::RescanParams(RescanScope::Info | RescanScope::All) => reread = true,
-                // Nothing else is this instance's to serve: it never activates,
-                // so a restart or a latency change has nothing to restart.
-                _ => {}
-            }
-        }
-        if reread {
-            self.param_ranges = read_param_ranges(main, &self.inner);
-        }
-        // If the plugin requested a param flush, perform it.
-        if self.inner.take_params_flush_requested() {
-            let _ = self.inner.flush_params(main, vec![]);
-        }
-    }
-
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         // CLAP values are in the plugin's native plain range, so the host's
         // normalized value is denormalized against the declared bounds — the
@@ -287,6 +228,71 @@ impl Editor for ClapEditor {
                 width: sz.width,
                 height: sz.height,
             })
+    }
+}
+
+impl EditorWindow for ClapEditor {
+    fn has_editor(&self, main: &MainThread) -> bool {
+        EditorWindow::has_editor(&self.inner, main)
+    }
+
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        let size = self
+            .inner
+            .embed_editor(main, parent, scale)
+            .map_err(|e| editor_error(format!("CLAP open_editor failed: {e}")))?;
+        Ok(EditorSize {
+            width: size.width,
+            height: size.height,
+        })
+    }
+
+    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+        // No transient parent: this crate does not hold the host's window, and
+        // `set_transient` is a stacking hint the plugin may ignore anyway. The
+        // title is what the host would have put on a window it owned.
+        let title = std::ffi::CString::new(self.inner.info().name.as_str())
+            .unwrap_or_else(|_| c"Plugin Editor".to_owned());
+        self.inner
+            .open_floating_editor_with(main, None, &title)
+            .map_err(|e| editor_error(format!("CLAP floating open failed: {e}")))
+    }
+
+    fn close_editor(&mut self, main: &MainThread) {
+        EditorWindow::close_editor(&mut self.inner, main);
+    }
+
+    fn editor_idle(&mut self, main: &MainThread) {
+        // The editor's timers (a UI toolkit's repaint tick), its callbacks to
+        // the main thread and its file descriptors are all served from here:
+        // this is the only main-thread tick the instance has.
+        let mut requests = Vec::new();
+        Control::take_requests(&mut self.inner, main, &mut requests);
+        let mut reread = false;
+        for request in requests {
+            match request {
+                Request::Callback => self.inner.run_main_thread(main),
+                Request::Timer(id) => self.inner.run_timer(main, id),
+                Request::Fd(id) => self.inner.service_fd(main, id),
+                // A rescan that re-described the parameters re-reads their bounds.
+                Request::RescanParams(RescanScope::Info | RescanScope::All) => reread = true,
+                // Nothing else is this instance's to serve: it never activates,
+                // so a restart or a latency change has nothing to restart.
+                _ => {}
+            }
+        }
+        if reread {
+            self.param_ranges = read_param_ranges(main, &self.inner);
+        }
+        // If the plugin requested a param flush, perform it.
+        if self.inner.take_params_flush_requested() {
+            let _ = self.inner.flush_params(main, vec![]);
+        }
     }
 }
 

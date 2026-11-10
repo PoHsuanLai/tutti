@@ -129,7 +129,7 @@ plugin.set_parameter(&main, first, Normalized::of(0.5));
 ### State and editor
 
 ```rust,no_run
-# use tutti_plugin_types::Control;
+# use tutti_plugin_types::{Control, EditorWindow};
 # use tutti_plugin_types::ContentScale;
 # use tutti_vst2_host::{Vst2Loaded, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> Result<(), Box<dyn std::error::Error>> {

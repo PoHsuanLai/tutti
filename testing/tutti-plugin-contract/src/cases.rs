@@ -10,11 +10,12 @@ use tutti_plugin_types::{
     ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, Reopen,
     SampleFormat, Samples, TransportChange, TransportInfo,
 };
+use tutti_plugin_types::{ParamId, RenderMode, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::spec::{self, Mode, Param};
 use crate::{
-    Active, BLOCK, Format, Kind, ParamTiming, RATE, Render, prepare, set_level, set_mode,
+    Active, BLOCK, Format, Kind, ParamTiming, RATE, Render, prepare, select, set_level, set_mode,
     transcript,
 };
 
@@ -412,6 +413,83 @@ pub fn transport_change_is_told_at_its_frame<F: Format>() {
         [(0, 0, true, 120.0, 4.0), (0, 32, true, 140.0, 10.0)],
         "the block's transport, then the change at its frame"
     );
+}
+
+/// What a plugin's control surface answers, read through `&mut dyn Control`.
+#[derive(Debug, PartialEq)]
+struct Surfaced {
+    has_editor: bool,
+    render_mode_live: bool,
+    requests: Vec<Request>,
+    edits: Vec<(ParamId, Normalized)>,
+}
+
+/// Reads the surface: the editor, the render mode, and what the plugin raises
+/// when a state load selects the notice (once, outside any block).
+fn surfaced<F: Format>(c: &mut dyn Control) -> Surfaced {
+    let main = main_thread();
+    let mut requests = Vec::new();
+    let mut edits = Vec::new();
+    // What the setup itself raised (its own state loads) is not the witness.
+    c.take_requests(&main, &mut requests);
+    c.take_reported_edits(&main, &mut edits);
+    requests.clear();
+    edits.clear();
+    if F::SURFACE.notices {
+        select::<F, _>(
+            c,
+            if F::SURFACE.has_editor {
+                spec::EDITOR_TIDY
+            } else {
+                0
+            },
+            spec::NOTICE_ON_LOAD,
+        );
+    }
+    c.take_requests(&main, &mut requests);
+    c.take_reported_edits(&main, &mut edits);
+    Surfaced {
+        has_editor: c.has_editor(&main),
+        render_mode_live: c.set_render_mode(&main, RenderMode::Offline),
+        requests,
+        edits,
+    }
+}
+
+/// The control surface a shell reads through (`has_editor`, `set_render_mode`,
+/// `take_requests`, `take_reported_edits`) answers the same in a loaded plugin
+/// and in an active one, and each answer is the spec's row for the format. A
+/// format that has no editor, no live render mode, or reports nothing outside a
+/// block answers so in both states.
+// Mutation (run): `Vst3Controller::has_editor` returning `false` -> the active
+//   read has no editor -> fails the vst3 case only; `Vst2Controller::has_editor`
+//   returning `true` -> fails the vst2 case only; `ClapController::take_requests`
+//   pushing nothing -> the active read has no callback -> fails the clap case only;
+//   `Vst2Controller::take_reported_edits` pushing nothing -> the active read has
+//   no edit -> fails the vst2 case; `Vst2Controller::set_render_mode` returning
+//   `false` -> fails the vst2 case.
+pub fn the_control_surface_answers_alike_loaded_and_active<F: Format>() {
+    let spec = F::SURFACE;
+    let mut loaded = F::load();
+    if spec.has_editor && !spec.notices {
+        select::<F, _>(&mut loaded, spec::EDITOR_TIDY, 0);
+    }
+    let on_loaded = surfaced::<F>(&mut loaded);
+    let mut active = activate(loaded, BLOCK);
+    let on_active = surfaced::<F>(&mut *active);
+
+    let expected = Surfaced {
+        has_editor: spec.has_editor,
+        render_mode_live: spec.render_mode_live,
+        requests: spec.request.into_iter().collect(),
+        edits: spec
+            .edit
+            .into_iter()
+            .map(|(param, value)| (param.id(), Normalized::clamped(value)))
+            .collect(),
+    };
+    assert_eq!(on_loaded, expected, "loaded");
+    assert_eq!(on_active, expected, "active");
 }
 
 /// State round-trips what the plugin persists.

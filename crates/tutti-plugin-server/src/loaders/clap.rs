@@ -17,8 +17,8 @@ use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
-    SampleRate, Samples, Seat, Stage, State,
+    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
+    SampleFormat, SampleRate, Samples, Seat, Stage, State,
 };
 
 use crate::loaders::common::Meta;

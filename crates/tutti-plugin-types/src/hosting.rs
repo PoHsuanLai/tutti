@@ -159,26 +159,24 @@ impl<F: InProcess> Reopen for F {
     }
 }
 
-/// The editor-only instance an [`OutOfProcess`] format loads in the host
-/// process while its audio instance runs in another.
+/// A plugin's editor window, in whatever object holds the plugin: a
+/// [`Control`](crate::Control) (loaded or active) or an [`Editor`] (the
+/// editor-only instance). Every method is a main-thread call, which the
+/// `&MainThread` proves.
 ///
-/// It shows the plugin's GUI and is kept faithful to the audio instance by the
-/// host: parameter writes and the state blob go to it, and the parameter edits
-/// the user makes in it come back through [`poll_edits`](Self::poll_edits).
-/// Every method is a main-thread call, which the `&MainThread` proves.
-///
-/// The editor methods (`open_editor`, `open_floating_editor`, `close_editor`,
-/// `editor_idle`) are the ones [`Control`](crate::Control) declares for a
-/// plugin wherever it is; see there for their shared contract. This is the
-/// editor-only instance's role, so here `open_editor`, `close_editor` and
-/// `editor_idle` are required, not defaulted.
-pub trait Editor: Send {
-    /// Embeds into `parent`, whose backing-store scale is `scale` (forwarded
-    /// where the format takes it; see [`ContentScale`]).
+/// Every method is required but [`open_floating_editor`](Self::open_floating_editor),
+/// so an implementation states its answer to each rather than inheriting one.
+pub trait EditorWindow {
+    /// Whether the plugin has an editor it can embed or open.
+    fn has_editor(&self, main: &MainThread) -> bool;
+
+    /// Embeds the editor into `parent`, whose backing-store scale is `scale`
+    /// (forwarded where the format takes it; see [`ContentScale`]), and returns
+    /// its size.
     ///
     /// # Errors
     ///
-    /// The plugin refuses or fails to open its editor.
+    /// The plugin has no editor, or refuses or fails to open it.
     fn open_editor(
         &mut self,
         main: &MainThread,
@@ -186,7 +184,8 @@ pub trait Editor: Send {
         scale: ContentScale,
     ) -> PluginResult<EditorSize>;
 
-    /// Opens as a plugin-owned floating window. No parent in, no size out.
+    /// Opens the editor as a plugin-owned floating window. No parent in, no
+    /// size out.
     ///
     /// Defaulted to a refusal: only CLAP has the concept.
     ///
@@ -200,13 +199,29 @@ pub trait Editor: Send {
         )))
     }
 
-    /// Closes the editor. The instance stays loaded.
+    /// Closes the editor. The plugin stays loaded. Nothing happens when no
+    /// editor is open.
     fn close_editor(&mut self, main: &MainThread);
 
-    /// The editor's main-thread tick: its timers, callbacks and file
-    /// descriptors are served from here.
+    /// The editor's main-thread tick, where the format has one that is not a
+    /// request: VST2's `effEditIdle`, VST3's run loop on Linux. What a plugin
+    /// asks for (CLAP's timers, descriptors and callbacks) is served by
+    /// [`Control::take_requests`](crate::Control::take_requests) and
+    /// [`Lifecycle::drive`](crate::Lifecycle::drive), so a [`Control`](crate::Control)
+    /// that has no such tick does nothing here. An [`Editor`] has no
+    /// `Lifecycle` to feed, so its idle serves those requests itself.
     fn editor_idle(&mut self, main: &MainThread);
+}
 
+/// The editor-only instance an [`OutOfProcess`] format loads in the host
+/// process while its audio instance runs in another.
+///
+/// It shows the plugin's GUI and is kept faithful to the audio instance by the
+/// host: parameter writes and the state blob go to it, and the parameter edits
+/// the user makes in it come back through [`poll_edits`](Self::poll_edits).
+/// Every method is a main-thread call, which the `&MainThread` proves. Its
+/// window is an [`EditorWindow`].
+pub trait Editor: EditorWindow + Send {
     /// Mirrors a parameter write so the editor's display follows a host-side
     /// edit. Normalized, as the audio path takes it; an impl denormalizes at its
     /// own edge if its format speaks plain units.

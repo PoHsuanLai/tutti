@@ -18,7 +18,7 @@ use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_plugin_types::{ContentScale, Control, Normalized, ParamId};
+use tutti_plugin_types::{ContentScale, Control, EditorWindow, Normalized, ParamId};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext};
 

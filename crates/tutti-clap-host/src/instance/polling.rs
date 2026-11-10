@@ -114,7 +114,7 @@ impl ClapLoaded {
 
     /// Whether this plugin can present a floating (plugin-owned) window.
     ///
-    /// The counterpart to [`has_editor`](tutti_plugin_types::Control::has_editor), which asks the
+    /// The counterpart to [`has_editor`](tutti_plugin_types::EditorWindow::has_editor), which asks the
     /// embedded question only. A host should consult both: a plugin may support
     /// either, both, or — via [`prefers_floating`](Self::prefers_floating) —
     /// have an opinion about which.
@@ -230,7 +230,7 @@ impl ClapLoaded {
         })
     }
 
-    /// [`Control::close_editor`](tutti_plugin_types::Control::close_editor) without a token, for `Drop`, which
+    /// [`EditorWindow::close_editor`](tutti_plugin_types::EditorWindow::close_editor) without a token, for `Drop`, which
     /// has none: the thread a drop runs on is the owner's. The per-format lane
     /// that gives the plugin a main-thread handle makes this unreachable off the
     /// main thread.

@@ -16,8 +16,8 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
-    SampleRate, Samples, Stage, State,
+    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
+    SampleFormat, SampleRate, Samples, Stage, State,
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 

@@ -26,8 +26,8 @@ pub use format::{Format, Gap, ParamTiming, run};
 pub use formats::{Clap, Vst2, Vst3, Vst3Cpp};
 pub use plugin::{bundle_of, clap as clap_path, library, vst3_cpp_module, vst3_module};
 pub use transcript::{
-    Kind, Logged, Told, Transcript, find_blob, patch_level, patch_mode, replace_blob, set_level,
-    set_mode, transcript,
+    Kind, Logged, Told, Transcript, find_blob, patch_level, patch_mode, replace_blob, select,
+    set_level, set_mode, transcript,
 };
 pub use tutti_plugin_types::{InProcess, OutOfProcess};
 
@@ -50,6 +50,7 @@ macro_rules! contract {
             latency_applied,
             reset_clears_the_delay_line,
             tail_reported,
+            the_control_surface_answers_alike_loaded_and_active,
             parameters_listed,
             parameter_round_trip,
             unlisted_parameter_is_none,

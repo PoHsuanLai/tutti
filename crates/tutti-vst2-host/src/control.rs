@@ -4,9 +4,9 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    ContentScale, Control, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized, ParamId,
-    ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, Preset, PresetId,
-    RenderMode, Request, WindowHandle,
+    ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin,
+    Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
+    Preset, PresetId, RenderMode, Request, WindowHandle,
 };
 
 use crate::error::Vst2Error;
@@ -215,6 +215,21 @@ impl Control for Vst2Loaded {
         true
     }
 
+    /// The reports of `audioMasterAutomate` (the plugin's own editor moving a
+    /// knob), oldest first. A report naming a negative index names no
+    /// parameter and is dropped. The queue the reports arrive in drops rather
+    /// than growing when nobody drains it:
+    /// [`dropped_param_changes`](Vst2Loaded::dropped_param_changes) counts them.
+    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        while let Some((index, value)) = self.param_rx.pop() {
+            if let Ok(index) = u32::try_from(index) {
+                out.push((ParamId::new(index), Normalized::clamped(f64::from(value))));
+            }
+        }
+    }
+}
+
+impl EditorWindow for Vst2Loaded {
     fn has_editor(&self, _main: &MainThread) -> bool {
         self.instance.has_editor()
     }
@@ -236,18 +251,5 @@ impl Control for Vst2Loaded {
 
     fn editor_idle(&mut self, main: &MainThread) {
         self.instance.idle_editor(main);
-    }
-
-    /// The reports of `audioMasterAutomate` (the plugin's own editor moving a
-    /// knob), oldest first. A report naming a negative index names no
-    /// parameter and is dropped. The queue the reports arrive in drops rather
-    /// than growing when nobody drains it:
-    /// [`dropped_param_changes`](Vst2Loaded::dropped_param_changes) counts them.
-    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
-        while let Some((index, value)) = self.param_rx.pop() {
-            if let Ok(index) = u32::try_from(index) {
-                out.push((ParamId::new(index), Normalized::clamped(f64::from(value))));
-            }
-        }
     }
 }

@@ -31,7 +31,7 @@ use tutti_fixtures::main_thread;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
-use tutti_plugin_types::Control;
+use tutti_plugin_types::EditorWindow;
 use tutti_vst3_host::{ContentScale, EditorSize, KeyEvent, WindowHandle};
 
 #[path = "active.rs"]
@@ -480,7 +480,7 @@ fn supported_platform_type_still_opens() {
 
 gui_test! {
 /// This is the regression test for "nothing pumps the plugin run loop": before
-/// [`Control::editor_idle`] existed, `host-checker` (a VSTGUI
+/// [`EditorWindow::editor_idle`] existed, `host-checker` (a VSTGUI
 /// plugin, which drives its redraws off a registered timer) would register its
 /// timer and X file descriptor with us and then wait forever. The editor
 /// appeared, painted once, and froze.

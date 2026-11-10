@@ -175,7 +175,7 @@ println!("{edits} param edits; latency changed: {}", restart.latency_changed);
 
 ```rust,no_run
 # use std::path::Path;
-# use tutti_plugin_types::Control;
+# use tutti_plugin_types::{Control, EditorWindow};
 # use tutti_vst3_host::{ContentScale, LoadOptions, Vst3Loaded, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");

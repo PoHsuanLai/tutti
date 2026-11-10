@@ -22,7 +22,7 @@ use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_plugin_types::{ContentScale, Control, Controller, Request};
+use tutti_plugin_types::{ContentScale, Control, Controller, EditorWindow, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,

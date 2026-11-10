@@ -51,6 +51,8 @@ struct Inst {
     plugin: clap_plugin,
     core: Core,
     dsp: Mutex<Dsp>,
+    /// The host, for `core::NOTICE_ON_LOAD`'s `request_callback`.
+    host: *const clap_host,
 }
 
 unsafe fn inst<'a>(p: *const clap_plugin) -> &'a Inst {
@@ -447,7 +449,16 @@ unsafe extern "C" fn state_load(p: *const clap_plugin, s: *const clap_istream) -
         }
         bytes.extend_from_slice(&chunk[..n as usize]);
     }
-    unsafe { inst(p) }.core.load(&bytes).is_ok()
+    let plugin = unsafe { inst(p) };
+    let loaded = plugin.core.load(&bytes).is_ok();
+    if loaded && plugin.core.notice() == core::NOTICE_ON_LOAD {
+        // SAFETY: the host outlives the plugin, and `request_callback` is
+        // callable from any thread.
+        if let Some(request) = unsafe { plugin.host.as_ref() }.and_then(|h| h.request_callback) {
+            unsafe { request(plugin.host) };
+        }
+    }
+    loaded
 }
 
 // ---- the plugin -------------------------------------------------------------
@@ -618,7 +629,7 @@ static DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(clap_plugin_descriptor {
 
 unsafe extern "C" fn create(
     _f: *const clap_plugin_factory,
-    _host: *const clap_host,
+    host: *const clap_host,
     id: *const c_char,
 ) -> *const clap_plugin {
     // SAFETY, for this function's `unsafe` blocks: `id` is a NUL-terminated string (checked non-null above).
@@ -642,6 +653,7 @@ unsafe extern "C" fn create(
         },
         core: Core::new(),
         dsp: Mutex::new(Dsp::default()),
+        host,
     });
     let raw: *mut Inst = &mut *me;
     me.plugin.plugin_data = raw as *mut c_void;

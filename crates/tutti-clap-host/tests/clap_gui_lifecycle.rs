@@ -33,7 +33,7 @@ use tutti_clap_test_plugin::{
     GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH,
     GuiCapture, GuiMode,
 };
-use tutti_plugin_types::Control;
+use tutti_plugin_types::EditorWindow;
 
 /// Serializes whole scenarios — set mode → reset → load → drive → read — so one
 /// test cannot observe another's calls or run against another's selected

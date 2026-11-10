@@ -15,10 +15,10 @@ impl Vst2Loaded {
     ///
     /// `parent` is the native view or window to embed into (`NSView*` on
     /// macOS, `HWND` on Windows, an X11 window id on Linux). While the editor is
-    /// open, call [`Control::editor_idle`](tutti_plugin_types::Control::editor_idle)
-    /// regularly, and [`Control::close_editor`](tutti_plugin_types::Control::close_editor)
+    /// open, call [`EditorWindow::editor_idle`](tutti_plugin_types::EditorWindow::editor_idle)
+    /// regularly, and [`EditorWindow::close_editor`](tutti_plugin_types::EditorWindow::close_editor)
     /// before destroying `parent`. The body of
-    /// [`Control::open_editor`](tutti_plugin_types::Control::open_editor).
+    /// [`EditorWindow::open_editor`](tutti_plugin_types::EditorWindow::open_editor).
     ///
     /// # Errors
     ///

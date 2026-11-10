@@ -16,8 +16,8 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
-    SampleRate, Samples, Stage, State,
+    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
+    SampleFormat, SampleRate, Samples, Stage, State,
 };
 use tutti_vst2_host::{Vst2Error, Vst2Loaded, Vst2Processor};
 
@@ -473,12 +473,12 @@ impl PluginEditorHost for Vst2Instance {
         let loaded = self
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
-        Control::open_editor(loaded, main, parent, scale)
+        EditorWindow::open_editor(loaded, main, parent, scale)
     }
 
     fn close_editor(&mut self, main: &MainThread) {
         if let Some(loaded) = self.loaded_mut() {
-            Control::close_editor(loaded, main);
+            EditorWindow::close_editor(loaded, main);
         }
     }
 }

@@ -8,10 +8,10 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    ClapFeature, ContentScale, Control, EditorPresence, EditorSize, FdId, Features, Layout,
-    LoadedPlugin, Normalized, ParamId, ParamRange, ParameterInfo, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples,
-    TimerId, WindowHandle,
+    ClapFeature, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, FdId, Features,
+    Layout, LoadedPlugin, Normalized, ParamId, ParamRange, ParameterInfo, PluginClass,
+    PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, RenderMode, Request,
+    RescanScope, Samples, TimerId, WindowHandle,
 };
 
 use super::controller::ClapController;
@@ -388,7 +388,13 @@ impl Control for ClapLoaded {
         self.plugin.set_render_offline(main, mode.is_offline())
     }
 
-    /// Whether [`open_editor`](Control::open_editor) can actually embed an editor.
+    /// Nothing: CLAP reports the edits a plugin's own editor makes in the
+    /// block's `ProcessOutput`.
+    fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<(ParamId, Normalized)>) {}
+}
+
+impl EditorWindow for ClapLoaded {
+    /// Whether [`open_editor`](EditorWindow::open_editor) can actually embed an editor.
     ///
     /// Not just "is there a `clap.gui` vtable?": a plugin may expose the
     /// extension but omit `create`, or support only a floating window. Both are
@@ -407,7 +413,7 @@ impl Control for ClapLoaded {
     /// side-effect-free predicate; `create` allocates the plugin's real GUI
     /// resources. So a plugin whose `is_api_supported` says yes and whose
     /// `create` then fails still reports `true` here; that surfaces as
-    /// [`open_editor`](Control::open_editor)'s error. An absent `is_api_supported`
+    /// [`open_editor`](EditorWindow::open_editor)'s error. An absent `is_api_supported`
     /// is not a refusal — the same reading `embed_editor_sequence` uses.
     fn has_editor(&self, main: &MainThread) -> bool {
         self.plugin.has_editor(main)
@@ -458,11 +464,12 @@ impl Control for ClapLoaded {
     fn close_editor(&mut self, main: &MainThread) {
         self.destroy_editor(main);
     }
-
-    // `editor_idle` keeps the default (nothing): CLAP's editor timers, callbacks
-    // and file descriptors are served by `take_requests`, whose requests the
-    // shell feeds to `Lifecycle::drive` (`run_timer`, `run_main_thread`,
-    // `service_fd`). A second pass here would take requests that belong to it.
+    /// Nothing, on purpose: CLAP's editor timers, callbacks and file
+    /// descriptors are served by [`take_requests`](Control::take_requests),
+    /// whose requests the shell feeds to `Lifecycle::drive` (`run_timer`,
+    /// `run_main_thread`, `service_fd`). A second pass here would take
+    /// requests that belong to it.
+    fn editor_idle(&mut self, _main: &MainThread) {}
 }
 
 /// The filesystem path an id names, or `None` when it names none.
@@ -568,8 +575,14 @@ impl Control for ClapController {
         Control::set_render_mode(self.loaded_mut(), main, mode)
     }
 
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        Control::take_reported_edits(self.loaded_mut(), main, out);
+    }
+}
+
+impl EditorWindow for ClapController {
     fn has_editor(&self, main: &MainThread) -> bool {
-        Control::has_editor(self.loaded(), main)
+        EditorWindow::has_editor(self.loaded(), main)
     }
 
     fn open_editor(
@@ -578,16 +591,19 @@ impl Control for ClapController {
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        Control::open_editor(self.loaded_mut(), main, parent, scale)
+        EditorWindow::open_editor(self.loaded_mut(), main, parent, scale)
     }
 
     fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
-        Control::open_floating_editor(self.loaded_mut(), main)
+        EditorWindow::open_floating_editor(self.loaded_mut(), main)
     }
 
     fn close_editor(&mut self, main: &MainThread) {
-        Control::close_editor(self.loaded_mut(), main);
+        EditorWindow::close_editor(self.loaded_mut(), main);
     }
+
+    /// Nothing, as the Loaded's is: see [`ClapLoaded`]'s `editor_idle`.
+    fn editor_idle(&mut self, _main: &MainThread) {}
 }
 
 #[allow(dead_code)]

@@ -802,16 +802,16 @@ fn a_refused_lend_is_offered_again_on_a_tick() {
     assert!(poll(&mut rt));
 }
 
-/// **The editor, render-mode, request and reported-edit entries of `Control`
-/// default to "nothing here" in both states that hold a plugin**, so a format
-/// that has none of them (and the fake) is driven through
-/// [`Lifecycle::control`] with no special case: no editor, no live render
-/// mode, no requests, no reported edits.
+/// **The fake's explicit answers for the editor, render-mode, request and
+/// reported-edit entries of `Control` reach the host through
+/// [`Lifecycle::control`] in both states that hold a plugin**: no editor (and
+/// the floating window refused by its one default), no live render mode, no
+/// requests, no reported edits.
 ///
-/// Mutation (run): the default `set_render_mode` returning `true` fails the
-/// first assertion; the default `has_editor` returning `true` fails the second.
+/// Mutation (run): the fake's `set_render_mode` returning `true` fails the
+/// first assertion; its `has_editor` returning `true` fails the second.
 #[test]
-fn control_defaults_say_nothing_in_either_state() {
+fn the_fake_control_answers_nothing_in_either_state() {
     let mut rig = Rig::new();
     for active in [false, true] {
         if active {

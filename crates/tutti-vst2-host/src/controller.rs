@@ -6,10 +6,10 @@ use std::marker::PhantomData;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, Controller, EditorSize, Loaded, LoadedPlugin,
-    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult, PluginTail,
-    Prepare, Preset, PresetId, Processor, Refused, RenderMode, Request, RescanScope, RestartRules,
-    SampleFormat, Samples, Stuck, WindowHandle,
+    AutomationMode, ContentScale, Control, Controller, EditorSize, EditorWindow, Loaded,
+    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
+    PluginTail, Prepare, Preset, PresetId, Processor, Refused, RenderMode, Request, RescanScope,
+    RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
 };
 
 use crate::loaded::Vst2Loaded;
@@ -150,8 +150,14 @@ impl Control for Vst2Controller {
         Control::set_render_mode(self.loaded_mut(), main, mode)
     }
 
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        Control::take_reported_edits(self.loaded_mut(), main, out);
+    }
+}
+
+impl EditorWindow for Vst2Controller {
     fn has_editor(&self, main: &MainThread) -> bool {
-        Control::has_editor(self.loaded(), main)
+        EditorWindow::has_editor(self.loaded(), main)
     }
 
     fn open_editor(
@@ -160,19 +166,15 @@ impl Control for Vst2Controller {
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        Control::open_editor(self.loaded_mut(), main, parent, scale)
+        EditorWindow::open_editor(self.loaded_mut(), main, parent, scale)
     }
 
     fn close_editor(&mut self, main: &MainThread) {
-        Control::close_editor(self.loaded_mut(), main);
+        EditorWindow::close_editor(self.loaded_mut(), main);
     }
 
     fn editor_idle(&mut self, main: &MainThread) {
-        Control::editor_idle(self.loaded_mut(), main);
-    }
-
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
-        Control::take_reported_edits(self.loaded_mut(), main, out);
+        EditorWindow::editor_idle(self.loaded_mut(), main);
     }
 }
 

@@ -85,3 +85,74 @@ pub const TAIL: Samples = Samples(8191);
 pub fn tag(channel: usize) -> f32 {
     (channel + 1) as f32
 }
+
+/// The editor behaviour that offers a view (`EDITOR_TIDY` in the plugin's
+/// state word, second byte).
+pub const EDITOR_TIDY: u32 = 1;
+/// The notice behaviour that raises one notice per state load (`NOTICE_ON_LOAD`,
+/// third byte).
+pub const NOTICE_ON_LOAD: u32 = 1;
+
+/// What a format's control surface answers for the shared plugin, the same in
+/// a loaded plugin and an active one. One row per format ([`Surface`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Surface {
+    /// Whether the plugin's shell has an editor to select: only the Rust VST3
+    /// shell does, offering a view once the state's editor byte says
+    /// [`EDITOR_TIDY`]. Where `false`, the plugin has no editor whatever the
+    /// state says, and the case does not send the byte (the C++ plugin refuses
+    /// it).
+    pub has_editor: bool,
+    /// What `set_render_mode(Offline)` answers: `true` where the format takes
+    /// the mode live (VST2: the host's own flag), `false` where it is read at
+    /// activation (VST3) or the plugin has no render extension (the shared
+    /// CLAP shell exports none).
+    pub render_mode_live: bool,
+    /// Whether the shell reads the notice byte ([`NOTICE_ON_LOAD`]): CLAP and
+    /// VST2, which tell the host something on each state load.
+    pub notices: bool,
+    /// The request a notice raises, as `take_requests` reports it: CLAP's
+    /// `request_callback`. Nothing for every other format.
+    pub request: Option<tutti_plugin_types::Request>,
+    /// The edit a notice reports outside a block, as `take_reported_edits`
+    /// reads it: VST2's `audioMasterAutomate(0, 0.5)`. Nothing for every other
+    /// format (CLAP and VST3 report edits in a block's output).
+    pub edit: Option<(Param, f64)>,
+}
+
+/// CLAP: no editor in the plugin, no `clap.render`, a callback request.
+pub const CLAP: Surface = Surface {
+    has_editor: false,
+    render_mode_live: false,
+    notices: true,
+    request: Some(tutti_plugin_types::Request::Callback),
+    edit: None,
+};
+
+/// VST2: no editor in the plugin, a live render mode, an automate report.
+pub const VST2: Surface = Surface {
+    has_editor: false,
+    render_mode_live: true,
+    notices: true,
+    request: None,
+    edit: Some((Param::Level, 0.5)),
+};
+
+/// VST3 from the Rust plugin: an editor once selected, the mode read at
+/// activation, nothing raised.
+pub const VST3: Surface = Surface {
+    has_editor: true,
+    render_mode_live: false,
+    notices: false,
+    request: None,
+    edit: None,
+};
+
+/// VST3 from the C++ plugin: no editor, nothing raised.
+pub const VST3_CPP: Surface = Surface {
+    has_editor: false,
+    render_mode_live: false,
+    notices: false,
+    request: None,
+    edit: None,
+};

@@ -19,7 +19,7 @@ use super::instance::Instance;
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
 use crate::util::window::{ContentScale, EditorSize};
-use tutti_plugin_types::{Control, EditorError, PluginError, StateError};
+use tutti_plugin_types::{EditorError, EditorWindow, PluginError, StateError};
 use tutti_plugin_types::{Normalized, ParamId, ParameterInfo, RenderMode};
 use tutti_plugin_types::{Preset, PresetId};
 

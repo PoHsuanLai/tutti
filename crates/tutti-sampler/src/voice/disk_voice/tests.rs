@@ -562,16 +562,40 @@ fn clip_reader_jump_edge_is_allocation_free() {
 }
 
 /// One-frame blocks, the shortest a node is handed: the per-block work
-/// (the clock's runs, the ring's claim) allocates nothing either.
+/// (the clock's runs, the ring's claim) allocates nothing either, with the
+/// transport moving a frame a block (so the reader keeps its continuation:
+/// a transport left standing would re-anchor, and so jump, on every block).
+/// 100,000 frames from beat 5 cross the window's end at beat 8 (72,000
+/// frames at 120 BPM) and the ring's end (the ring holds 2,047 frames), so
+/// the run reaches the steady read, the underrun and the silence past the
+/// window.
 #[test]
 fn clip_reader_single_frame_steady_state_is_allocation_free() {
     let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
     let mut direct = warm_clip_reader(&transport, 1);
     for _ in 0..256 {
         direct.block_in(&transport.env(1, 48_000.0));
+        transport.advance(1, 48_000.0);
     }
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100_000 {
+            direct.block_in(&transport.env(1, 48_000.0));
+            transport.advance(1, 48_000.0);
+        }
+    });
+}
+
+/// One-frame blocks on a standing transport: the playhead is the same frame
+/// every block, so every block is a jump (the continuation copied into the
+/// scratch, a crossfade started), and the jump's per-block work allocates
+/// nothing at the shortest block either. A jump renders its continuation
+/// ([`OLD_FRAMES`] frames), so a few thousand blocks are enough.
+#[test]
+fn clip_reader_single_frame_jump_every_block_is_allocation_free() {
+    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
+    let mut direct = warm_clip_reader(&transport, 1);
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
             direct.block_in(&transport.env(1, 48_000.0));
         }
     });

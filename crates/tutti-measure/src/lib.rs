@@ -4,8 +4,8 @@
 //! ## Items
 //!
 //! - Transform: [`stft`], [`stft_magnitude`], [`stft_polar`] and
-//!   [`istft_transform`], over a validated [`StftGeometry`] with a
-//!   [`CosineWindow`], producing [`Stft`], [`StftMagnitude`] or [`StftPolar`].
+//!   [`istft_transform`], over a validated [`StftGeometry`](tutti_dsp::StftGeometry) with a
+//!   [`CosineWindow`](tutti_dsp::CosineWindow), producing [`Stft`], [`StftMagnitude`] or [`StftPolar`].
 //! - Pitch: [`yin()`] and [`yin_track`] with a [`YinConfig`], returning
 //!   [`PitchEstimate`] and [`Pitch`]; [`median_filter`] and [`penalize_jumps`]
 //!   clean up a track.

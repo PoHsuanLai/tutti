@@ -42,7 +42,9 @@ pub fn graph_engine(transport: &Transport, build: impl FnOnce(&mut Editor)) -> E
 
 /// Every one of `outputs` global outputs reads `node`'s output 0.
 pub fn fan(ed: &mut Editor, node: NodeKey, outputs: usize) {
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node, port: 0 }); outputs];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node, port: 0 }); outputs]);
 }
 
 /// A rolling transport driving a sine through a filter, at `outputs` width.
@@ -64,10 +66,10 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
                 node: filter,
                 port: 0,
             },
-            Edge::Direct(Source::Node(OutPort {
+            vec![Edge::Direct(Source::Node(OutPort {
                 node: source,
                 port: 0,
-            })),
+            }))],
         );
         fan(ed, filter, outputs);
     });

@@ -543,14 +543,12 @@ fn a_clip_into_a_synth_is_allocation_free() {
             port: 0,
         }),
     );
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            tutti_graph::Source::Node(tutti_graph::OutPort {
-                node: NodeKey(2),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        tutti_graph::Source::Node(tutti_graph::OutPort {
+            node: NodeKey(2),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let at = |frame: usize, playing: bool| {
         Transport::new(playing, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None)

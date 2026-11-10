@@ -176,14 +176,14 @@ fn rig(workers: usize, no_alloc: bool, m: usize) -> Rig {
     );
     ed.insert(NodeKey(91), "lag", Forkable(Kind::Lag { latency: m }));
     let t = &mut ed.spec_mut().topology;
-    t.edges.insert(
+    t.connect(
         InPort {
             node: NodeKey(91),
             port: 0,
         },
         Edge::Direct(out(90)),
     );
-    t.outputs = vec![out(91)];
+    t.set_outputs([out(91)]);
     Rig {
         ed,
         exec,

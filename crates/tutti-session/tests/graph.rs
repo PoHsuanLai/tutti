@@ -218,6 +218,40 @@ fn every_source_reads_back_as_written() {
     }
 }
 
+/// Silence is stored as the empty set, never as a `Source::Zero` (which the
+/// compiler's validation refuses), whichever setter wrote it: a port or output
+/// set to `Silence`, an output feed with no usable port, and a fresh or widened
+/// root. `planned_compensation` is `None` when the spec does not validate.
+///
+/// Mutation (run, recorded here): store `vec![Source::Zero]` instead of the
+/// empty set in `set_source`'s `Zero` arm, in `set_output_source`, in
+/// `feed_outputs`' `usable == 0` arm, or in `widen_outputs`' resize -> the
+/// matching step's assert fails (the spec stops validating).
+#[test]
+fn every_setter_stores_silence_as_the_empty_set() {
+    let mut s = detached(2);
+    let graph = s.graph();
+    let (sink, _) = graph.insert(Through::mono());
+    let (src, _) = graph.insert(Const::frame(&[1.0, 2.0]));
+    assert!(graph.planned_compensation().is_some(), "fresh root");
+
+    graph.set_source(sink, 0, GraphSource::Node(src, 0));
+    graph.set_source(sink, 0, GraphSource::Silence);
+    assert!(graph.planned_compensation().is_some(), "set_source Silence");
+
+    graph.set_output_source(0, GraphSource::Node(src, 0));
+    graph.set_output_source(0, GraphSource::Silence);
+    assert!(graph.planned_compensation().is_some(), "set_output_source");
+
+    graph.set_outputs_from(src);
+    graph.set_outputs_from_ports(src, &[]);
+    assert!(graph.planned_compensation().is_some(), "no usable port");
+
+    graph.widen_outputs(4).expect("widens");
+    assert!(graph.planned_compensation().is_some(), "widened root");
+    assert_eq!(graph.output_source(3), GraphSource::Silence);
+}
+
 /// `remove` says whether the node was there, so removing a node twice is a
 /// no-op rather than a panic.
 ///

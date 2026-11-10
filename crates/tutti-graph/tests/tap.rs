@@ -82,18 +82,18 @@ fn build(ed: &mut Editor) -> Vec<Source> {
                 node: NodeKey(lag),
                 port: 0,
             },
-            Edge::Direct(Source::Global(0)),
+            vec![Edge::Direct(Source::Global(0))],
         );
         t.edges.insert(
             InPort {
                 node: NodeKey(gain),
                 port: 0,
             },
-            Edge::Direct(out(lag)),
+            vec![Edge::Direct(out(lag))],
         );
         gains.push(out(gain));
     }
-    ed.spec_mut().topology.outputs = gains.clone();
+    ed.spec_mut().topology.set_outputs(gains.clone());
     gains
 }
 

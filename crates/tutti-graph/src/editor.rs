@@ -421,8 +421,8 @@ impl std::error::Error for MissingSource {}
 /// editor.insert(half, "half", ForkByClone(Half));
 /// let topology = &mut editor.spec_mut().topology;
 /// topology.inputs = ChannelLayout::MONO;
-/// topology.edges.insert(InPort { node: half, port: 0 }, Edge::Direct(Source::Global(0)));
-/// topology.outputs = vec![Source::Node(OutPort { node: half, port: 0 })];
+/// topology.connect(InPort { node: half, port: 0 }, Edge::Direct(Source::Global(0)));
+/// topology.set_outputs([Source::Node(OutPort { node: half, port: 0 })]);
 /// editor.commit().expect("compiles");
 ///
 /// // On the audio thread:
@@ -828,7 +828,7 @@ impl Editor {
     fn check_meter_widths(&self) -> Result<(), CommitError> {
         let t = &self.spec.topology;
         for (&meter, spec) in &t.meters {
-            let sources = spec.sources(&t.outputs).len();
+            let sources = spec.lanes(t.outputs.len());
             match self.meter_readers.get(&meter) {
                 Some(&(capacity, _)) if sources > capacity => {
                     return Err(CommitError::MeterWidth {
@@ -1487,24 +1487,29 @@ impl Editor {
     }
 
     /// Removes `key` and every edge that touches it. Output channels it fed
-    /// become [`Source::Zero`].
+    /// are left empty (silence).
     pub fn remove(&mut self, key: NodeKey) {
         self.touch();
         let t = &mut self.spec.topology;
         t.nodes.remove(&key);
-        t.edges.retain(|at, e| {
-            let from = match *e {
-                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p, .. }) => {
-                    Some(p.node)
-                }
-                Edge::Direct(_) => None,
-            };
-            at.node != key && from != Some(key)
-        });
-        for s in &mut t.outputs {
-            if matches!(s, Source::Node(p) if p.node == key) {
-                *s = Source::Zero;
+        t.edges.retain(|at, edges| {
+            if at.node == key {
+                return false;
             }
+            edges.retain(|e| {
+                let from = match *e {
+                    Edge::Direct(Source::Node(p))
+                    | Edge::Feedback(FeedbackFrom { from: p, .. }) => Some(p.node),
+                    Edge::Direct(_) => None,
+                };
+                from != Some(key)
+            });
+            // A port left with no edge is an unfed port: no key.
+            !edges.is_empty()
+        });
+        for sources in &mut t.outputs {
+            // A channel that lost its only source is empty: silence.
+            sources.retain(|s| !matches!(s, Source::Node(p) if p.node == key));
         }
         // A key is the author's and can be inserted again after a removal, so
         // a tap left naming it would read the new node.

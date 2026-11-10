@@ -170,23 +170,24 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
         EventEdge::feedback(ev(3, 0), Samples(256)),
     );
     let t = &mut spec.topology;
-    t.edges.insert(at(5, 0), Edge::Direct(Source::Global(0)));
-    t.edges.insert(at(6, 0), from(4, 0));
-    t.edges.insert(at(7, 0), from(5, 0));
-    t.edges.insert(at(7, 1), from(6, 0));
+    t.edges
+        .insert(at(5, 0), vec![Edge::Direct(Source::Global(0))]);
+    t.edges.insert(at(6, 0), vec![from(4, 0)]);
+    t.edges.insert(at(7, 0), vec![from(5, 0)]);
+    t.edges.insert(at(7, 1), vec![from(6, 0)]);
     t.edges.insert(
         at(7, 2),
-        Edge::Feedback(FeedbackFrom::one_block(
+        vec![Edge::Feedback(FeedbackFrom::one_block(
             OutPort {
                 node: NodeKey(9),
                 port: 0,
             },
             Samples(256),
-        )),
+        ))],
     );
-    t.edges.insert(at(8, 0), from(7, 0));
-    t.edges.insert(at(9, 0), from(8, 0));
-    t.outputs = vec![
+    t.edges.insert(at(8, 0), vec![from(7, 0)]);
+    t.edges.insert(at(9, 0), vec![from(8, 0)]);
+    t.set_outputs(vec![
         Source::Node(OutPort {
             node: NodeKey(9),
             port: 0,
@@ -195,7 +196,7 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
             node: NodeKey(1),
             port: 0,
         }),
-    ];
+    ]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -327,9 +328,11 @@ fn crossfades_are_allocation_free_on(workers: usize) {
         }),
     );
     let t = &mut ed.spec_mut().topology;
-    t.edges.insert(at(1, 0), Edge::Direct(Source::Global(0)));
-    t.edges.insert(at(1, 1), Edge::Direct(Source::Global(1)));
-    t.outputs = vec![
+    t.edges
+        .insert(at(1, 0), vec![Edge::Direct(Source::Global(0))]);
+    t.edges
+        .insert(at(1, 1), vec![Edge::Direct(Source::Global(1))]);
+    t.set_outputs(vec![
         Source::Node(OutPort {
             node: NodeKey(1),
             port: 0,
@@ -338,7 +341,7 @@ fn crossfades_are_allocation_free_on(workers: usize) {
             node: NodeKey(3),
             port: 0,
         }),
-    ];
+    ]);
     ed.commit().expect("commits");
 
     let input = vec![0.25f32; 256];
@@ -734,12 +737,13 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
     ed.insert(NodeKey(4), "ramps", Unforkable(RampEvery));
     {
         let t = &mut ed.spec_mut().topology;
-        t.edges.insert(at(2, 0), Edge::Direct(Source::Global(0)));
-        t.edges.insert(at(1, 0), from(2, 0));
-        t.outputs = vec![Source::Node(OutPort {
+        t.edges
+            .insert(at(2, 0), vec![Edge::Direct(Source::Global(0))]);
+        t.edges.insert(at(1, 0), vec![from(2, 0)]);
+        t.set_outputs(vec![Source::Node(OutPort {
             node: NodeKey(1),
             port: 0,
-        })];
+        })]);
     }
     let cut = ParamIn {
         node: NodeKey(1),
@@ -894,10 +898,10 @@ fn reporting_nodes_are_allocation_free_on(workers: usize) {
         ed.spec_mut()
             .topology
             .edges
-            .insert(at(fx.0, 0), from(src.0, 0));
+            .insert(at(fx.0, 0), vec![from(src.0, 0)]);
         outputs.push(Source::Node(OutPort { node: fx, port: 0 }));
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

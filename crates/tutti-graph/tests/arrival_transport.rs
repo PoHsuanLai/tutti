@@ -90,14 +90,12 @@ fn topology(ed: &mut Editor) {
             node: PROBE,
             port: 0,
         },
-        Edge::Direct(Source::Node(OutPort {
+        vec![Edge::Direct(Source::Node(OutPort {
             node: LATENT,
             port: 0,
-        })),
+        }))],
     );
-    t.outputs = (0..3)
-        .map(|port| Source::Node(OutPort { node: PROBE, port }))
-        .collect();
+    t.set_outputs((0..3).map(|port| Source::Node(OutPort { node: PROBE, port })));
 }
 
 fn units(lat: usize) -> BTreeMap<NodeKey, Box<dyn Node>> {
@@ -475,14 +473,14 @@ fn wide(workers: usize) -> (Editor, Executor) {
                 node: probe,
                 port: 0,
             },
-            Edge::Direct(Source::Node(OutPort {
+            vec![Edge::Direct(Source::Node(OutPort {
                 node: latent,
                 port: 0,
-            })),
+            }))],
         );
         outputs.extend((0..3).map(|port| Source::Node(OutPort { node: probe, port })));
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     if workers > 1 {
         exec.set_pool(Some(common::TestPool::new(workers)));

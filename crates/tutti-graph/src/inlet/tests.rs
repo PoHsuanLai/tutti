@@ -144,14 +144,12 @@ fn the_inlet_refuses_to_fork() {
     let prepare = Prepare::new(RATE, Samples(64));
     let (mut editor, _exec) = Editor::new(prepare);
     editor.insert(NodeKey(7), "inlet", node);
-    editor.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(7),
-                port,
-            })
+    editor.spec_mut().topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(7),
+            port,
         })
-        .collect();
+    }));
     let err = editor
         .fork(ForkTarget::Master, ForkMode::Live, prepare)
         .expect_err("a fork through the live inlet is refused");

@@ -5,13 +5,12 @@
 //!
 //! Giving `InPort`/`OutPort` a kind in `tutti-types` would break every place
 //! that builds them by literal (`InPort { node, port }`). Event edges also
-//! have a different *shape* from audio edges — fan-in is allowed on event
-//! ports, so an event sink holds a list of sources where an audio sink holds
-//! exactly one — so the two maps cannot share `Topology::edges`' type anyway.
+//! have a different *edge kind* from audio edges (an event edge carries an
+//! offset-merged stream, an audio edge a signal that will be summed), so the
+//! two maps do not share a type.
 //!
-//! [`GraphSpec`] therefore **embeds** the `Topology` unchanged (audio stays one
-//! source per port, keyed on the sink — fan-in still unrepresentable there) and
-//! adds what is new beside it, with distinct port types ([`EventIn`],
+//! [`GraphSpec`] therefore **embeds** the `Topology` unchanged (a set of audio
+//! sources per sink port) and adds what is new beside it, with distinct port types ([`EventIn`],
 //! [`EventOut`]) so an audio port cannot be used as an event port by accident.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -105,8 +104,9 @@ impl EventEdge {
 /// nodes' shapes and returns a [`ValidGraph`], which is what
 /// [`compile`](fn@crate::compile) takes.
 ///
-/// Audio edges live in the embedded `Topology`, one source per input port,
-/// so audio fan-in cannot be written (summing is a node's job). Event ports
+/// Audio edges live in the embedded `Topology`, a set of sources per input
+/// port; the compiler does not sum a set of two or more yet
+/// (`CompileError::FanInNotCompiled`). Event ports
 /// ([`EventIn`], [`EventOut`]) are separate types, so an audio port cannot be
 /// used as an event port by accident, and an event input may have several
 /// sources, merged by offset.

@@ -91,10 +91,12 @@ fn rig<N: tutti_graph::IntoNode>(
             }),
         );
     }
-    ed.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
-        node: NodeKey(2),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![tutti_graph::Source::Node(tutti_graph::OutPort {
+            node: NodeKey(2),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     (ed, exec, controls, seen)
 }

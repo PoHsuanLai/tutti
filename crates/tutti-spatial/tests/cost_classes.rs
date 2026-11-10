@@ -53,7 +53,7 @@ fn wire(ed: &mut Editor, to: NodeKey, port: u16, from: Source) {
     ed.spec_mut()
         .topology
         .edges
-        .insert(InPort { node: to, port }, Edge::Direct(from));
+        .insert(InPort { node: to, port }, vec![Edge::Direct(from)]);
 }
 
 /// [`PANNERS`] declared panners and [`HEAVY`] undeclared ones, each off the
@@ -95,9 +95,9 @@ fn graph(workers: usize, declared: bool) -> Executor {
             );
         }
     }
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: SUM, port }))
-        .collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: SUM, port })));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

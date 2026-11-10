@@ -103,14 +103,12 @@ fn rig(lat: usize, forkable: bool) -> Rig {
             node: PROBE,
             port: 0,
         },
-        Edge::Direct(Source::Node(OutPort {
+        vec![Edge::Direct(Source::Node(OutPort {
             node: LATENT,
             port: 0,
-        })),
+        }))],
     );
-    t.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: PROBE, port }))
-        .collect();
+    t.set_outputs((0..2).map(|port| Source::Node(OutPort { node: PROBE, port })));
     ed.commit().expect("commits");
     let mut reference = Reference::new(prepare(MAX));
     let mut units: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();

@@ -55,10 +55,10 @@ fn build_engine_with_chain() -> Engine {
     let mut wire = |node: NodeKey, port: u16, from: NodeKey, out: u16| {
         topology.edges.insert(
             InPort { node, port },
-            Edge::Direct(Source::Node(OutPort {
+            vec![Edge::Direct(Source::Node(OutPort {
                 node: from,
                 port: out,
-            })),
+            }))],
         );
     };
     wire(eq, 0, osc, 0);
@@ -68,14 +68,12 @@ fn build_engine_with_chain() -> Engine {
     wire(strip, 1, eq, 0);
     wire(limiter, 0, strip, 0);
     wire(limiter, 1, strip, 1);
-    topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: limiter,
-                port,
-            })
+    topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: limiter,
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     // Every commit is sent; the editor only had to outlive the setup.

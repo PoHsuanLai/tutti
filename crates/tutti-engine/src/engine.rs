@@ -1525,14 +1525,12 @@ mod tests {
         use tutti_graph::NodeKey;
         use tutti_graph::{OutPort, Source};
         ed.insert(NodeKey(1), "ramp", tutti_graph::Unforkable(Ramp(width)));
-        ed.spec_mut().topology.outputs = (0..width)
-            .map(|port| {
-                Source::Node(OutPort {
-                    node: NodeKey(1),
-                    port,
-                })
+        ed.spec_mut().topology.set_outputs((0..width).map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
             })
-            .collect();
+        }));
         ed.commit().expect("commits");
     }
 

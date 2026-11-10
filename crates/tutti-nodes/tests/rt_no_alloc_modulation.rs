@@ -279,7 +279,7 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
         );
         outputs.push(Source::Node(OutPort { node: p, port: 0 }));
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     (ed, exec)
 }
@@ -593,10 +593,13 @@ fn lanes_200(
     for j in 0..25u64 {
         ed.insert(NodeKey(1000 + j), "probe", Unforkable(Probe8));
         for p in 0..8 {
-            ed.spec_mut().topology.outputs.push(Source::Node(OutPort {
-                node: NodeKey(1000 + j),
-                port: p,
-            }));
+            ed.spec_mut()
+                .topology
+                .outputs
+                .push(vec![Source::Node(OutPort {
+                    node: NodeKey(1000 + j),
+                    port: p,
+                })]);
         }
     }
     for k in 0..200 {
@@ -875,10 +878,13 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     };
     for k in 0..2 * CHAINS {
         ed.insert(probe(k), "probe", ForkByClone(ParamProbe));
-        ed.spec_mut().topology.outputs.push(Source::Node(OutPort {
-            node: probe(k),
-            port: 0,
-        }));
+        ed.spec_mut()
+            .topology
+            .outputs
+            .push(vec![Source::Node(OutPort {
+                node: probe(k),
+                port: 0,
+            })]);
         ed.set_param_range(cutoff(k), ParamRange::new(0.0, 1.0))
             .expect("a probe");
     }
@@ -905,7 +911,7 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
             for port in 0..2 {
                 ed.spec_mut().topology.edges.insert(
                     InPort { node, port },
-                    Edge::Direct(Source::Node(OutPort { node: src, port })),
+                    vec![Edge::Direct(Source::Node(OutPort { node: src, port }))],
                 );
             }
         } else {
@@ -1202,12 +1208,12 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
             node: filter,
             port: 0,
         },
-        Edge::Direct(Source::Node(OutPort { node: saw, port: 0 })),
+        vec![Edge::Direct(Source::Node(OutPort { node: saw, port: 0 }))],
     );
-    topology.outputs = vec![Source::Node(OutPort {
+    topology.set_outputs(vec![Source::Node(OutPort {
         node: filter,
         port: 0,
-    })];
+    })]);
     ed.commit().expect("commits");
     let transport = Transport::new(false, Bpm::of(120.0), Beat(0.0), None);
     let mut out = vec![0.0f32; 128];

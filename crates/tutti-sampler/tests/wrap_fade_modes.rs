@@ -81,7 +81,7 @@ fn graph(wave: &Arc<Wave>, workers: usize, host: Host) -> Executor {
             outputs.push(Source::Node(OutPort { node: key, port }));
         }
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

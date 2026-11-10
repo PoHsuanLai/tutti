@@ -920,6 +920,7 @@ impl Session {
                 // tables, meters, programs and clips, never a unit. A tap
                 // or meter whose reader was dropped goes out of the next plan.
                 self.graph.reap_taps();
+                self.graph.reap_event_taps();
                 self.graph.reap_meters();
                 if let Some((taps, _)) = &self.heard {
                     taps.reclaim();

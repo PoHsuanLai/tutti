@@ -957,6 +957,45 @@ impl Graph {
 }
 ```
 
+### Stage E1 as built
+
+Built as specified, except where the code's own pattern for the audio tap
+decided otherwise:
+
+- **`EventTapSpec::source` is `Option<EventOut>`.** `Editor::remove` sets it to
+  `None`, as it sets an audio tap's lane to `Source::Zero`: a key is the
+  author's and can be inserted again, and a tap left naming it would read the
+  new node (`a_removed_node_reads_nothing_and_a_reused_key_is_not_read`). A node
+  that is *replaced* keeps its key, so a narrowing and a restoring resume the
+  stream, as the table says.
+- **The op takes `&Env`, not a start frame.** `Op::EventTap { tap, src }` calls
+  `Env::frame_at(offset)` of the block's own `Env`, which is the datum the
+  survey named, held by both the serial and the pooled path. The ring's
+  occupancy, read by the producer, can only be an *over*estimate (the reader
+  only drains), so an event may be refused that the reader had just made room
+  for, and none is taken past the ring; the design said "underestimate" of the
+  vacancy.
+- **`EventTapReader::available` is a `usize`** (events, like `capacity`).
+- **`MissingSource` was already `#[non_exhaustive]`:** `EventPort` is a new
+  variant, not a breaking change.
+- **The reference interpreter has no version.** It knows no taps, audio or
+  event, so there is no event-tap arm to add to it; the differential suite's
+  audio-tap test holds the op to the reference's outputs, and its harness hands
+  the reference its shapes without giving the editor any, which `open_event_tap`
+  needs. The event tap is held to analytic figures instead (a script's frames,
+  a declared latency, the ring's size) and to the serial render.
+- **`NodeMode` is not in the graph yet** (lane 3, M1), so the bypassed-or-muted
+  row has no test; M1 owns it.
+- **Q4 is a pull, not a hook.** A reader belongs to the thread that drains it,
+  and a re-prepare cannot hand that thread a new one, so
+  `Graph::reopen_event_taps() -> Vec<EventTapReader>` reopens every tap at the
+  graph's current rate (each replaces its id) and the caller that re-rates the
+  graph (E3's hardware out, in the session) calls it and takes the readers. The
+  session does not call it for a caller's taps.
+- **No cost measurement was taken.** The op is priced in the `EVENTS` class
+  (`cost.rs`), as the table says; the audio tap's `COPY` has no measurement
+  beside it either, and a ring push per event is not a per-frame cost.
+
 ### The event inlet
 
 `Graph::open_event_inlet`: a ring a thread of your own fills, drained into one
@@ -1150,7 +1189,7 @@ describes changes: each graph PR edits that document's primitive table.
 
 | PR | Holds | Touches `tutti-graph` |
 |---|---|---|
-| **E1** | The event tap: `EventTapId`, `EventTapSpec`, `Topology.event_taps`, `EventTapWriter` and `EventTapReader`, `Editor::open_event_tap`, `MissingSource::EventPort`, the compiler's op and `DelayKey::EventTap`, `verify`, `cost`, the serial, pooled and reference interpreters, the commit carry, reap. The tests above. Then `tutti-session`: `Graph::open_event_tap` and the `Reclaim` reap | Yes |
+| **E1** (done) | The event tap: `EventTapId`, `EventTapSpec`, `Topology.event_taps`, `EventTapWriter` and `EventTapReader`, `Editor::open_event_tap`, `MissingSource::EventPort`, the compiler's op and `DelayKey::EventTap`, `verify`, `cost`, the serial, pooled and reference interpreters, the commit carry, reap. The tests above. Then `tutti-session`: `Graph::open_event_tap` and the `Reclaim` reap | Yes |
 | **E2** | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
 | **E3** | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
 | **E4** | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |

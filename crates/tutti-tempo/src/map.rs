@@ -242,6 +242,9 @@ impl TempoMap {
     /// ramp, whose tempo is linear in time; a beat ramp's tempo is
     /// exponential in time, and this is its chord over the span. `0.0` for a
     /// step, an empty span, or a span that ends before it begins.
+    ///
+    /// A bare `f64` (BPM per second): no unit covers a tempo's slope, and its
+    /// reader divides it into CLAP's per-sample `tempo_inc` at the C ABI.
     #[must_use]
     pub fn tempo_slope_with(&self, from: Seconds, to: Seconds, hint: &mut Cursor) -> f64 {
         let s = self.by_sec(from.get(), hint);

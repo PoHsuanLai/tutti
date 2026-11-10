@@ -524,7 +524,12 @@ zeroed the slope when a point lay inside. 5b tells it where things change:
   starts in (so a step adds no jump to it, and a ramp that ends in the stretch
   is read to its end). The "point inside the chunk" zero is gone, because a
   stretch holds no point; the stopped zero and the loop-end zero (the stretch's
-  last frame is past the loop's end) stay, per entry.
+  last frame is past the loop's end) stay, per entry. The slope is right only
+  because a point ends a stretch: past a ramp's end `tempo_slope_with` holds
+  the ramp's own slope, so a per-sample increment over a span that crossed the
+  end would extrapolate past it. Every point is an entry, so no stretch does;
+  an entry dropped past the cap of eight leaves its stretch's slope at zero
+  (below) for the same reason.
 - **A chunk spanning calls.** `begin` runs in the call holding the chunk's
   first frame and sees only that call's `Env`. So the walk is incremental:
   `take` runs it once per call over the frames that call puts into the chunk,

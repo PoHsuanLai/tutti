@@ -3,7 +3,7 @@
 //! The input is analytic and exact in binary (a sawtooth plus a bounded
 //! integer hash, scaled by powers of two), so the quantized samples are fixed
 //! figures with no libm in them. The digests were taken from the encoders as
-//! they stood in `tutti-export` and `tutti-io` before this crate existed, so a
+//! they stood in `tutti-export` and the live WAV sink before this crate existed, so a
 //! change to a header field, a quantization, a FLAC level or the mask shows as a
 //! different digest.
 //!

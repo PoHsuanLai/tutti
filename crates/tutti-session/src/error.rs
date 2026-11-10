@@ -19,6 +19,25 @@ pub enum HeardTapError {
     Backpressure,
 }
 
+/// Why [`Graph::open_inlet`](crate::Graph::open_inlet) refused.
+#[derive(Clone, Copy, Debug, PartialEq, Error)]
+#[non_exhaustive]
+pub enum InletError {
+    /// The producer runs at another rate than the graph. An inlet does not
+    /// resample, so the signal would play at the wrong speed (and drift
+    /// besides); open the producer at the graph's rate.
+    #[error(
+        "the inlet's producer runs at {producer:?} but the graph at {graph:?}; \
+         an inlet does not resample"
+    )]
+    RateMismatch {
+        /// The rate the producer fills the ring at.
+        producer: tutti_types::SampleRate,
+        /// The graph's rate when the inlet was opened.
+        graph: tutti_types::SampleRate,
+    },
+}
+
 /// Every subsystem's error, so `?` propagates across crate boundaries.
 ///
 /// Each variant wraps a subsystem error via `#[from]`. Device failures arrive

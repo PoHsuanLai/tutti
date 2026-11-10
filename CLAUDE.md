@@ -45,7 +45,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
 - Copying audio out of the graph is a **tap**, read through one `TapReader`
-  (`TapIn` adapts it to `AudioIn`), and there are two kinds:
+  (it is an `AudioIn` as it is: `impl AudioIn for TapReader`), and there are two
+  kinds:
   - **The plan tap** (`Graph::open_tap`, `open_output_tap`; opening refuses a
     source that does not exist then with `MissingSource`, and a lane whose port
     goes missing later reads silence, never failing a commit): `Topology.taps`,
@@ -65,6 +66,13 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
     (`tutti-engine/src/hearing.rs`).
   Both count what a slow reader loses (`TapReader::take_lost`, and
   `AudioIn::take_lost` through `Recorder::lost`).
+- Copying audio into the graph is an **inlet**, the inverse of the tap:
+  `InletNode` (`tutti-graph`) copies a standalone ring (`TapReader::standalone`)
+  a thread of your own fills (a capture callback) into the graph, and
+  `Graph::open_inlet` / `add_inlet` (`tutti-session`) refuse a producer whose
+  rate is not the graph's with `InletError::RateMismatch`. An inlet does not
+  resample and two clocks drift; what fills or empties the ring is counted,
+  never blocked on. Gain is a node downstream, not the inlet's.
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or
@@ -232,7 +240,7 @@ cargo xtask test-all              # both
   `alsa-sys`'s build script.
 - **Bevy-free floor:** three engine crates have an optional, off-by-default
   `bevy` feature (`tutti-types`, `tutti-modulation`, `tutti-sampler`); the
-  rest have none, and `tutti-session`, `tutti-graph`, `tutti-ump`, `tutti-io`
+  rest have none, and `tutti-session`, `tutti-graph`, `tutti-ump`
   and `tutti-codec` must never grow one (`WaveAsset`, the Bevy wrapper of a
   decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
@@ -296,7 +304,8 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti          Bevy-free umbrella. Every item is a `pub use` (tests/no_logic.rs).
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
-                 (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`).
+                 (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
+                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-rt.
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
@@ -335,13 +344,15 @@ crates/          everything shipped; directory name = package name; no nesting
                  conversion stay until the edges move off them
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
-                 over a `Write + Seek` sink; the `Pcm` widths and their one
-                 quantization. In: `Wave` (the resident sample buffer), `Wave::read`,
-                 `Wave::read_metadata`, `FileIn` (the streaming `AudioIn`),
+                 over a `Write + Seek` sink, and `FileOut` (the file sink: the
+                 `AudioOut` over an `Encoder`, any `Format`); the `Pcm` widths and
+                 their one quantization. In: `Wave` (the resident sample buffer), `Wave::read`,
+                 `Wave::read_metadata`, `FileIn` (the streaming `AudioIn`, `FileOut`'s mirror),
                  `DecodeError`, `can_decode`. Depends on `tutti-types` alone
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
-                 `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
+                 `PrerollTable`, `MAX_ROOT_CHANNELS`, the tap (`TapReader`, an
+                 `AudioIn`) and its inverse the inlet (`InletNode`); `Engine` renders it
   tutti-dsp      pure algorithms over slices: the real FFT, the cosine windows and `StftGeometry`, filters,
                  dynamics, convolver, delay lines, reverb, waveshapers, the export
                  resampler
@@ -360,7 +371,6 @@ crates/          everything shipped; directory name = package name; no nesting
                  conversion in `f64`, and constant-tempo cells for a ramp
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
-  tutti-io       live I/O edge: mic monitor, `TapIn`, `WavOut`, `Recorder`
   tutti-cpal     device
   tutti-export   offline render
   tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
@@ -397,7 +407,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-midi-types`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
-4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
+4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
    `tutti-plugin-db`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
@@ -470,7 +480,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   CI runs the per-module path gate on each), are `publish = false`,
   `#![forbid(unsafe_code)]` and have no `bevy` feature. `tutti-metering`
   depends on `tutti-types` alone; `tutti-transport` on `tutti-types`,
-  `tutti-rt` and `tutti-graph`; `tutti-engine` on those and the two crates
+  `tutti-rt`, `tutti-graph` and `tutti-tempo` (the project's tempo is a
+  `TempoMap` that `TransportSettings` publishes through an `ArcLend`, swept by
+  the session's `Reclaim` phase: `reclaim_tempo`); `tutti-engine` on those and the two crates
   above, with a dev edge to `tutti-nodes` for the `ClickNode` tests.
   `TransportAudio` (`Transport::audio`, taken once) is the audio side the
   engine drives across the crate edge; the clock, control inputs and pending
@@ -508,7 +520,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   sink is `Write + Seek + Send + 'static` on `Encoder` whatever the features,
   because bounds that followed the features would be worse; a `FormatWriter`
   asks only for what its own format needs. The
-  WAV writer is one: `tutti-export` and `tutti-io`'s `WavOut` both write
+  WAV writer is one: `tutti-export` and `FileOut` (the codec's `AudioOut`, the
+  mirror of `FileIn`) both write
   through it. Each format's writer implements `FormatWriter` (its boundary: it writes
   blocks of interleaved samples into a sink as one file of its format), with
   the sink bounds on the `impl`, not the trait; `Encoder` is the one type over
@@ -730,7 +743,7 @@ Scalars use `Param<U>`.
 ## Buffers: edges vs graph nodes
 
 - **`AudioIn` / `AudioOut`** (`tutti-types::io`) are engine **edges** (mic,
-  WAV, `TapIn`, `FileIn`, the sampler's butler ring). They take flat
+  `FileOut`, a `TapReader`, `FileIn`, the sampler's butler ring). They take flat
   interleaved `&[S]` with a runtime `ChannelLayout`. **Every count on this
   boundary is in frames**, typed as `Samples` (the frame count). Cross to a
   slice length only with `Samples::interleaved_len` /
@@ -762,7 +775,7 @@ Scalars use `Param<U>`.
   hosts decode as the same four feeds.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
-  `Recorder::start`'s error) are mandatory.
+  `Recorder::start`'s error, in `tutti-session`) are mandatory.
 - **Every `AudioIn` impl must state `ON_EMPTY` correctly** (live "not yet" vs
   finite "never again"). Getting it wrong ends a recording with no error.
 - **A new trait must state its boundary in one sentence without "and".**
@@ -890,7 +903,11 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
+- **Dead crate names:** `tutti-io` → dissolved: `TapIn` is gone (`TapReader` is an
+  `AudioIn`), `WavOut` → `tutti_codec::FileOut` (any `Format`, beside `FileIn`),
+  `MicMonitorNode` and `MicRing` → `tutti_graph::InletNode` (opened by
+  `Graph::open_inlet`), `Recorder` and `PumpLoop` → `tutti-session` (feature
+  `record`, implied by `audio-io`), `vst-tutti` → `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
   host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
   render; the note logic went to `tutti-voicing`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`

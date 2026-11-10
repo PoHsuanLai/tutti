@@ -96,10 +96,10 @@
 //! starving source also needs a real sleep between polls, which is illegal on a
 //! shared pool.
 //!
-//! # The loop is `tutti_io::Recorder`'s
+//! # The loop is `tutti_session::Recorder`'s
 //!
 //! The poll / park / break / finalize loop, the width check, the `Drop`
-//! finalization and the driver seam are [`Recorder`]'s, with the three
+//! finalization are [`Recorder`]'s, with the three
 //! non-blocking methods a frame loop needs ([`Recorder::request_stop`],
 //! [`Recorder::is_finished`], [`Recorder::finish_in_place`]). An
 //! [`AudioPump`] is a `Recorder` plus the element type that keys its drain
@@ -112,14 +112,14 @@ use bevy_app::{App, Update};
 use bevy_ecs::message::{Message, MessageWriter};
 use bevy_ecs::prelude::*;
 
-use tutti_io::{Recorder, ThreadDriver};
+use tutti_session::Recorder;
 use tutti_types::Samples;
 use tutti_types::{AudioIn, AudioOut};
 
 /// How long the pump parks when a [`Starved`](tutti_types::OnEmpty::Starved)
-/// source yields nothing: `tutti_io`'s default, long enough not to spin a
+/// source yields nothing: the session's default, long enough not to spin a
 /// core, far shorter than the ring it drains can overrun.
-pub use tutti_io::IDLE_PARK;
+pub use tutti_session::IDLE_PARK;
 
 /// A running `AudioIn → AudioOut` pump: one background thread moving frames
 /// from a source into a sink until it stops or is stopped.
@@ -179,7 +179,7 @@ impl<S> AudioPump<S> {
     /// component has no error to return, so a mismatch starts no thread and
     /// the drain reports it as a [`PumpFinished`] whose `result` is an
     /// [`InvalidInput`](std::io::ErrorKind::InvalidInput) error carrying the
-    /// [`tutti_io::Error::ChannelWidthMismatch`]. The sink is dropped
+    /// [`tutti_session::RecorderError::ChannelWidthMismatch`]. The sink is dropped
     /// unfinalized, as `Recorder::start` drops it: not one frame reached it.
     pub fn start<I, O>(src: I, dst: O, capacity: Samples) -> Self
     where
@@ -202,12 +202,7 @@ impl<S> AudioPump<S> {
         O: AudioOut<S> + Send + 'static,
         S: Default + Copy + Send + 'static,
     {
-        let take = match Recorder::start_with_capacity(
-            src,
-            dst,
-            capacity,
-            ThreadDriver::with_park(park),
-        ) {
+        let take = match Recorder::start_with_capacity(src, dst, capacity, park) {
             Ok(recorder) => Take::Running(recorder),
             Err(refused) => Take::Refused(Some(refused.into())),
         };
@@ -331,11 +326,10 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static>(
 /// readable, mirroring
 /// [`unwire_removed_sources`](super::wire::unwire_removed_sources).
 /// The sink would be finalized without it: the [`Recorder`] inside stops and
-/// joins in its `Drop`. But `Drop` can only store the finalize error in a
-/// [`FinalizeStatus`](tutti_io::FinalizeStatus) that nothing here reads, so a
-/// sink that failed to close on a despawn (an unreadable WAV) would go
-/// unreported. This collects the result while the component is still
-/// reachable, and logs it; the entity has already left the drain's query, so
+/// joins in its `Drop`. But `Drop` can only log the finalize error, away from
+/// the entity, so a sink that failed to close on a despawn (an unreadable WAV)
+/// would go unreported here. This collects the result while the component is
+/// still reachable, and logs it; the entity has already left the drain's query, so
 /// no [`PumpFinished`] is sent.
 ///
 /// This blocks the frame until the thread notices its flag (one poll, so

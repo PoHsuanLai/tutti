@@ -67,7 +67,6 @@ members = [
     "crates/tutti-graph",
     "crates/tutti-modulation",
     "crates/tutti-export",
-    "crates/tutti-io",
     "crates/tutti-alsa-ump-sys",
     "crates/tutti-midi-hardware",
     "crates/tutti-midi-file",

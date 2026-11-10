@@ -41,9 +41,9 @@ use std::sync::Arc;
 
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
-    CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
-    MeterReader, MissingSource, ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader,
-    Transport,
+    CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, InletNode,
+    IntoNode, MeterReader, MissingSource, ParamIn, ParamMod, ParamRange, ParamSet, Prepare,
+    TapReader, TapWriter, Transport,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -56,7 +56,7 @@ use tutti_types::{
     graph::{Edge, InPort, OutPort, Source},
 };
 
-use crate::SessionNode;
+use crate::{InletError, SessionNode};
 
 /// The largest block a device's graph is prepared for.
 ///
@@ -701,6 +701,61 @@ impl Graph {
         );
         self.edited = true;
         (id, controls)
+    }
+
+    /// Opens an inlet: audio a thread of your own pushes into the graph. A
+    /// ring of `capacity` frames and `width` channels is read by an
+    /// [`InletNode`] (unwired; declare what it feeds like any node), and the
+    /// writer is the producer's end: push whole frames with
+    /// [`push_interleaved`](TapWriter::push_interleaved) from any one thread. The
+    /// mirror of [`open_tap`](Self::open_tap), which copies the other way.
+    ///
+    /// An inlet **does not resample**, and its clock is not the graph's: the
+    /// producer must run at the graph's rate, checked here, once, as
+    /// `producer_rate`. After that two clocks drift however slowly, and
+    /// nothing corrects it: a producer ahead of the graph finds the ring full
+    /// and its writer refuses whole frames, counting them; one behind leaves
+    /// the ring empty and the node writes silence for the frames it lacks.
+    /// Neither side blocks. A ring of a few blocks keeps both rare, at that
+    /// much latency. A re-prepare to another rate later is not checked.
+    ///
+    /// The node is unforkable: an export of a graph that holds it is refused,
+    /// naming its key.
+    ///
+    /// # Errors
+    ///
+    /// [`InletError::RateMismatch`] when `producer_rate` is not the graph's
+    /// rate; nothing is opened.
+    pub fn open_inlet(
+        &mut self,
+        width: ChannelLayout,
+        capacity: Samples,
+        producer_rate: SampleRate,
+    ) -> Result<(NodeKey, TapWriter), InletError> {
+        let (ring, writer) = TapReader::standalone(TapId(0), usize::from(width.count()), capacity);
+        Ok((self.add_inlet(ring, producer_rate)?, writer))
+    }
+
+    /// [`open_inlet`](Self::open_inlet) over a ring the producer's layer
+    /// already built ([`TapReader::standalone`]), for a producer that must
+    /// choose its width and rate before the graph sees it (a capture device).
+    ///
+    /// # Errors
+    ///
+    /// [`InletError::RateMismatch`] as for [`open_inlet`](Self::open_inlet).
+    pub fn add_inlet(
+        &mut self,
+        ring: TapReader,
+        producer_rate: SampleRate,
+    ) -> Result<NodeKey, InletError> {
+        let graph = self.editor.prepare().sample_rate();
+        if producer_rate != graph {
+            return Err(InletError::RateMismatch {
+                producer: producer_rate,
+                graph,
+            });
+        }
+        Ok(self.insert(InletNode::new(ring)).0)
     }
 
     /// [`insert`](Self::insert) a [`SessionNode`], its params addressed by

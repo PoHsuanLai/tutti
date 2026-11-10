@@ -39,7 +39,6 @@ thiserror.workspace = true
 
 # The sound card. Off: offline only, and no ALSA headers needed.
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
-tutti-io = { path = "../tutti-io", optional = true }
 tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
@@ -60,7 +59,11 @@ tutti-plugin-types = { path = "../tutti-plugin-types", optional = true }
 # feature, and there must never be one (`scripts/check-bevy-free.sh`).
 default = []
 device = ["dep:tutti-cpal"]
-audio-io = ["dep:tutti-io", "tutti-cpal?/capture"]
+# `Recorder` and its pump loop: device-free, so a host that records files or
+# taps without a microphone (`bevy-tutti`'s `AudioPump`) takes it alone.
+record = []
+# The live I/O edge: `record`, and with `device`, the mic capture too.
+audio-io = ["record", "tutti-cpal?/capture"]
 modulation = ["dep:tutti-modulation"]
 midi = [
     "dep:tutti-midi-types",
@@ -102,7 +105,9 @@ tutti-rt = { path = "../tutti-rt" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The in-memory tone a sampler voice test plays (`Wave`).
-tutti-codec = { path = "../tutti-codec" }
+tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "decode-wav", "decode-flac"] }
+# An independent reader for the WAV files the recorder tests write.
+hound = "3.5"
 # `test-support`'s hand-stepped streamer.
 tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support"] }
 # `ManualStreamDriver`, `OutputSpec`: the device-free device tests.
@@ -130,6 +135,19 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[test]]
 name = "device"
 required-features = ["device"]
+
+# The recorder: its thread, and the pump over a tap and a decoded file.
+[[test]]
+name = "recorder_thread"
+required-features = ["record"]
+
+[[test]]
+name = "tap_to_wav_roundtrip"
+required-features = ["record"]
+
+[[test]]
+name = "file_in_pump"
+required-features = ["record"]
 
 # Work handed to the main thread runs on the session's update.
 [[test]]

@@ -396,7 +396,6 @@ dependencies = [
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-io",
  "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
@@ -4202,7 +4201,6 @@ dependencies = [
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-io",
  "tutti-measure",
  "tutti-metering",
  "tutti-midi-file",
@@ -4335,11 +4333,12 @@ dependencies = [
  "assert_no_alloc",
  "cpal",
  "criterion",
+ "hound",
+ "tempfile",
  "thiserror 2.0.21",
  "tutti-codec",
  "tutti-engine",
  "tutti-graph",
- "tutti-io",
  "tutti-nodes",
  "tutti-rt",
  "tutti-transport",
@@ -4417,20 +4416,6 @@ dependencies = [
  "tutti-rt",
  "tutti-types",
  "tutti-ump",
-]
-
-[[package]]
-name = "tutti-io"
-version = "0.0.1"
-dependencies = [
- "assert_no_alloc",
- "hound",
- "tempfile",
- "thiserror 2.0.21",
- "tutti-codec",
- "tutti-fixtures",
- "tutti-graph",
- "tutti-types",
 ]
 
 [[package]]
@@ -4783,6 +4768,7 @@ name = "tutti-session"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "hound",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -4793,7 +4779,6 @@ dependencies = [
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-io",
  "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
@@ -4906,6 +4891,7 @@ dependencies = [
  "crossbeam-queue",
  "tutti-graph",
  "tutti-rt",
+ "tutti-tempo",
  "tutti-types",
 ]
 

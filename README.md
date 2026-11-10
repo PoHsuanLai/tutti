@@ -47,8 +47,11 @@ runtime on both: the `Engine` that renders the graph, over the `Transport` of
 `tutti-transport` and the load meter of `tutti-metering` (level meters are
 ops in the graph's plan).
 
-**The edges.** `tutti-cpal` is the only path to a sound card. `tutti-io` is the
-live edge — a microphone monitor, a WAV sink, `Recorder`. `tutti-export` is its
+**The edges.** `tutti-cpal` is the only path to a sound card. The live edge is
+spread over the crates that own its parts: a tap (`TapReader`) is an `AudioIn`
+and an inlet (`InletNode`) copies outside audio into the graph (`tutti-graph`),
+`FileOut` is the file sink (`tutti-codec`), and `Recorder` pumps one into the
+other (`tutti-session`). `tutti-export` is its
 deliberate opposite number: the *offline* edge, rendering a graph faster than
 real time.
 

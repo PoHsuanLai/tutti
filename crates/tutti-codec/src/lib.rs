@@ -12,6 +12,7 @@ mod contract;
 mod decode;
 mod encoder;
 mod error;
+mod file_out;
 #[cfg(feature = "encode-flac")]
 mod flac;
 mod format;
@@ -34,6 +35,7 @@ pub use decode::{DecodeError, FileIn, WaveMetadata};
 pub use decode::{can_decode, decodable_extensions};
 pub use encoder::Encoder;
 pub use error::{Codec, Error, Result, SpecError};
+pub use file_out::FileOut;
 #[cfg(feature = "encode-flac")]
 pub use flac::FlacWriter;
 pub use format::{FlacLevel, Format, Quality, QualityOutOfRange};

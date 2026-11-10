@@ -16,9 +16,9 @@ workspace = true
 
 [features]
 default = []
-# Mic capture (`MicIn`). Gated because it needs the capture ring and the
-# monitor node `tutti-io` defines; without it this crate is output-only.
-capture = ["dep:tutti-io", "dep:tutti-codec"]
+# Mic capture (`MicIn`). Gated because it needs the codec's `FileOut`, the
+# sink `MicIn::matching_sink` opens; without it this crate is output-only.
+capture = ["dep:tutti-codec"]
 
 # JACK, through cpal's implicitly-featured optional `jack` dependency.
 #
@@ -46,16 +46,14 @@ tutti-engine = { path = "../tutti-engine" }
 # `TapReader` and `TapWriter`, the mic's rings.
 tutti-graph = { path = "../tutti-graph" }
 
-# The live I/O edge: the capture ring and the monitor node `MicIn` hands back.
-tutti-io = { path = "../tutti-io", optional = true }
-# `Pcm`, the width of the WAV sink `MicIn::matching_sink` opens.
+# `FileOut`, `Format` and `Spec`: the sink `MicIn::matching_sink` opens.
 tutti-codec = { path = "../tutti-codec", optional = true }
 
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 
 [dev-dependencies]
-# `contract::prepared`, to drive the mic's monitor node by hand in the capture tests.
+# `contract::prepared`, to drive the inlet node by hand in the capture tests.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 # The RT gates render a real graph under a disabled allocator.
 assert_no_alloc = { version = "1", default-features = false }
@@ -63,6 +61,11 @@ criterion.workspace = true
 # Stimulus nodes (`tutti_nodes::testing`) and a real filter for the fixture
 # graphs. `tutti-nodes` does not depend on this crate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
+
+# The WAV the mic-fault test writes, and an independent reader for it.
+tutti-codec = { path = "../tutti-codec", features = ["encode-wav"] }
+hound = "3.5"
+tempfile = "3.10"
 
 [[bench]]
 name = "audio_callback"

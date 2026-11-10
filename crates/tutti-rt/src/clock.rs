@@ -18,6 +18,10 @@
 /// the module docs). Audio-thread safe: no lock, no allocation and no syscall
 /// beyond the vDSO's or QPC's. 2^63 ns is 292 years of uptime, so the
 /// saturation is unreachable.
+///
+/// A bare `i64` of nanoseconds, not `Seconds`: `Seconds` is an `f64`, and
+/// every reader hands this exact integer count on (VST3's `systemTime`, the
+/// plugin wire), where a float would round it.
 #[must_use]
 pub fn monotonic_ns() -> i64 {
     os_monotonic_ns()

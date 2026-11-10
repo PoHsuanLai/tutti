@@ -851,7 +851,8 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote> + '_; }
   `tutti-tempo`, a small pure crate above `tutti-types` with
   `#![forbid(unsafe_code)]`, because the transport, the export plan, plugin
   transport info and SMF import all want it. The file layer builds one from tempo
-  meta events. Adopting it in the transport is separate work.
+  meta events. Adopting it in the transport is separate work: [020](020-tempo-map-transport.md)
+  is that design, and it points `MidiFile::seconds_at` at the same `TempoMap`.
 - **Integer ticks.** Events keep their tick and the track its division, so a write is
   exact with no rounding, and `events()` gives callers `Beat`.
 - **A lossless round trip** is the test: a file read and written holds the same

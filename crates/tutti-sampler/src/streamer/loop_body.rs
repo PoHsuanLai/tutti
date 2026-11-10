@@ -1,7 +1,7 @@
-//! Butler thread body: the main loop.
+//! Streamer thread body: the main loop.
 //!
 //! The *work* of a cycle is
-//! [`ButlerCycle::step`](super::step::ButlerCycle::step) — synchronous, and
+//! [`StreamerCycle::step`](super::step::StreamerCycle::step) — synchronous, and
 //! shared with the test driver. What lives here is the pacing: waiting on the
 //! command queue with a timeout between cycles, so a max-priority thread with
 //! nothing to do does not spin a core, and a sent command is handled at once.
@@ -13,11 +13,11 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 
-use super::command::ButlerCommand;
+use super::command::StreamerCommand;
 use super::handlers::Handles;
-use super::step::{ButlerCycle, StepOutcome};
+use super::step::{StepOutcome, StreamerCycle};
 
-/// How long the butler waits between cycles when no command arrives.
+/// How long the streamer waits between cycles when no command arrives.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Pacing {
     /// Nothing streaming.
@@ -34,9 +34,9 @@ impl Pacing {
     };
 }
 
-/// The butler thread's main loop; returns only on shutdown.
+/// The streamer thread's main loop; returns only on shutdown.
 ///
-/// Each cycle drains the queue and does one [`ButlerCycle::step`], then
+/// Each cycle drains the queue and does one [`StreamerCycle::step`], then
 /// paces according to its [`StepOutcome`].
 ///
 /// # Pacing
@@ -52,15 +52,15 @@ impl Pacing {
 /// actually matter.
 ///
 /// Returns too when every sender is gone (nothing can reach it again).
-pub(super) fn butler_loop(
-    queue: &Receiver<ButlerCommand>,
+pub(super) fn streamer_loop(
+    queue: &Receiver<StreamerCommand>,
     shared: Handles,
-    mut cycle: ButlerCycle,
+    mut cycle: StreamerCycle,
     shutdown: Arc<AtomicBool>,
     pacing: Pacing,
 ) {
     // A command the wait received, handled first by the next cycle.
-    let mut woken_by: Option<ButlerCommand> = None;
+    let mut woken_by: Option<StreamerCommand> = None;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;

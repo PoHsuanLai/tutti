@@ -7,7 +7,7 @@
 //! stream's [`Mapping`]: the file frame a loop places `s` on, its fade blended
 //! toward the lead-in (`LoopSpan`'s sequence, the one the memory tier and a
 //! forked disk voice read), or the frame a reversed read mirrors it to. The
-//! butler writes the mapping ([`Mapping::fill`]); the audio thread reads the
+//! streamer writes the mapping ([`Mapping::fill`]); the audio thread reads the
 //! four taps a position needs by the same rule the memory tier takes them
 //! ([`Arrangement::taps`]). Neither side keeps a loop's state: the mapping is a
 //! function of the position.
@@ -25,7 +25,7 @@
 //! past that block, and then the switch is a jump the memory tier made at the
 //! edit, so the reader crossfades there from a record of what the old mapping
 //! would have played ([`FadeRecord`]), at the read rate, consuming the ring.
-//! The record also covers the frames the butler has not rewritten yet, so a
+//! The record also covers the frames the streamer has not rewritten yet, so a
 //! reader that arrives early plays the old sequence rather than a gap. No
 //! change of mapping flushes the ring.
 
@@ -45,7 +45,7 @@ use crate::voice::loop_span::{LoopSpan, blend};
 const BODY_MAX_FRAMES: usize = 1 << 16;
 
 /// How far past the in-flight block a rewrite may start, in frames: room for
-/// the butler to rewrite before the reader gets there.
+/// the streamer to rewrite before the reader gets there.
 pub(crate) const GUARD_FRAMES: u64 = 256;
 
 /// Frames of old material a [`FadeRecord`] carries past the fade itself: what
@@ -151,7 +151,7 @@ pub(crate) struct FadeRecord {
     pub(crate) fade_frames: usize,
 }
 
-/// What the reader needs to read the ring, published by the butler
+/// What the reader needs to read the ring, published by the streamer
 /// (`ArcLend`, read once per block): the arrangement before and from a
 /// switch point, and the fade across it.
 #[derive(Debug)]
@@ -504,7 +504,7 @@ pub(crate) enum Edit {
 /// Change `writer`'s mapping to `new` (see the module docs), fading over
 /// `fade_frames` output frames at read rate `rate` where the switch is a jump.
 ///
-/// Butler thread; reads the file only for a fade's record.
+/// Streamer thread; reads the file only for a fade's record.
 pub(crate) fn apply_mapping(
     writer: &mut RegionOut,
     new: Mapping,
@@ -541,7 +541,7 @@ pub(crate) fn apply_mapping(
     // The switch: where they part, or past the block in flight. The record's
     // disk read takes time, during which the reader moves on: take where it
     // is again afterwards, and choose again if it has reached the switch.
-    // (The live tests step the reader and the butler by hand, so there the
+    // (The live tests step the reader and the streamer by hand, so there the
     // reader never moves during the read; `DURING_RECORD_READ` moves it in
     // this module's tests.)
     let mut busy = writer.in_flight_end();
@@ -1034,11 +1034,11 @@ mod tests {
         }
     }
 
-    /// A reader that reaches the switch during the butler's read moves the
+    /// A reader that reaches the switch during the streamer's read moves the
     /// switch past it. A loop `[1 000, 3 000)` set on an unlooped ring
     /// parts from it at 3 000, which is where the switch goes while the
     /// reader is at 64 — no fade. But the reader claims `[2 999, 3 100)`
-    /// while the butler reads: the switch is chosen again, a guard past the
+    /// while the streamer reads: the switch is chosen again, a guard past the
     /// new in-flight end, and crossfaded (the reader would have played the
     /// old content past where the two part).
     ///
@@ -1075,7 +1075,7 @@ mod tests {
     /// chosen, and the fourth choice stands (its fade record covers the
     /// reader crossing it), rather than chasing the reader to the ring's end.
     ///
-    /// Mutation (run): the `tries == 4` bound removed → the butler chases
+    /// Mutation (run): the `tries == 4` bound removed → the streamer chases
     /// the reader until it claims past the ring's end, at 9 256 → fails.
     #[test]
     fn a_reader_keeping_pace_is_given_up_on_after_four_reads() {

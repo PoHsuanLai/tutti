@@ -1,5 +1,5 @@
 use super::*;
-use crate::butler::{RegionBuffer, RegionId};
+use crate::streamer::{RegionBuffer, RegionId};
 use crate::testing::{MockTransport, block};
 use std::path::PathBuf;
 use tutti_graph::contract::Direct;
@@ -137,11 +137,11 @@ fn a_disk_voice_sizes_its_positions_from_max_block() {
 /// the playhead in the *file's* frames — `src_ratio` applied exactly once.
 ///
 /// `file_sample_rate` is the file's rate (`ports.rs` hands over the one
-/// the butler recorded), so the gate already measures in file frames;
+/// the streamer recorded), so the gate already measures in file frames;
 /// composing the conversion into the gate as well applied it twice. Every
 /// other streaming fixture hardcodes 44100 against a default `src_ratio` of
 /// 1.0 — the one value that makes a double-multiply invisible. Observed
-/// where the reader says it plays (`Ring::play`, what the butler fills).
+/// where the reader says it plays (`Ring::play`, what the streamer fills).
 ///
 /// Mutation (run): the gate's rate composing the conversion
 /// (`window_rate` via `read_rate`) → ~104 490 → fails.
@@ -191,7 +191,7 @@ fn placement_gate_applies_src_ratio_exactly_once() {
 /// timeline, 1.0x -> 2.0x relocates the file position by 441 000 frames
 /// while the transport reports the same beat, at the same tempo, still
 /// rolling. The next block reads where the gate puts the playhead at the
-/// new speed and tells the butler so (`Ring::play`), which fills there.
+/// new speed and tells the streamer so (`Ring::play`), which fills there.
 ///
 /// Mutation (run): the gate's rate ignoring varispeed → the voice reads
 /// on near 441 000 → fails.
@@ -252,7 +252,7 @@ fn a_fork_closes_its_file_once_past_its_window() {
             file_path: path,
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     let _ = streamer.step_until_settled(1_000);
     // Beats [0, 1): 24 000 frames at 120 BPM.
     let voice = streamer
@@ -314,7 +314,7 @@ fn a_stopped_clock_silences_a_fork() {
             file_path: path,
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     let _ = streamer.step_until_settled(1_000);
     let voice = streamer
         .status()
@@ -383,7 +383,7 @@ fn a_severed_copy_holds_no_live_reader() {
 }
 
 /// A fork of a disk voice never touches the live stream: rendered
-/// inside its window on the render's transport, it tells the live butler
+/// inside its window on the render's transport, it tells the live streamer
 /// no position (so the live window stays where the live voice reads), and
 /// its controls are its own. What it plays instead is
 /// `tests/offline_disk_voice.rs`'s. The node's fork source forks it for an
@@ -1545,9 +1545,9 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
 
 /// A skipped block lets go of the ring, as a rendered silent block
 /// does: the reader's last claim is cleared and every shrink so far
-/// acknowledged, so a butler that moved the window while the voice was
+/// acknowledged, so a streamer that moved the window while the voice was
 /// silent is not held off by the stale claim. The ring is 4 096 frames
-/// wide; the butler restarts it where it aliases the slots the last
+/// wide; the streamer restarts it where it aliases the slots the last
 /// block read, and its write is refused until the reader has
 /// acknowledged.
 ///
@@ -1587,7 +1587,7 @@ fn a_skipped_block_releases_the_ring_to_the_writer() {
         voice.render_lanes(&clock, 0..BLOCK, out, 1, positions, gather)
     };
     assert!(run(&mut voice), "the voice reads the ring");
-    // The butler restarts the window on slots the last block read
+    // The streamer restarts the window on slots the last block read
     // (22 050 and 26 146 share one).
     const AGAIN: u64 = 26_000;
     writer.reset(AGAIN);
@@ -1602,11 +1602,11 @@ fn a_skipped_block_releases_the_ring_to_the_writer() {
     assert_eq!(rest.get(), 200 - 143, "the skipped block released the ring");
 }
 
-/// Render `script` over a 40-second mono stream the butler refills (it
+/// Render `script` over a 40-second mono stream the streamer refills (it
 /// is stepped by hand once per block, so nothing is timing-dependent),
 /// returning every block's bits and the underruns counted. A skipped
 /// block is rendered as the zeros it stands for.
-fn butler_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
+fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
     use crate::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};
     const BLOCK: usize = 64;
     let _guard = NoSkip::on(no_skip);
@@ -1635,7 +1635,7 @@ fn butler_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
             file_path: path,
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     for _ in 0..4096 {
         if streamer.step_once() != StepOutcome::Busy {
             break;
@@ -1684,22 +1684,22 @@ fn butler_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
     (blocks, underruns, skipped)
 }
 
-/// The butler's ring stays consistent across skipped blocks: a
-/// stream played, held silent for 300 blocks (the butler stepping all
+/// The streamer's ring stays consistent across skipped blocks: a
+/// stream played, held silent for 300 blocks (the streamer stepping all
 /// the while), then resumed where it stopped and after a seek 20 s on,
 /// renders the same bits and counts the same underruns with the skip as
 /// without it. The skip tells the ring the reader holds nothing, as the
-/// silent frames did, so the butler neither starves nor is held back.
+/// silent frames did, so the streamer neither starves nor is held back.
 /// Also pins that the skip is taken (300 + 50 blocks) and not taken with
 /// it off.
 ///
 /// The `reader.idle()` release is pinned by
 /// `a_skipped_block_releases_the_ring_to_the_writer`, not here: this
-/// script's butler is never held off by a stale claim. Mutation (run):
+/// script's streamer is never held off by a stale claim. Mutation (run):
 /// `silence` leaving `st.last` set → the resume after the seek is read
 /// as a continuation, not a jump (no crossfade) → bits differ → fails.
 #[test]
-fn the_butlers_ring_is_consistent_across_skipped_blocks() {
+fn the_streamers_ring_is_consistent_across_skipped_blocks() {
     let script: &Script = &[
         (true, 40, None),
         (false, 300, None),
@@ -1708,8 +1708,8 @@ fn the_butlers_ring_is_consistent_across_skipped_blocks() {
         // 20 s at 120 BPM is beat 40.
         (true, 200, Some(40.0)),
     ];
-    let (on, on_underruns, on_skipped) = butler_fed(script, false);
-    let (off, off_underruns, off_skipped) = butler_fed(script, true);
+    let (on, on_underruns, on_skipped) = streamer_fed(script, false);
+    let (off, off_underruns, off_skipped) = streamer_fed(script, true);
     assert_eq!(on_skipped, 350, "the stopped blocks are skipped");
     assert_eq!(off_skipped, 0, "the switch turns the skip off");
     assert_eq!(on_underruns, off_underruns, "the ring's underruns differ");

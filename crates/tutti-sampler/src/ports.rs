@@ -1,10 +1,10 @@
 //! Public ports onto the sampler streaming engine, split MIDI-device-style into
 //! a WRITE port ([`Commands`]) and a READ port ([`Status`]).
 //!
-//! The [`DiskStreamer`](crate::DiskStreamer) handle owns the butler thread; these two
+//! The [`DiskStreamer`](crate::DiskStreamer) handle owns the streamer thread; these two
 //! cloneable handles are the differentiated surfaces onto it:
 //!
-//! - [`Commands`] wraps the butler command channel and exposes a single
+//! - [`Commands`] wraps the streamer command channel and exposes a single
 //!   [`send`](Commands::send) over a public [`Command`] enum — mirroring the
 //!   audio-thread [`VoicePoolHandle`](crate::VoicePoolHandle).
 //! - [`Status`] wraps the sample rate + channel-plan map and exposes reads
@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::butler::{
-    ButlerCommand, ButlerGone, ButlerSender, ChannelPlan, RegionId, SessionRate, TakeVoiceError,
+use crate::streamer::{
+    ChannelPlan, RegionId, SessionRate, StreamerCommand, StreamerGone, StreamerSender,
+    TakeVoiceError,
 };
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_codec::Wave;
@@ -42,9 +43,9 @@ pub enum Source {
     /// The `Wave` is shared by `Arc`, so several voices over one sample cost one
     /// copy of the audio.
     Memory(Arc<Wave>),
-    /// File streamed incrementally from disk by the butler thread.
+    /// File streamed incrementally from disk by the streamer thread.
     ///
-    /// The path is opened on the butler thread, not here, so constructing this
+    /// The path is opened on the streamer thread, not here, so constructing this
     /// variant does no I/O and cannot fail.
     Disk(PathBuf),
 }
@@ -64,9 +65,9 @@ impl std::fmt::Debug for Source {
     }
 }
 
-/// A butler stream-control command, one public variant per streaming operation.
+/// A streamer stream-control command, one public variant per streaming operation.
 ///
-/// Each variant maps to exactly one internal `ButlerCommand`; the [`Commands`]
+/// Each variant maps to exactly one internal `StreamerCommand`; the [`Commands`]
 /// port performs that mapping in [`send`](Commands::send).
 ///
 /// # Positions are in frames
@@ -84,9 +85,9 @@ pub enum Command {
     /// Register a disk-streaming source for a timeline clip on `channel_index`,
     /// starting `offset` frames into the file. Maps to `StreamAudioFile`.
     Stream {
-        /// Butler channel this stream occupies. One live stream per index.
+        /// Streamer channel this stream occupies. One live stream per index.
         channel_index: usize,
-        /// The file to stream. Opened by the butler thread, not here.
+        /// The file to stream. Opened by the streamer thread, not here.
         file_path: PathBuf,
         /// Start position, in frames from the head of the file.
         offset: SamplePosition,
@@ -95,7 +96,7 @@ pub enum Command {
     /// `SeekStream`. A placed voice (`take_disk_voice`) follows its clock and
     /// ignores this: seek the clock.
     Seek {
-        /// Butler channel carrying the stream to move.
+        /// Streamer channel carrying the stream to move.
         channel_index: usize,
         /// Absolute target, in frames from the head of the file.
         file_position: SamplePosition,
@@ -107,7 +108,7 @@ pub enum Command {
     /// faster transposes up. The pitch-independent kind is `StretchFactor`, and
     /// it does not travel this port; it lives on the voice's stretch filter.
     SetSpeed {
-        /// Butler channel carrying the stream to respeed.
+        /// Streamer channel carrying the stream to respeed.
         channel_index: usize,
         /// Magnitude only; the sign is carried by `direction`.
         speed: PlaybackRate,
@@ -121,7 +122,7 @@ pub enum Command {
     /// being played, crossfaded; one further ahead, exactly where it takes
     /// effect. See [`LoopSetting::On`] for the whole rule.
     Loop {
-        /// Butler channel carrying the stream to loop.
+        /// Streamer channel carrying the stream to loop.
         channel_index: usize,
         /// The loop intent. Its `start`/`end` are file frames and its
         /// `crossfade_frames` are frames, matching this enum's rule.
@@ -130,21 +131,21 @@ pub enum Command {
     /// Stop the stream on a channel, dropping its ring and link. Maps to
     /// `StopStreaming`.
     Stop {
-        /// Butler channel to tear down.
+        /// Streamer channel to tear down.
         channel_index: usize,
     },
 }
 
 impl Command {
-    /// The one `ButlerCommand` this maps to: the single place the public
-    /// variants meet the butler's.
-    fn into_butler(self) -> ButlerCommand {
+    /// The one `StreamerCommand` this maps to: the single place the public
+    /// variants meet the streamer's.
+    fn into_streamer(self) -> StreamerCommand {
         match self {
             Command::Stream {
                 channel_index,
                 file_path,
                 offset,
-            } => ButlerCommand::StreamAudioFile {
+            } => StreamerCommand::StreamAudioFile {
                 channel_index,
                 file_path,
                 offset_samples: offset.get().max(0.0) as usize,
@@ -152,7 +153,7 @@ impl Command {
             Command::Seek {
                 channel_index,
                 file_position,
-            } => ButlerCommand::SeekStream {
+            } => StreamerCommand::SeekStream {
                 channel_index,
                 file_position: file_position.get().max(0.0) as u64,
             },
@@ -160,7 +161,7 @@ impl Command {
                 channel_index,
                 speed,
                 direction,
-            } => ButlerCommand::SetVarispeed {
+            } => StreamerCommand::SetVarispeed {
                 channel_index,
                 direction,
                 speed,
@@ -169,76 +170,76 @@ impl Command {
                 channel_index,
                 setting,
             } => loop_command(channel_index, None, setting),
-            Command::Stop { channel_index } => ButlerCommand::StopStreaming { channel_index },
+            Command::Stop { channel_index } => StreamerCommand::StopStreaming { channel_index },
         }
     }
 }
 
-/// The butler's command for a loop `setting` on `channel_index`, meant for
-/// `stream` when the sender knows it (see `ButlerCommand::SetStreamLoop`).
+/// The streamer's command for a loop `setting` on `channel_index`, meant for
+/// `stream` when the sender knows it (see `StreamerCommand::SetStreamLoop`).
 fn loop_command(
     channel_index: usize,
     stream: Option<RegionId>,
     setting: LoopSetting,
-) -> ButlerCommand {
+) -> StreamerCommand {
     match setting {
         LoopSetting::On {
             start,
             end,
             crossfade_frames,
-        } => ButlerCommand::SetStreamLoop {
+        } => StreamerCommand::SetStreamLoop {
             channel_index,
             stream,
             range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
             crossfade_frames,
         },
-        LoopSetting::Off => ButlerCommand::ClearStreamLoop {
+        LoopSetting::Off => StreamerCommand::ClearStreamLoop {
             channel_index,
             stream,
         },
     }
 }
 
-/// WRITE port onto the butler: a cloneable wrapper over the butler's
-/// command queue that dispatches a public [`Command`] to the butler.
+/// WRITE port onto the streamer: a cloneable wrapper over the streamer's
+/// command queue that dispatches a public [`Command`] to the streamer.
 ///
 /// Mirrors [`VoicePoolHandle`](crate::VoicePoolHandle) — a thin,
 /// `Clone` handle over a sender with a single [`send`](Self::send) method.
 #[derive(Clone, Debug)]
 pub struct Commands {
-    tx: ButlerSender,
+    tx: StreamerSender,
 }
 
 impl Commands {
-    pub(crate) fn new(tx: ButlerSender) -> Self {
+    pub(crate) fn new(tx: StreamerSender) -> Self {
         Self { tx }
     }
 
-    /// Dispatches a single command to the butler. Control thread: while
-    /// the butler's bounded queue is full it waits, so nothing reachable from
+    /// Dispatches a single command to the streamer. Control thread: while
+    /// the streamer's bounded queue is full it waits, so nothing reachable from
     /// a graph node's `process` calls it. No audio-thread code sends to the
-    /// butler: a voice pool's streaming loop is forwarded by its control-side
+    /// streamer: a voice pool's streaming loop is forwarded by its control-side
     /// handle ([`VoicePoolHandle::send`](crate::VoicePoolHandle::send)).
     ///
-    /// `Ok` means the command was *queued* — the butler applies it on its own
+    /// `Ok` means the command was *queued* — the streamer applies it on its own
     /// thread, and that outcome is not available synchronously.
     ///
     /// # Errors
     ///
-    /// `ButlerGone` means the butler thread has exited and the command was
+    /// `StreamerGone` means the streamer thread has exited and the command was
     /// discarded. It is permanent: every later command fails the same way,
     /// so a caller should stop rather than retry.
     ///
     /// Ignoring that error is the failure this port is shaped to prevent — a
-    /// dead butler silently accepting `Stream`, `Seek`, `Loop` and `Stop`
+    /// dead streamer silently accepting `Stream`, `Seek`, `Loop` and `Stop`
     /// forever is indistinguishable from working playback.
     #[must_use = "a discarded command is a stream that never starts, seeks, or stops"]
-    pub fn send(&self, cmd: Command) -> Result<(), ButlerGone> {
-        self.tx.send(cmd.into_butler()).map_err(|_| ButlerGone)
+    pub fn send(&self, cmd: Command) -> Result<(), StreamerGone> {
+        self.tx.send(cmd.into_streamer()).map_err(|_| StreamerGone)
     }
 
     /// Sets or clears the loop of the stream `stream` on `channel_index`:
-    /// [`send`](Self::send)'s `Command::Loop`, which the butler ignores once
+    /// [`send`](Self::send)'s `Command::Loop`, which the streamer ignores once
     /// the channel carries another stream (the voice's stopped, or the
     /// channel restarted on another file). Control thread; waits as `send`
     /// does.
@@ -247,15 +248,15 @@ impl Commands {
         channel_index: usize,
         stream: RegionId,
         setting: LoopSetting,
-    ) -> Result<(), ButlerGone> {
+    ) -> Result<(), StreamerGone> {
         self.tx
             .send(loop_command(channel_index, Some(stream), setting))
-            .map_err(|_| ButlerGone)
+            .map_err(|_| StreamerGone)
     }
 
     /// Dispatches a batch of commands, in order.
     ///
-    /// Returns how many were queued. `< cmds.len()` means the butler was gone
+    /// Returns how many were queued. `< cmds.len()` means the streamer was gone
     /// and the rest were discarded — dispatch stops at the first failure,
     /// since the condition is permanent and every later command would fail too.
     ///
@@ -284,9 +285,9 @@ pub struct Status {
     plans: Arc<DashMap<usize, ChannelPlan>>,
 }
 
-// `ChannelPlan` isn't `Debug` (it holds butler-internal cache/link state), so
+// `ChannelPlan` isn't `Debug` (it holds streamer-internal cache/link state), so
 // hand-roll a summary rather than deriving — never touch the map's contents to
-// avoid contending with the butler thread.
+// avoid contending with the streamer thread.
 impl std::fmt::Debug for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Status")
@@ -308,18 +309,18 @@ impl Status {
         self.sample_rate.get()
     }
 
-    /// Builds a [`DiskVoice`] for a channel whose butler stream is ready, placed
+    /// Builds a [`DiskVoice`] for a channel whose streamer stream is ready, placed
     /// on the timeline at `start_beat` for `duration` (the transport it reads
     /// is its block's, from the graph).
     ///
     /// Pulls the ring consumer and shared RT state out of the channel's plan and
     /// wraps them in a placement-gated reader. `start_beat` and `duration` are
     /// musical time — the gate converts them to file frames using the file's
-    /// own rate, not the session's: the rate the butler recorded when it opened
+    /// own rate, not the session's: the rate the streamer recorded when it opened
     /// the stream, so a session rate that moves later (a device restart) leaves
     /// the gate's frames where they were.
     ///
-    /// The voice also keeps a read-only handle onto the butler's record of
+    /// The voice also keeps a read-only handle onto the streamer's record of
     /// the stream, so a fork of it for an offline render (an export) can read
     /// the same file on its own rather than through the live ring; see
     /// `DiskVoice::fork_copy`.
@@ -328,7 +329,7 @@ impl Status {
     ///
     /// # Errors
     ///
-    /// [`TakeVoiceError::NotStreaming`] while the butler has not opened the
+    /// [`TakeVoiceError::NotStreaming`] while the streamer has not opened the
     /// stream yet: a caller polls again next frame rather than treating it as
     /// a failure. [`TakeVoiceError::ReaderTaken`] once a voice has been taken
     /// from the stream: a stream serves one live voice. The voice is as wide
@@ -383,7 +384,7 @@ impl Status {
         duration: Option<BeatDuration>,
     ) -> Result<DiskVoice, TakeVoiceError> {
         let (inner, rt_state, file_sample_rate, origin) =
-            crate::butler::control::take_streaming_unit(&self.plans, channel_index, width, true)?;
+            crate::streamer::control::take_streaming_unit(&self.plans, channel_index, width, true)?;
 
         Ok(DiskVoice::new(
             inner,
@@ -399,11 +400,11 @@ impl Status {
         .with_origin(origin))
     }
 
-    /// The loop the stream on `channel_index` runs, as the butler last set
+    /// The loop the stream on `channel_index` runs, as the streamer last set
     /// it; `None` when the channel streams nothing (tests).
     #[cfg(test)]
     pub(crate) fn stream_loop(&self, channel_index: usize) -> Option<LoopSetting> {
-        crate::butler::control::stream_loop(&self.plans, channel_index)
+        crate::streamer::control::stream_loop(&self.plans, channel_index)
     }
 
     /// The stream's live reader as a bare free-running source (tests: no
@@ -415,12 +416,12 @@ impl Status {
     ) -> Result<
         (
             crate::voice::disk_voice::DiskSource,
-            Arc<crate::butler::RtState>,
+            Arc<crate::streamer::RtState>,
         ),
         TakeVoiceError,
     > {
         let (unit, rt_state, _, _) =
-            crate::butler::control::take_streaming_unit(&self.plans, channel_index, None, false)?;
+            crate::streamer::control::take_streaming_unit(&self.plans, channel_index, None, false)?;
         Ok((unit, rt_state))
     }
 }
@@ -429,14 +430,14 @@ impl Status {
 mod tests {
     use super::*;
 
-    /// A `Commands` whose butler is already gone — the state a real handle
-    /// reaches once `ButlerThread::stop` has run.
-    fn dead_butler() -> Commands {
+    /// A `Commands` whose streamer is already gone — the state a real handle
+    /// reaches once `StreamerThread::stop` has run.
+    fn dead_streamer() -> Commands {
         let (tx, _) = crossbeam_channel::bounded(8);
         Commands::new(tx)
     }
 
-    /// Every command variant reports a dead butler.
+    /// Every command variant reports a dead streamer.
     ///
     /// Covering every variant, not one representative: the arms send
     /// independently, so a variant whose `Result` went unpropagated would accept
@@ -444,8 +445,8 @@ mod tests {
     /// indistinguishable from working playback, and invisible to a test that
     /// only exercised its neighbours.
     #[test]
-    fn every_command_reports_a_dead_butler() {
-        let cmds = dead_butler();
+    fn every_command_reports_a_dead_streamer() {
+        let cmds = dead_streamer();
 
         assert_eq!(
             cmds.send(Command::Stream {
@@ -453,14 +454,14 @@ mod tests {
                 file_path: "/nonexistent.wav".into(),
                 offset: SamplePosition(0.0),
             }),
-            Err(ButlerGone)
+            Err(StreamerGone)
         );
         assert_eq!(
             cmds.send(Command::Seek {
                 channel_index: 0,
                 file_position: SamplePosition(0.0),
             }),
-            Err(ButlerGone)
+            Err(StreamerGone)
         );
         assert_eq!(
             cmds.send(Command::SetSpeed {
@@ -468,15 +469,15 @@ mod tests {
                 speed: PlaybackRate::new(1.0),
                 direction: Direction::Forward,
             }),
-            Err(ButlerGone)
+            Err(StreamerGone)
         );
         assert_eq!(
             cmds.send(Command::Loop {
                 channel_index: 0,
                 setting: LoopSetting::Off,
             }),
-            Err(ButlerGone),
-            "the Loop/Off arm maps to its own butler command"
+            Err(StreamerGone),
+            "the Loop/Off arm maps to its own streamer command"
         );
         assert_eq!(
             cmds.send(Command::Loop {
@@ -487,19 +488,19 @@ mod tests {
                     crossfade_frames: 0,
                 },
             }),
-            Err(ButlerGone),
+            Err(StreamerGone),
             "the Loop/On arm is a separate send from Loop/Off"
         );
         assert_eq!(
             cmds.send(Command::Stop { channel_index: 0 }),
-            Err(ButlerGone)
+            Err(StreamerGone)
         );
     }
 
     /// A batch reports how many landed rather than vanishing wholesale.
     #[test]
-    fn send_all_reports_nothing_queued_to_a_dead_butler() {
-        let cmds = dead_butler();
+    fn send_all_reports_nothing_queued_to_a_dead_streamer() {
+        let cmds = dead_streamer();
         let queued = cmds.send_all([
             Command::Stop { channel_index: 0 },
             Command::Stop { channel_index: 1 },

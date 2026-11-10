@@ -25,7 +25,7 @@
 //! [`seek`]: FileIn::seek
 //!
 //! It shares [`Wave::read`](crate::Wave::read)'s probe head and its one-packet
-//! helper. All decode/seek/file I/O runs on the butler thread; the audio
+//! helper. All decode/seek/file I/O runs on the streamer thread; the audio
 //! thread never touches this type.
 
 use std::path::Path;

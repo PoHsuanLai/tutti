@@ -1,4 +1,4 @@
-//! Butler thread command enum and ID types.
+//! Streamer thread command enum and ID types.
 
 use std::path::PathBuf;
 
@@ -9,9 +9,9 @@ use tutti_types::PlaybackRate;
 
 use crate::voice::types::Direction;
 
-/// Command sent to the Butler thread.
+/// Command sent to the Streamer thread.
 #[derive(Debug)]
-pub(crate) enum ButlerCommand {
+pub(crate) enum StreamerCommand {
     /// Stream an audio file to a channel buffer.
     StreamAudioFile {
         channel_index: usize,
@@ -21,7 +21,7 @@ pub(crate) enum ButlerCommand {
     /// Stop streaming for a channel.
     StopStreaming { channel_index: usize },
 
-    /// Enable looping on a streaming channel. The butler builds a
+    /// Enable looping on a streaming channel. The streamer builds a
     /// [`LoopConfig`](super::plan::LoopConfig) (range + crossfade, plus the
     /// fade's lead-in, captured once) into the channel's `link.loop_config`,
     /// which the refill writes the ring by, and repositions the stream at its
@@ -67,6 +67,6 @@ pub(crate) enum ButlerCommand {
         speed: PlaybackRate,
     },
 
-    /// Shutdown the butler thread.
+    /// Shutdown the streamer thread.
     Shutdown,
 }

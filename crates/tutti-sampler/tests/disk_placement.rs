@@ -72,7 +72,7 @@ fn write_wav(path: &Path, channels: u16, mask: u32) {
     std::fs::write(path, out).expect("writes the file");
 }
 
-/// A hand-stepped butler streaming `path` on channel 0, primed.
+/// A hand-stepped disk streamer streaming `path` on channel 0, primed.
 fn streamer_on(path: &Path) -> DiskStreamer {
     let mut streamer = DiskStreamer::manual(SampleRate(SR), Default::default()).expect("builds");
     streamer
@@ -82,7 +82,7 @@ fn streamer_on(path: &Path) -> DiskStreamer {
             file_path: path.to_path_buf(),
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"

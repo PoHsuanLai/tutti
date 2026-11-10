@@ -1,6 +1,6 @@
-//! Butler thread configuration.
+//! Streamer thread configuration.
 
-/// Ring, cache and crossfade sizing for the butler thread.
+/// Ring, cache and crossfade sizing for the streamer thread.
 ///
 /// `Default` is tuned for 64-channel streaming on a typical desktop; use
 /// `Default` + struct-update to change one field.
@@ -19,7 +19,7 @@ pub struct BufferConfig {
     /// too is a target rather than a hard bound — but a single wave larger than
     /// the whole ceiling is refused.
     pub cache_max_bytes: u64,
-    /// Crossfade length in frames applied when the butler repositions a live
+    /// Crossfade length in frames applied when the streamer repositions a live
     /// stream (timeline seek or a PDC preroll change). 512 by default, about
     /// 12 ms at 44.1 kHz — long enough to hide the discontinuity, short enough
     /// not to smear the seek target.

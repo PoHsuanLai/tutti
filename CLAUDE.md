@@ -563,7 +563,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates), and
   the one thread-priority call, `request_priority` (a request for an ordinary-
   scheduler raise, never real time, whose `PriorityOutcome` is what a caller
-  logs; the plugin server and the sampler's butler both use it). Keep
+  logs; the plugin server and the sampler's streamer both use it). Keep
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
@@ -759,7 +759,7 @@ Scalars use `Param<U>`.
   the block. **Every cell's publisher calls `reclaim()` on a control-side
   tick it already has**, so a cell that goes quiet still gets that scan:
   the session's `Phase::Reclaim` (which `bevy-tutti`'s `reclaim_graph`
-  runs, and nothing more), the butler's cycle (its rings' maps). The
+  runs, and nothing more), the streamer's cycle (its rings' maps). The
   session's sweep is decided in `tutti-session` alone: a node whose
   controls publish returns a `Reclaimer` from `SessionNode::reclaimer`,
   which the graph keeps by node from `add`/`crossfade` until the node goes;
@@ -954,7 +954,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `Source::pull` answers (`Starved`, `Ended`, `Failed`), `tutti_types::pump` → a private
   step of `PumpLoop`, `vst-tutti` → `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
   host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
-  render; the note logic went to `tutti-voicing`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
+  render; the note logic went to `tutti-voicing`), `butler` → disk streamer (`tutti-sampler`'s `streamer/`: `ButlerCommand` → `StreamerCommand`, `ButlerThread` → `StreamerThread`, `ButlerSender` → `StreamerSender`, `ButlerGone` → `StreamerGone`, `ButlerCycle` → `StreamerCycle`; the thread is `tutti-streamer`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, whose analyzers are now `tutti-measure`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;

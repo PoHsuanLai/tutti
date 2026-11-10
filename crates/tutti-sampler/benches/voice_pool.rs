@@ -4,7 +4,7 @@
 //! 1.333 ms; divide a case's time by that for the fraction of the budget
 //! one pool consumes, before any other track, effect or plugin.
 //!
-//! Memory sources only — no butler, no disk, no page cache. Streaming
+//! Memory sources only — no streamer, no disk, no page cache. Streaming
 //! from disk is dominated by the filesystem and by prefetch state, which is
 //! not something criterion can summarise honestly; a counting-allocator and
 //! sampling-profiler harness is the instrument for anything shaped like that
@@ -214,8 +214,8 @@ enum Tier {
 
 /// A pool of `n` placed voices on the moving transport, all reading the same
 /// stereo tone at `speed` and `stretch`. The disk tier's streams are on a
-/// hand-driven butler whose rings hold the whole file (a file under 30 s is
-/// prefilled whole), so the measurement never waits on, or steps, a butler.
+/// hand-driven streamer whose rings hold the whole file (a file under 30 s is
+/// prefilled whole), so the measurement never waits on, or steps, a streamer.
 struct Pool64 {
     rig: Rig,
     /// Keeps the disk tier's streams (and their rings) alive.
@@ -322,7 +322,7 @@ fn pool_knobs(
                         file_path: path.clone(),
                         offset: SamplePosition(0.0),
                     })
-                    .expect("the butler is alive");
+                    .expect("the streamer is alive");
             }
             for _ in 0..4096 {
                 if s.step_once() != StepOutcome::Busy {

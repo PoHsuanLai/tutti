@@ -1,17 +1,17 @@
 //! A disk voice's file, read on demand for an offline render.
 //!
-//! A [`DiskVoice`](super::disk_voice::DiskVoice) plays what the butler streams
+//! A [`DiskVoice`](super::disk_voice::DiskVoice) plays what the streamer streams
 //! into its ring. A fork of one for an export cannot: the ring has one
-//! consumer, the live audio thread, and a seek asked of the butler moves the
+//! consumer, the live audio thread, and a seek asked of the streamer moves the
 //! live stream. So a forked voice reads the file itself, through this: the
-//! file the butler's record names ([`StreamFile`]), re-opened by its path and
+//! file the streamer's record names ([`StreamFile`]), re-opened by its path and
 //! decoded a page at a time on the render's own thread as the render reaches
-//! it — or read in place, when the butler's cache already holds it decoded.
+//! it — or read in place, when the streamer's cache already holds it decoded.
 //!
-//! # Why a synchronous reader, not a second butler stream
+//! # Why a synchronous reader, not a second streamer stream
 //!
 //! Offline there is no deadline to meet, so there is nothing to prefetch for.
-//! A second butler stream would put the render back on the butler's schedule
+//! A second streamer stream would put the render back on the streamer's schedule
 //! (a render faster than real time outruns its refills, and an underrun is
 //! silence written into the file as a success), and would need tearing down
 //! when the export ends. Reading on demand makes the export a function of the
@@ -54,7 +54,7 @@ use super::interp::{
 };
 use super::loop_span::{LoopSpan, blend};
 use super::types::Direction;
-use crate::butler::control::StreamFile;
+use crate::streamer::control::StreamFile;
 
 // A read is placed by the `Place` the voice built from its file's topology
 // (`DiskSource::with_reader`), the same one its live read uses: the caller
@@ -102,7 +102,7 @@ pub(crate) enum ReadFault {
     Open(#[from] tutti_codec::DecodeError),
 }
 
-/// The file a forked disk voice plays: the butler's description of it, and
+/// The file a forked disk voice plays: the streamer's description of it, and
 /// the file itself, opened on the first read.
 pub(crate) struct OfflineRead {
     /// What to play. Shared by clones: it is a description, never written.
@@ -172,7 +172,7 @@ impl OfflineRead {
     /// `LoopSpan` has a loop (the fade leads into the loop's start; taps near
     /// the end wrap through it), as `MemorySource::read_placed_into` reads the
     /// same loop. Reverse mirrors the position about the file's last frame, as
-    /// the memory tier does, and ignores the loop, as the butler's reverse
+    /// the memory tier does, and ignores the loop, as the streamer's reverse
     /// refill does. Silence where the file has nothing to play — forward at or
     /// past the end, reverse at a position whose mirror is before the first
     /// frame (`pos >= len`, as forward) — and the file is closed there (there
@@ -275,7 +275,7 @@ impl OfflineRead {
     }
 }
 
-/// An opened file: decoded whole already (the butler's cached wave, or a
+/// An opened file: decoded whole already (the streamer's cached wave, or a
 /// file that cannot seek), or paged in through a decoder.
 enum Open {
     Resident(Arc<Wave>),
@@ -286,7 +286,7 @@ enum Open {
 }
 
 impl Open {
-    /// Open `file`: the butler's decoded copy when its cache holds one, else
+    /// Open `file`: the streamer's decoded copy when its cache holds one, else
     /// the file by its path — header only when it can seek, a whole decode
     /// when it cannot.
     fn from_file(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
@@ -322,7 +322,7 @@ impl Open {
         }
     }
 
-    /// No codec compiled in: nothing can be decoded, here or by the butler.
+    /// No codec compiled in: nothing can be decoded, here or by the streamer.
     #[cfg(not(codec))]
     fn open_path(_file: &StreamFile, _fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
         Err(ReadFault::NoCodec)
@@ -479,7 +479,7 @@ impl Pages {
     /// PAGE)` going forward, `(at + LEAD - PAGE, at + LEAD]` going backward,
     /// clamped to the file. A seek or decode that fails leaves the page
     /// silent and latches the failure; a decode that comes up short (a
-    /// truncated file) leaves the rest silent, as the butler's refill does.
+    /// truncated file) leaves the rest silent, as the streamer's refill does.
     fn load(&mut self, slot: usize, at: usize, backward: bool) {
         let ch = self.channels;
         let start = if backward {
@@ -595,7 +595,7 @@ mod tests {
 
     /// The taps wrap through the loop (the disk fork): on a
     /// hard loop `[10, 20)`, half a frame before the end interpolates frames
-    /// 18, 19, then 10, 11 — what the loop plays next, and what the butler's
+    /// 18, 19, then 10, 11 — what the loop plays next, and what the streamer's
     /// ring holds there — not 20, 21 from past it; half a frame into a later
     /// pass the frame behind is 19; the first pass reaches 10 from 9. Paged,
     /// through the loop's own tap layout, as the memory tier reads it.

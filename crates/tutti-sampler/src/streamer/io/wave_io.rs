@@ -1,6 +1,6 @@
-//! The read half of the butler's cold-path disk refill.
+//! The read half of the streamer's cold-path disk refill.
 //!
-//! The butler moves frames from a resident (whole-file) [`Wave`] into a
+//! The streamer moves frames from a resident (whole-file) [`Wave`] into a
 //! per-region ring buffer. This module owns the source end: [`WaveIn`] is the
 //! one place the planar `wave.at(0,i)/at(1,i)` unpack lives — a cursor over a
 //! `Wave` with mono up-mix and zero-pad past end. A loop is not its business:
@@ -9,7 +9,7 @@
 //!
 //! Both ends speak flat interleaved `&[f32]` at a runtime width, with the
 //! stride owned by the type and every count denominated in frames. The sink
-//! end is [`RegionOut::push_interleaved`](crate::butler::prefetch::RegionOut::push_interleaved).
+//! end is [`RegionOut::push_interleaved`](crate::streamer::prefetch::RegionOut::push_interleaved).
 //! `WaveIn` is not a [`Source`](tutti_types::Source): it never ends (see its type
 //! docs).
 
@@ -25,7 +25,7 @@ use tutti_types::ChannelLayout;
 ///
 /// Identical to [`interp::read_frame`](crate::voice::interp::read_frame)'s,
 /// through the same [`Place`]. The two tiers must agree here — this is the
-/// butler's unpack and that is the RT reader, and a voice that unpacked
+/// streamer's unpack and that is the RT reader, and a voice that unpacked
 /// differently on disk than in memory is precisely the divergence the shared
 /// kernel exists to prevent.
 #[inline]
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(f, [0.7, 0.7]);
     }
 
-    /// The butler's unpack must follow the SAME channel policy as the RT
+    /// The streamer's unpack must follow the SAME channel policy as the RT
     /// reader's `interp::read_frame`: mono is placed by the spread, anything else by its topology. Two
     /// implementations of a channel policy is how the two tiers drift apart.
     #[test]

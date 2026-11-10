@@ -1,6 +1,6 @@
 //! The audio thread's read of a live stream's ring.
 //!
-//! A live disk voice reads the butler's ring (`butler::prefetch::Ring`) by
+//! A live disk voice reads the streamer's ring (`streamer::prefetch::Ring`) by
 //! position: its seat gives the straight position each output frame plays
 //! (the memory tier's, less the channel's PDC preroll), the ring's published
 //! map says which four slots that position's taps are (`Arrangement::taps`, the
@@ -16,14 +16,14 @@
 //! `segment_generation`, a free-running source's seek epoch): a seek that
 //! lands exactly on the continuation is a jump too, as it is to the seat
 //! (`interp::Seat`); a loop or direction edit switches what
-//! the ring holds at a position the butler publishes (`loops::RingMap`). The
+//! the ring holds at a position the streamer publishes (`loops::RingMap`). The
 //! memory tier cuts at either. The live reader crossfades, over the ring's
 //! fade length, from the continuation of what it was playing, rendered
 //! the moment the discontinuity arrives into a buffer of its own:
 //!
 //! - at a jump, the old position's continuation, read from the ring while its
 //!   window still holds it;
-//! - at a switch, the butler's record of what the old mapping would have
+//! - at a switch, the streamer's record of what the old mapping would have
 //!   played there (`loops::FadeRecord`);
 //! - in the middle of a fade, the fade itself — its old side blended with its
 //!   new one at its own weights — so fades chain (an edit during an edit, a
@@ -32,7 +32,7 @@
 //! Rendered, not referenced: nothing published later (another edit's record,
 //! another jump) can change it, and it keeps the rate it was rendered at. The
 //! new side is the clock's position throughout, read from the ring as it
-//! goes: when the ring does not hold it yet (the butler moves its window on
+//! goes: when the ring does not hold it yet (the streamer moves its window on
 //! its next cycle, following `Ring::play`), the old side plays on alone, and
 //! the fade starts once the new side sounds. So once a fade is done the output
 //! is the memory tier's again. A continuation that runs out, and the ring
@@ -58,7 +58,7 @@ use tutti_rt::{PosClaim, PosReader, Reader};
 use tutti_types::SamplePosition;
 
 use crate::MAX_SAMPLER_CHANNELS;
-use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
+use crate::streamer::{Arrangement, RingMap, RtState, SharedReader};
 
 use super::interp::{Place, hermite_lanes, interpolate_taps};
 use super::loop_span::blend;

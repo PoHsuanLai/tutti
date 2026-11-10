@@ -60,7 +60,7 @@ real time.
 | Crate | What it owns |
 |---|---|
 | [`tutti-nodes`](crates/tutti-nodes) | The DSP node library: filters, delays, dynamics, distortion, chorus, convolution, mix bus, automation |
-| [`tutti-sampler`](crates/tutti-sampler) | Clip playback — in-memory and disk-streamed voices, time-stretch, the prefetch butler |
+| [`tutti-sampler`](crates/tutti-sampler) | Clip playback — in-memory and disk-streamed voices, time-stretch, the prefetch streamer |
 | [`tutti-polysynth`](crates/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
 | [`tutti-soundfont`](crates/tutti-soundfont) | SoundFont (`.sf2`) playback |
 | [`tutti-spatial`](crates/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |

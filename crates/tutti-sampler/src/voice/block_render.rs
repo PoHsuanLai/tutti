@@ -177,7 +177,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
                 file_path: path.clone(),
                 offset: SamplePosition(0.0),
             })
-            .expect("the butler is alive");
+            .expect("the streamer is alive");
     }
     assert!(
         streamer.step_until_settled(512) < 512,

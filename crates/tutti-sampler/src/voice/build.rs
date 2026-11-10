@@ -13,7 +13,7 @@ use crate::{PlaceError, Wave};
 ///
 /// The `Residency::Whole` half of the tier decision, expressed as a function so
 /// a host writes one line rather than assembling a `Voice` by hand. The disk
-/// half needs a butler round-trip and so is not a pure function: it goes
+/// half needs a streamer round-trip and so is not a pure function: it goes
 /// through a [`DiskStreamer`](crate::DiskStreamer).
 ///
 /// # `window` is required, not defaulted
@@ -38,7 +38,7 @@ pub fn memory_voice(
     Ok(Voice {
         source: VoiceSource::Memory(source),
         play,
-        // `None`: the butler channel is a disk-tier concept. `Voice`'s own doc
+        // `None`: the streamer channel is a disk-tier concept. `Voice`'s own doc
         // says it is "meaningless for `Memory` (loop is primed directly on the
         // `MemorySource`)".
         channel_index: None,
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn a_memory_voice_carries_no_butler_channel() {
+    fn a_memory_voice_carries_no_streamer_channel() {
         let wave = Arc::new(Wave::with_capacity(2, 48_000.0, 128));
         let v = memory_voice(
             wave,
@@ -110,7 +110,7 @@ mod tests {
         .expect("a stereo wave places");
         assert!(
             v.channel_index.is_none(),
-            "the butler channel is a disk-tier concept; `Voice`'s doc calls it \
+            "the streamer channel is a disk-tier concept; `Voice`'s doc calls it \
              meaningless for Memory"
         );
         assert!(matches!(v.source, VoiceSource::Memory(_)));

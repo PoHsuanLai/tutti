@@ -1518,7 +1518,7 @@ fn a_build_whose_commit_fails_hands_back_the_graph() {
             node: NodeKey(1),
             port: 0,
         },
-        vec![Edge::Direct(Source::Zero)],
+        vec![Edge::Direct(Source::Global(0))],
     );
     let pending = ed
         .fork_gather(ForkTarget::Master, ForkMode::Live, pre)

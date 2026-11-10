@@ -132,7 +132,6 @@ fn shapes() -> Vec<(&'static str, Topology)> {
     t.nodes.insert(A, spec("dc", 0, 1));
     t.nodes.insert(B, spec("sum", 2, 1));
     edge(&mut t, at(B, 0), out(A, 0));
-    t.edges.insert(at(B, 1), vec![Edge::Direct(Source::Zero)]);
     t.set_outputs(vec![Source::Node(out(B, 0))]);
     all.push(("zero_sourced_port", t));
 
@@ -381,7 +380,7 @@ fn pdc_delays_equal_latency_delays() {
         let want_out: Vec<(DelayKey, Samples)> = rec
             .outputs()
             .iter()
-            .filter(|&&(ch, _)| t.outputs[ch] != [Source::Zero])
+            .filter(|&&(ch, _)| !t.outputs[ch].is_empty())
             .map(|&(ch, by)| {
                 let key = DelayKey::Output {
                     channel: ch as u16,

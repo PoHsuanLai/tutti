@@ -1042,12 +1042,8 @@ fn out_of_band_graph(node: OutOfBand) -> Executor {
     let key = NodeKey(1);
     let (inputs, outputs) = (node.inputs, node.outputs);
     ed.insert(key, "oob", Unforkable(node));
-    for port in 0..inputs {
-        ed.spec_mut()
-            .topology
-            .edges
-            .insert(InPort { node: key, port }, vec![Edge::Direct(Source::Zero)]);
-    }
+    // The inputs are left unwired: an unwired port reads silence.
+    let _ = inputs;
     if outputs > 0 {
         ed.spec_mut()
             .topology
@@ -1175,7 +1171,7 @@ fn an_unchanged_commit_sends_nothing_and_a_change_still_sends() {
     );
 
     // An edit through `spec_mut` sends.
-    ed.spec_mut().topology.outputs.push(vec![Source::Zero]);
+    ed.spec_mut().topology.outputs.push(Vec::new());
     ed.commit().expect("commits");
     assert_eq!(ed.in_flight(), 1, "a spec edit sends");
 

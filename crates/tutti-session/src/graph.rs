@@ -1645,7 +1645,10 @@ impl Graph {
     ///
     /// If `channel` is past the global outputs.
     pub fn set_output_source(&mut self, channel: usize, source: GraphSource) {
-        self.editor.spec_mut().topology.outputs[channel] = vec![Self::lower(source)];
+        self.editor.spec_mut().topology.outputs[channel] = match Self::lower(source) {
+            Source::Zero => Vec::new(),
+            source => vec![source],
+        };
         self.follow_outputs();
         self.edited = true;
     }
@@ -1683,14 +1686,15 @@ impl Graph {
             .iter_mut()
             .enumerate()
         {
-            *source = vec![if usable == 0 {
-                Source::Zero
+            // Silence is the empty set.
+            *source = if usable == 0 {
+                Vec::new()
             } else {
-                Source::Node(OutPort {
+                vec![Source::Node(OutPort {
                     node,
                     port: port(c) as u16,
-                })
-            }];
+                })]
+            };
         }
         self.follow_outputs();
         self.edited = true;
@@ -2021,7 +2025,7 @@ impl Graph {
         };
         let outputs = &mut self.editor.spec_mut().topology.outputs;
         if outputs.len() < target {
-            outputs.resize(target, vec![Source::Zero]);
+            outputs.resize(target, Vec::new());
             self.edited = true;
         }
         refused.map_or(Ok(()), Err)
@@ -2109,7 +2113,7 @@ impl Graph {
         self.widen_refusal = None;
         let outputs = &mut self.editor.spec_mut().topology.outputs;
         if outputs.len() != width {
-            outputs.resize(width, vec![Source::Zero]);
+            outputs.resize(width, Vec::new());
             self.edited = true;
             self.follow_outputs();
         }

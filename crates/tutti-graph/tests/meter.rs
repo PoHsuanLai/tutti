@@ -302,7 +302,7 @@ fn the_master_follows_the_outputs() {
     block(&mut r, 32);
     assert_eq!(level(&mut m), vec![(0.5, 0.5, 32), (0.25, 0.25, 32)]);
 
-    r.ed.spec_mut().topology.outputs[0] = vec![Source::Zero];
+    r.ed.spec_mut().topology.outputs[0] = Vec::new();
     r.ed.spec_mut().topology.outputs.push(vec![out(1)]);
     commit(&mut r);
     assert_eq!(m.channels(), 3);

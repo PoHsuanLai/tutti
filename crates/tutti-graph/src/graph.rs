@@ -326,12 +326,13 @@ pub struct Topology {
     /// The sources of each sink port, keyed on the sink port: a set, held as
     /// a `Vec` in sorted order ([`connect`](Self::connect) keeps it so).
     ///
-    /// An absent key and an empty `Vec` mean the same (nothing feeds the
-    /// port); [`disconnect`](Self::disconnect) removes the key when the last
-    /// edge goes, so the derived `Eq` and `Hash` agree. A raw write is legal
-    /// and [`validate`](Self::validate) checks it: the same edge twice is
-    /// [`Invalid::DuplicateEdge`], and `Source::Zero` beside another source is
-    /// [`Invalid::SilenceBesideSources`].
+    /// Silence is the empty set: an absent key and an empty `Vec` mean the
+    /// same (nothing feeds the port), and [`disconnect`](Self::disconnect)
+    /// removes the key when the last edge goes, so the derived `Eq` and `Hash`
+    /// agree. `Source::Zero` is never stored. A raw write is legal and
+    /// [`validate`](Self::validate) checks it: the same edge twice is
+    /// [`Invalid::DuplicateEdge`], and a stored `Source::Zero` is
+    /// [`Invalid::StoredSilence`].
     pub edges: BTreeMap<InPort, Vec<Edge>>,
     /// The sources of each global output channel, in channel order, with the
     /// same rules as [`edges`](Self::edges) (a sink is a sink).
@@ -516,9 +517,12 @@ pub enum Invalid {
         /// `Direct` edge).
         edge: Edge,
     },
-    /// A `Source::Zero` beside another source at one sink: it adds nothing,
-    /// and would make two equal wirings compare unequal.
-    SilenceBesideSources {
+    /// A `Source::Zero` stored in a sink's set, alone or beside others.
+    ///
+    /// Silence has one representation: the empty set. A `Zero` in a set would
+    /// make two equal wirings compare unequal, so every writer drops it and
+    /// `validate` refuses one a raw write left.
+    StoredSilence {
         /// The sink: an input port or a global output channel.
         at: Sink,
     },
@@ -613,8 +617,8 @@ impl Topology {
                     width: sink.inputs,
                 });
             }
-            if edges.len() > 1 && edges.contains(&Edge::Direct(Source::Zero)) {
-                errs.push(Invalid::SilenceBesideSources { at: Sink::Port(at) });
+            if edges.contains(&Edge::Direct(Source::Zero)) {
+                errs.push(Invalid::StoredSilence { at: Sink::Port(at) });
             }
             for (n, edge) in edges.iter().enumerate() {
                 if edges[..n].contains(edge) {
@@ -658,8 +662,8 @@ impl Topology {
         }
 
         for (channel, sources) in self.outputs.iter().enumerate() {
-            if sources.len() > 1 && sources.contains(&Source::Zero) {
-                errs.push(Invalid::SilenceBesideSources {
+            if sources.contains(&Source::Zero) {
+                errs.push(Invalid::StoredSilence {
                     at: Sink::Output(channel as u16),
                 });
             }
@@ -702,7 +706,13 @@ impl Topology {
     ///
     /// Two topologies that wire the same sources compare and hash equal
     /// whatever order they were wired in.
+    ///
+    /// `Edge::Direct(Source::Zero)` adds nothing: silence is the empty set and
+    /// is never stored.
     pub fn connect(&mut self, at: InPort, edge: Edge) {
+        if edge == Edge::Direct(Source::Zero) {
+            return;
+        }
         let list = self.edges.entry(at).or_default();
         if let Err(i) = list.binary_search(&edge) {
             list.insert(i, edge);
@@ -727,9 +737,13 @@ impl Topology {
     }
 
     /// Sets the global outputs to one source per channel, in order, replacing
-    /// every channel's set: the one-source wiring.
+    /// every channel's set: the one-source wiring. A `Source::Zero` is an
+    /// empty channel (silence is the empty set, never a stored `Zero`).
     pub fn set_outputs(&mut self, sources: impl IntoIterator<Item = Source>) {
-        self.outputs = sources.into_iter().map(|s| vec![s]).collect();
+        self.outputs = sources
+            .into_iter()
+            .map(|s| if s == Source::Zero { vec![] } else { vec![s] })
+            .collect();
     }
 
     /// Returns every declared input port nothing feeds, in key order.

@@ -1373,7 +1373,7 @@ impl Editor {
     }
 
     /// Removes `key` and every edge that touches it. Output channels it fed
-    /// become [`Source::Zero`].
+    /// are left empty (silence).
     pub fn remove(&mut self, key: NodeKey) {
         self.touch();
         let t = &mut self.spec.topology;
@@ -1394,12 +1394,8 @@ impl Editor {
             !edges.is_empty()
         });
         for sources in &mut t.outputs {
-            let before = sources.len();
+            // A channel that lost its only source is empty: silence.
             sources.retain(|s| !matches!(s, Source::Node(p) if p.node == key));
-            // A channel that lost its only source is silent, as it was.
-            if before > 0 && sources.is_empty() {
-                sources.push(Source::Zero);
-            }
         }
         // A key is the author's and can be inserted again after a removal, so
         // a tap left naming it would read the new node.

@@ -101,7 +101,10 @@ fn assert_wired(
     }
     assert_eq!(
         g.spec().topology.outputs,
-        outputs.iter().map(|s| vec![*s]).collect::<Vec<_>>(),
+        outputs
+            .iter()
+            .map(|s| if *s == Source::Zero { vec![] } else { vec![*s] })
+            .collect::<Vec<_>>(),
         "{case}: global outputs"
     );
 }
@@ -459,7 +462,10 @@ fn pipe_output_fans_out_as_net_does() {
         .collect();
     assert_eq!(
         g.spec().topology.outputs,
-        ports.iter().map(|s| vec![*s]).collect::<Vec<_>>()
+        ports
+            .iter()
+            .map(|s| if *s == Source::Zero { vec![] } else { vec![*s] })
+            .collect::<Vec<_>>()
     );
 }
 
@@ -620,4 +626,71 @@ fn renderer_drives_blocks_and_interleaves() {
     r.render_into(&mut [&mut l, &mut rr]);
     assert_eq!((l, rr), (vec![1.0; 30], vec![2.0; 30]));
     assert_eq!(r.executor().frame(), Frame(280));
+}
+
+/// Silence is the empty set and `Source::Zero` is never stored: every writer
+/// normalises, so two topologies built the old ways (a stored `Zero`, an
+/// absent key) compare and hash equal.
+///
+/// Mutation (run, recorded here): in `GraphBuilder::set_source`, store
+/// `vec![Edge::Direct(Zero)]` instead of removing the key -> the first
+/// assert fails. Mutation: in `GraphBuilder::new`, start each output as
+/// `vec![Zero]` -> the fresh-builder assert fails. Mutation: in
+/// `Topology::set_outputs`, keep `vec![Zero]` -> the second assert fails.
+/// Mutation: in `GraphBuilder::set_output`, store `vec![Zero]` -> the
+/// `outputs[1]` assert fails.
+/// Mutation: in `Topology::connect`, drop the `Zero` early return -> the third
+/// fails. Mutation: in `Editor::remove`, push `Zero` into an emptied channel
+/// -> the last assert fails.
+#[test]
+fn every_writer_normalises_silence_to_the_empty_set() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let hash = |t: &tutti_graph::Topology| {
+        let mut h = DefaultHasher::new();
+        t.hash(&mut h);
+        h.finish()
+    };
+    let at = InPort {
+        node: NodeKey(0),
+        port: 0,
+    };
+
+    // A builder: a fresh one is empty, a port set to silence is no key.
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
+    let a = g.add(node(1, 1));
+    assert_eq!(g.spec().topology.outputs, vec![vec![], vec![]]);
+    g.set_source(a, 0, Source::Global(0));
+    assert_eq!(g.spec().topology.edges.len(), 1);
+    g.disconnect(a, 0);
+    assert!(g.spec().topology.edges.is_empty(), "cleared port: no key");
+    g.set_output(1, Source::Zero);
+    assert_eq!(g.spec().topology.outputs[1], Vec::<Source>::new());
+
+    // `Topology`'s writers.
+    let mut t = tutti_graph::Topology::default();
+    t.set_outputs([Source::Zero, Source::Node(OutPort { node: a, port: 0 })]);
+    assert_eq!(t.outputs[0], Vec::<Source>::new());
+    t.connect(at, Edge::Direct(Source::Zero));
+    assert!(t.edges.is_empty(), "connecting silence stores nothing");
+
+    // The two old ways agree: "no key" and "never wired" are one value.
+    let mut wired_then_cleared = tutti_graph::Topology::default();
+    wired_then_cleared.connect(at, Edge::Direct(Source::Global(0)));
+    wired_then_cleared.disconnect(at, Edge::Direct(Source::Global(0)));
+    assert_eq!(wired_then_cleared, tutti_graph::Topology::default());
+    assert_eq!(
+        hash(&wired_then_cleared),
+        hash(&tutti_graph::Topology::default())
+    );
+
+    // `Editor::remove` leaves an emptied channel empty.
+    let (mut ed, _exec) = Editor::new(prepare(64));
+    ed.insert(NodeKey(1), "w", node(0, 1));
+    ed.spec_mut().topology.set_outputs([Source::Node(OutPort {
+        node: NodeKey(1),
+        port: 0,
+    })]);
+    ed.remove(NodeKey(1));
+    assert_eq!(ed.spec().topology.outputs, vec![Vec::<Source>::new()]);
 }

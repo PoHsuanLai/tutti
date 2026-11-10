@@ -227,16 +227,17 @@ fn validate_refuses_a_duplicate_edge_in_one_set() {
     );
 }
 
-/// `Source::Zero` adds nothing, so beside another source it is refused (two
-/// equal wirings would compare unequal); alone it is fine. A feedback edge
-/// counts as another source.
+/// Silence has one representation, the empty set, so `validate` refuses a
+/// stored `Source::Zero`: alone, beside another source, at an input port or at
+/// an output channel. The empty set (and an absent key) is fine.
 ///
 /// Mutation (run, recorded here): in `Topology::validate`, test
-/// `edges.len() > 2` instead of `> 1` -> the two-entry port cases pass
-/// validation and the test fails; likewise `sources.len() > 2` for the
-/// output case.
+/// `edges.len() > 1 && edges.contains(..)` (the old "beside" rule) -> the
+/// lone-`Zero` port case passes validation and the test fails; likewise
+/// `sources.len() > 1 && ..` for outputs. Mutation: drop the output check ->
+/// the output assertions fail.
 #[test]
-fn validate_refuses_silence_beside_other_sources() {
+fn validate_refuses_a_stored_zero_alone_and_beside_others() {
     let mut t = Topology::default();
     t.nodes.insert(A, spec("dc", 0, 1));
     t.nodes.insert(C, spec("mix", 1, 1));
@@ -244,31 +245,43 @@ fn validate_refuses_silence_beside_other_sources() {
     let from_a = Edge::Direct(Source::Node(out(A, 0)));
     let fb = Edge::Feedback(FeedbackFrom::new(out(C, 0), Samples(64)));
 
-    t.edges.insert(at(C, 0), vec![zero]);
-    t.outputs = vec![vec![Source::Zero]];
-    t.validate().expect("silence alone is a source");
+    t.edges.insert(at(C, 0), vec![]);
+    t.outputs = vec![vec![]];
+    t.validate().expect("the empty set is silence");
 
-    for beside in [vec![zero, from_a], vec![from_a, zero], vec![fb, zero]] {
-        t.edges.insert(at(C, 0), beside.clone());
-        let errs = t.validate().expect_err("silence beside a source");
+    for set in [
+        vec![zero],
+        vec![zero, from_a],
+        vec![from_a, zero],
+        vec![fb, zero],
+    ] {
+        t.edges.insert(at(C, 0), set.clone());
+        let errs = t.validate().expect_err("a stored Zero");
         assert_eq!(
             errs,
-            vec![Invalid::SilenceBesideSources {
+            vec![Invalid::StoredSilence {
                 at: Sink::Port(at(C, 0))
             }],
-            "{beside:?}"
+            "{set:?}"
         );
     }
 
-    t.edges.insert(at(C, 0), vec![from_a]);
-    t.outputs = vec![vec![Source::Node(out(C, 0)), Source::Zero]];
-    let errs = t.validate().expect_err("silence beside a source");
-    assert_eq!(
-        errs,
-        vec![Invalid::SilenceBesideSources {
-            at: Sink::Output(0)
-        }]
-    );
+    t.edges.remove(&at(C, 0));
+    for set in [
+        vec![Source::Zero],
+        vec![Source::Node(out(C, 0)), Source::Zero],
+    ] {
+        t.outputs = vec![set.clone()];
+        let mut errs = t.validate().expect_err("a stored Zero");
+        errs.retain(Invalid::is_fatal); // C's port 0 is unwired here
+        assert_eq!(
+            errs,
+            vec![Invalid::StoredSilence {
+                at: Sink::Output(0)
+            }],
+            "{set:?}"
+        );
+    }
 }
 
 /// `connect` keeps each list sorted and free of duplicates, so two wirings of

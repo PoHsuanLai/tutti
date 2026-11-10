@@ -185,7 +185,8 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
             let width = u64::from(desc.spec.topology.inputs.count());
             Some(Edge::Direct(Source::Global(rng.below(width) as u16)))
         } else if roll < 80 {
-            Some(Edge::Direct(Source::Zero))
+            // Silence is no edge.
+            None
         } else if roll < 90 {
             // Feedback delays of at least a block, sometimes longer.
             let delay = Samples(MAX_BLOCK + 17 * rng.below(3) as usize);
@@ -333,7 +334,7 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
         });
         for s in &mut t.outputs {
             if matches!(s[..], [Source::Node(p)] if p.node == victim) {
-                s[0] = Source::Zero;
+                s.clear();
             }
         }
         d.spec.events.retain(|at, _| at.node != victim);
@@ -532,7 +533,13 @@ proptest! {
     fn an_aligned_tap_of_the_outputs_is_the_output(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
             let desc = random_graph(seed);
-            let outputs: Vec<Source> = desc.spec.topology.outputs.iter().map(|s| s[0]).collect();
+            let outputs: Vec<Source> = desc
+                .spec
+                .topology
+                .outputs
+                .iter()
+                .map(|s| s.first().copied().unwrap_or(Source::Zero))
+                .collect();
             let mut spec = desc.spec.clone();
             spec.topology.taps.insert(
                 TapId(1),

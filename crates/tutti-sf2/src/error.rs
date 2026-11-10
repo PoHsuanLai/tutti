@@ -46,9 +46,12 @@ pub enum Error {
         /// The list type the file has; a byte that is not printable ASCII is `?`.
         actual: [u8; 4],
     },
-    /// A LIST chunk holds a sub-chunk the format does not define there.
-    #[error("the INFO list contains an unknown ID '{}'", Code(.0))]
-    ListContainsUnknownId([u8; 4]),
+    /// A chunk's size reaches past the end of its list, or is not the size its
+    /// id has (`ifil` and `iver` are four bytes). The id is shown with any
+    /// byte that is not printable ASCII as `?`; `????` when not even a chunk
+    /// header fits in what is left of the list.
+    #[error("the '{}' chunk has an invalid size", Code(.0))]
+    InvalidChunkSize([u8; 4]),
     /// The file has no usable `smpl` chunk.
     #[error("no valid sample data was found")]
     SampleDataNotFound,

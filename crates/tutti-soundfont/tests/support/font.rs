@@ -30,3 +30,24 @@ pub fn one_preset(zones: Vec<Zone>) -> Arc<SoundFont> {
         &[Inst { name: "i", zones }],
     )
 }
+
+/// One preset (bank 0, program 0) over one instrument of the given zones, with a
+/// sample header (its own sine) for each of `samples`.
+pub fn one_preset_with_samples(
+    zones: Vec<Zone>,
+    samples: &[tutti_fixtures::sf2::SampleSpec],
+) -> Arc<SoundFont> {
+    let presets = [Preset {
+        name: "p",
+        bank: 0,
+        program: 0,
+        zones: vec![(vec![], 0)],
+    }];
+    let insts = [Inst { name: "i", zones }];
+    Arc::new(
+        SoundFont::new(&mut std::io::Cursor::new(
+            tutti_fixtures::sf2::bytes_with_headers(&presets, &insts, samples),
+        ))
+        .expect("the built SoundFont parses"),
+    )
+}

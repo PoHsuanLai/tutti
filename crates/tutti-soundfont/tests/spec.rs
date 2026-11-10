@@ -588,3 +588,99 @@ fn reset_cuts_the_voices_forgets_the_pedals_and_keeps_the_program() {
     rig.energy(44_100 * 3);
     assert!(rig.energy(512) > 1.0, "still the violin");
 }
+
+// ---- 7.10 sample types, 8.1.2 generators 46 and 47 ---------------------------
+
+/// 7.10: the two samples of a stereo pair are a left one and a right one, and
+/// each sounds on its own side whatever the zone's pan. Here the left sample is
+/// four times the right one's amplitude, and both zones' pan is centre: the left
+/// output carries the left sample alone (and the right output the right alone),
+/// so the left is four times the right. A zone of a mono sample takes its pan.
+///
+/// Mutation (run): `Voice::start` ignoring `sample_side` (taking `region.pan()`
+/// whatever the side) puts both centred, left equals right, and fails the ratio.
+#[test]
+fn the_samples_of_a_stereo_pair_sound_on_their_own_sides() {
+    use tutti_fixtures::sf2::SampleSpec;
+    let spec = |sample_type, link, gain| SampleSpec {
+        sample_type,
+        link,
+        gain,
+    };
+    let zone = |sample: i16| vec![(generator::SAMPLE_MODES, 1), (generator::SAMPLE_ID, sample)];
+    let font = support::font::one_preset_with_samples(
+        vec![zone(0), zone(1)],
+        &[spec(4, 1, 1.0), spec(2, 0, 0.25)],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    let (left, right) = rig.energy_lr(4096);
+    assert!(right > 1.0, "the right sample is heard: {right}");
+    let ratio = left / right;
+    assert!(
+        (ratio - 4.0).abs() < 0.4,
+        "left {left} against right {right}"
+    );
+
+    // The left sample alone is not heard on the right.
+    let font =
+        support::font::one_preset_with_samples(vec![zone(0)], &[spec(4, 1, 1.0), spec(2, 0, 0.25)]);
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    let (left, right) = rig.energy_lr(4096);
+    assert!(left > 1.0 && right < 1e-3 * left, "{left} {right}");
+
+    // A mono sample keeps the zone's pan: hard right here.
+    let font = support::font::one_preset_with_samples(
+        vec![vec![
+            (generator::SAMPLE_MODES, 1),
+            (generator::PAN, 500),
+            (generator::SAMPLE_ID, 0),
+        ]],
+        &[spec(1, 0, 1.0)],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    let (left, right) = rig.energy_lr(4096);
+    assert!(right > 1.0 && left < 1e-3 * right, "{left} {right}");
+}
+
+/// 8.1.2, generator 46 (keynum): the zone sounds as if the key were the forced
+/// one. The sample is 441 Hz at key 69 and the zone forces 81 (an octave up), so
+/// a note at key 69 sounds at 882 Hz: twice the zero crossings of the same note
+/// in a zone without it.
+///
+/// Mutation (run): `Voice::start` not reading `forced_key` fails it (equal counts).
+#[test]
+fn keynum_forces_the_key_of_a_zone() {
+    let crossings = |zone: Vec<(u16, i16)>| {
+        let mut rig = Rig::dry(&one_preset(vec![zone]));
+        rig.note_on(0, 69, 100);
+        let (left, _) = rig.render(8192);
+        left.windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count()
+    };
+    let plain = crossings(vec![]);
+    let forced = crossings(vec![(generator::KEY_NUM, 81)]);
+    assert!(plain > 50, "{plain}");
+    let ratio = forced as f32 / plain as f32;
+    assert!((ratio - 2.0).abs() < 0.1, "{forced} against {plain}");
+}
+
+/// 8.1.2, generator 47 (velocity): the zone sounds as if the velocity were the
+/// forced one. A strike at 127 in a zone forcing 32 is as loud as a strike at 32
+/// in a plain zone, and quieter than a plain 127.
+///
+/// Mutation (run): `Voice::start` not reading `forced_velocity` fails the first
+/// comparison.
+#[test]
+fn velocity_forces_the_velocity_of_a_zone() {
+    let plain = one_preset(vec![vec![]]);
+    let forced = one_preset(vec![vec![(generator::VELOCITY, 32)]]);
+    let loud = level(&plain, 69, 127);
+    let soft = level(&plain, 69, 32);
+    let got = level(&forced, 69, 127);
+    assert!(loud > 1.5 * soft, "{loud} {soft}");
+    assert!((got / soft - 1.0).abs() < 0.05, "{got} against {soft}");
+}

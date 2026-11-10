@@ -43,7 +43,8 @@ fn a_truncated_file_is_an_io_error() {
 /// the control byte and fails the second assertion.
 #[test]
 fn a_wrong_form_type_names_what_it_found() {
-    let mut file = b"RIFF\0\0\0\0WAV\x01".to_vec();
+    // The RIFF size is honoured, so it is true: the form type and 16 more bytes.
+    let mut file = b"RIFF\x14\0\0\0WAV\x01".to_vec();
     file.extend([0; 16]);
     let error = SoundFont::new(&mut Cursor::new(file)).unwrap_err();
     let message = error.to_string();

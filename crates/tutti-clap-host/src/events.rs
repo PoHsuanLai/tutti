@@ -38,7 +38,7 @@ use tutti_plugin_types::{
 };
 
 use crate::types::RtNoteExpressions;
-use tutti_midi_protocol::{midi1, narrow, widen};
+use tutti_midi_protocol::{midi1, narrow, widen, widen_message};
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity, sysex7_packets};
 use tutti_ump::{
@@ -115,15 +115,6 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
         10 => Some(NoteExpressionType::Pan),
         74 => Some(NoteExpressionType::Brightness),
         _ => None,
-    }
-}
-
-/// `message` as MIDI 2.0 when it is a MIDI 1.0 channel voice message
-/// ([`widen`]); every other message is returned as it came.
-fn widened(message: Message) -> Message {
-    match message {
-        Message::Midi1(address, voice) => Message::Midi2(address, widen(voice)),
-        other => other,
     }
 }
 
@@ -807,7 +798,7 @@ impl ClapEvent {
                 let message = Midi1Parser::message(MidiGroup::FIRST, &e.data)?;
                 Some(WireMidi {
                     offset: e.header.time,
-                    ump: Ump::from(widened(message)),
+                    ump: Ump::from(widen_message(message)),
                 })
             }
             _ => None,

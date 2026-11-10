@@ -19,7 +19,9 @@
 
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
+use tutti_midi_protocol::midi1;
 use tutti_plugin_types::WireMidi;
+use tutti_ump::{Midi1Bytes, Ump, decode};
 
 /// A block's plugin-to-host MIDI, reserved once and reused.
 pub type MidiEventVec = Vec<WireMidi>;
@@ -124,33 +126,40 @@ pub fn to_midi(event: &crate::api::MidiEvent) -> Option<WireMidi> {
 
 /// Serializes a Tutti UMP [`WireMidi`] to a VST2 `crate::api::MidiEvent`.
 ///
-/// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `to_midi1_bytes` performs the
-/// spec Min-Center-Max downscale (16-bit velocity / 32-bit CC / bend → 7/14-bit;
-/// `convert.rs`), so no precision is lost beyond MIDI-1's inherent width.
-/// Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
-/// program change (everything with a 3-byte MIDI-1 form). SysEx is not a
-/// `api::MidiEvent` in VST2: [`MidiSendBuffer::stage_piece`] reassembles it into a
-/// `SysExEvent`.
-/// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
-/// controllers, per-note management (Detach/Reset), and any resolution beyond
-/// 7/14 bits.
+/// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `midi1_of` narrows a MIDI
+/// 2.0 channel voice message with the spec's Min-Center-Max downscale
+/// (`tutti_midi_protocol::midi1`), so no precision is lost beyond MIDI-1's
+/// inherent width. Translated: NoteOn/Off, CC, channel pitch bend,
+/// channel/poly pressure, program change (everything with a 3-byte MIDI-1
+/// form). SysEx is not a `api::MidiEvent` in VST2: [`MidiSendBuffer::stage_piece`]
+/// reassembles it into a `SysExEvent`.
+/// Returns `None` when the packet is not exactly one MIDI 1.0 message: per-note
+/// pitch bend, per-note controllers and management (no MIDI-1 analogue), and a
+/// Program Change with a bank (three messages; `stage_piece` sends all three).
 pub fn from_midi(event: &WireMidi) -> Option<crate::api::MidiEvent> {
-    let (midi_data, len) = tutti_midi_types::to_midi1_bytes(&event.ump)?;
-    Some(midi_event(event.offset, midi_data, len))
+    let mut messages = midi1_of(event.ump);
+    let only = messages.next()?;
+    messages
+        .next()
+        .is_none()
+        .then(|| midi_event(event.offset, only))
+}
+
+/// The MIDI 1.0 messages `ump` stands for, in send order (none when it has no
+/// MIDI 1.0 form, or does not decode).
+fn midi1_of(ump: Ump) -> impl Iterator<Item = Midi1Bytes> {
+    decode(ump).ok().into_iter().flat_map(midi1)
 }
 
 /// One MIDI-1 message as a VST2 event at `frame_offset`.
-fn midi_event(frame_offset: u32, midi_data: [u8; 3], len: u8) -> crate::api::MidiEvent {
+fn midi_event(frame_offset: u32, message: Midi1Bytes) -> crate::api::MidiEvent {
     use crate::api;
     use std::mem;
 
-    // VST2's `midi_data` is a fixed `[u8; 3]`. `to_midi1_bytes` already
-    // zero-pads shorter messages into that fixed array, so `midi_data` is
-    // wire-ready as-is and `len` is redundant here. The assert guards the
-    // invariant that a >3-byte MIDI-1 message never reaches the VST2
-    // fixed-array path (SysEx and other long-form messages are dropped by
-    // `to_midi1_bytes` returning `None` above, never reaching here).
-    debug_assert!(len <= 3, "VST2 midi_data is [u8; 3]; got len {len}");
+    // VST2's `midi_data` is a fixed `[u8; 3]`: a short message is zero-padded.
+    // A message with no 3-byte form (SysEx) never reaches here: `midi1` has
+    // none for it, and `stage_piece` sends SysEx as a `SysExEvent`.
+    let midi_data = message.padded();
 
     // `frame_offset` is `u32`; VST2's `delta_frames` is `i32`. A value past
     // `i32::MAX` wraps negative, and the plugin offsets into its own buffers
@@ -389,14 +398,13 @@ impl MidiSendBuffer {
             // bank is CC 0, CC 32, PC): each takes a slot at the same frame,
             // and all of them fit or none is staged (a bank is not sent
             // without its program).
-            let messages = tutti_midi_types::to_midi1_messages(ev);
-            let n = messages.len();
+            let n = midi1_of(*ev).count();
             if self.order.len() + n > self.room {
                 self.events_dropped += n as u64;
                 continue;
             }
-            for (bytes, len) in messages {
-                let mut api = midi_event(offset.get(), bytes, len);
+            for message in midi1_of(*ev) {
+                let mut api = midi_event(offset.get(), message);
                 api.delta_frames = delta;
                 self.order.push(Staged::Midi(self.api_events.len()));
                 self.api_events.push(api);
@@ -749,6 +757,27 @@ mod tests {
         assert_eq!(api.midi_data[0], 0xC1);
         assert_eq!(api.midi_data[1], 42);
         assert_eq!(api.midi_data[2], 0);
+    }
+
+    /// `from_midi` is one event: a Program Change with a bank is three, so it
+    /// has none (`stage_piece` sends the three), and a MIDI 2.0 Note On at
+    /// velocity 0 goes out at velocity 1, not as a MIDI 1.0 Note Off (M2-104).
+    ///
+    /// Mutation (run): `from_midi` returning the first of `midi1`'s messages →
+    /// the bank's CC 0 → fails.
+    #[test]
+    fn from_midi_is_one_message_or_none() {
+        let banked = wire(
+            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+            0,
+        );
+        assert!(from_midi(&banked).is_none());
+        let silent_on = wire(
+            midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
+            0,
+        );
+        let api = from_midi(&silent_on).expect("a Note On converts");
+        assert_eq!(api.midi_data, [0x91, 60, 1]);
     }
 
     #[test]

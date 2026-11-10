@@ -36,9 +36,9 @@ thiserror.workspace = true
 # `Offset`: where an event sits in the block `send_midi` is given; `Ump`: the packet.
 tutti-graph = { path = "../tutti-graph" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-# UMP decode (message view + MIDI 2.0→1.0 value scaling) for
-# MusicDeviceMIDIEvent delivery to instrument / music-effect AUs.
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
+# `midi1`: a channel voice message as the MIDI 1.0 bytes `MusicDeviceMIDIEvent`
+# takes (the narrowing and a banked Program Change's three messages).
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # The engine's unit newtypes: `Bpm`/`Beat` on `TransportState` and `Seconds` on
 # `get_tail_time`. `default-features = false` drops this crate's codec/midi
 # defaults, which the unit vocabulary does not need.
@@ -49,6 +49,8 @@ tutti-rt = { path = "../tutti-rt" }
 coreaudio-sys = "0.2"
 
 [dev-dependencies]
+# The tests build SysEx and MIDI 1.0 fixtures with its helpers.
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # The tests that build their own raw calls beside the safe API.
 tutti-au-host = { path = ".", features = ["test-support"] }
 tutti-au-ffi = { path = "../tutti-au-ffi", features = ["test-support"] }

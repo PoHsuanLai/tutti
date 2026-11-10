@@ -219,7 +219,7 @@ impl HostDecl {
                     to: RouteTarget::Param(HOST_TARGET),
                     depth: Depth(0.3),
                     polarity: tutti_modulation::Polarity::Bipolar,
-                    curve: tutti_modulation::CurveType::Linear,
+                    curve: tutti_modulation::Law::Linear,
                 },
             )],
             targets: if range {

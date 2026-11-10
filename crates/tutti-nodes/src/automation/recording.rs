@@ -3,7 +3,7 @@
 //!
 //! [`Recorder`] is the **write** side of a [`Curve`]: where a curve is
 //! `beat -> value`, a recorder is fed `(beat, value)` samples by whoever watches
-//! the param and hands back an [`AutomationEnvelope`] — itself a `Curve` — when
+//! the param and hands back an [`Trajectory`] — itself a `Curve` — when
 //! the take ends. Like every other curve in the engine it holds no clock and
 //! consults no loop range: the caller supplies an already-resolved, already
 //! loop-wrapped [`Beat`].
@@ -11,7 +11,7 @@
 //! A recorder is also a `Curve` in its own right, reading the take *in progress*
 //! (see the [`Curve`] impl). That is what makes latch-hold a plain curve
 //! rather than a second, disagreeing accumulator: for the take's duration the
-//! host reads the in-flight take where it would read the saved envelope, and
+//! host reads the in-flight take where it would read the saved trajectory, and
 //! automation replaces the knob as it always does (doc 014 §2).
 //!
 //! ## What lives where
@@ -22,7 +22,7 @@
 //! has no opinion on how targets are addressed, so it holds no registry and
 //! carries no target trait.
 
-use audio_automation::{AutomationEnvelope, AutomationPoint, CurveType};
+use tutti_curve::{Breakpoint, Law, Trajectory};
 use tutti_modulation::Curve;
 use tutti_types::{Beat, BeatDuration};
 
@@ -33,10 +33,10 @@ use tutti_types::{Beat, BeatDuration};
 ///
 /// There is no `Off` and no `Play`: not recording is the absence of a recorder
 /// (the host's map simply has no entry), and *playback* is
-/// [`Curve::value_at`] on the saved envelope. Both were states on
-/// `audio_automation::AutomationState`, whose extra arms this type deliberately
-/// drops — a recorder that also answered reads would be a second accumulator
-/// competing with the saved envelope.
+/// [`Curve::value_at`] on the saved trajectory. A mode with an `Off` and a `Play`
+/// arm would give the recorder reads of its own, which this type deliberately
+/// has none of — a recorder that also answered reads would be a second
+/// accumulator competing with the saved trajectory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecordMode {
     /// Capture continuously from the first sample, no touch required.
@@ -82,7 +82,7 @@ pub struct RecordingConfig {
     /// Whether [`Recorder::finish`] thins the take before handing it back.
     pub auto_simplify: bool,
     /// Curve type stamped on each recorded point.
-    pub default_curve: CurveType,
+    pub default_curve: Law,
 }
 
 impl Default for RecordingConfig {
@@ -91,7 +91,7 @@ impl Default for RecordingConfig {
             min_point_interval: BeatDuration(0.01),
             simplify_tolerance: 0.01,
             auto_simplify: true,
-            default_curve: CurveType::Linear,
+            default_curve: Law::Linear,
         }
     }
 }
@@ -106,7 +106,7 @@ impl Default for RecordingConfig {
 /// of the read path.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Take {
-    /// The control is held. Samples land in the envelope.
+    /// The control is held. Samples land in the trajectory.
     Capturing { last_beat: Beat, last_value: f32 },
     /// Released under `Latch` — the value is frozen until the take ends.
     Held { value: f32 },
@@ -116,21 +116,21 @@ enum Take {
 
 /// One automation lane under capture: the write side of a [`Curve`].
 ///
-/// Takes `&mut self` throughout. The previous incarnation held its envelope in
+/// Takes `&mut self` throughout. The previous incarnation held its trajectory in
 /// an `Arc<RwLock<_>>` so a concurrent map could hand out `&self` recorders;
 /// with the map host-side that lock had no reader to protect, and the borrow
 /// checker does the job for free. A recorder has no concurrent reader to
 /// share it with.
 #[derive(Debug, Clone)]
 pub struct Recorder {
-    envelope: AutomationEnvelope<f32>,
+    trajectory: Trajectory,
     mode: RecordMode,
     take: Option<Take>,
     config: RecordingConfig,
 }
 
 impl Recorder {
-    /// A recorder over an empty envelope clamped to `[min, max]`.
+    /// A recorder over an empty trajectory clamped to `[min, max]`.
     #[must_use]
     pub fn new(mode: RecordMode, min: f32, max: f32) -> Self {
         Self::with_config(mode, min, max, RecordingConfig::default())
@@ -140,21 +140,21 @@ impl Recorder {
     #[must_use]
     pub fn with_config(mode: RecordMode, min: f32, max: f32, config: RecordingConfig) -> Self {
         Self {
-            // `0.0` is the envelope's *target label*, not a value — the label is
+            // `0.0` is the trajectory's *target label*, not a value — the label is
             // unused here (the host's map key addresses the lane), and `Curve`'s
             // blanket impl ignores it beyond its thread bounds.
-            envelope: AutomationEnvelope::new(0.0).with_range(min, max),
+            trajectory: Trajectory::new().with_range(min, max),
             mode,
             take: None,
             config,
         }
     }
 
-    /// A recorder that overdubs onto an existing envelope — a second pass over a
+    /// A recorder that overdubs onto an existing trajectory — a second pass over a
     /// lane that already has points.
-    pub fn overdub(mode: RecordMode, envelope: AutomationEnvelope<f32>) -> Self {
+    pub fn overdub(mode: RecordMode, trajectory: Trajectory) -> Self {
         Self {
-            envelope,
+            trajectory,
             mode,
             take: None,
             config: RecordingConfig::default(),
@@ -190,9 +190,9 @@ impl Recorder {
         self.config = config;
     }
 
-    /// The envelope written so far, including the take in progress.
-    pub fn envelope(&self) -> &AutomationEnvelope<f32> {
-        &self.envelope
+    /// The trajectory written so far, including the take in progress.
+    pub fn trajectory(&self) -> &Trajectory {
+        &self.trajectory
     }
 
     /// Whether a take is currently open (capturing, or latch-held).
@@ -264,23 +264,23 @@ impl Recorder {
         }
     }
 
-    /// End the take and hand back the envelope, thinned if
+    /// End the take and hand back the trajectory, thinned if
     /// [`auto_simplify`](RecordingConfig::auto_simplify) is set.
     ///
     /// Takes `self`: the take is over, so consuming the recorder is what the
-    /// host's map does anyway (remove the entry, keep the envelope). This is the
-    /// only way to get the envelope by value.
+    /// host's map does anyway (remove the entry, keep the trajectory). This is the
+    /// only way to get the trajectory by value.
     #[must_use]
-    pub fn finish(mut self) -> AutomationEnvelope<f32> {
+    pub fn finish(mut self) -> Trajectory {
         if self.config.auto_simplify {
-            self.envelope.simplify(self.config.simplify_tolerance);
+            self.trajectory.simplify(self.config.simplify_tolerance);
         }
-        self.envelope
+        self.trajectory
     }
 
     fn write_point(&mut self, beat: Beat, value: f32) {
-        self.envelope.add_point(AutomationPoint::with_curve(
-            beat.get(),
+        self.trajectory.add_breakpoint(Breakpoint::with_law(
+            beat,
             value,
             self.config.default_curve,
         ));
@@ -290,17 +290,17 @@ impl Recorder {
 /// The take **in progress** — not the saved lane.
 ///
 /// This is what makes latch-hold composable: the host reads the live recorder
-/// in place of the saved envelope for the take's duration — no second
+/// in place of the saved trajectory for the take's duration — no second
 /// summation path.
 ///
 /// `None` when no take is open, preserving the empty-vs-zero distinction
 /// [`Curve`] requires: between takes the recorder contributes *nothing* and the
-/// saved envelope shows through, rather than pinning the param to `0.0`.
+/// saved trajectory shows through, rather than pinning the param to `0.0`.
 impl Curve for Recorder {
     fn value_at(&self, beat: Beat) -> Option<f32> {
         match self.take {
             Some(Take::Held { value }) => Some(value),
-            Some(Take::Capturing { .. }) => self.envelope.value_at(beat),
+            Some(Take::Capturing { .. }) => self.trajectory.value_at(beat),
             None => None,
         }
     }
@@ -325,7 +325,7 @@ mod tests {
         r.record(Beat(0.0), 0.1);
         r.record(Beat(1.0), 0.2);
         r.record(Beat(2.0), 0.3);
-        assert_eq!(r.envelope().len(), 3);
+        assert_eq!(r.trajectory().len(), 3);
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod tests {
             r.record(Beat(0.0), 0.5);
             r.record(Beat(1.0), 0.6);
             assert!(
-                r.envelope().is_empty(),
+                r.trajectory().is_empty(),
                 "{mode:?} must not capture before touch"
             );
             assert!(!r.is_taking());
@@ -346,7 +346,7 @@ mod tests {
     fn touch_on_write_is_a_noop() {
         let mut r = recorder(RecordMode::Write);
         r.touch(Beat(0.0), 0.5);
-        assert!(r.envelope().is_empty());
+        assert!(r.trajectory().is_empty());
         assert!(!r.is_taking());
     }
 
@@ -356,14 +356,14 @@ mod tests {
     fn touch_records_then_release_ends_the_take() {
         let mut r = recorder(RecordMode::Touch);
         r.touch(Beat(0.0), 0.5);
-        assert_eq!(r.envelope().len(), 1);
+        assert_eq!(r.trajectory().len(), 1);
 
         r.record(Beat(1.0), 0.6);
         r.record(Beat(2.0), 0.7);
-        assert_eq!(r.envelope().len(), 3);
+        assert_eq!(r.trajectory().len(), 3);
 
         r.release(Beat(3.0), 0.8);
-        assert_eq!(r.envelope().len(), 4, "release writes a final point");
+        assert_eq!(r.trajectory().len(), 4, "release writes a final point");
         assert!(!r.is_taking(), "Touch ends the take on release");
     }
 
@@ -372,11 +372,11 @@ mod tests {
         let mut r = recorder(RecordMode::Touch);
         r.touch(Beat(0.0), 0.5);
         r.release(Beat(1.0), 0.6);
-        let after_release = r.envelope().len();
+        let after_release = r.trajectory().len();
 
         r.record(Beat(2.0), 0.9);
         assert_eq!(
-            r.envelope().len(),
+            r.trajectory().len(),
             after_release,
             "a released Touch take must not resume on further samples"
         );
@@ -407,11 +407,11 @@ mod tests {
         let mut r = recorder(RecordMode::Latch);
         r.touch(Beat(0.0), 0.5);
         r.release(Beat(1.0), 0.7);
-        let held = r.envelope().len();
+        let held = r.trajectory().len();
 
         r.record(Beat(2.0), 0.9);
         assert_eq!(
-            r.envelope().len(),
+            r.trajectory().len(),
             held,
             "a held latch take freezes; samples do not land"
         );
@@ -422,7 +422,7 @@ mod tests {
     fn release_without_a_take_is_a_noop() {
         let mut r = recorder(RecordMode::Touch);
         r.release(Beat(1.0), 0.5);
-        assert!(r.envelope().is_empty());
+        assert!(r.trajectory().is_empty());
         assert!(!r.is_taking());
     }
 
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn no_take_contributes_nothing() {
-        // The empty-vs-zero distinction: between takes the saved envelope must
+        // The empty-vs-zero distinction: between takes the saved trajectory must
         // show through, so the recorder reads None rather than 0.0.
         let mut r = recorder(RecordMode::Touch);
         assert_eq!(r.value_at(Beat(0.0)), None);
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn capturing_reads_the_envelope_being_written() {
+    fn capturing_reads_the_trajectory_being_written() {
         let mut r = recorder(RecordMode::Touch);
         r.touch(Beat(0.0), 0.0);
         r.record(Beat(4.0), 1.0);
@@ -469,7 +469,7 @@ mod tests {
         r.record(Beat(0.1), 0.6); // +0.1 — too soon
         r.record(Beat(0.4), 0.7); // +0.4 from 0.0 — still too soon
         r.record(Beat(0.5), 0.8); // +0.5 — writes
-        assert_eq!(r.envelope().len(), 2);
+        assert_eq!(r.trajectory().len(), 2);
     }
 
     #[test]
@@ -488,7 +488,7 @@ mod tests {
         );
         r.record(Beat(4.0), 0.5);
         r.record(Beat(0.0), 0.9);
-        assert_eq!(r.envelope().len(), 2, "the seek-back point must land");
+        assert_eq!(r.trajectory().len(), 2, "the seek-back point must land");
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
         for i in 0..=10 {
             r.record(Beat(i as f64), i as f32 / 10.0);
         }
-        let dense = r.envelope().len();
+        let dense = r.trajectory().len();
         let env = r.finish();
         assert!(
             env.len() < dense,
@@ -526,14 +526,14 @@ mod tests {
         let mut r = recorder(RecordMode::Latch);
         r.touch(Beat(0.0), 0.5);
         r.record(Beat(1.0), 0.6);
-        let captured = r.envelope().len();
+        let captured = r.trajectory().len();
 
         r.set_mode(RecordMode::Write);
         assert!(
             !r.is_taking(),
             "the old discipline's take does not carry over"
         );
-        assert_eq!(r.envelope().len(), captured, "captured points survive");
+        assert_eq!(r.trajectory().len(), captured, "captured points survive");
     }
 
     #[test]
@@ -547,18 +547,18 @@ mod tests {
     // ── overdub ──
 
     #[test]
-    fn overdub_starts_from_an_existing_envelope() {
-        let mut env = AutomationEnvelope::new(0.0f32).with_range(0.0, 1.0);
-        env.add_point(AutomationPoint::new(0.0, 0.2));
-        env.add_point(AutomationPoint::new(8.0, 0.4));
+    fn overdub_starts_from_an_existing_trajectory() {
+        let mut env = Trajectory::new().with_range(0.0, 1.0);
+        env.add_breakpoint(Breakpoint::new(Beat(0.0), 0.2));
+        env.add_breakpoint(Breakpoint::new(Beat(8.0), 0.4));
 
         let mut r = Recorder::overdub(RecordMode::Touch, env);
-        assert_eq!(r.envelope().len(), 2);
+        assert_eq!(r.trajectory().len(), 2);
         assert!(!r.is_taking());
 
         r.touch(Beat(4.0), 0.9);
         assert_eq!(
-            r.envelope().len(),
+            r.trajectory().len(),
             3,
             "the new point joins the existing ones"
         );

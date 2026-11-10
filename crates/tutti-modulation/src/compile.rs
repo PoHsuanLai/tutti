@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use audio_automation::CurveType;
+use tutti_curve::Law;
 use tutti_types::{
     Adsr, Beat, BeatDuration, Depth, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
     SampleRate, Samples, Seconds,
@@ -146,7 +146,7 @@ pub struct RouteDecl {
     /// Both ways or one.
     pub polarity: Polarity,
     /// The response curve on the magnitude.
-    pub curve: CurveType,
+    pub curve: Law,
 }
 
 impl RouteDecl {

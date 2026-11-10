@@ -37,6 +37,10 @@ members = [
     # The tempo map: step and ramp segments, beat, seconds and frame conversion.
     # Depends on `tutti-types` alone (and `libm`); nothing adopts it yet.
     "crates/tutti-tempo",
+    # The easing laws (`Law`) and the automation point list built on them:
+    # layer 1, `tutti-types` alone. The graph, the modulation compiler and the
+    # automation lanes evaluate the same `Law`.
+    "crates/tutti-curve",
     "crates/tutti-cpal",
     "crates/tutti-types",
     # The audio file encoders (WAV, AIFF, FLAC, Ogg Vorbis) behind one `Encoder`
@@ -160,12 +164,10 @@ missing_panics_doc = "warn"
 
 # Shared-dep pins the members inherit via `workspace = true`.
 #
-# The `audio-automation` rev must stay in step with any consumer that also
-# depends on that crate directly — dawai does. Two revs of `audio-automation`
-# are two disjoint copies of `Curve`, and the error surfaces at the consumer's
-# seam as `expected Curve, found Curve`, nowhere near here. (`bevy_reflect` is the
-# optional `bevy` feature of `tutti-types` and `tutti-modulation`; the rest of
-# the bevy 0.19 pins moved to the parked `crates/bevy-tutti/Cargo.toml`.)
+# `bevy_reflect` is the optional `bevy` feature of `tutti-types` and
+# `tutti-modulation`, and the one pin a consumer must keep in step with the
+# bevy 0.19 line; the rest of the bevy 0.19 pins moved to the parked
+# `crates/bevy-tutti/Cargo.toml`.
 [workspace.dependencies]
 bevy_reflect = { version = "0.19", default-features = false }
 thiserror = "2"
@@ -180,16 +182,6 @@ thiserror = "2"
 # fontconfig was wrong: that edge was the vendored fundsp fork's own bare
 # `plotters` dev-dependency, and went with the fork.
 criterion = "0.8"
-
-# Automation curves. We track an unreleased commit (0.4.1, which adds the
-# `bevy_reflect` feature), so this is a direct git dep rather than crates.io
-# `0.4` plus a `[patch]`. Members inherit it with `workspace = true`; keep the
-# rev identical to the app workspace's pin, or the two trees resolve to
-# disjoint copies of the same types across the cross-workspace path deps.
-#
-# `default-features = false` here is the floor: members that need reflection
-# opt in with `features = ["bevy_reflect"]` on their own line.
-audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "5c9c3a7", default-features = false }
 
 midly = { version = "0.5", default-features = false }
 coremidi = "0.9"
@@ -221,7 +213,4 @@ inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
-# NOTE: no `[patch.crates-io]` here. `audio-automation` is a direct git dep in
-# this workspace's `[workspace.dependencies]`, inherited by the four members that
-# use it (tutti-modulation, tutti-nodes, tutti-plugin, tutti-plugin-types), so no
-# crates.io reference survives to redirect.
+# NOTE: no `[patch.crates-io]` here: no member depends on a git repository.

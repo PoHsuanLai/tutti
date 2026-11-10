@@ -8,7 +8,7 @@
 //! Automation is carried as **ramp** events ([`ParamRamp`]: relative, from
 //! wherever the param stands) and as **curve segments** ([`ParamSegment`]:
 //! absolute, between their own endpoints), both moving along a closed set of
-//! shapes ([`SegmentShape`]) a param port evaluates per frame.
+//! shapes ([`Law`]) a param port evaluates per frame.
 //!
 //!
 //! A MIDI event carries a [`tutti_ump::Ump`]. The graph reads one fact of it,
@@ -17,13 +17,14 @@
 
 use std::cell::Cell;
 
+use tutti_curve::Law;
 use tutti_types::{ParamAddr, ParamKey, SamplePosition, Samples, Unit, UnitAddr};
 use tutti_ump::Ump;
 
 use crate::time::Offset;
 
 /// A ramp of one parameter from the value it has at the event's frame to a
-/// target, starting there: linear, or along a [`SegmentShape`]
+/// target, starting there: linear, or along a [`Law`]
 /// ([`with_shape`](Self::with_shape)).
 ///
 /// **Relative, unlike a [`ParamSegment`].** Its start value is whatever the
@@ -34,7 +35,7 @@ use crate::time::Offset;
 /// from frame `duration - 1` on. Re-sending one restarts it from where the
 /// source stands.
 ///
-/// A shape that needs `from` to be chosen ([`SegmentShape::Exp`]'s
+/// A shape that needs `from` to be chosen ([`Law::Exp`]'s
 /// geometric `k = ln(to / from)`) wants a [`ParamSegment`], which names its
 /// start value: a shape is a function of progress alone.
 ///
@@ -53,15 +54,15 @@ use crate::time::Offset;
 ///   boundary the units rule stops at: tutti does not know the unit.
 ///
 /// ```
-/// use tutti_graph::{ParamRamp, SegmentShape};
+/// use tutti_graph::{ParamRamp, Law};
 /// use tutti_types::{Db, Hz, ParamKey, Samples};
 /// let r = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(800.0), Samples(64));
 /// assert_eq!(r.target(ParamKey::<Hz>::CUTOFF), Some(Hz(800.0)));
 /// assert_eq!(r.target(ParamKey::<Db>::THRESHOLD), None); // another param
 /// assert_eq!(r.foreign_target(7), None); // not a foreign param at all
-/// assert_eq!(r.shape(), SegmentShape::Linear);
-/// let eased = r.with_shape(SegmentShape::PowerIn(2.0));
-/// assert_eq!(eased.shape(), SegmentShape::PowerIn(2.0));
+/// assert_eq!(r.shape(), Law::Linear);
+/// let eased = r.with_shape(Law::PowerIn(2.0));
+/// assert_eq!(eased.shape(), Law::PowerIn(2.0));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamRamp {
@@ -98,7 +99,7 @@ impl ParamRamp {
     }
 
     fn packed(addr: ParamAddr, target: f32, duration: Samples) -> Self {
-        let (shape, shape_param) = SegmentShape::Linear.pack();
+        let (shape, shape_param) = ShapeTag::pack(Law::Linear);
         Self {
             addr,
             target,
@@ -112,15 +113,15 @@ impl ParamRamp {
     /// eases in or out from wherever the parameter stands. A zero duration
     /// is still a step.
     #[must_use]
-    pub fn with_shape(mut self, shape: SegmentShape) -> Self {
-        (self.shape, self.shape_param) = shape.pack();
+    pub fn with_shape(mut self, shape: Law) -> Self {
+        (self.shape, self.shape_param) = ShapeTag::pack(shape);
         self
     }
 
-    /// The shape it moves along ([`SegmentShape::Linear`] unless
+    /// The shape it moves along ([`Law::Linear`] unless
     /// [`with_shape`](Self::with_shape) set one).
-    pub fn shape(&self) -> SegmentShape {
-        SegmentShape::unpack(self.shape, self.shape_param)
+    pub fn shape(&self) -> Law {
+        self.shape.unpack(self.shape_param)
     }
 
     /// Which parameter this ramps — for routing on the address.
@@ -157,159 +158,8 @@ fn saturate(n: Samples) -> u32 {
     u32::try_from(n.get()).unwrap_or(u32::MAX)
 }
 
-/// How a [`ParamSegment`] or a [`ParamRamp`] moves from its start value to
-/// its end value: a
-/// function `g` of its progress `t` in `[0, 1]`, with `g(0) = 0` and
-/// `g(1) = 1`; the value is `from + (to - from) · g(t)`.
-///
-/// A **closed set**, so a segment stays a `Copy` value a few words long on
-/// the audio thread rather than an `Arc<dyn Curve>`. Every shape is monotone
-/// between its endpoints, so a segment never leaves `[from, to]`.
-///
-/// A parameter that is not finite, or out of the range a variant states,
-/// evaluates as [`Linear`](Self::Linear): the audio thread never computes a
-/// NaN from a shape.
-///
-/// **Platform figures.** `Linear`, `Hold`, and the power shapes at exponents
-/// 0.5 and 1–5 evaluate with IEEE-exact operations (multiplication, `sqrt`),
-/// so they render the same bits on every target. Other exponents (`powf`)
-/// and [`Exp`](Self::Exp) (`exp_m1`) go through the platform's libm and may
-/// differ in the last ulp between targets; within one target they are
-/// deterministic, so a parallel render still equals the serial one.
-///
-/// ```
-/// use tutti_graph::SegmentShape;
-/// assert_eq!(SegmentShape::Linear.eval(0.25), 0.25);
-/// assert_eq!(SegmentShape::PowerIn(2.0).eval(0.5), 0.25);
-/// assert_eq!(SegmentShape::PowerOut(2.0).eval(0.5), 0.75);
-/// assert_eq!(SegmentShape::Hold.eval(0.99), 0.0);
-/// assert_eq!(SegmentShape::PowerIn(f32::NAN).eval(0.5), 0.5); // as linear
-/// ```
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum SegmentShape {
-    /// `t`. The default: a [`ParamRamp`]'s shape unless it names one.
-    #[default]
-    Linear,
-    /// `0` until the end, then `1`: the start value held, and a step onto
-    /// the end value on the segment's last frame.
-    Hold,
-    /// `t^p`, `p > 0`: an ease-in. `p > 1` starts slow (`2` is a quadratic,
-    /// `audio-automation`'s "exponential"), `p < 1` starts fast (`0.5` is a
-    /// square root, its "logarithmic").
-    PowerIn(f32),
-    /// `1 - (1 - t)^p`, `p > 0`: the ease-out mirror of
-    /// [`PowerIn`](Self::PowerIn).
-    PowerOut(f32),
-    /// [`PowerIn`](Self::PowerIn) over the first half and
-    /// [`PowerOut`](Self::PowerOut) over the second, `p > 0`: an S-curve
-    /// (`2` is the quadratic "S-curve").
-    PowerInOut(f32),
-    /// `(e^(k·t) - 1) / (e^k - 1)`: a true exponential with curvature `k`
-    /// (`|k|` past 64 is clamped). `k > 0` starts slow, `k < 0` starts fast;
-    /// `k` near 0 is linear. `k = ln(to / from)` makes the value geometric
-    /// (a frequency sweep linear in pitch).
-    Exp(f32),
-}
-
-impl SegmentShape {
-    /// `g(t)`, `t` clamped to `[0, 1]` (a NaN `t` is 0). Allocation-free:
-    /// what a param port calls once per frame.
-    #[inline]
-    #[must_use]
-    pub fn eval(self, t: f32) -> f32 {
-        let t = if t >= 0.0 { t.min(1.0) } else { 0.0 };
-        match self {
-            Self::Linear => t,
-            Self::Hold => {
-                if t < 1.0 {
-                    0.0
-                } else {
-                    1.0
-                }
-            }
-            Self::PowerIn(p) if valid_exponent(p) => pow(t, p),
-            Self::PowerOut(p) if valid_exponent(p) => 1.0 - pow(1.0 - t, p),
-            Self::PowerInOut(p) if valid_exponent(p) => {
-                // `2^(p-1) · t^p` is `(2t)^p / 2`, which keeps the integer
-                // exponents on multiplications.
-                if t < 0.5 {
-                    pow(2.0 * t, p) / 2.0
-                } else {
-                    1.0 - pow(2.0 - 2.0 * t, p) / 2.0
-                }
-            }
-            Self::Exp(k) if k.is_finite() => {
-                let k = k.clamp(-EXP_CURVATURE_MAX, EXP_CURVATURE_MAX);
-                if k.abs() < 1e-4 {
-                    t
-                } else {
-                    (k * t).exp_m1() / k.exp_m1()
-                }
-            }
-            // An invalid parameter: linear (see the type docs).
-            Self::PowerIn(_) | Self::PowerOut(_) | Self::PowerInOut(_) | Self::Exp(_) => t,
-        }
-    }
-
-    /// The shape as its tag and parameter: how a segment and a ramp
-    /// store it.
-    pub(crate) fn pack(self) -> (ShapeTag, f32) {
-        match self {
-            Self::Linear => (ShapeTag::Linear, 0.0),
-            Self::Hold => (ShapeTag::Hold, 0.0),
-            Self::PowerIn(p) => (ShapeTag::PowerIn, p),
-            Self::PowerOut(p) => (ShapeTag::PowerOut, p),
-            Self::PowerInOut(p) => (ShapeTag::PowerInOut, p),
-            Self::Exp(k) => (ShapeTag::Exp, k),
-        }
-    }
-
-    /// The inverse of [`pack`](Self::pack).
-    pub(crate) fn unpack(tag: ShapeTag, param: f32) -> Self {
-        match tag {
-            ShapeTag::Linear => Self::Linear,
-            ShapeTag::Hold => Self::Hold,
-            ShapeTag::PowerIn => Self::PowerIn(param),
-            ShapeTag::PowerOut => Self::PowerOut(param),
-            ShapeTag::PowerInOut => Self::PowerInOut(param),
-            ShapeTag::Exp => Self::Exp(param),
-        }
-    }
-}
-
-/// The largest `|k|` [`SegmentShape::Exp`] evaluates: `e^64` is far inside
-/// `f32`, so the ratio never overflows to `inf / inf`.
-const EXP_CURVATURE_MAX: f32 = 64.0;
-
-fn valid_exponent(p: f32) -> bool {
-    p.is_finite() && p > 0.0
-}
-
-/// `x^p` for `x` in `[0, 1]`: the integer exponents up to 5 and the square
-/// root by IEEE-exact operations, anything else through `powf`.
-#[inline]
-fn pow(x: f32, p: f32) -> f32 {
-    if p == 1.0 {
-        x
-    } else if p == 2.0 {
-        x * x
-    } else if p == 3.0 {
-        x * x * x
-    } else if p == 4.0 {
-        let x2 = x * x;
-        x2 * x2
-    } else if p == 5.0 {
-        let x2 = x * x;
-        x2 * x2 * x
-    } else if p == 0.5 {
-        x.sqrt()
-    } else {
-        x.powf(p)
-    }
-}
-
-/// [`SegmentShape`]'s variant, as a byte: a segment or a ramp stores its
-/// shape as this and an `f32`, so an [`Event`] stays 32 bytes.
+/// A [`Law`]'s variant, as a byte: a segment or a ramp stores its law as this
+/// and an `f32`, so an [`Event`] stays 32 bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum ShapeTag {
@@ -321,8 +171,34 @@ pub(crate) enum ShapeTag {
     Exp,
 }
 
+impl ShapeTag {
+    /// The law as its tag and parameter: how a segment and a ramp store it.
+    fn pack(law: Law) -> (Self, f32) {
+        match law {
+            Law::Linear => (Self::Linear, 0.0),
+            Law::Hold => (Self::Hold, 0.0),
+            Law::PowerIn(p) => (Self::PowerIn, p),
+            Law::PowerOut(p) => (Self::PowerOut, p),
+            Law::PowerInOut(p) => (Self::PowerInOut, p),
+            Law::Exp(k) => (Self::Exp, k),
+        }
+    }
+
+    /// The inverse of [`pack`](Self::pack).
+    fn unpack(self, param: f32) -> Law {
+        match self {
+            Self::Linear => Law::Linear,
+            Self::Hold => Law::Hold,
+            Self::PowerIn => Law::PowerIn(param),
+            Self::PowerOut => Law::PowerOut(param),
+            Self::PowerInOut => Law::PowerInOut(param),
+            Self::Exp => Law::Exp(param),
+        }
+    }
+}
+
 /// A curve segment of one parameter: from a start value to an end value
-/// along a [`SegmentShape`], over a length in frames, evaluated by the param
+/// along a [`Law`], over a length in frames, evaluated by the param
 /// port **per frame inside the block** — sample-accurate non-linear
 /// automation, with no sub-chunking at breakpoints (doc 013, decision 7).
 ///
@@ -359,18 +235,18 @@ pub(crate) enum ShapeTag {
 /// is applied when the port reads the value, never to the endpoints.
 ///
 /// ```
-/// use tutti_graph::{ParamSegment, SegmentShape};
+/// use tutti_graph::{ParamSegment, Law};
 /// use tutti_types::{Hz, ParamKey, Samples};
 /// let s = ParamSegment::new(
 ///     ParamKey::<Hz>::CUTOFF,
 ///     Hz(200.0),
 ///     Hz(800.0),
 ///     Samples(480),
-///     SegmentShape::PowerIn(2.0),
+///     Law::PowerIn(2.0),
 /// );
 /// assert_eq!(s.target(ParamKey::<Hz>::CUTOFF), Some(Hz(800.0)));
 /// assert_eq!(s.start(ParamKey::<Hz>::CUTOFF), Some(Hz(200.0)));
-/// assert_eq!(s.shape(), SegmentShape::PowerIn(2.0));
+/// assert_eq!(s.shape(), Law::PowerIn(2.0));
 /// // Frame 239 is 240/480 of the way: a quadratic ease-in is a quarter up.
 /// assert_eq!(s.raw_value_after(Samples(239)), 200.0 + 600.0 * 0.25);
 /// assert_eq!(s.raw_value_after(Samples(479)), 800.0);
@@ -406,7 +282,7 @@ impl ParamSegment {
         from: U,
         to: U,
         duration: Samples,
-        shape: SegmentShape,
+        shape: Law,
     ) -> Self {
         Self::unit(key.addr(), from.to_raw(), to.to_raw(), duration, shape)
     }
@@ -423,7 +299,7 @@ impl ParamSegment {
         from: f32,
         to: f32,
         duration: Samples,
-        shape: SegmentShape,
+        shape: Law,
     ) -> Self {
         Self::packed(
             u32::from(param.into().to_u16()),
@@ -437,19 +313,12 @@ impl ParamSegment {
 
     /// A segment of a foreign unit's parameter `id`, in its own
     /// normalisation, as [`new`](Self::new) otherwise.
-    pub fn foreign(id: u32, from: f32, to: f32, duration: Samples, shape: SegmentShape) -> Self {
+    pub fn foreign(id: u32, from: f32, to: f32, duration: Samples, shape: Law) -> Self {
         Self::packed(id, true, from, to, duration, shape)
     }
 
-    fn packed(
-        id: u32,
-        foreign: bool,
-        from: f32,
-        to: f32,
-        duration: Samples,
-        shape: SegmentShape,
-    ) -> Self {
-        let (tag, shape_param) = shape.pack();
+    fn packed(id: u32, foreign: bool, from: f32, to: f32, duration: Samples, shape: Law) -> Self {
+        let (tag, shape_param) = ShapeTag::pack(shape);
         Self {
             id,
             from,
@@ -520,8 +389,8 @@ impl ParamSegment {
     }
 
     /// The shape it moves along.
-    pub fn shape(&self) -> SegmentShape {
-        SegmentShape::unpack(self.shape, self.shape_param)
+    pub fn shape(&self) -> Law {
+        self.shape.unpack(self.shape_param)
     }
 
     /// Its position along itself at the event's frame, in frames.
@@ -592,7 +461,7 @@ impl ParamSegment {
 pub(crate) fn segment_value(
     from: f32,
     to: f32,
-    shape: SegmentShape,
+    shape: Law,
     position: f32,
     length: f32,
     j: u32,
@@ -1518,76 +1387,6 @@ mod tests {
         assert!(!Event::ramp(Offset::ZERO, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
     }
 
-    /// Every shape runs from 0 to 1, monotonically, at its analytic figures
-    /// (closed forms in `f64`, within a tolerance: `Exp` and a non-integer
-    /// power go through libm), and a shape with an unusable parameter is
-    /// linear.
-    ///
-    /// Mutations (run), each fails: `PowerOut` as `pow(t, p)` (the ease-in);
-    /// `PowerInOut`'s first half as `pow(t, p)` (no `2t`); `Exp` with
-    /// `exp_m1(k)` and `exp_m1(k t)` swapped; dropping the `valid_exponent`
-    /// guard (`PowerIn(-1)` gives `inf` at 0).
-    #[test]
-    fn every_shape_meets_its_closed_form() {
-        use SegmentShape as S;
-        let closed = |s: S, t: f64| -> f64 {
-            match s {
-                S::Linear => t,
-                S::Hold => f64::from(u8::from(t >= 1.0)),
-                S::PowerIn(p) => t.powf(f64::from(p)),
-                S::PowerOut(p) => 1.0 - (1.0 - t).powf(f64::from(p)),
-                S::PowerInOut(p) if t < 0.5 => 2f64.powf(f64::from(p) - 1.0) * t.powf(f64::from(p)),
-                S::PowerInOut(p) => 1.0 - (2.0 - 2.0 * t).powf(f64::from(p)) / 2.0,
-                S::Exp(k) => {
-                    let k = f64::from(k);
-                    ((k * t).exp() - 1.0) / (k.exp() - 1.0)
-                }
-            }
-        };
-        let shapes = [
-            S::Linear,
-            S::Hold,
-            S::PowerIn(2.0),
-            S::PowerIn(0.5),
-            S::PowerIn(5.0),
-            S::PowerIn(1.7),
-            S::PowerOut(3.0),
-            S::PowerInOut(2.0),
-            S::PowerInOut(4.0),
-            S::Exp(5.0),
-            S::Exp(-3.0),
-        ];
-        for s in shapes {
-            assert_eq!(s.eval(0.0), 0.0, "{s:?} starts at 0");
-            assert_eq!(s.eval(1.0), 1.0, "{s:?} ends at 1");
-            let mut prev = 0.0f32;
-            for i in 0..=1000 {
-                let t = i as f32 / 1000.0;
-                let g = s.eval(t);
-                let want = closed(s, f64::from(t));
-                assert!(
-                    (f64::from(g) - want).abs() < 2e-6,
-                    "{s:?} at {t}: {g} vs {want}"
-                );
-                assert!(g >= prev, "{s:?} is monotone at {t}");
-                prev = g;
-            }
-        }
-        for s in [
-            S::PowerIn(-1.0),
-            S::PowerOut(0.0),
-            S::PowerInOut(f32::INFINITY),
-            S::Exp(f32::NAN),
-        ] {
-            assert_eq!(s.eval(0.0), 0.0, "{s:?}");
-            assert_eq!(s.eval(0.3), 0.3, "{s:?} is linear");
-        }
-        // Out of range and NaN progress: clamped, never a NaN.
-        assert_eq!(S::Exp(2.0).eval(-1.0), 0.0);
-        assert_eq!(S::PowerIn(2.0).eval(f32::NAN), 0.0);
-        assert!(S::Exp(1e9).eval(0.5).is_finite());
-    }
-
     /// A segment's address round-trips, built-in and foreign never answer
     /// for each other, and its shape and timing read back as built.
     ///
@@ -1600,23 +1399,17 @@ mod tests {
         use tutti_types::{Hz, ParamKey};
         let key = ParamKey::<Hz>::CUTOFF;
         let id = u32::from(key.addr().to_u16());
-        let foreign = ParamSegment::foreign(id, 0.25, 0.75, Samples(8), SegmentShape::Exp(2.0));
+        let foreign = ParamSegment::foreign(id, 0.25, 0.75, Samples(8), Law::Exp(2.0));
         assert_eq!(foreign.target(key), None);
         assert_eq!(foreign.foreign_target(id), Some(0.75));
         assert_eq!(foreign.foreign_start(id), Some(0.25));
         assert_eq!(foreign.addr(), ParamAddr::Id(id));
-        let s = ParamSegment::new(
-            key,
-            Hz(1.0),
-            Hz(2.0),
-            Samples(8),
-            SegmentShape::PowerOut(3.0),
-        )
-        .resumed(SamplePosition(2.5), SamplePosition(10.0));
+        let s = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(8), Law::PowerOut(3.0))
+            .resumed(SamplePosition(2.5), SamplePosition(10.0));
         assert_eq!(s.addr(), ParamAddr::unit(key.addr()));
         assert_eq!(s.foreign_target(id), None);
         assert_eq!(s.start(key), Some(Hz(1.0)));
-        assert_eq!(s.shape(), SegmentShape::PowerOut(3.0));
+        assert_eq!(s.shape(), Law::PowerOut(3.0));
         assert_eq!(s.position(), SamplePosition(2.5));
         assert_eq!(s.length(), SamplePosition(10.0));
         // 2.5 frames along at its event, 7.5 more to go: the end value
@@ -1626,7 +1419,7 @@ mod tests {
         assert_eq!(s.raw_value_after(Samples(1_000)), 2.0);
         assert_eq!(s.arrives_after(), Some(Samples(8)));
         // A zero length is a step.
-        let step = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), SegmentShape::Hold);
+        let step = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), Law::Hold);
         assert_eq!(step.raw_value_after(Samples(0)), 2.0);
         assert_eq!(step.arrives_after(), Some(Samples(0)));
         // A length that is not above zero and finite is a step too, never a
@@ -1637,7 +1430,7 @@ mod tests {
             assert_eq!(s.arrives_after(), Some(Samples(0)), "length {l}");
         }
         // A negative position holds `from` until it reaches 0, then moves.
-        let late = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), SegmentShape::Linear)
+        let late = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), Law::Linear)
             .resumed(SamplePosition(-3.0), SamplePosition(4.0));
         assert_eq!(late.raw_value_after(Samples(2)), 1.0);
         assert_eq!(late.raw_value_after(Samples(3)), 1.0);

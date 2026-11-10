@@ -34,8 +34,9 @@ use crate::NodeKey;
 use tutti_rt::{PackedAtomic, RtScope};
 use tutti_types::{ParamAddr, Samples, UnitAddr, UnitParam};
 
-use crate::event::{Event, EventKind, SegmentShape, segment_progress};
+use crate::event::{Event, EventKind, segment_progress};
 use crate::spec::EventOut;
+use tutti_curve::Law;
 
 /// Most params one node can declare modulatable: 32 addresses.
 ///
@@ -330,7 +331,7 @@ pub(crate) struct Curve {
     pub(crate) position: f32,
     /// Its length, in frames.
     pub(crate) length: f32,
-    pub(crate) shape: SegmentShape,
+    pub(crate) shape: Law,
 }
 
 /// One event source's ramp: its value, and the move it is on — a
@@ -344,7 +345,7 @@ pub(crate) struct Ramp {
     /// A ramp's length, in frames.
     len: u32,
     /// A ramp's shape.
-    shape: SegmentShape,
+    shape: Law,
     /// Frames done: a ramp's steps taken, a segment's frames since its
     /// event's.
     done: u32,
@@ -360,7 +361,7 @@ impl Ramp {
     /// Start a ramp to `target` along `shape` over `len` frames from this
     /// frame on, from the value the last frame had. A second ramp on the
     /// same frame replaces the first, from the same value.
-    fn start(&mut self, target: f32, len: usize, shape: SegmentShape) {
+    fn start(&mut self, target: f32, len: usize, shape: Law) {
         self.from = self.value;
         self.target = target;
         self.len = u32::try_from(len).unwrap_or(u32::MAX);
@@ -843,7 +844,7 @@ mod tests {
             Hz(5.0),
             Hz(9.0),
             Samples(20),
-            SegmentShape::Linear,
+            Law::Linear,
         );
         let ramp = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(0.0), Samples(2));
         let base = |i: usize| 1.0 + i as f32;

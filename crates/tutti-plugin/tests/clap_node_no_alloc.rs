@@ -3,7 +3,7 @@
 //! the FIFO and ring, the transport snapshot from `Env` (with a meter
 //! installed), the per-chunk payload (MIDI from the live inbox, and curve
 //! segments from two foreign control lanes on the plugin's event input, an
-//! LFO and an automation envelope, followed along by the node's
+//! LFO and an automation trajectory, followed along by the node's
 //! `SegmentPoints`), the IPC submit and collect, and the executor around
 //! them, the lanes included.
 //!
@@ -31,7 +31,7 @@ use std::time::Duration;
 use tutti_fixtures::midi;
 use tutti_graph::{Offset, Transport, TransportChanges};
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
-use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, CurveType};
+use tutti_nodes::automation::{Breakpoint, ControlLaneNode, Law, Trajectory};
 use tutti_types::{Beat, Bpm, Samples};
 use tutti_types::{BeatDuration, Depth, PhaseIncrement};
 use tutti_types::{BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
@@ -115,7 +115,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         amount: Amount {
             depth: Depth(0.5),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     };
@@ -123,15 +123,15 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let lfo = ControlLaneNode::for_foreign(77, program, Some(0.5), (0.0, 1.0));
     let prepare = tutti_graph::Prepare::new(tutti_types::SampleRate(SAMPLE_RATE), Samples(BLOCK))
         .with_quantum(Samples(QUANTUM));
-    // Curve segments on another parameter: an exponential envelope, so
+    // Curve segments on another parameter: an exponential trajectory, so
     // each segment runs across chunks and the node follows it.
-    let mut env = AutomationEnvelope::new(());
+    let mut env = Trajectory::new();
     for k in 0..200 {
         let v = if k % 2 == 0 { 0.2 } else { 0.9 };
-        env.add_point(AutomationPoint::with_curve(
-            f64::from(k) * 2.0,
+        env.add_breakpoint(Breakpoint::with_law(
+            Beat::new(f64::from(k) * 2.0),
             v,
-            CurveType::Exponential,
+            Law::PowerIn(2.0),
         ));
     }
     let lane = ControlLaneNode::for_foreign(

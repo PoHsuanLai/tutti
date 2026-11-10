@@ -26,8 +26,8 @@ use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Node, ParamRamp,
-    ParamSegment, Prepare, SegmentShape, Shape, Status, Transport, Unforkable,
+    CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Law, Node,
+    ParamRamp, ParamSegment, Prepare, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, Samples, Tail};
@@ -676,10 +676,10 @@ impl Node for RampEvery {
                     // A curve segment spanning the next event: interrupted.
                     k => {
                         let shape = [
-                            SegmentShape::PowerIn(2.0),
-                            SegmentShape::Exp(3.0),
-                            SegmentShape::PowerInOut(1.5),
-                            SegmentShape::Hold,
+                            Law::PowerIn(2.0),
+                            Law::Exp(3.0),
+                            Law::PowerInOut(1.5),
+                            Law::Hold,
                         ][(f / 111) as usize % 4];
                         let seg = ParamSegment::new(
                             tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,

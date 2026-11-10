@@ -414,6 +414,11 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-dsp      pure algorithms over slices: the real FFT, the cosine windows and `StftGeometry`, filters,
                  dynamics, convolver, delay lines, reverb, waveshapers, the export
                  resampler
+  tutti-curve    the easing laws and the automation point list: `Law` (`Linear`, `Hold`,
+                 `PowerIn(p)`, `PowerOut(p)`, `PowerInOut(p)`, `Exp(k)`; `eval`, `interpolate`),
+                 and the minimal `Trajectory` / `Breakpoint` (breakpoints in
+                 `Beat`, each with its `Law`, read at a beat). Layer 1, depends on
+                 `tutti-types` alone; replaced the external `audio-automation`
   tutti-modulation modulation compiler
   tutti-measure  the analyzers, measurements over slices that read audio and return
                  numbers: loudness (EBU R128, windowed momentary and short-term), peaks
@@ -471,8 +476,8 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
+0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`, `tutti-types`
+1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
@@ -719,7 +724,18 @@ list (normal and build edges; dev-dependencies may go anywhere).
   algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
   A loop that indexes the graph's `Inputs`/`Outputs`, or reads a `Param` cell,
   stays in the node.
-- `tutti-graph` depends on no tutti crate but `tutti-types`, `tutti-rt` and `tutti-ump` (its outside
+- `tutti-curve` depends on `tutti-types` alone (no `libm`: the laws evaluate with
+  `std`, so their bits are what the graph's `Law` rendered before the move), keeps
+  every module private (`tutti_curve::Law`; CI runs the per-module path gate on it),
+  is `#![forbid(unsafe_code)]`, `publish = false`, and has no features (no `bevy`: a
+  `Law` is a plain `Copy` value; no `serde`: nothing in tutti persists a curve, and a
+  consumer that does converts at its own seam). **The curve laws are one set here:**
+  the graph's param segments and ramps, modulation's `Amount.curve` and `shape()`, and
+  the automation lanes and recorder all use `Law`. A law nothing in tutti uses is not
+  added (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Circular` and cubic `Bezier`
+  were dropped). `tutti-polysynth`'s `PortamentoCurve` and `CrossfadeCurve`'s smootherstep
+  are the follow-up (doc 024 consolidation 6).
+- `tutti-graph` depends on no tutti crate but `tutti-types`, `tutti-rt`, `tutti-ump` and `tutti-curve` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
@@ -1094,19 +1110,18 @@ read the `Cargo.toml`, grep for the type, run the probe.
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
-  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
   a `ControlLaneNode` per param). A comment or doc that disagrees with the
   code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
   gated off MSVC, because `sin` differs in the last ulp between CRTs.
 
-## Consumers: two pins that must stay in step
+## Consumers: the pin that must stay in step
 
-Consumers pin this repo as a git dependency. Keep these in step with them;
-both are in `[workspace.dependencies]`:
-
-- **`audio-automation`'s rev.** A mismatch surfaces as
-  `expected Curve, found Curve`.
-- **The bevy 0.19 line**, for anything that touches `bevy-tutti` (its pins now
-  live in `crates/bevy-tutti/Cargo.toml`, while it is parked).
+Consumers pin this repo as a git dependency. Keep **the bevy 0.19 line** in step
+with them, for anything that touches `bevy-tutti` (its pins now live in
+`crates/bevy-tutti/Cargo.toml`, while it is parked; `bevy_reflect` is in
+`[workspace.dependencies]`). The curve types (`tutti_curve::Law`, the automation
+point list) are the engine's own, so a consumer holds no second copy of them to
+keep in step: it converts at its own seam.

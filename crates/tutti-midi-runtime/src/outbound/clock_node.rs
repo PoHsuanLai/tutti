@@ -123,7 +123,7 @@ impl Node for ClockNode {
         in_offset_order(self.pending.as_mut_slice());
         let out = io.event_out(0);
         for e in &self.pending {
-            let _ = out.push(Event::midi(offset_of(e, block_len), e.1.0));
+            let _ = out.push(Event::midi(offset_of(e, block_len), e.1));
         }
         Status::Modified
     }

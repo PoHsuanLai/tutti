@@ -41,7 +41,7 @@
 //!     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
 //!         let first = cx.env.offset(0).unwrap();
 //!         let mut sending = self.0.block(io.event_out(0), first);
-//!         let _ = io.event_out(0).push(Event::midi(Offset::ZERO, [0x4090_3c00, 0xffff_0000, 0, 0]));
+//!         let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump([0x4090_3c00, 0xffff_0000, 0, 0])));
 //!         sending.release_all(first);
 //!         Status::Modified
 //!     }
@@ -50,9 +50,7 @@
 //! ```
 
 use tutti_graph::{Event, EventWriter, Offset};
-use tutti_ump::{
-    Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice1, Voice2, decode,
-};
+use tutti_ump::{Address, Key, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
 /// A note's place on the wire: its Group, Channel and Note Number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -68,12 +66,8 @@ impl NoteKey {
             group: self.group,
             channel: self.channel,
         };
-        let off = Voice2::NoteOff {
-            note: self.note,
-            velocity: 0,
-            attribute: Attribute::None,
-        };
-        Event::midi(at, Ump::from(Message::Midi2(address, off)).0)
+        let off = Voice2::note_off(self.note, 0);
+        Event::midi(at, Ump::from(Message::Midi2(address, off)))
     }
 }
 
@@ -87,19 +81,18 @@ pub(crate) enum Class {
 
 impl Class {
     pub(crate) fn of(ump: Ump) -> Self {
-        let key = |a: Address, note| NoteKey {
-            group: a.group,
-            channel: a.channel,
-            note,
+        let (Some(address), Some(event)) = (ump.address(), ump.key_event()) else {
+            return Self::Other;
         };
-        match decode(ump) {
-            Ok(Message::Midi1(a, Voice1::NoteOn { note, velocity })) if velocity.get() != 0 => {
-                Self::On(key(a, note))
-            }
-            Ok(Message::Midi1(a, Voice1::NoteOn { note, .. } | Voice1::NoteOff { note, .. }))
-            | Ok(Message::Midi2(a, Voice2::NoteOff { note, .. })) => Self::Off(key(a, note)),
-            Ok(Message::Midi2(a, Voice2::NoteOn { note, .. })) => Self::On(key(a, note)),
-            _ => Self::Other,
+        let key = |key: Key| NoteKey {
+            group: address.group,
+            channel: address.channel,
+            note: NoteNumber::masked(key.note()),
+        };
+        match event {
+            KeyEvent::On(k) => Self::On(key(k)),
+            KeyEvent::Off(k) => Self::Off(key(k)),
+            KeyEvent::Sustain { .. } => Self::Other,
         }
     }
 }
@@ -278,7 +271,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     pub fn send(&mut self, at: Offset, ump: Ump, owner: Option<T>) {
         match Class::of(ump) {
             Class::Other => {
-                let _ = self.out.push(Event::midi(at, ump.0));
+                let _ = self.out.push(Event::midi(at, ump));
             }
             Class::On(key) => self.on(at, ump, key, owner),
             Class::Off(key) => self.off(at, ump, key, owner),
@@ -334,7 +327,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     }
 
     fn write(&mut self, at: Offset, ump: Ump) -> bool {
-        self.out.push(Event::midi(at, ump.0)).is_ok()
+        self.out.push(Event::midi(at, ump)).is_ok()
     }
 
     /// An untagged source has one note per key, so its off ends whatever its

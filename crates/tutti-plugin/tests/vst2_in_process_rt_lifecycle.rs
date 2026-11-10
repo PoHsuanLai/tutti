@@ -139,9 +139,16 @@ fn drive_block(unit: &mut BoundInProcessVst2Client) {
 
 /// One block of `frames` through `unit` prepared for blocks of up to `max`.
 fn drive_blocks(unit: &mut BoundInProcessVst2Client, max: usize, frames: usize) {
-    use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
+    use tutti_graph::{Node, Prepare};
     let rate = SampleRate(SAMPLE_RATE);
     Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
+    process_block(unit, frames);
+}
+
+/// One block of `frames` through `unit` as it is prepared now: no prepare.
+fn process_block(unit: &mut BoundInProcessVst2Client, frames: usize) {
+    use tutti_graph::{Env, Node, Transport, TransportChanges};
+    let rate = SampleRate(SAMPLE_RATE);
     let silence = vec![0.0f32; frames];
     let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
         .map(|_| &silence[..])
@@ -231,8 +238,19 @@ fn blocks_past_64_frames_reach_the_plugin_after_a_prepare() {
     drop(loaded.handle);
 }
 
-/// `Node::prepare` at a new rate (a device change re-prepares a running
-/// graph) must park the rate rather than dispatch it.
+/// [`prepare_at`], on a thread that is not the main thread: where a graph's
+/// `prepare` runs when its commit is off the main thread.
+fn prepare_off_main_thread(unit: &mut BoundInProcessVst2Client, rate: SampleRate) {
+    std::thread::scope(|s| {
+        s.spawn(|| prepare_at(unit, rate))
+            .join()
+            .expect("the prepare returns");
+    });
+}
+
+/// `Node::prepare` at a new rate **off the main thread** (a commit there
+/// re-prepares the graph) must park the rate rather than dispatch it: telling
+/// a VST2 plugin its rate needs the main thread.
 ///
 /// The rate is *also* asserted not to have reached the plugin, not only the
 /// mains counters: a host that skipped the bracket but still dispatched
@@ -252,7 +270,7 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
         "load must have told the plugin the rate it was loaded at"
     );
 
-    prepare_at(&mut loaded.unit, SampleRate(96_000.0));
+    prepare_off_main_thread(&mut loaded.unit, SampleRate(96_000.0));
 
     let after = read_capture(&loaded.path);
     assert_eq!(
@@ -271,12 +289,22 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
     drop(loaded.handle);
 }
 
-/// The parked rate is not dropped: the main-thread drain delivers it.
+/// The parked rate is not dropped: the main-thread drain delivers it, once
+/// the audio thread has handed the Processor back.
 ///
 /// This is the positive half of the test above. Without it, "nothing was
 /// dispatched" is satisfied by a node that discards the rate entirely, which
 /// would be the worse bug — the plugin keeps rendering at its previous rate
 /// forever, with no diagnostic anywhere.
+///
+/// The drain recalls the Processor, which is on the audio thread; the next
+/// block hands it back (and renders silence), and the next drain runs the
+/// change (doc 016 §2.6).
+///
+/// Mutation (run): the node's block reading its realtime end without polling
+/// it (`rt.held()` in place of `rt.poll`) → no Processor is taken or handed
+/// back, and the rate never reaches the plugin → fails (with every test here
+/// that renders).
 #[test]
 fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let _guard = lock_probe();
@@ -286,10 +314,17 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let before = read_capture(&loaded.path);
     assert_eq!(before.sample_rate, SAMPLE_RATE as f32);
 
-    prepare_at(&mut loaded.unit, SampleRate(96_000.0));
+    prepare_off_main_thread(&mut loaded.unit, SampleRate(96_000.0));
     // The drain point: `editor_idle` is the per-frame main-thread call, and it
     // is reached through the handle rather than the node — the two ends of the
     // deferral are deliberately on opposite sides of the audio/control split.
+    loaded.handle.editor_idle(&main_thread());
+    assert_eq!(
+        read_capture(&loaded.path).sample_rate,
+        SAMPLE_RATE as f32,
+        "the Processor is still on the audio thread"
+    );
+    process_block(&mut loaded.unit, BLOCK);
     loaded.handle.editor_idle(&main_thread());
 
     let after = read_capture(&loaded.path);
@@ -309,6 +344,36 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
         before.resume_count + 1,
         "the deferred rate change must be bracketed in effMainsChanged(1)"
     );
+
+    drop(loaded.handle);
+}
+
+/// `Node::prepare` at a new rate **on the main thread** tells the plugin in
+/// the call: the node is out of any executor while it is prepared, so its
+/// realtime end hands the Processor back and takes the new one there, with no
+/// block of silence and no pump.
+///
+/// Mutation (run): `set_rate` always parking → the plugin is still at 48 kHz
+/// after the prepare → fails.
+#[test]
+fn a_prepare_on_the_main_thread_tells_the_plugin_at_once() {
+    let _guard = lock_probe();
+    let mut loaded = load();
+
+    drive_block(&mut loaded.unit);
+    let before = read_capture(&loaded.path);
+    assert_eq!(before.sample_rate, SAMPLE_RATE as f32);
+
+    let _main = main_thread();
+    prepare_at(&mut loaded.unit, SampleRate(96_000.0));
+
+    let after = read_capture(&loaded.path);
+    assert_eq!(after.sample_rate, 96_000.0, "told in the prepare");
+    assert_eq!(after.suspend_count, before.suspend_count + 1);
+    assert_eq!(after.resume_count, before.resume_count + 1);
+    assert_eq!(loaded.unit.unlent_blocks(), 0, "no block went without it");
+    process_block(&mut loaded.unit, BLOCK);
+    assert_eq!(loaded.unit.unlent_blocks(), 0, "the new Processor renders");
 
     drop(loaded.handle);
 }

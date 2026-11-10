@@ -50,8 +50,6 @@ use tutti_types::{
     Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, first_frame_at_or_after,
 };
 
-/// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
-const PPQN: f64 = 24.0;
 /// Below this beat, a play edge is treated as "from the top" → Start (0xFA)
 /// rather than Continue (0xFB). Wide enough to absorb float jitter at beat 0.
 const START_EPSILON_BEATS: f64 = 1e-6;
@@ -430,7 +428,7 @@ impl ClockMaster {
         beats_per_sample: BeatDuration,
         emit: &mut impl FnMut(UmpAt),
     ) {
-        let tick_beats = BeatDuration(1.0 / PPQN);
+        let tick_beats = BeatDuration(1.0 / f64::from(System::TIMING_CLOCKS_PER_QUARTER));
         // The tick at or before the pass's first beat: its frame is 0 (on the
         // beat, within the rule's tolerance) or before the pass (already
         // sent, or behind an off-tick start).

@@ -287,7 +287,7 @@ impl Node for MidiInputNode {
             // Refused past the capacity: counted by the executor.
             let _ = io
                 .event_out(input_port_of(&ev.1))
-                .push(Event::midi(offset_of(ev, block_len), ev.1.0));
+                .push(Event::midi(offset_of(ev, block_len), ev.1));
         }
         Status::Modified
     }

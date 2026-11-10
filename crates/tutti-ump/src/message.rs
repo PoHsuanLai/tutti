@@ -64,6 +64,18 @@ pub enum Utility {
     DeltaClockstamp(DeltaTicks),
 }
 
+impl Address {
+    /// `channel` in the first Group, the Group a single-group sender uses.
+    #[inline]
+    #[must_use]
+    pub const fn first(channel: MidiChannel) -> Self {
+        Address {
+            group: MidiGroup::FIRST,
+            channel,
+        }
+    }
+}
+
 // ---- System ----------------------------------------------------------------
 
 /// System Common and System Real Time messages (M2-104 §7.6).
@@ -89,6 +101,12 @@ pub enum System {
     ActiveSensing,
     /// Reset.
     Reset,
+}
+
+impl System {
+    /// How many Timing Clock messages make a quarter note (MIDI 1.0
+    /// Detailed Specification, "System Real Time Messages").
+    pub const TIMING_CLOCKS_PER_QUARTER: u32 = 24;
 }
 
 // ---- MIDI 1.0 channel voice ------------------------------------------------
@@ -575,6 +593,28 @@ pub enum Voice2 {
 }
 
 impl Voice2 {
+    /// A Note On with no attribute.
+    #[inline]
+    #[must_use]
+    pub const fn note_on(note: NoteNumber, velocity: u16) -> Self {
+        Self::NoteOn {
+            note,
+            velocity,
+            attribute: Attribute::None,
+        }
+    }
+
+    /// A Note Off with no attribute.
+    #[inline]
+    #[must_use]
+    pub const fn note_off(note: NoteNumber, velocity: u16) -> Self {
+        Self::NoteOff {
+            note,
+            velocity,
+            attribute: Attribute::None,
+        }
+    }
+
     /// The note a message addresses: the one in byte 3 of a Note On or Off,
     /// Polyphonic Pressure, Per-Note Pitch Bend, a Registered or Assignable
     /// Per-Note Controller or Per-Note Management (M2-104 section 7.4). `None`

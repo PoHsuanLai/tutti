@@ -1542,6 +1542,20 @@ not built: the VST2 shadow it served is not in the graph path. The model is
 `tutti-rt/tests/handoff_loom.rs`. `Lifecycle`'s `Hand` joins it with the node
 that uses it (step 4a-3).
 
+As built (doc 021 step 4a-3b, VST2 in-process first): `Hand::threaded()` gives
+a `Lifecycle` the control end of a `tutti_rt::handoff` and the caller its
+`Rt`. `apply(Lend)` lends (a refused lend keeps the Processor `Held`, offered
+again on the next `Tick`), `apply(Recall)` recalls (an offer still in the slot
+comes back at once; one the audio thread holds comes back at its next poll and
+`Tick` steps `Returned`). The in-process VST2 node renders through its `Rt`
+alone: no lock on the audio thread, and a block with no Processor in hand is
+silence counted by `unlent_blocks` (was `contention_count`). A rate change on
+the main thread finishes inside `prepare` (the node is out of any executor, so
+its `Rt` is polled there); off it the rate is parked, and the next pump recalls,
+one block hands the Processor back, and the pump after runs the bracket. A
+refused rate is silence until a rate is taken (the `Lifecycle` rule, no
+rollback).
+
 - **Lend.** `apply(Lend)` moves the Processor into the slot. The realtime loop
   calls `rt.poll(&mut slot)` at the head of each request, between blocks, and
   takes it. Until it does, the plugin renders silence, as a refused plugin does

@@ -81,7 +81,7 @@ impl Hand {
             .iter()
             .map(|&(index, ump)| {
                 let at = tutti_graph::Offset::new(index, block).expect("inside the block");
-                tutti_graph::Event::midi(at, ump.0)
+                tutti_graph::Event::midi(at, ump)
             })
             .collect();
         let env = tutti_graph::Env {

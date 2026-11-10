@@ -53,7 +53,7 @@ impl Node for Src {
         let mut m = self.mail.lock().unwrap();
         for (_, w) in m.drain(..) {
             // A unit fading out has detached writers: its pushes are refused.
-            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, w));
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(w)));
         }
         Status::Silent
     }
@@ -1429,7 +1429,7 @@ fn a_source_without_note_events_closes_nothing() {
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
             let _ = io
                 .event_out(0)
-                .push(Event::midi(Offset::ZERO, [0x20b0_0764, 0, 0, 0]));
+                .push(Event::midi(Offset::ZERO, Ump([0x20b0_0764, 0, 0, 0])));
             Status::Modified
         }
         fn reset(&mut self) {}
@@ -1473,7 +1473,7 @@ fn a_note_from_a_source_that_declared_none_is_caught() {
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, ON60));
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(ON60)));
             Status::Modified
         }
         fn reset(&mut self) {}
@@ -1512,7 +1512,7 @@ impl Node for Once {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         if !std::mem::replace(&mut self.0, true) {
-            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, ON60));
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(ON60)));
         }
         Status::Modified
     }

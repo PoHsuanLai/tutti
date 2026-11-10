@@ -285,7 +285,9 @@ impl Node for TestNode {
                 for at in cx.env.offsets() {
                     let f = cx.env.frame_at(at).get();
                     if (f + phase).is_multiple_of(period) {
-                        let _ = io.event_out(0).push(Event::midi(at, [f as u32, 0, 0, 0]));
+                        let _ = io
+                            .event_out(0)
+                            .push(Event::midi(at, Ump([f as u32, 0, 0, 0])));
                         self.count += 1.0;
                     }
                 }
@@ -302,7 +304,7 @@ impl Node for TestNode {
                     let f = cx.env.frame_at(at).get();
                     if (f + phase).is_multiple_of(period) {
                         for i in 0..burst {
-                            let e = Event::midi(at, [f as u32 + i, 0, 0, 0]);
+                            let e = Event::midi(at, Ump([f as u32 + i, 0, 0, 0]));
                             if io.event_out(0).push(e).is_ok() {
                                 self.count += 1.0;
                             }
@@ -346,7 +348,7 @@ impl Node for TestNode {
                         continue;
                     }
                     w[1] += 1;
-                    let fwd = Event::midi(e.offset, w);
+                    let fwd = Event::midi(e.offset, Ump(w));
                     // Kept sorted by due frame (stably): after a rate change
                     // rescaled the older entries, new ones can fall due
                     // before them. `insert` stays within the reserved

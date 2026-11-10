@@ -1,11 +1,11 @@
 //! A live disk voice against the memory tier, through loops and repositions.
 //!
-//! The butler writes a stream into a ring indexed by straight position — the
+//! The streamer writes a stream into a ring indexed by straight position — the
 //! loop's sequence, the file mirrored in reverse — and the voice seats on the
 //! clock as the memory tier does and reads its taps there by position
 //! (`live_read`), each block's transport from its `Env`. These tests drive a
 //! live `DiskVoice` from a hand-stepped
-//! butler (`DiskStreamer::manual`, one cycle per block, as the butler thread
+//! streamer (`DiskStreamer::manual`, one cycle per block, as the streamer thread
 //! stands to the audio callback) and compare it with a placed `MemorySource`
 //! on its own copy of the clock, given the same edits at the same blocks.
 //!
@@ -14,7 +14,7 @@
 //! from the same frames, so there is no lag to line up and no tolerance to
 //! take — a 44.1 kHz file at 48 kHz included. Where the two differ is only
 //! where a jump or an edit lands: the memory tier cuts there, the live voice
-//! crossfades there (from its copy of the old continuation, or the butler's
+//! crossfades there (from its copy of the old continuation, or the streamer's
 //! record of the old loop) over the ring's fade length. The tests allow that
 //! window and nothing else, and count the frames the live voice could not
 //! read (underruns): a reposition costs none.
@@ -33,7 +33,7 @@ const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 /// Length of the ramp files, in frames.
 const LEN: usize = 40_000;
-/// The butler's default seek crossfade, in output frames.
+/// The streamer's default seek crossfade, in output frames.
 const FADE: usize = 512;
 
 /// Frame `i` of every ramp file: distinct per frame, and exactly what an f32
@@ -109,7 +109,7 @@ struct Setup {
     beat: f64,
     /// The channel's PDC preroll, in frames.
     preroll: usize,
-    /// Other streams on channels 1.., so the butler refills in parallel.
+    /// Other streams on channels 1.., so the streamer refills in parallel.
     neighbours: usize,
 }
 
@@ -125,7 +125,7 @@ impl Setup {
     }
 }
 
-/// A live voice on a hand-stepped butler, and the clock it is placed on.
+/// A live voice on a hand-stepped streamer, and the clock it is placed on.
 struct Live {
     streamer: DiskStreamer,
     voice: DiskVoice,
@@ -138,7 +138,7 @@ impl Live {
     }
 
     /// Stream `path` on channel 0 from where the clock starts, with the
-    /// setup's loop and preroll, under the butler's default config (its seek
+    /// setup's loop and preroll, under the streamer's default config (its seek
     /// crossfade included), and take a live voice placed at beat 0.
     fn with(path: &Path, setup: Setup) -> Self {
         let mut config = DiskStreamerConfig::default();
@@ -156,7 +156,7 @@ impl Live {
                     file_path: path.to_path_buf(),
                     offset: SamplePosition(setup.beat / 2.0 * SR),
                 })
-                .expect("the butler is alive");
+                .expect("the streamer is alive");
         }
         assert!(
             streamer.step_until_settled(1_000) < 1_000,
@@ -169,7 +169,7 @@ impl Live {
                     channel_index: 0,
                     setting: setup.loop_,
                 })
-                .expect("the butler is alive");
+                .expect("the streamer is alive");
             assert!(
                 streamer.step_until_settled(1_000) < 1_000,
                 "the ring primes"
@@ -190,7 +190,7 @@ impl Live {
     }
 
     /// One block of the voice, channel 0; then the clock moves and the
-    /// butler runs a cycle, as the thread would before the next callback.
+    /// streamer runs a cycle, as the thread would before the next callback.
     fn block(&mut self) -> Vec<f32> {
         let left = block(&mut self.voice, &self.clock, SR, BLOCK).swap_remove(0);
         self.clock.advance(BLOCK as i64, SR);
@@ -218,7 +218,7 @@ impl Live {
                 channel_index: 0,
                 setting,
             })
-            .expect("the butler is alive");
+            .expect("the streamer is alive");
     }
 
     /// Window moves and retractions of the voice's ring so far.
@@ -517,7 +517,7 @@ fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
     // The turn lands a guard past the block the voice was in, and fades
     // over the ring's fade length from what the old (looped or plain)
     // mapping held: past that, the two are the same frames.
-    let settled = BLOCK + crate::butler::GUARD_FRAMES as usize + FADE + 8;
+    let settled = BLOCK + crate::streamer::GUARD_FRAMES as usize + FADE + 8;
     assert_same_outside("looped against plain", &got, &want, &[(0, settled)]);
 
     // From there on, the memory tier's mirror (exact: whole positions).
@@ -531,7 +531,7 @@ fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
 /// A loop change takes effect where the memory tier's does, never lags,
 /// and costs no frame: the memory tier changes its loop at the edit; the
 /// live ring switches a guard past the block its reader is in and crossfades
-/// there from the butler's record of the old loop. Outside that span the two
+/// there from the streamer's record of the old loop. Outside that span the two
 /// are bit-identical, before and after — the live voice is on the clock — and
 /// nothing underruns. With the default crossfade (512 frames).
 ///
@@ -561,7 +561,7 @@ fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
     assert_eq!(live.underruns(), 0, "frames went unread");
     let window = (
         edit,
-        edit + BLOCK * 2 + crate::butler::GUARD_FRAMES as usize + FADE + 8,
+        edit + BLOCK * 2 + crate::streamer::GUARD_FRAMES as usize + FADE + 8,
     );
     assert_same_outside("across a loop change", &got, &want, &[window]);
     // Inside the window: the old loop, then a fade, never a hard jump — each
@@ -618,7 +618,7 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
         got.extend(live.render(block - at));
         want.extend(memory.render(block - at));
         at = *block;
-        let span = BLOCK * 3 + crate::butler::GUARD_FRAMES as usize * 2 + FADE * 2;
+        let span = BLOCK * 3 + crate::streamer::GUARD_FRAMES as usize * 2 + FADE * 2;
         allowed.push((got.len(), got.len() + span));
         match event {
             Event::Loop(setting) => {
@@ -642,11 +642,11 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
     assert_same_outside("edits and jumps", &got, &want, &allowed);
 }
 
-/// Two loop changes in one butler cycle, and a jump with a loop change in
+/// Two loop changes in one streamer cycle, and a jump with a loop change in
 /// one cycle, settle to the last loop at the clock, rather than a second
 /// reposition reading the ring's head off a pending flush and resuming at
 /// frame 0. The second change supersedes the first before the
-/// reader reaches it; the jump is the reader's own, the loop the butler's.
+/// reader reaches it; the jump is the reader's own, the loop the streamer's.
 ///
 /// Mutation (run): the second of two changes ignored while the first's switch
 /// is pending (`apply_mapping` returning `Same` whenever a switch is pending)
@@ -678,7 +678,7 @@ fn two_changes_in_one_cycle_settle_to_the_last() {
         got.extend(live.render(150));
         want.extend(memory.render(150));
         assert_eq!(live.underruns(), 0, "jump {jump}: frames went unread");
-        let span = BLOCK * 3 + crate::butler::GUARD_FRAMES as usize * 2 + FADE * 2;
+        let span = BLOCK * 3 + crate::streamer::GUARD_FRAMES as usize * 2 + FADE * 2;
         assert_same_outside(&format!("jump {jump}"), &got, &want, &[(edit, edit + span)]);
     }
 }
@@ -735,7 +735,7 @@ fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
 }
 
 /// A looped stream refilled in parallel loops as one refilled serially
-/// (three streams, so the butler's parallel refill runs): bit-identical to
+/// (three streams, so the streamer's parallel refill runs): bit-identical to
 /// the memory tier, with the loop travelling with its writer.
 ///
 /// The loop lives on the ring's writer (`loops::Content`), which the
@@ -766,7 +766,7 @@ fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
 /// on, and agrees with the live voice past its switch: a fork of the live
 /// voice (`fork_copy`, as a graph fork takes it, rendered on its own
 /// transport from beat 0) plays the edited loop from the start of its render
-/// — the stream's record holds the loop the butler runs — and, frame for
+/// — the stream's record holds the loop the streamer runs — and, frame for
 /// frame, what the live voice plays once its switch has landed and faded.
 ///
 /// Mutation (run): the stream's record not told the new loop (`set_loop`
@@ -794,7 +794,7 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
     }
     let want = Memory::new(ramp_wave(SR as u32, LEN), b, 1.0, 0.0).render(81 + 150);
     assert_same_outside("the fork against the edited loop", &forked, &want, &[]);
-    let settled = edit + BLOCK * 2 + crate::butler::GUARD_FRAMES as usize + FADE + 8;
+    let settled = edit + BLOCK * 2 + crate::streamer::GUARD_FRAMES as usize + FADE + 8;
     assert_same_outside(
         "the fork against the live voice past its switch",
         &forked,
@@ -815,7 +815,7 @@ fn max_step(v: &[f32]) -> (f32, usize) {
 /// (a DAW's cycle mode): after `[1000, 3000)`
 /// is edited to `[200, 1400)`, the clock set back to beat 0 lands inside the
 /// window, below the switch, where the ring still held the old loop. The
-/// butler drops what differs below the reader when it edits, so the jump
+/// streamer drops what differs below the reader when it edits, so the jump
 /// moves the window and the new loop is read; outside the edit's and the
 /// jump's spans the live voice is the memory tier's, frame for frame.
 ///
@@ -830,7 +830,7 @@ fn a_jump_back_behind_a_loop_edit_plays_the_new_loop() {
     let (a, b) = (loop_on(1_000.0, 3_000.0, 0), loop_on(200.0, 1_400.0, 0));
     let mut live = Live::new(&path, a, 1.0);
     let mut memory = Memory::new(ramp_wave(SR as u32, LEN), a, 1.0, 0.0);
-    let span = BLOCK * 3 + crate::butler::GUARD_FRAMES as usize * 2 + FADE * 2;
+    let span = BLOCK * 3 + crate::streamer::GUARD_FRAMES as usize * 2 + FADE * 2;
     let mut got = live.render(81);
     let mut want = memory.render(81);
     let mut allowed = vec![(got.len(), got.len() + span)];
@@ -916,8 +916,8 @@ fn fades_chain_without_a_step() {
 }
 
 /// A starved reader ramps out and back in: a jump outside the window
-/// with the butler stalled plays the old continuation, which runs out after `OLD_FRAMES`; it ramps to silence over
-/// its last frames instead of cutting, and when the butler resumes the ring
+/// with the streamer stalled plays the old continuation, which runs out after `OLD_FRAMES`; it ramps to silence over
+/// its last frames instead of cutting, and when the streamer resumes the ring
 /// ramps back in. On a sine, no step exceeds the sine's own plus a ramp's
 /// `1 / 64` per frame — where cut hard it steps by up to the sine's full
 /// swing.
@@ -934,7 +934,7 @@ fn a_starved_reader_ramps_out_and_back_in() {
     write_sine(&path, 31 * SR as usize);
     let mut live = Live::new(&path, LoopSetting::Off, 1.0);
     let mut got = live.render(20);
-    // Far outside the window, and the butler stalls for 50 blocks.
+    // Far outside the window, and the streamer stalls for 50 blocks.
     live.clock.set_beat(Beat::new(beats(1_450_000.0)));
     for _ in 0..50 {
         got.extend(block(&mut live.voice, &live.clock, SR, BLOCK).swap_remove(0));
@@ -960,7 +960,7 @@ fn a_starved_reader_ramps_out_and_back_in() {
 
 /// A `Command::Seek` on a stream a placed voice reads moves nothing:
 /// the voice follows its clock and is the one
-/// that says where the butler fills; the seek, meant for a free-running
+/// that says where the streamer fills; the seek, meant for a free-running
 /// reader, must not drag the window away. The voice plays on, bit for bit
 /// the memory tier, nothing unread.
 ///
@@ -984,7 +984,7 @@ fn a_seek_does_not_move_a_placed_voices_window() {
             channel_index: 0,
             file_position: SamplePosition(30.5 * SR),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     got.extend(live.render(100));
     want.extend(memory.render(100));
     assert_eq!(live.underruns(), 0, "the window was dragged away");
@@ -1045,7 +1045,7 @@ fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
 
 /// A paused source holds no refill back.
 /// A free-running source plays four blocks, stops, and is sought to where
-/// the slots its last block claimed come round again; the butler moves the
+/// the slots its last block claimed come round again; the streamer moves the
 /// window there while it is stopped. Resumed, it plays the target at once,
 /// nothing unread: a stopped block tells the ring it reads nothing
 /// (`PosReader::idle`), so the ranges of its last block no longer stop the
@@ -1056,7 +1056,7 @@ fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
 /// once, and the resumed block underruns → fails. (The placed voice's idle,
 /// on a stopped clock in `LiveRead::render`, has no such test: nothing moves
 /// a placed voice's window while its clock is stopped — a seek of the clock
-/// reaches the butler only through the voice's next claim, and a relayed
+/// reaches the streamer only through the voice's next claim, and a relayed
 /// `Command::Seek` is ignored for it (see
 /// `a_seek_does_not_move_a_placed_voices_window`). `PosRing`'s
 /// `an_idle_reader_holds_nothing_back` covers `idle` itself.)
@@ -1075,7 +1075,7 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
             file_path: path.to_path_buf(),
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
@@ -1105,7 +1105,7 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
             channel_index: 0,
             file_position: SamplePosition(target as f64),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     for _ in 0..50 {
         block(&mut source, &stopped, SR, BLOCK);
         let _ = streamer.step_once();
@@ -1139,14 +1139,14 @@ fn a_stream_serves_one_live_voice() {
     );
 }
 
-/// A pool on `streamer`'s butler, prepared, holding `voice` (a streaming
+/// A pool on `streamer`'s streamer, prepared, holding `voice` (a streaming
 /// voice on channel 0) at `id`; and its handle.
 fn pool_with(
     streamer: &DiskStreamer,
     id: crate::SlotId,
     voice: DiskVoice,
 ) -> (crate::VoicePool, crate::VoicePoolHandle) {
-    let (mut pool, handle) = crate::VoicePool::with_butler(streamer.commands()).with_handle();
+    let (mut pool, handle) = crate::VoicePool::with_streamer(streamer.commands()).with_handle();
     pool.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     handle
         .send(crate::VoiceCommand::AddVoice {
@@ -1162,7 +1162,7 @@ fn pool_with(
     (pool, handle)
 }
 
-/// Streams `path` on channel 0 of a fresh hand-stepped butler from frame 0,
+/// Streams `path` on channel 0 of a fresh hand-stepped streamer from frame 0,
 /// primed.
 fn streaming(path: &Path) -> DiskStreamer {
     let mut streamer =
@@ -1174,7 +1174,7 @@ fn streaming(path: &Path) -> DiskStreamer {
             file_path: path.to_path_buf(),
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
@@ -1183,7 +1183,7 @@ fn streaming(path: &Path) -> DiskStreamer {
 }
 
 /// A loop set through a pool's handle on a live streaming voice reaches
-/// the butler, and the voice loops. The handle forwards it on the
+/// the streamer, and the voice loops. The handle forwards it on the
 /// control thread; the pool only records it. On a ramp whose every frame
 /// is distinct, a hard loop `[1000, 3001)` played at unity: once the
 /// first wrap and its fades are behind it, every frame the pool puts out
@@ -1193,7 +1193,7 @@ fn streaming(path: &Path) -> DiskStreamer {
 /// → the pool records the loop but the stream never loops → frames past
 /// 3001 → fails.
 #[test]
-fn a_loop_set_through_a_pool_reaches_the_butler_and_the_voice_loops() {
+fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
@@ -1238,7 +1238,7 @@ fn a_loop_set_through_a_pool_reaches_the_butler_and_the_voice_loops() {
 
 /// A loop set on a voice whose channel has since been restarted on
 /// another stream leaves the new stream alone. The handle forwards the
-/// loop naming the voice's stream; the butler, finding the channel on
+/// loop naming the voice's stream; the streamer, finding the channel on
 /// another one, ignores it. A host's own `Command::Loop`, which names only
 /// the channel, still loops whatever the channel streams.
 ///
@@ -1263,14 +1263,14 @@ fn a_loop_for_a_replaced_stream_leaves_the_new_one_alone() {
     let commands = streamer.commands();
     commands
         .send(Command::Stop { channel_index: 0 })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     commands
         .send(Command::Stream {
             channel_index: 0,
             file_path: second.clone(),
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
@@ -1299,7 +1299,7 @@ fn a_loop_for_a_replaced_stream_leaves_the_new_one_alone() {
             channel_index: 0,
             setting: loop_on(1_000.0, 3_001.0, 0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     assert!(streamer.step_until_settled(1_000) < 1_000);
     assert_eq!(
         streamer.status().stream_loop(0),

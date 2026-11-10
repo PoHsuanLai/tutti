@@ -1,41 +1,41 @@
-//! One butler cycle, synchronously.
+//! One streamer cycle, synchronously.
 //!
-//! The butler's work is a loop over three pure steps — publish PDC preroll
+//! The streamer's work is a loop over three pure steps — publish PDC preroll
 //! changes, apply direction changes to each ring's mapping, refill the rings
 //! (following each reader to where it plays). None of them is asynchronous:
-//! they read a `DashMap`, decode from a file, and write into a ring. The only async in the butler is the *pacing* —
+//! they read a `DashMap`, decode from a file, and write into a ring. The only async in the streamer is the *pacing* —
 //! the timer the loop parks on when there is nothing urgent to do.
 //!
-//! This module is that work with the pacing removed. [`ButlerCycle::step`]
+//! This module is that work with the pacing removed. [`StreamerCycle::step`]
 //! drains the command queue, runs the three steps, and reports what the pacing
 //! layer should do next as a [`StepOutcome`]. The async loop in
 //! [`loop_body`](super::loop_body) is then the pacing layer and nothing else.
 //!
 //! # Why the split earns its name
 //!
-//! A test that has to observe a butler-driven stream otherwise has only wall
+//! A test that has to observe a streamer-driven stream otherwise has only wall
 //! clock to work with: send a command, sleep, look, sleep again. That is not a
-//! stylistic complaint. The butler parks 1 ms when idle and 3 ms when every
+//! stylistic complaint. The streamer parks 1 ms when idle and 3 ms when every
 //! ring is healthy, so a poller reading at 5–10 ms is racing a producer it
 //! cannot see, and every such test carries a timeout that is really a guess
 //! about the machine it runs on. Driving the same steps directly makes the
-//! question "has the butler done the work" answerable by *counting* rather
+//! question "has the streamer done the work" answerable by *counting* rather
 //! than by waiting — `step` returns only after the work is done.
 //!
 //! It is the same seam the production loop uses, not a parallel test path:
-//! `butler_loop_async` is written in terms of `ButlerCycle::step`, so a
+//! `streamer_loop_async` is written in terms of `StreamerCycle::step`, so a
 //! divergence between what tests drive and what ships is not representable.
 
-use super::command::ButlerCommand;
+use super::command::StreamerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, Local, handle_command};
 use super::io::refill::{refill_all, refill_all_parallel};
 use super::loops::{Mapping, apply_mapping};
 use super::preroll::{PdcFeed, apply_pdc_updates};
 
-/// What the pacing layer should do after one butler cycle.
+/// What the pacing layer should do after one streamer cycle.
 ///
-/// The butler runs at maximum thread priority, so "keep going" and "there is
+/// The streamer runs at maximum thread priority, so "keep going" and "there is
 /// nothing to do" must be distinguishable — spinning either one costs a core.
 /// The step itself has no opinion on *how long* to park, only on whether
 /// parking is safe, which is why this carries no duration.
@@ -58,7 +58,7 @@ pub enum StepOutcome {
     /// pacing layer skip its park and re-run immediately, which spins a
     /// max-priority thread flat out for the whole tail of every clip.
     ///
-    /// It is also what a step-driven caller needs: "the butler has done all it
+    /// It is also what a step-driven caller needs: "the streamer has done all it
     /// can" is a *fixed point*, and a caller that waited for `Healthy` instead
     /// would wait forever near the end of a file.
     Stalled,
@@ -66,18 +66,18 @@ pub enum StepOutcome {
     Shutdown,
 }
 
-/// The butler's per-cycle state and the step over it.
+/// The streamer's per-cycle state and the step over it.
 ///
-/// Owns [`Local`] (butler-thread-local: producers, scratch, the region-id
+/// Owns [`Local`] (streamer-thread-local: producers, scratch, the region-id
 /// source) and borrows nothing. Both the async loop and a test driver build one
 /// and call [`step`](Self::step) repeatedly; the only difference between them is
 /// what happens *between* the calls.
-pub(crate) struct ButlerCycle {
+pub(crate) struct StreamerCycle {
     local: Local,
     config: BufferConfig,
 }
 
-impl ButlerCycle {
+impl StreamerCycle {
     /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill,
     /// reading delay compensation through `pdc`.
     pub(crate) fn new(config: BufferConfig, pdc: PdcFeed) -> Self {
@@ -112,10 +112,10 @@ impl ButlerCycle {
     pub(crate) fn step(
         &mut self,
         shared: &Handles,
-        mut drain: impl FnMut() -> Option<ButlerCommand>,
+        mut drain: impl FnMut() -> Option<StreamerCommand>,
     ) -> StepOutcome {
         while let Some(cmd) = drain() {
-            if matches!(cmd, ButlerCommand::Shutdown) {
+            if matches!(cmd, StreamerCommand::Shutdown) {
                 handle_command(cmd, shared, &self.config, &mut self.local);
                 return StepOutcome::Shutdown;
             }
@@ -123,7 +123,7 @@ impl ButlerCycle {
         }
 
         // Every ring's retired maps, whether or not this cycle publishes
-        // one: the butler is their only publisher, and its cycle is the
+        // one: the streamer is their only publisher, and its cycle is the
         // control-side tick they get. A lock and a length check per ring
         // when nothing is retired.
         for writer in self.local.regions.writers() {
@@ -262,8 +262,8 @@ mod tests {
     use super::super::prefetch::RegionBuffer;
     use super::*;
 
-    /// A map the reader held across the butler's last publish is freed by
-    /// the butler's next cycle, with no further publish, while no channel
+    /// A map the reader held across the streamer's last publish is freed by
+    /// the streamer's next cycle, with no further publish, while no channel
     /// streams (the cycle returns `Idle`).
     ///
     /// Mutation (run): the cycle's per-ring `reclaim_maps` loop removed → the
@@ -280,7 +280,7 @@ mod tests {
             metrics: Arc::new(Metrics::new()),
             session_rate: SessionRate::new(SampleRate(48_000.0)),
         };
-        let mut cycle = ButlerCycle::new(config, PdcFeed::over(None));
+        let mut cycle = StreamerCycle::new(config, PdcFeed::over(None));
         let id = RegionId(1);
         let (writer, _reader) = RegionBuffer::with_capacity(id, PathBuf::from("t.wav"), 1024, 1u16);
         let ring = Arc::clone(writer.ring());

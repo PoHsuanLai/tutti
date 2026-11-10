@@ -1,7 +1,7 @@
-//! Butler command handlers + their state types.
+//! Streamer command handlers + their state types.
 //!
-//! `Handles` — Arc'd state also held by `ButlerThread`.
-//! `Local`    — butler-thread-local data (producers, captures, ...).
+//! `Handles` — Arc'd state also held by `StreamerThread`.
+//! `Local`    — streamer-thread-local data (producers, captures, ...).
 //! `handle_command` — dispatch; each arm is either inline or a `handle_*` fn.
 
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use tutti_types::{SampleRate, SrcRatio};
 
 use super::cache::LruCache;
-use super::command::{ButlerCommand, RegionId};
+use super::command::{RegionId, StreamerCommand};
 use super::config::BufferConfig;
 use super::io::refill::load_wave;
 use super::loops::{LeadIn, Mapping, RingLoop, RingMap, apply_mapping, buffer_size_for_file};
@@ -23,7 +23,7 @@ use super::prefetch::RegionBuffer;
 use super::preroll::PdcFeed;
 use super::region_map::RegionMap;
 
-/// Arc'd handles shared between `ButlerThread` (controller) and the butler
+/// Arc'd handles shared between `StreamerThread` (controller) and the streamer
 /// loop. `Clone` is cheap — every field is an `Arc`.
 #[derive(Clone)]
 pub(super) struct Handles {
@@ -34,7 +34,7 @@ pub(super) struct Handles {
     pub session_rate: SessionRate,
 }
 
-/// The session (graph) rate, one cell shared by the controller, the butler
+/// The session (graph) rate, one cell shared by the controller, the streamer
 /// and every [`Status`](crate::Status) snapshot.
 ///
 /// Shared rather than copied into each because a device restart moves it
@@ -58,7 +58,7 @@ impl SessionRate {
     /// Why the ratio is derived under the plan's lock on both sides.
     /// `handle_stream_file` reads the rate and sets the ratio while it holds
     /// the plan's entry; this stores the rate first and then takes each entry.
-    /// So a stream the butler opens concurrently either set its ratio before
+    /// So a stream the streamer opens concurrently either set its ratio before
     /// this took its entry (and is re-derived here), or takes the entry after
     /// this released it, and then reads the new rate. Neither order leaves a
     /// stream on the old ratio.
@@ -73,7 +73,7 @@ impl SessionRate {
     }
 }
 
-/// Butler-thread-local state. Never shared. Plain data.
+/// Streamer-thread-local state. Never shared. Plain data.
 pub(super) struct Local {
     /// Every live region's producer half.
     pub regions: RegionMap,
@@ -82,10 +82,10 @@ pub(super) struct Local {
     pub buffer_margin: f64,
     /// Monotonic id source; see [`mint_region_id`](Self::mint_region_id).
     pub next_region_id: u64,
-    /// Flat interleaved refill scratch. Butler-thread-local, so it may grow.
+    /// Flat interleaved refill scratch. Streamer-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
     /// The delay-compensation table this cycle reads, handed to it with the
-    /// cycle (`ButlerThread::cycle`, or `with_pdc` for a hand-stepped one).
+    /// cycle (`StreamerThread::cycle`, or `with_pdc` for a hand-stepped one).
     pub pdc: PdcFeed,
 }
 
@@ -110,20 +110,20 @@ impl Local {
     }
 }
 
-/// Dispatch one command on the butler thread.
+/// Dispatch one command on the streamer thread.
 ///
 /// Every arm is infallible and silently no-ops when its channel is absent or not
 /// streaming: commands race the streams they name (a `Stop` may arrive after the
 /// stream already ended), and there is no caller left to report to by the time
-/// the butler sees one.
+/// the streamer sees one.
 pub(super) fn handle_command(
-    cmd: ButlerCommand,
+    cmd: StreamerCommand,
     shared: &Handles,
     config: &BufferConfig,
     local: &mut Local,
 ) {
     match cmd {
-        ButlerCommand::StreamAudioFile {
+        StreamerCommand::StreamAudioFile {
             channel_index,
             file_path,
             offset_samples,
@@ -137,11 +137,11 @@ pub(super) fn handle_command(
                 local,
             );
         }
-        ButlerCommand::StopStreaming { channel_index } => {
+        StreamerCommand::StopStreaming { channel_index } => {
             if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
                 // Capture the region id before dropping the link so its writer
                 // (ring buffer + RegionMeta) can be freed from the RegionMap;
-                // otherwise every stopped stream leaks for the butler's lifetime.
+                // otherwise every stopped stream leaks for the streamer's lifetime.
                 let region_id = plan.link.as_ref().map(|link| link.region_id);
                 plan.stop_streaming();
                 drop(plan);
@@ -151,7 +151,7 @@ pub(super) fn handle_command(
             }
         }
 
-        ButlerCommand::SetStreamLoop {
+        StreamerCommand::SetStreamLoop {
             channel_index,
             stream,
             range,
@@ -166,21 +166,21 @@ pub(super) fn handle_command(
                 local,
             );
         }
-        ButlerCommand::ClearStreamLoop {
+        StreamerCommand::ClearStreamLoop {
             channel_index,
             stream,
         } => {
             handle_set_stream_loop(channel_index, stream, None, shared, config, local);
         }
 
-        ButlerCommand::SeekStream {
+        StreamerCommand::SeekStream {
             channel_index,
             file_position,
         } => {
             handle_seek_stream(channel_index, file_position, shared, local);
         }
 
-        ButlerCommand::SetVarispeed {
+        StreamerCommand::SetVarispeed {
             channel_index,
             direction,
             speed,
@@ -191,7 +191,7 @@ pub(super) fn handle_command(
             }
         }
 
-        ButlerCommand::Shutdown => {}
+        StreamerCommand::Shutdown => {}
     }
 }
 
@@ -204,7 +204,7 @@ pub(super) fn handle_command(
 ///
 /// The verdict comes from [`crate::probe()`], not from a local copy of the
 /// rule. A host picks a playback tier before any of this runs, and it must
-/// reach the same conclusion this function does — so "can the butler stream it"
+/// reach the same conclusion this function does — so "can the streamer stream it"
 /// is asked in exactly one place. Re-deriving it here is how the two would drift
 /// the next time the conditions changed.
 #[cfg(codec)]
@@ -450,7 +450,7 @@ fn handle_set_stream_loop(
 }
 
 /// Seek a stream's free-running reader to absolute file frame
-/// `file_position`, and move the butler's window there (less the channel's
+/// `file_position`, and move the streamer's window there (less the channel's
 /// PDC preroll) so it is filled before the reader asks.
 ///
 /// Free-running readers only. A placed voice follows its clock (seek the

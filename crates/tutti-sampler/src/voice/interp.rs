@@ -8,11 +8,11 @@
 //! transport-placement gate.
 //!
 //! `read_frame` is the in-memory reader only — the streaming tier pulls from the
-//! butler ring rather than an indexable `Wave`, so it feeds the same kernel from
+//! streamer ring rather than an indexable `Wave`, so it feeds the same kernel from
 //! its own 4-tap history. Same interpolation, different fetch.
 //!
 //! `read_frame` also owns the crate's channel policy (see its docs); the
-//! butler's planar unpack in `wave_io` follows the same rule. Two
+//! streamer's planar unpack in `wave_io` follows the same rule. Two
 //! implementations of a channel policy is how the two tiers drift apart — the
 //! same failure mode this module exists to prevent for interpolation.
 //!
@@ -628,7 +628,7 @@ static NO_SPREAD: MonoSpread = MonoSpread::FAN;
 impl Place {
     /// A wave read as it stands: every channel of one as wide as the frame in
     /// its own slot, and a mono one to every channel. For the readers whose
-    /// frame is the wave's own width (the butler's ring writers, which carry the file as it is) and for a
+    /// frame is the wave's own width (the streamer's ring writers, which carry the file as it is) and for a
     /// test; a wave of another width than the frame is a bug there.
     pub const FAN: Self = Self::Native(MonoSpread::FAN);
 

@@ -19,8 +19,8 @@ caller's choice; the sampler never picks one on its own.
 
 - `MemorySource` plays a decoded `Wave` held in memory. It needs no thread and
   no file, and is a graph node on its own.
-- `DiskVoice` plays a file streamed by the butler, a background thread owned by
-  `DiskStreamer`. The butler decodes ahead of the playhead into a ring per
+- `DiskVoice` plays a file streamed by the streamer, a background thread owned by
+  `DiskStreamer`. The streamer decodes ahead of the playhead into a ring per
   stream; the audio thread only reads the ring, so the streaming tier is
   real-time safe. `probe` reads a file's header and says whether this build
   can stream it.
@@ -48,7 +48,7 @@ All three are `tutti-types` types.
 
 ## Quick start
 
-An in-memory voice needs no butler and no file, so it is a plain graph node:
+An in-memory voice needs no streamer and no file, so it is a plain graph node:
 build the `Wave`, wrap it, put it in a graph and render.
 
 ```rust
@@ -97,5 +97,5 @@ here instead (`VoicePool::with_channels` returns `PoolTooWide`).
   `VoicePoolNode`. The plugin and asset loader are `bevy-tutti`'s; everything
   else in this crate works without Bevy.
 - `test-support`: `DiskStreamer::manual` and `step_once`, which run the
-  butler's cycle by hand instead of on its thread, and the `testing` module (a
+  streamer's cycle by hand instead of on its thread, and the `testing` module (a
   mock transport and block driver). For tests; a host has no use for it.

@@ -1,8 +1,8 @@
 //! A disk voice forked for an offline render plays its file itself.
 //!
 //! A fork (the node's fork source, as a graph fork takes it:
-//! `ForkMode::Offline`) cannot read the butler's ring: the live audio thread
-//! is its one consumer. So it reads the file the butler's record names, on
+//! `ForkMode::Offline`) cannot read the streamer's ring: the live audio thread
+//! is its one consumer. So it reads the file the streamer's record names, on
 //! demand, as `offline_read` does, on the render's transport from each
 //! block's `Env`. These tests pin what it plays: the file's own samples from
 //! the frame its beat falls on, at another render rate, looped as the stream
@@ -46,7 +46,7 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
     w.finalize().expect("writes");
 }
 
-/// A hand-stepped butler streaming `path` on channel 0, primed.
+/// A hand-stepped disk streamer streaming `path` on channel 0, primed.
 fn streamer_on(path: &Path) -> DiskStreamer {
     streamer_with(path, Default::default())
 }
@@ -61,7 +61,7 @@ fn streamer_with(path: &Path, config: tutti_sampler::DiskStreamerConfig) -> Disk
             file_path: path.to_path_buf(),
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
@@ -307,7 +307,7 @@ fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
                     crossfade_frames: fade,
                 },
             })
-            .expect("the butler is alive");
+            .expect("the streamer is alive");
         let _ = streamer.step_until_settled(1_000);
 
         let clock = clock_at(SR);
@@ -402,7 +402,7 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
                     crossfade_frames: fade,
                 },
             })
-            .expect("the butler is alive");
+            .expect("the streamer is alive");
         let _ = streamer.step_until_settled(1_000);
 
         let clock = clock_at(SR);
@@ -492,7 +492,7 @@ fn a_varispeed_change_lands_on_a_forks_next_block() {
 
 /// A fork of a stream that is gone plays nothing, and says so: the live
 /// voice's channel restarted on another file, so the live voice is on a ring
-/// the butler no longer feeds, and so is its fork — it must not pick up the
+/// the streamer no longer feeds, and so is its fork — it must not pick up the
 /// other file from the channel, and its render fails rather than pass the
 /// silence off as the clip.
 ///
@@ -514,7 +514,7 @@ fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
             file_path: second,
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     let _ = streamer.step_until_settled(1_000);
 
     let clock = clock_at(SR);
@@ -529,7 +529,7 @@ fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
 }
 
 /// A fork whose file cannot be read fails, naming the file. The file is
-/// removed after the stream started (the butler keeps its own handle), so the
+/// removed after the stream started (the streamer keeps its own handle), so the
 /// fork, which re-opens it by its path, cannot: it renders silence and latches
 /// the failure its render reports (the fork's health probe, which the
 /// export reads).
@@ -698,11 +698,11 @@ fn a_fork_follows_a_looping_render_timeline() {
 /// - A crossfaded loop at 1.5×, through the fade, the seam and many
 ///   wraps, on fractional positions: the fade toward the lead-in and the
 ///   taps through the seam, which a placed memory voice honours too.
-/// - The same loop, paged: the rows above fork onto the butler's cached
-///   wave (`Open::Resident`, the butler decodes the file whole to capture a
+/// - The same loop, paged: the rows above fork onto the streamer's cached
+///   wave (`Open::Resident`, the streamer decodes the file whole to capture a
 ///   loop's fade), which reads through the very `read_looped_frame` the
 ///   memory tier does — so there the two sides share their loop code, and a
-///   bug in it passes. This row evicts the wave from the butler's cache
+///   bug in it passes. This row evicts the wave from the streamer's cache
 ///   (a one-entry cache, and a second stream whose loop loads its own file)
 ///   so the fork decodes pages (`Pages::read_looped_into`), an independent
 ///   fetch-and-blend. A hard loop at 1.5× runs the paged seam taps too.
@@ -806,7 +806,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         write_ramp(&path, case.file_rate, LEN);
         let mut config = tutti_sampler::DiskStreamerConfig::default();
         if case.paged {
-            // One wave resident at a time, so the next file the butler loads
+            // One wave resident at a time, so the next file the streamer loads
             // evicts this one.
             config.buffer_config.cache_max_entries = 1;
         }
@@ -818,11 +818,11 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
                     channel_index: 0,
                     setting: case.loop_,
                 })
-                .expect("the butler is alive");
+                .expect("the streamer is alive");
             let _ = streamer.step_until_settled(1_000);
         }
         if case.paged {
-            // A second stream whose crossfaded loop makes the butler load its
+            // A second stream whose crossfaded loop makes the streamer load its
             // own file whole — evicting the first, which the fork then pages.
             let other = dir.path().join("other.wav");
             write_ramp(&other, SR as u32, 1_000);
@@ -833,7 +833,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
                     file_path: other,
                     offset: SamplePosition(0.0),
                 })
-                .expect("the butler is alive");
+                .expect("the streamer is alive");
             let _ = streamer.step_until_settled(1_000);
             commands
                 .send(Command::Loop {
@@ -844,7 +844,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
                         crossfade_frames: 100,
                     },
                 })
-                .expect("the butler is alive");
+                .expect("the streamer is alive");
             let _ = streamer.step_until_settled(1_000);
         }
         let mut voice = live_voice(&streamer, 1.0);

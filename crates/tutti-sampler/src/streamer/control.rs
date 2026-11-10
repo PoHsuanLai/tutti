@@ -1,8 +1,8 @@
-//! The butler's read-side operations over its channel-plan map, and the
+//! The streamer's read-side operations over its channel-plan map, and the
 //! error a command send reports.
 //!
 //! The command side is [`Commands`](crate::Commands): one mapping from the
-//! public [`Command`](crate::Command) to the butler's own, sent from control
+//! public [`Command`](crate::Command) to the streamer's own, sent from control
 //! threads only, waiting while the queue is full. The read
 //! side, "take the streaming consumer", is here, and
 //! [`Status`](crate::Status) drives it.
@@ -20,35 +20,35 @@ use crate::voice::disk_voice::DiskSource;
 use crate::voice::interp::Place;
 use crate::voice_width;
 
-/// The butler thread is gone, so a stream-control command was discarded.
+/// The streamer thread is gone, so a stream-control command was discarded.
 ///
 /// There is one failure mode and it is permanent: a blocking send waits
 /// out a full queue and fails only once the queue is closed, which happens
-/// when the butler thread exits or its streamer is dropped. Every later
+/// when the streamer thread exits or its streamer is dropped. Every later
 /// command fails the same way, so a caller that sees this should stop rather
 /// than retry.
 ///
 /// It is an error type rather than a silent `let _ =` because swallowing it
-/// leaves a dead butler accepting `Stream`/`Seek`/`Loop`/`Stop` indefinitely and
+/// leaves a dead streamer accepting `Stream`/`Seek`/`Loop`/`Stop` indefinitely and
 /// doing nothing — indistinguishable, from the caller's side, from working
 /// playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ButlerGone;
+pub struct StreamerGone;
 
-impl core::fmt::Display for ButlerGone {
+impl core::fmt::Display for StreamerGone {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "butler thread is gone; the command was discarded")
+        write!(f, "streamer thread is gone; the command was discarded")
     }
 }
 
-impl std::error::Error for ButlerGone {}
+impl std::error::Error for StreamerGone {}
 
-/// Build a bare `DiskSource` over a channel whose butler link is
+/// Build a bare `DiskSource` over a channel whose streamer link is
 /// ready, alongside the channel's shared [`RtState`], the file's own rate and
 /// the stream's [`StreamOrigin`]: the stream's one live reader, `placed` when
 /// the caller wraps it in a voice that follows a clock.
 ///
-/// [`TakeVoiceError::NotStreaming`] while the butler hasn't installed the
+/// [`TakeVoiceError::NotStreaming`] while the streamer hasn't installed the
 /// [`ChannelPlan`] link yet; [`TakeVoiceError::ReaderTaken`] once the stream
 /// has its reader; [`TakeVoiceError::Place`] when the file's channels cannot
 /// be placed into `width` (the placement is built before the reader is
@@ -90,7 +90,7 @@ pub(crate) fn stream_loop(
         .map(|file| file.loop_)
 }
 
-/// A butler stream's own record of what it plays: the file, the file's rate,
+/// A streamer stream's own record of what it plays: the file, the file's rate,
 /// the loop set on it, and whether it is still running.
 ///
 /// Built when the stream starts and held by its [`Link`](super::plan::Link);
@@ -98,20 +98,20 @@ pub(crate) fn stream_loop(
 /// [`StreamOrigin`]. It is deliberately small: a live voice may be the last
 /// holder, and its drop can land on the audio thread, where it frees a path
 /// and this record (the same class of free as the voice's `Arc<RtState>`),
-/// never the butler's plan map or a wave. The cache is held weakly for the
+/// never the streamer's plan map or a wave. The cache is held weakly for the
 /// same reason.
 pub(crate) struct StreamRecord {
     path: PathBuf,
     file_rate: SampleRate,
-    /// The loop the butler runs, told by [`Link::set_loop`](super::plan::Link::set_loop),
+    /// The loop the streamer runs, told by [`Link::set_loop`](super::plan::Link::set_loop),
     /// the one place it changes. A lock, not an atomic: a loop is three
     /// values that change together, and neither side is the audio thread
-    /// (the butler writes; a fork reads, on the control thread).
+    /// (the streamer writes; a fork reads, on the control thread).
     loop_: std::sync::Mutex<LoopSetting>,
     /// Set when the stream's link goes: stopped, or replaced by a new stream
     /// on the channel.
     ended: std::sync::atomic::AtomicBool,
-    /// The butler's wave cache, to hand a fork the file already decoded
+    /// The streamer's wave cache, to hand a fork the file already decoded
     /// when it holds it (a file that cannot seek is always there, pinned for
     /// the stream's life).
     cache: std::sync::Weak<super::cache::LruCache>,
@@ -144,29 +144,29 @@ impl StreamRecord {
     }
 }
 
-/// Which butler stream a voice consumes: a read-only handle on the stream's
+/// Which streamer stream a voice consumes: a read-only handle on the stream's
 /// [`StreamRecord`].
 ///
 /// Nothing reachable through it can drive a stream. It exists so a fork of a
-/// disk voice can play the same material without the live butler (see
+/// disk voice can play the same material without the live streamer (see
 /// `DiskVoice::fork_copy`). The description is read when it is asked
 /// for rather than copied into the voice when the voice is built: a loop is
 /// set on the stream later (`Command::Loop`), and a copy would miss it.
 #[derive(Clone)]
 pub(crate) struct StreamOrigin(Arc<StreamRecord>);
 
-/// What a butler stream plays, read from its record: the file, the file's own
-/// rate and the loop, and the file decoded when the butler's cache holds it.
-/// Enough to play the same material with no butler at all.
+/// What a streamer stream plays, read from its record: the file, the file's own
+/// rate and the loop, and the file decoded when the streamer's cache holds it.
+/// Enough to play the same material with no streamer at all.
 #[derive(Clone)]
 pub(crate) struct StreamFile {
     /// The file the stream was started on. A fork re-opens it by this path.
     pub(crate) path: PathBuf,
-    /// The file's own rate, as the butler recorded it from the header.
+    /// The file's own rate, as the streamer recorded it from the header.
     pub(crate) file_rate: SampleRate,
     /// The loop set on the stream, in file frames; `Off` when there is none.
     pub(crate) loop_: LoopSetting,
-    /// The whole file, when the butler's cache holds it: read in place
+    /// The whole file, when the streamer's cache holds it: read in place
     /// rather than decoded (or, for a file that cannot seek, decoded whole)
     /// a second time.
     pub(crate) resident: Option<Arc<tutti_codec::Wave>>,
@@ -214,16 +214,16 @@ impl StreamOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::butler::cache::LruCache;
+    use crate::streamer::cache::LruCache;
 
-    /// A fork is handed the butler's decoded copy of the file when its cache
+    /// A fork is handed the streamer's decoded copy of the file when its cache
     /// holds one — the same `Arc`, not a second decode — and nothing once
     /// the cache is gone. A file that cannot seek is always there (the stream
     /// pins it), so a fork of one never decodes it again.
     ///
     /// Mutation (run): `describe` answering `resident: None` → fails.
     #[test]
-    fn a_fork_is_handed_the_butlers_decoded_copy() {
+    fn a_fork_is_handed_the_streamers_decoded_copy() {
         let path = PathBuf::from("/cached.wav");
         let cache = Arc::new(LruCache::new(4, 1 << 20));
         let wave = Arc::new(tutti_codec::Wave::new(1, 48_000.0));

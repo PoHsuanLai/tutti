@@ -217,7 +217,7 @@ cannot exhaust one. That is why the guarantee lives in the return type.
 Rules:
 - **Register on the control side; lend on the reading thread.** Registering
   takes the publisher's lock and may allocate a block of slots, so it happens
-  where the node (or the butler's cycle, or the MIDI drain) is built, and
+  where the node (or the streamer's cycle, or the MIDI drain) is built, and
   the reader is stored beside what it reads. A fork builds its node over a
   new cell and registers there. `Reader::clone` registers a new reader on the
   same cell, so a derived `Clone` on a node holding one is a node with its
@@ -262,7 +262,7 @@ Rules:
   that phase. A first cut had the adapter sweep the clip and voice controls
   on its node entities, so a headless host swept fewer cells than a Bevy
   one: which nodes publish is a fact of the node type, so the type says it
-  and the session keeps it by node. The butler's cycle sweeps its rings'
+  and the session keeps it by node. The streamer's cycle sweeps its rings'
   maps. Derived at each owner rather than registered in a global list: an
   owner with a tick already knows its cells. `reclaim` returns at once when
   nothing is retired, so the per-tick sweep costs a lock and a length check
@@ -279,7 +279,7 @@ Rules:
   into every follower. Cells no audio thread reads stay plain: device
   enumeration in `tutti-midi-hardware`, and the per-channel compensation
   table (`PrerollTable`, a lock), which the session writes and only the
-  sampler's butler and the host read. The hardware MIDI per-block port set,
+  sampler's streamer and the host read. The hardware MIDI per-block port set,
   which the audio thread does read, is an `ArcLend` behind a publisher
   lock.
 
@@ -370,7 +370,7 @@ the trait once the width went runtime, but no caller used the ring through it:
 the refill needs the landed frame count to advance `file_position`, which `write`
 (returning `()`) cannot give, so it calls `push_interleaved`, and the impl was
 deleted. `write_interleaved_reversed` / `set_decoder` / `file_position` never had
-a trait counterpart: reverse refill is butler policy, not something every sink
+a trait counterpart: reverse refill is streamer policy, not something every sink
 can do. Forcing those through `AudioOut` would produce trait methods whose
 meaning depends on which tier you are in, which is the failure that got
 `ClipReader` deleted. The sampler is still not an example of a subsystem the
@@ -381,7 +381,7 @@ is that it has no verdict to give: `fill_interleaved` always fills the whole
 buffer and returns `out.len() / ch` unconditionally, so it never ends and never
 waits on a producer. A source that never returns a short count is not answering
 the question `Source::pull` exists to ask. The type's docs, in
-`butler/io/wave_io.rs`, say it in a paragraph.
+`streamer/io/wave_io.rs`, say it in a paragraph.
 
 **A sampler *voice* is a graph node and not an edge — the split above decides it,
 not the width.** `MemorySource` implements `tutti_graph::Node` (no
@@ -396,7 +396,7 @@ sounds again when the playhead re-enters; and `Source` deliberately carries no
 rate/length/seek vocabulary, so `window_position`, `read_rate` / `window_rate`,
 loop wrap and `rebind_offline` would all stay outside the trait anyway. It also
 renders into the graph's **planar** `Io`, so an interleaved impl would be
-de-interleaved right back. The sampler's genuine edge is the butler ring, and
+de-interleaved right back. The sampler's genuine edge is the streamer ring, and
 that is the thing wearing the trait.
 
 Going runtime cost one compile-time guarantee: "a stereo source cannot feed a

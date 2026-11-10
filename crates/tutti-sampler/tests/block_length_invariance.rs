@@ -337,8 +337,8 @@ fn write_wav(path: &Path, frames: usize) {
 }
 
 /// A live disk voice streaming `path` from its start, on its own
-/// hand-driven butler, its ring primed (a file this short is prefilled
-/// whole, so the render never waits on the butler).
+/// hand-driven streamer, its ring primed (a file this short is prefilled
+/// whole, so the render never waits on the streamer).
 fn disk_voice(path: &Path) -> (DiskStreamer, tutti_sampler::DiskVoice) {
     let mut s = DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
     s.commands()
@@ -347,7 +347,7 @@ fn disk_voice(path: &Path) -> (DiskStreamer, tutti_sampler::DiskVoice) {
             file_path: path.to_path_buf(),
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     for _ in 0..4096 {
         if s.step_once() != StepOutcome::Busy {
             break;

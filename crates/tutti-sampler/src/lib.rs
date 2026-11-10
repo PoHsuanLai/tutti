@@ -7,7 +7,7 @@
 //! - [`MemorySource`]: in-memory playback of a [`Wave`], configured with
 //!   [`MemorySourceConfig`], [`LoopSetting`] and [`VoiceWindow`].
 //! - [`DiskVoice`]: disk-streamed playback, built by [`Status::take_disk_voice`].
-//! - [`DiskStreamer`]: owns the butler thread; [`Commands`] (a stream
+//! - [`DiskStreamer`]: owns the streamer thread; [`Commands`] (a stream
 //!   [`Command`]) in, [`Status`] out.
 //! - [`Voice`], [`VoiceSource`], [`Playback`]: a voice of either tier and its
 //!   control state.
@@ -90,7 +90,7 @@ mod lanes;
 pub mod stretch;
 
 // Bevy-free DSP leaves + value types from `voice` — usable as plain
-// `tutti_graph` nodes without the ECS layer. The butler's `LruCache` /
+// `tutti_graph` nodes without the ECS layer. The streamer's `LruCache` /
 // `StreamPin` are internal machinery a consumer never constructs, so they stay
 // `pub(crate)`.
 // `DiskVoiceConfig` and `DiskSource` are deliberately NOT re-exported: nothing
@@ -113,25 +113,25 @@ pub use voice::{
 #[cfg(feature = "bevy")]
 pub use voice::{VoicePoolNode, VoicePoolRef};
 
-// The async disk-streaming engine (butler thread + the `DiskStreamer` handle). All
+// The async disk-streaming engine (streamer thread + the `DiskStreamer` handle). All
 // Bevy-free — a non-Bevy host drives it directly via `DiskStreamer::new` / the
-// `ButlerThread` API.
-pub(crate) mod butler;
+// `StreamerThread` API.
+pub(crate) mod streamer;
 
-pub use butler::{DiskStreamer, DiskStreamerConfig, TakeVoiceError};
+pub use streamer::{DiskStreamer, DiskStreamerConfig, TakeVoiceError};
 
-// The hand-driven butler cycle's verdict, alongside `DiskStreamer::manual`.
+// The hand-driven streamer cycle's verdict, alongside `DiskStreamer::manual`.
 #[cfg(any(test, feature = "test-support"))]
-pub use butler::StepOutcome;
+pub use streamer::StepOutcome;
 
 mod ports;
 pub use ports::{Command, Commands, Source, Status};
 
-// Header-only probe: what a file is, and whether *this build's* butler can
+// Header-only probe: what a file is, and whether *this build's* streamer can
 // stream it. Public because the tier decision is the caller's
 // (`Source`'s doc: "the sampler never decides the tier on its own") but the
 // streamability half of it is this crate's own capability — so the host and the
-// butler read one function rather than two copies of a rule.
+// streamer read one function rather than two copies of a rule.
 //
 // Codec-gated because it *is* the codec layer: `Wave::read_metadata` and
 // `WaveMetadata` are themselves gated in `tutti-codec`, so with no format feature

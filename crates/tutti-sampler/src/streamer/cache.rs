@@ -59,7 +59,7 @@ struct CacheEntry {
 
 /// RAII guard that keeps a cache entry pinned (unevictable) for the lifetime of
 /// a stream. Acquired by [`LruCache::pin`], released on `Drop`. Held inside the
-/// butler's stream link so it lives exactly as long as the stream.
+/// streamer's stream link so it lives exactly as long as the stream.
 pub struct StreamPin {
     cache: Arc<LruCache>,
     path: PathBuf,

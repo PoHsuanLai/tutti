@@ -33,6 +33,7 @@ use tutti_clap_test_plugin::{
     GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH,
     GuiCapture, GuiMode,
 };
+use tutti_plugin_types::Control;
 
 /// Serializes whole scenarios — set mode → reset → load → drive → read — so one
 /// test cannot observe another's calls or run against another's selected
@@ -978,7 +979,7 @@ fn open_floating_editor_runs_the_spec_sequence() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("a floating-only plugin must open in floating mode");
 
     let cap = probe.capture();
@@ -1012,7 +1013,7 @@ fn the_floating_path_asks_only_the_floating_question() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let cap = probe.capture();
@@ -1043,7 +1044,7 @@ fn a_floating_editor_is_asked_for_no_geometry() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let observed = calls(&probe.capture());
@@ -1075,7 +1076,7 @@ fn the_host_suggests_a_window_title() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let cap = probe.capture();
@@ -1097,7 +1098,7 @@ fn no_transient_parent_skips_the_hint() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(&main_thread(), None, TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), None, TEST_TITLE)
         .expect("floating open should succeed without a transient parent");
 
     let cap = probe.capture();
@@ -1124,7 +1125,7 @@ fn close_editor_tears_down_a_floating_editor() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
     loaded.close_editor(&main_thread());
 

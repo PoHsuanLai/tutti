@@ -244,17 +244,14 @@ impl Vst2Instance {
     /// the core queues its effects.
     pub fn poll(&mut self, main: &MainThread) -> Vec<AsyncEvent> {
         self.serve(main);
-        if let Some(loaded) = self.loaded_ref() {
+        if let Some(loaded) = self.loaded_mut() {
             // An empty queue is an empty `Vec`, which allocates nothing.
-            for (index, value) in loaded.drain_param_changes() {
-                // A report with a negative index names no parameter.
-                if let Ok(index) = u32::try_from(index) {
-                    self.events.push(AsyncEvent::ParameterChanged {
-                        index: ParamId::new(index),
-                        value: Normalized::clamped(f64::from(value)),
-                    });
-                }
-            }
+            let mut edits = Vec::new();
+            Control::take_reported_edits(loaded, main, &mut edits);
+            let reported = edits
+                .into_iter()
+                .map(|(index, value)| AsyncEvent::ParameterChanged { index, value });
+            self.events.extend(reported);
         }
         std::mem::take(&mut self.events)
     }
@@ -270,8 +267,8 @@ impl Vst2Instance {
         let mut requests = std::mem::take(&mut self.requests);
         for _ in 0..MAX_PASSES {
             requests.clear();
-            if let Some(loaded) = self.loaded_ref() {
-                loaded.take_requests(main, &mut requests);
+            if let Some(loaded) = self.loaded_mut() {
+                Control::take_requests(loaded, main, &mut requests);
             }
             let asked = !requests.is_empty();
             if !asked && self.state.is_quiet() {
@@ -405,7 +402,7 @@ impl PluginAudio for Vst2Instance {
     /// (a rate change) keeps it.
     fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
         if let Some(loaded) = self.loaded_mut() {
-            loaded.set_offline_render(mode.is_offline());
+            Control::set_render_mode(loaded, _main, mode);
         }
         self.state.set_mode(mode);
         true
@@ -471,23 +468,17 @@ impl PluginEditorHost for Vst2Instance {
         &mut self,
         main: &MainThread,
         parent: WindowHandle,
-        _scale: ContentScale,
+        scale: ContentScale,
     ) -> PluginResult<EditorSize> {
         let loaded = self
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
-        loaded
-            .open_editor(main, parent)
-            .map(|sz| EditorSize {
-                width: sz.width,
-                height: sz.height,
-            })
-            .map_err(|e| translate_error(e, Path::new("")).into())
+        Control::open_editor(loaded, main, parent, scale)
     }
 
     fn close_editor(&mut self, main: &MainThread) {
         if let Some(loaded) = self.loaded_mut() {
-            loaded.close_editor(main);
+            Control::close_editor(loaded, main);
         }
     }
 }

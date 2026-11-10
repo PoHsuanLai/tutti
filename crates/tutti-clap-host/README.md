@@ -149,7 +149,8 @@ println!("{} bytes of preset state", preset.len());
 
 ```rust,no_run
 # use tutti_clap_host::{ClapLoaded, ContentScale, LoadOptions, WindowHandle};
-# fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_clap_host::Result<()> {
+# use tutti_plugin_types::Control;
+# fn ex(native_view_ptr: *mut std::ffi::c_void) -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 if plugin.has_editor(&main) {

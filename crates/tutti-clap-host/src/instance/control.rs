@@ -8,9 +8,10 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    ClapFeature, Control, EditorPresence, FdId, Features, Layout, LoadedPlugin, Normalized,
-    ParamId, ParamRange, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, PresetId, Request, RescanScope, Samples, TimerId,
+    ClapFeature, ContentScale, Control, EditorPresence, EditorSize, FdId, Features, Layout,
+    LoadedPlugin, Normalized, ParamId, ParamRange, ParameterInfo, PluginClass, PluginDescriptor,
+    PluginError, PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples,
+    TimerId, WindowHandle,
 };
 
 use super::controller::ClapController;
@@ -199,25 +200,6 @@ impl ClapLoaded {
             .map_or(PluginTail::Unknown, PluginTail::from_clap_samples)
     }
 
-    /// Everything one main-thread pass turns into the core's requests: what
-    /// the plugin asked for from any thread, the timers that are due and the
-    /// descriptors that are ready. Appended to `out`; call it between blocks on
-    /// the thread that loaded the plugin, as often as the host ticks (a timer's
-    /// period is at best that fine).
-    ///
-    /// It is cheap when there is nothing to do, so it can run on every pass of
-    /// a real-time-priority thread: the word is one atomic, and the clock is
-    /// read only while a timer or a descriptor is registered. The timers lock
-    /// is taken only once the earliest deadline has passed, and the descriptors
-    /// are polled at most once per 5 ms.
-    ///
-    /// Timers and callbacks are served only while the host keeps calling this
-    /// and feeding the requests to the core: a loop that blocks waiting for the
-    /// next message serves none until one arrives.
-    pub fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        self.take_requests_with(main, Instant::now, out);
-    }
-
     /// Only what the plugin raised since the last take, with no timer or
     /// descriptor polled. For the second look after main-thread work that may
     /// itself have asked for more.
@@ -225,7 +207,7 @@ impl ClapLoaded {
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
     }
 
-    /// [`take_requests`](Self::take_requests) with the clock supplied, which it
+    /// [`Control::take_requests`] with the clock supplied, which it
     /// reads at most once and only when a timer or a descriptor is registered.
     /// Returns which scans it ran.
     pub(crate) fn take_requests_with(
@@ -378,6 +360,109 @@ impl Control for ClapLoaded {
         #[cfg(not(unix))]
         let _ = (main, id);
     }
+
+    /// Everything one main-thread pass turns into the core's requests: what
+    /// the plugin asked for from any thread, the timers that are due and the
+    /// descriptors that are ready. Appended to `out`; call it between blocks on
+    /// the thread that loaded the plugin, as often as the host ticks (a timer's
+    /// period is at best that fine).
+    ///
+    /// It is cheap when there is nothing to do, so it can run on every pass of
+    /// a real-time-priority thread: the word is one atomic, and the clock is
+    /// read only while a timer or a descriptor is registered. The timers lock
+    /// is taken only once the earliest deadline has passed, and the descriptors
+    /// are polled at most once per 5 ms.
+    ///
+    /// Timers and callbacks are served only while the host keeps calling this
+    /// and feeding the requests to the core: a loop that blocks waiting for the
+    /// next message serves none until one arrives.
+    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+        self.take_requests_with(main, Instant::now, out);
+    }
+
+    /// Switches between real-time and offline rendering per `CLAP_EXT_RENDER`.
+    /// `true` when the plugin accepted, `false` when it has no `clap.render` or
+    /// refused (the next activation carries [`Prepare::mode`](tutti_plugin_types::Prepare::mode)
+    /// either way).
+    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+        self.plugin.set_render_offline(main, mode.is_offline())
+    }
+
+    /// Whether [`open_editor`](Control::open_editor) can actually embed an editor.
+    ///
+    /// Not just "is there a `clap.gui` vtable?": a plugin may expose the
+    /// extension but omit `create`, or support only a floating window. Both are
+    /// legal CLAP and both make `embed_editor_sequence` fail, so both answer
+    /// `false` here.
+    ///
+    /// **This is the embedded question only, and it is not "has an editor".**
+    /// A floating-only plugin has a perfectly good editor that this returns
+    /// `false` for — ask [`has_floating_editor`](Self::has_floating_editor) for
+    /// the other half. A caller deciding whether to show a UI at all wants the
+    /// union; one deciding whether it can *embed* wants this. Feeding only this
+    /// into `Features::EDITOR` is what made floating-only plugins report no
+    /// editor at all.
+    ///
+    /// Deliberately does not create a GUI to find out. `is_api_supported` is a
+    /// side-effect-free predicate; `create` allocates the plugin's real GUI
+    /// resources. So a plugin whose `is_api_supported` says yes and whose
+    /// `create` then fails still reports `true` here; that surfaces as
+    /// [`open_editor`](Control::open_editor)'s error. An absent `is_api_supported`
+    /// is not a refusal — the same reading `embed_editor_sequence` uses.
+    fn has_editor(&self, main: &MainThread) -> bool {
+        self.plugin.has_editor(main)
+    }
+
+    /// Creates the plugin editor and embeds it into the given native `parent`
+    /// window, whose backing-store scale is `scale`, returning the editor's
+    /// initial size.
+    ///
+    /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
+    /// `set_scale(scale)` → `get_size` → `set_parent` → `show`. See
+    /// `embed_editor_sequence` for the ordering rationale and for which
+    /// window apis take the `set_scale` step (win32 and x11; never cocoa).
+    ///
+    /// # Errors
+    /// [`PluginError::Editor`] if the plugin does not expose a GUI, if the
+    /// embedded window API is unsupported, or if `create`/`set_parent` fails.
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        self.embed_editor(main, parent, scale).map_err(plugin_error)
+    }
+
+    /// Opens the plugin's own floating window with no transient parent, titled
+    /// with the plugin's name: this crate does not hold the host's window, and
+    /// `set_transient` is a stacking hint the plugin may ignore anyway. A host
+    /// that has both uses
+    /// [`open_floating_editor_with`](ClapLoaded::open_floating_editor_with).
+    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+        let title = std::ffi::CString::new(self.info().name.as_str())
+            .unwrap_or_else(|_| c"Plugin Editor".to_owned());
+        self.open_floating_editor_with(main, None, &title)
+            .map_err(plugin_error)
+    }
+
+    /// Hides and destroys the plugin editor, if one was opened. Idempotent.
+    ///
+    /// `gui.hide` is skipped when the plugin reported
+    /// `gui.closed(was_destroyed = true)`: that says its window is gone, and
+    /// `hide` acts on a window. `gui.destroy` runs either way —
+    /// `ext/gui.h` states the host "must call clap_plugin_gui->destroy() to
+    /// acknowledge the gui destruction", and the spec's own lifecycle pairs
+    /// `destroy` (step 14) with `create` (step 2), so it releases the gui
+    /// resources `create` allocated rather than the window that just closed.
+    fn close_editor(&mut self, main: &MainThread) {
+        self.destroy_editor(main);
+    }
+
+    // `editor_idle` keeps the default (nothing): CLAP's editor timers, callbacks
+    // and file descriptors are served by `take_requests`, whose requests the
+    // shell feeds to `Lifecycle::drive` (`run_timer`, `run_main_thread`,
+    // `service_fd`). A second pass here would take requests that belong to it.
 }
 
 /// The filesystem path an id names, or `None` when it names none.
@@ -473,6 +558,35 @@ impl Control for ClapController {
 
     fn service_fd(&mut self, main: &MainThread, id: FdId) {
         Control::service_fd(self.loaded_mut(), main, id);
+    }
+
+    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+        Control::take_requests(self.loaded_mut(), main, out);
+    }
+
+    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+        Control::set_render_mode(self.loaded_mut(), main, mode)
+    }
+
+    fn has_editor(&self, main: &MainThread) -> bool {
+        Control::has_editor(self.loaded(), main)
+    }
+
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        Control::open_editor(self.loaded_mut(), main, parent, scale)
+    }
+
+    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+        Control::open_floating_editor(self.loaded_mut(), main)
+    }
+
+    fn close_editor(&mut self, main: &MainThread) {
+        Control::close_editor(self.loaded_mut(), main);
     }
 }
 

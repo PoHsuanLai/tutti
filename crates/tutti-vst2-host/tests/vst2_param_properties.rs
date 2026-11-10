@@ -1072,7 +1072,7 @@ fn the_display_string_describes_only_the_current_value() {
 #[test]
 fn a_plugins_echo_of_a_host_write_is_not_reported() {
     let _guard = lock_probe();
-    let (instance, path) = load_probe();
+    let (mut instance, path) = load_probe();
     probe_call(&path, b"tutti_vst2_probe_set_echo_set_parameter\0", |sym| {
         // SAFETY: the probe exports this as `extern "C" fn(bool)`.
         let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
@@ -1084,7 +1084,8 @@ fn a_plugins_echo_of_a_host_write_is_not_reported() {
             .loaded()
             .write_parameter(pid(0), Normalized::of(0.5))
     );
-    let echoed = instance.loaded().drain_param_changes();
+    let mut echoed = Vec::new();
+    instance.take_reported_edits(&main_thread(), &mut echoed);
     reset_switches(&path);
 
     assert_eq!(

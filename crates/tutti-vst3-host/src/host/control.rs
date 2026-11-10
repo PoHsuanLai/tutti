@@ -5,9 +5,10 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, BusChannels, Control, EditorPresence, Features, LoadedPlugin, Normalized,
-    ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail,
-    Preset, PresetId, RescanScope, Samples, Vst3SubCategories,
+    AutomationMode, BusChannels, ContentScale, Control, EditorPresence, EditorSize, Features,
+    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, Preset, PresetId, Request, RescanScope, Samples, Vst3SubCategories,
+    WindowHandle,
 };
 
 use crate::error::Vst3Error;
@@ -408,5 +409,125 @@ impl Control for Vst3Loaded {
 
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {
         self.rebuild_midi_cc_mapping(main);
+    }
+
+    /// What the plugin has asked of the host since the last take, as the
+    /// core's requests, appended to `out`: every `restartComponent` flag that
+    /// has a request ([`RestartFlags::raise_into`](tutti_vst3_ffi::RestartFlags::raise_into) says which). A host that
+    /// drives a [`Lifecycle`](tutti_plugin_types::Lifecycle) feeds these to it.
+    ///
+    /// Wait-free and allocation-free up to `out`'s capacity, so it can run
+    /// between blocks of a realtime-priority thread. Queued edits, progress
+    /// and unit news stay for
+    /// [`poll_plugin_notifications`](Vst3Loaded::poll_plugin_notifications) or
+    /// [`discard_notifications`](Vst3Loaded::discard_notifications).
+    fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+        out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
+    }
+
+    // `set_render_mode` keeps the default (`false`): VST3 reads the mode only at
+    // activation (`setupProcessing`'s `kOffline`), so a live change is a
+    // reconfigure through the Lifecycle, whose `Prepare::mode` the next
+    // activation carries.
+
+    /// Returns `true` if the plugin actually publishes an editor view.
+    ///
+    /// **Asks `createView`, not `controller.is_some()`.** Those are different
+    /// questions: nearly every VST3 has an edit controller — that is where
+    /// parameters live — while only some also publish a UI. A host that shows
+    /// an "open editor" button from this answer needs the stronger question.
+    ///
+    /// The view is created and immediately released — the same
+    /// `createView(kEditor)` the SDK's own `editorhost` uses to decide there is
+    /// a UI (`editorhost.cpp:207`). That costs a plugin-side allocation per
+    /// call, so callers needing it per-frame should cache it; the DAW asks
+    /// once, at scan time.
+    ///
+    /// A plugin with no controller at all answers `false`.
+    fn has_editor(&self, main: &MainThread) -> bool {
+        self.plugin.has_editor(main)
+    }
+
+    /// Creates the plugin editor, attaches it to `parent` and returns its
+    /// initial pixel size. Only one editor may be open at a time per instance:
+    /// opening a second replaces the first.
+    ///
+    /// `scale` is `parent`'s backing-store scale. On a physical-pixel window
+    /// system (Win32, X11) it is sent through
+    /// `IPlugViewContentScaleSupport::setContentScaleFactor` before
+    /// `attached`, for a view that implements it; on macOS the view reads it
+    /// from its own `NSView`, and it is not sent (see [`ContentScale`]).
+    ///
+    /// # Errors
+    ///
+    /// [`PluginError::Editor`] if the plugin has no controller, refuses to
+    /// create a view, the view rejects this platform's window type, or
+    /// `IPlugView::attached` fails.
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        self.embed_editor(main, parent, scale)
+            .map_err(|error| match error {
+                Vst3Error::PluginError { code, .. } => {
+                    PluginError::Editor(tutti_plugin_types::EditorError::PluginError(format!(
+                        "IPlugView::attached failed with code {code}"
+                    )))
+                }
+                other => plugin_error(other),
+            })
+    }
+
+    /// Closes the editor if open, calling `IPlugView::removed`. No-op otherwise.
+    fn close_editor(&mut self, main: &MainThread) {
+        self.plugin.close_editor(main);
+    }
+
+    /// Runs one iteration of the event loop this host lends the plugin
+    /// (`Linux::IRunLoop`): fire any timers that came due and dispatch any
+    /// plugin file descriptor that became readable.
+    ///
+    /// **The embedder must call this from its UI thread, every frame, for as
+    /// long as any editor of this plugin is open.** X11 has no ambient run loop
+    /// the way Cocoa and Win32 do, so `iplugview.h` makes the loop the *host's*
+    /// job: "the host has to call the event handler when the file descriptor is
+    /// marked readable", and a registered timer "will be called repeatedly until
+    /// it is unregistered". Nothing else drives them. Skip this and the editor
+    /// opens, paints once, and then freezes — no redraws, no animation, no
+    /// response to input.
+    ///
+    /// Cheap and non-blocking: the `poll` uses a zero timeout, so calling it on
+    /// a frame where nothing is ready costs one syscall and returns. That is why
+    /// it is safe to call unconditionally from a render loop.
+    ///
+    /// # Why this is not folded into `poll_plugin_notifications`
+    ///
+    /// The two look alike but run on different clocks, and merging them would
+    /// break one or the other.
+    /// [`poll_plugin_notifications`](Vst3Loaded::poll_plugin_notifications) drains
+    /// queues that this host filled; the work is already done and arriving late
+    /// only delays a UI update. This call *is* the plugin's event loop — its
+    /// cadence sets the editor's frame rate, and a host that polls
+    /// notifications a few times a second (perfectly adequate for parameter
+    /// echoes) would render such an editor unusable. Equally, a host with no
+    /// editor open should not be forced to pump a loop with nothing in it.
+    /// Keeping them separate lets each be called at the rate it actually needs.
+    ///
+    /// # Why the host and not a timer thread
+    ///
+    /// A background thread ticking this would be simpler for the embedder and
+    /// is wrong: the handlers are plugin GUI code reaching into its X
+    /// connection, and the spec's whole premise is that the host donates *its
+    /// UI thread*. Calling them from anywhere else is the same data race as
+    /// touching any other toolkit off-thread. So the obligation is the
+    /// embedder's, and this method is the seam — it deliberately cannot be
+    /// automated away from inside a library that owns no event loop.
+    ///
+    /// No-op on non-Linux targets, where the OS provides the run loop, so
+    /// calling it unconditionally is portable.
+    fn editor_idle(&mut self, main: &MainThread) {
+        self.plugin.run_editor_loop_iteration(main);
     }
 }

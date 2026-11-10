@@ -94,7 +94,7 @@ impl Editor for Vst3Editor {
     ) -> PluginResult<EditorSize> {
         let size = self
             .inner
-            .open_editor(main, parent, scale)
+            .embed_editor(main, parent, scale)
             .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))?;
         Ok(EditorSize {
             width: size.width,
@@ -103,7 +103,7 @@ impl Editor for Vst3Editor {
     }
 
     fn close_editor(&mut self, main: &MainThread) {
-        self.inner.close_editor(main);
+        Control::close_editor(&mut self.inner, main);
     }
 
     fn editor_idle(&mut self, _main: &MainThread) {

@@ -141,7 +141,7 @@ impl Editor for ClapEditor {
     ) -> PluginResult<EditorSize> {
         let size = self
             .inner
-            .open_editor(main, parent, scale)
+            .embed_editor(main, parent, scale)
             .map_err(|e| editor_error(format!("CLAP open_editor failed: {e}")))?;
         Ok(EditorSize {
             width: size.width,
@@ -156,12 +156,12 @@ impl Editor for ClapEditor {
         let title = std::ffi::CString::new(self.inner.info().name.as_str())
             .unwrap_or_else(|_| c"Plugin Editor".to_owned());
         self.inner
-            .open_floating_editor(main, None, &title)
+            .open_floating_editor_with(main, None, &title)
             .map_err(|e| editor_error(format!("CLAP floating open failed: {e}")))
     }
 
     fn close_editor(&mut self, main: &MainThread) {
-        self.inner.close_editor(main);
+        Control::close_editor(&mut self.inner, main);
     }
 
     fn editor_idle(&mut self, main: &MainThread) {
@@ -169,7 +169,7 @@ impl Editor for ClapEditor {
         // the main thread and its file descriptors are all served from here:
         // this is the only main-thread tick the instance has.
         let mut requests = Vec::new();
-        self.inner.take_requests(main, &mut requests);
+        Control::take_requests(&mut self.inner, main, &mut requests);
         let mut reread = false;
         for request in requests {
             match request {

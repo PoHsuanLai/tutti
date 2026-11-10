@@ -44,6 +44,7 @@ use tutti_clap_test_plugin::{
     CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
     CMD_UNREGISTER_TIMER, CMD_UNREGISTER_TIMER_IN_DEACTIVATE, Site, ThreadCapture,
 };
+use tutti_plugin_types::Control;
 
 /// The probe's capture, command word and reset are process-globals shared by
 /// every test in this binary. Serialize whole scenarios — reset → drive → read

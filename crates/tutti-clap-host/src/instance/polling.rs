@@ -31,32 +31,6 @@ fn gui_error(error: GuiError) -> ClapError {
 }
 
 impl ClapLoaded {
-    /// Whether [`open_editor`](Self::open_editor) can actually embed an editor.
-    ///
-    /// Not just "is there a `clap.gui` vtable?": a plugin may expose the
-    /// extension but omit `create`, or support only a floating window. Both are
-    /// legal CLAP and both make `embed_editor_sequence` fail, so both answer
-    /// `false` here.
-    ///
-    /// **This is the embedded question only, and it is not "has an editor".**
-    /// A floating-only plugin has a perfectly good editor that this returns
-    /// `false` for — ask [`has_floating_editor`](Self::has_floating_editor) for
-    /// the other half. A caller deciding whether to show a UI at all wants the
-    /// union; one deciding whether it can *embed* wants this. Feeding only this
-    /// into `Features::EDITOR` is what made floating-only plugins report no
-    /// editor at all.
-    ///
-    /// Deliberately does not create a GUI to find out. `is_api_supported` is a
-    /// side-effect-free predicate; `create` allocates the plugin's real GUI
-    /// resources. So a plugin whose `is_api_supported` says yes and whose
-    /// `create` then fails still reports `true` here; that surfaces as
-    /// [`open_editor`](Self::open_editor)'s error. An absent `is_api_supported`
-    /// is not a refusal — the same reading `embed_editor_sequence` uses.
-    #[must_use]
-    pub fn has_editor(&self, main: &MainThread) -> bool {
-        self.plugin.has_editor(main)
-    }
-
     /// Creates the plugin editor and embed it into the given native `parent`
     /// window, whose backing-store scale is `scale`, returning the editor's
     /// initial size.
@@ -69,7 +43,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::EditorError`] if the plugin does not expose a GUI, if the
     /// embedded window API is unsupported, or if `create`/`set_parent` fails.
-    pub fn open_editor(
+    pub(crate) fn embed_editor(
         &mut self,
         main: &MainThread,
         parent: WindowHandle,
@@ -115,7 +89,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::EditorError`] if the plugin exposes no GUI, if it does not
     /// support a floating window, or if `create` fails.
-    pub fn open_floating_editor(
+    pub fn open_floating_editor_with(
         &mut self,
         main: &MainThread,
         transient: Option<WindowHandle>,
@@ -140,7 +114,7 @@ impl ClapLoaded {
 
     /// Whether this plugin can present a floating (plugin-owned) window.
     ///
-    /// The counterpart to [`has_editor`](Self::has_editor), which asks the
+    /// The counterpart to [`has_editor`](tutti_plugin_types::Control::has_editor), which asks the
     /// embedded question only. A host should consult both: a plugin may support
     /// either, both, or — via [`prefers_floating`](Self::prefers_floating) —
     /// have an opinion about which.
@@ -256,20 +230,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Hides and destroys the plugin editor, if one was opened. Idempotent.
-    ///
-    /// `gui.hide` is skipped when the plugin reported
-    /// `gui.closed(was_destroyed = true)`: that says its window is gone, and
-    /// `hide` acts on a window. `gui.destroy` runs either way —
-    /// `ext/gui.h` states the host "must call clap_plugin_gui->destroy() to
-    /// acknowledge the gui destruction", and the spec's own lifecycle pairs
-    /// `destroy` (step 14) with `create` (step 2), so it releases the gui
-    /// resources `create` allocated rather than the window that just closed.
-    pub fn close_editor(&mut self, main: &MainThread) {
-        self.destroy_editor(main);
-    }
-
-    /// [`close_editor`](Self::close_editor) without a token, for `Drop`, which
+    /// [`Control::close_editor`](tutti_plugin_types::Control::close_editor) without a token, for `Drop`, which
     /// has none: the thread a drop runs on is the owner's. The per-format lane
     /// that gives the plugin a main-thread handle makes this unreachable off the
     /// main thread.

@@ -15,7 +15,7 @@ use tutti_plugin_types::MainThread;
 use vst::host::{PluginInstance, PluginLoader};
 use vst::plugin::Category;
 
-use tutti_plugin_types::{PluginDescriptor, Request};
+use tutti_plugin_types::PluginDescriptor;
 
 use crate::error::{LoadStage, Result, Vst2Error};
 use crate::host::{HostState, MIDI_OUT_QUEUE_CAPACITY, PARAM_QUEUE_CAPACITY, ParameterChange};
@@ -416,16 +416,16 @@ impl Vst2Loaded {
         self.instance.is_resumed()
     }
 
-    /// Sets whether the host reports itself as rendering offline.
+    /// Sets whether the host reports itself as rendering offline: the body of
+    /// [`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode),
+    /// kept inherent for the one caller that has no
+    /// [`MainThread`] (a render-mode change from
+    /// the thread that drives the plugin's node) and holds only a `&self`.
     ///
-    /// Unlike the other three formats there is nothing to push: VST2 carries
-    /// this through `audioMasterGetCurrentProcessLevel`, a callback the plugin
-    /// makes whenever it likes. So this stores the answer the host will give,
-    /// and no plugin can decline it — there is no query to refuse. That is also
-    /// why a render-mode change needs no restart here.
-    ///
-    /// `&self` and atomic: the plugin may ask from its audio thread while the
-    /// control thread sets it.
+    /// VST2 carries the mode through `audioMasterGetCurrentProcessLevel`, a
+    /// callback the plugin makes whenever it likes, so this stores the answer
+    /// the host will give; no plugin can decline it. The store is atomic: the
+    /// plugin may ask from its audio thread while the control thread sets it.
     pub fn set_offline_render(&self, offline: bool) {
         self.host.set_offline(offline);
     }
@@ -436,30 +436,13 @@ impl Vst2Loaded {
         self.host.is_offline()
     }
 
-    /// Takes the requests the plugin raised since the last call, in the order
-    /// [`taken`](tutti_plugin_types::taken) yields them, into `out`.
-    ///
-    /// VST 2.4 has one notice, `audioMasterIOChanged`, for the pins, the latency
-    /// and the tail alike, so it raises [`Request::IoChanged`],
-    /// [`Request::LatencyChanged`] and [`Request::TailChanged`] together;
-    /// `audioMasterUpdateDisplay` raises a rescan of the parameters' values and
-    /// of their names. Feed them to [`Lifecycle::drive`](tutti_plugin_types::Lifecycle::drive);
-    /// the core reads the figures again rather than restarting the plugin
-    /// ([`RestartRules::NONE`](tutti_plugin_types::RestartRules::NONE)).
-    pub fn take_requests(&self, _main: &MainThread, out: &mut Vec<Request>) {
-        // Control side, so the one warning about a plugin that grew its pins past the
-        // activation (S7: it renders silence until re-activated) is logged here.
-        let _ = self.instance.report_pin_refusals();
-        out.extend(tutti_plugin_types::taken(self.host.requests()));
-    }
-
     /// Returns the plugin's current latency, in samples, read from the live
     /// `AEffect` rather than from anything cached.
     ///
     /// VST2 has no latency-changed callback: `audioMasterIOChanged` is the
     /// nearest thing, and a plugin that alters `initialDelay` on a sample-rate
     /// change may send nothing at all. So the core asks again after every
-    /// activation and every request ([`Request::LatencyChanged`]); this is the
+    /// activation and every request ([`Request::LatencyChanged`](tutti_plugin_types::Request::LatencyChanged)); this is the
     /// read it makes.
     #[must_use]
     pub fn latency_samples(&self) -> Samples {

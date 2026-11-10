@@ -130,8 +130,9 @@ plugin.set_parameter(&main, first, Normalized::of(0.5));
 
 ```rust,no_run
 # use tutti_plugin_types::Control;
+# use tutti_plugin_types::ContentScale;
 # use tutti_vst2_host::{Vst2Loaded, WindowHandle};
-# fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst2_host::Result<()> {
+# fn ex(native_view_ptr: *mut std::ffi::c_void) -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
 // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
@@ -140,8 +141,9 @@ plugin.set_parameter(&main, first, Normalized::of(0.5));
 let saved = plugin.save_state(&main).expect("saves");
 plugin.load_state(&main, &saved).expect("restores");
 
-// The editor is the same `AEffect` the audio path drives — hence in-process.
-let size = plugin.open_editor(&main, unsafe { WindowHandle::from_raw(native_view_ptr) })?;
+// The editor is the same `AEffect` the audio path drives, hence in-process.
+// VST2 has no content scale: the argument is accepted and ignored.
+let size = plugin.open_editor(&main, unsafe { WindowHandle::from_raw(native_view_ptr) }, ContentScale::IDENTITY)?;
 println!("editor is {}x{}", size.width, size.height);
 plugin.close_editor(&main);
 # Ok(()) }
@@ -195,7 +197,7 @@ next control-side call (`activate`, a `flush_edits` tick) to destroy.
 MIT OR Apache-2.0
 
 [`Vst2Loaded`]: crate::Vst2Loaded
-[`Vst2Loaded::take_requests`]: crate::Vst2Loaded::take_requests
+[`Vst2Loaded::take_requests`]: tutti_plugin_types::Control::take_requests
 [`Vst2Processor`]: crate::Vst2Processor
 [`Vst2Processor::process_f32`]: crate::Vst2Processor::process_f32
 [`Vst2Processor::process_f64`]: crate::Vst2Processor::process_f64

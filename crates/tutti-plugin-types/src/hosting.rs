@@ -166,6 +166,12 @@ impl<F: InProcess> Reopen for F {
 /// host: parameter writes and the state blob go to it, and the parameter edits
 /// the user makes in it come back through [`poll_edits`](Self::poll_edits).
 /// Every method is a main-thread call, which the `&MainThread` proves.
+///
+/// The editor methods (`open_editor`, `open_floating_editor`, `close_editor`,
+/// `editor_idle`) are the ones [`Control`](crate::Control) declares for a
+/// plugin wherever it is; see there for their shared contract. This is the
+/// editor-only instance's role, so here `open_editor`, `close_editor` and
+/// `editor_idle` are required, not defaulted.
 pub trait Editor: Send {
     /// Embeds into `parent`, whose backing-store scale is `scale` (forwarded
     /// where the format takes it; see [`ContentScale`]).

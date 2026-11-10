@@ -281,9 +281,9 @@ impl Vst3Instance {
         let mut requests = std::mem::take(&mut self.requests);
         for _ in 0..MAX_PASSES {
             requests.clear();
-            if let Some(loaded) = self.loaded_ref() {
+            if let Some(loaded) = self.loaded_mut() {
                 loaded.discard_notifications();
-                loaded.take_requests(main, &mut requests);
+                Control::take_requests(loaded, main, &mut requests);
             }
             let asked = !requests.is_empty();
             if !asked && self.state.is_quiet() {
@@ -598,6 +598,11 @@ impl Vst3Instance {
         self.loaded_ref().expect("the plugin is not lost")
     }
 
+    /// [`vst3_loaded`](Self::vst3_loaded), exclusively.
+    pub(crate) fn vst3_loaded_mut(&mut self) -> &mut Vst3Loaded {
+        self.loaded_mut().expect("the plugin is not lost")
+    }
+
     /// Calls the host's `restartComponent(flags)` as the plugin would, so a
     /// session test can raise a restart the probe never raises on its own.
     pub(crate) fn plugin_restart_component(&self, flags: i32) {
@@ -749,13 +754,13 @@ mod tests {
 
         // Nothing pending: the idle read every pass takes.
         assert_no_alloc::assert_no_alloc(|| {
-            let loaded = instance.vst3_loaded();
+            let loaded = instance.vst3_loaded_mut();
             loaded.discard_notifications();
-            loaded.take_requests(&main_thread(), &mut requests);
+            Control::take_requests(loaded, &main_thread(), &mut requests);
         });
         assert!(requests.is_empty());
 
-        let loaded = instance.vst3_loaded();
+        let loaded = instance.vst3_loaded_mut();
         for i in 0..64 {
             plugin_perform_edit(loaded, 100, f64::from(i) / 64.0);
         }
@@ -767,7 +772,7 @@ mod tests {
 
         assert_no_alloc::assert_no_alloc(|| {
             loaded.discard_notifications();
-            loaded.take_requests(&main_thread(), &mut requests);
+            Control::take_requests(loaded, &main_thread(), &mut requests);
         });
         assert_eq!(
             loaded.pending_notifications(),
@@ -782,7 +787,7 @@ mod tests {
             "two flags are one request"
         );
         requests.clear();
-        loaded.take_requests(&main_thread(), &mut requests);
+        Control::take_requests(loaded, &main_thread(), &mut requests);
         assert!(requests.is_empty(), "a take consumes the requests");
 
         // And the bridge turns one into the host's event, once.

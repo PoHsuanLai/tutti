@@ -13,7 +13,7 @@
 //! A position that jumps (a seek, a transport loop, a varispeed change, a PDC
 //! change) is read at its new place — a jump being a position off the last
 //! one's continuation, or a new segment (the clock's
-//! `segment_generation`, a free-running source's seek epoch): a seek that
+//! `segment_generation`): a seek that
 //! lands exactly on the continuation is a jump too, as it is to the seat
 //! (`interp::Seat`); a loop or direction edit switches what
 //! the ring holds at a position the streamer publishes (`loops::RingMap`). The
@@ -238,15 +238,6 @@ impl LiveRead {
     pub(crate) fn reset(&mut self) {
         self.st.last = None;
         self.st.fade = None;
-    }
-
-    /// A block that reads nothing (a stopped source): the ring's reader
-    /// claims no range, so it holds no write back.
-    #[inline]
-    pub(crate) fn idle(&mut self) {
-        if let Some(reader) = self.reader.as_mut() {
-            reader.idle();
-        }
     }
 
     /// What a block with no frame to play does to the reader, without

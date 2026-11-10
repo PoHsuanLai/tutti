@@ -5,10 +5,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RegionId(pub u64);
 
-use tutti_types::PlaybackRate;
-
-use crate::voice::types::Direction;
-
 /// Command sent to the Streamer thread.
 #[derive(Debug)]
 pub(crate) enum StreamerCommand {
@@ -45,26 +41,6 @@ pub(crate) enum StreamerCommand {
         channel_index: usize,
         /// As `SetStreamLoop`'s.
         stream: Option<RegionId>,
-    },
-
-    /// Reposition a live stream to an absolute file sample offset (timeline
-    /// seek). `file_position` is the absolute file sample offset; the handler
-    /// applies the channel's `pdc_preroll` before repositioning. Mirrors the
-    /// PDC and loop-change click-free reposition (flush + seek + crossfade).
-    SeekStream {
-        channel_index: usize,
-        file_position: u64,
-    },
-
-    /// Set varispeed (direction and speed) for a channel.
-    ///
-    /// [`PlaybackRate::UNITY`] is normal speed. Carrying the bounded type rather
-    /// than a raw `f32` means the range is enforced where the value is built,
-    /// not re-checked (or forgotten) in each handler.
-    SetVarispeed {
-        channel_index: usize,
-        direction: Direction,
-        speed: PlaybackRate,
     },
 
     /// Shutdown the streamer thread.

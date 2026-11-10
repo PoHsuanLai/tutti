@@ -1013,7 +1013,7 @@ mod tests {
         let mut held = vec![0.0f32; 10_000];
         writer.fill_with(&Mapping::plain(LEN), 0, &mut held);
         assert_eq!(writer.push_interleaved(&held), tutti_types::Samples(10_000));
-        let mut reader = shared.take_reader(false).expect("the ring's reader");
+        let mut reader = shared.take_reader().expect("the ring's reader");
         let _ = reader.claim(0, [(0, 64), (0, 0)]);
         assert_eq!(writer.in_flight_end(), 64);
         (writer, reader, wave)

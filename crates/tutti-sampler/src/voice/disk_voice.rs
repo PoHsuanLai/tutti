@@ -1,12 +1,11 @@
 //! Disk streaming sample playback, fed by the streamer thread.
 //!
-//! Two types, one tier: [`DiskSource`] is the graph node that reads the
-//! streamer's ring free-running (its own position, stepping by the read rate),
-//! and [`DiskVoice`] is a timeline clip over the same stream: it places its
-//! read on the transport exactly as the memory tier's placed read does
-//! (`interp::place`, the same gate and step, from the block's `Env`) and
-//! reads the ring at that position. Both read through
-//! `LiveRead`: the ring indexed by position, the memory tier's tap layout, the
+//! Two types, one tier: [`DiskSource`] is the reader of the streamer's ring (the
+//! ring, its control cell and its width), and [`DiskVoice`] is a timeline clip
+//! over it: it places its read on the transport exactly as the memory tier's
+//! placed read does (`interp::place`, the same gate and step, from the block's
+//! `Env`) and reads the ring at that position through `LiveRead`: the ring
+//! indexed by position, the memory tier's tap layout, the
 //! one kernel — so a clip plays what the same clip in memory plays at the same
 //! clock frame, and a jump is a crossfade from where it was, not a flush.
 //!
@@ -17,7 +16,6 @@
 
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_graph::{
@@ -40,45 +38,22 @@ use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES, audible};
 use crate::streamer::control::StreamOrigin;
 use crate::streamer::{RegionId, RtState, SharedReader};
 
-/// Frames a free-running block's positions are computed for at a time:
-/// `process` renders a longer block in pieces this long, so the positions
-/// live in a fixed array.
-const BLOCK_FRAMES: usize = 256;
-
-/// Disk streaming sampler, free-running: the streaming tier's bare reader.
-///
-/// Reads the streamer's ring at its own position — the stream's origin (its
-/// offset), stepped by the read rate (`RtState::read_rate`: varispeed,
-/// conversion, stretch), less the channel's PDC preroll — and follows a
-/// `Command::Seek` the streamer relays (`Ring::seek_request`). The streamer fills
-/// the ring ahead of where it reads (`Ring::play`). A [`DiskVoice`] wraps one
-/// for its width and its ring, and reads by the clock instead.
+/// The streaming tier's bare reader: the streamer's ring, its control cell
+/// and its width. A [`DiskVoice`] wraps one and reads the ring by the clock.
 ///
 /// The audio thread holds the ring through a `SharedReader` (an `Arc`) and
 /// the ring's one `PosReader`, which this source owns and a clone does not
 /// get (`LiveRead`'s module docs): every access is an atomic.
 ///
-/// As a graph node it refuses every fork
-/// ([`ForkError::NotForkable`](tutti_graph::ForkError::NotForkable)): a copy
-/// cannot read the live ring, and it knows neither where on the timeline it
-/// plays nor its file, so the only copy it could give is silence — which an
-/// export would write as if it were the graph's. A [`DiskVoice`] forks.
+/// It is not a graph node: it knows neither where on the timeline it plays
+/// nor its file. A [`DiskVoice`] is, and forks.
 pub struct DiskSource {
     /// Boxed: a voice in a pool should not carry the reader's jump state
     /// inline (it is built on the control thread, where the box is).
     read: Box<LiveRead>,
-    playing: AtomicBool,
-
-    sample_rate: SampleRate,
 
     /// Shared state for cross-thread communication (speed, direction, gain).
     shared_state: Option<Arc<RtState>>,
-
-    /// The free-running position, file frames before the preroll; `None`
-    /// until the first block takes the ring's origin.
-    position: Option<f64>,
-    /// The last `Command::Seek` epoch applied.
-    applied_seek: u64,
 
     /// Output width — the declaration.
     channels: ChannelLayout,
@@ -90,10 +65,7 @@ pub struct DiskSource {
 impl std::fmt::Debug for DiskSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiskSource")
-            .field("playing", &self.playing.load(Ordering::Relaxed))
-            .field("sample_rate", &self.sample_rate)
             .field("has_shared_state", &self.shared_state.is_some())
-            .field("position", &self.position)
             .finish_non_exhaustive()
     }
 }
@@ -102,11 +74,7 @@ impl Clone for DiskSource {
     fn clone(&self) -> Self {
         Self {
             read: self.read.clone(),
-            playing: AtomicBool::new(self.playing.load(Ordering::Relaxed)),
-            sample_rate: self.sample_rate,
             shared_state: self.shared_state.clone(),
-            position: self.position,
-            applied_seek: self.applied_seek,
             channels: self.channels,
             stride: self.stride,
         }
@@ -118,7 +86,7 @@ impl DiskSource {
     /// taken one leaves this source silent).
     #[cfg(test)]
     pub(crate) fn new(consumer: SharedReader, shared_state: Arc<RtState>) -> Self {
-        let reader = consumer.take_reader(false).ok();
+        let reader = consumer.take_reader().ok();
         let width = crate::voice_width(consumer.channels());
         let place = Place::for_topology(consumer.topology(), width)
             .expect("a test ring is placeable at its own width");
@@ -142,33 +110,10 @@ impl DiskSource {
         let stride = channels.count() as usize;
         Self {
             read: Box::new(LiveRead::new(consumer, reader, stride, place)),
-            playing: AtomicBool::new(true),
-            sample_rate: SampleRate::SR_44K1,
             shared_state: Some(shared_state),
-            position: None,
-            // Seek epochs count from 0: a seek before this reader existed is
-            // applied at its first block.
-            applied_seek: 0,
             channels,
             stride,
         }
-    }
-
-    /// Starts reading. One relaxed atomic store, safe from the audio thread.
-    pub fn play(&self) {
-        self.playing.store(true, Ordering::Relaxed);
-    }
-
-    /// Emits silence and stops reading. The streamer keeps its window where the
-    /// reader last played.
-    pub fn stop(&self) {
-        self.playing.store(false, Ordering::Relaxed);
-    }
-
-    /// Whether frames are being read. `process` checks this before touching
-    /// the ring.
-    pub fn is_playing(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
     }
 
     /// Publishes a new output gain (NaN or infinite: silence), to the shared `RtState` (see `tutti_nodes`'
@@ -195,57 +140,12 @@ impl DiskSource {
     pub fn reset_interpolation(&mut self) {
         self.read.reset();
     }
-
-    /// Render `size` frames free-running, frame `i` handed to `emit`.
-    fn render(&mut self, size: usize, mut emit: impl FnMut(usize, &[f32])) {
-        // Borrowed beside the reader, not cloned: `self` holds a strong
-        // reference, so a clone only adds two atomic refcount updates.
-        let Some(state) = self.shared_state.as_deref() else {
-            let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
-            (0..size).for_each(|i| emit(i, &silent[..self.stride]));
-            return;
-        };
-        let ring = self.read.ring();
-        let (epoch, target) = ring.seek_request();
-        if epoch != self.applied_seek {
-            self.applied_seek = epoch;
-            self.position = Some(target as f64);
-        }
-        let mut position = self.position.unwrap_or(ring.origin() as f64);
-        let preroll = ring.preroll() as f64;
-        let rate = state.read_rate().get();
-        let gain = audible(state.gain().get());
-        let mut positions = [None; BLOCK_FRAMES];
-        let mut done = 0;
-        while done < size {
-            let n = (size - done).min(BLOCK_FRAMES);
-            for (k, p) in positions[..n].iter_mut().enumerate() {
-                *p = Some(SamplePosition(
-                    (position + rate * k as f64 - preroll).max(0.0),
-                ));
-            }
-            // A relayed seek is a new segment, even to where it stands.
-            self.read.render(
-                &positions[..n],
-                self.applied_seek,
-                rate,
-                gain,
-                state,
-                done,
-                &mut Out::Frames(&mut emit),
-            );
-            position += rate * n as f64;
-            done += n;
-        }
-        self.position = Some(position);
-    }
 }
 
 impl DiskSource {
-    /// Stop reading and let go of the live stream: the ring's reader, and
+    /// Let go of the live stream: the ring's reader, and
     /// the control cell. A copy severed so never touches the live stream.
     fn sever(&mut self) {
-        self.playing.store(false, Ordering::Relaxed);
         self.shared_state = None;
         self.reset_interpolation();
         self.read.sever();
@@ -255,67 +155,6 @@ impl DiskSource {
     #[inline]
     fn width(&self) -> usize {
         self.stride
-    }
-}
-
-impl Node for DiskSource {
-    /// No inputs, the file's width out (at most [`MAX_SAMPLER_CHANNELS`]); a
-    /// generator, never skipped.
-    fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.channels)
-            .with_tail(Tail::Unbounded)
-            // The memory tier's read (`MemorySource`, measured 16–17 ns per
-            // frame and channel), through the same kernel, from a ring of
-            // atomics: not measured on its own (doc 013, "The cost model and coarsening").
-            .with_cost(tutti_graph::Cost::Moderate)
-    }
-
-    fn prepare(&mut self, p: &Prepare) {
-        self.sample_rate = p.sample_rate();
-    }
-
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let frames = io.frames();
-        let (_, mut outs) = io.split();
-        if !self.playing.load(Ordering::Relaxed) {
-            for ch in outs.iter_mut() {
-                ch.fill(0.0);
-            }
-            // A stopped source holds no refill back.
-            self.read.idle();
-            return Status::Modified;
-        }
-        let n = self.width().min(outs.len());
-        let mut refs: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
-            std::array::from_fn(|_| Default::default());
-        for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
-            *slot = ch;
-        }
-        self.render(frames, |i, f| {
-            for (c, &s) in f[..n].iter().enumerate() {
-                refs[c][i] = s;
-            }
-        });
-        Status::Modified
-    }
-
-    /// Stopped, and the read's jump state forgotten.
-    fn reset(&mut self) {
-        self.playing.store(false, Ordering::Relaxed);
-        self.reset_interpolation();
-    }
-}
-
-impl IntoNode for DiskSource {
-    type Controls = ();
-
-    /// No fork source: see the type's docs.
-    fn into_parts(self) -> NodeParts<()> {
-        NodeParts {
-            node: Box::new(self),
-            controls: (),
-            fork: None,
-        }
     }
 }
 
@@ -634,8 +473,7 @@ impl DiskVoice {
         self.file_sample_rate
     }
 
-    /// Sets the playback speed magnitude, in the shared `RtState` (what the
-    /// streamer's `SetVarispeed` also sets). The next block reads at the
+    /// Sets the playback speed magnitude, in the shared `RtState`. The next block reads at the
     /// position the new speed gives, crossfaded.
     pub fn set_speed(&mut self, speed: PlaybackRate) {
         self.shared_state.set_speed(speed);
@@ -860,7 +698,6 @@ impl DiskVoice {
     /// Run at `sample_rate`: the step converts the file's rate to it. What
     /// [`Node::prepare`] does; allocation-free.
     pub(crate) fn set_render_rate(&mut self, sample_rate: SampleRate) {
-        self.inner.sample_rate = sample_rate;
         self.sample_rate = Some(sample_rate);
     }
 

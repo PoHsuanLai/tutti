@@ -84,6 +84,10 @@ impl From<bool> for Direction {
 /// of their own, so the field-wise [`Voice`] clone and the stretch wrapper
 /// work uniformly across them.
 #[non_exhaustive]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the voice is built once on the control thread and read in place; boxing the memory tier would put a pointer chase in front of every per-sample read, the cost the enum exists to avoid"
+)]
 pub enum VoiceSource {
     /// The whole source is resident in memory.
     Memory(MemorySource),

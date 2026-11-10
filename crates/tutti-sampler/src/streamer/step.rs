@@ -171,7 +171,7 @@ impl StreamerCycle {
     }
 
     /// Turn each ring whose channel changed direction (`RtState`'s, set by the
-    /// voice or by `SetVarispeed`): reverse is a mapping (the file mirrored,
+    /// voice): reverse is a mapping (the file mirrored,
     /// loop ignored), so the change is `apply_mapping`'s — a switch the reader
     /// crossfades across just past the block it is in.
     ///

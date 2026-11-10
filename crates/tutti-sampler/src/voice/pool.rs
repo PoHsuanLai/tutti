@@ -865,10 +865,9 @@ impl VoicePool {
                     if let Some(slot) = self.slot_mut(id) {
                         // Unified across tiers: both backends carry speed in-unit.
                         // In-memory stores it on the `MemorySource`; streaming
-                        // forwards to the shared `RtState` (the exact speed
-                        // effect of the streamer's `SetVarispeed`, reachable from
-                        // the reader). `apply_speed` covers both, so a host
-                        // never forks streaming speed onto a streamer command.
+                        // forwards to the shared `RtState`, reachable from the
+                        // reader. `apply_speed` covers both, so a host never
+                        // forks streaming speed onto a streamer command.
                         slot.voice.source.apply_speed(speed);
                         slot.voice.play.speed = speed;
                     }
@@ -884,11 +883,9 @@ impl VoicePool {
                         // In-memory: `voice.play.direction` drives the reversed index
                         // in the hot read (the source-side `set_direction` is a
                         // no-op). Streaming: the source-side `set_direction`
-                        // forwards to the shared `RtState` (the direction leg of the
-                        // streamer's `SetVarispeed`) — `voice.play.direction` is
-                        // unused by the ring pull. One command reaches both, so
-                        // a host sends reverse ONCE rather than folding it into
-                        // a separate streamer speed command.
+                        // forwards to the shared `RtState` — `voice.play.direction`
+                        // is unused by the ring pull. One command reaches both,
+                        // so a host sends reverse ONCE.
                         slot.voice.play.direction = direction;
                         slot.voice.source.apply_direction(direction);
                     }

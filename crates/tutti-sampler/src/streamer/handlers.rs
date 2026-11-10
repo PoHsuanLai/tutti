@@ -173,24 +173,6 @@ pub(super) fn handle_command(
             handle_set_stream_loop(channel_index, stream, None, shared, config, local);
         }
 
-        StreamerCommand::SeekStream {
-            channel_index,
-            file_position,
-        } => {
-            handle_seek_stream(channel_index, file_position, shared, local);
-        }
-
-        StreamerCommand::SetVarispeed {
-            channel_index,
-            direction,
-            speed,
-        } => {
-            if let Some(plan) = shared.plans.get(&channel_index) {
-                plan.rt_state.set_speed(speed);
-                plan.rt_state.set_direction(direction);
-            }
-        }
-
         StreamerCommand::Shutdown => {}
     }
 }
@@ -314,12 +296,11 @@ fn handle_stream_file(
     let pdc_preroll = local.pdc.preroll(channel_index);
 
     // The window starts where the reader will play: the offset, pre-rolled.
-    // A free-running reader starts at the offset; a placed voice at its clock.
+    // A placed voice reads at its clock.
     let start = (offset_samples as u64).saturating_sub(pdc_preroll);
     RegionBuffer::place(
         &mut producer,
         start,
-        offset_samples as u64,
         pdc_preroll,
         config.seek_crossfade_frames,
     );
@@ -453,37 +434,6 @@ fn handle_set_stream_loop(
             range,
             crossfade_frames,
         }));
-    }
-}
-
-/// Seek a stream's free-running reader to absolute file frame
-/// `file_position`, and move the streamer's window there (less the channel's
-/// PDC preroll) so it is filled before the reader asks.
-///
-/// Free-running readers only. A placed voice follows its clock (seek the
-/// clock), and it is the one that says where it plays: moving the window for
-/// it here would be a second writer of that position, dragging the window away
-/// from the voice until its next block said otherwise. So on a stream whose
-/// live reader is placed, the request is relayed and the window left alone.
-///
-/// No-op when the channel isn't streaming.
-pub(super) fn handle_seek_stream(
-    channel_index: usize,
-    file_position: u64,
-    shared: &Handles,
-    local: &mut Local,
-) {
-    let Some(plan) = shared.plans.get(&channel_index) else {
-        return;
-    };
-    let Some(link) = plan.link.as_ref() else {
-        return;
-    };
-    link.consumer.request_seek(file_position);
-    if !link.consumer.placed()
-        && let Some(writer) = local.regions.get_mut(link.region_id)
-    {
-        writer.set_play(file_position.saturating_sub(plan.pdc_preroll));
     }
 }
 

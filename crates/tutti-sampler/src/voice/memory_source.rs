@@ -62,7 +62,7 @@ pub enum LoopSetting {
     /// Every tier reads the same rule.
     ///
     /// When a change is heard. On the memory tier a change is a store,
-    /// heard at the next frame. On a live disk stream (`Command::Loop`) the
+    /// heard at the next frame. On a live disk stream (`Stream::set_loop`) the
     /// streamer rewrites the ring it has read ahead, from where the old and new
     /// loops first differ: when that is far enough ahead of the playhead, the
     /// change is heard exactly where the memory tier hears it; when it is at
@@ -673,7 +673,7 @@ impl MemorySource {
     /// clears the range and disables looping.
     ///
     /// In-memory only. The streaming tier's loop is streamer-owned (a
-    /// `Command::Loop` from the reader's drain), which is why this is inherent
+    /// `Stream::set_loop` from the reader's drain), which is why this is inherent
     /// rather than a shared trait method — there is no honest way for one call
     /// to mean both.
     pub fn set_loop_setting(&mut self, setting: LoopSetting) {

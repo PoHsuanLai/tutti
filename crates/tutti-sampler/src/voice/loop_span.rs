@@ -118,7 +118,7 @@ impl LoopSpan {
 
     /// The loop a [`LoopSetting`] describes in a file `len` frames long, its
     /// points taken to whole frames as the streamer takes them
-    /// (`Commands::send`'s `Command::Loop`).
+    /// (`Stream::set_loop`).
     pub(crate) fn from_setting(setting: LoopSetting, len: usize) -> Option<Self> {
         match setting {
             LoopSetting::On {

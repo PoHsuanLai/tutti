@@ -29,8 +29,9 @@ use tutti_codec::Wave;
 use tutti_graph::contract::Direct;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
-    DiskStreamer, DiskStreamerConfig, DiskVoice, LoopSetting, MemorySource, Open, Placement,
-    Playback, SlotId, StepOutcome, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
+    ByHand, DiskStreamer, DiskStreamerConfig, DiskVoice, LoopSetting, MemorySource, Open,
+    Placement, Playback, SlotId, StepOutcome, Stream, Voice, VoiceCommand, VoiceNode, VoicePool,
+    VoiceSource,
 };
 use tutti_types::{Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor};
 
@@ -218,7 +219,7 @@ enum Tier {
 struct Pool64 {
     rig: Rig,
     /// Keeps the disk tier's streams (and their rings) alive.
-    _streamer: Option<DiskStreamer>,
+    _streamer: Option<(DiskStreamer<ByHand>, Vec<Stream>)>,
     _dir: tempfile::TempDir,
 }
 
@@ -320,16 +321,19 @@ fn pool_knobs(
                     break;
                 }
             }
-            let voices = openings
+            let (streams, voices): (Vec<_>, Vec<_>) = openings
                 .into_iter()
                 .map(|opening| {
-                    let Open::Ready(reader) = opening.poll() else {
+                    let Open::Ready(stream, reader) = opening.poll() else {
                         panic!("a primed stream answers its open");
                     };
-                    VoiceSource::Disk(DiskVoice::from_reader(reader, knobs.start, None))
+                    (
+                        stream,
+                        VoiceSource::Disk(DiskVoice::from_reader(reader, knobs.start, None)),
+                    )
                 })
-                .collect();
-            streamer = Some(s);
+                .unzip();
+            streamer = Some((s, streams));
             voices
         }
     };

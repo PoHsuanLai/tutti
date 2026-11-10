@@ -94,14 +94,16 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     s.graph().set_output_source(2, GraphSource::Node(eff, 0));
 
     // The voice, on outputs 0 and 1.
-    let voice = match tier {
+    // The stream's handle is held for the whole render: dropping it would end
+    // the stream.
+    let (voice, _stream) = match tier {
         Tier::Disk => {
             let streamer = s.disk_streamer().expect("an offline session streams");
             // The streamer opens the stream on its own thread.
-            let reader =
+            let (stream, reader) =
                 settle_threaded(streamer.open(&path, Placement::HEAD)).expect("the stream opens");
             let voice = DiskVoice::from_reader(reader, Beat(1.0), None);
-            s.graph().insert(voice).0
+            (s.graph().insert(voice).0, Some(stream))
         }
         Tier::Memory => {
             let mut wave = tutti_codec::Wave::new(2, RATE);
@@ -110,7 +112,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             }
             let source = MemorySource::placed(std::sync::Arc::new(wave), Beat(1.0), None)
                 .expect("a placeable wave");
-            s.graph().insert(source).0
+            (s.graph().insert(source).0, None)
         }
     };
     s.graph().set_output_source(0, GraphSource::Node(voice, 0));

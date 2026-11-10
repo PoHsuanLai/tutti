@@ -3,7 +3,6 @@
 
 use std::cell::Cell;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
@@ -17,7 +16,8 @@ use crate::processor::{ProcessorParts, Vst2Processor};
 use crate::scratch::RenderScratch;
 
 /// The main-thread half of an activation: the whole control surface of a
-/// [`Vst2Loaded`], reached through `Deref`, beside a Processor that renders.
+/// [`Vst2Loaded`] (the [`Control`] trait; [`loaded`](Self::loaded) and
+/// [`loaded_mut`](Self::loaded_mut) for the format's own surface), beside a Processor that renders.
 ///
 /// It **owns** the [`Vst2Loaded`], and so the plugin: the Processor holds only the audio
 /// handle ([`RenderHandle`](vst::host::RenderHandle)), which shares the plugin's core and
@@ -33,6 +33,13 @@ use crate::scratch::RenderScratch;
 ///
 /// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
 /// type makes it compile, and the test fails):
+///
+/// ```compile_fail
+/// // No `Deref`: a `&Vst2Controller` is not a `&Vst2Loaded`.
+/// fn loaded(c: &tutti_vst2_host::Vst2Controller) -> &tutti_vst2_host::Vst2Loaded {
+///     c
+/// }
+/// ```
 ///
 /// ```compile_fail
 /// fn needs_sync<T: Sync>() {}
@@ -56,47 +63,45 @@ impl Vst2Controller {
             _not_sync: PhantomData,
         }
     }
-}
 
-impl Deref for Vst2Controller {
-    type Target = Vst2Loaded;
-
-    fn deref(&self) -> &Vst2Loaded {
+    /// The loaded plugin, for the surface the [`Control`] impl does not cover.
+    /// The Controller does not `Deref` to it (doc 016 section 2.2).
+    #[must_use]
+    pub fn loaded(&self) -> &Vst2Loaded {
         &self.loaded
     }
-}
 
-impl DerefMut for Vst2Controller {
-    fn deref_mut(&mut self) -> &mut Vst2Loaded {
+    /// [`loaded`](Self::loaded), mutably.
+    pub fn loaded_mut(&mut self) -> &mut Vst2Loaded {
         &mut self.loaded
     }
 }
 
 impl Control for Vst2Controller {
     fn info(&self) -> &PluginDescriptor {
-        Control::info(&**self)
+        Control::info(self.loaded())
     }
 
     fn wiring(&self, main: &MainThread) -> LoadedPlugin {
-        Control::wiring(&**self, main)
+        Control::wiring(self.loaded(), main)
     }
 
     fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        Control::parameters(&**self, main)
+        Control::parameters(self.loaded(), main)
     }
 
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        Control::parameter(&**self, main, id)
+        Control::parameter(self.loaded(), main, id)
     }
 
     /// A direct `setParameter` on the plugin: the SDK allows it from either
     /// thread, and the Processor's own automation writes go the same way.
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        Control::set_parameter(&mut **self, main, id, value);
+        Control::set_parameter(self.loaded_mut(), main, id, value);
     }
 
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(&**self, main, id, value)
+        Control::parameter_text(self.loaded(), main, id, value)
     }
 
     fn parameter_value_from_text(
@@ -105,35 +110,35 @@ impl Control for Vst2Controller {
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
-        Control::parameter_value_from_text(&**self, main, id, text)
+        Control::parameter_value_from_text(self.loaded(), main, id, text)
     }
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut **self, main)
+        Control::save_state(self.loaded_mut(), main)
     }
 
     fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        Control::load_state(&mut **self, main, bytes)
+        Control::load_state(self.loaded_mut(), main, bytes)
     }
 
     fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
-        Control::presets(&mut **self, main)
+        Control::presets(self.loaded_mut(), main)
     }
 
     fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        Control::load_preset(&mut **self, main, id)
+        Control::load_preset(self.loaded_mut(), main, id)
     }
 
     fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
-        Control::current_preset(&mut **self, main)
+        Control::current_preset(self.loaded_mut(), main)
     }
 
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
-        Control::set_automation_state(&mut **self, main, mode);
+        Control::set_automation_state(self.loaded_mut(), main, mode);
     }
 
     fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        Control::rescan_parameters(&mut **self, main, scope);
+        Control::rescan_parameters(self.loaded_mut(), main, scope);
     }
 }
 
@@ -142,11 +147,11 @@ impl Controller for Vst2Controller {
     type Processor = Vst2Processor;
 
     fn latency(&self, _main: &MainThread) -> Samples {
-        self.latency_samples()
+        self.loaded.latency_samples()
     }
 
     fn tail(&self, main: &MainThread) -> PluginTail {
-        Vst2Loaded::tail(self, main)
+        Vst2Loaded::tail(&self.loaded, main)
     }
 }
 

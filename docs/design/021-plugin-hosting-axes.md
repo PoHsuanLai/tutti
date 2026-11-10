@@ -596,6 +596,8 @@ changes:
   `latency_reported` reports plugin plus chunk, and `automation_point_offset`
   and `note_at_offset` need a stated offset in `spec`. Each is a `Gap { why,
   fails_with }`, reviewed, as 016's contract rule has it. Never `#[ignore]`.
+- A reset never reaches an out-of-process plugin (`M::Reset` is a pipeline no-op in
+  the server): a defect and its proposed fix and test are in 016 §6.2.
 - `process_does_not_allocate` runs under `assert_no_alloc` for `IpcProcessor`
   too (today's gate on the client's audio entry points becomes this case).
 - `tests/server.rs` (64 lines, three tests) is subsumed and deleted;

@@ -11,11 +11,12 @@ where the code lives. The ranking and the staging come after that, because the
 order in which families are built follows from what each needs from the traits.
 
 Status: design only; nothing here is implemented. Written against `main` at
-`5de4dd7b0`: doc 024 step 1a has landed (#455: `Kernel` is `Realization`,
-`ReverbNode<D>` is `DesignNode<D>`, the `contract` module is in `tutti-dsp`) and
-so have consolidations 1, 2, 3, 9 and 10 (#448, #451, #446, #443, #444); step 1b
-(the `model` module with `System`, `Lti`, `Memoryless`, ...) has not, and the
-traits of doc 024 §4.2 are quoted from that doc, not from code. It does not
+`f2647ae8b`: doc 024 step 1 has landed (#455: `Kernel` is `Realization`,
+`ReverbNode<D>` is `DesignNode<D>`; #463: the `model` module with `System`, `Lti`,
+`Design::Model`, `Realization<M>`, `Effect<M>`, and the `contract` feature) and so
+have consolidations 1, 2, 3, 9 and 10 (#448, #451, #446, #443, #444). The class
+traits step 1 did not add (`Memoryless`, `SteadyState`, `Periodic`, `Noise`, the
+combinators) are quoted from doc 024 §4.2, not from code. It does not
 contradict [doc 022](022-reverb.md) (the reverb items stay its steps, and its
 exclusion of shimmer stands, §9 D3) or [doc 026](026-stretch.md) (the listening
 gate is still the owner's; formant preservation is a new realization beside
@@ -1193,15 +1194,15 @@ seam for offline stem separation with no bundled model. Each is a
 Stages are PRs that pass `cargo xtask ci`. Kernels that need no new trait ship
 early as plain `tutti-dsp` code with analytic tests and adopt the class traits in
 the doc 024 step that hosts them, as the smoother did (consolidation 2): a stage
-that needs a trait waits for step 1b (the `model` module), which is not on `main`
-yet.
+that needs a class trait step 1 did not add (`Memoryless`, `SteadyState`, ...)
+waits for the doc 024 step that adds it.
 
 | Stage | Content | Proves it | After |
 |---|---|---|---|
 | A1 | Spatial PR 1: the VBAP solve into `tutti-dsp::spatial`; `vbap` and `glam` dropped (§4) | unedited tests and digests; preset tuples pinned; Pulkki's properties | the owner's approval of §9 Q5 |
 | A2 | Spatial PRs 2 (HRTF) and 3 (cleanup) | `hrtf_render.rs`, contract suite; paths stable | A1 |
 | B1 | Utility pack; pan-law consolidation into `balance.rs` (the polysynth law and the crossfade onto it) (§3.12, §3.5) | matrices, sidebands, DC corner; power figures | none (the pan models adopt `GainMatrix` at step 7) |
-| B2 | Oversampling kernels and ADAA kernels as plain code and free functions (§3.1, §3.2) | derivative, identity, box average, stopband, overshoot, power complement | none (parallel with doc 024 step 1b) |
+| B2 | Oversampling kernels and ADAA kernels as plain code and free functions (§3.1, §3.2) | derivative, identity, box average, stopband, overshoot, power complement | none |
 | B3 | Doc 024 step 5 adopts them: waveshaper `Memoryless`, `Graded` oversampling, `Adaa` realizations, the oversampler models | the aliasing case, digests | B2, step 5 |
 | B4 | True-peak limiter and the true-peak reader (§3.3) | margin, inter-sample peak, `Dg` | **B2 (kernels) and doc 024 step 4** (not B3) |
 | C1 | EQ family: slopes and tilt on `SeriesN`; then `Controlled` and dynamic EQ; then the linear-phase FIR (§3.4) | Butterworth magnitude, settled response, phase | steps 2, 3, 4; the FIR's model with step 6 (a plain FIR-by-convolver earlier) |

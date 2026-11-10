@@ -29,10 +29,10 @@
 //! listener (a facet lying across the origin, such as three speakers on the
 //! horizontal plane) spans no volume and has no inverse, so it is not a tuple;
 //! a layout with no speaker below the horizon therefore has no tuple covering
-//! the directions below it, and `SpeakerLayout::gains` retreats a source there
+//! the directions below it, and `SpeakerLayout::gains_into` retreats a source there
 //! to the horizon.
 
-use super::math::{Vec3, cross, direction, dot, sub};
+use super::math::{Vec3, cross, direction, dot, sub, wrapped_deg};
 
 /// A pair closer than this (degrees of bearing) is one point to the ear.
 const MIN_PAIR_GAP: f64 = 5.0;
@@ -49,16 +49,19 @@ const MIN_VOLUME: f64 = 1e-3;
 /// edge, two arcs sharing a point.
 const EPS: f64 = 1e-9;
 
-/// A bearing wrapped into `-180..180` degrees.
-fn wrapped(deg: f64) -> f64 {
-    deg - 360.0 * ((deg + 180.0) / 360.0).floor()
-}
+/// A direction whose dot product with a corner exceeds `1 - ` this is the
+/// corner: a second speaker at the same place.
+const COINCIDENT: f64 = 1e-12;
+
+/// Edge lengths are compared as their cosines times this, rounded, so that
+/// equal lengths tie whatever the last bit of the dot product.
+const SHORTNESS_QUANTUM: f64 = 1e9;
 
 /// The pairs of a horizontal layout, as indices into `azimuths` (degrees),
 /// ordered from the lowest bearing.
 pub(super) fn pairs(azimuths: &[f64]) -> Vec<[u16; 2]> {
     let n = azimuths.len();
-    let bearing = |i: usize| wrapped(azimuths[i]);
+    let bearing = |i: usize| wrapped_deg(azimuths[i]);
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| bearing(a).total_cmp(&bearing(b)));
     let mut out = Vec::with_capacity(n);
@@ -126,7 +129,10 @@ fn facets(dirs: &[Vec3]) -> Vec<[u16; 3]> {
                     }
                     // A second speaker at a corner's place: the layout has a
                     // duplicate, and no triangle of it is a tuple.
-                    if [a, b, c].iter().any(|&corner| dot(corner, p) > 1.0 - 1e-12) {
+                    if [a, b, c]
+                        .iter()
+                        .any(|&corner| dot(corner, p) > 1.0 - COINCIDENT)
+                    {
                         continue 'triple;
                     }
                 }
@@ -153,7 +159,7 @@ fn accepted_edges(dirs: &[Vec3], facets: &[[u16; 3]]) -> Vec<(u16, u16)> {
     // that two edges of equal length (a symmetric layout) compare as equal and
     // the lower indices decide, whatever the last bit of their dot products.
     let shortness = |&(i, j): &(u16, u16)| {
-        -(dot(dirs[usize::from(i)], dirs[usize::from(j)]) * 1e9).round() as i64
+        -(dot(dirs[usize::from(i)], dirs[usize::from(j)]) * SHORTNESS_QUANTUM).round() as i64
     };
     edges.sort_by_key(|e| (shortness(e), *e));
     let mut kept: Vec<(u16, u16)> = Vec::with_capacity(edges.len());

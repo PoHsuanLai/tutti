@@ -3,13 +3,14 @@
 use tutti_types::{Azimuth, Elevation, Spread};
 
 use super::error::SpeakerGeometryError;
-use super::math::{Mat2, Mat3, direction, inverse2, inverse3, mul2, mul3};
+use super::math::{Mat2, Mat3, direction, inverse2, inverse3, mul2, mul3, wrapped_deg};
 use super::select;
 
-/// The most speakers a layout holds (Atmos 7.1.4 is eleven).
+/// The most speakers a layout holds: twelve, the 7.1.4 Atmos bed's eleven
+/// speakers and its LFE.
 pub const MAX_SPEAKERS: usize = 12;
 
-/// How many times [`SpeakerLayout::gains`] may retreat a source's elevation
+/// How many times [`SpeakerLayout::gains_into`] may retreat a source's elevation
 /// toward the horizontal plane before giving up.
 ///
 /// The retreat halves the distance to the plane each round, so the bound is a
@@ -21,8 +22,22 @@ pub const MAX_SPEAKERS: usize = 12;
 const MAX_ELEVATION_RETREATS: u32 = 8;
 
 /// Below this, a gain vector's sum of squares is treated as zero and
-/// renormalising it would divide by about zero.
+/// renormalising it would divide by about zero. An `f32` widened for the
+/// comparison, so it is a hair above `1e-10`; [`POWER_FLOOR`] is the exact
+/// `f64` one.
 const ENERGY_EPSILON: f32 = 1e-10;
+
+/// Below this, the sum of squares of one tuple's candidate gains is zero (a
+/// power, in `f64`).
+const POWER_FLOOR: f64 = 1e-10;
+
+/// A speaker above or below the horizontal plane by more than this many
+/// degrees makes a layout [`PanningMode::Surround`].
+const PLANE_TOLERANCE_DEG: f64 = 1e-6;
+
+/// An elevation retreat that lands within this many degrees of the horizontal
+/// plane snaps to it.
+const ELEVATION_SNAP_DEG: f64 = 1e-4;
 
 /// Whether a layout pans between pairs of speakers or triplets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +77,7 @@ impl Tuple {
 /// A speaker array, ready to pan over.
 ///
 /// Built once on the control side by [`new`](Self::new) or a preset; the solve
-/// ([`gains`](Self::gains)) takes `&self` and allocates nothing, so one layout
+/// ([`gains_into`](Self::gains_into)) takes `&self` and allocates nothing, so one layout
 /// serves any number of sources.
 #[derive(Debug, Clone)]
 pub struct SpeakerLayout {
@@ -104,7 +119,7 @@ impl SpeakerLayout {
             .iter()
             .map(|&(a, e)| (f64::from(a.get()), f64::from(e.get())))
             .collect();
-        let mode = if degrees.iter().any(|&(_, e)| e.abs() > 1e-6) {
+        let mode = if degrees.iter().any(|&(_, e)| e.abs() > PLANE_TOLERANCE_DEG) {
             PanningMode::Surround
         } else {
             PanningMode::Horizontal
@@ -155,9 +170,7 @@ impl SpeakerLayout {
             return Err(SpeakerGeometryError::NoValidTuples);
         }
 
-        let has_rear_speakers = degrees
-            .iter()
-            .any(|&(a, _)| (a - 360.0 * ((a + 180.0) / 360.0).floor()).abs() > 90.0);
+        let has_rear_speakers = degrees.iter().any(|&(a, _)| wrapped_deg(a).abs() > 90.0);
         Ok(Self {
             count,
             mode,
@@ -265,10 +278,15 @@ impl SpeakerLayout {
         self.has_rear_speakers
     }
 
-    /// The gains of one source at `azimuth` and `elevation`, with `spread`
-    /// applied: unit power (the sum of squares is 1) for every bearing and
-    /// height, whatever the layout covers. Entries from
-    /// [`speaker_count`](Self::speaker_count) on are zero.
+    /// Write the gains of one source at `azimuth` and `elevation`, with
+    /// `spread` applied, into `out`: unit power (the sum of squares is 1) for
+    /// every bearing and height, whatever the layout covers.
+    ///
+    /// `out` is [`speaker_count`](Self::speaker_count) long, and all of it is
+    /// written. A slice of another length is a caller's bug: a debug assertion
+    /// fires, and a release build writes the first `min(out.len(),
+    /// speaker_count)` gains (spread and unit power then hold over those) and
+    /// leaves the rest of `out` as it was.
     ///
     /// # The three steps, and why each is load-bearing
     ///
@@ -308,24 +326,24 @@ impl SpeakerLayout {
     /// out: a front-only pair genuinely cannot place a rear image, and
     /// collapsing to the nearest speaker keeps an automation audible all the
     /// way round.
-    #[must_use]
-    pub fn gains(
+    pub fn gains_into(
         &self,
         azimuth: Azimuth,
         elevation: Elevation,
         spread: Spread,
-    ) -> [f32; MAX_SPEAKERS] {
+        out: &mut [f32],
+    ) {
+        debug_assert_eq!(out.len(), self.count);
         let mut scratch = [0.0f64; MAX_SPEAKERS];
         self.unit_power_gains(azimuth, elevation, &mut scratch[..self.count]);
-        let mut gains = [0.0f32; MAX_SPEAKERS];
-        for (out, &g) in gains.iter_mut().zip(&scratch[..self.count]) {
+        let written = out.len().min(self.count);
+        for (out, &g) in out.iter_mut().zip(&scratch[..written]) {
             *out = g as f32;
         }
-        apply_spread(spread, &mut gains, self.count);
-        gains
+        apply_spread(spread, &mut out[..written]);
     }
 
-    /// Steps 1 to 3 of [`gains`](Self::gains), in `f64`, into `scratch`
+    /// Steps 1 to 3 of [`gains_into`](Self::gains_into), in `f64`, into `scratch`
     /// (`speaker_count` long).
     fn unit_power_gains(&self, azimuth: Azimuth, elevation: Elevation, scratch: &mut [f64]) {
         let azimuth = if self.has_rear_speakers {
@@ -355,7 +373,7 @@ impl SpeakerLayout {
             // try again. Snapping the last sliver to exactly 0 rather than
             // halving forever is what keeps the bound at two rounds in practice.
             elevation_deg *= 0.5;
-            if elevation_deg.abs() < 1e-4 {
+            if elevation_deg.abs() < ELEVATION_SNAP_DEG {
                 elevation_deg = 0.0;
             }
         }
@@ -404,7 +422,7 @@ impl SpeakerLayout {
         };
 
         let sum_sq: f64 = candidate[..len].iter().map(|g| g * g).sum();
-        let norm = if sum_sq > 1e-10 {
+        let norm = if sum_sq > POWER_FLOOR {
             1.0 / sum_sq.sqrt()
         } else {
             0.0
@@ -430,7 +448,7 @@ const SEVEN_ZERO: [(Azimuth, Elevation); 7] = [
 /// (left-right) axis: 135 degrees becomes 45, 180 becomes 0.
 ///
 /// Only correct for an array with no rear speaker; see
-/// [`SpeakerLayout::gains`].
+/// [`SpeakerLayout::gains_into`].
 #[inline]
 fn fold_to_front(azimuth: Azimuth) -> Azimuth {
     let deg = azimuth.wrap().get();
@@ -445,25 +463,25 @@ fn fold_to_front(azimuth: Azimuth) -> Azimuth {
     }
 }
 
-/// Apply spread to `gains[..count]` in place, holding the sum of squares at 1:
+/// Apply spread to `gains` in place, holding the sum of squares at 1:
 /// the energy law the solve establishes, preserved across the diffusion blend
 /// rather than newly imposed by it.
 #[inline]
-fn apply_spread(spread: Spread, gains: &mut [f32], count: usize) {
+fn apply_spread(spread: Spread, gains: &mut [f32]) {
     // Unwrapped once here: the blend below is interpolation arithmetic on the
     // scalar, which `Spread` deliberately does not define operators for.
     let spread = spread.get();
     if spread <= 0.0 {
         return;
     }
-    let equal_gain = 1.0 / (count as f32).sqrt();
-    for gain in &mut gains[..count] {
+    let equal_gain = 1.0 / (gains.len() as f32).sqrt();
+    for gain in gains.iter_mut() {
         *gain = *gain * (1.0 - spread) + equal_gain * spread;
     }
-    let sum_sq: f32 = gains[..count].iter().map(|g| g * g).sum();
+    let sum_sq: f32 = gains.iter().map(|g| g * g).sum();
     if sum_sq > 0.0 {
         let norm = 1.0 / sum_sq.sqrt();
-        for gain in &mut gains[..count] {
+        for gain in gains.iter_mut() {
             *gain *= norm;
         }
     }

@@ -3,7 +3,7 @@
 //! A [`SpeakerLayout`] is built once, on the control side, from the speakers'
 //! positions: it picks the **pairs** (a horizontal layout) or **triplets** (a
 //! layout with height) of speakers a source can be placed between and keeps
-//! the inverse of each tuple's direction matrix. [`SpeakerLayout::gains`] then
+//! the inverse of each tuple's direction matrix. [`SpeakerLayout::gains_into`] then
 //! turns a bearing, a height and a spread into the speaker gains with no
 //! allocation, every control passed per call.
 //!

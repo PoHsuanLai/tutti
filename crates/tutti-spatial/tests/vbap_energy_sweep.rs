@@ -7,9 +7,9 @@
 //! one. The property is a scalar identity that can be stated exactly — the sum
 //! of the squared speaker gains is 1.0 — so the oracle is that sentence, and
 //! there is nothing to compare against and nothing to justify a tolerance
-//! beyond f32 accumulation. Comparing against another VBAP crate would be
-//! weaker, not stronger: the panner's solve is a copy of Pulkki's, so a second
-//! copy of it could not disagree.
+//! beyond f32 accumulation. Comparing against another VBAP implementation would
+//! be weaker, not stronger: the solve is Pulkki's, so a second copy of it could
+//! not disagree.
 //!
 //! Tests that only check where the *bearing* lands would pass a normalization
 //! that was skipped, applied twice, or clamped to zero; these check how much
@@ -20,8 +20,7 @@
 //! Pulkki's solve normalizes the tuple solution and then clamps negative gains
 //! to zero. Left to that, a stereo pair holds unity to 30°, decays (0.933 at
 //! 45°, 0.500 at 90°, 0.067 at 135°) and is **completely silent from 150°
-//! through 210°**. `SpeakerLayout::gains` corrects this in this crate's
-//! layer, so unity is asserted at spread 0 as well, and the stereo pair's
+//! through 210°**. `SpeakerLayout::gains_into` (in `tutti-dsp`) corrects this, so unity is asserted at spread 0 as well, and the stereo pair's
 //! rear arc is asserted as a hard-pan table.
 //!
 //! # Tolerance rationale
@@ -125,12 +124,12 @@ fn sum_of_squares(gains: &[f32]) -> f32 {
 /// small enough to enumerate, and an enumeration is a proof where a sample is
 /// only evidence. Five layouts × seven spreads (including 0) × 24 bearings.
 ///
-/// Spread 0 is in the grid. `apply_spread` returns early there, and upstream
-/// `vbap` alone does not keep the invariant; `SpeakerLayout::gains` establishes unit
+/// Spread 0 is in the grid. `apply_spread` returns early there, and Pulkki's
+/// normalize-then-clamp alone does not keep the invariant; `SpeakerLayout::gains_into` establishes unit
 /// energy *before* `apply_spread` runs, so the law holds at every spread
 /// including none.
 ///
-/// Mutation: delete the renormalization in `SpeakerLayout::gains` → fails at stereo,
+/// Mutation: delete the renormalization in `SpeakerLayout::gains_into` → fails at stereo,
 /// spread 0%, az 45° (0.933 against 1.0). Two mutations this test verifiably
 /// does *not* catch, both by design: deleting the elevation retreat (it sweeps
 /// the horizontal plane only —
@@ -180,7 +179,7 @@ fn every_layout_holds_unit_energy_across_the_sweep() {
 /// speaker at all.
 ///
 /// This is the half of the correction the azimuth sweep cannot reach. Two regions have
-/// no geometry to solve against, and upstream returned an all-zero gain vector
+/// no geometry to solve against, and the plain solve returns an all-zero gain vector
 /// for both — silence, not a fade:
 ///
 /// - Below an Atmos bed. 7.1.4 has eleven speakers and none beneath the
@@ -190,11 +189,11 @@ fn every_layout_holds_unit_energy_across_the_sweep() {
 ///   plane, and at ±90° elevation the direction vector's horizontal projection
 ///   is the zero vector, so every gain came out zero.
 ///
-/// `SpeakerLayout::gains` retreats the elevation toward the plane until the array can
-/// answer, which covers both. Renormalizing alone cannot: upstream's clamp had
+/// `SpeakerLayout::gains_into` retreats the elevation toward the plane until the array can
+/// answer, which covers both. Renormalizing alone cannot: the clamp has
 /// already destroyed the sign information, and scaling zeros leaves zeros.
 ///
-/// Mutation: delete the elevation-retreat loop in `SpeakerLayout::gains` (solve once) →
+/// Mutation: delete the elevation-retreat loop in `SpeakerLayout::gains_into` (solve once) →
 /// fails at atmos, elevation -90°, and at quad/5.1/7.1 elevation ±90°.
 #[test]
 fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
@@ -237,7 +236,7 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
 ///
 /// A stereo pair sits at ±30° and has no rear speaker, so it has no
 /// front/back axis: there is no amplitude difference between two speakers both
-/// in front of you that says "behind". `SpeakerLayout::gains` therefore mirrors a rear
+/// in front of you that says "behind". `SpeakerLayout::gains_into` therefore mirrors a rear
 /// bearing about the lateral axis (135° → 45°, 180° → 0°) and then hard-pans
 /// anything still outside the pair, at full energy.
 ///
@@ -255,8 +254,8 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
 /// the alternative of picking one speaker arbitrarily would make
 /// the sweep discontinuous at the seam.
 ///
-/// Mutation: normalize before clamping (i.e. drop `SpeakerLayout::gains` and call
-/// upstream directly) → fails at 90°, energy 0.500 against 1.0. Fold without
+/// Mutation: normalize before clamping (i.e. clamp the tuple solution without the
+/// correction of `SpeakerLayout::gains_into`) → fails at 90°, energy 0.500 against 1.0. Fold without
 /// renormalizing → also fails at 90°, same figure. Renormalize without folding
 /// → fails at 180°, energy 0.000. Break the reset seeding (seat
 /// `VbapPannerNode::reset` on `Azimuth::FRONT`) → fails at 30°, reading
@@ -299,7 +298,7 @@ fn stereo_hard_pans_outside_the_pair_and_mirrors_the_rear() {
 /// A surrounding layout has a real speaker behind the listener, so mirroring a
 /// rear bearing into the front hemisphere would not be a graceful fallback — it
 /// would move the source to the wrong side of the room. The gate in
-/// `SpeakerLayout::gains` is derived from the speaker positions rather than from the
+/// `SpeakerLayout::gains_into` is derived from the speaker positions rather than from the
 /// channel count, and this is what checks it did not invert.
 ///
 /// Asserted as "the rear speakers carry the energy at a rear bearing", which is
@@ -348,7 +347,7 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 /// Checked on 5.1, where full spread has somewhere to spread *to*: it must
 /// light up more speakers than a point source at the same bearing does.
 ///
-/// Mutation: skip `apply_spread` in `SpeakerLayout::gains`, which both branches share (the
+/// Mutation: skip `apply_spread` in `SpeakerLayout::gains_into`, which both branches share (the
 /// width branch included) → fails, because both readings light the same speakers.
 #[test]
 fn spread_reaches_the_stereo_width_path() {

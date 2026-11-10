@@ -43,7 +43,7 @@
 //!   [`FdnKernel`]; [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula both
 //!   ways.
 //! - Spatial: [`SpeakerLayout`], the pairs or triplets of a speaker array and Pulkki's
-//!   vector base amplitude panning solve over it ([`SpeakerLayout::gains`]), with a
+//!   vector base amplitude panning solve over it ([`SpeakerLayout::gains_into`]), with a
 //!   [`SpeakerGeometryError`] for a layout that cannot be built.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Frame-by-bin data: [`StftGeometry`] (window, hop, shape and rate, validated

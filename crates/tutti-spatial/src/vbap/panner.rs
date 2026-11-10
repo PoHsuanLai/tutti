@@ -97,13 +97,13 @@ impl VbapPanner {
     ///
     /// # Spread applies to both virtual sources
     ///
-    /// The `width > 0` branch must reach spread (`SpeakerLayout::gains`)
+    /// The `width > 0` branch must reach spread (`SpeakerLayout::gains_into`)
     /// too, or a spread set on a node fed any non-zero width would silently do
     /// nothing. `width` and
     /// `spread` are orthogonal: width says how far apart the two virtual
     /// sources sit, spread how far each one is smeared across the speaker
     /// field, so neither may suppress the other. Both go through
-    /// [`SpeakerLayout::gains`], which also gives each virtual
+    /// [`SpeakerLayout::gains_into`], which also gives each virtual
     /// source unit energy on its own — without that, the width branch would
     /// reintroduce the rear-arc silence the mono branch avoids.
     /// Covered by `tests/vbap_energy_sweep.rs::spread_reaches_the_stereo_width_path`.
@@ -140,10 +140,14 @@ impl VbapPanner {
     ) -> BlockGains {
         // Unwrapped once: the angle offset below scales the scalar.
         let width = width.get().max(0.0);
+        let count = self.layout.speaker_count();
         if width < 0.001 {
+            let mut a = [0.0; MAX_SPEAKERS];
+            self.layout
+                .gains_into(azimuth, elevation, spread, &mut a[..count]);
             return BlockGains {
                 mono: true,
-                a: self.layout.gains(azimuth, elevation, spread),
+                a,
                 b: [0.0; MAX_SPEAKERS],
             };
         }
@@ -153,15 +157,14 @@ impl VbapPanner {
         // wraparound the node normalizes the target to, re-introduced here by
         // adding to the already-wrapped value.
         let angle_offset = ArcDegrees(15.0 * width);
-        BlockGains {
-            mono: false,
-            a: self
-                .layout
-                .gains(azimuth.rotate_by(angle_offset), elevation, spread),
-            b: self
-                .layout
-                .gains(azimuth.rotate_by(-angle_offset), elevation, spread),
-        }
+        let (mut a, mut b) = ([0.0; MAX_SPEAKERS], [0.0; MAX_SPEAKERS]);
+        let left = azimuth.rotate_by(angle_offset);
+        let right = azimuth.rotate_by(-angle_offset);
+        self.layout
+            .gains_into(left, elevation, spread, &mut a[..count]);
+        self.layout
+            .gains_into(right, elevation, spread, &mut b[..count]);
+        BlockGains { mono: false, a, b }
     }
 
     /// The gains at the smoother's current position, without advancing

@@ -196,7 +196,13 @@ fn gains_are_not_negative() {
                 for g in raw(&layout, a, e) {
                     assert!(g >= 0.0, "{name} at ({a}, {e}): {g}");
                 }
-                let all = layout.gains(Azimuth(a as f32), Elevation(e as f32), Spread::POINT);
+                let mut all = vec![0.0; layout.speaker_count()];
+                layout.gains_into(
+                    Azimuth(a as f32),
+                    Elevation(e as f32),
+                    Spread::POINT,
+                    &mut all,
+                );
                 assert!(all.iter().all(|g| *g >= 0.0), "{name} at ({a}, {e})");
             }
         }
@@ -235,8 +241,9 @@ fn a_source_uses_at_most_a_tuple() {
 fn a_source_at_a_speaker_puts_all_its_gain_there() {
     for (name, layout, positions) in presets() {
         for (s, &(a, e)) in positions.iter().enumerate() {
-            let gains = layout.gains(Azimuth(a), Elevation(e), Spread::POINT);
-            for (other, g) in gains.iter().enumerate().take(positions.len()) {
+            let mut gains = vec![0.0; layout.speaker_count()];
+            layout.gains_into(Azimuth(a), Elevation(e), Spread::POINT, &mut gains);
+            for (other, g) in gains.iter().enumerate() {
                 let want = if other == s { 1.0 } else { 0.0 };
                 assert!(
                     (g - want).abs() < 1e-6,

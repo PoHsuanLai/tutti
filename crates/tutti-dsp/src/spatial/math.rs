@@ -17,6 +17,15 @@ pub(super) type Mat2 = [[f64; 2]; 2];
 
 const DEG: f64 = core::f64::consts::PI / 180.0;
 
+/// A determinant smaller than this has no inverse: the columns are, to that
+/// figure, dependent.
+const DETERMINANT_FLOOR: f64 = 1e-10;
+
+/// A bearing in degrees wrapped into `-180..180` (`Azimuth::wrap` is `f32`).
+pub(super) fn wrapped_deg(deg: f64) -> f64 {
+    deg - 360.0 * ((deg + 180.0) / 360.0).floor()
+}
+
 /// The unit vector of a bearing and height in degrees: 0 degrees bearing is
 /// `+y` (front), 90 is `+x` (left), height is `+z`.
 ///
@@ -48,8 +57,8 @@ pub(super) fn scale(a: Vec3, s: f64) -> Vec3 {
 }
 
 /// The inverse of the matrix whose columns are `c`, or `None` when its
-/// determinant is smaller than `1e-10` (the columns are, to that figure,
-/// coplanar).
+/// determinant is smaller than [`DETERMINANT_FLOOR`] (the columns are,
+/// to that figure, coplanar).
 ///
 /// The cofactor columns are `c1 x c2`, `c2 x c0` and `c0 x c1`, the
 /// determinant is `c2 . (c0 x c1)`, and the inverse is those columns scaled
@@ -59,7 +68,7 @@ pub(super) fn inverse3(c: Mat3) -> Option<Mat3> {
     let t1 = cross(c[2], c[0]);
     let t2 = cross(c[0], c[1]);
     let det = dot(c[2], t2);
-    if det.abs() < 1e-10 {
+    if det.abs() < DETERMINANT_FLOOR {
         return None;
     }
     let inv_det = det.recip();
@@ -81,10 +90,10 @@ pub(super) fn mul3(m: Mat3, v: Vec3) -> Vec3 {
 }
 
 /// The inverse of the 2x2 matrix whose columns are `x` and `y`, or `None`
-/// when its determinant is smaller than `1e-10`.
+/// when its determinant is smaller than [`DETERMINANT_FLOOR`].
 pub(super) fn inverse2(x: [f64; 2], y: [f64; 2]) -> Option<Mat2> {
     let det = x[0] * y[1] - x[1] * y[0];
-    if det.abs() < 1e-10 {
+    if det.abs() < DETERMINANT_FLOOR {
         return None;
     }
     let inv_det = det.recip();

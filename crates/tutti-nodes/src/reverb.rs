@@ -14,8 +14,8 @@
 //! [`FreeverbNode`] is the General MIDI send of the SoundFont player.
 
 use tutti_dsp::{
-    Ceiling, Channels, Design, Effort, FreeverbControls, FreeverbDesign, MAX_CHANNELS, Network,
-    Ramp, Realization, Ring, Setup,
+    Ceiling, Channels, Design, Effect, Effort, FreeverbControls, FreeverbDesign, MAX_CHANNELS,
+    Ramp, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, ParamSetBuilder, Prepare, Shape,
@@ -83,7 +83,7 @@ pub trait ControlParams: Clone + Send + 'static {
 
 /// A [`Design`] a [`DesignNode`] can run: the design plus the cells of its
 /// controls.
-pub trait NodeDesign: Design + 'static {
+pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'static {
     /// The cells.
     type Params: ControlParams<Controls = Self::Controls>;
 
@@ -225,10 +225,10 @@ pub struct DesignNode<D: NodeDesign> {
     mode: Mode<D::Controls>,
     mix: Param<Mix>,
     good_mix: LastGood,
-    /// The network the realization was last retargeted to: designed in place.
-    network: Box<Network>,
-    /// The longest-ringing network of a modulated block, for the tail only.
-    longest: Box<Network>,
+    /// The model the realization was last retargeted to: designed in place.
+    network: Box<D::Model>,
+    /// The longest-ringing model of a modulated block, for the tail only.
+    longest: Box<D::Model>,
     /// The controls `network` is the design of.
     applied: Option<D::Controls>,
     /// The tail of `network`, in frames at `rate`.
@@ -286,6 +286,7 @@ impl<D: NodeDesign> DesignNode<D> {
         let channels = design.channels();
         let realization = design.realization();
         let params = design.params(controls);
+        let (network, longest) = (Box::new(design.blank(rate)), Box::new(design.blank(rate)));
         let mut node = Self {
             design,
             realization,
@@ -293,8 +294,8 @@ impl<D: NodeDesign> DesignNode<D> {
             mode,
             mix: Param::new(Mix::WET),
             good_mix: LastGood::fixed(Mix::WET.get()),
-            network: Box::new(Network::new(rate)),
-            longest: Box::new(Network::new(rate)),
+            network,
+            longest,
             applied: None,
             current: 0,
             ceiling: 0,
@@ -320,8 +321,8 @@ impl<D: NodeDesign> DesignNode<D> {
 
     /// Prepares the realization for `rate` and sizes everything that depends on it.
     fn retune(&mut self, rate: SampleRate, max_block: MaxBlock) {
-        let ceiling = Ceiling::new(rate, Ceiling::MAX_DECAY, TAIL_FLOOR)
-            .or_else(|| Ceiling::new(SampleRate::DEFAULT, Ceiling::MAX_DECAY, TAIL_FLOOR))
+        let ceiling = Ceiling::new(rate, D::Range::DEFAULT, TAIL_FLOOR)
+            .or_else(|| Ceiling::new(SampleRate::DEFAULT, D::Range::DEFAULT, TAIL_FLOOR))
             .expect("the default rate is positive and finite");
         let bounds = self.design.bounds(&ceiling);
         self.rate = ceiling.rate();
@@ -336,7 +337,7 @@ impl<D: NodeDesign> DesignNode<D> {
         );
         self.applied = None;
         self.ceiling = match self.mode {
-            Mode::Live => frames(bounds.tail, self.rate),
+            Mode::Live => frames(bounds.tail(), self.rate),
             Mode::Fixed(controls) => {
                 self.design
                     .design_into(&controls, self.rate, &mut self.network);

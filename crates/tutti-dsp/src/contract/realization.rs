@@ -28,9 +28,8 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{Db, MaxBlock, SampleRate, Samples};
 
 use super::design::{DesignCase, map_absorption, map_fdn};
-use crate::network::{
-    Absorption, Band, Bounds, Ceiling, Channels, Design, Network, Realization, Ring, Setup,
-};
+use crate::network::{Absorption, Band, Bounds, Network};
+use crate::{Ceiling, Channels, Design, Effect, MaxDecay, Realization, Ring, Setup, System};
 
 /// The longest block the cases prepare for.
 const MAX_BLOCK: usize = 512;
@@ -38,10 +37,7 @@ const MAX_BLOCK: usize = 512;
 const WINDOW: usize = 1024;
 
 /// A design plus what the realization contract needs to know about its realization.
-pub(crate) trait RealizationCase: DesignCase
-where
-    Self::Realization: Clone,
-{
+pub(crate) trait RealizationCase: DesignCase {
     /// The relative error the realization's measured RT60 may have against the
     /// network's `rt60` (the realization declares it: design 022 section 8.2).
     fn tolerance(&self) -> f32;
@@ -114,7 +110,11 @@ fn setup<D: Design>(d: &D, rate: SampleRate) -> Setup {
 }
 
 /// A prepared realization retargeted to `controls`, and its network.
-fn built<D: Design>(d: &D, c: &D::Controls, rate: SampleRate) -> (D::Realization, Network) {
+fn built<D: Design<Model = Network>>(
+    d: &D,
+    c: &D::Controls,
+    rate: SampleRate,
+) -> (D::Realization, Network) {
     let ceiling = Ceiling::at(rate).expect("a positive finite rate");
     let mut k = d.realization();
     k.prepare(&d.bounds(&ceiling), &setup(d, rate));
@@ -131,7 +131,7 @@ fn widths<D: Design>(d: &D) -> (usize, usize) {
 
 /// Renders `input` (the same signal on every input channel) through `k` in
 /// blocks of `block`, one `Vec` per output channel.
-fn render<K: Realization>(
+fn render<K: Effect<Network>>(
     k: &mut K,
     (inputs, outputs): (usize, usize),
     input: &[f32],
@@ -292,10 +292,7 @@ pub(crate) mod cases {
     ///
     /// Mutation (a `Defective` test): the realization retargets every loop gain
     /// scaled by 1.05, 39% longer to fall 60 dB.
-    pub(crate) fn rt60<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn rt60<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut measured = 0;
@@ -333,10 +330,7 @@ pub(crate) mod cases {
     ///
     /// Mutation: the realization ignores the damping (every band decays like the
     /// lowest).
-    pub(crate) fn band_order<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn band_order<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut ordered = 0;
@@ -384,10 +378,7 @@ pub(crate) mod cases {
     ///
     /// Mutation: the realization retargets every loop gain scaled by 1.03, which rings
     /// 2.4 times as long at the largest room and so past the network's tail.
-    pub(crate) fn tail_covers<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn tail_covers<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
         for c in d.probes() {
@@ -446,10 +437,7 @@ pub(crate) mod cases {
     /// Mutations: the realization's output delayed by one frame (its `latency` still
     /// says the same); a `latency` that claims one frame more than the realization
     /// delays.
-    pub(crate) fn arrival<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn arrival<D: RealizationCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.static_probes() {
                 let (mut k, network) = built(d, &c, rate);
@@ -475,10 +463,7 @@ pub(crate) mod cases {
     /// network, a partition for a FIR), never a pre-delay or a tap spacing.
     ///
     /// Mutation: a realization that declares one frame more than it has.
-    pub(crate) fn latency<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn latency<D: RealizationCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.static_probes() {
                 let (k, network) = built(d, &c, rate);
@@ -499,10 +484,7 @@ pub(crate) mod cases {
     /// travelled, so none of the input reaches the output.
     ///
     /// Mutation: the realization adds its input to its first output.
-    pub(crate) fn wet_only<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn wet_only<D: RealizationCase>(d: &D) -> Result<(), String> {
         if !d.wet_only() {
             return Ok(());
         }
@@ -531,10 +513,7 @@ pub(crate) mod cases {
     /// channel has nothing to say.
     ///
     /// Mutation: the realization copies its first output channel onto its second.
-    pub(crate) fn decorrelated<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn decorrelated<D: RealizationCase>(d: &D) -> Result<(), String> {
         let (_, outputs) = widths(d);
         if outputs < 2 {
             return Ok(());
@@ -567,10 +546,7 @@ pub(crate) mod cases {
     /// above unity (a `LoopGain` mutant would not do: Freeverb's `retarget`
     /// refuses a loop gain of 1 or more, so scaling the network's cannot
     /// destabilise it).
-    pub(crate) fn stability<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn stability<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let frames = (60.0 * rate.get()) as usize;
         let mut checked = 0;
@@ -606,10 +582,7 @@ pub(crate) mod cases {
     /// Mutations: the realization scales its output by 4 from its second retarget on,
     /// a gain applied unslewed (a `Defective` test); an FDN that takes its new
     /// gains, or its new line lengths, whole (run by hand on `fdn.rs`).
-    pub(crate) fn click_free<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn click_free<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let second = rate.get() as usize;
         let tone: Vec<f32> = (0..6 * second)
@@ -660,10 +633,7 @@ pub(crate) mod cases {
     ///
     /// Mutation: the last right comb (1640 frames, the longest) 5% long, which is
     /// inside the RT60 tolerance.
-    pub(crate) fn line_lengths<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn line_lengths<D: RealizationCase>(d: &D) -> Result<(), String> {
         use crate::network::Stage;
         let rate = rate_of(d);
         let mut checked = 0;
@@ -730,10 +700,7 @@ pub(crate) mod cases {
     /// does, at the same controls.
     ///
     /// Mutation: a `reset` that does nothing.
-    pub(crate) fn reset<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn reset<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
             let probe = noise(9, 8192, 1.0);
@@ -753,10 +720,7 @@ pub(crate) mod cases {
     /// does, at the same controls: state gone, coefficients kept.
     ///
     /// Mutation: a `fresh` that keeps the state (a plain clone).
-    pub(crate) fn fresh<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn fresh<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
             let probe = noise(9, 8192, 1.0);
@@ -778,10 +742,7 @@ pub(crate) mod cases {
     /// time-domain realization; a convolver would declare its own tolerance).
     ///
     /// Mutation: a gain that depends on the block's length.
-    pub(crate) fn block_independent<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn block_independent<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
             let x = noise(13, 4096, 1.0);
@@ -801,10 +762,7 @@ pub(crate) mod cases {
 
     /// The first frame any channel sounds for a unit impulse at frame 0 of the
     /// network `c` designs, in `frames`.
-    fn first_sound<D: RealizationCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize>
-    where
-        D::Realization: Clone,
-    {
+    fn first_sound<D: RealizationCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize> {
         let (mut k, network) = built(d, c, rate);
         let frames = network.min_delay() as usize + 4000;
         let mut x = vec![0.0f32; frames];
@@ -820,10 +778,7 @@ pub(crate) mod cases {
     /// Vacuous for a design with no pre-delay control.
     ///
     /// Mutation: the realization drops the pre-delay (a `Defective` test).
-    pub(crate) fn pre_delay<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn pre_delay<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (without, with, by) in d.pre_delay_pairs() {
             let (a, b) = (first_sound(d, &without, rate), first_sound(d, &with, rate));
@@ -844,10 +799,7 @@ pub(crate) mod cases {
     /// Vacuous for a design with no size control.
     ///
     /// Mutation: the realization keeps every line at one length.
-    pub(crate) fn size<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn size<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (a, b) in d.size_pairs() {
             let (fa, fb) = (first_sound(d, &a, rate), first_sound(d, &b, rate));
@@ -874,10 +826,7 @@ pub(crate) mod cases {
     /// frames. Vacuous for a design with no diffusion control.
     ///
     /// Mutation: the realization mixes no line into another.
-    pub(crate) fn diffusion<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn diffusion<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let (from, to) = ((0.15 * rate.get()) as usize, (0.3 * rate.get()) as usize);
         let mut x = vec![0.0f32; to + 1];
@@ -904,10 +853,7 @@ pub(crate) mod cases {
     ///
     /// Mutations: a loop gain of 0.998 in the frozen network loses 4 dB; an input
     /// left open raises the level.
-    pub(crate) fn freeze<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn freeze<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let second = rate.get() as usize;
         let level = |out: &[Vec<f32>], from: usize| 10.0 * energy(out, from, second / 5).log10();
@@ -942,10 +888,7 @@ pub(crate) mod cases {
     /// control.
     ///
     /// Mutation: the realization ignores the width.
-    pub(crate) fn width<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn width<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let corr = |c: &D::Controls| -> f64 {
             let (mut k, _) = built(d, c, rate);
@@ -977,10 +920,7 @@ pub(crate) mod cases {
     /// wet gain.
     ///
     /// Mutation: the realization ignores the wet gain.
-    pub(crate) fn wet_gain<D: RealizationCase>(d: &D) -> Result<(), String>
-    where
-        D::Realization: Clone,
-    {
+    pub(crate) fn wet_gain<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let x = noise(12, 1 << 14, 1.0);
         for (a, b, ratio) in d.wet_pairs() {
@@ -1144,7 +1084,7 @@ pub(crate) struct Flawed<K> {
     runaway: f32,
 }
 
-impl<K: Realization + Clone> Flawed<K> {
+impl<K: Effect<Network, Bounds = Bounds> + Clone> Flawed<K> {
     /// Retargets the inner realization to `network` as `edit` leaves it.
     fn edited(&mut self, network: &Network, edit: impl FnOnce(&mut Network)) {
         let mut n = Box::new(network.clone());
@@ -1153,7 +1093,9 @@ impl<K: Realization + Clone> Flawed<K> {
     }
 }
 
-impl<K: Realization + Clone> Realization for Flawed<K> {
+impl<K: Effect<Network, Bounds = Bounds> + Clone> Realization<Network> for Flawed<K> {
+    type Bounds = Bounds;
+
     fn prepare(&mut self, bounds: &Bounds, setup: &Setup) {
         self.inner.prepare(bounds, setup);
     }
@@ -1228,6 +1170,40 @@ impl<K: Realization + Clone> Realization for Flawed<K> {
         }
     }
 
+    fn reset(&mut self) {
+        if self.defect != Defect::NoReset {
+            self.inner.reset();
+        }
+    }
+
+    fn latency(&self) -> Samples {
+        let l = self.inner.latency();
+        if self.defect == Defect::FalseLatency {
+            Samples(l.get() + 1)
+        } else {
+            l
+        }
+    }
+
+    fn effort(&self) -> crate::Effort {
+        self.inner.effort()
+    }
+
+    fn fresh(&self) -> Self {
+        if self.defect == Defect::FreshKeepsState {
+            return self.clone();
+        }
+        Self {
+            inner: self.inner.fresh(),
+            defect: self.defect,
+            retargets: self.retargets,
+            held: [0.0; 8],
+            runaway: 1.0,
+        }
+    }
+}
+
+impl<K: Effect<Network, Bounds = Bounds> + Clone> Effect<Network> for Flawed<K> {
     fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
         self.inner.process(input, output);
         match self.defect {
@@ -1271,55 +1247,31 @@ impl<K: Realization + Clone> Realization for Flawed<K> {
             _ => {}
         }
     }
-
-    fn reset(&mut self) {
-        if self.defect != Defect::NoReset {
-            self.inner.reset();
-        }
-    }
-
-    fn latency(&self) -> Samples {
-        let l = self.inner.latency();
-        if self.defect == Defect::FalseLatency {
-            Samples(l.get() + 1)
-        } else {
-            l
-        }
-    }
-
-    fn effort(&self) -> crate::network::Effort {
-        self.inner.effort()
-    }
-
-    fn fresh(&self) -> Self {
-        if self.defect == Defect::FreshKeepsState {
-            return self.clone();
-        }
-        Self {
-            inner: self.inner.fresh(),
-            defect: self.defect,
-            retargets: self.retargets,
-            held: [0.0; 8],
-            runaway: 1.0,
-        }
-    }
 }
 
 /// A design whose realization has one [`Defect`].
 #[derive(Clone)]
-pub(crate) struct Defective<D: Design> {
+pub(crate) struct Defective<D: DesignCase> {
     pub(crate) inner: D,
     pub(crate) defect: Defect,
     /// Applied to the realization as it is built: a defect in the realization's own state.
     pub(crate) tweak: fn(&mut D::Realization),
 }
 
-impl<D: Design> Design for Defective<D>
-where
-    D::Realization: Clone,
-{
+impl<D: DesignCase> Design for Defective<D> {
     type Controls = D::Controls;
+    type Model = Network;
+    type Bounds = Bounds;
+    type Range = MaxDecay;
     type Realization = Flawed<D::Realization>;
+
+    fn blank(&self, rate: SampleRate) -> Network {
+        Network::new(rate)
+    }
+
+    fn measure(&self, model: &Network, floor: Db) -> Bounds {
+        self.inner.measure(model, floor)
+    }
 
     fn channels(&self) -> Channels {
         self.inner.channels()
@@ -1329,7 +1281,7 @@ where
         self.inner.design_into(c, rate, out);
     }
 
-    fn bounds(&self, ceiling: &Ceiling) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
         self.inner.bounds(ceiling)
     }
 
@@ -1346,10 +1298,7 @@ where
     }
 }
 
-impl<D: DesignCase> DesignCase for Defective<D>
-where
-    D::Realization: Clone,
-{
+impl<D: DesignCase> DesignCase for Defective<D> {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
     }
@@ -1373,10 +1322,7 @@ where
     }
 }
 
-impl<D: RealizationCase> RealizationCase for Defective<D>
-where
-    D::Realization: Clone,
-{
+impl<D: RealizationCase> RealizationCase for Defective<D> {
     fn tolerance(&self) -> f32 {
         self.inner.tolerance()
     }

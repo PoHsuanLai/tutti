@@ -5,13 +5,16 @@
 //! block-aligned park. Every figure is the definition of a delay.
 
 use tutti_dsp::{
-    Bounds, Ceiling, Channels, Design, Effort, FirSummary, Network, Realization, Setup, Stage,
+    Bounds, Ceiling, Channels, Design, Effect, Effort, FirSummary, MaxDecay, Network, Realization,
+    Setup, Stage,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode};
 use tutti_nodes::{ControlParams, DesignNode, NodeDesign};
-use tutti_types::{ChannelLayout, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
+use tutti_types::{
+    ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam,
+};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -35,9 +38,25 @@ struct EchoKernel {
     echo: Echo,
 }
 
-impl Realization for EchoKernel {
+impl Realization<Network> for EchoKernel {
+    type Bounds = Bounds;
     fn prepare(&mut self, _: &Bounds, _: &Setup) {}
     fn retarget(&mut self, _: &Network) {}
+    fn reset(&mut self) {
+        self.line.fill(0.0);
+    }
+    fn latency(&self) -> Samples {
+        Samples(self.echo.latency)
+    }
+    fn effort(&self) -> Effort {
+        Effort::Light
+    }
+    fn fresh(&self) -> Self {
+        Self::new(self.echo)
+    }
+}
+
+impl Effect<Network> for EchoKernel {
     fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
         let n = self.line.len();
         let (first, second) = (
@@ -50,18 +69,6 @@ impl Realization for EchoKernel {
             *o = back(first) + if second != first { back(second) } else { 0.0 };
             self.at = (self.at + 1) % n;
         }
-    }
-    fn reset(&mut self) {
-        self.line.fill(0.0);
-    }
-    fn latency(&self) -> Samples {
-        Samples(self.echo.latency)
-    }
-    fn effort(&self) -> Effort {
-        Effort::Light
-    }
-    fn fresh(&self) -> Self {
-        Self::new(self.echo)
     }
 }
 
@@ -77,6 +84,9 @@ impl EchoKernel {
 
 impl Design for Echo {
     type Controls = ();
+    type Model = Network;
+    type Bounds = Bounds;
+    type Range = MaxDecay;
     type Realization = EchoKernel;
 
     fn channels(&self) -> Channels {
@@ -97,8 +107,16 @@ impl Design for Echo {
         }));
     }
 
-    fn bounds(&self, ceiling: &Ceiling) -> Bounds {
-        Bounds::of(&self.design(&(), ceiling.rate()), ceiling.floor())
+    fn blank(&self, rate: SampleRate) -> Network {
+        Network::new(rate)
+    }
+
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
+        self.measure(&self.design(&(), ceiling.rate()), ceiling.floor())
+    }
+
+    fn measure(&self, model: &Network, floor: Db) -> Bounds {
+        Bounds::of(model, floor)
     }
 
     fn realization(&self) -> EchoKernel {

@@ -66,6 +66,7 @@ mod window;
 
 mod fdn;
 mod fdn_design;
+mod model;
 mod network;
 mod resample;
 mod reverb;
@@ -98,16 +99,20 @@ pub use filter::{
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
+pub use model::{
+    Cadence, Ceiling, Channels, Design, Effect, Effort, Lti, MaxDecay, MaxDecayError, Range,
+    Realization, Ring, Setup, Sizes, System,
+};
 pub use network::{
-    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Channels, Design, Effort, Fdn,
-    FirSummary, Full, Gains, Inline, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES,
-    MAX_TAPS, Matrix, Modulation, Network, OutputMap, Realization, Ring, Setup, Stage, Tap, Taps,
-    loop_gain, pre_delay_frames, rt60_from_gain,
+    Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Full, Gains, Inline, Line,
+    MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation, Network,
+    OutputMap, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use smoother::Smoother;
+pub use rustfft::num_complex::Complex64;
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

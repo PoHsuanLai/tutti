@@ -27,9 +27,8 @@
 
 use tutti_types::Samples;
 
-use crate::network::{
-    Absorption, Band, Bounds, Effort, Matrix, Network, Realization, Setup, Stage,
-};
+use crate::network::{Absorption, Band, Bounds, Matrix, Network, Stage};
+use crate::{Effect, Effort, Realization, Setup};
 
 /// The frames between control updates: every ramp advances once a chunk.
 const CHUNK: usize = 32;
@@ -357,7 +356,9 @@ fn read(buf: &[f32], w: usize, delay: f32) -> f32 {
     a * (1.0 - frac) + b * frac
 }
 
-impl Realization for FdnKernel {
+impl Realization<Network> for FdnKernel {
+    type Bounds = Bounds;
+
     fn prepare(&mut self, bounds: &Bounds, setup: &Setup) {
         let rate = setup.rate.get();
         self.rate = rate;
@@ -496,6 +497,26 @@ impl Realization for FdnKernel {
         }
     }
 
+    fn reset(&mut self) {
+        self.settle();
+    }
+
+    fn latency(&self) -> Samples {
+        Samples::ZERO
+    }
+
+    fn effort(&self) -> Effort {
+        Effort::Moderate
+    }
+
+    fn fresh(&self) -> Self {
+        let mut fresh = self.clone();
+        fresh.settle();
+        fresh
+    }
+}
+
+impl Effect<Network> for FdnKernel {
     // The per-line arrays (`c_len`, `c_out`, `state`, `buf` rows) are indexed by
     // one line number with the loop's scratch `d`; an iterator over any one of
     // them would only hide the others.
@@ -564,23 +585,5 @@ impl Realization for FdnKernel {
             }
             self.pos = (self.pos + 1) % CHUNK;
         }
-    }
-
-    fn reset(&mut self) {
-        self.settle();
-    }
-
-    fn latency(&self) -> Samples {
-        Samples::ZERO
-    }
-
-    fn effort(&self) -> Effort {
-        Effort::Moderate
-    }
-
-    fn fresh(&self) -> Self {
-        let mut fresh = self.clone();
-        fresh.settle();
-        fresh
     }
 }

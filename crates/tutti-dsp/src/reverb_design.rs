@@ -13,13 +13,14 @@
 //! ([`Realization`](crate::Realization)): it reads those two numbers from the network, and
 //! this file changes no processing.
 
-use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate};
+use tutti_types::{Amplitude, ChannelLayout, Db, Mix, SampleRate};
 
 use crate::network::{
-    Absorption, AllPass, AllPassForm, Bounds, Ceiling, Channels, Design, Fdn, Gains, Inline, Line,
-    MAX_CHANNELS, MAX_LINES, Matrix, Modulation, Network, OutputMap, Stage,
+    Absorption, AllPass, AllPassForm, Bounds, Fdn, Gains, Inline, Line, MAX_CHANNELS, MAX_LINES,
+    Matrix, Modulation, Network, OutputMap, Stage,
 };
 use crate::reverb::Freeverb;
+use crate::{Ceiling, Channels, Design, MaxDecay};
 
 const COMBS_LEFT: [usize; 8] = [
     Freeverb::CF_TUNING_L1,
@@ -94,6 +95,9 @@ fn position(mix: Mix, default: f32) -> f32 {
 
 impl Design for FreeverbDesign {
     type Controls = FreeverbControls;
+    type Model = Network;
+    type Bounds = Bounds;
+    type Range = MaxDecay;
     type Realization = Freeverb;
 
     fn channels(&self) -> Channels {
@@ -101,6 +105,10 @@ impl Design for FreeverbDesign {
             input: ChannelLayout::MONO,
             output: ChannelLayout::STEREO,
         }
+    }
+
+    fn blank(&self, rate: SampleRate) -> Network {
+        Network::new(rate)
     }
 
     /// A [`Freeverb`] at the default rate; the node's `prepare` re-tunes it.
@@ -177,12 +185,16 @@ impl Design for FreeverbDesign {
     /// room 1 (the low band's loop gain is the room's alone), so the worst case
     /// is that design. `max_decay` does not apply: Freeverb has no decay
     /// control, and its longest RT60 is what room 1 makes it.
-    fn bounds(&self, ceiling: &Ceiling) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
         let worst = FreeverbControls {
             room: Mix(1.0),
             damp: Mix(0.0),
         };
-        Bounds::of(&self.design(&worst, ceiling.rate()), ceiling.floor())
+        self.measure(&self.design(&worst, ceiling.rate()), ceiling.floor())
+    }
+
+    fn measure(&self, model: &Network, floor: Db) -> Bounds {
+        Bounds::of(model, floor)
     }
 }
 
@@ -193,6 +205,7 @@ mod tests {
     use tutti_types::{Db, Seconds};
 
     use super::*;
+    use crate::System as _;
     use crate::contract::design::{
         DesignCase, Mutant, cases, design_contract, map_absorption, map_fdn,
     };
@@ -522,7 +535,7 @@ mod tests {
         assert!(tail.to_f32() > low as f32, "{tail:?} covers the decay");
     }
 
-    use crate::network::Ring;
+    use crate::Ring;
 
     /// The bounds of Freeverb are the design at room 1, whatever the ceiling's
     /// decay: it has no decay control to cap.
@@ -536,7 +549,12 @@ mod tests {
         let room_one = FreeverbDesign.design(&controls(1.0, 0.0), SampleRate(48_000.0));
         assert_eq!(b, Bounds::of(&room_one, ceiling.floor()));
         assert_eq!((b.lines, b.stages, b.outputs), (16, 5, 2));
-        let short = Ceiling::new(SampleRate(48_000.0), Seconds(0.5), Db(-60.0)).unwrap();
+        let short = Ceiling::new(
+            SampleRate(48_000.0),
+            MaxDecay::new(Seconds(0.5)).unwrap(),
+            Db(-60.0),
+        )
+        .unwrap();
         assert_eq!(FreeverbDesign.bounds(&short), b);
     }
 
@@ -568,7 +586,8 @@ mod realization_tests {
     use crate::contract::realization::{
         Defect, Defective, RealizationCase, cases, realization_contract,
     };
-    use crate::network::{Band, Realization, Setup};
+    use crate::network::Band;
+    use crate::{Realization, Setup};
 
     fn controls(room: f32, damp: f32) -> FreeverbControls {
         FreeverbControls {

@@ -24,13 +24,15 @@ use tutti_types::{
 };
 
 use crate::network::{
-    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Channels, Design, Fdn, Gains, Inline,
-    Line, MAX_LINES, Matrix, Modulation, Network, OutputMap, Realization, Ring, Setup, Stage,
-    loop_gain, pre_delay_frames,
+    Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix,
+    Modulation, Network, OutputMap, Stage, loop_gain, pre_delay_frames,
 };
+use crate::{Ceiling, Channels, Design, Effect, MaxDecay, Realization, Ring, Setup, Sizes, System};
 
 /// A design plus what the contract needs to know to test it.
-pub(crate) trait DesignCase: Design {
+pub(crate) trait DesignCase:
+    Design<Model = Network, Bounds = Bounds, Range = MaxDecay, Realization: Effect<Network> + Clone>
+{
     /// The rates to design at.
     fn rates(&self) -> Vec<SampleRate> {
         vec![
@@ -97,7 +99,7 @@ pub(crate) trait DesignCase: Design {
     }
 
     /// The ceiling the design is bounded against at `rate`.
-    fn ceiling(&self, rate: SampleRate) -> Ceiling {
+    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
         Ceiling::at(rate).expect("a positive finite rate")
     }
 }
@@ -321,7 +323,7 @@ pub(crate) mod cases {
             let bound = d.bounds(&ceiling);
             for c in every(d) {
                 let n = d.design(&c, rate);
-                let size = Bounds::of(&n, ceiling.floor());
+                let size = d.measure(&n, ceiling.floor());
                 if !bound.dominates(&size) {
                     return Err(format!("{bound:?} does not dominate {size:?}"));
                 }
@@ -536,9 +538,28 @@ impl<D> Mutant<D> {
     }
 }
 
-impl<D: Design> Design for Mutant<D> {
+impl<D> Design for Mutant<D>
+where
+    D: Design<
+            Model = Network,
+            Bounds = Bounds,
+            Range = MaxDecay,
+            Realization: Effect<Network> + Clone,
+        >,
+{
     type Controls = D::Controls;
+    type Model = Network;
+    type Bounds = Bounds;
+    type Range = MaxDecay;
     type Realization = D::Realization;
+
+    fn blank(&self, rate: SampleRate) -> Network {
+        Network::new(rate)
+    }
+
+    fn measure(&self, model: &Network, floor: Db) -> Bounds {
+        self.inner.measure(model, floor)
+    }
 
     fn channels(&self) -> Channels {
         self.inner.channels()
@@ -553,7 +574,7 @@ impl<D: Design> Design for Mutant<D> {
         self.inner.realization()
     }
 
-    fn bounds(&self, ceiling: &Ceiling) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
         (self.bounds)(self.inner.bounds(ceiling))
     }
 }
@@ -592,7 +613,7 @@ impl<D: DesignCase> DesignCase for Mutant<D> {
     fn wet_only(&self) -> bool {
         self.inner.wet_only()
     }
-    fn ceiling(&self, rate: SampleRate) -> Ceiling {
+    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
         self.inner.ceiling(rate)
     }
 }
@@ -658,7 +679,7 @@ impl ToyFdn {
         Seconds(if v.is_nan() {
             1.0
         } else {
-            v.clamp(0.05, Ceiling::MAX_DECAY.get())
+            v.clamp(0.05, MaxDecay::DEFAULT.get().get())
         })
     }
 }
@@ -668,21 +689,36 @@ impl ToyFdn {
 #[derive(Clone, Debug)]
 pub(crate) struct Unrun;
 
-impl Realization for Unrun {
+impl Realization<Network> for Unrun {
+    type Bounds = Bounds;
     fn prepare(&mut self, _: &Bounds, _: &Setup) {}
     fn retarget(&mut self, _: &Network) {}
-    fn process(&mut self, _: &[&[f32]], output: &mut [&mut [f32]]) {
-        output.iter_mut().for_each(|c| c.fill(0.0));
-    }
     fn reset(&mut self) {}
     fn fresh(&self) -> Self {
         Unrun
     }
 }
 
+impl Effect<Network> for Unrun {
+    fn process(&mut self, _: &[&[f32]], output: &mut [&mut [f32]]) {
+        output.iter_mut().for_each(|c| c.fill(0.0));
+    }
+}
+
 impl Design for ToyFdn {
     type Controls = ToyControls;
+    type Model = Network;
+    type Bounds = Bounds;
+    type Range = MaxDecay;
     type Realization = Unrun;
+
+    fn blank(&self, rate: SampleRate) -> Network {
+        Network::new(rate)
+    }
+
+    fn measure(&self, model: &Network, floor: Db) -> Bounds {
+        Bounds::of(model, floor)
+    }
 
     fn channels(&self) -> Channels {
         Channels {
@@ -770,7 +806,7 @@ impl Design for ToyFdn {
 
     /// The largest design (size 1, the longest decay, the longest pre-delay);
     /// the tail is unbounded because freeze is reachable.
-    fn bounds(&self, ceiling: &Ceiling) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
         let worst = ToyControls {
             decay: [ceiling.max_decay(); 3],
             size: Mix(1.0),

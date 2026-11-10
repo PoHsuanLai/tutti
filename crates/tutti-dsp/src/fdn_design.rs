@@ -24,9 +24,10 @@ use tutti_types::{ChannelLayout, Db, Depth, Hz, Mix, SampleRate, Seconds, Stereo
 
 use crate::fdn::FdnKernel;
 use crate::network::{
-    Absorption, Bounds, Ceiling, Channels, Design, Fdn, Gains, Inline, Line, MAX_LINES, Matrix,
-    Modulation, Network, OutputMap, Ring, Stage, pre_delay_frames,
+    Absorption, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network,
+    OutputMap, Stage, pre_delay_frames,
 };
+use crate::{Ceiling, Channels, Design, MaxDecay, Ring};
 
 /// The line lengths at 44.1 kHz for a room size of 0.5 (the scale is
 /// `0.5 + size`), values near primes, so the delays share few factors.
@@ -120,7 +121,7 @@ impl FdnDesign {
     pub const LINES: usize = 8;
 
     /// A design of `lines` lines (2 to 16, even: half feed each ear), RT60s up
-    /// to `max_decay` (at most [`Ceiling::MAX_DECAY_CAP`]), which holds its tail
+    /// to `max_decay` (at most [`MaxDecay::CAP`]), which holds its tail
     /// on a freeze if `freezable`. `None` when the figures are out of range.
     ///
     /// **A design that can freeze has an unbounded tail ceiling**, so a node
@@ -132,7 +133,7 @@ impl FdnDesign {
             && lines.is_multiple_of(2)
             && max_decay.get().is_finite()
             && max_decay.get() >= MIN_DECAY.get()
-            && max_decay.get() <= Ceiling::MAX_DECAY_CAP.get();
+            && max_decay.get() <= MaxDecay::CAP.get();
         ok.then_some(Self {
             lines,
             max_decay,
@@ -168,7 +169,7 @@ impl FdnDesign {
     /// is `3 / (RT60 fs)` decades a frame, so the bound reads a decay slower by
     /// `x = 2e / ln 10 * RT60 fs / 3` of itself, and the tail by `1 / (1 - x)`:
     /// 0.5% at 8 s and 44.1 kHz, 11% at 192 kHz.
-    fn rounding_margin(&self, ceiling: &Ceiling) -> f32 {
+    fn rounding_margin(&self, ceiling: &Ceiling<MaxDecay>) -> f32 {
         let e = 2.0 * f64::from(f32::EPSILON);
         let x =
             2.0 * e / std::f64::consts::LN_10 * self.max_decay.get() * ceiling.rate().get() / 3.0;
@@ -181,7 +182,7 @@ impl Default for FdnDesign {
     fn default() -> Self {
         Self {
             lines: Self::LINES,
-            max_decay: Ceiling::MAX_DECAY,
+            max_decay: MaxDecay::DEFAULT.get(),
             freezable: false,
         }
     }
@@ -199,6 +200,9 @@ fn finite_secs(v: Seconds, default: Seconds) -> Seconds {
 
 impl Design for FdnDesign {
     type Controls = FdnControls;
+    type Model = Network;
+    type Bounds = Bounds;
+    type Range = MaxDecay;
     type Realization = FdnKernel;
 
     fn channels(&self) -> Channels {
@@ -206,6 +210,10 @@ impl Design for FdnDesign {
             input: ChannelLayout::MONO,
             output: ChannelLayout::STEREO,
         }
+    }
+
+    fn blank(&self, rate: SampleRate) -> Network {
+        Network::new(rate)
     }
 
     fn realization(&self) -> FdnKernel {
@@ -329,7 +337,7 @@ impl Design for FdnDesign {
     /// The largest design: size 1, the longest decay in every band, the longest
     /// pre-delay, the deepest modulation. The tail is unbounded if the design
     /// can freeze, and the network's own at the longest decay if not.
-    fn bounds(&self, ceiling: &Ceiling) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
         let worst = FdnControls {
             decay: [self.max_decay; 3],
             size: Mix(1.0),
@@ -341,7 +349,7 @@ impl Design for FdnDesign {
         };
         let mut network = Box::new(Network::new(ceiling.rate()));
         self.design_into(&worst, ceiling.rate(), &mut network);
-        let mut b = Bounds::of(&network, ceiling.floor());
+        let mut b = self.measure(&network, ceiling.floor());
         b.tail = match b.tail {
             _ if self.freezable => Ring::Unbounded,
             Ring::Finite(t) => {
@@ -351,6 +359,10 @@ impl Design for FdnDesign {
         };
         b
     }
+
+    fn measure(&self, model: &Network, floor: Db) -> Bounds {
+        Bounds::of(model, floor)
+    }
 }
 
 #[cfg(test)]
@@ -359,12 +371,13 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use super::*;
+    use crate::System as _;
     use crate::contract::design::{DesignCase, design_contract};
     use crate::contract::realization::{RealizationCase, realization_contract};
     use crate::network::{Band, Fdn, Matrix, Network, Stage};
 
     fn freezable() -> FdnDesign {
-        FdnDesign::new(8, Ceiling::MAX_DECAY, true).unwrap()
+        FdnDesign::new(8, MaxDecay::DEFAULT.get(), true).unwrap()
     }
 
     fn base() -> FdnControls {
@@ -883,7 +896,7 @@ mod tests {
     /// `FdnKernel::begin_chunk` loses 0.25 dB and fails.
     #[test]
     fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
-        use crate::network::{Realization, Setup};
+        use crate::{Effect, Realization, Setup};
         let rate = SampleRate(48_000.0);
         let d = freezable();
         let mut k = d.realization();

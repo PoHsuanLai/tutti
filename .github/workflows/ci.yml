@@ -118,7 +118,7 @@ jobs:
       # namespace both ends of the wire chunk a state with.
       - run: cargo xtask check-paths tutti_plugin_ipc client config error midi_intake protocol subprocess transport
       # And `tutti-dsp`: its modules are private, the root names every item.
-      - run: cargo xtask check-paths tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
+      - run: cargo xtask check-paths tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp model network reverb reverb_design swept_delay waveshape window resample
       # And `tutti-measure`, which keeps its modules private too.
       - run: cargo xtask check-paths tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules

@@ -1,6 +1,7 @@
 # tutti-midi-device
 
-The pure core of MIDI device detection for the Tutti engine (design 017 §5).
+The pure core of MIDI device detection for the Tutti engine (design 017 §5), and the
+MIDI-CI codec.
 
 - `DeviceTable`: takes an `OsChange` from a backend and returns the
   `DeviceEvent` it causes, if any. A repeat of a known state returns `None`.
@@ -19,6 +20,12 @@ The pure core of MIDI device detection for the Tutti engine (design 017 §5).
   an app can remember a device; renaming an `Identity` variant breaks saved
   files.
 - `EndpointId`: the OS's own handle, opaque, valid while the device is present.
+- `CiMessage`: the MIDI-CI (M2-101) codec over SysEx payload bytes: the header, `Muid`
+  (checked: the reserved range and the broadcast value are refused; broadcast is a
+  `Destination`), Discovery and its Reply, Invalidate MUID and NAK. `encode` returns
+  the bytes between `F0` and `F7`; frame them with `tutti_ump::frame`, and decode the
+  bytes a `tutti_ump::SysexAssembler` completes. There is no state machine and no
+  inbound path yet (design 017 §5, "MIDI-CI").
 
-No OS, no thread, no clock, and no dependency but optional `serde`. `tutti-midi-hardware` feeds the
+No OS, no thread, no clock, and no dependency but `bitflags` and optional `serde`. `tutti-midi-hardware` feeds the
 table from ALSA and CoreMIDI. Licensed under MIT or Apache-2.0.

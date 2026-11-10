@@ -9,11 +9,11 @@
 //! a plain value that travels with the endpoint, read from the OS rather than
 //! assumed, and code that depends on it is an ordinary `match`.
 //!
-//! [`Protocol`] and [`FunctionBlock`] are the MIDI 2.0 spec's own nouns from
-//! `tutti-midi-types` / `tutti-midi-runtime`, reused here rather than restated.
+//! [`Protocol`] is the MIDI 2.0 spec's own noun from `tutti-midi-types`, reused
+//! here rather than restated. The endpoint's Function Blocks are not here: the
+//! `Endpoint` model of design 017 §5 (stage 4b) will hold them.
 
 use tutti_midi_device::{EndpointId, Identity};
-use tutti_midi_runtime::FunctionBlock;
 use tutti_midi_types::Protocol;
 
 /// What an endpoint can carry.
@@ -30,14 +30,6 @@ pub struct UmpCapability {
     /// real distinction a caller may act on (a per-note controller is pointless
     /// to send to a `Midi1` endpoint), so it is recorded rather than flattened.
     pub protocol: Protocol,
-
-    /// The endpoint's function blocks, if it declared any.
-    ///
-    /// Empty is the honest answer for "the OS did not say", which is distinct
-    /// from "the device has none" — and neither is worth inventing a block for.
-    /// ALSA fills these from `snd_ump_block_info_*`; CoreMIDI has no equivalent
-    /// today, so it reports none.
-    pub function_blocks: Vec<FunctionBlock>,
 }
 
 /// Hand-written rather than derived, and the polarity is the point.
@@ -54,30 +46,18 @@ impl Default for UmpCapability {
 }
 
 impl UmpCapability {
-    /// A MIDI-2.0 endpoint with no declared function blocks.
+    /// A MIDI-2.0 endpoint.
     pub fn midi2() -> Self {
         Self {
             protocol: Protocol::Midi2,
-            function_blocks: Vec::new(),
         }
     }
 
-    /// A MIDI-1.0 endpoint with no declared function blocks.
+    /// A MIDI-1.0 endpoint.
     pub fn midi1() -> Self {
         Self {
             protocol: Protocol::Midi1,
-            function_blocks: Vec::new(),
         }
-    }
-
-    /// Attach function blocks (consuming builder, as [`EndpointNegotiator`]
-    /// already does for the protocol-level equivalent).
-    ///
-    /// [`EndpointNegotiator`]: tutti_midi_runtime::EndpointNegotiator
-    #[must_use]
-    pub fn with_function_blocks(mut self, blocks: Vec<FunctionBlock>) -> Self {
-        self.function_blocks = blocks;
-        self
     }
 
     /// Whether this endpoint carries MIDI-2-only messages — per-note

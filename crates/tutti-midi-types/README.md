@@ -21,7 +21,6 @@ Around it, six public modules:
 - [`mpe`] — MIDI Polyphonic Expression (RP-053): zones, modes, note rotation.
 - [`sync`] — MIDI clock and MTC decoders.
 - [`cc`] — CC numbers and CC→target mapping ([`cc::mapping`]).
-- [`ci`] — MIDI-CI (Capability Inquiry) messages.
 - [`translation`] — the MIDI 1↔2 boundary and its bit-scaling, also reachable
   at the root as [`convert`].
 

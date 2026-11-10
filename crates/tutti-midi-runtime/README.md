@@ -25,8 +25,6 @@ Pure MIDI values live in `tutti-midi-types`; OS ports live in
   (Beat Clock, MTC, JR timestamps).
 - [`MpeIngest`]: the input-edge transform that rewrites classic-MPE channel
   spread into native MIDI 2.0 per-note messages.
-- [`EndpointNegotiator`], [`CiInitiator`] and [`CiResponder`]: UMP Stream
-  endpoint discovery and MIDI-CI. SysEx7 reassembly is `tutti_ump::SysexAssembler`.
 
 The MPE mode/zone types ([`MpeMode`], [`MpeZone`], [`MpeZoneConfig`]) are
 re-exported from `tutti-midi-types`, so a consumer of the runtime needs one

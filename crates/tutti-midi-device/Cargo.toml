@@ -3,7 +3,7 @@ name = "tutti-midi-device"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "MIDI device detection core for the Tutti audio engine: DeviceId and the pure DeviceTable"
+description = "MIDI device core for the Tutti audio engine: DeviceId, the pure DeviceTable and the MIDI-CI codec"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-midi-device"
@@ -24,6 +24,7 @@ default = []
 serde = ["dep:serde"]
 
 [dependencies]
+bitflags = "2"
 serde = { version = "1", optional = true, features = ["derive"] }
 
 [dev-dependencies]

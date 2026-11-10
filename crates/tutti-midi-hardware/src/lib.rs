@@ -43,11 +43,6 @@ pub use tutti_midi_types::{
     UnencodableMessage, midi2, midly, normalize,
 };
 
-/// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's
-/// inbound-decode path can turn a message `tutti_ump::SysexAssembler` completed
-/// into a `CiMessage` (`ci::CiMessage::decode`) to feed the negotiators.
-pub use tutti_midi_types::ci;
-
 /// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,
 /// distinct from project save and from SMF. The MIDI 1.0 equivalent (`smf`) and
 /// the file-level path codec (`clip`) are `tutti-midi-file`'s and are not
@@ -97,7 +92,7 @@ pub use tutti_midi_runtime::{
 ///   ring), and [`TimedMidiEvent`] (a clip's events).
 ///
 /// The rarer surfaces (sync decoders such as [`MidiClockDecoder`], MPE zone
-/// config, the MIDI-CI codec) are not in the prelude; import them from the
+/// config) are not in the prelude; import them from the
 /// crate root by name. The SMF / Clip File codecs are not here at all:
 /// they are `tutti-midi-file`'s, and this crate does not re-export them.
 ///
@@ -129,5 +124,5 @@ pub mod prelude {
 
 // This crate is OS MIDI I/O plus the value types a host drives. The ECS
 // bindings that drive them — routing, sequence, scheduled dispatch, clock-out,
-// track-out, metadata, negotiation, device management, MPE — live in
+// track-out, metadata, device management, MPE — live in
 // `bevy_tutti::midi`.

@@ -353,8 +353,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  instruments as values (`Rules`) and a `Patch`; no audio, no voice, no
                  allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and
                  `tutti-types`; `publish = false`
-  tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
-                 the pure `DeviceTable`; no OS, no thread, and no dependency but optional `serde`
+  tutti-midi-device  MIDI device core (design 017 §5): `DeviceId`, `OsChange`, the pure
+                 `DeviceTable`, and the MIDI-CI codec (`CiMessage`: Discovery, Invalidate
+                 MUID, NAK, over SysEx payload bytes); no OS, no thread, and no
+                 dependency but `bitflags` and optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits;
                  no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
@@ -499,7 +501,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
   feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
-  threads and the OS. A consumer that persists a `DeviceInfo` depends on it with
+  threads and the OS. It also holds the MIDI-CI codec (`CiMessage::encode` and
+  `decode` over the bytes between `F0` and `F7`, which the caller frames with
+  `tutti_ump::frame` and reassembles with `tutti_ump::SysexAssembler`; `Muid::new`
+  refuses the reserved range and broadcast, which is a `Destination`). It has no
+  state machine and no inbound path; design 017 §5, "MIDI-CI", is the rebuild.
+  Doc 017 §6 gives it `tutti-ump` for the Endpoint and Connection of stage 4b; the
+  codec needs no `tutti-ump` type, so the edge is not there yet. A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with

@@ -19,9 +19,7 @@ fn an_unreported_capability_defaults_to_midi1() {
     assert!(!UmpCapability::default().carries_midi2_only());
 }
 
-// NOTE: `with_function_blocks` and `EndpointId` are deliberately untested
-// here. The first is `self.function_blocks = blocks; self` — asserting the
-// field comes back is the assignment restated. The second's "a stale id must
+// NOTE: `EndpointId` is deliberately untested here. Its "a stale id must
 // not resolve to a different device" is a property of the *backend lookup*,
 // not of `EndpointId`: `assert_ne!(from_raw(1), from_raw(2))` exercises the
 // derived `PartialEq` on a one-field newtype and cannot fail while the type

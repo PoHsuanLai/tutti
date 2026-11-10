@@ -3761,6 +3761,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tutti-fixtures",
+ "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-types",
  "tutti-ump",

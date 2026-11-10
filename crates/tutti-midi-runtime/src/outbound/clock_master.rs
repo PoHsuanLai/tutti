@@ -2,8 +2,8 @@
 //! (24 PPQN) and MIDI Time Code so external gear follows *this* transport.
 //!
 //! [`ClockMaster`] is the symmetric inverse of the sync *decoders*
-//! ([`MidiClockDecoder`](tutti_midi_types::sync::MidiClockDecoder) /
-//! [`MtcDecoder`](tutti_midi_types::sync::MtcDecoder)): where they read an
+//! ([`MidiClockDecoder`](crate::MidiClockDecoder) /
+//! [`MtcDecoder`](crate::MtcDecoder)): where they read an
 //! incoming stream to derive transport state, this reads the transport to
 //! *produce* the stream. It is ticked once per transport segment of a block,
 //! on the audio thread, by a [`ClockNode`](crate::ClockNode), and stamps each
@@ -43,9 +43,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use tutti_graph::UmpAt;
 use tutti_ump::{Message, MidiGroup, System, U7, U14, Ump};
 
+use crate::{SmpteFrameRate, SmpteTimecode};
 use atomic_float::AtomicF64;
 use tutti_graph::{Offset, Transport};
-use tutti_midi_types::sync::{SmpteFrameRate, SmpteTimecode};
 use tutti_types::{
     Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, first_frame_at_or_after,
 };
@@ -575,7 +575,7 @@ fn timecode_at(position: f64, rate: f64, fps: SmpteFrameRate) -> SmpteTimecode {
 }
 
 /// The eight MTC nibbles of `tc`, piece `p` in bits `4p..4p+4`: the inverse of
-/// the assembly in [`MtcDecoder`](tutti_midi_types::sync::MtcDecoder).
+/// the assembly in [`MtcDecoder`](crate::MtcDecoder).
 ///
 /// MTC has four rate codes (24, 25, 29.97 drop-frame, 30) and no 29.97
 /// non-drop one. [`SmpteFrameRate::Fps2997Ndf`] goes out with the 29.97

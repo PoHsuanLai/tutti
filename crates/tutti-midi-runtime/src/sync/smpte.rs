@@ -2,7 +2,7 @@
 //!
 //! Its own module because the rate is the one piece of timecode vocabulary that
 //! outlives a decoder: a project holds a frame rate whether or not any MTC is
-//! arriving, and [`crate::sync::mtc`] reads it rather than owning it.
+//! arriving, and the MTC decoder reads it rather than owning it.
 
 /// SMPTE frame rate for MTC/LTC.
 ///

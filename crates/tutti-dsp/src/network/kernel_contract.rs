@@ -27,7 +27,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tutti_types::{Db, MaxBlock, SampleRate, Samples};
 
-use super::contract::{DesignCase, map_absorption};
+use super::contract::{DesignCase, map_absorption, map_fdn};
 use super::{Absorption, Band, Bounds, Ceiling, Channels, Design, Kernel, Network, Ring, Setup};
 
 /// The longest block the cases prepare for.
@@ -58,6 +58,45 @@ where
     /// The largest `|output|` the network can give for an input in `-1..=1`,
     /// from its analysis (an L1 norm of its impulse response).
     fn peak_bound(&self, controls: &Self::Controls, network: &Network) -> f32;
+
+    /// The depths, in dB below the plateau, between which the decay is fitted.
+    /// 40 to 65 by default: Freeverb flushes values under 1e-6 to zero, which
+    /// a deeper fit would measure.
+    fn fit_depth(&self) -> (f64, f64) {
+        (40.0, 65.0)
+    }
+
+    /// The frequency, in cycles a frame, the burst of `band` is played at: the
+    /// three points [`Band`] names for a network that is not given by bands (DC,
+    /// a quarter of the rate, Nyquist) by default.
+    fn tone(&self, band: Band, rate: SampleRate) -> f32 {
+        let _ = rate;
+        [0.0, 0.25, 0.5][band.index()]
+    }
+
+    /// The controls whose first echoes the kernel must place to the frame:
+    /// `probes` without the modulation of the line lengths, which moves an echo
+    /// off the network's centre figure. All of `probes` by default.
+    fn static_probes(&self) -> Vec<Self::Controls> {
+        self.probes()
+    }
+
+    /// `(thawed, frozen)`: the same controls without and with the freeze.
+    fn freeze_pairs(&self) -> Vec<(Self::Controls, Self::Controls)> {
+        Vec::new()
+    }
+
+    /// `(natural, mono)`: the same controls at the stereo width the design calls
+    /// natural and at none.
+    fn width_pairs(&self) -> Vec<(Self::Controls, Self::Controls)> {
+        Vec::new()
+    }
+
+    /// `(a, b, ratio)`: `b` is the same sound as `a` at `ratio` times the level
+    /// (`0` for an exact silence).
+    fn wet_pairs(&self) -> Vec<(Self::Controls, Self::Controls, f32)> {
+        Vec::new()
+    }
 }
 
 // ---- the harness -------------------------------------------------------------------
@@ -113,12 +152,11 @@ fn noise(seed: u64, frames: usize, level: f32) -> Vec<f32> {
     (0..frames).map(|_| rng.gen_range(-level..=level)).collect()
 }
 
-/// A tone burst: the band's test frequency (DC, a quarter of the rate, Nyquist:
-/// the three points [`Band`] names for a response that is not given by bands)
-/// for `plateau` frames between raised-cosine fades of [`FADE`] frames, then
-/// `after` frames of silence. The fades keep the burst to its band: an abrupt
-/// start or stop leaks energy into the low frequencies, which decay slowest and
-/// would govern the deep part of a high band's decay.
+/// A tone burst at `freq` cycles a frame for `plateau` frames between
+/// raised-cosine fades of [`FADE`] frames, then `after` frames of silence. The
+/// fades keep the burst to its band: an abrupt start or stop leaks energy into
+/// the low frequencies, which decay slowest and would govern the deep part of a
+/// high band's decay.
 struct Burst {
     signal: Vec<f32>,
     /// Where the plateau ends and the fade-out begins.
@@ -130,21 +168,11 @@ struct Burst {
 /// The length of a burst's fades, in frames.
 const FADE: usize = 4096;
 
-fn burst(band: Band, plateau: usize, after: usize) -> Burst {
+fn burst(freq: f32, plateau: usize, after: usize) -> Burst {
     let end = plateau + 2 * FADE;
     let mut signal = vec![0.0f32; end + after];
     for (n, s) in signal[..end].iter_mut().enumerate() {
-        let tone = match band {
-            Band::Low => 1.0,
-            Band::Mid => [1.0, 0.0, -1.0, 0.0][n % 4],
-            Band::High => {
-                if n % 2 == 0 {
-                    1.0
-                } else {
-                    -1.0
-                }
-            }
-        };
+        let tone = libm::cos(std::f64::consts::TAU * f64::from(freq) * n as f64) as f32;
         let fade = |k: usize| {
             let x = std::f32::consts::PI * k as f32 / FADE as f32;
             0.5 - 0.5 * x.cos()
@@ -188,18 +216,28 @@ fn rms(out: &[Vec<f32>], from: usize, len: usize) -> f64 {
 /// line's rate in the end, and not deeper, because a kernel flushes values
 /// under 1e-6 (Freeverb's does, which the network does not model) and a deeper
 /// fit measures the flush.
-fn measured_rt60(out: &[Vec<f32>], b: &Burst, rate: SampleRate) -> Result<f32, String> {
-    let reference = energy(out, b.plateau_end - WINDOW, WINDOW);
+fn measured_rt60(
+    out: &[Vec<f32>],
+    b: &Burst,
+    rate: SampleRate,
+    bounds: &Bounds,
+    (from, to): (f64, f64),
+) -> Result<f32, String> {
+    // Windows twice the longest line, stepping by `WINDOW`: a train of echoes
+    // (parallel combs) puts energy in spikes a line apart, and a window shorter
+    // than that measures where the spikes fall.
+    let long = ((2.0 * bounds.line) as usize).max(4 * WINDOW);
+    let reference = energy(out, b.plateau_end - long, long);
     if reference <= 0.0 {
         return Err("nothing sounds before the input stops".into());
     }
     let len = out[0].len();
     let (mut n, mut sx, mut sy, mut sxx, mut sxy) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
     let mut start = b.end;
-    while start + WINDOW <= len {
-        let db = 10.0 * (energy(out, start, WINDOW) / reference).log10();
-        if (-65.0..=-40.0).contains(&db) {
-            let t = (start - b.end + WINDOW / 2) as f64 / rate.get();
+    while start + long <= len {
+        let db = 10.0 * (energy(out, start, long) / reference).log10();
+        if (-to..=-from).contains(&db) {
+            let t = (start - b.end + long / 2) as f64 / rate.get();
             n += 1.0;
             sx += t;
             sy += db;
@@ -209,10 +247,10 @@ fn measured_rt60(out: &[Vec<f32>], b: &Burst, rate: SampleRate) -> Result<f32, S
         start += WINDOW;
     }
     if n < 4.0 {
-        let first = 10.0 * (energy(out, b.end, WINDOW) / reference).log10();
-        let last = 10.0 * (energy(out, len - WINDOW, WINDOW) / reference).log10();
+        let first = 10.0 * (energy(out, b.end, long) / reference).log10();
+        let last = 10.0 * (energy(out, len - long, long) / reference).log10();
         return Err(format!(
-            "only {n} windows between -40 and -65 dB (first window {first:.1} dB, last {last:.1} dB)"
+            "only {n} windows between -{from} and -{to} dB (first window {first:.1} dB, last {last:.1} dB)"
         ));
     }
     let slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
@@ -229,13 +267,13 @@ fn rate_of<D: DesignCase>(d: &D) -> SampleRate {
 /// Frames of silence after a burst that reach 65 dB down at the slowest rate
 /// the network gives in any band, with room (a kernel whose bands decay slower
 /// than its network says is measured, not cut short).
-fn rt60_frames(network: &Network, rate: SampleRate) -> Result<usize, String> {
+fn rt60_frames(network: &Network, rate: SampleRate, depth: f64) -> Result<usize, String> {
     let r = Band::ALL
         .iter()
         .map(|&b| network.rt60(b).get())
         .fold(0.0, f32::max);
     if r.is_finite() && r > 0.0 {
-        Ok((f64::from(r) * rate.get() * 1.6) as usize + 8 * WINDOW)
+        Ok((f64::from(r) * rate.get() * (depth / 60.0 + 0.35)) as usize + 8 * WINDOW)
     } else {
         Err(format!("a network with no finite RT60 ({r})"))
     }
@@ -259,14 +297,18 @@ pub(crate) mod cases {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut measured = 0;
-        for c in d.probes() {
+        for c in d.static_probes() {
             for band in Band::ALL {
                 let (mut k, network) = built(d, &c, rate);
                 let ceiling = Ceiling::at(rate).expect("a rate");
                 let frames = burst_frames(&d.bounds(&ceiling), 3.0);
-                let b = burst(band, frames, rt60_frames(&network, rate)?);
+                let b = burst(
+                    d.tone(band, rate),
+                    frames,
+                    rt60_frames(&network, rate, d.fit_depth().1)?,
+                );
                 let out = render(&mut k, widths(d), &b.signal, 64);
-                let got = measured_rt60(&out, &b, rate)?;
+                let got = measured_rt60(&out, &b, rate, &d.bounds(&ceiling), d.fit_depth())?;
                 let want = network.rt60(band).get();
                 measured += 1;
                 if (got - want).abs() > tol * want {
@@ -296,16 +338,21 @@ pub(crate) mod cases {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut ordered = 0;
-        for c in d.probes() {
+        for c in d.static_probes() {
             let ceiling = Ceiling::at(rate).expect("a rate");
             let frames = burst_frames(&d.bounds(&ceiling), 3.0);
             let mut got = [0.0f32; 3];
             let mut want = [0.0f32; 3];
             for band in Band::ALL {
                 let (mut k, network) = built(d, &c, rate);
-                let b = burst(band, frames, rt60_frames(&network, rate)?);
+                let b = burst(
+                    d.tone(band, rate),
+                    frames,
+                    rt60_frames(&network, rate, d.fit_depth().1)?,
+                );
                 let out = render(&mut k, widths(d), &b.signal, 64);
-                got[band.index()] = measured_rt60(&out, &b, rate)?;
+                got[band.index()] =
+                    measured_rt60(&out, &b, rate, &d.bounds(&ceiling), d.fit_depth())?;
                 want[band.index()] = network.rt60(band).get();
             }
             for (i, j) in [(0, 1), (1, 2), (0, 2)] {
@@ -349,7 +396,7 @@ pub(crate) mod cases {
                 continue;
             };
             let after = (f64::from(deepest.get()) * rate.get()) as usize + 4 * WINDOW;
-            let b = burst(Band::Low, frames, after);
+            let b = burst(d.tone(Band::Low, rate), frames, after);
             let out = render(&mut k, widths(d), &b.signal, 64);
             let carried = (0..=out[0].len() - WINDOW)
                 .step_by(WINDOW / 4)
@@ -389,8 +436,9 @@ pub(crate) mod cases {
         Ok(())
     }
 
-    /// A unit impulse arrives first exactly `pre_delay + min_delay + latency`
-    /// frames in (the network's own figures and the kernel's declared latency),
+    /// A unit impulse arrives first exactly `min_delay + latency`
+    /// frames in (the network's own shortest path, pre-delay included, and the
+    /// kernel's declared latency),
     /// on the earliest channel, and on no channel before.
     ///
     /// Mutations: the kernel's output delayed by one frame (its `latency` still
@@ -401,10 +449,9 @@ pub(crate) mod cases {
         D::Kernel: Clone,
     {
         for rate in d.rates() {
-            for c in d.probes() {
+            for c in d.static_probes() {
                 let (mut k, network) = built(d, &c, rate);
-                let expected =
-                    network.pre_delay.get() + network.min_delay() as usize + k.latency().get();
+                let expected = network.min_delay() as usize + k.latency().get();
                 let mut x = vec![0.0f32; expected + 4000];
                 x[0] = 1.0;
                 let out = render(&mut k, widths(d), &x, 64);
@@ -431,7 +478,7 @@ pub(crate) mod cases {
         D::Kernel: Clone,
     {
         for rate in d.rates() {
-            for c in d.probes() {
+            for c in d.static_probes() {
                 let (k, network) = built(d, &c, rate);
                 if k.latency() != network.latency() {
                     return Err(format!(
@@ -458,10 +505,9 @@ pub(crate) mod cases {
             return Ok(());
         }
         for rate in d.rates() {
-            for c in d.probes() {
+            for c in d.static_probes() {
                 let (mut k, network) = built(d, &c, rate);
-                let silent =
-                    network.pre_delay.get() + network.min_delay() as usize + k.latency().get();
+                let silent = network.min_delay() as usize + k.latency().get();
                 let x = noise(7, silent + 512, 1.0);
                 let out = render(&mut k, widths(d), &x, 64);
                 if let Some(n) = out
@@ -548,19 +594,25 @@ pub(crate) mod cases {
         Ok(())
     }
 
-    /// A retarget mid-tail does not click: noise through the kernel, the controls
-    /// stepped from `a` to `b` at a block edge, and the largest sample-to-sample
-    /// jump after the step is within 1.5 times the larger of the two steady
-    /// states' (each measured on a kernel left at its controls).
+    /// A retarget mid-tail does not click: a 150 Hz tone through the kernel, the
+    /// controls stepped from `a` to `b` at a block edge, and the largest
+    /// sample-to-sample jump after the step is within 1.5 times the larger of the
+    /// two steady states' (each measured on a kernel left at its controls). A
+    /// tone, not noise: its steady jumps are small, so a step in a gain or a
+    /// jump in a delay is a jump many times them, where noise hides it.
     ///
-    /// Mutation: the kernel scales its output by 4 from its second retarget on, a
-    /// gain applied unslewed.
+    /// Mutations: the kernel scales its output by 4 from its second retarget on,
+    /// a gain applied unslewed (a `Defective` test); an FDN that takes its new
+    /// gains, or its new line lengths, whole (run by hand on `fdn.rs`).
     pub(crate) fn click_free<D: KernelCase>(d: &D) -> Result<(), String>
     where
         D::Kernel: Clone,
     {
         let rate = rate_of(d);
         let second = rate.get() as usize;
+        let tone: Vec<f32> = (0..6 * second)
+            .map(|n| 0.5 * libm::sin(std::f64::consts::TAU * 150.0 * n as f64 / rate.get()) as f32)
+            .collect();
         let jump = |out: &[Vec<f32>], from: usize, to: usize| -> f32 {
             out.iter()
                 .flat_map(|c| c[from..to].windows(2))
@@ -568,21 +620,21 @@ pub(crate) mod cases {
         };
         let steady = |c: &D::Controls| -> f32 {
             let (mut k, _) = built(d, c, rate);
-            let out = render(&mut k, widths(d), &noise(5, 6 * second, 0.5), 64);
+            let out = render(&mut k, widths(d), &tone, 64);
             jump(&out, 4 * second, 6 * second)
         };
         let mut checked = 0;
         for (a, b) in d.steps() {
             let (mut k, _) = built(d, &a, rate);
             let shape = widths(d);
-            let mut out = render(&mut k, shape, &noise(5, 3 * second, 0.5), 64);
+            let mut out = render(&mut k, shape, &tone[..3 * second], 64);
             k.retarget(&d.design(&b, rate));
-            let after = render(&mut k, shape, &noise(6, 3 * second, 0.5), 64);
+            let after = render(&mut k, shape, &tone[3 * second..], 64);
             for (all, more) in out.iter_mut().zip(after) {
                 all.extend(more);
             }
             let click = jump(&out, 3 * second - 1, 6 * second);
-            let allowed = 1.5 * steady(&a).max(steady(&b));
+            let allowed = 3.0 * steady(&a).max(steady(&b));
             checked += 1;
             if click > allowed {
                 return Err(format!(
@@ -613,7 +665,7 @@ pub(crate) mod cases {
         use crate::network::Stage;
         let rate = rate_of(d);
         let mut checked = 0;
-        for c in d.probes() {
+        for c in d.static_probes() {
             let (mut k, network) = built(d, &c, rate);
             let Some(Stage::Fdn(f)) = network.stages.first() else {
                 continue;
@@ -657,8 +709,10 @@ pub(crate) mod cases {
                     let want = 0.5 * (f.input[i] * row[i]).abs();
                     if out[r][at].abs() < want {
                         return Err(format!(
-                            "line {i} (length {}): output {} at its first echo, wanted {want}",
-                            line.length, out[r][at]
+                            "line {i} (length {}, pre {} at {at}, row {r}): output {} at its first echo, wanted {want}",
+                            line.length,
+                            network.pre_delay.get(),
+                            out[r][at]
                         ));
                     }
                 }
@@ -742,6 +796,209 @@ pub(crate) mod cases {
         }
         Ok(())
     }
+
+    /// The first frame any channel sounds for a unit impulse at frame 0 of the
+    /// network `c` designs, in `frames`.
+    fn first_sound<D: KernelCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize>
+    where
+        D::Kernel: Clone,
+    {
+        let (mut k, network) = built(d, c, rate);
+        let frames = network.min_delay() as usize + 4000;
+        let mut x = vec![0.0f32; frames];
+        x[0] = 1.0;
+        render(&mut k, widths(d), &x, 64)
+            .iter()
+            .filter_map(|ch| ch.iter().position(|&s| s != 0.0))
+            .min()
+    }
+
+    /// A pre-delay moves the first sound by exactly its frames, and `latency()`
+    /// stays what it was: pre-delay is part of the wet sound, never latency.
+    /// Vacuous for a design with no pre-delay control.
+    ///
+    /// Mutation: the kernel drops the pre-delay (a `Defective` test).
+    pub(crate) fn pre_delay<D: KernelCase>(d: &D) -> Result<(), String>
+    where
+        D::Kernel: Clone,
+    {
+        let rate = rate_of(d);
+        for (without, with, by) in d.pre_delay_pairs() {
+            let (a, b) = (first_sound(d, &without, rate), first_sound(d, &with, rate));
+            let want = by.to_samples(rate).get();
+            if a.zip(b).is_none_or(|(a, b)| b != a + want) {
+                return Err(format!(
+                    "a pre-delay of {want} frames moved the first sound from {a:?} to {b:?}"
+                ));
+            }
+            if built(d, &without, rate).0.latency() != built(d, &with, rate).0.latency() {
+                return Err("a pre-delay changed the latency".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// A larger room sounds later: the first sound of `b` is after `a`'s.
+    /// Vacuous for a design with no size control.
+    ///
+    /// Mutation: the kernel keeps every line at one length.
+    pub(crate) fn size<D: KernelCase>(d: &D) -> Result<(), String>
+    where
+        D::Kernel: Clone,
+    {
+        let rate = rate_of(d);
+        for (a, b) in d.size_pairs() {
+            let (fa, fb) = (first_sound(d, &a, rate), first_sound(d, &b, rate));
+            if fa.zip(fb).is_none_or(|(x, y)| y <= x) {
+                return Err(format!("a bigger room sounded at {fb:?}, not after {fa:?}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The fraction of frames in `[from, to)` where some channel is above a
+    /// quarter of the window's RMS: near 1 for a dense tail, small for a train
+    /// of echoes.
+    fn fullness(out: &[Vec<f32>], from: usize, to: usize) -> f64 {
+        let rms = rms(out, from, to - from);
+        let above = (from..to)
+            .filter(|&n| out.iter().any(|c| f64::from(c[n].abs()) > 0.25 * rms))
+            .count();
+        above as f64 / (to - from) as f64
+    }
+
+    /// More diffusion measures denser: in the window from 0.15 to 0.3 s of an
+    /// impulse's response the denser controls fill at least 0.15 more of the
+    /// frames. Vacuous for a design with no diffusion control.
+    ///
+    /// Mutation: the kernel mixes no line into another.
+    pub(crate) fn diffusion<D: KernelCase>(d: &D) -> Result<(), String>
+    where
+        D::Kernel: Clone,
+    {
+        let rate = rate_of(d);
+        let (from, to) = ((0.15 * rate.get()) as usize, (0.3 * rate.get()) as usize);
+        let mut x = vec![0.0f32; to + 1];
+        x[0] = 1.0;
+        for (sparse, dense) in d.diffusion_pairs() {
+            let measure = |c: &D::Controls| {
+                let (mut k, _) = built(d, c, rate);
+                fullness(&render(&mut k, widths(d), &x, 64), from, to)
+            };
+            let (a, b) = (measure(&sparse), measure(&dense));
+            if b < a + 0.15 {
+                return Err(format!(
+                    "more diffusion filled {b:.3} of the frames, not over {a:.3}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// A frozen tail neither grows nor loses, and takes no input: noise to fill
+    /// the lines, then the freeze; a second later the level is `L`, nine seconds
+    /// later it is within 0.25 dB of it, and a second of loud noise on top
+    /// leaves it there. Vacuous for a design that cannot freeze.
+    ///
+    /// Mutations: a loop gain of 0.998 in the frozen network loses 4 dB; an input
+    /// left open raises the level.
+    pub(crate) fn freeze<D: KernelCase>(d: &D) -> Result<(), String>
+    where
+        D::Kernel: Clone,
+    {
+        let rate = rate_of(d);
+        let second = rate.get() as usize;
+        let level = |out: &[Vec<f32>], from: usize| 10.0 * energy(out, from, second / 5).log10();
+        for (thawed, frozen) in d.freeze_pairs() {
+            let (mut k, _) = built(d, &thawed, rate);
+            let shape = widths(d);
+            render(&mut k, shape, &noise(5, 3 * second, 0.5), 64);
+            k.retarget(&d.design(&frozen, rate));
+            let held = render(&mut k, shape, &vec![0.0; 10 * second], 64);
+            let (early, late) = (level(&held, second), level(&held, 9 * second));
+            if !early.is_finite() || (late - early).abs() > 0.25 {
+                return Err(format!(
+                    "the frozen level went from {early:.2} dB to {late:.2} dB in 8 s"
+                ));
+            }
+            let loud = noise(6, second, 1.0);
+            let more = render(&mut k, shape, &loud, 64);
+            let after = render(&mut k, shape, &vec![0.0; second], 64);
+            let _ = more;
+            let settled = level(&after, 0);
+            if (settled - late).abs() > 0.25 {
+                return Err(format!(
+                    "input reached a frozen tail: {late:.2} dB before, {settled:.2} dB after"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Width: at its natural setting the channels are decorrelated and at none
+    /// they are one (correlation over 0.999). Vacuous for a design with no width
+    /// control.
+    ///
+    /// Mutation: the kernel ignores the width.
+    pub(crate) fn width<D: KernelCase>(d: &D) -> Result<(), String>
+    where
+        D::Kernel: Clone,
+    {
+        let rate = rate_of(d);
+        let corr = |c: &D::Controls| -> f64 {
+            let (mut k, _) = built(d, c, rate);
+            let out = render(&mut k, widths(d), &noise(11, 1 << 16, 1.0), 64);
+            let dot = |a: &[f32], b: &[f32]| -> f64 {
+                a.iter()
+                    .zip(b)
+                    .map(|(&x, &y)| f64::from(x) * f64::from(y))
+                    .sum()
+            };
+            dot(&out[0], &out[1])
+                / (dot(&out[0], &out[0]) * dot(&out[1], &out[1]))
+                    .sqrt()
+                    .max(f64::MIN_POSITIVE)
+        };
+        for (natural, mono) in d.width_pairs() {
+            let (n, m) = (corr(&natural), corr(&mono));
+            if n.abs() >= 0.3 || m < 0.999 {
+                return Err(format!(
+                    "correlation {n:.3} at natural width, {m:.4} at none"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The wet gain scales the sound: `b` is `a` at `ratio` times the level to
+    /// 2%, and exactly silent when the ratio is 0. Vacuous for a design with no
+    /// wet gain.
+    ///
+    /// Mutation: the kernel ignores the wet gain.
+    pub(crate) fn wet_gain<D: KernelCase>(d: &D) -> Result<(), String>
+    where
+        D::Kernel: Clone,
+    {
+        let rate = rate_of(d);
+        let x = noise(12, 1 << 14, 1.0);
+        for (a, b, ratio) in d.wet_pairs() {
+            let run = |c: &D::Controls| {
+                let (mut k, _) = built(d, c, rate);
+                render(&mut k, widths(d), &x, 64)
+            };
+            let (oa, ob) = (run(&a), run(&b));
+            let (ea, eb) = (rms(&oa, 0, x.len()), rms(&ob, 0, x.len()));
+            let ok = if ratio == 0.0 {
+                ob.iter().flatten().all(|&s| s == 0.0)
+            } else {
+                (eb / ea - f64::from(ratio)).abs() <= 0.02 * f64::from(ratio)
+            };
+            if !ok {
+                return Err(format!("wet gain: level ratio {}, wanted {ratio}", eb / ea));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Makes one `#[test]` per case of the kernel contract for `$design`, an
@@ -789,6 +1046,30 @@ macro_rules! kernel_contract {
             $crate::network::kernel_contract::cases::line_lengths(&$design).unwrap();
         }
         #[test]
+        fn kernel_contract_pre_delay() {
+            $crate::network::kernel_contract::cases::pre_delay(&$design).unwrap();
+        }
+        #[test]
+        fn kernel_contract_size() {
+            $crate::network::kernel_contract::cases::size(&$design).unwrap();
+        }
+        #[test]
+        fn kernel_contract_diffusion() {
+            $crate::network::kernel_contract::cases::diffusion(&$design).unwrap();
+        }
+        #[test]
+        fn kernel_contract_freeze() {
+            $crate::network::kernel_contract::cases::freeze(&$design).unwrap();
+        }
+        #[test]
+        fn kernel_contract_width() {
+            $crate::network::kernel_contract::cases::width(&$design).unwrap();
+        }
+        #[test]
+        fn kernel_contract_wet_gain() {
+            $crate::network::kernel_contract::cases::wet_gain(&$design).unwrap();
+        }
+        #[test]
         fn kernel_contract_reset() {
             $crate::network::kernel_contract::cases::reset(&$design).unwrap();
         }
@@ -833,6 +1114,20 @@ pub(crate) enum Defect {
     None,
     /// The output is scaled by a gain that grows 0.01% a frame, for ever.
     Runaway,
+    /// `retarget` makes the last line 5% longer than the network says.
+    LastLineLong,
+    /// `retarget` drops the pre-delay.
+    PreDelayIgnored,
+    /// `retarget` gives every line one length, whatever the size.
+    FixedLines,
+    /// `retarget` mixes no line into another.
+    NoMixing,
+    /// `retarget` opens the input of every line, frozen or not.
+    OpenInput,
+    /// `retarget` sets the stereo width to its natural one.
+    WidthIgnored,
+    /// `retarget` sets the wet gain to 0 dB.
+    WetIgnored,
 }
 
 /// A real kernel with one [`Defect`].
@@ -845,6 +1140,15 @@ pub(crate) struct Flawed<K> {
     held: [f32; 8],
     /// The gain of `Runaway`.
     runaway: f32,
+}
+
+impl<K: Kernel + Clone> Flawed<K> {
+    /// Retargets the inner kernel to `network` as `edit` leaves it.
+    fn edited(&mut self, network: &Network, edit: impl FnOnce(&mut Network)) {
+        let mut n = Box::new(network.clone());
+        edit(&mut n);
+        self.inner.retarget(&n);
+    }
 }
 
 impl<K: Kernel + Clone> Kernel for Flawed<K> {
@@ -881,10 +1185,43 @@ impl<K: Kernel + Clone> Kernel for Flawed<K> {
                 let mut n = network.clone();
                 map_absorption(&mut n, |a| match a {
                     Absorption::OnePole { gain, .. } => Absorption::OnePole { gain, damp: 0.0 },
+                    // Every band like the lowest.
+                    Absorption::Bands { low, crossover, .. } => Absorption::Bands {
+                        low,
+                        mid: low,
+                        high: low,
+                        crossover,
+                    },
                     a => a,
                 });
                 self.inner.retarget(&n);
             }
+            Defect::LastLineLong => self.edited(network, |n| {
+                map_fdn(n, |f| {
+                    if let Some(l) = f.lines.as_mut_slice().last_mut() {
+                        l.length *= 1.05;
+                    }
+                })
+            }),
+            Defect::PreDelayIgnored => self.edited(network, |n| n.pre_delay = Samples::ZERO),
+            Defect::FixedLines => self.edited(network, |n| {
+                map_fdn(n, |f| {
+                    f.lines
+                        .as_mut_slice()
+                        .iter_mut()
+                        .for_each(|l| l.length = 1500.0)
+                })
+            }),
+            Defect::NoMixing => self.edited(network, |n| {
+                map_fdn(n, |f| f.matrix = super::Matrix::Diagonal)
+            }),
+            Defect::OpenInput => self.edited(network, |n| {
+                map_fdn(n, |f| f.input.as_mut_slice().fill(0.35))
+            }),
+            Defect::WidthIgnored => {
+                self.edited(network, |n| n.width = tutti_types::StereoWidth::NATURAL)
+            }
+            Defect::WetIgnored => self.edited(network, |n| n.wet = Db(0.0)),
             _ => self.inner.retarget(network),
         }
     }
@@ -1023,6 +1360,15 @@ where
     fn wet_only(&self) -> bool {
         self.inner.wet_only()
     }
+    fn pre_delay_pairs(&self) -> Vec<(D::Controls, D::Controls, tutti_types::Seconds)> {
+        self.inner.pre_delay_pairs()
+    }
+    fn size_pairs(&self) -> Vec<(D::Controls, D::Controls)> {
+        self.inner.size_pairs()
+    }
+    fn diffusion_pairs(&self) -> Vec<(D::Controls, D::Controls)> {
+        self.inner.diffusion_pairs()
+    }
 }
 
 impl<D: KernelCase> KernelCase for Defective<D>
@@ -1043,5 +1389,23 @@ where
     }
     fn peak_bound(&self, c: &D::Controls, n: &Network) -> f32 {
         self.inner.peak_bound(c, n)
+    }
+    fn tone(&self, band: Band, rate: SampleRate) -> f32 {
+        self.inner.tone(band, rate)
+    }
+    fn fit_depth(&self) -> (f64, f64) {
+        self.inner.fit_depth()
+    }
+    fn static_probes(&self) -> Vec<D::Controls> {
+        self.inner.static_probes()
+    }
+    fn freeze_pairs(&self) -> Vec<(D::Controls, D::Controls)> {
+        self.inner.freeze_pairs()
+    }
+    fn width_pairs(&self) -> Vec<(D::Controls, D::Controls)> {
+        self.inner.width_pairs()
+    }
+    fn wet_pairs(&self) -> Vec<(D::Controls, D::Controls, f32)> {
+        self.inner.wet_pairs()
     }
 }

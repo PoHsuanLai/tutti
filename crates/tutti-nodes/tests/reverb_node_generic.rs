@@ -112,9 +112,8 @@ struct NoParams;
 
 impl ReverbParams for NoParams {
     type Controls = ();
-    const ADDRS: &'static [UnitAddr] = &[];
-    fn new(_: ()) -> Self {
-        NoParams
+    fn addrs(&self) -> &'static [UnitAddr] {
+        &[]
     }
     fn bind(&self, set: tutti_graph::ParamSetBuilder) -> tutti_graph::ParamSetBuilder {
         set
@@ -128,6 +127,10 @@ impl ReverbParams for NoParams {
 
 impl ReverbDesign for Echo {
     type Params = NoParams;
+
+    fn params(&self, _: ()) -> NoParams {
+        NoParams
+    }
 }
 
 fn node(echo: Echo) -> ReverbNode<Echo> {

@@ -87,49 +87,52 @@ jobs:
           # but prefixed `-` for uninitialised, so the gate would report the
           # checkout rather than the pin on every run.
           submodules: recursive
+      # The toolchain `rust-toolchain.toml` pins: the gates below that are
+      # `cargo xtask` recipes build `xtask` (std only, a few seconds).
+      - run: rustup toolchain install
       # Engine types are imported from a crate's root or prelude, never through
       # its modules. Neither rustc nor clippy has a lint for a redundant path,
       # and doc comments in ```text / ```ignore blocks are never compiled — so
-      # this grep is the only enforcement there is.
-      - run: scripts/check-canonical-paths.sh
+      # this scan is the only enforcement there is.
+      - run: cargo xtask check-paths
       # `tutti-graph` keeps every module private, so rustc already refuses
       # `tutti_graph::plan::Plan` in code. Prose is the gap: a ```text block
       # or a *.md naming a module path compiles fine and goes stale the moment
       # a module is renamed. The per-module gate covers it.
-      - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile controls cost editor event exec fade fork graph held history instrument io kernels latency loss meter node par param plan play pool preroll reference slots spec tail tap time
+      - run: cargo xtask check-paths tutti_graph arena builder command compile controls cost editor event exec fade fork graph held history instrument io kernels latency loss meter node par param plan play pool preroll reference slots spec tail tap time
       # The same for `tutti-session`, which keeps every module private too.
-      - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph instrument midi modulation node plugin session watch
+      - run: cargo xtask check-paths tutti_session builder device error export graph instrument midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
+      - run: cargo xtask check-paths tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
+      - run: cargo xtask check-paths tutti_midi_protocol midi1 narrow scale voice
       # And `tutti-midi-device`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_midi_device id table
+      - run: cargo xtask check-paths tutti_midi_device id table
       # And `tutti-plugin-db`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
+      - run: cargo xtask check-paths tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-plugin-ipc`, whose modules are private but `state_chunk`, the
       # namespace both ends of the wire chunk a state with.
-      - run: scripts/check-canonical-paths.sh tutti_plugin_ipc client config error midi_intake protocol subprocess transport
+      - run: cargo xtask check-paths tutti_plugin_ipc client config error midi_intake protocol subprocess transport
       # And `tutti-dsp`: its modules are private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
+      - run: cargo xtask check-paths tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
       # And `tutti-measure`, which keeps its modules private too.
-      - run: scripts/check-canonical-paths.sh tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
+      - run: cargo xtask check-paths tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
       # private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
-      - run: scripts/check-canonical-paths.sh tutti_metering load
-      - run: scripts/check-canonical-paths.sh tutti_engine engine error
+      - run: cargo xtask check-paths tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
+      - run: cargo xtask check-paths tutti_metering load
+      - run: cargo xtask check-paths tutti_engine engine error
       # And `tutti-codec`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
+      - run: cargo xtask check-paths tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
       # And `tutti-sf2` and `tutti-soundfont`: modules private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
-      - run: scripts/check-canonical-paths.sh tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
+      - run: cargo xtask check-paths tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
+      - run: cargo xtask check-paths tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
       # And `tutti-tempo`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
+      - run: cargo xtask check-paths tutti_tempo error grid map point segment
       # And `tutti-voicing`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_voicing controller holds phase voicing
+      - run: cargo xtask check-paths tutti_voicing controller holds phase voicing
       # And `tutti-rt`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals doorbell drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
+      - run: cargo xtask check-paths tutti_rt cell denormals doorbell drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -137,8 +140,8 @@ jobs:
       # unexplained C++ compile error in `audio-probe` rather than as a version
       # complaint — so this compares those three statements against the commits
       # the superproject actually records. It belongs in this job because it is
-      # the other static gate: no toolchain, no build, just a claim checked.
-      - run: scripts/check-submodule-pins.sh
+      # the other static gate: no build of the workspace, just a claim checked.
+      - run: cargo xtask check-submodule-pins
       # Design 015 §8, check 4: `tutti-session` re-exports no crate whole.
       # (Checks 3 and 5, over `bevy-tutti/src`, are skipped while it is parked.)
       # Perl over the source, no build, so it belongs with the other static gates.
@@ -154,11 +157,10 @@ jobs:
       # Every member sits directly in `crates/<package>` or `testing/<dir>`, no
       # shipped crate builds on a `testing/` crate, and dependencies point down
       # the layers in CLAUDE.md (`cargo metadata`, no build).
-      - run: rustup toolchain install
       - run: scripts/check-layout.sh
       # A tuple struct with a private field does not derive `Deserialize`
-      # plainly: the derive skips `new` (python3 over the source, no build).
-      - run: scripts/check-range-types.sh
+      # plainly: the derive skips `new` (`xtask` over the source, no build).
+      - run: cargo xtask check-range-types
       # Every InProcess/OutOfProcess impl is listed in the plugin contract's
       # `hostings` (python3 over the source, no build).
       - run: scripts/check-hosting.sh
@@ -721,7 +723,7 @@ jobs:
       # Each feature of the feature-gated crates alone. The union above cannot
       # see a link out of one feature's docs into an item another feature
       # gates, which the union of features cannot see.
-      - run: scripts/check-doc-features.sh
+      - run: cargo xtask check-doc-features
       # The docs.rs build: nightly and `--cfg docsrs`, so `doc_cfg` parses and
       # the feature badges render. A dated nightly (bumped by hand, like
       # `rust-toolchain.toml`'s stable) so a new rustdoc lint cannot turn CI

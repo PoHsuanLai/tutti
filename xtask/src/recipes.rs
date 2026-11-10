@@ -3,6 +3,7 @@
 //! the `Ctx`), so `--dry-run` and the tests see exactly what a run would do.
 
 use crate::cmd::Cmd;
+use crate::gates::Gate;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -27,6 +28,12 @@ pub(crate) enum Step {
     /// the justfile's pipeline ignored it (the `cargo check` before it had
     /// already built the same graph).
     NoBevyInTree(Cmd),
+    /// A gate over the repo's files (`gates.rs`), run in this process.
+    Gate(Gate),
+    /// `cargo doc` for each feature of the feature-gated crates, one at a
+    /// time (`gates/doc_features.rs`); every run is attempted and the
+    /// failures reported together.
+    DocFeatures,
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
 }
@@ -41,6 +48,8 @@ impl Step {
                 "{} | fail if a line matches '\\bbevy(_[a-z]+)?\\b'",
                 c.display()
             ),
+            Step::Gate(g) => g.display(),
+            Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <f>, for each feature of tutti-session and tutti".to_owned(),
             Step::RequireCargoDeny => {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
@@ -163,12 +172,26 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ("check-guards", "", "scripts/check-guards.sh"),
     ("check-plugin-ffi", "", "scripts/check-plugin-ffi.sh"),
     ("check-layout", "", "scripts/check-layout.sh"),
-    ("check-range-types", "", "scripts/check-range-types.sh"),
+    (
+        "check-range-types",
+        "",
+        "no plain derived Deserialize on a private tuple field",
+    ),
     ("check-hosting", "", "scripts/check-hosting.sh"),
     (
         "check-paths",
-        "[script args]",
-        "scripts/check-canonical-paths.sh",
+        "[<crate> <module>...]",
+        "engine types are imported from a crate's root, never through its modules (also searches *.md)",
+    ),
+    (
+        "check-submodule-pins",
+        "",
+        "the VST3 SDK submodules are at the v3.8.0_build_66 SHAs",
+    ),
+    (
+        "check-doc-features",
+        "",
+        "rustdoc per feature for tutti-session and tutti",
     ),
     ("lint", "", "cargo fmt --check and workspace clippy"),
     (
@@ -370,20 +393,26 @@ impl Planner<'_> {
             "check-guards" => self.lines(&["scripts/check-guards.sh"]),
             "check-plugin-ffi" => self.lines(&["scripts/check-plugin-ffi.sh"]),
             "check-layout" => self.lines(&["scripts/check-layout.sh"]),
-            "check-range-types" => self.lines(&["scripts/check-range-types.sh"]),
+            "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
+            "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
+            "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.lines(&["scripts/check-hosting.sh"]),
-            "check-paths" => self.run(Cmd::sh("scripts/check-canonical-paths.sh").args(args)),
+            "check-paths" => self.out.push(Step::Gate(Gate::CanonicalPaths(args.to_vec()))),
             "lint" => self.lines(&[
                 "cargo fmt --all --check",
                 "cargo clippy --locked --workspace --all-targets -- -D warnings",
             ]),
             "check-windows" => self.check_windows(),
-            "doc" => self.lines(&[
-                r#"RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps"#,
-                r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract"#,
-                "scripts/check-doc-features.sh",
-                r#"RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps"#,
-            ]),
+            "doc" => {
+                self.lines(&[
+                    r#"RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps"#,
+                    r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract"#,
+                ]);
+                self.out.push(Step::DocFeatures);
+                self.lines(&[
+                    r#"RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps"#,
+                ]);
+            }
             "check-loom" => self.lines(&[
                 r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
             ]),
@@ -409,6 +438,7 @@ impl Planner<'_> {
                 for d in [
                     "lint", "deny", "check-paths", "check-bevy-free", "check-adapter", "check-guards",
                     "check-plugin-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-submodule-pins",
                     "check-features",
                     "check-loom", "test", "test-features", "test-editor", "test-doc",
                     "test-release", "doc",

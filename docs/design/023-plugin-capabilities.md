@@ -29,9 +29,7 @@ Builds on [016](016-plugin-hosts.md) (`Loaded`, `Processor`, `Controller`) and o
 [021](021-plugin-hosting-axes.md) (plugin format and hosting are two axes),
 whose probe binary (021 §2.5) carries the honesty probes of §6. It uses the
 runtime tail of [013](013-native-graph.md), which is built (PR #359):
-`Io::report_tail` and `contract::assert_honest_tail`. Numbering: 021, 022 and
-this doc are on `main`; 019, 020 and 024 are drafts on other branches until they
-merge.
+`Io::report_tail` and `contract::assert_honest_tail`.
 
 ## Summary
 
@@ -933,7 +931,7 @@ timeline in `tutti-transport` (regions). A hosted ARA plugin would then be a
 
 ## 9. Steps
 
-Ordered; each is one reviewable PR that leaves `just ci` green. They run after
+Ordered; each is one reviewable PR that leaves `cargo xtask ci` green. They run after
 doc 021's structure steps 1 to 8, except where a step names a narrower
 dependency: step 3 needs only 021's step 4c (the probe binary), step 2 needs
 `Io::report_tail`, which is built (PR #359).

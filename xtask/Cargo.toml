@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The repo's development commands (`cargo xtask help`): what the justfile was"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# No dependencies, and none on a workspace crate: the commands that build and
+# gate the workspace must not depend on what they build (scripts/check-layout.sh).
+[dependencies]

@@ -13,7 +13,7 @@
 //!
 //! The shape *is* documented — in `tutti-io`'s README, as a doctest. nextest
 //! does not run doctests (`CLAUDE.md`, "nextest does NOT run doctests, and
-//! says nothing about skipping them"), so `just test` never executed it.
+//! says nothing about skipping them"), so `cargo xtask test` never executed it.
 //!
 //! Values, not just counts. Each frame carries its own index, so a dropped,
 //! duplicated, or channel-swapped frame shows up as a wrong *number* rather

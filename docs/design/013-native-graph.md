@@ -225,7 +225,7 @@ the interpreter.
   only its epoch's values) + a retirement list the audio thread never
   touches. Same API, no call site moved. The reader cannot free;
   the loom model `arc-lend/tests/loom.rs` checks that against the
-  shipped code (exhaustively under `just loom-full`). The read costs the same as the `ArcSwap::load` it
+  shipped code (exhaustively under `cargo xtask loom-full`). The read costs the same as the `ArcSwap::load` it
   replaced uncontended (~3 ns) and less under a hammering publisher (~25 ns vs
   ~41 ns), per `tutti-types/benches/rt_publish_read.rs`. `arc-swap` left
   `tutti-types`.
@@ -6941,7 +6941,7 @@ budget itself, which now asserts a no-op commit allocates nothing at all.
 
 `crates/vendor/fundsp-tutti` is gone (the 32.7k-line row of the
 ["Delete fundsp" table](#delete-fundsp)), with its workspace membership and its
-`--exclude fundsp-tutti` in CI's and `just`'s clippy, rustdoc and Windows
+`--exclude fundsp-tutti` in CI's and `cargo xtask`'s clippy, rustdoc and Windows
 runs. No non-test crate used any of its DSP kernels or I/O by then (the
 decoder had moved to `tutti-io` when the surface shrank, the FFT to the sampler and the
 convolver, the filters and panners to `tutti-nodes`), so nothing was
@@ -7182,7 +7182,7 @@ like a finished one's.) Pinned by
 `the_rendered_graph_is_dropped_on_the_main_thread`, which bites only with
 `bevy_tasks/multi_threaded` on (bevy-tutti's own feature set leaves it off, and
 a task then runs on the thread that polls it), so CI's `dark features` job and
-`just test-features` run it alone with that feature.
+`cargo xtask test-features` run it alone with that feature.
 
 Every failure fails the whole fork (`ForkError::Source`, naming the node's
 key; bevy-tutti's `ExportError::ForkSource`, naming its entity), never a fork

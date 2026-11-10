@@ -22,10 +22,6 @@ suites) is generalised in [024](024-design-model-realization.md), whose traits
 replace this doc's reverb-only ones; the general traits are doc 024's, and this
 doc keeps the reverb specifics.
 
-Numbering: 021 (plugin hosting) and 023 (plugin capabilities) are on `main`
-beside this doc; 019 (bounce), 020 (tempo map) and 024 (the design model) are
-drafts on other branches until they merge.
-
 ## Summary
 
 - **Every algorithmic reverb is a feedback delay network in state-space form**
@@ -513,7 +509,7 @@ old version.
 
 ## 9. Staged plan
 
-Each step is a PR that passes `just ci`. #354 merges first.
+Each step is a PR that passes `cargo xtask ci`. #354 merges first.
 
 | Step | Content | After | Rough size |
 |---|---|---|---|

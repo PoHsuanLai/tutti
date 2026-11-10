@@ -140,6 +140,26 @@ fn a_gain_set_through_the_controls_reaches_the_running_voice() {
     assert_eq!(s.controls().gain(), Amplitude::new(0.5));
 }
 
+/// A gain cell a host wrote a NaN or an infinity into leaves the voice at the
+/// gain it had: the output stays finite and unchanged, and a finite write
+/// after it lands.
+///
+/// Mutation (run): `drain_commands` applying `self.gain.load()` unguarded
+/// makes the NaN case render NaN (and the infinite ones, infinity).
+#[test]
+fn a_non_finite_gain_write_leaves_the_voice_at_its_gain() {
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut s = solo_voice();
+        assert!(s.controls().params().set(UnitParam::Volume, 0.25));
+        assert!(all_at(&block(&mut s), 0.25));
+        s.controls().params().set(UnitParam::Volume, bad);
+        let held = block(&mut s);
+        assert!(all_at(&held, 0.25), "gain = {bad}: got {:?}", &held[..4]);
+        s.controls().params().set(UnitParam::Volume, 0.5);
+        assert!(all_at(&block(&mut s), 0.5), "gain = {bad} then 0.5");
+    }
+}
+
 /// A fork of the node starts from the gain last set: an export renders
 /// the fader the user set. And the fork shares nothing: a live move after the
 /// fork does not reach it.

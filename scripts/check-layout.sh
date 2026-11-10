@@ -7,7 +7,14 @@
 #   a nested directory (`crates/foo/bar`) is refused, and so is a directory
 #   under `crates/` that is not a member;
 # - every workspace member under `testing/` is directly `testing/<dir>`;
-# - no member lives anywhere else, and `vendor/` holds no member;
+# - no member lives anywhere else but `xtask` (the one named exception, a
+#   top-level directory: the development commands, `cargo xtask help`), and
+#   `vendor/` holds no member;
+# - `xtask` has no dependency at all (std only), nothing depends on it, and it
+#   is in no layer. Mutation (planted, seen to exit 1, removed): `arc-lend` as a
+#   `[dependencies]` entry of `xtask`: "xtask has dependencies" and "xtask:
+#   normal dependency on arc-lend"; `xtask` as a `[dependencies]` entry of
+#   `tutti-ump`: "tutti-ump depends on xtask";
 # - nothing under `crates/` has a normal or build dependency on anything under
 #   `testing/` (a dev-dependency is fine).
 #
@@ -194,8 +201,10 @@ for name, p in pkgs.items():
     elif parts[0] == "testing":
         if len(parts) != 2:
             fail(f"{name}: {d} is a nested directory under testing/; members sit directly in testing/")
+    elif d == "xtask" and name == "xtask":
+        pass
     else:
-        fail(f"{name}: {d} is outside crates/ and testing/ (vendor/ holds third-party code, never a member)")
+        fail(f"{name}: {d} is outside crates/ and testing/ (vendor/ holds third-party code, never a member; xtask is the one exception)")
 
 for top in ("crates", "testing"):
     for entry in sorted(os.listdir(os.path.join(root, top))):
@@ -208,6 +217,18 @@ def internal_deps(p):
     for d in p["dependencies"]:
         if d["name"] in pkgs and d["name"] != p["name"]:
             yield d["name"], (d["kind"] or "normal")
+
+# ---- xtask stands alone ----------------------------------------------------
+if "xtask" in pkgs:
+    if pkgs["xtask"]["dependencies"]:
+        fail("xtask has dependencies; it is std only")
+    for dep, kind in internal_deps(pkgs["xtask"]):
+        fail(f"xtask: {kind} dependency on {dep}; xtask depends on no workspace crate")
+    for name, p in pkgs.items():
+        if name != "xtask" and any(dep == "xtask" for dep, _ in internal_deps(p)):
+            fail(f"{name} depends on xtask; nothing depends on it")
+else:
+    fail("xtask is not a workspace member")
 
 # ---- crates/ never builds on testing/ -------------------------------------
 for name, p in pkgs.items():

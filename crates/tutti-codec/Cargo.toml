@@ -25,7 +25,7 @@ encode-wav = []
 encode-flac = ["dep:flacenc", "dep:md-5"]
 encode-aiff = ["dep:aifc"]
 # Ogg Vorbis. Its C library (`ogg_next_sys`) does not cross-compile to Windows
-# MSVC from Linux, so `just check-windows` leaves it out of the lint run. A
+# MSVC from Linux, so `cargo xtask check-windows` leaves it out of the lint run. A
 # decode-only build never reaches it.
 encode-vorbis = ["dep:vorbis_rs"]
 # Each `decode-*` feature pulls exactly one symphonia container (and its codec)

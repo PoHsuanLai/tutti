@@ -103,8 +103,16 @@ impl Node for PolySynth {
             SortedEvents::EMPTY
         };
         let count = tutti_midi_runtime::gather_midi(events, &mut self.midi_buffer);
-        let volume = block_driven(&io, 0)
-            .map_or_else(|| self.master_volume.load().get(), Self::clamp_volume);
+        let volume = block_driven(&io, 0).map_or_else(
+            || {
+                let cell = self.master_volume.load().get();
+                if cell.is_finite() {
+                    self.last_volume = cell;
+                }
+                self.last_volume
+            },
+            Self::clamp_volume,
+        );
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();
         let (Some(left), right) = (channels.next(), channels.next()) else {

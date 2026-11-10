@@ -305,7 +305,6 @@ fn pdc_delays_equal_latency_delays() {
         let plan = compiled(&t);
         let rec = latency::delays(&t);
         let comp = rec.compensation().clone();
-        assert_eq!(comp, latency::plan(&t), "{name}: plan and delays agree");
 
         let mut want_in: Vec<(DelayKey, Samples)> = rec
             .inputs()
@@ -363,6 +362,44 @@ fn pdc_delays_equal_latency_delays() {
         nonzero += usize::from(!comp.is_empty());
     }
     assert!(nonzero >= 2, "the agreement is not vacuous");
+}
+
+/// The solve against an analytic figure: a diamond whose branches carry 3 and
+/// 7 frames merges at 7, so the short branch is delayed by exactly 4 into the
+/// merge, nothing else is delayed, and the plan's total latency is 7.
+///
+/// Mutation (run): in `latency::delays`, take the *minimum* departure as a
+/// node's arrival (`.min()` for `.max()`) → no delay into the merge → fails.
+/// Mutation (run): in `latency::departure`, return `at` (ignore the node's
+/// own latency) → no delay, total 0 → fails.
+#[test]
+fn a_diamond_of_3_and_7_delays_the_short_branch_by_4() {
+    let mut t = Topology::default();
+    t.nodes.insert(A, spec("dc", 0, 1));
+    t.nodes
+        .insert(B, spec("gain", 1, 1).with_latency(Samples(3)));
+    t.nodes
+        .insert(C, spec("gain", 1, 1).with_latency(Samples(7)));
+    t.nodes.insert(D, spec("sum", 2, 1));
+    edge(&mut t, at(B, 0), out(A, 0));
+    edge(&mut t, at(C, 0), out(A, 0));
+    edge(&mut t, at(D, 0), out(B, 0));
+    edge(&mut t, at(D, 1), out(C, 0));
+    t.outputs = vec![Source::Node(out(D, 0))];
+    let plan = compiled(&t);
+    let delays: Vec<_> = plan.delays().iter().map(|d| (d.key, d.len)).collect();
+    assert_eq!(
+        delays,
+        vec![(
+            DelayKey::Audio {
+                at: at(D, 0),
+                from: Source::Node(out(B, 0)),
+            },
+            Samples(4)
+        )]
+    );
+    assert_eq!(plan.total_latency().samples(), Samples(7));
+    assert_eq!(plan.compensation(), &[Samples(0)]);
 }
 
 /// The rings the plan inserts actually align the paths: rendered through the

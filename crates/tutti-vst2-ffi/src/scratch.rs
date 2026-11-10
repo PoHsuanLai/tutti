@@ -26,8 +26,6 @@ use crate::host::RenderHandle;
 /// of the [`Prepare`](tutti_plugin_types::Prepare), and reused for every block:
 /// after construction nothing here allocates, so it is safe on the audio thread.
 ///
-
-///
 /// Carrying both costs `block_size * (in + out) * 12` bytes over one width —
 /// at a 512-sample block and stereo I/O, 24 KiB.
 pub struct RenderScratch {

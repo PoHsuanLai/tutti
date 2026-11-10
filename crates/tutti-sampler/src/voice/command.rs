@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::ports::Commands;
+use crate::streamer::StreamerPort;
 use crate::stretch;
 
 use super::memory_source::{LoopSetting, VoiceWindow};
@@ -552,7 +552,7 @@ pub struct VoicePoolHandle {
     pub(crate) counters: Arc<DrainCounters>,
     /// The pool's streamer, which a streaming voice's loop is forwarded to.
     /// `None` for a pool built without one.
-    pub(crate) streamer: Option<Commands>,
+    pub(crate) streamer: Option<StreamerPort>,
     /// The streamer stream of every streaming voice this handle (or a clone)
     /// added, by slot, with the loop last forwarded to it; a slot holding a
     /// memory voice has no entry. Written by `send` as it queues an add, a
@@ -631,7 +631,7 @@ impl VoicePoolHandle {
     ///
     /// An [`UpdateLoop`](VoiceCommand::UpdateLoop) aimed at a streaming voice, and
     /// an [`AddVoice`](VoiceCommand::AddVoice) of one, forward the loop to
-    /// the pool's streamer (`Command::Loop`, naming the voice's stream) here,
+    /// the pool's streamer (a loop command naming the voice's stream) here,
     /// and queue the command only once the streamer has taken it, so the
     /// voice's `Playback` never records a loop the streamer did not receive.
     /// A forward that cannot be made (a pool without a streamer, a voice
@@ -647,7 +647,7 @@ impl VoicePoolHandle {
     /// # Blocking
     ///
     /// That forward waits while the streamer's queue is full, as
-    /// [`Commands::send`] does: as long as a stalled streamer stalls, and for
+    /// a [`Stream`](crate::Stream)'s commands do: as long as a stalled streamer stalls, and for
     /// good on a streamer nobody drains (a controller never started, or a
     /// `DiskStreamer::manual` stepped on this thread). While it waits,
     /// another thread's streaming add or streaming loop through a clone of
@@ -667,7 +667,7 @@ impl VoicePoolHandle {
     /// applies the refused loop and then the rollback, which can be briefly
     /// audible when a loop change re-arms the fade-in; and a rolled-back
     /// add on a stream the handle had not added sends `Off`, clearing a loop
-    /// a host set on that channel with its own `Command::Loop`. That is a
+    /// a host set on that channel with its own loop. That is a
     /// failure a caller can act on rather than log, which is why it is `#[must_use]` — see
     /// [`SendError::is_disconnected`] for which of the two is worth retrying.
     #[must_use = "a dropped command is a note that never sounds or a voice that never stops"]
@@ -798,7 +798,7 @@ impl VoicePoolHandle {
     /// left to undo.
     fn roll_back(&self, addr: Option<StreamAddr>, previous: LoopSetting) {
         if let Some((streamer, addr)) = self.streamer.as_ref().zip(addr) {
-            let _ = streamer.send_stream_loop(addr.stream, previous);
+            let _ = streamer.send_loop(addr.stream, previous);
         }
     }
 

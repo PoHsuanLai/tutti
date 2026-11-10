@@ -13,8 +13,8 @@ use crate::OpenError;
 /// reused, and what every command about the stream names.
 ///
 /// Opaque: the only way to hold one is to be handed it
-/// ([`StreamReader::id`](crate::StreamReader::id)), so a command can only name
-/// a stream that was opened.
+/// ([`Stream::id`](crate::Stream::id), [`StreamReader::id`](crate::StreamReader::id)),
+/// so a command can only name a stream that was opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StreamId(pub(crate) u64);
 
@@ -41,24 +41,24 @@ pub(crate) enum StreamerCommand {
         width: Option<ChannelLayout>,
         reply: Reply,
     },
-    /// Stop a stream: its ring and region go.
-    StopStreaming { stream: StreamId },
+    /// End a stream: its record, and with it its ring and region, goes in the
+    /// step that handles this. Sent by `Drop for Stream`. A stream the
+    /// streamer no longer holds ignores it.
+    Close { stream: StreamId },
 
-    /// Enable looping on a stream. The streamer builds a
-    /// [`LoopConfig`](super::plan::LoopConfig) (range + crossfade, plus the
-    /// fade's lead-in, captured once) into the stream's `link.loop_config`,
-    /// which the refill writes the ring by, and repositions the stream at its
-    /// head so the change is heard at once (`handle_set_stream_loop`). A
-    /// stream the streamer no longer holds (stopped) ignores it.
+    /// Enable looping on a stream. The streamer captures the loop (range and
+    /// crossfade, plus the fade's lead-in, read once) into the stream's ring
+    /// mapping and records the loop as applied (`handle_loop`). A stream the
+    /// streamer no longer holds ignores it.
     SetStreamLoop {
         stream: StreamId,
         /// `(loop_start, loop_end)` in file samples.
         range: (u64, u64),
         crossfade_frames: usize,
     },
-    /// Clear looping on a stream — drop its `link.loop_config` so the
-    /// stream plays through to the end without wrapping, repositioned at its
-    /// head as a loop change is.
+    /// Clear looping on a stream, so it plays through to the end without
+    /// wrapping, repositioned as a loop change is. A stream the streamer no
+    /// longer holds ignores it.
     ClearStreamLoop { stream: StreamId },
 
     /// Shutdown the streamer thread.

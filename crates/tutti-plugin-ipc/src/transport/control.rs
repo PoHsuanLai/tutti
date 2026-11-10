@@ -727,14 +727,9 @@ mod tests {
         }
     }
 
-    fn pair(label: &str) -> Pair {
+    fn pair() -> Pair {
         use interprocess::local_socket::traits::Listener as _;
-        let path = std::env::temp_dir().join(format!(
-            "tutti-control-{}-{}-{:?}.sock",
-            label,
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let path = crate::unique_socket_path();
         let _ = std::fs::remove_file(&path);
         let name = crate::transport::control::socket_name(&path).unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
@@ -765,7 +760,7 @@ mod tests {
         use crate::protocol::ProcessAudioData;
         use crate::protocol::frame::read_frame;
 
-        let mut p = pair("round-trip");
+        let mut p = pair();
         let mut server = p.take_peer();
         let mut partial = PartialFrame::default();
         let block = HostMessage::ProcessAudio(ProcessAudioData {
@@ -805,8 +800,7 @@ mod tests {
     #[test]
     fn a_send_to_a_peer_that_reads_nothing_is_bounded() {
         use interprocess::local_socket::traits::Listener as _;
-        let path =
-            std::env::temp_dir().join(format!("tutti-control-send-{}.sock", std::process::id()));
+        let path = crate::unique_socket_path();
         let _ = std::fs::remove_file(&path);
         let name = socket_name(&path).unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
@@ -878,7 +872,7 @@ mod tests {
     /// deterministic test of a race.
     #[test]
     fn a_frame_interrupted_by_a_deadline_is_resumed_from_where_it_stopped() {
-        let mut p = pair("resume");
+        let mut p = pair();
         let msg = latency_msg(4242);
 
         let sent = msg.clone();
@@ -935,7 +929,7 @@ mod tests {
     /// second, distinguishable message is what makes the offset observable.
     #[test]
     fn the_frame_after_a_resumed_one_still_parses() {
-        let mut p = pair("resume-next");
+        let mut p = pair();
         let first = latency_msg(1111);
         let second = latency_msg(2222);
 
@@ -975,7 +969,7 @@ mod tests {
     /// made one missed block budget kill a live plugin session.
     #[test]
     fn a_timeout_with_nothing_read_reports_a_framed_stream() {
-        let mut p = pair("clean");
+        let mut p = pair();
         // The peer sends nothing at all.
         let err = recv_within(&mut p.host, Duration::from_millis(20)).unwrap_err();
         match err {
@@ -999,7 +993,7 @@ mod tests {
     /// it — and the only thing that lets a caller finish the frame instead.
     #[test]
     fn a_timeout_part_way_through_a_frame_reports_a_broken_stream() {
-        let mut p = pair("partial");
+        let mut p = pair();
         // Announce a 4 KiB body, then send 8 bytes of it and stop.
         {
             use std::io::Write;

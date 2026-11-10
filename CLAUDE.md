@@ -632,7 +632,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   stream is a `Config`/`State`/`step` triple. It reuses `tutti-dsp`'s
   `RealFft`/`FftScratch`, `Complex`, `StftGeometry`, `Grid`, `Error` and
   `CosineWindow` and does not copy them: those serve the processors too (the
-  sampler's vocoder builds on `StftGeometry`).
+  sampler's vocoder builds on `StftGeometry`). `tutti_dsp::Error` is only what
+  the geometry and the grid refuse; the analysers' own `tutti_measure::Error`
+  carries it as `Dsp` and raises its own variant for its own validation.
   A processor goes in `tutti-dsp`, a measurement in `tutti-measure`.
 - **A pure algorithm over slices goes in `tutti-dsp` (or, if it only reads audio and
   returns a measurement, `tutti-measure`); a node file holds only

@@ -16,9 +16,9 @@
 use tutti_types::{Confidence, Hz, SampleRate, Samples, Seconds};
 
 use crate::xcorr::{CrossCorrelation, cross_correlate_shaped};
+use crate::{Error, Result};
 use tutti_dsp::Complex;
 use tutti_dsp::FftScratch;
-use tutti_dsp::{Error, Result};
 
 /// A bin whose cross-spectrum magnitude is below this fraction of the
 /// strongest in-band bin is damped rather than boosted to unit magnitude.

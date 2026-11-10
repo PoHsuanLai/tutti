@@ -113,7 +113,7 @@ let pitch = yin(&YinConfig::standard(sample_rate)?, &samples)?;
 // refused here rather than silently truncated inside the measurement.
 let planes = StereoPlanes::new(&samples, &samples).expect("equal lengths");
 let reading = correlate(planes);
-# Ok::<(), tutti_dsp::Error>(())
+# Ok::<(), tutti_measure::Error>(())
 ```
 
 ## Reading from a running graph
@@ -175,7 +175,7 @@ let reading = correlate(planes);
 
 ## Constraint: an invalid combination is refused at construction, never mid-measurement
 
-The config constructors are where `Error` comes from — a hop that exceeds or does
+The config constructors are where `tutti_measure::Error` comes from — a hop that exceeds or does
 not COLA-divide its window, an inverted or above-Nyquist frequency range, a
 non-positive sample rate. Refusing there is the point: a detector that *accepted*
 an inverted range would report "unvoiced" forever instead, which is a silent

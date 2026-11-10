@@ -14,8 +14,8 @@
 use tutti_types::{Confidence, PitchClass};
 
 use crate::chroma::{CLASSES, mean_of_rows};
+use crate::{Error, Result};
 use tutti_dsp::Grid;
-use tutti_dsp::{Error, Result};
 
 /// A chroma whose spread is under this fraction of its mean is flat: the
 /// 24 profiles would correlate alike, down to rounding.

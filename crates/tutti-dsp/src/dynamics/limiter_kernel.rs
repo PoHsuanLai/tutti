@@ -1,8 +1,9 @@
 //! The lookahead limiter's per-frame gain: the curve, the instant-attack
 //! release recursion on its target, before the window minimum.
 
-use super::curves::{LimiterCurve, amplitude_to_db, compute_limiter_gain, smooth_envelope};
+use super::curves::{LimiterCurve, amplitude_to_db, compute_limiter_gain};
 use super::envelope::EnvelopeFollower;
+use crate::Smoother;
 use tutti_types::{Amplitude, Db, SampleRate, Seconds};
 
 /// The controls one block of a limiter runs on, read once at the top of the
@@ -105,7 +106,7 @@ impl LimiterKernel {
             self.envelope = target_gain;
         } else {
             self.envelope =
-                smooth_envelope(self.envelope, target_gain, self.follower.release_coeff());
+                Smoother::toward(self.envelope, target_gain, self.follower.release_coeff());
         }
         self.envelope
     }

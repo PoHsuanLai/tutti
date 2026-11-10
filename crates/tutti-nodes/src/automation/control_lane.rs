@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tutti_graph::{
-    Cost, Cx, Event, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
-    NodeParts, Offset, ParamRange, ParamRangeReader, ParamSegment, PlayReading, Prepare,
-    SegmentShape, Shape, Status, Transport,
+    Cost, Cx, Event, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Law, Node,
+    NodeParts, Offset, ParamRange, ParamRangeReader, ParamSegment, PlayReading, Prepare, Shape,
+    Status, Transport,
 };
 use tutti_modulation::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
@@ -17,8 +17,6 @@ use tutti_types::{
     AtomicF32, Beat, Frame, ParamAddr, ParamCell, ParamKey, SamplePosition, Samples, Tail, Unit,
     UnitAddr,
 };
-
-use super::lane::segment_shape;
 
 /// The control lane's grid step, in frames of the play clock: a lane ends a
 /// piece on every frame whose play count is a multiple of this, and on every
@@ -35,7 +33,7 @@ pub const LANE_EVENT_CAPACITY: u32 = 256;
 
 /// How a lane builds a segment for its target: the typed key (or foreign
 /// id) bound in, so the lane itself is not generic.
-type MakeSegment = dyn Fn(f32, f32, SegmentShape) -> ParamSegment + Send + Sync;
+type MakeSegment = dyn Fn(f32, f32, Law) -> ParamSegment + Send + Sync;
 
 /// Where a lane reads its target's range.
 enum RangeSource {
@@ -293,8 +291,8 @@ struct Seen {
 ///   on where blocks fall.
 /// - **Exact mode.** A native target whose program is automation alone
 ///   receives the curve's own shaped pieces (as `AutomationLaneNode` sent
-///   them), and a piece with no [`SegmentShape`] on the grid. A plugin lane
-///   never uses it: a plugin receives points.
+///   them); a curve that cannot say its pieces takes the grid. A plugin
+///   lane never uses it: a plugin receives points.
 /// - **Steady.** When nothing moves (stopped with no seconds-clock layer,
 ///   or no layers but constant ones, and every input arrived) the lane
 ///   sends one held value and no grid.
@@ -675,25 +673,20 @@ impl Block<'_> {
                         to,
                         shape,
                     }) if from.is_finite() && to.is_finite() && end.get() > beat => {
-                        segment_shape(shape).map(|shape| {
-                            let (s, e) = (start.get(), end.get());
-                            let seg = make(from, to, shape).resumed(
-                                SamplePosition((beat - s) * f),
-                                SamplePosition((e - s) * f),
-                            );
-                            (seg, from, to, Some((e - beat) * f))
-                        })
+                        let (s, e) = (start.get(), end.get());
+                        let seg = make(from, to, shape)
+                            .resumed(SamplePosition((beat - s) * f), SamplePosition((e - s) * f));
+                        Some((seg, from, to, Some((e - beat) * f)))
                     }
                     Some(CurveSegment::Hold { value, until }) if value.is_finite() => Some((
-                        make(value, value, SegmentShape::Linear),
+                        make(value, value, Law::Linear),
                         value,
                         value,
                         until.map(|u| (u.get() - beat) * f).filter(|d| *d > 0.0),
                     )),
                     None if curve.value_at(t.beat()).is_none() => {
                         // No value anywhere: the knob, held.
-                        self.knob
-                            .map(|k| (make(k, k, SegmentShape::Linear), k, k, None))
+                        self.knob.map(|k| (make(k, k, Law::Linear), k, k, None))
                     }
                     _ => None,
                 };
@@ -742,7 +735,7 @@ impl Block<'_> {
             } else {
                 Some(self.clamp(v0))
             };
-            let seg = v.map(|v| make(v, v, SegmentShape::Linear));
+            let seg = v.map(|v| make(v, v, Law::Linear));
             if let (Some(v), Some(seg)) = (v, seg) {
                 if unchanged(None, v, None, &seg) {
                     return Ok(());
@@ -812,8 +805,7 @@ impl Block<'_> {
             }
         }
         let (v0, v1) = (self.clamp(v0), self.clamp(v1));
-        let seg =
-            make(v0, v1, SegmentShape::Linear).resumed(SamplePosition(0.0), SamplePosition(d));
+        let seg = make(v0, v1, Law::Linear).resumed(SamplePosition(0.0), SamplePosition(d));
         if unchanged(None, v1, Some(d), &seg) {
             return Ok(());
         }

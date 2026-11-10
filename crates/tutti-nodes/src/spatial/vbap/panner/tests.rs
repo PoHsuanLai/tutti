@@ -11,7 +11,9 @@ use tutti_types::Seconds;
 /// Mutations (each run, each fails): `gap_closed` returning `coeff`
 /// whatever the step count (one step per block: the response falls
 /// 60 frames behind); `advance_angle` taking the arc as `target -
-/// current` (the sweep goes the long way).
+/// current` (the sweep goes the long way); `solve_block` solving the
+/// gains at the position it started from, before the advance (the gains
+/// are one block behind the position: the `gains` assertion fails).
 #[test]
 fn solve_block_follows_the_exact_one_pole_response() {
     for (rate, block, start, target) in [
@@ -43,12 +45,18 @@ fn solve_block_follows_the_exact_one_pole_response() {
             .smoother
             .reset_to_target(Azimuth(start.0), Elevation(start.1));
         for b in 1..=(rate as usize / block) {
-            panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, block);
+            let gains = panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, block);
             let left = (1.0 - coeff).powi((b * block) as i32);
             let want = Azimuth((f64::from(start.0) + arc * (1.0 - left)) as f32);
             let want_el =
                 f64::from(target.1.get()) - (f64::from(target.1.get()) - f64::from(start.1)) * left;
             let (az, el) = panner.smoother.current();
+            // The gains are the solve at the block's *last* frame, the
+            // advanced position, not at the one the block started from.
+            let at_end = panner
+                .kernel
+                .gains(az, el, StereoWidth::NATURAL, Spread::POINT);
+            assert_eq!(gains, at_end, "block {b}: gains off the advanced position");
             let err = want.shortest_arc_to(az).get().abs();
             assert!(err < tol, "block {b}: bearing {az:?}, want {want:?}");
             assert!(

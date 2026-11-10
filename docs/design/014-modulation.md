@@ -95,7 +95,7 @@ base(t)  = automation(t)  where the lane's automation has a value at t
 ## 3. Where things live
 
 Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
-`tutti-types`; `tutti-modulation` names `tutti-types` and `audio-automation`;
+`tutti-types`; `tutti-modulation` names `tutti-types` and `tutti-curve` (it named `audio-automation` until Q25 of doc 024 replaced it);
 `tutti-nodes` names `tutti-modulation` and `tutti-graph`; `tutti-plugin` names
 `tutti-nodes`; `bevy-tutti` names `tutti-modulation` (optional) and `tutti-nodes`.
 
@@ -493,7 +493,7 @@ its output to the target, so each value lands on its own frame.
 
 ### 5.3 Control resolution: `CONTROL_STEP = 32` frames on the play clock
 
-The sum of differently shaped layers has no closed form a `SegmentShape`
+The sum of differently shaped layers has no closed form a `Law`
 carries, so it goes **piecewise-linear**: pieces end on a 32-frame grid of
 the play clock plus every corner.
 
@@ -607,7 +607,7 @@ at most 4096 frames (§13).
 When `is_pure_automation()` holds **and the target is a native port**, the
 lane sends the curve's own shaped
 segments, breakpoints between frames included: today's `for_param` walk, so
-automation-only fidelity does not regress. Pieces with no `SegmentShape`
+automation-only fidelity does not regress. Pieces with no `Law`
 (`Circular`, `Back`, `Elastic`, `Bounce`, `Bezier`) and pieces a clamp cuts
 are today sampled at block edges (`lane.rs:43-49`, `:181-186`), which
 depends on block size; they go **on the play-clock grid** instead, as linear
@@ -722,7 +722,7 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     reaches silence in finite time, and a silent follower sends nothing (a
     piece from 0 to 0 after one that ended at 0 is skipped; a lane reads an
     input that has not sent as 0). `env(g)` counts the audio before `g`.
-  - **The note envelope's stages are linear segments** (`SegmentShape::
+  - **The note envelope's stages are linear segments** (`Law::
     Linear`, in frames from `Seconds::to_samples`), so a lane carries them
     exactly: the peak lands on frame `on + attack`, the sustain on
     `on + attack + decay`. A note-on (re)starts the attack from the current
@@ -913,7 +913,7 @@ open:
 
 | Module (`crates/tutti-modulation/src`) | Fate |
 |---|---|
-| `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `audio-automation`'s `CurveType::interpolate`, the editor's evaluation |
+| `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `tutti_curve::Law::interpolate` (it was `audio-automation`'s `CurveType::interpolate`) |
 | `curve.rs` | kept, moved into the floor |
 | `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Wave` (`program.rs`); the rest deleted |
 | `lfo.rs`, `modulator.rs` | **moved to `tutti-nodes`** (`tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use them); deleted from `tutti-modulation` with `routing`. `tutti-modulation` keeps no runtime. |
@@ -1131,7 +1131,7 @@ republishes with `automation: None`, so the knob (the gesture) drives the
 param; on release it republishes with the finished envelope. (It is
 an `AutomationTake` component on the `Automation`'s entity, holding a
 `Recorder`; `close_takes`, before the reconcile, swaps a finished take's
-envelope into the `Automation` and removes the take.)
+trajectory into the `Automation` and removes the take.)
 
 ## 9. Plugin delivery: requirements
 
@@ -1514,8 +1514,8 @@ param port and every node that sends nothing a sink could miss ignores it.
 Every new test carries its mutation record. Bit-for-bit comparisons are
 serial against parallel and live against fork, on one target; anything
 calling libm is asserted analytically with a tolerance, or as a golden
-digest on its recording target. The `audio-automation` pin and the bevy
-0.19 line are unaffected.
+digest on its recording target. The bevy 0.19 line is unaffected (the
+`audio-automation` pin it once named is gone: `tutti-curve` replaced the crate).
 
 ### 12.1 Plugin parameter delivery
 
@@ -1935,7 +1935,7 @@ order-dependent sum).
   authored write to a modulated param moves the knob; a held note
   envelope newly routed reads its level at once; a plugin GUI edit
   becomes the knob (the in-process VST2 probe); a take suspends the
-  automation, then its envelope plays; a follower downstream of its
+  automation, then its trajectory plays; a follower downstream of its
   target is refused by route and surfaced once; an entity rebound to a
   node with another param list is modulated from the node's first frame;
   a crossfaded plugin keeps its lane. Each records the mutations run

@@ -264,7 +264,7 @@ pub use editor::{CommitError, Editor, Limits, MAX_ROOT_CHANNELS, MissingSource};
 pub use event::{
     Event, EventDensity, EventKind, EventOrderError, EventRejected, EventWriter, Harmony,
     HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,
-    SegmentShape, SortedEvents, SubBlocks, UmpAt, note_off_room,
+    SortedEvents, SubBlocks, UmpAt, note_off_room,
 };
 pub use event_inlet::{EventInletNode, EventInletWriter, Refused};
 pub use event_tap::{EventTapReader, EventTapWriter, TapEvent};
@@ -274,6 +274,7 @@ pub use fork::{
     ForkBuild, ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode,
     ForkRemains, ForkSource, ForkTarget, Forked, PendingFork, Unforkable,
 };
+pub use tutti_curve::Law;
 // The audio graph as a value, and the two passes over it. `plan` is the
 // latency pass and is exported as `latency_plan`.
 pub use gain::EdgeGain;

@@ -8,7 +8,6 @@ mod program;
 mod shape;
 mod sources;
 
-pub use audio_automation::CurveType;
 pub use compile::{
     CompileError, Compiled, Declarations, RATE_ANCHOR_MARGIN, RouteDecl, RouteKey, RouteTarget,
     SignalKind, Source, SourceKey, SourceNode, TargetDecl, TargetKey, compile, layer_id,
@@ -20,4 +19,5 @@ pub use program::{
 };
 pub use shape::{LfoShape, Polarity, shape};
 pub use sources::{Follower, Lfo, LfoRate, Macro, NoteEnvelope};
+pub use tutti_curve::Law;
 pub use tutti_types::Adsr;

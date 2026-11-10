@@ -352,7 +352,7 @@ struct SourcePlan {
 /// use std::sync::Arc;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_modulation::{
-///     Clock, CurveType, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
+///     Clock, Law, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
 ///     Source, SourceKey, TargetDecl, TargetKey, Wave,
 /// };
 /// use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
@@ -397,7 +397,7 @@ struct SourcePlan {
 ///         to: RouteTarget::Param(cutoff),
 ///         depth: Depth(0.3),
 ///         polarity: Polarity::Bipolar,
-///         curve: CurveType::Linear,
+///         curve: Law::Linear,
 ///     },
 /// )];
 /// let targets = [(cutoff, TargetDecl { min: 20.0, max: 20_000.0, automation: None })];

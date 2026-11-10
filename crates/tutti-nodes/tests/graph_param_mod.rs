@@ -25,7 +25,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use audio_automation::CurveType;
+use tutti_curve::Law;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventOut, GraphBuilder, IntoNode, NodeParts, PARAM_DECLICK, ParamIn, ParamRange,
@@ -74,7 +74,7 @@ fn konst(depth: f32) -> Layer {
         amount: Amount {
             depth: Depth(depth),
             polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
+            curve: Law::Linear,
         },
         depth_by: None,
     }

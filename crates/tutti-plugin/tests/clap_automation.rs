@@ -1,6 +1,6 @@
 //! Parameter automation reaches a hosted plugin through the graph: a
 //! foreign control lane on the plugin node's event input, a curve segment
-//! and a shaped ramp scheduled into it, and a lane sending an envelope's
+//! and a shaped ramp scheduled into it, and a lane sending a trajectory's
 //! segments, against
 //! the reference CLAP plugin's gain parameter.
 //!
@@ -17,14 +17,12 @@ use std::sync::Arc;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Editor, EventEdge, EventIn, EventKind, EventOut, ForkMode, ForkTarget, ParamRamp, ParamSegment,
-    Prepare, SegmentShape,
+    Editor, EventEdge, EventIn, EventKind, EventOut, ForkMode, ForkTarget, Law, ParamRamp,
+    ParamSegment, Prepare,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_modulation::ControlProgram;
-use tutti_nodes::automation::{
-    AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
-};
+use tutti_nodes::automation::{Breakpoint, ControlLaneNode, Curve, Trajectory};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{At, Frame};
 use tutti_types::{Beat, SampleRate, Samples};
@@ -280,7 +278,7 @@ fn follows(
 #[test]
 fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
     const AT: u64 = 300;
-    let seg = ParamSegment::foreign(GAIN, 0.5, 0.75, Samples(1000), SegmentShape::PowerIn(2.0));
+    let seg = ParamSegment::foreign(GAIN, 0.5, 0.75, Samples(1000), Law::PowerIn(2.0));
     let (out, latency) = render_gain(None, &[(AT, EventKind::Segment(seg))], 10);
     let end = AT as usize + seg.arrives_after().expect("arrives").get();
     follows(
@@ -307,13 +305,13 @@ fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
 fn a_shaped_ramp_drives_a_plugin_parameter_along_its_shape() {
     const AT: u64 = 300;
     let step = ParamRamp::foreign(GAIN, 0.5, Samples(0));
-    let ramp = ParamRamp::foreign(GAIN, 0.75, Samples(1000)).with_shape(SegmentShape::PowerIn(2.0));
+    let ramp = ParamRamp::foreign(GAIN, 0.75, Samples(1000)).with_shape(Law::PowerIn(2.0));
     let (out, latency) = render_gain(
         None,
         &[(100, EventKind::Ramp(step)), (AT, EventKind::Ramp(ramp))],
         10,
     );
-    let seg = ParamSegment::foreign(GAIN, 0.5, 0.75, Samples(1000), SegmentShape::PowerIn(2.0));
+    let seg = ParamSegment::foreign(GAIN, 0.5, 0.75, Samples(1000), Law::PowerIn(2.0));
     follows(
         &out,
         latency,
@@ -337,7 +335,7 @@ fn a_shaped_ramp_drives_a_plugin_parameter_along_its_shape() {
 fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
     const AT: u64 = 300;
     const CUT: u64 = 800;
-    let seg = ParamSegment::foreign(GAIN, 0.5, 0.75, Samples(1000), SegmentShape::PowerIn(2.0));
+    let seg = ParamSegment::foreign(GAIN, 0.5, 0.75, Samples(1000), Law::PowerIn(2.0));
     let ramp = ParamRamp::foreign(GAIN, 0.25, Samples(0));
     let (out, latency) = render_gain(
         None,
@@ -355,9 +353,9 @@ fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
 }
 
 /// **An automation lane drives a plugin parameter along its curve.** A lane
-/// sending an exponential envelope as segments (`for_foreign`) gives what a
+/// sending an exponential trajectory as segments (`for_foreign`) gives what a
 /// scheduled segment gives: the gain follows the curve within one point
-/// spacing and lands exactly on the end gain on the envelope's last frame.
+/// spacing and lands exactly on the end gain on the trajectory's last frame.
 ///
 /// Mutation (run): the plugin node sending only each segment's first point
 /// → the gain moves only at the lane's block-edge re-sends, more than one
@@ -366,14 +364,10 @@ fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
 /// the chunk edge at frame 255 lies above `curve(256)` → fails.
 #[test]
 fn a_lane_drives_a_plugin_parameter_along_its_curve() {
-    let mut env = AutomationEnvelope::new(());
-    env.add_point(AutomationPoint::with_curve(
-        0.0,
-        0.5,
-        CurveType::Exponential,
-    ));
+    let mut env = Trajectory::new();
+    env.add_breakpoint(Breakpoint::with_law(Beat(0.0), 0.5, Law::PowerIn(2.0)));
     // 120 BPM at 48 kHz: 24 000 frames a beat, so frame 1500.
-    env.add_point(AutomationPoint::new(0.0625, 0.75));
+    env.add_breakpoint(Breakpoint::new(Beat(0.0625), 0.75));
     let lane = ControlLaneNode::for_foreign(
         GAIN,
         ControlProgram::from_curve(Arc::new(env.clone())),

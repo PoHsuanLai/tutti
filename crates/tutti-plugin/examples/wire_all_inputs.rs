@@ -20,7 +20,7 @@ use tutti_fixtures::main_thread;
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 use tutti_modulation::{
-    Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, Polarity, Wave,
+    Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity, Wave,
 };
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::Result;
@@ -94,7 +94,7 @@ fn main() -> Result<()> {
             amount: Amount {
                 depth: Depth(0.5),
                 polarity: Polarity::Bipolar,
-                curve: CurveType::Linear,
+                curve: Law::Linear,
             },
             depth_by: None,
         };

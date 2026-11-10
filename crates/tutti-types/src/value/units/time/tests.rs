@@ -157,6 +157,9 @@ fn one_pole_step_response_reaches_one_minus_inverse_e_after_tau() {
 /// one holds (0); a step form's empty step moves nothing.** And a long
 /// time constant keeps a coefficient above zero.
 ///
+/// Also carries the deleted `tutti-nodes` `a_zero_smoothing_time_is_instant`
+/// (run: `one_pole`'s `else` returning 0, the freeze, fails this test).
+///
 /// Mutations (run): `one_pole` without its `n > 0.0` guard → zero
 /// gives `1 − exp(−inf)` = 1 still, but a negative τ gives
 /// `1 − exp(+…)` < 0 and NaN gives NaN → fails; its `else` returning 0

@@ -4,7 +4,7 @@
 use super::*;
 use crate::LfoShape;
 use crate::shape::shape;
-use audio_automation::{AutomationEnvelope, AutomationPoint};
+use tutti_curve::{Breakpoint, Trajectory};
 use tutti_types::{Amplitude, Frame, Hz, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -66,7 +66,7 @@ fn route(source: u64, to: RouteTarget, depth: f32) -> RouteDecl {
         to,
         depth: Depth(depth),
         polarity: Polarity::Bipolar,
-        curve: CurveType::Linear,
+        curve: Law::Linear,
     }
 }
 
@@ -116,11 +116,11 @@ fn time(beat: f64, play: f64, epoch: u32) -> ProgramTime {
     }
 }
 
-/// A frozen envelope: what a host hands as automation.
-fn envelope() -> Arc<dyn Curve> {
-    let mut e = AutomationEnvelope::new(());
-    e.add_point(AutomationPoint::new(0.0, 100.0));
-    e.add_point(AutomationPoint::new(4.0, 900.0));
+/// A frozen trajectory: what a host hands as automation.
+fn trajectory() -> Arc<dyn Curve> {
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::new(Beat(0.0), 100.0));
+    e.add_breakpoint(Breakpoint::new(Beat(4.0), 900.0));
     Arc::new(e)
 }
 
@@ -165,7 +165,7 @@ impl Rig {
             (
                 target(3),
                 TargetDecl {
-                    automation: Some(envelope()),
+                    automation: Some(trajectory()),
                     ..ranged(20.0, 20_000.0)
                 },
             ),
@@ -269,17 +269,17 @@ fn equal_declarations_in_any_order_compile_equal() {
 /// that.
 ///
 /// Mutations (run), each fails: `RouteDecl::amount` dropping the curve
-/// (`curve: CurveType::Linear`) → the exponential rows read the linear
+/// (`curve: Law::Linear`) → the exponential rows read the linear
 /// figure; dropping the polarity → the unipolar rows read the bipolar one;
 /// the depth route's amount used for the scaled layer → the scaled LFO
 /// reads the full depth.
 #[test]
 fn the_offset_at_raw_unit_is_shape_times_span_for_every_source_kind() {
     let curves = [
-        CurveType::Linear,
-        CurveType::Exponential,
-        CurveType::Logarithmic,
-        CurveType::SCurve,
+        Law::Linear,
+        Law::PowerIn(2.0),
+        Law::PowerIn(0.5),
+        Law::PowerInOut(2.0),
     ];
     let span = 800.0f64;
     for polarity in [Polarity::Bipolar, Polarity::Unipolar] {
@@ -326,7 +326,7 @@ fn the_offset_at_raw_unit_is_shape_times_span_for_every_source_kind() {
                             to: RouteTarget::Depth(RouteKey(5)),
                             depth: Depth::FULL,
                             polarity: Polarity::Unipolar,
-                            curve: CurveType::Linear,
+                            curve: Law::Linear,
                         },
                     ),
                 ];
@@ -423,13 +423,8 @@ fn a_macro_move_changes_exactly_the_programs_it_reaches() {
     assert_eq!(
         after.programs[&target(2)].value_at(Some(0.0), &at, 2.0, &[]),
         Some(
-            (-0.0
-                + f64::from(shape(
-                    -0.75,
-                    Depth(0.2),
-                    Polarity::Bipolar,
-                    CurveType::Linear
-                )) * 2.0) as f32
+            (-0.0 + f64::from(shape(-0.75, Depth(0.2), Polarity::Bipolar, Law::Linear)) * 2.0)
+                as f32
         ),
         "depth 0.2 of a span of 2, at the macro's −0.75"
     );
@@ -863,8 +858,8 @@ fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
             },
         ));
         for (j, (polarity, curve)) in [
-            (Polarity::Bipolar, CurveType::Linear),
-            (Polarity::Unipolar, CurveType::Exponential),
+            (Polarity::Bipolar, Law::Linear),
+            (Polarity::Unipolar, Law::PowerIn(2.0)),
         ]
         .into_iter()
         .enumerate()
@@ -892,7 +887,7 @@ fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
         (
             plugin(5, 3),
             TargetDecl {
-                automation: Some(envelope()),
+                automation: Some(trajectory()),
                 ..ranged(0.0, 1.0)
             },
         ),

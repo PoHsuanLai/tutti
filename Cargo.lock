@@ -59,12 +59,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "allocator-api2"
-version = "0.2.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
-
-[[package]]
 name = "alsa"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -237,17 +231,6 @@ name = "atomic_float"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "628d228f918ac3b82fe590352cc719d30664a0c13ca3a60266fe02c7132d480a"
-
-[[package]]
-name = "audio-automation"
-version = "0.4.1"
-source = "git+https://github.com/PoHsuanLai/audio-automation.git?rev=5c9c3a7#5c9c3a7e2e5904ef7d221905f15b9748622e8e5a"
-dependencies = [
- "bevy_reflect",
- "hashbrown 0.16.1",
- "libm",
- "serde",
-]
 
 [[package]]
 name = "audio-codec-algorithms"
@@ -1445,9 +1428,7 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
- "allocator-api2",
  "equivalent",
- "foldhash",
  "serde",
  "serde_core",
 ]
@@ -3588,6 +3569,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-curve"
+version = "0.0.1"
+dependencies = [
+ "tutti-types",
+]
+
+[[package]]
 name = "tutti-dsp"
 version = "0.0.1"
 dependencies = [
@@ -3662,6 +3650,7 @@ dependencies = [
  "libc",
  "proptest",
  "ringbuf",
+ "tutti-curve",
  "tutti-graph",
  "tutti-rt",
  "tutti-types",
@@ -3772,8 +3761,8 @@ dependencies = [
 name = "tutti-modulation"
 version = "0.0.1"
 dependencies = [
- "audio-automation",
  "bevy_reflect",
+ "tutti-curve",
  "tutti-types",
 ]
 
@@ -3783,11 +3772,11 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "assert_no_alloc",
- "audio-automation",
  "biquad",
  "criterion",
  "libm",
  "thiserror 2.0.21",
+ "tutti-curve",
  "tutti-dsp",
  "tutti-engine",
  "tutti-graph",

@@ -50,6 +50,8 @@
 //!   `Copy` values, for edits the control thread hands the audio thread.
 //! - [`drain_clock()`] — counts the drains the audio side begins, so the control
 //!   side can tell which of its writes a block has surely taken.
+//! - [`FaultLatch`] — a flag a producer raises when it stops for good, read
+//!   *before* the ring so a failure never hides the frames pushed ahead of it.
 //! - [`Doorbell`] — wakes one parked thread from another (the audio thread
 //!   rings; a futex wake only if a sleeper is parked), with no wake-up lost
 //!   between its check and its park.
@@ -74,6 +76,7 @@ mod denormals;
 mod doorbell;
 mod drain_clock;
 mod edits;
+mod fault_latch;
 mod job_gate;
 mod level_cell;
 mod packed_atomic;
@@ -92,6 +95,7 @@ pub use denormals::with_no_denormals;
 pub use doorbell::Doorbell;
 pub use drain_clock::{DrainBeat, DrainMark, DrainWatch, drain_clock};
 pub use edits::{EditReader, EditWriter, RingFull, edit_ring};
+pub use fault_latch::{Drained, FaultLatch};
 pub use job_gate::JobGate;
 pub use level_cell::{LevelReader, LevelSpan, LevelWriter, level_cell};
 pub use packed_atomic::PackedAtomic;

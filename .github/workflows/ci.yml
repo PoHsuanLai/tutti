@@ -921,3 +921,6 @@ jobs:
       # `drain_clock` (a write leaves the record only after a drain that must
       # have seen it has begun), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture
+      # `FaultLatch` (a failure is never read before the frames pushed ahead
+      # of it: the flag is read before the ring), against the shipped code.
+      - run: cargo test --locked -p tutti-rt --release --test fault_latch_loom -- --nocapture

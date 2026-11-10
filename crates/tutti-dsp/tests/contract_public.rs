@@ -148,7 +148,7 @@ impl Design for GainDesign {
     type Bounds = NoSizes;
     type Range = ();
     type Realization = GainRealization;
-    const CADENCE: Cadence = Cadence::Block;
+    const CADENCE: Cadence = Cadence::BLOCK;
 
     fn channels(&self) -> Channels {
         Channels {

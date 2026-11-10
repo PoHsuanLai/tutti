@@ -22,12 +22,14 @@
 
 use tutti_types::{Amplitude, ChannelLayout, Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
 
-use crate::fdn::FdnKernel;
+use core::num::NonZeroU32;
+
+use crate::fdn::{CHUNK, FdnKernel};
 use crate::network::{
     Absorption, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network,
     OutputMap, Stage, pre_delay_frames,
 };
-use crate::{Ceiling, Channels, Design, MaxDecay, Ring, Sizes};
+use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Ring, Sizes};
 
 /// The line lengths at 44.1 kHz for a room size of 0.5 (the scale is
 /// `0.5 + size`), values near primes, so the delays share few factors.
@@ -227,6 +229,16 @@ impl Design for FdnDesign {
     type Bounds = Bounds;
     type Range = MaxDecay;
     type Realization = FdnKernel;
+
+    // The grid the render is a function of: the kernel ramps in whole chunks
+    // counted from the last reset (doc 024 section 4.4). The *design* is still
+    // sampled once per block; a grid finer than that would redesign per chunk
+    // for nothing the kernel needs (doc 022), so this names the render's clock
+    // and not a schedule for `design_into` (doc 024 Q27).
+    const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(CHUNK as u32) {
+        Some(n) => n,
+        None => unreachable!(),
+    });
 
     fn channels(&self) -> Channels {
         Channels {
@@ -691,6 +703,20 @@ mod tests {
     }
 
     crate::realization_contract!(freezable(), Lti, reverb);
+
+    /// The FDN's declared cadence is its chunk clock, so the contract requires
+    /// its block-independence cases.
+    ///
+    /// Mutation: `CADENCE` left at `Cadence::BLOCK` fails (the two cases would
+    /// silently stop running).
+    #[test]
+    fn the_fdn_declares_its_stream_grid() {
+        assert_eq!(
+            FdnDesign::CADENCE,
+            Cadence::stream(NonZeroU32::new(CHUNK as u32).unwrap())
+        );
+        assert!(cases::block_independence_required(&freezable()));
+    }
 
     use crate::contract::cases::realization as cases;
     use crate::contract::flaws::{Defect, Defective};

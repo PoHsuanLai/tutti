@@ -134,7 +134,9 @@ macro_rules! realization_contract {
         }
         #[test]
         fn realization_contract_block_independent() {
-            $crate::contract::cases::realization::block_independent(&$design).unwrap();
+            if $crate::contract::cases::realization::block_independence_required(&$design) {
+                $crate::contract::cases::realization::block_independent(&$design).unwrap();
+            }
         }
         #[test]
         fn realization_contract_landed() {
@@ -142,7 +144,9 @@ macro_rules! realization_contract {
         }
         #[test]
         fn realization_contract_stream_clock() {
-            $crate::contract::cases::realization::stream_clock(&$design).unwrap();
+            if $crate::contract::cases::realization::block_independence_required(&$design) {
+                $crate::contract::cases::realization::stream_clock(&$design).unwrap();
+            }
         }
         #[test]
         fn realization_contract_vacuity() {

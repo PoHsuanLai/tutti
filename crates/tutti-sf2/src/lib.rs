@@ -1,18 +1,8 @@
-//! A SoundFont 2 (`.sf2`) file as data: [`SoundFont`] parses one into its
-//! presets, instruments, sample headers and sample data, and holds nothing
-//! that plays. `tutti-rustysynth` is the synthesizer over it.
-//!
-//! Generator values stay raw, in the unit the SoundFont 2.04 specification
-//! gives each ([`GeneratorType`]); turning a value into seconds or hertz is
-//! the player's.
-//!
-//! The `smpl` chunk is read as 16-bit samples. A file with a compressed
-//! (SoundFont 3) `smpl` chunk is refused with
-//! [`SoundFontError::UnsupportedSampleFormat`], and the `sm24` chunk and the
-//! modulator chunks are skipped.
-
+#![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
+mod bank;
 mod binary_reader;
 mod error;
 mod four_cc;
@@ -37,8 +27,8 @@ mod zone_info;
 
 use std::ops::RangeInclusive;
 
-pub use error::SoundFontError;
-pub use four_cc::FourCC;
+pub use bank::{Bank, BankError};
+pub use error::{Error, Result};
 pub use generator_type::GeneratorType;
 pub use instrument::Instrument;
 pub use instrument_region::InstrumentRegion;

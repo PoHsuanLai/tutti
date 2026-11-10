@@ -234,7 +234,7 @@ impl GateNode {
     ) -> Self {
         Self {
             core: GateCore::new(threshold_db, attack, hold, release),
-            channels: ChannelLayout::from(channels.max(1) as u16),
+            channels: ChannelLayout::from(channels.max(1)),
             gains: Vec::new(),
         }
     }

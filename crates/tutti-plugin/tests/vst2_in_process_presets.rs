@@ -61,7 +61,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_client, handle) = in_process_vst2_client(&path, SAMPLE_RATE)
+    let (_client, handle) = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.
     clear_probe_env();
@@ -80,18 +80,18 @@ fn a_listed_preset_loads_the_program_it_names() {
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
     let cap = handle.presets().expect("the VST2 path carries presets");
-    let presets = cap.presets();
+    let presets = cap.presets(&main_thread());
     assert_eq!(presets.len(), 3, "the probe declared 3 programs");
 
     // Deliberately not `PresetId::Number(2)`: the id is opaque, and taking it
     // from the listing is what a caller does.
     let wanted = presets[2].id.clone();
     assert!(
-        cap.load_preset(&wanted),
+        cap.load_preset(&main_thread(), &wanted),
         "loading a preset the plugin listed must be accepted"
     );
     assert_eq!(
-        cap.current_preset(),
+        cap.current_preset(&main_thread()),
         Some(wanted),
         "the plugin must report the program the handle just loaded"
     );
@@ -112,22 +112,28 @@ fn an_id_from_another_format_is_refused() {
     // would make every `is_some_and` below read as a refusal, so a lost preset
     // route would pass this test rather than fail it.
     let cap = handle.presets().expect("the VST2 path carries presets");
-    let before = cap.current_preset();
+    let before = cap.current_preset(&main_thread());
 
     assert!(
-        !cap.load_preset(&PresetId::Program {
-            list_id: 0,
-            index: 1
-        }),
+        !cap.load_preset(
+            &main_thread(),
+            &PresetId::Program {
+                list_id: 0,
+                index: 1
+            }
+        ),
         "a VST3 program id addresses no VST2 program"
     );
     assert!(
-        !cap.load_preset(&PresetId::Location(PathBuf::from("/x.clap-preset"))),
+        !cap.load_preset(
+            &main_thread(),
+            &PresetId::Location(PathBuf::from("/x.clap-preset"))
+        ),
         "a CLAP preset path addresses no VST2 program"
     );
 
     assert_eq!(
-        cap.current_preset(),
+        cap.current_preset(&main_thread()),
         before,
         "a refused load must not move the program"
     );
@@ -165,7 +171,7 @@ fn a_plugin_with_no_programs_declines_rather_than_going_silent() {
         .presets()
         .expect("the route exists even for a plugin with no programs");
     assert_eq!(
-        cap.presets(),
+        cap.presets(&main_thread()),
         Vec::new(),
         "the plugin was asked and listed nothing"
     );
@@ -184,4 +190,10 @@ fn a_plugin_with_programs_answers_both_preset_bits() {
     let report = FeatureReport::new(loaded.probed, loaded.features);
     assert_eq!(report.get(Features::PRESET_LIST), Some(true));
     assert_eq!(report.get(Features::PRESET_LOAD), Some(true));
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

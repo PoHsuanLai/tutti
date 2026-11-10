@@ -151,7 +151,7 @@ use tutti_vst2_test_plugin::{
 ///
 /// Mutation that catches it: making `parameter_properties` return
 /// `Some(decoded)` unconditionally (dropping the `supported != 1` check in
-/// `vst-tutti`'s `parameter_properties`) turns every `None` here into a `Some`
+/// `tutti-vst2-ffi`'s `parameter_properties`) turns every `None` here into a `Some`
 /// full of zeros — exactly the bug of reading an unwritten buffer.
 #[test]
 fn real_world_plugins_decline_these_opcodes() {
@@ -348,7 +348,7 @@ fn midi_program_metadata_round_trips() {
 /// a refusal as success — and, symmetrically, reads a genuine "program 0" as
 /// failure.
 ///
-/// Mutation that catches it: changing the `current < 0` check in `vst-tutti`'s
+/// Mutation that catches it: changing the `current < 0` check in `tutti-vst2-ffi`'s
 /// `current_midi_program` to `current == 0` (the "0 means unsupported" reflex)
 /// turns the probe's valid program 0 into `None`.
 #[test]
@@ -760,7 +760,9 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
         i32::MIN + 3,  // negative, near a plausible index
     ] {
         assert_eq!(
-            instance.parameter(pid(id)).map(|n| n.get() as f32),
+            instance
+                .parameter(&main_thread(), pid(id))
+                .map(|n| n.get() as f32),
             None,
             "reading out-of-range id {id} must not dispatch"
         );
@@ -778,7 +780,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
     for id in 0..count {
         assert!(
             instance
-                .parameter(pid(id))
+                .parameter(&main_thread(), pid(id))
                 .map(|n| n.get() as f32)
                 .is_some(),
             "in-range id {id} must still read"
@@ -886,7 +888,7 @@ fn a_refused_string_parse_reports_none_and_writes_nothing() {
     }
 
     let after = instance
-        .parameter(pid(0))
+        .parameter(&main_thread(), pid(0))
         .map(|n| n.get() as f32)
         .expect("param 0 is readable");
     assert!(
@@ -958,10 +960,18 @@ fn a_plugins_echo_of_a_host_write_is_not_reported() {
     reset_switches(&path);
 
     assert_eq!(
-        instance.parameter(pid(0)).map(|n| n.get() as f32),
+        instance
+            .parameter(&main_thread(), pid(0))
+            .map(|n| n.get() as f32),
         Some(0.5),
         "the write landed"
     );
     assert_eq!(echoed, Vec::new(), "the echo is not an edit");
     assert_eq!(instance.dropped_param_changes(), 0, "nor a dropped one");
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

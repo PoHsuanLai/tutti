@@ -112,7 +112,7 @@ crates/             everything shipped, directory name = package name
   tutti-io          # Live I/O edge: mic monitor node, TapIn, WavOut, Recorder.
                     #   Device-free, so tutti-cpal depends on it, not vice versa.
   tutti-codec       # File codecs: the encoders, and the decoder (Wave, FileIn).
-  tutti-mod         # Pure modulation: the route compiler, curves. Audio-free.
+  tutti-modulation         # Pure modulation: the route compiler, curves. Audio-free.
   tutti-export      # Offline rendering and export
   tutti-dsp         # Pure algorithms over slices. Names only tutti-types.
   tutti-nodes       # DSP nodes (LFO, dynamics, convolution, automation).
@@ -120,13 +120,12 @@ crates/             everything shipped, directory name = package name
                     #   tutti-nodes; the arrow never runs back.
   tutti-sampler     # Sample playback (streaming, audition)
   tutti-polysynth   # Polyphonic subtractive/wavetable synth
-  tutti-soundfont   # SoundFont (.sf2) playback
+  tutti-soundfont   # SoundFont (.sf2) playback: the voice render (derived from rustysynth) under tutti-voicing
   tutti-sf2         # A SoundFont 2 file as data (no synth).
-  tutti-rustysynth  # The SoundFont synthesizer over it (a port of rustysynth).
   tutti-midi-types / -runtime / -hardware / -file, tutti-alsa-ump-sys
   tutti-plugin / -types / -server
   tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
-  vst-tutti         # Our fork of the vst crate (VST2 bindings)
+  tutti-vst2-ffi    # Host half of our fork of the vst crate (all VST2 unsafe)
 testing/            never shipped
   tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures
   tutti-shared-plugin    # test plugin: core + a shell per format

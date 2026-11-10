@@ -37,21 +37,29 @@ const STALE_AFTER: Duration = Duration::from_secs(120);
 
 /// Held for one test; released on drop, including on a failing assertion's
 /// unwind.
-pub(crate) struct Guard;
+pub(crate) struct Guard(Option<PathBuf>);
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir(path());
+        if let Some(p) = &self.0 {
+            let _ = std::fs::remove_dir(p);
+        }
     }
 }
 
 /// Take the machine, waiting for whoever holds it.
 pub(crate) fn acquire() -> Guard {
-    let p = path();
+    acquire_at(&path())
+}
+
+/// [`acquire`] on a given path, so a test can exercise the protocol on a
+/// private directory instead of racing every other process for the real one.
+fn acquire_at(p: &std::path::Path) -> Guard {
+    let p = p.to_path_buf();
     let deadline = Instant::now() + STALE_AFTER;
     loop {
         match std::fs::create_dir(&p) {
-            Ok(()) => return Guard,
+            Ok(()) => return Guard(Some(p)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 if Instant::now() >= deadline {
                     let _ = std::fs::remove_dir(&p);
@@ -61,7 +69,7 @@ pub(crate) fn acquire() -> Guard {
             }
             // An unusable temp dir must not fail the suites; fall back to
             // running unserialized.
-            Err(_) => return Guard,
+            Err(_) => return Guard(None),
         }
     }
 }
@@ -72,18 +80,30 @@ mod tests {
 
     /// **Held, the lock excludes another process**: what a second test
     /// process would try (`create_dir` on the same path) is refused while a
-    /// guard lives, and succeeds once it drops.
+    /// guard lives, and the path is free once it drops. It runs on a private
+    /// path: the machine-wide one is contended by every other test process
+    /// (and other worktrees), so a raw `create_dir` or `remove_dir` on it
+    /// would race them and could delete a lock another process holds.
     ///
-    /// Mutation: make `acquire` a process-local `static Mutex` (the bug this
+    /// Mutation: make `acquire_at` a process-local `static Mutex` (the bug this
     /// module replaced) → nothing is created on disk → the first
     /// `create_dir` succeeds → fails.
     #[test]
     fn a_held_lock_refuses_another_process() {
-        let guard = acquire();
-        let err = std::fs::create_dir(path()).expect_err("the lock is held on disk");
+        let dir = tempfile::tempdir().expect("a private directory");
+        let p = dir.path().join("lock");
+        let guard = acquire_at(&p);
+        let err = std::fs::create_dir(&p).expect_err("the lock is held on disk");
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         drop(guard);
-        std::fs::create_dir(path()).expect("released on drop");
-        std::fs::remove_dir(path()).expect("clean up");
+        std::fs::create_dir(&p).expect("released on drop");
+    }
+
+    /// The real path round-trips: `acquire` waits for any holder, then
+    /// releases on drop (without touching the shared path raw).
+    #[test]
+    fn the_machine_wide_lock_can_be_taken_again_after_a_release() {
+        drop(acquire());
+        drop(acquire());
     }
 }

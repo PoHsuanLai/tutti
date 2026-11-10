@@ -6,6 +6,7 @@
 //! notices and the server's [`AsyncEvent`]s.
 
 use std::path::Path;
+use tutti_plugin_types::MainThread;
 
 use tutti_plugin::server::{
     AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
@@ -37,10 +38,6 @@ pub struct Vst2Instance {
     refused: bool,
 }
 
-// SAFETY: the host instances are `Send`, and the instance is driven from one
-// thread at a time.
-unsafe impl Send for Vst2Instance {}
-
 fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
     match err {
         Vst2Error::LoadFailed {
@@ -62,13 +59,6 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
 }
 
 impl Vst2Instance {
-    /// Lightweight probe: open the plugin and read its identity, without
-    /// activating it.
-    pub fn probe(path: &Path) -> Result<PluginDescriptor> {
-        let loaded = Vst2Loaded::load(path).map_err(|e| translate_error(e, path))?;
-        Ok(Control::info(&loaded).clone())
-    }
-
     /// Load and activate a VST2 plugin.
     ///
     /// `prefer_f64` is the caller's request for 64-bit blocks: the plugin is told
@@ -78,13 +68,22 @@ impl Vst2Instance {
     /// width `process` is entered at.
     #[cfg(test)]
     pub fn load(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
-        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None, &mut || {})
-            .map(|(instance, _)| instance)
+        Self::load_with_state(
+            main,
+            path,
+            sample_rate,
+            block_size,
+            prefer_f64,
+            None,
+            &mut || {},
+        )
+        .map(|(instance, _)| instance)
     }
 
     /// `load`, restoring `state` **before the plugin is
@@ -93,6 +92,7 @@ impl Vst2Instance {
     /// activated. The second value is the plugin's refusal of the state, if it
     /// refused: the plugin is then activated at its defaults.
     pub fn load_with_state(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
@@ -100,7 +100,7 @@ impl Vst2Instance {
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
     ) -> Result<(Self, Option<String>)> {
-        let loaded = Vst2Loaded::load(path).map_err(|e| translate_error(e, path))?;
+        let loaded = Vst2Loaded::load(main, path).map_err(|e| translate_error(e, path))?;
         let format = if prefer_f64 && loaded.metadata().supports_f64 {
             SampleFormat::Float64
         } else {
@@ -129,11 +129,11 @@ impl Vst2Instance {
         let state_error = state.and_then(|data| {
             before_restore();
             match instance.lifecycle.control() {
-                Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+                Some(control) => control.load_state(main, data).err().map(|e| e.to_string()),
                 None => Some("the plugin is lost".to_string()),
             }
         });
-        let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
+        let refused = instance.drive(main, Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
             let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
             return Err(BridgeError::LoadFailed {
@@ -142,7 +142,7 @@ impl Vst2Instance {
                 reason: format!("activate failed: {reason}"),
             });
         }
-        instance.refresh_meta();
+        instance.refresh_meta(main);
         // Whatever the activation told the host is what the load reply carries.
         instance.events.clear();
         Ok((instance, state_error))
@@ -150,17 +150,17 @@ impl Vst2Instance {
 
     /// Steps one event through the core, applying its effects. Returns the
     /// reason of a refusal it told, if any.
-    fn drive(&mut self, event: Event) -> Option<PluginError> {
+    fn drive(&mut self, main: &MainThread, event: Event) -> Option<PluginError> {
         let mut told = Vec::new();
         // Taken, not cloned: a clone copies the layout's `Vec`s. The state put
         // in its place is built without allocating and is replaced below.
         let state = std::mem::replace(&mut self.state, Lifecycle::<Vst2Loaded>::initial_state());
         self.state = self
             .lifecycle
-            .drive(state, event, &mut self.hand, |n| told.push(n));
+            .drive(state, event, &mut self.hand, main, |n| told.push(n));
         let mut refusal = None;
         for notice in told {
-            if let Some(reason) = self.absorb(notice) {
+            if let Some(reason) = self.absorb(main, notice) {
                 refusal = Some(reason);
             }
         }
@@ -169,7 +169,7 @@ impl Vst2Instance {
 
     /// Turns a notice into what the host hears, keeping the cached metadata in
     /// step. Returns the reason when the notice is a refusal.
-    fn absorb(&mut self, notice: Notice) -> Option<PluginError> {
+    fn absorb(&mut self, main: &MainThread, notice: Notice) -> Option<PluginError> {
         match notice {
             Notice::LatencyChanged(samples) => {
                 self.meta.loaded.latency_samples = samples;
@@ -180,7 +180,7 @@ impl Vst2Instance {
                 self.events.push(AsyncEvent::TailChanged { tail });
             }
             Notice::IoChanged => {
-                self.refresh_meta();
+                self.refresh_meta(main);
                 self.events.push(AsyncEvent::IoChanged);
             }
             Notice::ParamValuesChanged => self.events.push(AsyncEvent::ParamValuesChanged),
@@ -192,7 +192,7 @@ impl Vst2Instance {
                 tracing::warn!("VST2 plugin refused {} Hz: {reason}", rate.0);
                 // Whether the host must re-read the instance depends on whether
                 // a rollback revives it: `finish_refusals` decides.
-                self.refresh_meta();
+                self.refresh_meta(main);
                 self.refused = true;
                 return Some(reason);
             }
@@ -220,10 +220,10 @@ impl Vst2Instance {
     }
 
     /// Reads the plugin's wiring again into the metadata the host is given.
-    fn refresh_meta(&mut self) {
+    fn refresh_meta(&mut self, main: &MainThread) {
         if let Some(control) = self.lifecycle.control() {
             self.meta.descriptor = control.info().clone();
-            self.meta.loaded = control.wiring();
+            self.meta.loaded = control.wiring(main);
         }
     }
 
@@ -241,8 +241,8 @@ impl Vst2Instance {
     /// idle pass every dispatch takes) does not enter the lifecycle and
     /// allocates nothing. A pass that has work allocates, as a rate change does:
     /// the core queues its effects.
-    pub fn poll(&mut self) -> Vec<AsyncEvent> {
-        self.serve();
+    pub fn poll(&mut self, main: &MainThread) -> Vec<AsyncEvent> {
+        self.serve(main);
         if let Some(loaded) = self.loaded_ref() {
             // An empty queue is an empty `Vec`, which allocates nothing.
             for (index, value) in loaded.drain_param_changes() {
@@ -260,7 +260,7 @@ impl Vst2Instance {
 
     /// [`poll`](Self::poll)'s pass, leaving what the host should be told in
     /// `events`.
-    fn serve(&mut self) {
+    fn serve(&mut self, main: &MainThread) {
         // A restart the pass performs may itself make the plugin ask for more
         // (an activation whose `effMainsChanged` raises `audioMasterIOChanged`),
         // so the word is taken again until a pass finds it empty. Bounded, so a
@@ -270,21 +270,21 @@ impl Vst2Instance {
         for _ in 0..MAX_PASSES {
             requests.clear();
             if let Some(loaded) = self.loaded_ref() {
-                loaded.take_requests(&mut requests);
+                loaded.take_requests(main, &mut requests);
             }
             let asked = !requests.is_empty();
             if !asked && self.state.is_quiet() {
                 // All a tick would do: let the control side reap what a
                 // Processor retired.
                 if let Some(control) = self.lifecycle.control() {
-                    control.flush_edits();
+                    control.flush_edits(main);
                 }
                 break;
             }
             for request in requests.drain(..) {
-                self.drive(Event::Request(request));
+                self.drive(main, Event::Request(request));
             }
-            self.drive(Event::Tick);
+            self.drive(main, Event::Tick);
             if !asked {
                 break;
             }
@@ -361,7 +361,7 @@ impl PluginAudio for Vst2Instance {
     ///
     /// The plugin may also change its pins and its latency across the
     /// re-activation; the metadata follows them and the host is told.
-    fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+    fn set_sample_rate(&mut self, main: &MainThread, rate: f64) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
             return Err(PluginError::Other(
                 "VST2 plugin has no configuration to change".to_string(),
@@ -376,7 +376,7 @@ impl PluginAudio for Vst2Instance {
                 standing(self.is_active(), previous.rate())
             )));
         };
-        let refusal = self.drive(Event::Op(HostOp::Reconfigure(wanted)));
+        let refusal = self.drive(main, Event::Op(HostOp::Reconfigure(wanted)));
         self.finish_refusals();
         refusal.map_or(Ok(()), |reason| {
             Err(PluginError::Other(format!(
@@ -394,7 +394,7 @@ impl PluginAudio for Vst2Instance {
     /// restart, and `probed::VST2` carries `RENDER_MODE` for the same reason.
     /// The mode is also recorded in the core's `Prepare`, so a later activation
     /// (a rate change) keeps it.
-    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
         if let Some(loaded) = self.loaded_mut() {
             loaded.set_offline_render(mode.is_offline());
         }
@@ -407,25 +407,25 @@ impl PluginParams for Vst2Instance {
     /// Normalized `0..=1`, VST2's own domain; `0.0` for a parameter the plugin
     /// has no accessor for, which the shared trait flattens (the distinction
     /// stays on `Control::parameter`).
-    fn get_parameter(&self, id: ParamId) -> f64 {
+    fn get_parameter(&self, main: &MainThread, id: ParamId) -> f64 {
         self.loaded_ref()
-            .and_then(|loaded| Control::parameter(loaded, id))
+            .and_then(|loaded| Control::parameter(loaded, main, id))
             .map_or(0.0, Normalized::get)
     }
 
     /// Normalized `0..=1` in. A direct `setParameter` on the plugin, on the
     /// thread that serves the request, which the SDK allows beside `process`.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         if let Some(control) = self.lifecycle.control() {
-            control.set_parameter(id, value);
+            control.set_parameter(main, id, value);
         }
     }
 
     /// The plugin's display string, but **only for the value it currently
     /// holds**: see [`Control::parameter_text`]. Setting the parameter in order
     /// to read its label would make a display query *audible*.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(self.loaded_ref()?, id, value)
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        Control::parameter_text(self.loaded_ref()?, main, id, value)
     }
 
     /// Parse `text` through the plugin's own `effString2Parameter`.
@@ -436,17 +436,22 @@ impl PluginParams for Vst2Instance {
     /// this method is a pure query; it is surfaced here rather than hidden
     /// because the alternative — refusing to implement it — would leave a user
     /// unable to type a value into a VST2 field at all.
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        Control::parameter_value_from_text(self.loaded_ref()?, id, text)
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
+        Control::parameter_value_from_text(self.loaded_ref()?, main, id, text)
     }
 
-    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self, main: &MainThread) -> Vec<ParameterInfo> {
         self.loaded_ref()
-            .map(Control::parameters)
+            .map(|loaded| Control::parameters(loaded, main))
             .unwrap_or_default()
     }
 
-    fn parameter_count(&self) -> usize {
+    fn parameter_count(&self, _main: &MainThread) -> usize {
         self.loaded_ref().map_or(0, Vst2Loaded::parameter_count)
     }
 }
@@ -455,6 +460,7 @@ impl PluginEditorHost for Vst2Instance {
     /// `_scale` is unused: VST2 has no call that takes a content scale.
     fn open_editor(
         &mut self,
+        main: &MainThread,
         parent: WindowHandle,
         _scale: ContentScale,
     ) -> PluginResult<EditorSize> {
@@ -466,7 +472,7 @@ impl PluginEditorHost for Vst2Instance {
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
         loaded
-            .open_editor(host_parent)
+            .open_editor(main, host_parent)
             .map(|sz| EditorSize {
                 width: sz.width,
                 height: sz.height,
@@ -474,9 +480,9 @@ impl PluginEditorHost for Vst2Instance {
             .map_err(|e| translate_error(e, Path::new("")).into())
     }
 
-    fn close_editor(&mut self) {
+    fn close_editor(&mut self, main: &MainThread) {
         if let Some(loaded) = self.loaded_mut() {
-            loaded.close_editor();
+            loaded.close_editor(main);
         }
     }
 }
@@ -486,45 +492,52 @@ impl PluginPresets for Vst2Instance {
     /// takes a position in `[0, numPrograms)` — so unlike AU's sparse selectors
     /// these are genuinely dense. Unnamed slots are kept: dropping one would
     /// renumber every program after it.
-    fn get_presets(&mut self) -> Vec<Preset> {
+    fn get_presets(&mut self, main: &MainThread) -> Vec<Preset> {
         self.lifecycle
             .control()
-            .map(Control::presets)
+            .map(|loaded| Control::presets(loaded, main))
             .unwrap_or_default()
     }
 
     /// Switch program, bracketed by `effBeginSetProgram`/`effEndSetProgram` in
     /// the host layer. `false` for an id this format cannot address.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
         self.lifecycle
             .control()
-            .is_some_and(|control| control.load_preset(id))
+            .is_some_and(|control| control.load_preset(main, id))
     }
 
-    fn get_current_preset(&mut self) -> Option<PresetId> {
-        self.lifecycle.control()?.current_preset()
+    fn get_current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+        self.lifecycle.control()?.current_preset(main)
     }
 }
 
 impl PluginState for Vst2Instance {
-    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
+    fn get_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         self.lifecycle
             .control()
             .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
-            .save_state()
+            .save_state(main)
     }
 
-    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
         self.lifecycle
             .control()
             .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
-            .load_state(data)
+            .load_state(main, data)
     }
 }
 
 #[cfg(all(test, feature = "vst2"))]
 mod tests {
     use super::*;
+
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     use tutti_plugin::server::{Features, PluginTail};
 
     /// Every `TUTTI_VST2_PROBE_*` key the reference plugin reads at
@@ -574,7 +587,7 @@ mod tests {
             unsafe { std::env::set_var(k, v) };
         }
         let path = crate::test_utils::vst2_probe_path();
-        let loaded = Vst2Instance::load(Path::new(path), 48_000.0, 512, false);
+        let loaded = Vst2Instance::load(&main_thread(), Path::new(path), 48_000.0, 512, false);
         clear_probe_env();
         (
             loaded.unwrap_or_else(|e| panic!("loading the VST2 probe at {path} failed: {e:?}")),
@@ -660,7 +673,7 @@ mod tests {
         let (p, _lock) = load_probe(&[]);
         let mut plugin = Plugin::Vst2(p);
         assert!(
-            plugin.poll_async_events().is_empty(),
+            plugin.poll_async_events(&main_thread()).is_empty(),
             "nothing was reported yet"
         );
 
@@ -678,7 +691,7 @@ mod tests {
         std::mem::forget(lib);
         assert_eq!(answered, 1, "the host handles audioMasterIOChanged");
 
-        let events = plugin.poll_async_events();
+        let events = plugin.poll_async_events(&main_thread());
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -704,7 +717,10 @@ mod tests {
         };
         assert_eq!(p.loaded().latency_samples.get(), 777);
         assert_eq!(p.loaded().inputs[0].count(), 4);
-        assert!(plugin.poll_async_events().is_empty(), "consumed");
+        assert!(
+            plugin.poll_async_events(&main_thread()).is_empty(),
+            "consumed"
+        );
     }
 
     /// The declared channel counts reach `LoadedPlugin` as one bus per side.
@@ -882,6 +898,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         // `match` rather than `expect_err`: the `Ok` type is not `Debug`.
         match Vst2Instance::load(
+            &main_thread(),
             Path::new("/nonexistent/tutti-not-a-plugin.so"),
             48_000.0,
             512,
@@ -910,7 +927,7 @@ mod tests {
         let prepare = p.state.prepare();
         for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let error = p
-                .set_sample_rate(rate)
+                .set_sample_rate(&main_thread(), rate)
                 .expect_err("a rate that is no rate is refused");
             assert!(error.to_string().contains("running at 48000"), "{error}");
             assert!(p.is_active(), "{rate}");
@@ -921,10 +938,14 @@ mod tests {
         let (left, right) = render(&mut p, 64).expect("the plugin still renders");
         assert!(left.iter().all(|&v| v == 1.0), "{:?}", &left[..4]);
         assert!(right.iter().all(|&v| v == 101.0));
-        assert!(p.poll().is_empty(), "the host is told nothing");
+        assert!(
+            p.poll(&main_thread()).is_empty(),
+            "the host is told nothing"
+        );
         assert_eq!(p.meta.loaded.inputs, layout.inputs);
         assert_eq!(p.meta.loaded.outputs, layout.outputs);
-        p.set_sample_rate(96_000.0).expect("a real rate");
+        p.set_sample_rate(&main_thread(), 96_000.0)
+            .expect("a real rate");
         assert_eq!(probe_capture().sample_rate, 96_000.0);
     }
 
@@ -948,7 +969,7 @@ mod tests {
             (f64::NEG_INFINITY, 512),
             (48_000.0, 0),
         ] {
-            match Vst2Instance::load(Path::new(path), rate, block, false) {
+            match Vst2Instance::load(&main_thread(), Path::new(path), rate, block, false) {
                 Err(BridgeError::LoadFailed {
                     stage: LoadStage::Activation,
                     reason,
@@ -959,7 +980,8 @@ mod tests {
             }
         }
         assert_eq!(probe_capture().resume_count, 0, "never resumed");
-        let p = Vst2Instance::load(Path::new(path), 48_000.0, 512, false).expect("a real load");
+        let p = Vst2Instance::load(&main_thread(), Path::new(path), 48_000.0, 512, false)
+            .expect("a real load");
         assert!(p.is_active());
     }
 
@@ -972,7 +994,8 @@ mod tests {
     fn the_rate_the_plugin_runs_at_is_not_a_restart() {
         let (mut p, _lock) = load_probe(&[]);
         reset_probe();
-        p.set_sample_rate(48_000.0).expect("the same rate");
+        p.set_sample_rate(&main_thread(), 48_000.0)
+            .expect("the same rate");
         let cap = probe_capture();
         assert_eq!((cap.suspend_count, cap.resume_count), (0, 0));
     }
@@ -989,13 +1012,14 @@ mod tests {
     fn the_render_mode_is_live_and_survives_a_rate_change() {
         let (mut p, _lock) = load_probe(&[]);
         reset_probe();
-        assert!(p.set_render_mode(RenderMode::Offline));
+        assert!(p.set_render_mode(&main_thread(), RenderMode::Offline));
         render(&mut p, 64).expect("renders");
         let cap = probe_capture();
         assert_eq!(cap.process_level, 4, "offline from the next block");
         assert_eq!(cap.suspend_count, 0, "and no restart for it");
 
-        p.set_sample_rate(96_000.0).expect("a rate change");
+        p.set_sample_rate(&main_thread(), 96_000.0)
+            .expect("a rate change");
         render(&mut p, 64).expect("renders");
         assert_eq!(probe_capture().process_level, 4, "still offline");
     }
@@ -1019,26 +1043,11 @@ mod tests {
             f(0);
         });
         let moved: Vec<_> = p
-            .poll()
+            .poll(&main_thread())
             .into_iter()
             .filter(|e| matches!(e, AsyncEvent::ParameterChanged { .. }))
             .collect();
         assert_eq!(moved.len(), 3, "{moved:?}");
-        assert!(p.poll().is_empty(), "told once");
-    }
-
-    /// **A probe reads the plugin's identity without activating it**: nothing is
-    /// resumed.
-    ///
-    /// Mutation (run): `probe` going through `load` (an activation) -> the
-    /// plugin resumes -> `resume_count` is 1 -> fails.
-    #[test]
-    fn a_probe_does_not_activate() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        reset_probe();
-        let descriptor =
-            Vst2Instance::probe(Path::new(crate::test_utils::vst2_probe_path())).expect("probes");
-        assert_eq!(descriptor.name, "Tutti VST2 Probe");
-        assert_eq!(probe_capture().resume_count, 0);
+        assert!(p.poll(&main_thread()).is_empty(), "told once");
     }
 }

@@ -162,7 +162,7 @@ impl ParameterQueue {
     /// calling — this method will not tell you that you did not.
     ///
     /// Takes a bare `f64` rather than a [`Normalized`] because the producer is
-    /// `Curve::value_at` (in `tutti-mod`), a **public trait a user implements**,
+    /// `Curve::value_at` (in `tutti-modulation`), a **public trait a user implements**,
     /// whose return carries no finiteness contract — so the value arriving here
     /// is untrusted by construction and the clamp belongs at this door rather
     /// than at every call site. An envelope dividing by a zero-length segment

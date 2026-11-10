@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tutti_plugin_types::MainThread;
 
 use vst::host::PluginLoader;
 use vst::plugin::{Category, Plugin as _};
@@ -100,12 +101,13 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 ///
 /// The type is `Send`, not `Sync`: the plugin behind it is not thread-safe, and
 /// the caller owns it on one thread at a time. Methods documented as main-thread
-/// only must be called from the thread registered with
-/// [`tutti_plugin_types::mark_main_thread`]; debug builds assert it.
+/// only take a [`MainThread`], the proof that the caller is on the process's
+/// main thread.
 ///
 /// Dropping it closes the editor, suspends the plugin if it is resumed and
-/// dispatches `effClose`, so drop it on the main thread, as it was loaded there
-/// (debug builds assert it, once a main thread is marked). The plugin's shared
+/// dispatches `effClose` (when the last handle on the plugin is gone, which is this
+/// drop unless a Processor still holds one), so drop it on the main thread, as it was loaded there
+/// (a drop has no token, so nothing checks it). The plugin's shared
 /// library is never unloaded, because unloading runs static destructors that
 /// crash many JUCE-based plugins.
 ///
@@ -125,7 +127,8 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// ```no_run
 /// use tutti_vst2_host::Vst2Loaded;
 ///
-/// let plugin = Vst2Loaded::load("/usr/lib/vst/MyPlugin.so")?;
+/// let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+/// let plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
 /// println!("{} by {}", plugin.metadata().name, plugin.metadata().vendor);
 /// # Ok::<(), tutti_vst2_host::Vst2Error>(())
 /// ```
@@ -188,14 +191,6 @@ impl std::fmt::Debug for Vst2Loaded {
     }
 }
 
-// SAFETY: every field is either `Send` or its non-`Send`-ness has been
-// addressed via a wrapper (`SendEditor`, `SendParams`). The raw pointers inside
-// `vst::host::PluginInstance` point at heap memory this crate owns, and the
-// plugin has no thread affinity beyond "the main thread opens and closes it",
-// which the callers keep (clause 4 of the invariant on `Shell`). Not `Sync`:
-// a shared reference would let two threads reach the dispatcher at once.
-unsafe impl Send for Vst2Loaded {}
-
 impl Vst2Loaded {
     /// Opens a VST2 plugin: `effOpen`, and a read of what it declares.
     ///
@@ -212,15 +207,9 @@ impl Vst2Loaded {
     /// module ([`LoadStage::Factory`]) or the plugin's entry point fails to
     /// produce an instance ([`LoadStage::Instantiation`]).
     ///
-    /// # Panics
-    ///
-    /// Main thread only. In debug builds, panics if called off the thread
-    /// registered with [`tutti_plugin_types::mark_main_thread`].
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn load(_main: &MainThread, path: impl AsRef<Path>) -> Result<Self> {
         // Loading runs the plugin's init sequence and probes its editor — VST2
-        // requires this happen on the host main thread. A no-op until
-        // `mark_main_thread()` has been called (headless tests are safe).
-        tutti_plugin_types::assert_main_thread();
+        // requires this happen on the host main thread, which `_main` proves.
 
         let path = path.as_ref();
         let resolved = resolve_bundle(path);
@@ -262,6 +251,15 @@ impl Vst2Loaded {
         })?;
 
         instance.init();
+
+        // The pin counts are settled in `effOpen`: a count no layout holds
+        // fails the load here, naming the side, rather than wrapping later.
+        let (pin_inputs, pin_outputs) = instance.read_pin_counts();
+        check_pin_counts(pin_inputs, pin_outputs).map_err(|reason| Vst2Error::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Initialization,
+            reason,
+        })?;
 
         let info = instance.get_info();
 
@@ -371,10 +369,11 @@ impl Vst2Loaded {
     #[must_use]
     pub fn pins(&self) -> (ChannelLayout, ChannelLayout) {
         let (inputs, outputs) = self.handle.instance.read_pin_counts();
-        (
-            ChannelLayout::from(inputs.max(0) as u16),
-            ChannelLayout::from(outputs.max(0) as u16),
-        )
+        // `pins` is an infallible re-read with no error path to refuse through:
+        // a negative count is no channels and one past `u16::MAX` saturates
+        // there (a plugin that wide fails wherever it is wired), never wraps.
+        let width = |count: i32| ChannelLayout::clamped(usize::try_from(count).unwrap_or(0));
+        (width(inputs), width(outputs))
     }
 
     /// Returns `true` while the plugin is resumed (`effMainsChanged(1)`): from an
@@ -414,13 +413,10 @@ impl Vst2Loaded {
     /// of their names. Feed them to [`Lifecycle::drive`](tutti_plugin_types::Lifecycle::drive);
     /// the core reads the figures again rather than restarting the plugin
     /// ([`RestartRules::NONE`](tutti_plugin_types::RestartRules::NONE)).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn take_requests(&self, out: &mut Vec<Request>) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn take_requests(&self, _main: &MainThread, out: &mut Vec<Request>) {
+        // Control side, so the one warning about a plugin that grew its pins past the
+        // activation (S7: it renders silence until re-activated) is logged here.
+        let _ = self.handle.instance.report_pin_refusals();
         out.extend(tutti_plugin_types::taken(self.host.requests()));
     }
 
@@ -456,7 +452,7 @@ impl Vst2Loaded {
     /// plugin never had. An unnamed slot yields an empty string and is kept,
     /// not skipped — dropping it would renumber every program after it, and the
     /// number is the identifier.
-    pub fn programs(&self) -> Vec<(i32, String)> {
+    pub fn programs(&self, _main: &MainThread) -> Vec<(i32, String)> {
         let count = self.handle.instance.read_num_programs().max(0);
         (0..count)
             .map(|i| (i, self.params.get_preset_name(i)))
@@ -474,7 +470,7 @@ impl Vst2Loaded {
     }
 
     /// Returns the index of the program the plugin reports as active.
-    pub fn current_program(&self) -> i32 {
+    pub fn current_program(&self, _main: &MainThread) -> i32 {
         self.params.get_preset_num()
     }
 
@@ -490,7 +486,7 @@ impl Vst2Loaded {
     /// Returns `false` for an out-of-range index without dispatching anything.
     /// VST2 gives no confirmation that an in-range change took — `effProgramChange`
     /// returns nothing — so `true` means "dispatched", not "the plugin moved".
-    pub fn set_program(&mut self, index: i32) -> bool {
+    pub fn set_program(&mut self, _main: &MainThread, index: i32) -> bool {
         if index < 0 || index >= self.handle.instance.read_num_programs() {
             return false;
         }
@@ -557,4 +553,40 @@ fn resolve_bundle(path: &Path) -> PathBuf {
         tutti_plugin_types::bundle::ModuleKind::Vst2,
     )
     .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Refuses a pin count a layout cannot hold (negative, or above `u16::MAX`),
+/// naming the side. `pins()` saturates for the infallible re-read; the load is
+/// where a plugin that wide is turned away.
+fn check_pin_counts(inputs: i32, outputs: i32) -> std::result::Result<(), String> {
+    for (side, count) in [("input", inputs), ("output", outputs)] {
+        if u16::try_from(count).is_err() {
+            return Err(format!(
+                "the plugin reports {count} {side} channels; at most {} are supported",
+                u16::MAX
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pin_count_tests {
+    use super::check_pin_counts;
+
+    /// The widest a layout holds passes; one past it, or a negative count, is
+    /// refused naming the side.
+    ///
+    /// Mutation (run): `check_pin_counts` returning `Ok(())` always (or testing
+    /// only `inputs`) fails the refusals here.
+    #[test]
+    fn a_pin_count_no_layout_holds_is_refused_naming_the_side() {
+        assert!(check_pin_counts(0, i32::from(u16::MAX)).is_ok());
+        let err = check_pin_counts(2, 65_536).unwrap_err();
+        assert!(err.contains("65536 output"), "{err}");
+        let err = check_pin_counts(65_538, 2).unwrap_err();
+        assert!(err.contains("65538 input"), "{err}");
+        assert!(check_pin_counts(-1, 2).unwrap_err().contains("-1 input"));
+        assert!(check_pin_counts(2, i32::MAX).is_err());
+    }
 }

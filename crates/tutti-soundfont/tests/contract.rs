@@ -1,7 +1,7 @@
 //! The graph's sample-accuracy contract for the SoundFont player as a
 //! graph node: a note-on at offset `k` of the event input sounds where the
 //! contract puts it, to the 8-frame resolution the node declares
-//! (`Resolution::Frames(8)`, rustysynth's chunk), on every path the harness
+//! (`Resolution::Frames(8)`, the voices' chunk), on every path the harness
 //! runs.
 //!
 //! The note's first sample is not at its onset: the fixture's attack ramps
@@ -19,7 +19,8 @@ use std::sync::Arc;
 use tutti_graph::EventKind;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_midi_types::MidiEvent;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::Samples;
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -27,6 +28,12 @@ use tutti_ump::{MidiChannel, MidiGroup};
 /// Frames from a note's onset to its first non-zero sample on the fixture's
 /// preset 0 at 48 kHz.
 const LEAD: usize = 41;
+
+/// Frames a note's volume envelope stays at 0 after its onset on this font's
+/// preset 0: the default delay is -12000 timecents, a millisecond, 47 frames
+/// at 48 kHz. The closes this path sees are 12, 13, 28, 41, 64, 65, 77, 78, 127
+/// and 128 frames after the onset.
+const DELAY_STAGE: usize = 48;
 
 fn font() -> Arc<SoundFont> {
     let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
@@ -45,8 +52,7 @@ fn soundfont_row() -> Row {
     Row::new(
         "SoundFontUnit",
         move || {
-            let mut settings = Settings::new(SAMPLE_RATE);
-            settings.reverb_and_chorus = false;
+            let settings = Settings::new(SAMPLE_RATE);
             Box::new(SoundFontUnit::new(Arc::clone(&font), &settings).expect("the unit builds"))
         },
         Excite::Event {
@@ -56,6 +62,10 @@ fn soundfont_row() -> Row {
         Detect::Threshold(0.0),
     )
     .with_lead(Samples(LEAD))
+    // A note ended on the frame it starts is silent (SF2 2.04 section 9.1.7: a
+    // release starts from the envelope's value, 0 at the onset), and a
+    // regenerated source's held note is closed on that frame.
+    .onset_release_is_silent(Samples(DELAY_STAGE))
 }
 
 tutti_graph::contract_tests!(event soundfont => soundfont_row());

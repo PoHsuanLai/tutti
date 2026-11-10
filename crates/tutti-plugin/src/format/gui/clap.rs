@@ -12,6 +12,7 @@ use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamId, ParamRange};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
+use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{Control, Request, RescanScope};
 
 /// Look up declared bounds for `id` in a table sorted by id.
@@ -75,23 +76,26 @@ pub(crate) struct ClapGuiInstance {
 }
 
 impl ClapGuiInstance {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(main: &MainThread, path: &Path) -> Result<Self> {
         // Resolve bundle directory to the actual binary.
         let resolved = crate::host::subprocess::resolve_bundle(path)?;
         // Editor-only load: gui/params/state work without activation, and this
         // instance must never be activated or process audio (audio runs in the
         // subprocess instance). Nothing here activates it.
-        let inner =
-            tutti_clap_host::ClapLoaded::load(&resolved, tutti_clap_host::LoadOptions::default())
-                .map_err(|e| BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("CLAP GUI-only load failed: {e}"),
-            })?;
+        let inner = tutti_clap_host::ClapLoaded::load(
+            main,
+            &resolved,
+            tutti_clap_host::LoadOptions::default(),
+        )
+        .map_err(|e| BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Opening,
+            reason: format!("CLAP GUI-only load failed: {e}"),
+        })?;
         // One pass over the catalog instead of a scan per write. Params are
         // readable on an unactivated instance, which is what this GUI-only
         // load is.
-        let param_ranges = read_param_ranges(&inner);
+        let param_ranges = read_param_ranges(main, &inner);
 
         Ok(Self {
             inner,
@@ -101,9 +105,12 @@ impl ClapGuiInstance {
 }
 
 /// The plugin's declared plain-unit bounds per parameter id, sorted by id.
-fn read_param_ranges(inner: &tutti_clap_host::ClapLoaded) -> Vec<(u32, (f64, f64))> {
+fn read_param_ranges(
+    main: &MainThread,
+    inner: &tutti_clap_host::ClapLoaded,
+) -> Vec<(u32, (f64, f64))> {
     let mut ranges: Vec<(u32, (f64, f64))> = inner
-        .parameter_list()
+        .parameter_list(main)
         .into_iter()
         .filter_map(|p| {
             let id = p.id.get();
@@ -115,10 +122,15 @@ fn read_param_ranges(inner: &tutti_clap_host::ClapLoaded) -> Vec<(u32, (f64, f64
 }
 
 impl PluginEditor for ClapGuiInstance {
-    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> Result<EditorSize> {
         let size = self
             .inner
-            .open_editor(parent, scale)
+            .open_editor(main, parent, scale)
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP open_editor failed: {e}")))?;
         Ok(EditorSize {
             width: size.width,
@@ -126,33 +138,33 @@ impl PluginEditor for ClapGuiInstance {
         })
     }
 
-    fn open_floating_editor(&mut self) -> Result<()> {
+    fn open_floating_editor(&mut self, main: &MainThread) -> Result<()> {
         // No transient parent: this crate does not hold the host's window, and
         // `set_transient` is a stacking hint the plugin may ignore anyway. The
         // title is what the host would have put on a window it owned.
         let title = std::ffi::CString::new(self.inner.info().name.as_str())
             .unwrap_or_else(|_| c"Plugin Editor".to_owned());
         self.inner
-            .open_floating_editor(None, &title)
+            .open_floating_editor(main, None, &title)
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP floating open failed: {e}")))
     }
 
-    fn close_editor(&mut self) {
-        self.inner.close_editor();
+    fn close_editor(&mut self, main: &MainThread) {
+        self.inner.close_editor(main);
     }
 
-    fn editor_idle(&mut self) {
+    fn editor_idle(&mut self, main: &MainThread) {
         // The editor's timers (a UI toolkit's repaint tick), its callbacks to
         // the main thread and its file descriptors are all served from here:
         // this is the only main-thread tick the instance has.
         let mut requests = Vec::new();
-        self.inner.take_requests(&mut requests);
+        self.inner.take_requests(main, &mut requests);
         let mut reread = false;
         for request in requests {
             match request {
-                Request::Callback => self.inner.run_main_thread(),
-                Request::Timer(id) => self.inner.run_timer(id),
-                Request::Fd(id) => self.inner.service_fd(id),
+                Request::Callback => self.inner.run_main_thread(main),
+                Request::Timer(id) => self.inner.run_timer(main, id),
+                Request::Fd(id) => self.inner.service_fd(main, id),
                 // A rescan that re-described the parameters re-reads their bounds.
                 Request::RescanParams(RescanScope::Info | RescanScope::All) => reread = true,
                 // Nothing else is this instance's to serve: it never activates,
@@ -161,15 +173,15 @@ impl PluginEditor for ClapGuiInstance {
             }
         }
         if reread {
-            self.param_ranges = read_param_ranges(&self.inner);
+            self.param_ranges = read_param_ranges(main, &self.inner);
         }
         // If the plugin requested a param flush, perform it.
         if self.inner.take_params_flush_requested() {
-            let _ = self.inner.flush_params(vec![]);
+            let _ = self.inner.flush_params(main, vec![]);
         }
     }
 
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         // CLAP values are in the plugin's native plain range, so the host's
         // normalized value is denormalized against the declared bounds — the
         // same conversion the subprocess loader applies on the audio path.
@@ -189,16 +201,16 @@ impl PluginEditor for ClapGuiInstance {
             .to_plain(value.get()),
             None => value.get(),
         };
-        self.inner.set_plain_value(id.get(), plain);
+        self.inner.set_plain_value(main, id.get(), plain);
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
         self.inner
-            .load_state(data)
+            .load_state(main, data)
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP set_state failed: {e}")))
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(ParamId, f32)> {
+    fn poll_gui_param_changes(&mut self, main: &MainThread) -> Vec<(ParamId, f32)> {
         // A CLAP editor reports its knob movements as output events on the next
         // `params.flush`, so an empty flush is how the host collects them. This
         // is the only bridge back to the audio instance in the subprocess —
@@ -211,7 +223,7 @@ impl PluginEditor for ClapGuiInstance {
         // `ClapLoaded::activate` consumes `self` into a processor and a controller,
         // so a `ClapLoaded` held by value cannot reach the active state. `flush_params` takes the main-thread branch, which is also
         // what the existing `editor_idle` flush above already relies on.
-        let events = self.inner.flush_params(vec![]);
+        let events = self.inner.flush_params(main, vec![]);
 
         events
             .into_iter()
@@ -219,20 +231,23 @@ impl PluginEditor for ClapGuiInstance {
             .collect()
     }
 
-    fn editor_capabilities(&mut self) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
         // Pass-through from the host crate — the shared `EditorCapabilities`
         // is already the union of vst3/clap fields, and `appkit_autoresize_friendly`
         // defaults to `false` which matches CLAP's pinned-NSView behavior.
-        self.inner.editor_capabilities()
+        self.inner.editor_capabilities(main)
     }
 
-    fn set_editor_size(&mut self, requested: EditorSize) -> Result<EditorSize> {
+    fn set_editor_size(&mut self, main: &MainThread, requested: EditorSize) -> Result<EditorSize> {
         let snapped = self
             .inner
-            .resize_editor(tutti_clap_host::EditorSize {
-                width: requested.width,
-                height: requested.height,
-            })
+            .resize_editor(
+                main,
+                tutti_clap_host::EditorSize {
+                    width: requested.width,
+                    height: requested.height,
+                },
+            )
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP resize_editor failed: {e}")))?;
         Ok(EditorSize {
             width: snapped.width,
@@ -240,7 +255,7 @@ impl PluginEditor for ClapGuiInstance {
         })
     }
 
-    fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
         self.inner
             .take_editor_resize_request()
             .map(|sz| EditorSize {
@@ -267,6 +282,13 @@ mod tests {
     //! integration test against a real plugin, beside `tests/clap_*.rs`.
 
     use super::*;
+
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     use tutti_clap_host::ClapEvent;
 
     /// A timer the plugin registers ticks on the editor's idle, which is the
@@ -282,7 +304,7 @@ mod tests {
 
         let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
         let path = tutti_fixtures::publish_with_extension(&real, "clap");
-        let mut gui = ClapGuiInstance::load(&path).expect("loads");
+        let mut gui = ClapGuiInstance::load(&main_thread(), &path).expect("loads");
 
         // The probe's switches are `extern "C"` symbols in the image this
         // instance loaded: re-open the same path, not the linked rlib.
@@ -299,12 +321,12 @@ mod tests {
 
         // `on_main_thread` is where the plugin registers it.
         unsafe { command(CMD_REGISTER_TIMER) };
-        gui.inner.on_main_thread();
+        gui.inner.on_main_thread(&main_thread());
         assert!(read().timer_registered);
         let tick = Site::OnTimer as usize;
         assert_eq!(read().sites[tick].visits, 0);
 
-        gui.editor_idle();
+        gui.editor_idle(&main_thread());
 
         assert_eq!(read().sites[tick].visits, 1, "a period-0 timer is due");
     }

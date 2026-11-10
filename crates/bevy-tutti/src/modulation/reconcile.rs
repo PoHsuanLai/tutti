@@ -18,7 +18,7 @@ use bevy_ecs::system::SystemParam;
 
 use crate::graph::AudioNode;
 use tutti_graph::EventOut;
-use tutti_mod::{
+use tutti_modulation::{
     Declarations, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey,
 };
 use tutti_nodes::automation::LaneControls;

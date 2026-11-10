@@ -14,6 +14,8 @@
 //! on purpose, which it must fail — a harness that cannot fail is worse than
 //! none.
 
+mod common;
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
@@ -496,4 +498,53 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
     assert_eq!(rig.output(0)[1], (2.0 + per_frame) as f32);
     rig.block();
     assert_eq!(rig.output(0)[0], 0.0);
+}
+
+/// The tail contract: a node that reports its ring (or less than its ceiling
+/// and no less than its ring) passes, mono and stereo, with and without
+/// latency; one that reports too short is caught, and so is a ceiling below
+/// the ring.
+///
+/// Mutation (run): in `assert_honest_tail`, `silent_from = ... + 1 + 100000`
+/// (check far too late) → the short-report and low-ceiling cases do not
+/// panic → fails. A `Ringer` reporting half its ring (150 of 300) panics with
+/// "the reported tail is too short".
+#[test]
+fn the_tail_contract_catches_a_report_that_is_too_short() {
+    use common::Ringer;
+    use tutti_graph::contract::{assert_honest_tail, prepared};
+    let rate = tutti_graph::contract::SAMPLE_RATE;
+    let ceiling = Tail::Finite(Samples(1000));
+    let check = |r: Ringer| {
+        let mut node = prepared(r, rate, 64);
+        catch_unwind(AssertUnwindSafe(|| assert_honest_tail(&mut node, rate))).is_ok()
+    };
+    assert!(check(Ringer::new(ceiling, 300, 300)));
+    assert!(check(Ringer::new(ceiling, 300, 400)), "long errs safe");
+    assert!(
+        check(Ringer::new(ceiling, 300, 299)),
+        "exact: sound through frame T"
+    );
+    assert!(check(Ringer::new(ceiling, 300, 300).wide(2)));
+    assert!(check(
+        Ringer::new(ceiling, 300, 300).with_latency(Samples(37))
+    ));
+    assert!(check(Ringer::new(
+        Tail::Unbounded,
+        300,
+        common::REPORT_UNBOUNDED
+    )));
+    assert!(
+        !check(Ringer::new(ceiling, 300, 150)),
+        "reports half its ring"
+    );
+    assert!(!check(Ringer::new(ceiling, 300, 298)), "one frame short");
+    assert!(
+        !check(Ringer::new(
+            Tail::Finite(Samples(100)),
+            300,
+            common::NO_REPORT
+        )),
+        "a ceiling below the ring"
+    );
 }

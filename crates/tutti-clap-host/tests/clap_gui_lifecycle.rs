@@ -21,6 +21,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, LoadOptions, WindowHandle};
@@ -74,7 +75,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -208,7 +209,7 @@ fn has_editor_true_for_embeddable_plugin() {
     let loaded = probe.load();
 
     assert!(
-        loaded.has_editor(),
+        loaded.has_editor(&main_thread()),
         "a plugin whose gui api is supported for embedding and whose `create` \
          exists has an editor"
     );
@@ -222,7 +223,7 @@ fn has_editor_false_when_extension_absent() {
     let loaded = probe.load();
 
     assert!(
-        !loaded.has_editor(),
+        !loaded.has_editor(&main_thread()),
         "no `clap.gui` extension means no editor"
     );
 }
@@ -239,7 +240,7 @@ fn has_editor_false_for_floating_only_plugin() {
     let mut loaded = probe.load();
 
     assert!(
-        !loaded.has_editor(),
+        !loaded.has_editor(&main_thread()),
         "a floating-only plugin has no *embeddable* editor: its gui vtable is \
          non-null, which is exactly why the old `!gui.is_null()` check reported \
          an editor the host could never open"
@@ -247,7 +248,7 @@ fn has_editor_false_for_floating_only_plugin() {
 
     assert!(
         loaded
-            .open_editor(fake_parent(), ContentScale::IDENTITY)
+            .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
             .is_err(),
         "and open_editor confirms it — the two must not disagree"
     );
@@ -256,7 +257,7 @@ fn has_editor_false_for_floating_only_plugin() {
     // Without this the test above is satisfied by a host that reports every
     // floating-only plugin as having no UI at all.
     assert!(
-        loaded.has_floating_editor(),
+        loaded.has_floating_editor(&main_thread()),
         "the same plugin *does* have a floating editor — a host that only ever \
          asks the embedded question reports it as editor-less"
     );
@@ -271,7 +272,7 @@ fn has_editor_false_when_create_is_absent() {
     let loaded = probe.load();
 
     assert!(
-        !loaded.has_editor(),
+        !loaded.has_editor(&main_thread()),
         "a gui vtable whose `create` is None cannot allocate an editor, however \
          non-null the pointer is"
     );
@@ -290,7 +291,7 @@ fn has_editor_does_not_create_a_gui() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let loaded = probe.load();
 
-    assert!(loaded.has_editor());
+    assert!(loaded.has_editor(&main_thread()));
 
     let cap = probe.capture();
     assert!(
@@ -329,7 +330,7 @@ fn has_editor_asks_about_the_current_platform_api() {
     let loaded = probe.load();
 
     assert!(
-        loaded.has_editor(),
+        loaded.has_editor(&main_thread()),
         "the probe returns false for any api string but its own platform's, so \
          a host asking about the wrong platform lands here"
     );
@@ -370,7 +371,7 @@ fn open_editor_runs_the_spec_embed_sequence() {
     let mut loaded = probe.load();
 
     let size = loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("embeddable plugin opens");
 
     assert_eq!(
@@ -428,7 +429,11 @@ fn open_editor_calls_set_scale_only_on_a_physical_pixel_api() {
     let mut loaded = probe.load();
 
     loaded
-        .open_editor(fake_parent(), ContentScale::new(2.0).expect("a scale"))
+        .open_editor(
+            &main_thread(),
+            fake_parent(),
+            ContentScale::new(2.0).expect("a scale"),
+        )
         .expect("embeddable plugin opens");
 
     let cap = probe.capture();
@@ -474,7 +479,7 @@ fn open_editor_refuses_floating_only_before_create() {
     let mut loaded = probe.load();
 
     let err = loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect_err("floating-only plugin cannot be embedded");
     let msg = format!("{err}");
     assert!(
@@ -503,11 +508,11 @@ fn close_editor_destroys_exactly_once() {
     let mut loaded = probe.load();
 
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
     assert_eq!(probe.capture().create_balance, 1, "one live editor");
 
-    loaded.close_editor();
+    loaded.close_editor(&main_thread());
 
     let cap = probe.capture();
     assert!(cap.destroyed, "destroy ran");
@@ -524,7 +529,7 @@ fn close_editor_destroys_exactly_once() {
 
     // Idempotent: a second close is a no-op, not a second destroy. This is the
     // property that makes the `Drop` impl safe after an explicit close.
-    loaded.close_editor();
+    loaded.close_editor(&main_thread());
     assert_eq!(
         probe.capture().create_balance,
         0,
@@ -551,7 +556,7 @@ fn close_editor_destroys_after_plugin_window_was_destroyed() {
     let mut loaded = probe.load();
 
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
 
     // Driven out-of-band — *between* the host's calls. The during-`show` case
@@ -575,7 +580,7 @@ fn close_editor_destroys_after_plugin_window_was_destroyed() {
          host still owes it a destroy"
     );
 
-    loaded.close_editor();
+    loaded.close_editor(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -610,7 +615,7 @@ fn close_editor_destroys_after_window_was_destroyed_during_show() {
     // of the host's embed sequence.
     probe.command(GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW);
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
 
     assert!(
@@ -629,7 +634,7 @@ fn close_editor_destroys_after_window_was_destroyed_during_show() {
         "the gui object is still allocated — only the window went away"
     );
 
-    loaded.close_editor();
+    loaded.close_editor(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -658,7 +663,7 @@ fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
 
     probe.command(GUI_CMD_CLOSED_NOT_DESTROYED);
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
 
     assert!(loaded.take_gui_closed(), "the host records the callback");
@@ -672,7 +677,7 @@ fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
         "the editor is still allocated — the plugin only reported its window closed"
     );
 
-    loaded.close_editor();
+    loaded.close_editor(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -697,11 +702,11 @@ fn editor_capabilities_reports_plugin_hints() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
     gui_reset();
 
-    let caps = loaded.editor_capabilities();
+    let caps = loaded.editor_capabilities(&main_thread());
 
     assert!(caps.resize.resizable, "the probe's can_resize is true");
     assert!(caps.resize.can_resize_horizontally);
@@ -730,7 +735,7 @@ fn editor_capabilities_touches_nothing_before_create() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let loaded = probe.load();
 
-    let caps = loaded.editor_capabilities();
+    let caps = loaded.editor_capabilities(&main_thread());
 
     assert!(
         !caps.resize.resizable,
@@ -759,7 +764,7 @@ fn resize_editor_forwards_the_adjusted_size() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
     gui_reset();
 
@@ -768,7 +773,9 @@ fn resize_editor_forwards_the_adjusted_size() {
         width: GUI_SIZE_QUANTUM * 33 + 7,
         height: GUI_SIZE_QUANTUM * 21 + 3,
     };
-    let applied = loaded.resize_editor(requested).expect("resize succeeds");
+    let applied = loaded
+        .resize_editor(&main_thread(), requested)
+        .expect("resize succeeds");
 
     assert_eq!(
         applied,
@@ -813,15 +820,18 @@ fn resize_editor_fails_when_plugin_cannot_adjust() {
     let probe = Probe::acquire(GuiMode::FixedSize);
     let mut loaded = probe.load();
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
     gui_reset();
 
     let err = loaded
-        .resize_editor(EditorSize {
-            width: 1234,
-            height: 567,
-        })
+        .resize_editor(
+            &main_thread(),
+            EditorSize {
+                width: 1234,
+                height: 567,
+            },
+        )
         .expect_err("a fixed-size editor cannot honour an arbitrary size");
 
     let msg = format!("{err}");
@@ -854,10 +864,10 @@ fn editor_capabilities_reports_fixed_size_as_not_resizable() {
     let probe = Probe::acquire(GuiMode::FixedSize);
     let mut loaded = probe.load();
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
 
-    let caps = loaded.editor_capabilities();
+    let caps = loaded.editor_capabilities(&main_thread());
 
     assert!(!caps.resize.resizable, "the probe's can_resize is false");
     assert!(!caps.resize.can_resize_horizontally);
@@ -890,7 +900,7 @@ fn take_editor_resize_request_delivers_once() {
     // the host still considers the editor live.
     probe.command(GUI_CMD_REQUEST_RESIZE);
     loaded
-        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
 
     assert_eq!(
@@ -924,7 +934,7 @@ fn drop_destroys_a_live_editor() {
     {
         let mut loaded = probe.load();
         loaded
-            .open_editor(fake_parent(), ContentScale::IDENTITY)
+            .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
             .expect("opens");
         assert_eq!(probe.capture().create_balance, 1, "one live editor");
     }
@@ -969,7 +979,7 @@ fn open_floating_editor_runs_the_spec_sequence() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("a floating-only plugin must open in floating mode");
 
     let cap = probe.capture();
@@ -1003,7 +1013,7 @@ fn the_floating_path_asks_only_the_floating_question() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let cap = probe.capture();
@@ -1034,7 +1044,7 @@ fn a_floating_editor_is_asked_for_no_geometry() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let observed = calls(&probe.capture());
@@ -1066,7 +1076,7 @@ fn the_host_suggests_a_window_title() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let cap = probe.capture();
@@ -1088,7 +1098,7 @@ fn no_transient_parent_skips_the_hint() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(None, TEST_TITLE)
+        .open_floating_editor(&main_thread(), None, TEST_TITLE)
         .expect("floating open should succeed without a transient parent");
 
     let cap = probe.capture();
@@ -1115,9 +1125,9 @@ fn close_editor_tears_down_a_floating_editor() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor(&main_thread(), Some(fake_parent()), TEST_TITLE)
         .expect("floating open should succeed");
-    loaded.close_editor();
+    loaded.close_editor(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -1142,7 +1152,7 @@ fn a_plugin_without_create_has_no_floating_editor() {
     let loaded = probe.load();
 
     assert!(
-        !loaded.has_floating_editor(),
+        !loaded.has_floating_editor(&main_thread()),
         "a plugin with no `create` fn cannot present any window, floating \
          included — the gui pointer being non-null says nothing about that"
     );
@@ -1159,7 +1169,7 @@ fn a_plugin_states_its_preferred_mode() {
         let probe = Probe::acquire(GuiMode::FloatingOnly);
         let loaded = probe.load();
         assert_eq!(
-            loaded.prefers_floating(),
+            loaded.prefers_floating(&main_thread()),
             Some(true),
             "a floating-only probe prefers floating"
         );
@@ -1168,7 +1178,7 @@ fn a_plugin_states_its_preferred_mode() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let loaded = probe.load();
     assert_eq!(
-        loaded.prefers_floating(),
+        loaded.prefers_floating(&main_thread()),
         Some(false),
         "an embeddable probe prefers embedded — `Some(false)` and `None` must \
          not collapse, or a host cannot tell a stated preference from silence"

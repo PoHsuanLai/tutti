@@ -677,8 +677,8 @@ fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 
 #[test]
 fn memory_source_process_is_allocation_free_at_six_channels() {
-    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize)
-        .expect("a placeable wave");
+    let node =
+        MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6u16).expect("a placeable wave");
     assert_eq!(node.shape().audio_out.count(), 6);
     let mut rig = Rig::new(node, 64);
 
@@ -696,8 +696,8 @@ fn memory_source_process_is_allocation_free_at_six_channels() {
 /// One-frame blocks at width 6.
 #[test]
 fn memory_source_one_frame_blocks_are_allocation_free_at_six_channels() {
-    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize)
-        .expect("a placeable wave");
+    let node =
+        MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6u16).expect("a placeable wave");
     let mut rig = Rig::new(node, 1);
     for _ in 0..256 {
         rig.block();
@@ -741,7 +741,7 @@ fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
 #[test]
 fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
     let wave = surround_wave(2.0, 48_000.0);
-    let mut reader = VoicePool::with_channels(None, 6usize).expect("a width the sampler reads");
+    let mut reader = VoicePool::with_channels(None, 6u16).expect("a width the sampler reads");
     // `placement: None` on the Playback record, so the sampler's OWN placement
     // is what gates playback.
     let sampler = MemorySource::with_config(
@@ -832,7 +832,7 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 #[test]
 fn add_voice_drain_is_allocation_free_at_six_channels() {
     let wave = surround_wave(2.0, 48_000.0);
-    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+    let (reader, handle) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let mut reader = Rig::new(reader, 64);
@@ -900,7 +900,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
 #[test]
 fn remove_voice_drain_does_not_free_on_the_audio_thread() {
     let wave = surround_wave(2.0, 48_000.0);
-    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+    let (reader, handle) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let mut reader = Rig::new(reader, 64);
@@ -964,7 +964,7 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
 #[test]
 fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
     let wave = surround_wave(2.0, 48_000.0);
-    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+    let (reader, handle) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let mut reader = Rig::new(reader, 64);
@@ -1123,7 +1123,7 @@ fn an_add_past_the_voice_cap_is_refused_without_allocating() {
 #[test]
 fn update_loop_drain_is_allocation_free_at_six_channels() {
     let wave = surround_wave(2.0, 48_000.0);
-    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+    let (reader, handle) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let mut reader = Rig::new(reader, 64);

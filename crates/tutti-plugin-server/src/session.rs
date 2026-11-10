@@ -15,6 +15,7 @@ use tutti_plugin::server::{
     ParameterQueue, SampleFormat, StagedState, WindowHandle,
 };
 use tutti_plugin::{BridgeError, Result};
+use tutti_plugin_types::MainThread;
 
 /// A block's plugin MIDI-out for the wire. Already capped at
 /// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
@@ -149,8 +150,8 @@ impl Session {
     /// Returns an error only when a failure cannot be expressed as a reply the
     /// host can act on. Plugin-level failures — a load that fails, a request
     /// with no plugin loaded — come back as an error-carrying `Reply` instead.
-    pub(crate) fn handle(&mut self, msg: HostMessage) -> Result<Reaction> {
-        self.handle_with(msg, &mut |_| {})
+    pub(crate) fn handle(&mut self, main: &MainThread, msg: HostMessage) -> Result<Reaction> {
+        self.handle_with(main, msg, &mut |_| {})
     }
 
     /// [`handle`](Self::handle), with `interim` for a message that cannot wait
@@ -160,15 +161,12 @@ impl Session {
     /// is a sink, not a source.
     pub(crate) fn handle_with(
         &mut self,
+        main: &MainThread,
         msg: HostMessage,
         interim: &mut dyn FnMut(BridgeMessage),
     ) -> Result<Reaction> {
         use HostMessage as M;
         match msg {
-            M::ProbePlugin { path } => {
-                self.discard_staged();
-                Ok(self.handle_probe(&path).into())
-            }
             M::LoadPlugin {
                 path,
                 sample_rate,
@@ -177,6 +175,7 @@ impl Session {
                 shm_name: _,
                 state,
             } => self.handle_load(
+                main,
                 path,
                 sample_rate.get(),
                 block_size,
@@ -216,13 +215,13 @@ impl Session {
                     // The wire's decode is the clamp (`Normalized::clamped`), so an
                     // out-of-range or NaN value from the peer never reaches a
                     // live plugin as such.
-                    plugin.instance_mut().set_parameter(param_id, value);
+                    plugin.instance_mut().set_parameter(main, param_id, value);
                 }
                 Ok(Reaction::None)
             }
             M::SetAutomationState { mode } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().set_automation_state(mode);
+                    plugin.instance_mut().set_automation_state(main, mode);
                 }
                 Ok(Reaction::None)
             }
@@ -230,14 +229,14 @@ impl Session {
                 let value = self
                     .plugin
                     .as_mut()
-                    .map(|p| Normalized::clamped(p.instance_mut().get_parameter(param_id)));
+                    .map(|p| Normalized::clamped(p.instance_mut().get_parameter(main, param_id)));
                 Ok(BridgeMessage::ParameterValue { value }.into())
             }
             M::GetParameterList => {
                 let parameters = self
                     .plugin
                     .as_ref()
-                    .map(|p| p.instance().get_parameter_list())
+                    .map(|p| p.instance().get_parameter_list(main))
                     .unwrap_or_default();
                 Ok(BridgeMessage::ParameterList { parameters }.into())
             }
@@ -250,7 +249,7 @@ impl Session {
                 let presets = self
                     .plugin
                     .as_mut()
-                    .map(|p| p.instance_mut().get_presets())
+                    .map(|p| p.instance_mut().get_presets(main))
                     .unwrap_or_default();
                 Ok(BridgeMessage::PresetList { presets }.into())
             }
@@ -258,21 +257,21 @@ impl Session {
                 let ok = self
                     .plugin
                     .as_mut()
-                    .is_some_and(|p| p.instance_mut().load_preset(&id));
+                    .is_some_and(|p| p.instance_mut().load_preset(main, &id));
                 Ok(BridgeMessage::PresetLoaded { ok }.into())
             }
             M::GetCurrentPreset => {
                 let id = self
                     .plugin
                     .as_mut()
-                    .and_then(|p| p.instance_mut().get_current_preset());
+                    .and_then(|p| p.instance_mut().get_current_preset(main));
                 Ok(BridgeMessage::CurrentPreset { id }.into())
             }
             M::GetParameterText { param_id, value } => {
                 let text = self
                     .plugin
                     .as_ref()
-                    .and_then(|p| p.instance().parameter_text(param_id, value));
+                    .and_then(|p| p.instance().parameter_text(main, param_id, value));
                 Ok(BridgeMessage::ParameterText { text }.into())
             }
             M::GetParameterValueFromText { param_id, text } => {
@@ -281,16 +280,16 @@ impl Session {
                 // as it reads it. The trait takes `&self` because the plugin
                 // handle is interior-mutable at the FFI edge, so this stays on
                 // the `as_ref` path with the other queries.
-                let value = self
-                    .plugin
-                    .as_ref()
-                    .and_then(|p| p.instance().parameter_value_from_text(param_id, &text));
+                let value = self.plugin.as_ref().and_then(|p| {
+                    p.instance()
+                        .parameter_value_from_text(main, param_id, &text)
+                });
                 Ok(BridgeMessage::ParameterValueFromText { value }.into())
             }
             M::GetParameterInfo { param_id } => {
                 let info = self.plugin.as_ref().and_then(|p| {
                     p.instance()
-                        .get_parameter_list()
+                        .get_parameter_list(main)
                         .into_iter()
                         .find(|info| info.id == param_id)
                 });
@@ -300,10 +299,10 @@ impl Session {
             M::OpenEditor {
                 parent_handle,
                 scale,
-            } => Ok(self.handle_open_editor(parent_handle, scale).into()),
+            } => Ok(self.handle_open_editor(main, parent_handle, scale).into()),
             M::CloseEditor => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().close_editor();
+                    plugin.instance_mut().close_editor(main);
                     self.editor = EditorState::Closed;
                 }
                 Ok(Reaction::None)
@@ -316,7 +315,7 @@ impl Session {
                 // otherwise render at its old rate against the host's blocks.
                 self.clock.sample_rate = rate.get();
                 let error = match self.plugin.as_mut() {
-                    Some(plugin) => match plugin.instance_mut().set_sample_rate(rate.get()) {
+                    Some(plugin) => match plugin.instance_mut().set_sample_rate(main, rate.get()) {
                         Ok(()) => None,
                         Err(e) => {
                             tracing::warn!(requested = %rate, "sample rate not applied: {e}");
@@ -335,7 +334,7 @@ impl Session {
                 // host already has it. Logged rather than dropped so a refusal
                 // is greppable when a bounce sounds like the live path.
                 if let Some(plugin) = self.plugin.as_mut()
-                    && !plugin.instance_mut().set_render_mode(mode)
+                    && !plugin.instance_mut().set_render_mode(main, mode)
                 {
                     tracing::debug!(?mode, "plugin did not accept the render mode");
                 }
@@ -350,9 +349,9 @@ impl Session {
             // that could disagree with the first.
             M::Reset => Ok(Reaction::None),
 
-            M::SaveState => Ok(self.handle_save_state()),
+            M::SaveState => Ok(self.handle_save_state(main)),
             M::LoadStateChunk { seq, last, bytes } => {
-                Ok(self.handle_load_state_chunk(seq, last, &bytes))
+                Ok(self.handle_load_state_chunk(main, seq, last, &bytes))
             }
             M::StageStateChunk { seq, last, bytes } => {
                 Ok(self.handle_stage_state_chunk(seq, last, &bytes))
@@ -369,11 +368,11 @@ impl Session {
     /// Drain async events from the loaded plugin, mapping each into a
     /// `BridgeMessage` the transport can push back. Called from the
     /// server's audio phase after every message dispatch.
-    pub(crate) fn drain_async_events(&mut self) -> Vec<BridgeMessage> {
+    pub(crate) fn drain_async_events(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
         let Some(plugin) = self.plugin.as_mut() else {
             return Vec::new();
         };
-        let events = plugin.poll_async_events();
+        let events = plugin.poll_async_events(main);
         // A parameter list that changed may have grown past the output
         // reserved at load. This runs on the audio-phase thread between
         // blocks, so the count is a count query, not the descriptor list.
@@ -388,7 +387,7 @@ impl Session {
             .iter()
             .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged | AsyncEvent::Reloaded))
         {
-            let params = plugin.instance().parameter_count();
+            let params = plugin.instance().parameter_count(main);
             self.pipeline.fit_params(params);
         }
         events
@@ -410,27 +409,12 @@ impl Session {
     /// Close the editor cleanly (if open). Called by `PluginServer`'s
     /// `Drop` so a subprocess teardown doesn't leak a floating editor
     /// window.
-    pub(crate) fn close_editor_on_drop(&mut self) {
+    pub(crate) fn close_editor_on_drop(&mut self, main: &MainThread) {
         if self.editor.is_open() {
             if let Some(plugin) = self.plugin.as_mut() {
-                plugin.instance_mut().close_editor();
+                plugin.instance_mut().close_editor(main);
             }
             self.editor = EditorState::Closed;
-        }
-    }
-
-    fn handle_probe(&self, path: &std::path::Path) -> BridgeMessage {
-        match Plugin::probe(path) {
-            Ok(descriptor) => BridgeMessage::PluginLoaded {
-                descriptor: Box::new(descriptor),
-                // A probe never activates the plugin, so there is no load data.
-                loaded: Default::default(),
-                negotiated_format: self.clock.format,
-                state_error: None,
-            },
-            Err(e) => BridgeMessage::Error {
-                message: format!("Probe failed: {e}"),
-            },
         }
     }
 
@@ -443,6 +427,7 @@ impl Session {
 
     fn handle_load(
         &mut self,
+        main: &MainThread,
         path: std::path::PathBuf,
         sample_rate: f64,
         block_size: usize,
@@ -473,6 +458,7 @@ impl Session {
         }
         let mut restoring = || interim(BridgeMessage::RestoringState);
         let (plugin, descriptor, loaded, negotiated, state_error) = match Plugin::load_with_state(
+            main,
             &path,
             sample_rate,
             block_size,
@@ -492,7 +478,7 @@ impl Session {
         // reserved here, off the audio thread: a queue per parameter, each
         // within a block's chunk room (`ParameterChanges::reserved`).
         self.pipeline.reserve_params(
-            plugin.instance().parameter_count(),
+            plugin.instance().parameter_count(main),
             ParameterQueue::chunk_room(block_size),
         );
         self.plugin = Some(plugin);
@@ -571,7 +557,12 @@ impl Session {
         .into())
     }
 
-    fn handle_open_editor(&mut self, parent_handle: u64, scale: ContentScale) -> BridgeMessage {
+    fn handle_open_editor(
+        &mut self,
+        main: &MainThread,
+        parent_handle: u64,
+        scale: ContentScale,
+    ) -> BridgeMessage {
         let Some(plugin) = self.plugin.as_mut() else {
             return BridgeMessage::Error {
                 message: "No plugin loaded".to_string(),
@@ -580,7 +571,7 @@ impl Session {
         // SAFETY: parent_handle is a raw platform window pointer carried
         // as u64 over IPC; the single unsafe boundary for editor embedding.
         let handle = unsafe { WindowHandle::from_u64(parent_handle) };
-        match plugin.instance_mut().open_editor(handle, scale) {
+        match plugin.instance_mut().open_editor(main, handle, scale) {
             Ok(size) => {
                 self.editor = EditorState::Open;
                 BridgeMessage::EditorOpened {
@@ -601,9 +592,9 @@ impl Session {
     /// frame carries. The empty cases still emit one terminating chunk — a host
     /// waits for `last`, so answering nothing would hang it rather than tell it
     /// there is no state.
-    fn handle_save_state(&mut self) -> Reaction {
+    fn handle_save_state(&mut self, main: &MainThread) -> Reaction {
         let data = match self.plugin.as_mut() {
-            Some(p) => match p.instance_mut().get_state() {
+            Some(p) => match p.instance_mut().get_state(main) {
                 Ok(data) => data,
                 // A plugin that fails to serialise is not a transport problem:
                 // one `Error` frame, and the host reports it as a rejection.
@@ -682,7 +673,13 @@ impl Session {
     /// with the reason. Resetting matters: leaving the partial buffer in place
     /// would make the *next*, well-formed load fail too, turning one bad
     /// project file into a permanently broken session.
-    fn handle_load_state_chunk(&mut self, seq: u32, last: bool, bytes: &[u8]) -> Reaction {
+    fn handle_load_state_chunk(
+        &mut self,
+        main: &MainThread,
+        seq: u32,
+        last: bool,
+        bytes: &[u8],
+    ) -> Reaction {
         let acc = self.state_in.get_or_insert_with(Reassembler::default);
         let complete = match acc.push(seq, last, bytes) {
             Ok(done) => done,
@@ -710,7 +707,7 @@ impl Session {
             }
             .into();
         };
-        let error = match plugin.instance_mut().set_state(&data) {
+        let error = match plugin.instance_mut().set_state(main, &data) {
             Ok(()) => None,
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
@@ -733,6 +730,13 @@ fn load_failure(e: &BridgeError) -> BridgeMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     // `Features` is named only by `load_clap_plugin_f64`, which carries the
     // same gate.
     use tutti_plugin::LoadStage;
@@ -842,7 +846,7 @@ mod tests {
         for (name, msg, expect) in cases {
             let mut s = Session::new();
             let r = s
-                .handle(msg)
+                .handle(&main_thread(), msg)
                 .unwrap_or_else(|e| panic!("{name} errored with no plugin: {e:?}"));
 
             match expect {
@@ -872,9 +876,12 @@ mod tests {
     fn set_sample_rate_no_plugin_updates_clock() {
         let mut s = Session::new();
         let r = s
-            .handle(HostMessage::SetSampleRate {
-                rate: tutti_plugin_types::SampleRate(96000.0),
-            })
+            .handle(
+                &main_thread(),
+                HostMessage::SetSampleRate {
+                    rate: tutti_plugin_types::SampleRate(96000.0),
+                },
+            )
             .unwrap()
             .into_reply();
         assert!(matches!(
@@ -894,11 +901,14 @@ mod tests {
     fn load_state_no_plugin_refuses_rather_than_going_silent() {
         let mut s = Session::new();
         let reply = s
-            .handle(HostMessage::LoadStateChunk {
-                seq: 0,
-                last: true,
-                bytes: vec![1, 2, 3],
-            })
+            .handle(
+                &main_thread(),
+                HostMessage::LoadStateChunk {
+                    seq: 0,
+                    last: true,
+                    bytes: vec![1, 2, 3],
+                },
+            )
             .unwrap()
             .into_reply();
         match reply {
@@ -912,7 +922,7 @@ mod tests {
     #[test]
     fn unload_plugin_clears_shm() {
         let mut s = Session::new();
-        let r = s.handle(HostMessage::UnloadPlugin).unwrap();
+        let r = s.handle(&main_thread(), HostMessage::UnloadPlugin).unwrap();
         assert_none(r);
         assert!(s.plugin.is_none());
         assert!(s.shm.is_none());
@@ -921,7 +931,7 @@ mod tests {
     #[test]
     fn shutdown_signals_shutdown() {
         let mut s = Session::new();
-        let r = s.handle(HostMessage::Shutdown).unwrap();
+        let r = s.handle(&main_thread(), HostMessage::Shutdown).unwrap();
         assert!(matches!(r, Reaction::Shutdown));
     }
 
@@ -929,14 +939,17 @@ mod tests {
     fn load_plugin_missing_path_errors() {
         let mut s = Session::new();
         let reply = s
-            .handle(HostMessage::LoadPlugin {
-                path: std::path::PathBuf::from("/nonexistent/path/plugin.vst3"),
-                sample_rate: tutti_plugin_types::SampleRate(44100.0),
-                block_size: 512,
-                preferred_format: SampleFormat::Float32,
-                shm_name: "x".into(),
-                state: None,
-            })
+            .handle(
+                &main_thread(),
+                HostMessage::LoadPlugin {
+                    path: std::path::PathBuf::from("/nonexistent/path/plugin.vst3"),
+                    sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                    block_size: 512,
+                    preferred_format: SampleFormat::Float32,
+                    shm_name: "x".into(),
+                    state: None,
+                },
+            )
             .expect("a failed load is a reply, not a server error")
             .into_reply();
         match reply {
@@ -972,14 +985,17 @@ mod tests {
     #[cfg(feature = "clap")]
     fn load_clap(name: &str, preferred_format: SampleFormat) -> (Session, AudioSlab) {
         let mut s = Session::new();
-        s.handle(HostMessage::LoadPlugin {
-            path: std::path::PathBuf::from(clap_plugin()),
-            sample_rate: tutti_plugin_types::SampleRate(44100.0),
-            block_size: 512,
-            preferred_format,
-            shm_name: name.to_string(),
-            state: None,
-        })
+        s.handle(
+            &main_thread(),
+            HostMessage::LoadPlugin {
+                path: std::path::PathBuf::from(clap_plugin()),
+                sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                block_size: 512,
+                preferred_format,
+                shm_name: name.to_string(),
+                state: None,
+            },
+        )
         .unwrap();
 
         let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
@@ -1006,13 +1022,14 @@ mod tests {
         }
         shm.publish_input(seq);
         let reply = s
-            .handle(HostMessage::ProcessAudio(Box::new(
-                tutti_plugin::server::ProcessAudioData {
+            .handle(
+                &main_thread(),
+                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
                     seq,
                     num_samples: F64_FRAMES,
                     ..Default::default()
-                },
-            )))
+                })),
+            )
             .unwrap()
             .into_reply();
         assert!(
@@ -1047,9 +1064,12 @@ mod tests {
         let (mut s, shm) = load_clap("rate_refusal_cycle", SampleFormat::Float64);
         assert_eq!(s.clock.format, SampleFormat::Float64, "fixture");
         let set = |s: &mut Session, rate: f64| {
-            s.handle(HostMessage::SetSampleRate {
-                rate: tutti_plugin_types::SampleRate(rate),
-            })
+            s.handle(
+                &main_thread(),
+                HostMessage::SetSampleRate {
+                    rate: tutti_plugin_types::SampleRate(rate),
+                },
+            )
             .unwrap()
             .into_reply()
         };
@@ -1060,7 +1080,10 @@ mod tests {
             "{accepted:?}"
         );
         assert_eq!(s.clock.sample_rate, 48000.0);
-        assert!(s.drain_async_events().is_empty(), "nothing changed");
+        assert!(
+            s.drain_async_events(&main_thread()).is_empty(),
+            "nothing changed"
+        );
         process_block(&mut s, &shm, 1, 0.5);
         assert!(shm.has_output(1), "a running plugin publishes");
 
@@ -1078,7 +1101,7 @@ mod tests {
         assert_eq!(s.clock.sample_rate, 96000.0, "the clock follows the host");
         assert!(s.rate_refused.is_some());
         assert!(
-            s.drain_async_events()
+            s.drain_async_events(&main_thread())
                 .iter()
                 .any(|m| matches!(m, BridgeMessage::PluginIoChanged)),
             "the host is told the instance can no longer run"
@@ -1151,13 +1174,14 @@ mod tests {
         }
         shm.publish_input(SEQ);
         let reply = s
-            .handle(HostMessage::ProcessAudio(Box::new(
-                tutti_plugin::server::ProcessAudioData {
+            .handle(
+                &main_thread(),
+                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
                     seq: SEQ,
                     num_samples: F64_FRAMES,
                     ..Default::default()
-                },
-            )))
+                })),
+            )
             .unwrap()
             .into_reply();
         assert!(
@@ -1364,7 +1388,7 @@ mod tests {
     #[cfg(feature = "clap")]
     fn first_param_id(s: &mut Session) -> ParamId {
         let reply = s
-            .handle(HostMessage::GetParameterList)
+            .handle(&main_thread(), HostMessage::GetParameterList)
             .unwrap()
             .into_reply();
         match reply {
@@ -1382,7 +1406,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("get_param_list_clap", SampleFormat::Float32);
         let reply = s
-            .handle(HostMessage::GetParameterList)
+            .handle(&main_thread(), HostMessage::GetParameterList)
             .unwrap()
             .into_reply();
         match reply {
@@ -1398,7 +1422,7 @@ mod tests {
         let (mut s, _shm) = load_clap("get_param_clap", SampleFormat::Float32);
         let param_id = first_param_id(&mut s);
         let reply = s
-            .handle(HostMessage::GetParameter { param_id })
+            .handle(&main_thread(), HostMessage::GetParameter { param_id })
             .unwrap()
             .into_reply();
         match reply {
@@ -1414,7 +1438,7 @@ mod tests {
         let (mut s, _shm) = load_clap("get_param_info_clap", SampleFormat::Float32);
         let param_id = first_param_id(&mut s);
         let reply = s
-            .handle(HostMessage::GetParameterInfo { param_id })
+            .handle(&main_thread(), HostMessage::GetParameterInfo { param_id })
             .unwrap()
             .into_reply();
         match reply {
@@ -1433,10 +1457,13 @@ mod tests {
         let (mut s, _shm) = load_clap("set_param_clap", SampleFormat::Float32);
         let param_id = first_param_id(&mut s);
         let r = s
-            .handle(HostMessage::SetParameter {
-                param_id,
-                value: Normalized::of(0.5),
-            })
+            .handle(
+                &main_thread(),
+                HostMessage::SetParameter {
+                    param_id,
+                    value: Normalized::of(0.5),
+                },
+            )
             .unwrap();
         assert_none(r);
     }
@@ -1465,7 +1492,11 @@ mod tests {
     fn save_state_bytes(s: &mut Session) -> Vec<u8> {
         let mut acc = Reassembler::default();
         let mut done = false;
-        for m in s.handle(HostMessage::SaveState).unwrap().into_replies() {
+        for m in s
+            .handle(&main_thread(), HostMessage::SaveState)
+            .unwrap()
+            .into_replies()
+        {
             match m {
                 BridgeMessage::StateChunk { seq, last, bytes } => {
                     assert!(!done, "chunks continued after `last`");
@@ -1491,11 +1522,14 @@ mod tests {
         let mut last_reaction = Reaction::None;
         for (seq, last, bytes) in state_chunk::split(data) {
             last_reaction = s
-                .handle(HostMessage::LoadStateChunk {
-                    seq,
-                    last,
-                    bytes: bytes.to_vec(),
-                })
+                .handle(
+                    &main_thread(),
+                    HostMessage::LoadStateChunk {
+                        seq,
+                        last,
+                        bytes: bytes.to_vec(),
+                    },
+                )
                 .unwrap();
         }
         last_reaction
@@ -1508,11 +1542,14 @@ mod tests {
         let mut last_reaction = Reaction::None;
         for (seq, last, bytes) in state_chunk::split(data) {
             last_reaction = s
-                .handle(HostMessage::StageStateChunk {
-                    seq,
-                    last,
-                    bytes: bytes.to_vec(),
-                })
+                .handle(
+                    &main_thread(),
+                    HostMessage::StageStateChunk {
+                        seq,
+                        last,
+                        bytes: bytes.to_vec(),
+                    },
+                )
                 .unwrap();
         }
         last_reaction
@@ -1521,14 +1558,17 @@ mod tests {
     #[cfg(feature = "clap")]
     fn load_reply(s: &mut Session, declared: Option<StagedState>) -> Option<String> {
         let reply = s
-            .handle(HostMessage::LoadPlugin {
-                path: std::path::PathBuf::from(clap_plugin()),
-                sample_rate: tutti_plugin_types::SampleRate(44100.0),
-                block_size: 512,
-                preferred_format: SampleFormat::Float32,
-                shm_name: "staged".into(),
-                state: declared,
-            })
+            .handle(
+                &main_thread(),
+                HostMessage::LoadPlugin {
+                    path: std::path::PathBuf::from(clap_plugin()),
+                    sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                    block_size: 512,
+                    preferred_format: SampleFormat::Float32,
+                    shm_name: "staged".into(),
+                    state: declared,
+                },
+            )
             .unwrap()
             .into_reply();
         match reply {
@@ -1538,24 +1578,30 @@ mod tests {
     }
 
     fn load_declaring(s: &mut Session, declared: Option<StagedState>) -> BridgeMessage {
-        s.handle(HostMessage::LoadPlugin {
-            path: std::path::PathBuf::from("/nonexistent/plugin.clap"),
-            sample_rate: tutti_plugin_types::SampleRate(44100.0),
-            block_size: 512,
-            preferred_format: SampleFormat::Float32,
-            shm_name: "x".into(),
-            state: declared,
-        })
+        s.handle(
+            &main_thread(),
+            HostMessage::LoadPlugin {
+                path: std::path::PathBuf::from("/nonexistent/plugin.clap"),
+                sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                block_size: 512,
+                preferred_format: SampleFormat::Float32,
+                shm_name: "x".into(),
+                state: declared,
+            },
+        )
         .unwrap()
         .into_reply()
     }
 
     fn stage(s: &mut Session, seq: u32, last: bool, bytes: &[u8]) -> Reaction {
-        s.handle(HostMessage::StageStateChunk {
-            seq,
-            last,
-            bytes: bytes.to_vec(),
-        })
+        s.handle(
+            &main_thread(),
+            HostMessage::StageStateChunk {
+                seq,
+                last,
+                bytes: bytes.to_vec(),
+            },
+        )
         .unwrap()
     }
 
@@ -1607,27 +1653,21 @@ mod tests {
         }
     }
 
-    /// **A stage belongs to the load that declares it**: a probe or an unload
-    /// that comes between discards it, and so does a half-received one.
+    /// **A stage belongs to the load that declares it**: an unload that comes
+    /// between discards it, and so does a half-received one.
     ///
-    /// Mutation (run): `discard_staged` not called in the probe arm fails the
-    /// first assertion; not called in the unload arm, the second and third.
+    /// Mutation (run): `discard_staged` not called in the unload arm fails the
+    /// first and second assertions.
     #[test]
     fn a_stage_does_not_outlive_the_next_request() {
         let mut s = Session::new();
         assert_state_loaded_reply(stage(&mut s, 0, true, &[1]));
-        let _ = s.handle(HostMessage::ProbePlugin {
-            path: "/nonexistent/plugin.clap".into(),
-        });
-        assert!(s.staged.is_none(), "a probe discards the stage");
-
-        assert_state_loaded_reply(stage(&mut s, 0, true, &[1]));
-        let _ = s.handle(HostMessage::UnloadPlugin);
+        let _ = s.handle(&main_thread(), HostMessage::UnloadPlugin);
         assert!(s.staged.is_none(), "an unload discards the stage");
 
         assert!(matches!(stage(&mut s, 0, false, &[1]), Reaction::None));
         assert!(s.stage_in.is_some());
-        let _ = s.handle(HostMessage::UnloadPlugin);
+        let _ = s.handle(&main_thread(), HostMessage::UnloadPlugin);
         assert!(s.stage_in.is_none(), "and a half-received one");
     }
 
@@ -1693,6 +1733,7 @@ mod tests {
             let mut heard = Vec::new();
             let reply = s
                 .handle_with(
+                    &main_thread(),
                     HostMessage::LoadPlugin {
                         path: std::path::PathBuf::from(clap_plugin()),
                         sample_rate: tutti_plugin_types::SampleRate(44100.0),
@@ -1736,11 +1777,14 @@ mod tests {
         let mut s = Session::new();
         assert_state_loaded(stage_state_bytes(&mut s, &[9, 9]));
         let reply = s
-            .handle(HostMessage::StageStateChunk {
-                seq: 5,
-                last: true,
-                bytes: vec![1],
-            })
+            .handle(
+                &main_thread(),
+                HostMessage::StageStateChunk {
+                    seq: 5,
+                    last: true,
+                    bytes: vec![1],
+                },
+            )
             .unwrap()
             .into_reply();
         assert!(
@@ -1790,9 +1834,12 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("set_sr_clap", SampleFormat::Float32);
         let r = s
-            .handle(HostMessage::SetSampleRate {
-                rate: tutti_plugin_types::SampleRate(96000.0),
-            })
+            .handle(
+                &main_thread(),
+                HostMessage::SetSampleRate {
+                    rate: tutti_plugin_types::SampleRate(96000.0),
+                },
+            )
             .unwrap()
             .into_reply();
         assert!(matches!(
@@ -1809,7 +1856,7 @@ mod tests {
         let (mut s, _shm) = load_clap("unload_clap", SampleFormat::Float32);
         assert!(s.plugin.is_some());
         assert!(s.shm.is_some());
-        let r = s.handle(HostMessage::UnloadPlugin).unwrap();
+        let r = s.handle(&main_thread(), HostMessage::UnloadPlugin).unwrap();
         assert_none(r);
         assert!(s.plugin.is_none());
         assert!(s.shm.is_none());
@@ -1821,8 +1868,9 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("proc_audio_clap", SampleFormat::Float32);
         let reply = s
-            .handle(HostMessage::ProcessAudio(Box::new(
-                tutti_plugin::server::ProcessAudioData {
+            .handle(
+                &main_thread(),
+                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 512,
                     midi_events: MidiEventVec::new(),
@@ -1830,8 +1878,8 @@ mod tests {
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
                     ..Default::default()
-                },
-            )))
+                })),
+            )
             .unwrap()
             .into_reply();
         assert!(
@@ -1850,14 +1898,17 @@ mod tests {
             .expect("the probe module is inside its bundle")
             .to_path_buf();
         let mut s = Session::new();
-        s.handle(HostMessage::LoadPlugin {
-            path: bundle,
-            sample_rate: tutti_plugin_types::SampleRate(48_000.0),
-            block_size: 512,
-            preferred_format: SampleFormat::Float32,
-            shm_name: name.to_string(),
-            state: None,
-        })
+        s.handle(
+            &main_thread(),
+            HostMessage::LoadPlugin {
+                path: bundle,
+                sample_rate: tutti_plugin_types::SampleRate(48_000.0),
+                block_size: 512,
+                preferred_format: SampleFormat::Float32,
+                shm_name: name.to_string(),
+                state: None,
+            },
+        )
         .unwrap();
         let loaded = s.plugin.as_ref().unwrap().instance().loaded().clone();
         let layout = tutti_plugin::server::SlabLayout {
@@ -1883,13 +1934,14 @@ mod tests {
         }
         shm.publish_input(seq);
         let reply = s
-            .handle(HostMessage::ProcessAudio(Box::new(
-                tutti_plugin::server::ProcessAudioData {
+            .handle(
+                &main_thread(),
+                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
                     seq,
                     num_samples: frames,
                     ..Default::default()
-                },
-            )))
+                })),
+            )
             .expect("a failed block does not end the server")
             .into_reply();
         assert!(
@@ -1924,7 +1976,7 @@ mod tests {
                 );
             }
             assert_eq!(s.pipeline.failed_blocks(), 3);
-            assert!(s.drain_async_events().is_empty());
+            assert!(s.drain_async_events(&main_thread()).is_empty());
             s.pipeline.failed_blocks()
         };
         assert_eq!(failing, 3);
@@ -1969,10 +2021,10 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_vst3_probe("idle_vst3");
         // Warm: the first pass sizes the bridge's request buffer.
-        assert!(s.drain_async_events().is_empty());
+        assert!(s.drain_async_events(&main_thread()).is_empty());
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..64 {
-                assert!(s.drain_async_events().is_empty());
+                assert!(s.drain_async_events(&main_thread()).is_empty());
             }
         });
     }
@@ -1983,10 +2035,10 @@ mod tests {
     fn an_idle_drain_does_not_allocate_clap() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("idle_clap", SampleFormat::Float32);
-        assert!(s.drain_async_events().is_empty());
+        assert!(s.drain_async_events(&main_thread()).is_empty());
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..64 {
-                assert!(s.drain_async_events().is_empty());
+                assert!(s.drain_async_events(&main_thread()).is_empty());
             }
         });
     }
@@ -2006,19 +2058,22 @@ mod tests {
     fn an_idle_drain_does_not_allocate_vst2() {
         let _lock = crate::test_utils::plugin_load_lock();
         let mut s = Session::new();
-        s.handle(HostMessage::LoadPlugin {
-            path: crate::test_utils::vst2_probe_staged_path().to_path_buf(),
-            sample_rate: tutti_plugin_types::SampleRate(48_000.0),
-            block_size: 512,
-            preferred_format: SampleFormat::Float32,
-            shm_name: "idle_vst2".to_string(),
-            state: None,
-        })
+        s.handle(
+            &main_thread(),
+            HostMessage::LoadPlugin {
+                path: crate::test_utils::vst2_probe_staged_path().to_path_buf(),
+                sample_rate: tutti_plugin_types::SampleRate(48_000.0),
+                block_size: 512,
+                preferred_format: SampleFormat::Float32,
+                shm_name: "idle_vst2".to_string(),
+                state: None,
+            },
+        )
         .unwrap();
-        assert!(s.drain_async_events().is_empty());
+        assert!(s.drain_async_events(&main_thread()).is_empty());
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..64 {
-                assert!(s.drain_async_events().is_empty());
+                assert!(s.drain_async_events(&main_thread()).is_empty());
             }
         });
     }
@@ -2049,22 +2104,33 @@ mod tests {
             .expect("the probe module is inside its bundle")
             .to_path_buf();
         let mut s = Session::new();
-        s.handle(HostMessage::LoadPlugin {
-            path: bundle,
-            sample_rate: tutti_plugin_types::SampleRate(48_000.0),
-            block_size: 512,
-            preferred_format: SampleFormat::Float32,
-            shm_name: "refit_vst3".to_string(),
-            state: None,
-        })
+        s.handle(
+            &main_thread(),
+            HostMessage::LoadPlugin {
+                path: bundle,
+                sample_rate: tutti_plugin_types::SampleRate(48_000.0),
+                block_size: 512,
+                preferred_format: SampleFormat::Float32,
+                shm_name: "refit_vst3".to_string(),
+                state: None,
+            },
+        )
         .unwrap();
-        let params = s.plugin.as_ref().unwrap().instance().parameter_count();
+        let params = s
+            .plugin
+            .as_ref()
+            .unwrap()
+            .instance()
+            .parameter_count(&main_thread());
         assert!(params > 1, "the probe has parameters to refit to");
         assert_eq!(s.pipeline.param_queues(), params, "reserved at load");
 
         s.pipeline
             .reserve_params(1, ParameterQueue::chunk_room(512));
-        assert!(s.drain_async_events().is_empty(), "nothing raised yet");
+        assert!(
+            s.drain_async_events(&main_thread()).is_empty(),
+            "nothing raised yet"
+        );
         assert_eq!(s.pipeline.param_queues(), 1);
 
         match s.plugin.as_ref().unwrap() {
@@ -2072,7 +2138,7 @@ mod tests {
             #[allow(unreachable_patterns)]
             _ => unreachable!("the probe is a VST3"),
         }
-        let messages = s.drain_async_events();
+        let messages = s.drain_async_events(&main_thread());
         assert!(
             messages
                 .iter()
@@ -2094,10 +2160,14 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (s, _shm) = load_clap("count_clap", SampleFormat::Float32);
         let clap = s.plugin.as_ref().unwrap().instance();
-        assert!(clap.parameter_count() > 0);
-        assert_eq!(clap.parameter_count(), clap.get_parameter_list().len());
+        assert!(clap.parameter_count(&main_thread()) > 0);
+        assert_eq!(
+            clap.parameter_count(&main_thread()),
+            clap.get_parameter_list(&main_thread()).len()
+        );
 
         let vst3 = crate::loaders::vst3::Vst3Instance::load(
+            &main_thread(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
             48_000.0,
             128,
@@ -2105,7 +2175,10 @@ mod tests {
         )
         .expect("the vendored VST3 probe loads");
         let vst3: &dyn tutti_plugin::server::PluginInstance = &vst3;
-        assert!(vst3.parameter_count() > 0);
-        assert_eq!(vst3.parameter_count(), vst3.get_parameter_list().len());
+        assert!(vst3.parameter_count(&main_thread()) > 0);
+        assert_eq!(
+            vst3.parameter_count(&main_thread()),
+            vst3.get_parameter_list(&main_thread()).len()
+        );
     }
 }

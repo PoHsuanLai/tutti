@@ -14,7 +14,7 @@ use tutti_graph::{
     ForkTarget, Io, Node, Offset, PARAM_DECLICK, ParamIn, ParamRange, ParamSegment, Prepare,
     SegmentShape, Shape, Status, Transport, TransportChanges,
 };
-use tutti_mod::{
+use tutti_modulation::{
     Amount, Clock, ControlProgram, Curve, CurveType, DepthBy, InputLayer, Layer, LayerId, LfoShape,
     PeriodPoint, Polarity, RateAnchor, SourceId, Wave,
 };
@@ -1167,7 +1167,7 @@ fn a_republished_program_reads_a_new_source() {
 /// frame 513) the lane glides back to 34.0 → fails. The case where both
 /// republishes land before one block (the lane never sees the program
 /// between) is closed by the compiler, which never gives an id twice
-/// (`tutti-mod`'s `a_signal_source_keeps_its_id`).
+/// (`tutti-modulation`'s `a_signal_source_keeps_its_id`).
 #[test]
 fn a_reused_source_id_starts_from_nothing() {
     let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));

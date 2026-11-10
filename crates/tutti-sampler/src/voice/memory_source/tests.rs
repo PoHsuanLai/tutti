@@ -1161,11 +1161,11 @@ fn new_stays_stereo_even_for_a_wide_wave() {
 
 #[test]
 fn with_channels_declares_the_width() {
-    let u = MemorySource::with_channels(indexed_wave(6, 32), 6usize).expect("a placeable wave");
+    let u = MemorySource::with_channels(indexed_wave(6, 32), 6u16).expect("a placeable wave");
     assert_eq!(u.channels(), ChannelLayout::from(6u16));
     assert_eq!(u.shape().audio_out.count(), 6);
     assert_eq!(
-        MemorySource::with_channels(indexed_wave(2, 32), 0usize)
+        MemorySource::with_channels(indexed_wave(2, 32), 0u16)
             .expect("a placeable wave")
             .channels(),
         ChannelLayout::MONO
@@ -1180,7 +1180,11 @@ fn with_channels_declares_the_width() {
 #[test]
 fn the_shape_is_the_declared_width() {
     for w in [1usize, 2, 6, 8] {
-        let u = MemorySource::with_channels(indexed_wave(2, 32), w).expect("a placeable wave");
+        let u = MemorySource::with_channels(
+            indexed_wave(2, 32),
+            ChannelLayout::try_from(w).expect("a test width is small"),
+        )
+        .expect("a placeable wave");
         let shape = u.shape();
         assert_eq!(shape.audio_out.count() as usize, w, "width {w}");
         assert_eq!(shape.audio_in.count(), 0);
@@ -1193,10 +1197,10 @@ fn the_shape_is_the_declared_width() {
 /// (two reads, each scattering into the node's planar outputs).
 #[test]
 fn six_channel_wave_reaches_all_six_outputs() {
-    let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize).expect("a placeable wave");
+    let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6u16).expect("a placeable wave");
     let out = planes(&mut u, None, 8);
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let mut placed = MemorySource::with_channels(indexed_wave(6, 64), 6usize)
+    let mut placed = MemorySource::with_channels(indexed_wave(6, 64), 6u16)
         .expect("a placeable wave")
         .placed_at(VoiceWindow::default());
     let placed = planes(&mut placed, Some(&transport), 8);
@@ -1216,7 +1220,7 @@ fn six_channel_wave_reaches_all_six_outputs() {
 /// strip's job, not the reader's.
 #[test]
 fn gain_applies_uniformly_across_all_channels() {
-    let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize).expect("a placeable wave");
+    let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6u16).expect("a placeable wave");
     u.set_gain(Amplitude::new(0.5));
     let mut out = [0.0f32; 6];
     frame_into(&mut u, None, &mut out);
@@ -1234,7 +1238,7 @@ fn gain_applies_uniformly_across_all_channels() {
 /// blend would leave channels 2..6 un-faded (or worse, untouched).
 #[test]
 fn six_channel_loop_crossfade_covers_every_channel() {
-    let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize).expect("a placeable wave");
+    let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6u16).expect("a placeable wave");
     u.set_loop_range(SamplePosition::new(0.0), SamplePosition::new(16.0), 4);
     let mut out = [0.0f32; 6];
     // Drive past the loop point so the crossfade engages at least once.
@@ -1266,7 +1270,7 @@ fn a_gain_change_reaches_the_rendering_node() {
     use tutti_graph::Solo;
     let wave = ramp_wave(64, 44_100.0);
     let mut solo = Solo::new(
-        MemorySource::with_channels(wave, 1usize).expect("a placeable wave"),
+        MemorySource::with_channels(wave, 1u16).expect("a placeable wave"),
         Prepare::new(SampleRate(SR), Samples(64)),
     );
     assert!(solo.controls().set(UnitParam::Volume, 0.25));
@@ -1358,17 +1362,26 @@ fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
         (8, Some(2)),
         (12, Some(2)),
     ] {
-        let mut free =
-            MemorySource::with_channels(ramp_wave(64, SR), width).expect("a placeable wave");
-        let mut placed = MemorySource::with_channels(ramp_wave(64, SR), width)
-            .expect("a placeable wave")
-            .placed_at(VoiceWindow::default());
+        let mut free = MemorySource::with_channels(
+            ramp_wave(64, SR),
+            ChannelLayout::try_from(width).expect("a test width is small"),
+        )
+        .expect("a placeable wave");
+        let mut placed = MemorySource::with_channels(
+            ramp_wave(64, SR),
+            ChannelLayout::try_from(width).expect("a test width is small"),
+        )
+        .expect("a placeable wave")
+        .placed_at(VoiceWindow::default());
         // Unprepared, a placed source reads a frame at a time; prepared, its
         // gather is sized and it reads lanes (`read_placed_lanes`, where the
         // spread is `MonoSpread::lanes`).
-        let mut lanes = MemorySource::with_channels(ramp_wave(64, SR), width)
-            .expect("a placeable wave")
-            .placed_at(VoiceWindow::default());
+        let mut lanes = MemorySource::with_channels(
+            ramp_wave(64, SR),
+            ChannelLayout::try_from(width).expect("a test width is small"),
+        )
+        .expect("a placeable wave")
+        .placed_at(VoiceWindow::default());
         lanes.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
         assert!(lanes.gather.frames() >= 8, "the lane path is reachable");
         let free = planes(&mut free, None, 8);

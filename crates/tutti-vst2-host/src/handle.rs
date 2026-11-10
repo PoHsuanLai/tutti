@@ -19,8 +19,12 @@
 //!
 //! So the instance is dropped normally and the module is leaked: the leak
 //! lives in `vst::host::PluginInstance`, which holds its `Library` in a
-//! `ManuallyDrop`. Dropping the instance here closes the plugin without ever
-//! unloading the module.
+//! `ManuallyDrop`. `effClose` runs when the last handle on the instance's core
+//! drops: the instance, the parameter object (`Vst2Loaded::params`), the editor and
+//! the Processor's render handle all hold it, so no handle outlives the close. On
+//! the control side that is `Vst2Loaded`'s drop (the Processor's handles are
+//! released before its `Hold`, so they are never last). The module is never
+//! unloaded.
 
 use vst::host::PluginInstance;
 use vst::plugin::Plugin as _;
@@ -33,10 +37,11 @@ use vst::plugin::Plugin as _;
 /// alongside. There is no way to load a second editor against the same
 /// audio instance.
 pub(crate) struct Vst2Handle {
-    /// Dropped normally: its destructor dispatches `effClose`. The module is
-    /// what stays loaded, not the instance — see the module docs.
+    /// One of the handles on the plugin's core, which dispatches `effClose` when the
+    /// last of them drops. The module is what stays loaded, not the instance — see
+    /// the module docs.
     pub(crate) instance: PluginInstance,
-    pub(crate) editor: Option<SendEditor>,
+    pub(crate) editor: Option<vst::editor::SendEditor>,
     /// Whether the last `effMainsChanged` dispatched carried `value=1`.
     ///
     /// Tracked because `effMainsChanged` is not documented as idempotent and real
@@ -47,22 +52,13 @@ pub(crate) struct Vst2Handle {
     pub(crate) resumed: bool,
 }
 
-/// Wrapper to make `Box<dyn Editor>` `Send`.
-///
-/// SAFETY: the editor is only accessed from one thread at a time, because it
-/// lives in the `Vst2Loaded` the Controller reaches through `&mut self` (clause
-/// 2 of the invariant on `Shell`). GUI methods (`open`, `close`, `idle`) are
-/// called on the main thread; the audio thread never touches the editor.
-pub(crate) struct SendEditor(pub(crate) Box<dyn vst::editor::Editor>);
-unsafe impl Send for SendEditor {}
-
 impl Vst2Handle {
     pub(crate) fn new(mut instance: PluginInstance) -> Self {
         // get_editor() can only be called once per PluginInstance — the
         // vst crate sets `is_editor_active = true` on first call, returning
         // None on subsequent calls. Probed once here so callers can ask
         // `has_editor()` later without re-entering the plugin.
-        let editor = instance.get_editor().map(SendEditor);
+        let editor = instance.take_editor();
         Self {
             instance,
             editor,
@@ -78,16 +74,22 @@ impl Vst2Handle {
 impl Drop for Vst2Handle {
     fn drop(&mut self) {
         // `effMainsChanged(0)` and `effClose` below are main-thread opcodes,
-        // like the `load` that opened the instance. Not while unwinding: a
-        // second panic in a drop aborts, and the first one is the finding.
+        // like the `load` that opened the instance. A drop cannot be handed a
+        // `MainThread`, so it checks (debug builds, once a host has claimed its
+        // main thread): the VST2 lane that splits the handles makes it a type.
+        // Not while unwinding: a second panic in a drop aborts, and the first
+        // one is the finding.
         if !std::thread::panicking() {
-            tutti_plugin_types::assert_main_thread();
+            debug_assert!(
+                !tutti_plugin_types::MainThread::claimed_elsewhere(),
+                "VST2 plugin dropped off the main thread"
+            );
         }
 
         // Close the editor first — some plugins read audio state during
         // editor teardown (e.g., to flush meter buffers).
         if let Some(mut editor) = self.editor.take() {
-            editor.0.close();
+            editor.close();
         }
 
         // Suspend audio so the plugin releases any RT-allocated resources
@@ -102,9 +104,9 @@ impl Drop for Vst2Handle {
             self.resumed = false;
         }
 
-        // `self.instance` is then dropped normally, which dispatches
-        // `effClose`. The shared module is *not* unloaded — that leak lives in
-        // `PluginInstance` itself. See the module docs for why the two must not
-        // be conflated.
+        // `effClose` runs when the last handle on the instance's core drops, which
+        // is after this (the parameter object is `Vst2Loaded`'s next field). The
+        // shared module is *not* unloaded — that leak lives in `PluginInstance`
+        // itself. See the module docs for why the two must not be conflated.
     }
 }

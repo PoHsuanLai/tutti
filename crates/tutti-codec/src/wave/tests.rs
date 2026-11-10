@@ -63,3 +63,13 @@ fn a_count_assumes_smpte_or_discrete_and_a_topology_is_kept() {
     assert_eq!(quad.channels(), 4);
     assert_eq!(quad.topology(), &ChannelTopology::quad());
 }
+
+/// A wave wider than a layout holds is refused, not given the wrapped width
+/// (65 538 channels would otherwise be a stereo topology over 65 538 vectors).
+///
+/// Mutation (run): `assumed` taking `channels as u16` stops this panicking.
+#[test]
+#[should_panic(expected = "at most u16::MAX channels")]
+fn a_wave_wider_than_a_layout_is_refused() {
+    let _ = Wave::new(usize::from(u16::MAX) + 1, 48_000.0);
+}

@@ -101,7 +101,7 @@ mod tests {
 
     fn make_writer(region_id: RegionId) -> RegionOut {
         let (writer, _reader) =
-            RegionBuffer::with_capacity(region_id, PathBuf::from("t.wav"), 1024, 2usize);
+            RegionBuffer::with_capacity(region_id, PathBuf::from("t.wav"), 1024, 2u16);
         writer
     }
 

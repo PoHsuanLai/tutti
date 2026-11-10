@@ -70,10 +70,13 @@ fn session_built(
 
 /// Loads the probe into `s` (blocking), unwired.
 fn add_probe(s: &mut Session) -> NodeKey {
-    s.add_plugin_blocking(PluginLoadRequest {
-        id: PluginId::from_path(clap_probe()),
-        state: None,
-    })
+    s.add_plugin_blocking(
+        &main_thread(),
+        PluginLoadRequest {
+            id: PluginId::from_path(clap_probe()),
+            state: None,
+        },
+    )
     .expect("the reference CLAP plugin loads")
 }
 
@@ -97,7 +100,7 @@ fn round_trip(s: &Session, node: NodeKey) {
     let _ = handle
         .presets()
         .expect("the subprocess backend has a preset route")
-        .current_preset();
+        .current_preset(&main_thread());
 }
 
 /// Waits (up to 10 s) for the probe's latency to read `want`: the
@@ -523,7 +526,7 @@ impl Drive {
                 if let Some(check) = &self.on_reload_due {
                     check();
                 }
-                let landed = s.land_reload(job.run());
+                let landed = s.land_reload(&main_thread(), job.run());
                 self.events.extend(landed);
             } else {
                 self.events.push(event);
@@ -1373,4 +1376,10 @@ fn a_death_after_a_refused_restore_does_not_withhold_the_snapshot() {
     );
     assert!(s.plugin(node).unwrap().withheld_snapshot().is_none());
     assert!(s.plugin(node).unwrap().snapshot().is_some());
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

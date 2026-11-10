@@ -43,14 +43,18 @@ fn plugin() -> (Arc<Module>, Plugin) {
         .find(|c| c.category.contains("Audio"))
         .expect("the probe exports an audio class");
     let mut plugin = module.create_plugin(&class.cid).expect("a plugin");
-    plugin.initialize_component().expect("initialize");
+    plugin
+        .initialize_component(&main_thread())
+        .expect("initialize");
     (module, plugin)
 }
 
 /// Sets up and activates the plugin, as the host's activation does.
 fn activate(plugin: &mut Plugin) {
-    plugin.setup_processing(setup()).expect("setup");
-    plugin.set_active(true).expect("activate");
+    plugin
+        .setup_processing(&main_thread(), setup())
+        .expect("setup");
+    plugin.set_active(&main_thread(), true).expect("activate");
 }
 
 /// No audio half until the plugin is set up and active; one at a time after.
@@ -62,9 +66,9 @@ fn activate(plugin: &mut Plugin) {
 fn the_audio_half_needs_a_set_up_active_plugin_and_comes_once() {
     let (_module, mut plugin) = plugin();
     assert!(plugin.audio_side().is_none(), "not set up");
-    plugin.setup_processing(setup()).unwrap();
+    plugin.setup_processing(&main_thread(), setup()).unwrap();
     assert!(plugin.audio_side().is_none(), "set up, not active");
-    plugin.set_active(true).unwrap();
+    plugin.set_active(&main_thread(), true).unwrap();
     let side = plugin.audio_side().expect("set up and active");
     assert!(plugin.audio_side().is_none(), "a second half is refused");
     drop(side);
@@ -80,16 +84,22 @@ fn state_changes_are_refused_while_the_audio_half_is_out() {
     let (_module, mut plugin) = plugin();
     activate(&mut plugin);
     let side = plugin.audio_side().unwrap();
-    assert_eq!(plugin.set_active(false), Err(Vst3Error::Busy));
-    assert_eq!(plugin.set_processing(true), Err(Vst3Error::Busy));
-    assert_eq!(plugin.setup_processing(setup()), Err(Vst3Error::Busy));
     assert_eq!(
-        plugin.set_bus_arrangements(&mut [], &mut []),
+        plugin.set_active(&main_thread(), false),
+        Err(Vst3Error::Busy)
+    );
+    assert_eq!(plugin.set_processing(true), Err(Vst3Error::Busy));
+    assert_eq!(
+        plugin.setup_processing(&main_thread(), setup()),
+        Err(Vst3Error::Busy)
+    );
+    assert_eq!(
+        plugin.set_bus_arrangements(&main_thread(), &mut [], &mut []),
         Err(Vst3Error::Busy)
     );
     assert!(plugin.is_active(), "refused changes changed nothing");
     drop(side);
-    assert_eq!(plugin.set_active(false), Ok(()));
+    assert_eq!(plugin.set_active(&main_thread(), false), Ok(()));
 }
 
 /// A real block through the audio half; after the plugin is dropped the half
@@ -104,22 +114,25 @@ fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
     activate(&mut plugin);
     let mut side: AudioSide = plugin.audio_side().unwrap();
 
-    let channels = plugin.audio_bus_channels(tutti_vst3_ffi::BusDirection::Output);
+    let channels = plugin.audio_bus_channels(&main_thread(), tutti_vst3_ffi::BusDirection::Output);
     let out_width = channels.iter().sum::<usize>().max(2);
-    let in_channels = plugin.audio_bus_channels(tutti_vst3_ffi::BusDirection::Input);
+    let in_channels =
+        plugin.audio_bus_channels(&main_thread(), tutti_vst3_ffi::BusDirection::Input);
     let in_width = in_channels.iter().sum::<usize>();
     let mut input = BusBuffers::new(
         SampleWidth::F32,
         &in_channels,
-        tutti_types::ChannelLayout::from(in_width.max(1)),
+        tutti_types::ChannelLayout::try_from(in_width.max(1)).expect("a test plugin is narrow"),
         BLOCK,
-    );
+    )
+    .unwrap();
     let mut output = BusBuffers::new(
         SampleWidth::F32,
         &channels,
-        tutti_types::ChannelLayout::from(out_width),
+        tutti_types::ChannelLayout::try_from(out_width).expect("a test plugin is narrow"),
         BLOCK,
-    );
+    )
+    .unwrap();
     let in_events = EventList::input();
     let out_events = EventList::output();
     let params = ParameterChangesImpl::with_queues(
@@ -172,8 +185,8 @@ fn a_setup_answered_false_is_tolerated_and_recorded() {
     // the environment while this sets it, and the probe reads it at creation.
     unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", SETUP_FAILS) };
     let (_module, mut plugin) = plugin();
-    assert_eq!(plugin.setup_processing(setup()), Ok(false));
-    plugin.set_active(true).expect("activate");
+    assert_eq!(plugin.setup_processing(&main_thread(), setup()), Ok(false));
+    plugin.set_active(&main_thread(), true).expect("activate");
     assert!(plugin.audio_side().is_some());
 }
 
@@ -283,4 +296,8 @@ fn a_failed_open_does_not_deadlock_the_next() {
         .expect("the opens finished: a failed open did not release the lock");
     assert!(refused, "a system library is not a VST3 module");
     assert!(opened);
+}
+
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

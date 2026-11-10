@@ -749,7 +749,7 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
                     .modulation()
                     .refusal(),
                 Some(ReconcileError::Compile(
-                    tutti_mod::CompileError::DuplicateTarget(_)
+                    tutti_modulation::CompileError::DuplicateTarget(_)
                 ))
             ),
             "{what}: held"
@@ -1074,8 +1074,8 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
 struct HalfMacro(f32);
 
 impl bevy_tutti::modulation::ModSourceKind for HalfMacro {
-    fn declare(&self) -> tutti_mod::Source {
-        tutti_mod::Source::Macro {
+    fn declare(&self) -> tutti_modulation::Source {
+        tutti_modulation::Source::Macro {
             value: self.0 / 2.0,
         }
     }

@@ -83,12 +83,12 @@
 # - `fn f(e: &mut tutti_graph::Editor) { e.commit(); }` in
 #   `src/graph/commit.rs` → (3) fails, names `Editor` at that line and
 #   `tutti_session::Session` (its `Graph`) as the owner.
-# - `pub use tutti_mod as modulation;` in `tutti-session`'s `lib.rs` → (4)
-#   fails and names `tutti` as the umbrella; `pub use tutti_mod;` and
-#   `pub use tutti_mod::*;` fail the same way.
+# - `pub use tutti_modulation as modulation;` in `tutti-session`'s `lib.rs` → (4)
+#   fails and names `tutti` as the umbrella; `pub use tutti_modulation;` and
+#   `pub use tutti_modulation::*;` fail the same way.
 # - (4), from `check-bevy-free.sh`: `#[cfg(feature = "modulation")] pub use
-#   tutti_mod as modulation;` (an attribute on the same line), `pub use
-#   tutti_mod::{self as modulation};` and `pub use tutti_engine::prelude::*;`
+#   tutti_modulation as modulation;` (an attribute on the same line), `pub use
+#   tutti_modulation::{self as modulation};` and `pub use tutti_engine::prelude::*;`
 #   each fail.
 # - The lexer, each case appended to `src/graph/commit.rs`: `Engine` in a
 #   `//` comment, in nested `/* */`, in a string and a raw string, inside
@@ -116,12 +116,12 @@
 #   tutti_engine::Engine);` passes (the test-only field is still excluded),
 #   and `#[cfg(test)] fn t<A, B>() -> Option<tutti_engine::Engine>` reports
 #   a false hit (the generics limit above).
-# - (4), from review: `pub use tutti_mod::{a::{B}, self};` and
-#   `pub use {tutti_mod as m};` passed the old regex. Check 4 now parses the
-#   use tree, and both fail, as do `pub use ::tutti_mod::{x::{y::{*}}};` and
-#   a multi-line `pub use tutti_mod::{ a::{B, C}, self as m, };`. These
-#   pass: `pub use tutti_mod::{a::{B}, C};`, `pub use {tutti_mod::A as M};`,
-#   `pub(crate) use tutti_mod;`, and `pub use tutti_mod;` in a comment or
+# - (4), from review: `pub use tutti_modulation::{a::{B}, self};` and
+#   `pub use {tutti_modulation as m};` passed the old regex. Check 4 now parses the
+#   use tree, and both fail, as do `pub use ::tutti_modulation::{x::{y::{*}}};` and
+#   a multi-line `pub use tutti_modulation::{ a::{B, C}, self as m, };`. These
+#   pass: `pub use tutti_modulation::{a::{B}, C};`, `pub use {tutti_modulation::A as M};`,
+#   `pub(crate) use tutti_modulation;`, and `pub use tutti_modulation;` in a comment or
 #   a string. Every earlier (4) mutation above still fails.
 #
 # - (5), each appended to `src/graph/commit.rs` (or `midi/hardware/device.rs`)

@@ -222,7 +222,11 @@ mod tests {
         fn save_state(&self) -> Result<Vec<u8>, StateError> {
             Err(StateError::NoStateRoute)
         }
-        fn load_state(&self, _data: &[u8]) -> Result<(), StateError> {
+        fn load_state(
+            &self,
+            _main: &tutti_plugin_types::MainThread,
+            _data: &[u8],
+        ) -> Result<(), StateError> {
             Ok(())
         }
     }

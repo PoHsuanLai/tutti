@@ -83,8 +83,63 @@ unsafe extern "C" fn factory_descriptor(
 ) -> *const clap_plugin_descriptor {
     if i == 0 { &DESCRIPTOR.0 } else { ptr::null() }
 }
-unsafe extern "C" fn entry_init(_path: *const c_char) -> bool {
-    true
+/// What `entry_init` does for the module's file name, which is the one thing a
+/// host that only probes can steer a plugin by (a probe sends no state, and no
+/// environment variable or process global is allowed to configure the plugin).
+/// A name that starts with none of these loads normally.
+///
+/// | file name starts with | `init` |
+/// |---|---|
+/// | `init-crash` | aborts the process |
+/// | `init-hang` | never returns |
+/// | `init-print` | writes to stdout and stderr, then succeeds |
+/// | `init-refuse` | returns `false` |
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InitMode {
+    Normal,
+    Crash,
+    Hang,
+    Print,
+    Refuse,
+}
+
+impl InitMode {
+    fn of(file_name: &str) -> Self {
+        [
+            ("init-crash", Self::Crash),
+            ("init-hang", Self::Hang),
+            ("init-print", Self::Print),
+            ("init-refuse", Self::Refuse),
+        ]
+        .into_iter()
+        .find(|(prefix, _)| file_name.starts_with(prefix))
+        .map_or(Self::Normal, |(_, mode)| mode)
+    }
+}
+
+unsafe extern "C" fn entry_init(path: *const c_char) -> bool {
+    // SAFETY: the host passes the module path as a NUL-terminated string that
+    // outlives this call, or null.
+    let path = (!path.is_null()).then(|| unsafe { CStr::from_ptr(path) }.to_string_lossy());
+    let file_name = path
+        .as_deref()
+        .and_then(|p| p.rsplit(['/', '\\']).next())
+        .unwrap_or("");
+    match InitMode::of(file_name) {
+        InitMode::Normal => true,
+        InitMode::Crash => std::process::abort(),
+        InitMode::Hang => loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        },
+        InitMode::Print => {
+            for line in 0..2000 {
+                println!("shared plugin init: stdout line {line}");
+                eprintln!("shared plugin init: stderr line {line}");
+            }
+            true
+        }
+        InitMode::Refuse => false,
+    }
 }
 unsafe extern "C" fn entry_deinit() {}
 

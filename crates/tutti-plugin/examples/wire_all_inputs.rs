@@ -18,7 +18,7 @@
 
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
-use tutti_mod::{
+use tutti_modulation::{
     Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, Polarity, Wave,
 };
 use tutti_nodes::automation::ControlLaneNode;
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
 
     // 1. Open. A path, not a catalog entry — the catalog is for discovery, and
     //    this host already knows what it wants.
-    let plugin = Plugin::open(&path, SAMPLE_RATE)?;
+    let plugin = Plugin::open(Some(&main_thread()), &path, SAMPLE_RATE)?;
 
     println!("opened {:?}", plugin.descriptor().name);
     println!("  format {}", plugin.descriptor().class.format_name());
@@ -144,4 +144,10 @@ fn report(name: &str, accepted: bool) {
         "  {name:<10} {}",
         if accepted { "wired" } else { "declined" }
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

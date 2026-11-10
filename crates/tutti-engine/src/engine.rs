@@ -1071,7 +1071,11 @@ impl GraphRender {
             Some(fold) => {
                 fold.planar_to_interleaved(
                     |c| &outs[c][..len],
-                    InterleavedMut::new(block, ChannelLayout::from(out_ch)),
+                    InterleavedMut::new(
+                        block,
+                        ChannelLayout::try_from(out_ch)
+                            .expect("a fold exists only for a held device width"),
+                    ),
                 );
                 true
             }
@@ -1630,7 +1634,7 @@ mod tests {
     /// channels, after settling the first block (the commit installs on the
     /// block after it), and returns frame 0.
     fn first_frame(engine: &Engine, device: usize) -> Vec<f32> {
-        let layout = ChannelLayout::from(device);
+        let layout = ChannelLayout::try_from(device).expect("a test width is small");
         let mut out = vec![-9.0f32; device * 8];
         engine.process_segment(&mut InterleavedMut::new(&mut out, layout));
         out[..device].to_vec()

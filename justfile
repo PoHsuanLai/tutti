@@ -19,16 +19,17 @@
 # binary by running it with `--list --format terse`; these ignore the flag, run
 # their whole suite and exit non-zero, so nextest fails at *list* time having
 # already executed them. `just test-editor` runs them properly.
-test *ARGS: plugin-server
+test *ARGS: plugin-server plugin-probe
     cargo nextest run --locked --workspace {{ARGS}} \
         -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
 
 # The AU mapping-family claim, which needs third-party Audio Units installed.
 # It hard-fails rather than skipping when none is present — deliberately — so it
-# is excluded from CI and run on purpose here, on a machine that has them.
+# is behind the `installed-units` feature: CI lints it, and it runs on purpose
+# here, on a macOS machine that has them.
 test-au-installed:
-    cargo test --locked -p tutti-au-host --test au_midi_map \
-        no_installed_third_party_unit_implements_the_mapping_family
+    cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass \
+        -E 'test(no_installed_third_party_unit_implements_the_mapping_family)'
 
 # The custom-harness editor tests. `cargo test` just execs the binary, which is
 # what a `harness = false` main wants.
@@ -60,7 +61,7 @@ test-release:
     cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph
 
 # Everything.
-test-all: test test-features test-editor test-doc test-release
+test-all: test test-features test-editor test-au-installed test-doc test-release
 
 # Lint the feature-gated code that no other recipe compiles.
 #
@@ -88,7 +89,9 @@ test-all: test test-features test-editor test-doc test-release
 #   tutti-session/clap  — hosted plugins and the plugin half of export
 #                         (tests/plugin.rs); `export,modulation` beside it
 #   tutti-plugin-contract/server — the shared plugin's mode and transcript
-#                         through a real plugin-server (tests/server.rs)
+#                         through a real plugin-server (tests/server.rs), and
+#                         each format's descriptor through a real plugin-probe
+#                         (tests/probe.rs)
 #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
 #                         (`plugin_midi_export` runs as a test) and its
 #                         prelude's request types
@@ -96,6 +99,7 @@ test-all: test test-features test-editor test-doc test-release
 # Not `--all-features`: that would pull every plugin-format SDK and (once it
 # exists) JACK, which needs libjack on the box. Name the combinations.
 check-features:
+    cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
     cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features audio-io --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features soundfont --all-targets -- -D warnings
@@ -105,6 +109,14 @@ check-features:
     cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
+    # tutti-export has no default format and a self dev-dependency with all four
+    # on, so its library is linted per feature alone (--lib skips the dev edge).
+    cargo clippy --locked -p tutti-export --lib -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features wav -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features flac -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features aiff -- -D warnings
+    cargo clippy --locked -p tutti-export --lib --features ogg -- -D warnings
+    cargo clippy --locked -p tutti-session --lib --features export-flac,export-aiff,export-ogg -- -D warnings
     cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
     cargo clippy --locked -p tutti-codec --features encode-wav --all-targets -- -D warnings
     cargo clippy --locked -p tutti-codec --features encode-aiff --all-targets -- -D warnings
@@ -119,6 +131,7 @@ check-features:
     cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
@@ -126,14 +139,21 @@ check-features:
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-probe --no-default-features --features vst2 --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-probe --no-default-features --features vst3 --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-probe --no-default-features --features clap --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
 # The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs,
 # `tutti-session/clap`'s plugin suite, `tutti`'s §5.2 example and
-# `tutti-plugin-contract`'s server suite, which spawn it; it needs the VST3 SDK
+# `tutti-plugin-contract`'s server and probe suites, which spawn it (and
+# `plugin-probe`, which the probe suite spawns); it needs the VST3 SDK
 # submodules, as in CI.
 test-features:
+    # Empty off macOS; on a Mac with the units installed it runs the AU claim.
+    cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass
     cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+    cargo build --locked -p tutti-plugin-probe
     cargo nextest run --locked -p tutti-cpal --features capture
     cargo nextest run --locked -p bevy-tutti --features audio-io
     cargo nextest run --locked -p bevy-tutti --features soundfont
@@ -142,6 +162,9 @@ test-features:
     cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti --features audio-io
+    # tutti-export's tests run with every format on (a dev-dependency on
+    # itself); the library alone per format is linted in `check-features`.
+    cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg
     # A `Format` variant exists only with its feature: each is tested alone (a
     # workspace run has them all on, through tutti-export).
     cargo nextest run --locked -p tutti-codec
@@ -325,6 +348,13 @@ profile-bench BENCH="engine_render" PKG="tutti-nodes" SECS="10":
 plugin-server:
     cargo build --locked -p tutti-plugin-server --bin plugin-server
 
+# Build the plugin probe, `plugin-probe`: what a scan spawns to read a plugin's
+# descriptor. Nothing in a test run builds it (a dev-dependency builds a library,
+# not a binary). `tutti-plugin-contract`'s `probe` suite (`--features server`)
+# needs it, and fails with this command's name when it is missing.
+plugin-probe:
+    cargo build --locked -p tutti-plugin-probe --bin plugin-probe
+
 plugin-server-release:
     cargo build --locked --release -p tutti-plugin-server --bin plugin-server
 
@@ -436,15 +466,18 @@ check-windows:
     win() { cargo clippy --locked --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
     win --workspace --all-targets \
         --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude bevy-tutti \
-        --exclude tutti-vst3-host --exclude tutti-plugin-server \
+        --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe \
         --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract
     win -p tutti-shared-plugin --all-targets
+    # tutti-export's library with the pure-Rust formats (--lib skips its dev edge,
+    # which turns `ogg` on); `export-ogg` is the part that needs real headers.
+    win -p tutti-export --lib --features wav,flac,aiff
     win -p tutti-codec --features encode-wav,encode-aiff,encode-flac,decode-wav,decode-flac,decode-mp3,decode-ogg,serde --all-targets
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
     win -p tutti-plugin-db --features json --all-targets
     win -p tutti-clap-host --features clap-extras --all-targets
     win -p tutti-vst2-host --all-targets
-    win -p tutti-vst3-host -p tutti-plugin-server --lib --bins
+    win -p tutti-vst3-host -p tutti-plugin-server -p tutti-plugin-probe --lib --bins
 
 # The rustdoc gate. The workspace sets broken_intra_doc_links and
 # private_intra_doc_links to deny, but a plain build never runs rustdoc, so this
@@ -482,12 +515,12 @@ check-loom:
 verify-audio OUT="/tmp/tutti-verify":
     cargo run --locked --release -p tutti-sampler   --example render_cases           -- {{OUT}}/sampler
     cargo run --locked --release -p tutti-export    --example render_export_cases    -- {{OUT}}/export
-    cargo run --locked --release -p tutti-dsp --example render_analysis_cases  -- {{OUT}}/analysis
+    cargo run --locked --release -p tutti-measure --example render_analysis_cases -- {{OUT}}/analysis
     cargo run --locked --release -p tutti-polysynth --example render_synth_cases     -- {{OUT}}/synth
     uv sync --quiet
     uv run python crates/tutti-sampler/examples/verify_sampler.py   {{OUT}}/sampler
     uv run python crates/tutti-export/examples/verify_export.py    {{OUT}}/export
-    uv run python crates/tutti-dsp/examples/verify_analysis.py {{OUT}}/analysis
+    uv run python crates/tutti-measure/examples/verify_analysis.py {{OUT}}/analysis
     uv run python crates/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # RustSec advisories, yanked and unmaintained crates (`deny.toml`).

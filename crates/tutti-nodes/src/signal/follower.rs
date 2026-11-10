@@ -4,7 +4,7 @@
 use tutti_graph::{
     Cost, Cx, Event, Io, Node, Offset, ParamSegment, Prepare, SegmentShape, Shape, Status,
 };
-use tutti_mod::{SignalKind, SourceId, SourceNode};
+use tutti_modulation::{SignalKind, SourceId, SourceNode};
 use tutti_types::{ChannelLayout, SampleRate, Seconds};
 use tutti_types::{SamplePosition, Samples};
 
@@ -97,7 +97,7 @@ impl EnvelopeFollowerNode {
         }
     }
 
-    /// The node `decl` describes (what `tutti_mod::compile` gives each
+    /// The node `decl` describes (what `tutti_modulation::compile` gives each
     /// follower), following an `input`-wide signal: `None` when `decl` is
     /// not a follower. The rate comes at `prepare`.
     #[must_use]

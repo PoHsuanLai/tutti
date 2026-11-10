@@ -1,0 +1,39 @@
+# The plugin-authoring half of the old `vst-tutti` crate (vst-rs 0.3.0): what the
+# VST2 test plugins build on. The host half is `crates/tutti-vst2-ffi`.
+[package]
+name = "tutti-vst2-author"
+version = "0.3.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Test-only: the plugin side of the vst-rs fork (plugin_main!, the AEffect builder, the plugin-side dispatcher)"
+license = "MIT"
+publish = false
+authors = [
+    "Marko Mijalkovic <marko.mijalkovic97@gmail.com>",
+    "Boscop",
+    "Alex Zywicki <alexander.zywicki@gmail.com>",
+    "doomy <notdoomy@protonmail.com>",
+    "Ms2ger",
+    "Rob Saunders",
+    "David Lu",
+    "Aske Simon Christensen",
+    "kykc",
+    "Jordan Earls",
+    "xnor104",
+    "Nathaniel Theis",
+    "Colin Wallace",
+    "Henrik Nordvik",
+    "Charles Saracco",
+    "Frederik Halkjær",
+]
+
+[dependencies]
+tutti-vst2-ffi = { path = "../../crates/tutti-vst2-ffi" }
+log = "0.4"
+
+# `util::parameter_transfer`'s test module does `extern crate rand`.
+[dev-dependencies]
+rand = "0.8"
+
+[lints]
+workspace = true

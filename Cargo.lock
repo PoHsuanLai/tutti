@@ -402,7 +402,7 @@ dependencies = [
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
  "tutti-plugin-db",
@@ -411,6 +411,7 @@ dependencies = [
  "tutti-rt",
  "tutti-sampler",
  "tutti-session",
+ "tutti-sf2",
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-transport",
@@ -3521,12 +3522,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustysynth"
-version = "1.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2fafc9b46be0b8ad0a15bb17406e34b4602987c90d12509ca71710ab545b40f"
-
-[[package]]
 name = "safe_arch"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4208,18 +4203,20 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
+ "tutti-measure",
  "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
  "tutti-polysynth",
  "tutti-rt",
  "tutti-sampler",
  "tutti-session",
+ "tutti-sf2",
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-transport",
@@ -4232,7 +4229,7 @@ name = "tutti-alsa-ump-sys"
 version = "0.0.1"
 
 [[package]]
-name = "tutti-au-host"
+name = "tutti-au-ffi"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
@@ -4242,7 +4239,21 @@ dependencies = [
  "coreaudio-sys",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
+ "tutti-plugin-types",
+ "tutti-types",
+]
+
+[[package]]
+name = "tutti-au-host"
+version = "0.0.1"
+dependencies = [
+ "assert_no_alloc",
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "coreaudio-sys",
  "thiserror 2.0.21",
+ "tutti-au-ffi",
+ "tutti-au-host",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
@@ -4255,12 +4266,16 @@ name = "tutti-clap-ffi"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "bitflags 2.13.2",
  "clap-sys",
  "libc",
  "libloading 0.8.9",
+ "tutti-clap-ffi",
  "tutti-clap-test-plugin",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-plugin-types",
+ "tutti-rt",
 ]
 
 [[package]]
@@ -4335,14 +4350,10 @@ dependencies = [
 name = "tutti-dsp"
 version = "0.0.1"
 dependencies = [
- "criterion",
- "ebur128",
  "libm",
- "pitch-detection",
  "rand 0.8.8",
  "rustfft",
  "thiserror 2.0.21",
- "tutti-graph",
  "tutti-types",
 ]
 
@@ -4374,7 +4385,9 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-codec",
  "tutti-dsp",
+ "tutti-export",
  "tutti-graph",
+ "tutti-measure",
  "tutti-nodes",
  "tutti-sampler",
  "tutti-spatial",
@@ -4416,6 +4429,20 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-codec",
  "tutti-fixtures",
+ "tutti-graph",
+ "tutti-types",
+]
+
+[[package]]
+name = "tutti-measure"
+version = "0.0.1"
+dependencies = [
+ "criterion",
+ "ebur128",
+ "pitch-detection",
+ "rand 0.8.8",
+ "thiserror 2.0.21",
+ "tutti-dsp",
  "tutti-graph",
  "tutti-types",
 ]
@@ -4514,7 +4541,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-mod"
+name = "tutti-modulation"
 version = "0.0.1"
 dependencies = [
  "audio-automation",
@@ -4535,7 +4562,7 @@ dependencies = [
  "tutti-dsp",
  "tutti-engine",
  "tutti-graph",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-rt",
  "tutti-transport",
@@ -4574,7 +4601,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin-db",
  "tutti-plugin-types",
@@ -4593,10 +4620,12 @@ name = "tutti-plugin-contract"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "tempfile",
  "tutti-clap-host",
  "tutti-fixtures",
  "tutti-midi-types",
  "tutti-plugin",
+ "tutti-plugin-db",
  "tutti-plugin-types",
  "tutti-shared-plugin",
  "tutti-shared-plugin-vst3-cpp",
@@ -4615,6 +4644,21 @@ dependencies = [
  "tempfile",
  "tracing",
  "tutti-plugin-types",
+]
+
+[[package]]
+name = "tutti-plugin-probe"
+version = "0.0.1"
+dependencies = [
+ "libloading 0.8.9",
+ "tempfile",
+ "tutti-clap-host",
+ "tutti-fixtures",
+ "tutti-plugin-types",
+ "tutti-types",
+ "tutti-vst2-host",
+ "tutti-vst2-test-plugin",
+ "tutti-vst3-host",
 ]
 
 [[package]]
@@ -4679,7 +4723,7 @@ dependencies = [
  "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-types",
  "tutti-ump",
@@ -4698,17 +4742,6 @@ dependencies = [
  "libc",
  "loom",
  "thread-priority",
-]
-
-[[package]]
-name = "tutti-rustysynth"
-version = "0.0.1"
-dependencies = [
- "thiserror 2.0.21",
- "tutti-fixtures",
- "tutti-sf2",
- "tutti-types",
- "tutti-ump",
 ]
 
 [[package]]
@@ -4737,7 +4770,7 @@ dependencies = [
  "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-rt",
  "tutti-sampler",
@@ -4766,13 +4799,14 @@ dependencies = [
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
  "tutti-plugin-types",
  "tutti-polysynth",
  "tutti-rt",
  "tutti-sampler",
+ "tutti-sf2",
  "tutti-shared-plugin",
  "tutti-soundfont",
  "tutti-spatial",
@@ -4785,8 +4819,12 @@ dependencies = [
 name = "tutti-sf2"
 version = "0.0.1"
 dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tutti-fixtures",
+ "tutti-sf2",
+ "tutti-types",
  "tutti-ump",
 ]
 
@@ -4796,7 +4834,7 @@ version = "0.1.0"
 dependencies = [
  "clap-sys",
  "num-traits",
- "vst-tutti",
+ "tutti-vst2-author",
  "vst3",
 ]
 
@@ -4819,7 +4857,6 @@ name = "tutti-soundfont"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
- "rustysynth",
  "thiserror 2.0.21",
  "tutti-fixtures",
  "tutti-graph",
@@ -4827,10 +4864,10 @@ dependencies = [
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-nodes",
- "tutti-rustysynth",
  "tutti-sf2",
  "tutti-types",
  "tutti-ump",
+ "tutti-voicing",
 ]
 
 [[package]]
@@ -4909,6 +4946,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-vst2-author"
+version = "0.3.0"
+dependencies = [
+ "log",
+ "rand 0.8.8",
+ "tutti-vst2-ffi",
+]
+
+[[package]]
+name = "tutti-vst2-ffi"
+version = "0.3.0"
+dependencies = [
+ "assert_no_alloc",
+ "bitflags 1.3.2",
+ "crossbeam-queue",
+ "libc",
+ "libloading 0.7.4",
+ "log",
+ "num-traits",
+ "num_enum 0.5.11",
+ "tutti-midi-types",
+ "tutti-plugin-types",
+ "tutti-ump",
+]
+
+[[package]]
 name = "tutti-vst2-host"
 version = "0.0.1"
 dependencies = [
@@ -4924,8 +4987,8 @@ dependencies = [
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-ump",
+ "tutti-vst2-ffi",
  "tutti-vst2-test-plugin",
- "vst-tutti",
 ]
 
 [[package]]
@@ -4933,7 +4996,7 @@ name = "tutti-vst2-test-plugin"
 version = "0.1.0"
 dependencies = [
  "num-traits",
- "vst-tutti",
+ "tutti-vst2-author",
 ]
 
 [[package]]
@@ -4942,6 +5005,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "assert_no_alloc",
+ "bitflags 2.13.2",
  "core-foundation-sys",
  "crossbeam-queue",
  "libc",
@@ -4967,10 +5031,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-clap-host",
+ "tutti-fixtures",
  "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-shared-plugin",
  "tutti-types",
  "tutti-ump",
  "tutti-vst3-ffi",
@@ -5084,19 +5150,6 @@ dependencies = [
  "ogg_next_sys",
  "thiserror 2.0.21",
  "tinyvec",
-]
-
-[[package]]
-name = "vst-tutti"
-version = "0.3.0"
-dependencies = [
- "bitflags 1.3.2",
- "libc",
- "libloading 0.7.4",
- "log",
- "num-traits",
- "num_enum 0.5.11",
- "rand 0.8.8",
 ]
 
 [[package]]

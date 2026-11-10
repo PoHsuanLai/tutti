@@ -12,6 +12,8 @@
 
 use std::ops::{Deref, DerefMut};
 
+use super::main_thread;
+
 use tutti_clap_host::{
     AudioBuffer, ClapController, ClapLoaded, ClapProcessContext, ClapProcessor,
     instance::ProcessOutputRef,
@@ -78,7 +80,7 @@ impl Activate for ClapLoaded {
         frames: u32,
     ) -> Result<Active<T>, (ClapLoaded, PluginError)> {
         let prepare = prepare_for::<T>(rate, frames);
-        match <ClapLoaded as Loaded>::activate(self, prepare) {
+        match <ClapLoaded as Loaded>::activate(self, &main_thread(), prepare) {
             Ok(pair) => Ok(Active {
                 pair: Some(pair),
                 _width: std::marker::PhantomData,
@@ -184,7 +186,7 @@ impl<T: Width> Active<T> {
     /// Ends the activation: the plugin comes back deactivated.
     pub fn deactivate(mut self) -> ClapLoaded {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        <ClapLoaded as Loaded>::deactivate(processor, controller)
+        <ClapLoaded as Loaded>::deactivate(&main_thread(), processor, controller)
             .map_err(|stuck| stuck.reason)
             .expect("the halves are a pair")
     }
@@ -198,11 +200,11 @@ impl<T: Width> Active<T> {
     /// previous configuration is the server bridge's, tested there.)
     pub fn reconfigure(&mut self, rate: f64, frames: u32) -> Result<(), PluginError> {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        let loaded = <ClapLoaded as Loaded>::deactivate(processor, controller)
+        let loaded = <ClapLoaded as Loaded>::deactivate(&main_thread(), processor, controller)
             .map_err(|stuck| stuck.reason)
             .expect("the halves are a pair");
         let wanted = prepare_for::<T>(rate, frames);
-        match <ClapLoaded as Loaded>::activate(loaded, wanted) {
+        match <ClapLoaded as Loaded>::activate(loaded, &main_thread(), wanted) {
             Ok(pair) => {
                 self.pair = Some(pair);
                 self.prepare = wanted;

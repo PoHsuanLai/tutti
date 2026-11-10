@@ -608,19 +608,19 @@ fn test_get_parameters() {
 
     let plugin = Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
-    let param_count = plugin.parameter_count();
+    let param_count = plugin.parameter_count(&main_thread());
     println!("Plugin has {} parameters", param_count);
 
     // The ids are the plugin's own, not list positions: read each through the
     // id it reported.
-    let ids = plugin.parameter_ids();
+    let ids = plugin.parameter_ids(&main_thread());
     assert_eq!(
         ids.len(),
         param_count as usize,
         "every index below parameter_count must yield a ParameterInfo"
     );
     for id in ids.into_iter().take(10) {
-        let value = Control::parameter(&*plugin, id)
+        let value = Control::parameter(&*plugin, &main_thread(), id)
             .expect("a listed parameter has a value")
             .get();
         assert_eq!(
@@ -647,38 +647,38 @@ fn test_set_parameter() {
     let mut plugin =
         Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
-    if plugin.parameter_count() > 0 {
+    if plugin.parameter_count(&main_thread()) > 0 {
         // The first listed parameter, by the id it reported: ParamID 0 need
         // not be the first parameter (or exist at all).
         let id = *plugin
-            .parameter_ids()
+            .parameter_ids(&main_thread())
             .first()
             .expect("a nonzero count lists a parameter");
         println!("Setting ParamID {id:?} to 0.5");
-        Control::set_parameter(&mut *plugin, id, Normalized::of(0.5));
-        let value = Control::parameter(&*plugin, id)
+        Control::set_parameter(&mut *plugin, &main_thread(), id, Normalized::of(0.5));
+        let value = Control::parameter(&*plugin, &main_thread(), id)
             .expect("a listed parameter reads back")
             .get();
         assert_eq!(value, plugin.get_parameter(id.get()));
         println!("Read back value: {value}");
 
         // An id the plugin never listed has no descriptor.
-        let listed = plugin.parameter_ids();
+        let listed = plugin.parameter_ids(&main_thread());
         let unlisted = (0..=u32::MAX)
             .map(ParamId::new)
             .find(|c| !listed.contains(c))
             .expect("some id is unlisted");
-        assert!(plugin.parameter_info(unlisted).is_none());
+        assert!(plugin.parameter_info(&main_thread(), unlisted).is_none());
         // Not silently written: it reads as `None` (`getParamNormalized`
         // answers 0 for an unknown id), and a write to it must leave every
         // listed parameter and that read unchanged.
-        assert_eq!(Control::parameter(&*plugin, unlisted), None);
+        assert_eq!(Control::parameter(&*plugin, &main_thread(), unlisted), None);
         let before: Vec<_> = listed
             .iter()
             .map(|i| plugin.get_parameter(i.get()))
             .collect();
-        Control::set_parameter(&mut *plugin, unlisted, Normalized::of(0.25));
-        assert_eq!(Control::parameter(&*plugin, unlisted), None);
+        Control::set_parameter(&mut *plugin, &main_thread(), unlisted, Normalized::of(0.25));
+        assert_eq!(Control::parameter(&*plugin, &main_thread(), unlisted), None);
         let after: Vec<_> = listed
             .iter()
             .map(|i| plugin.get_parameter(i.get()))
@@ -769,23 +769,26 @@ fn plain_range_probe_recovers_real_ranges() {
 
     for path in &corpus {
         let resolved = resolve_bundle(path);
-        let Ok(loaded) =
-            tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new())
-        else {
+        let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(
+            &main_thread(),
+            &resolved,
+            tutti_vst3_host::LoadOptions::new(),
+        ) else {
             eprintln!("  {}: failed to load, skipping", path.display());
             continue;
         };
 
         let mut probed = 0usize;
         let mut non_unit = 0usize;
-        for entry in loaded.parameter_list().into_iter().take(64) {
+        for entry in loaded.parameter_list(&main_thread()).into_iter().take(64) {
             let id = entry.id;
-            let Some(info) = loaded.parameter_info(id) else {
+            let Some(info) = loaded.parameter_info(&main_thread(), id) else {
                 continue;
             };
             // `None` is legitimate: no controller, or an incoherent map. That
             // is the case the caller turns into `ParamRange::Normalized`.
-            let Some(tutti_vst3_host::PlainRange { min, max }) = loaded.parameter_plain_range(id)
+            let Some(tutti_vst3_host::PlainRange { min, max }) =
+                loaded.parameter_plain_range(&main_thread(), id)
             else {
                 continue;
             };
@@ -795,14 +798,14 @@ fn plain_range_probe_recovers_real_ranges() {
                 min.is_finite() && max.is_finite(),
                 "{}: param {} ('{}') probed a non-finite range [{min}, {max}]",
                 path.display(),
-                info.id,
+                info.id(),
                 info.title_string()
             );
             assert!(
                 min <= max,
                 "{}: param {} ('{}') probed an inverted range [{min}, {max}]",
                 path.display(),
-                info.id,
+                info.id(),
                 info.title_string()
             );
             if min != 0.0 || (max - 1.0).abs() > 1e-9 {
@@ -837,4 +840,10 @@ fn plain_range_probe_recovers_real_ranges() {
          being consulted.",
         corpus.len()
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

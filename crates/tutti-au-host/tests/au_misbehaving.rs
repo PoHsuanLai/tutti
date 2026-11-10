@@ -559,7 +559,7 @@ fn a_partial_render_leaves_a_bounded_tail() {
 #[test]
 fn a_failing_class_info_save_is_an_error() {
     let au = Misbehaviour::FailsClassInfo.open_initialized(RATE, BLOCK);
-    let result = au.get_state();
+    let result = au.get_state(&main_thread());
     assert!(
         result.is_err(),
         "an AU refusing kAudioUnitProperty_ClassInfo must produce an error, not \
@@ -581,14 +581,16 @@ fn a_failing_class_info_restore_is_an_error_and_the_au_survives() {
     // A non-empty, well-formed binary plist, so the failure comes from the AU
     // rejecting `ClassInfo` rather than from the host declining to parse input.
     let good = Misbehaviour::None.open_initialized(RATE, BLOCK);
-    let blob = good.get_state().expect("well-behaved probe saves state");
+    let blob = good
+        .get_state(&main_thread())
+        .expect("well-behaved probe saves state");
     assert!(
         !blob.is_empty(),
         "the control probe produced an empty state blob, so this test would \
          exercise set_state's empty-input short circuit instead of the AU's refusal"
     );
 
-    let result = au.set_state(&blob);
+    let result = au.set_state(&main_thread(), &blob);
     assert!(
         result.is_err(),
         "an AU refusing a ClassInfo write must produce an error: {result:?}"
@@ -666,4 +668,10 @@ fn every_probe_loads_and_drops_cleanly() {
         let _ = au.factory_presets();
         drop(au);
     }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

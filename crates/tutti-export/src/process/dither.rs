@@ -1,21 +1,24 @@
-//! Dither — the one per-block processing stage.
+//! Dither — the one per-block processing stage (the noise is `tutti_dsp`'s).
 //!
 //! Dither is the only mastering step that is genuinely streamable: it needs no
 //! look-ahead, only a continuous RNG across block boundaries. Resampling is also
 //! block-based (an FFT overlap-add resampler), and normalization is the caller's two-pass composition
-//! (see `tutti_dsp::measure_loudness`), so this is the whole of what a "mastering"
+//! (see `tutti_measure::measure_loudness`), so this is the whole of what a "mastering"
 //! stage would otherwise hold.
 
 use crate::config::ExportConfig;
 use crate::options::Dither;
+use tutti_dsp::{DitherNoise, DitherShape};
+use tutti_types::Amplitude;
 
-/// Per-render dither state: the mode, the target depth, and the RNG.
+/// Per-render dither state: the mode, the target depth, and the noise source
+/// ([`DitherNoise`], which holds the algorithm).
 ///
 /// Carries the RNG so the noise sequence is continuous across blocks, and
 /// across channels within a block — a fresh sequence per block would correlate
 /// the noise to the block grid.
 pub(crate) struct DitherState {
-    random_state: u32,
+    noise: DitherNoise,
     dither: Dither,
     /// `None` when there is nothing to dither. See [`Self::for_config`].
     lsb: Option<f32>,
@@ -42,7 +45,7 @@ impl DitherState {
             (_, Some(depth)) => Some(1.0 / (1u32 << (depth.bits() - 1)) as f32),
         };
         Self {
-            random_state: 0x12345678,
+            noise: DitherNoise::new(),
             dither: config.dither,
             lsb,
         }
@@ -62,38 +65,12 @@ impl DitherState {
     /// frame width is irrelevant to the noise, so it is not a parameter.
     pub(crate) fn apply(&mut self, samples: &mut [f32]) {
         let Some(lsb) = self.lsb else { return };
-        for s in samples.iter_mut() {
-            let noise = match self.dither {
-                Dither::Off => 0.0,
-                Dither::Rectangular => self.rectangular_noise(),
-                Dither::Triangular => self.triangular_noise(),
-            };
-            *s += noise * lsb;
-        }
-    }
-
-    #[inline]
-    fn random(&mut self) -> u32 {
-        let mut x = self.random_state;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.random_state = x;
-        x
-    }
-
-    #[inline]
-    fn rectangular_noise(&mut self) -> f32 {
-        (self.random() as f32 / u32::MAX as f32) - 0.5
-    }
-
-    /// Two rectangular draws summed — TPDF, which decorrelates the noise from
-    /// the signal in a way a single draw does not.
-    #[inline]
-    fn triangular_noise(&mut self) -> f32 {
-        let r1 = self.random() as f32 / u32::MAX as f32;
-        let r2 = self.random() as f32 / u32::MAX as f32;
-        r1 - r2
+        let shape = match self.dither {
+            Dither::Off => return,
+            Dither::Rectangular => DitherShape::Rectangular,
+            Dither::Triangular => DitherShape::Triangular,
+        };
+        self.noise.apply(shape, Amplitude(lsb), samples);
     }
 }
 

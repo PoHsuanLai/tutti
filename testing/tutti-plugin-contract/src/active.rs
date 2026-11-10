@@ -53,7 +53,7 @@ impl<L: Loaded> Active<L> {
     ///
     /// The plugin's refusal.
     pub fn activate(loaded: L, prepare: Prepare) -> Result<Self, (Option<L>, PluginError)> {
-        match loaded.activate(prepare) {
+        match loaded.activate(&main_thread(), prepare) {
             Ok(pair) => Ok(Self {
                 pair: Some(pair),
                 prepare,
@@ -74,7 +74,7 @@ impl<L: Loaded> Active<L> {
     #[must_use]
     pub fn deactivate(mut self) -> L {
         let (processor, controller) = self.pair.take().expect("both halves");
-        L::deactivate(processor, controller)
+        L::deactivate(&main_thread(), processor, controller)
             .unwrap_or_else(|stuck| panic!("halves would not rejoin: {}", stuck.reason))
     }
 
@@ -85,11 +85,11 @@ impl<L: Loaded> Active<L> {
     /// When the halves will not rejoin or the plugin refuses.
     pub fn reconfigure(&mut self, wanted: Prepare) {
         let pair = self.pair.take().expect("both halves");
-        let loaded = L::deactivate(pair.0, pair.1)
+        let loaded = L::deactivate(&main_thread(), pair.0, pair.1)
             .unwrap_or_else(|stuck| panic!("halves would not rejoin: {}", stuck.reason));
         self.pair = Some(
             loaded
-                .activate(wanted)
+                .activate(&main_thread(), wanted)
                 .unwrap_or_else(|refused| panic!("reactivation refused: {}", refused.reason)),
         );
         self.prepare = wanted;
@@ -139,4 +139,10 @@ impl<L: Loaded> Active<L> {
             &ProcessContext::new(),
         )
     }
+}
+
+/// This process's main thread, for the cases: every case runs in a process of
+/// its own under nextest, so the claim cannot be refused.
+pub(crate) fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one case, one process")
 }

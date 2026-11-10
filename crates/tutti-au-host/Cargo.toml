@@ -14,8 +14,23 @@ categories = ["multimedia::audio", "os::macos-apis"]
 [lints]
 workspace = true
 
+[features]
+# What the integration tests need from `tutti-au-ffi` to build their own raw
+# calls beside the safe API (the raw `AudioUnit` behind a `Unit`, the packet-list
+# walkers). Off in a production build.
+test-support = ["tutti-au-ffi/test-support"]
+# `tests/au_midi_map.rs`'s claim about third-party Audio Units that are
+# installed on the machine (TDR Nova, TAL-NoiseMaker, TAL Reverb 4). It fails,
+# never skips, where they are absent, so it is compiled out unless asked for:
+# CI lints it (`clippy (macos)`) and a developer with the units runs it with
+# `just test-au-installed`. It gates one test and adds no code to the library.
+installed-units = []
+
 [dependencies]
 tutti-plugin-types = { path = "../tutti-plugin-types" }
+# Every raw AudioToolbox, CoreAudio and CoreFoundation call; this crate forbids
+# `unsafe`.
+tutti-au-ffi = { path = "../tutti-au-ffi" }
 # Structured errors (`AuError`), matching the sibling format hosts.
 thiserror.workspace = true
 # UMP MidiEvent decode (message view + MIDI 2.0→1.0 value scaling) for
@@ -28,35 +43,24 @@ tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.10"
-core-foundation-sys = "0.8"
 coreaudio-sys = "0.2"
-# `relax-void-encoding`: the AU Cocoa view factory protocol takes the unit as
-# `AudioUnit`, an opaque pointer each plugin SDK binds under its own struct name
-# (`ComponentInstanceRecord` from JUCE, `OpaqueAudioComponentInstance` from
-# Apple's own view factories). objc2's debug-build encoding check compares what
-# we send against the *plugin's* declared signature, so no single Rust type can
-# satisfy every plugin. This feature lets `*mut c_void` stand in for any
-# pointer, which is the case objc2 documents it for. It relaxes only pointer
-# identity at the top level — arity, scalar types and struct layouts are still
-# verified. See `editor/cocoa.rs::make_view`.
-objc2 = { version = "0.6", features = ["relax-void-encoding"] }
-# `AUEventListenerCreateWithDispatchQueue` takes an Objective-C *block*, not a
-# function pointer, and it is the only listener constructor that works without a
-# running CFRunLoop (see `listener.rs`). `block2` builds the block; it is already
-# in the tree via objc2-foundation, named here because this crate uses it
-# directly.
-block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeometry", "NSObject"] }
 
 [dev-dependencies]
+# The tests that build their own raw calls beside the safe API.
+tutti-au-host = { path = ".", features = ["test-support"] }
+tutti-au-ffi = { path = "../tutti-au-ffi", features = ["test-support"] }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 assert_no_alloc = { version = "1", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The probe AU and a few tests build CoreFoundation objects of their own.
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+
 # The Cocoa editor-lifecycle tests, run on the main thread. `harness = false` so
 # this target owns `main()` — the only way to reach the main thread under cargo,
-# and macOS requires it for AppKit. `main()` also calls `mark_main_thread()`,
-# which arms the affinity assert `AuEditor` makes. See the module docs; the test
+# and macOS requires it for AppKit, which `AuEditor` checks with the OS
+# (`pthread_main_np`). See the module docs; the test
 # bodies are shared with `tests/au_gui_lifecycle.rs`, not duplicated.
 [[test]]
 name = "au_gui_lifecycle_main"

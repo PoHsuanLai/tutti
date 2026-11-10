@@ -1,0 +1,1463 @@
+//! Structures and types for interfacing with the VST 2.4 API.
+
+use std::fmt;
+use std::os::raw::c_void;
+
+/// Why an `effGetChunk` produced no usable buffer.
+///
+/// Distinct from an empty chunk, because "nothing saved" and "the save failed"
+/// call for opposite host behaviour: `copy_chunk` used to fold both into an
+/// empty `Vec`, which let a host downgrade a failed chunk save to a parameter
+/// snapshot and drop the plugin's non-parameter state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkError {
+    /// The plugin returned a negative length: an explicit error return.
+    Failed(isize),
+    /// The plugin reported `len > 0` but left the out-pointer null, so there is
+    /// no buffer to copy however much it claims to have written.
+    NullBuffer(isize),
+}
+
+impl fmt::Display for ChunkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(len) => {
+                write!(f, "plugin returned a negative effGetChunk length ({len})")
+            }
+            Self::NullBuffer(len) => write!(
+                f,
+                "plugin reported {len} bytes of chunk data but left the pointer null"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ChunkError {}
+
+use self::consts::*;
+/// Constant values
+#[allow(missing_docs)] // For obvious constants
+pub mod consts {
+
+    pub const MAX_PRESET_NAME_LEN: usize = 24;
+    pub const MAX_PARAM_STR_LEN: usize = 32;
+    pub const MAX_LABEL: usize = 64;
+    pub const MAX_SHORT_LABEL: usize = 8;
+    pub const MAX_PRODUCT_STR_LEN: usize = 64;
+    pub const MAX_VENDOR_STR_LEN: usize = 64;
+
+    /// Buffer handed to `effGetEffectName` (45).
+    ///
+    /// `kVstMaxEffectNameLen` is 32 in the SDK. This is the *buffer* size, not
+    /// the bound: the opcode writes into host memory with no length argument,
+    /// so a plugin that ignores the limit overruns whatever it is given. 64
+    /// costs nothing on the stack of a load-time call and gives the same slack
+    /// as the product/vendor buffers beside it.
+    pub const MAX_EFFECT_NAME_LEN: usize = 64;
+
+    /// VST plugins are identified by a magic number. This corresponds to 0x56737450.
+    pub const VST_MAGIC: i32 =
+        ('V' as i32) << 24 | ('s' as i32) << 16 | ('t' as i32) << 8 | ('P' as i32);
+}
+
+/// `VSTPluginMain` function signature.
+///
+/// `extern "C"`: the host calls the symbol a plugin exports, so the Rust ABI would be
+/// undefined behaviour (it agrees with the C one only by coincidence on x86-64).
+///
+/// ```compile_fail
+/// # use tutti_vst2_ffi::api::{AEffect, HostCallbackProc, PluginMain};
+/// // Mutation (run): declare `PluginMain` as a plain `fn` again and this compiles,
+/// // so the doctest fails.
+/// fn rust_abi_main(_: HostCallbackProc) -> *mut AEffect {
+///     std::ptr::null_mut()
+/// }
+/// let _: PluginMain = rust_abi_main;
+/// ```
+pub type PluginMain = extern "C" fn(callback: HostCallbackProc) -> *mut AEffect;
+
+/// Host callback function passed to plugin.
+/// Can be used to query host information from plugin side.
+pub type HostCallbackProc = unsafe extern "C" fn(
+    effect: *mut AEffect,
+    opcode: i32,
+    index: i32,
+    value: isize,
+    ptr: *mut c_void,
+    opt: f32,
+) -> isize;
+
+/// Dispatcher function used to process opcodes. Called by host.
+pub type DispatcherProc = unsafe extern "C" fn(
+    effect: *mut AEffect,
+    opcode: i32,
+    index: i32,
+    value: isize,
+    ptr: *mut c_void,
+    opt: f32,
+) -> isize;
+
+/// Process function used to process 32 bit floating point samples. Called by host.
+pub type ProcessProc = unsafe extern "C" fn(
+    effect: *mut AEffect,
+    inputs: *const *const f32,
+    outputs: *mut *mut f32,
+    sample_frames: i32,
+);
+
+/// Process function used to process 64 bit floating point samples. Called by host.
+pub type ProcessProcF64 = unsafe extern "C" fn(
+    effect: *mut AEffect,
+    inputs: *const *const f64,
+    outputs: *mut *mut f64,
+    sample_frames: i32,
+);
+
+/// Callback function used to set parameter values. Called by host.
+pub type SetParameterProc = unsafe extern "C" fn(effect: *mut AEffect, index: i32, parameter: f32);
+
+/// Callback function used to get parameter values. Called by host.
+pub type GetParameterProc = unsafe extern "C" fn(effect: *mut AEffect, index: i32) -> f32;
+
+/// Used with the VST API to pass around plugin information.
+#[allow(non_snake_case)]
+#[repr(C)]
+#[derive(Debug)]
+pub struct AEffect {
+    /// Magic number. Must be `['V', 'S', 'T', 'P']`.
+    pub magic: i32,
+
+    /// Host to plug-in dispatcher.
+    ///
+    /// `Option` for the same reason as
+    /// [`processReplacing`](Self::processReplacing), and it matters more here:
+    /// this is the entry point for *every* host→plugin call, so a null slot
+    /// reached the jump on the first opcode rather than only during audio.
+    pub dispatcher: Option<DispatcherProc>,
+
+    /// Accumulating process mode is deprecated in VST 2.4! Use `processReplacing` instead!
+    ///
+    /// `Option` because the plugin fills this in across the C ABI and may leave it
+    /// null — see [`processReplacing`](Self::processReplacing).
+    pub _process: Option<ProcessProc>,
+
+    /// Set value of automatable parameter.
+    ///
+    /// `Option` for the same reason as
+    /// [`processReplacing`](Self::processReplacing). VST 2.4 lets a plugin with
+    /// `numParams == 0` leave this null, and an effect with no automatable
+    /// parameters is an ordinary thing to write — so the null is reachable
+    /// without any misbehaviour on the plugin's part.
+    pub setParameter: Option<SetParameterProc>,
+
+    /// Get value of automatable parameter.
+    ///
+    /// `Option` for the same reason as
+    /// [`setParameter`](Self::setParameter).
+    pub getParameter: Option<GetParameterProc>,
+
+    /// Number of programs (Presets).
+    pub numPrograms: i32,
+
+    /// Number of parameters. All programs are assumed to have this many parameters.
+    pub numParams: i32,
+
+    /// Number of audio inputs.
+    pub numInputs: i32,
+
+    /// Number of audio outputs.
+    pub numOutputs: i32,
+
+    /// Bitmask made of values from `api::PluginFlags`.
+    ///
+    /// ```no_run
+    /// use tutti_vst2_ffi::api::PluginFlags;
+    /// let flags = PluginFlags::CAN_REPLACING | PluginFlags::CAN_DOUBLE_REPLACING;
+    /// // ...
+    /// ```
+    pub flags: i32,
+
+    /// Reserved for host, must be 0.
+    pub reserved1: isize,
+
+    /// Reserved for host, must be 0.
+    pub reserved2: isize,
+
+    /// For algorithms which need input in the first place (Group delay or latency in samples).
+    ///
+    /// This value should be initially in a resume state.
+    pub initialDelay: i32,
+
+    /// Deprecated unused member.
+    pub _realQualities: i32,
+
+    /// Deprecated unused member.
+    pub _offQualities: i32,
+
+    /// Deprecated unused member.
+    pub _ioRatio: f32,
+
+    /// Void pointer usable by api to store object data.
+    pub object: *mut c_void,
+
+    /// User defined pointer.
+    pub user: *mut c_void,
+
+    /// Registered unique identifier (register it at Steinberg 3rd party support Web).
+    /// This is used to identify a plug-in during save+load of preset and project.
+    pub uniqueId: i32,
+
+    /// Plug-in version (e.g. 1100 for v1.1.0.0).
+    pub version: i32,
+
+    /// Process audio samples in replacing mode.
+    ///
+    /// `Option` rather than a bare `extern "C" fn`, because this struct is filled
+    /// in by the *plugin* across the C ABI and a real plugin can leave the slot
+    /// null even while reporting api version >= 2400. A non-nullable `fn` type
+    /// tells the compiler the pointer cannot be null, so the host's
+    /// `(p as *const u8).is_null()` guard folded to `false` under `-O` and the
+    /// call became a jump to address 0 — taking the whole DAW down. `Option<fn>`
+    /// makes the check load-bearing at every optimization level, and is
+    /// ABI-identical (null pointer optimization: both are one pointer wide).
+    pub processReplacing: Option<ProcessProc>,
+
+    /// Process double-precision audio samples in replacing mode.
+    ///
+    /// `Option` for the same reason as [`processReplacing`](Self::processReplacing).
+    pub processReplacingF64: Option<ProcessProcF64>,
+
+    /// Reserved for future use (please zero).
+    pub future: [u8; 56],
+}
+
+/// What a plugin reports about one parameter through
+/// `effGetParameterProperties` — VST 2.4's `VstParameterProperties`.
+///
+/// This is the only structured parameter metadata VST2 has. Without it a host
+/// knows a parameter's name, label and normalized value and nothing else, so it
+/// can only render a flat list of sliders: no integer range, no step
+/// granularity, no grouping.
+///
+/// Every field is written by the *plugin* into a buffer the host owns, so the
+/// layout must match the header byte for byte — a reordered field means the
+/// plugin writes `flags` where the host reads `minInteger`. Field order below
+/// is verified against `aeffectx.h`, and `size_of` is pinned to the measured
+/// 136 bytes by a test in this module.
+#[repr(C)]
+#[derive(Debug)]
+pub struct ParameterProperties {
+    /// Step increment for the float value, in normalized units.
+    pub step_float: f32,
+    /// Fine-grained step (e.g. shift-drag).
+    pub small_step_float: f32,
+    /// Coarse step (e.g. page up/down).
+    pub large_step_float: f32,
+    /// Full parameter label.
+    pub label: [u8; MAX_LABEL],
+    /// Bit flags found in `ParameterFlags`.
+    pub flags: i32,
+    /// Lowest integer value, when `USES_INT_STEP` is set.
+    pub min_integer: i32,
+    /// Highest integer value, when `USES_INT_STEP` is set.
+    pub max_integer: i32,
+    /// Integer step increment.
+    pub step_integer: i32,
+    /// Coarse integer step.
+    pub large_step_integer: i32,
+    /// Short label, for narrow UI slots (recommended 6 chars + delimiter).
+    pub short_label: [u8; MAX_SHORT_LABEL],
+    /// Preferred display position, when `USES_INDEX` is set.
+    pub display_index: i16,
+    /// Category this parameter belongs to (1-based; 0 = uncategorised), when
+    /// `USES_CATEGORY` is set.
+    pub category: i16,
+    /// How many parameters share this parameter's category.
+    pub num_parameters_in_category: i16,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub reserved: i16,
+    /// Name of the category, when `USES_CATEGORY` is set.
+    pub category_label: [u8; MAX_SHORT_LABEL],
+    /// Reserved for future use.
+    pub future: [u8; 16],
+}
+
+/// One named MIDI program, from `effGetMidiProgramName` /
+/// `effGetCurrentMidiProgram`. VST 2.4's `MidiProgramName`.
+///
+/// This is VST2's MIDI-facing preset metadata: it ties a program *name* to the
+/// concrete MIDI program-change number and bank-select pair that selects it, so
+/// a host can show "Acoustic Bass" instead of "program 32, bank 0/0".
+///
+/// `size_of` is pinned to the measured 80 bytes by a test in this module.
+#[repr(C)]
+#[derive(Debug)]
+pub struct MidiProgramName {
+    /// Index the host is asking about; the host writes this before dispatch
+    /// and the plugin fills the rest.
+    pub this_program_index: i32,
+    /// Program name.
+    pub name: [u8; MAX_LABEL],
+    /// MIDI program-change number (0-127) that selects this program.
+    pub midi_program: u8,
+    /// Bank-select MSB (CC 0), or 255 for "unused".
+    pub midi_bank_msb: u8,
+    /// Bank-select LSB (CC 32), or 255 for "unused".
+    pub midi_bank_lsb: u8,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub reserved: u8,
+    /// Index into the category list, or -1 when uncategorised.
+    pub parent_category_index: i32,
+    /// Bit flags found in `MidiProgramFlags`.
+    pub flags: i32,
+}
+
+/// A category grouping MIDI programs, from `effGetMidiProgramCategory`.
+/// VST 2.4's `MidiProgramCategory`.
+///
+/// `size_of` is pinned to the measured 76 bytes by a test in this module.
+#[repr(C)]
+#[derive(Debug)]
+pub struct MidiProgramCategory {
+    /// Index the host is asking about; written by the host before dispatch.
+    pub this_category_index: i32,
+    /// Category name.
+    pub name: [u8; MAX_LABEL],
+    /// Index of the enclosing category, or -1 at the top level.
+    pub parent_category_index: i32,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub flags: i32,
+}
+
+/// A name for one MIDI key, from `effGetMidiKeyName`. VST 2.4's `MidiKeyName`.
+///
+/// Drum and percussion instruments use this so a host can label a pad "Kick"
+/// rather than "C1" / note 36. Without the query a drum editor can only show
+/// note numbers.
+///
+/// `size_of` is pinned to the measured 80 bytes by a test in this module.
+#[repr(C)]
+#[derive(Debug)]
+pub struct MidiKeyName {
+    /// Program the question is scoped to; written by the host before dispatch.
+    pub this_program_index: i32,
+    /// MIDI note number being asked about (0-127); written by the host.
+    pub this_key_number: i32,
+    /// Key name the plugin wrote.
+    pub keyname: [u8; MAX_LABEL],
+    /// Reserved by the spec; plugins must leave it zero.
+    pub reserved: i32,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub flags: i32,
+}
+
+/// Information about a channel. Only some hosts use this information.
+#[repr(C)]
+#[derive(Debug)]
+pub struct ChannelProperties {
+    /// Channel name.
+    pub name: [u8; MAX_LABEL],
+
+    /// Flags found in `ChannelFlags`.
+    pub flags: i32,
+
+    /// Type of speaker arrangement this channel is a part of.
+    pub arrangement_type: SpeakerArrangementType,
+
+    /// Name of channel (recommended: 6 characters + delimiter).
+    pub short_name: [u8; MAX_SHORT_LABEL],
+
+    /// Reserved for future use.
+    pub future: [u8; 48],
+}
+
+/// Tells the host how the channels are intended to be used in the plugin. Only useful for some
+/// hosts.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug)]
+pub enum SpeakerArrangementType {
+    /// User defined arrangement.
+    Custom = -2,
+    /// Empty arrangement.
+    Empty = -1,
+
+    /// Mono.
+    Mono = 0,
+
+    /// L R
+    Stereo,
+    /// Ls Rs
+    StereoSurround,
+    /// Lc Rc
+    StereoCenter,
+    /// Sl Sr
+    StereoSide,
+    /// C Lfe
+    StereoCLfe,
+
+    /// L R C
+    Cinema30,
+    /// L R S
+    Music30,
+
+    /// L R C Lfe
+    Cinema31,
+    /// L R Lfe S
+    Music31,
+
+    /// L R C S (LCRS)
+    Cinema40,
+    /// L R Ls Rs (Quadro)
+    Music40,
+
+    /// L R C Lfe S (LCRS + Lfe)
+    Cinema41,
+    /// L R Lfe Ls Rs (Quadro + Lfe)
+    Music41,
+
+    /// L R C Ls Rs
+    Surround50,
+    /// L R C Lfe Ls Rs
+    Surround51,
+
+    /// L R C Ls  Rs Cs
+    Cinema60,
+    /// L R Ls Rs  Sl Sr
+    Music60,
+
+    /// L R C Lfe Ls Rs Cs
+    Cinema61,
+    /// L R Lfe Ls Rs Sl Sr
+    Music61,
+
+    /// L R C Ls Rs Lc Rc
+    Cinema70,
+    /// L R C Ls Rs Sl Sr
+    Music70,
+
+    /// L R C Lfe Ls Rs Lc Rc
+    Cinema71,
+    /// L R C Lfe Ls Rs Sl Sr
+    Music71,
+
+    /// L R C Ls Rs Lc Rc Cs
+    Cinema80,
+    /// L R C Ls Rs Cs Sl Sr
+    Music80,
+
+    /// L R C Lfe Ls Rs Lc Rc Cs
+    Cinema81,
+    /// L R C Lfe Ls Rs Cs Sl Sr
+    Music81,
+
+    /// L R C Lfe Ls Rs Tfl Tfc Tfr Trl Trr Lfe2
+    Surround102,
+}
+
+/// Used to specify whether functionality is supported.
+#[allow(missing_docs)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum Supported {
+    Yes,
+    Maybe,
+    No,
+    Custom(isize),
+}
+
+impl Supported {
+    /// Interpret an `effCanDo` return value.
+    ///
+    /// Total by construction. The VST2.4 SDK only *documents* `1` (yes), `0`
+    /// (don't know) and `-1` (no), but a real plugin's `canDo` returns whatever
+    /// its `dispatcher` left in the return slot — commonly the length of the
+    /// queried string, or an uninitialised stack value for an opcode it does
+    /// not handle. Anything undocumented is surfaced verbatim as
+    /// [`Supported::Custom`] (the variant that already existed for exactly this
+    /// case) rather than discarded: a host must not panic on a value a plugin
+    /// is free to invent, and folding an unknown answer into `Yes` would
+    /// misclassify the plugin.
+    pub fn from(val: isize) -> Supported {
+        use self::Supported::*;
+
+        match val {
+            1 => Yes,
+            0 => Maybe,
+            -1 => No,
+            other => Custom(other),
+        }
+    }
+}
+
+impl From<Supported> for isize {
+    /// Convert to integer ordinal for interop with VST api.
+    fn from(val: Supported) -> Self {
+        use self::Supported::*;
+
+        match val {
+            Yes => 1,
+            Maybe => 0,
+            No => -1,
+            Custom(i) => i,
+        }
+    }
+}
+
+/// Denotes in which thread the host is in.
+#[repr(i32)]
+#[derive(Debug)]
+pub enum ProcessLevel {
+    /// Unsupported by host.
+    Unknown = 0,
+
+    /// GUI thread.
+    User,
+    /// Audio process thread.
+    Realtime,
+    /// Sequence thread (MIDI, etc).
+    Prefetch,
+    /// Offline processing thread (therefore GUI/user thread).
+    Offline,
+}
+
+/// Language that the host is using.
+#[repr(i32)]
+#[allow(missing_docs)]
+#[derive(Debug)]
+pub enum HostLanguage {
+    English = 1,
+    German,
+    French,
+    Italian,
+    Spanish,
+    Japanese,
+}
+
+/// The file operation to perform.
+#[repr(i32)]
+#[derive(Debug)]
+pub enum FileSelectCommand {
+    /// Load a file.
+    Load = 0,
+    /// Save a file.
+    Save,
+    /// Load multiple files simultaneously.
+    LoadMultipleFiles,
+    /// Choose a directory.
+    SelectDirectory,
+}
+
+// TODO: investigate removing this.
+/// Format to select files.
+#[derive(Debug)]
+pub enum FileSelectType {
+    /// Regular file selector.
+    Regular,
+}
+
+/// File type descriptor.
+#[repr(C)]
+#[derive(Debug)]
+pub struct FileType {
+    /// Display name of file type.
+    pub name: [u8; 128],
+
+    /// OS X file type.
+    pub osx_type: [u8; 8],
+    /// Windows file type.
+    pub win_type: [u8; 8],
+    /// Unix file type.
+    pub nix_type: [u8; 8],
+
+    /// MIME type.
+    pub mime_type_1: [u8; 128],
+    /// Additional MIME type.
+    pub mime_type_2: [u8; 128],
+}
+
+/// File selector descriptor used in `host::OpCode::OpenFileSelector`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct FileSelect {
+    /// The type of file selection to perform.
+    pub command: FileSelectCommand,
+    /// The file selector to open.
+    pub select_type: FileSelectType,
+    /// Unknown. 0 = no creator.
+    pub mac_creator: i32,
+    /// Number of file types.
+    pub num_types: i32,
+    /// List of file types to show.
+    pub file_types: *mut FileType,
+
+    /// File selector's title.
+    pub title: [u8; 1024],
+    /// Initial path.
+    pub initial_path: *mut u8,
+    /// Used when operation returns a single path.
+    pub return_path: *mut u8,
+    /// Size of the path buffer in bytes.
+    pub size_return_path: i32,
+
+    /// Used when operation returns multiple paths.
+    pub return_multiple_paths: *mut *mut u8,
+    /// Number of paths returned.
+    pub num_paths: i32,
+
+    /// Reserved by host.
+    pub reserved: isize,
+    /// Reserved for future use.
+    pub future: [u8; 116],
+}
+
+/// A struct which contains events.
+#[repr(C)]
+#[derive(Debug)]
+pub struct Events {
+    /// Number of events.
+    pub num_events: i32,
+
+    /// Reserved for future use. Should be 0.
+    pub _reserved: isize,
+
+    /// Variable-length array of pointers to `api::Event` objects.
+    ///
+    /// The VST standard specifies a variable length array of initial size 2. If there are more
+    /// than 2 elements a larger array must be stored in this structure.
+    pub events: [*mut Event; 2],
+}
+
+/// The events of one `audioMasterProcessEvents` call, as the host callback received them.
+///
+/// Raw [`Events`] is the ABI struct: its fields are public, so safe code can build one with
+/// any count and any pointers, and nothing on it dereferences them. This is the view that
+/// does. Only the host callback (`host_dispatch`) makes one, from the plugin's `VstEvents`
+/// after it has checked it is non-null and aligned, and it borrows that list for the
+/// callback, so a handler cannot keep it. A handler reads the events with
+/// [`iter`](Self::iter).
+///
+/// Safe code cannot construct a view, nor read a list through the raw struct:
+///
+/// ```compile_fail,E0624
+/// # use tutti_vst2_ffi::api::{Events, PluginEvents};
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = PluginEvents::new(&raw);
+/// ```
+///
+/// ```compile_fail,E0451
+/// # use tutti_vst2_ffi::api::{Events, PluginEvents};
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = PluginEvents { events: &raw };
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use tutti_vst2_ffi::api::Events;
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = raw.plugin_events();
+/// ```
+///
+/// Mutation (run): make `PluginEvents::new` or its field `pub`, or put an `iter` back on
+/// `Events`: the matching doctest compiles and fails.
+#[derive(Debug)]
+pub struct PluginEvents<'a> {
+    events: &'a Events,
+}
+
+/// An event a plugin sent the host, copied out of its list by [`PluginEvents::iter`].
+#[derive(Debug)]
+pub enum PluginEvent<'a> {
+    /// A MIDI event.
+    Midi(MidiEvent),
+    /// A SysEx message, whose bytes are the plugin's, valid for the callback.
+    SysEx(SysExMessage<'a>),
+}
+
+/// A SysEx message in a plugin's event list: its frame and its bytes, which still lie in the
+/// plugin's buffer and are readable only for the callback that handed the list over (`'a`).
+///
+/// Only [`PluginEvents::iter`] makes one (the raw [`SysExEvent`] has no accessor for its
+/// pointer):
+///
+/// ```compile_fail,E0451
+/// # use tutti_vst2_ffi::api::SysExMessage;
+/// let _ = SysExMessage { delta_frames: 0, payload: &[] };
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use tutti_vst2_ffi::api::SysExEvent;
+/// fn go(e: &SysExEvent) { let _ = e.payload(); }
+/// ```
+///
+/// Mutation (run): make the fields `pub`, or give `SysExEvent` a `payload` again: the matching
+/// doctest compiles and fails.
+#[derive(Debug)]
+pub struct SysExMessage<'a> {
+    delta_frames: i32,
+    payload: &'a [u8],
+}
+
+impl SysExMessage<'_> {
+    /// The frame, in the block, the message lands on (negative as the plugin wrote it).
+    pub fn delta_frames(&self) -> i32 {
+        self.delta_frames
+    }
+
+    /// The payload bytes, empty for a null pointer or a non-positive size.
+    pub fn payload(&self) -> &[u8] {
+        self.payload
+    }
+}
+
+impl<'a> PluginEvents<'a> {
+    /// The view of a list the host callback has checked is non-null and aligned, and which the
+    /// VST2 contract has the plugin keep valid for the call.
+    pub(crate) fn new(events: &'a Events) -> Self {
+        Self { events }
+    }
+
+    /// A view of any `Events`, for the host crate's tests, which craft lists of null entries,
+    /// negative counts and short events.
+    ///
+    /// Not sound for arbitrary input: the caller must point every entry at memory it owns.
+    /// It exists behind `test-support` only, as the other FFI crates' raw builders do.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn for_test(events: &'a Events) -> Self {
+        Self::new(events)
+    }
+
+    /// The events, each copied out.
+    ///
+    /// A negative count is no events, a null entry is skipped, and an entry is read as a
+    /// struct only when its own `byte_size` says it is that big; the header is read as raw
+    /// integers, never as the [`EventType`] enum, because the plugin's memory can hold a value
+    /// that is no variant. An event of another type is skipped.
+    pub fn iter(&self) -> impl Iterator<Item = PluginEvent<'a>> + use<'a> {
+        let events: &'a Events = self.events;
+        // A negative count is no events; it must not become `usize::MAX`.
+        let num = usize::try_from(events.num_events).unwrap_or(0);
+        let base = events.events.as_ptr();
+        (0..num).filter_map(move |i| {
+            // SAFETY: the VST2 contract has the plugin supply `num_events` valid event
+            // pointers in the flexible array for the duration of the callback; a view is made
+            // only by the callback, for that call. Not checked here (the declared `[_; 2]`
+            // type is only the header's view of that array).
+            let event_ptr = unsafe { *base.add(i) };
+            if event_ptr.is_null() {
+                return None;
+            }
+            // `read_unaligned`: the header's alignment (4) does not prove the plugin's
+            // event type's.
+            //
+            // SAFETY: `event_ptr` is non-null and one of the plugin-supplied pointers,
+            // each to an event whose header (type and byte size, two `i32`) is readable for
+            // this callback.
+            let (event_type, declared) = unsafe {
+                let header = event_ptr.cast::<i32>();
+                (
+                    std::ptr::read_unaligned(header),
+                    std::ptr::read_unaligned(header.add(1)),
+                )
+            };
+            // Read a whole struct only if the plugin says it is that big.
+            let declared = usize::try_from(declared).unwrap_or(0);
+            if event_type == EventType::Midi as i32 && declared >= std::mem::size_of::<MidiEvent>()
+            {
+                // SAFETY: the event type is Midi and `byte_size` declares at least
+                // `size_of::<MidiEvent>()` readable bytes at `event_ptr`; the type field was
+                // just checked to be the `Midi` discriminant, and every other field is an
+                // integer. The struct holds no owned data, so the copy needs no drop.
+                let midi = unsafe { std::ptr::read_unaligned(event_ptr.cast::<MidiEvent>()) };
+                Some(PluginEvent::Midi(midi))
+            } else if event_type == EventType::SysEx as i32
+                && declared >= std::mem::size_of::<SysExEvent>()
+            {
+                // SAFETY: as above for SysEx; the struct holds no owned data.
+                let sysex = unsafe { std::ptr::read_unaligned(event_ptr.cast::<SysExEvent>()) };
+                let len = usize::try_from(sysex.data_size).unwrap_or(0);
+                let payload: &'a [u8] = if sysex.system_data.is_null() || len == 0 {
+                    &[]
+                } else {
+                    // SAFETY: non-null and sized above; the VST2 contract has the plugin keep
+                    // `data_size` readable bytes at `system_data` for the callback, which `'a`
+                    // is.
+                    unsafe { std::slice::from_raw_parts(sysex.system_data, len) }
+                };
+                Some(PluginEvent::SysEx(SysExMessage {
+                    delta_frames: sysex.delta_frames,
+                    payload,
+                }))
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl Events {
+    #[inline]
+    pub(crate) fn events_raw(&self) -> &[*const Event] {
+        use std::slice;
+        // A negative count is no events.
+        let len = usize::try_from(self.num_events).unwrap_or(0);
+        // SAFETY: VST2 ABI: `events` is a variable-length array and the host allocates
+        // `num_events` contiguous pointers from `events[0]`; `*mut Event` and
+        // `*const Event` share a layout. The count is the sender's word and is not
+        // otherwise checked (the allocation behind a `&Events` cannot be measured).
+        unsafe { slice::from_raw_parts(&self.events[0] as *const *mut _ as *const *const _, len) }
+    }
+
+    #[inline]
+    pub(crate) fn events_raw_mut(&mut self) -> &mut [*const SysExEvent] {
+        use std::slice;
+        // SAFETY: as in `events_raw`: the allocation holds `num_events` contiguous
+        // pointers from `events[0]` (`SendEventBuffer` allocates exactly this), and
+        // `&mut self` gives exclusive access. A negative count is no events.
+        unsafe {
+            slice::from_raw_parts_mut(
+                &mut self.events[0] as *mut *mut _ as *mut *const _,
+                usize::try_from(self.num_events).unwrap_or(0),
+            )
+        }
+    }
+
+    /// Use this in your impl of process_events() to process the incoming midi events.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use tutti_vst2_ffi::plugin::{Info, Plugin, HostCallback};
+    /// # use tutti_vst2_ffi::buffer::{AudioBuffer, SendEventBuffer};
+    /// # use tutti_vst2_ffi::host::Host;
+    /// # use tutti_vst2_ffi::api;
+    /// # use tutti_vst2_ffi::event::{Event, MidiEvent};
+    /// # struct ExamplePlugin { host: HostCallback, send_buf: SendEventBuffer }
+    /// # impl Plugin for ExamplePlugin {
+    /// #     fn new(host: HostCallback) -> Self { Self { host, send_buf: Default::default() } }
+    /// #
+    /// #     fn get_info(&self) -> Info { Default::default() }
+    /// #
+    /// fn process_events(&mut self, events: &api::Events) {
+    ///     for e in events.events() {
+    ///         match e {
+    ///             Event::Midi(MidiEvent { data, .. }) => {
+    ///                 // ...
+    ///             }
+    ///             _ => ()
+    ///         }
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    #[inline]
+    #[allow(clippy::needless_lifetimes)]
+    pub fn events<'a>(&'a self) -> impl Iterator<Item = crate::event::Event<'a>> {
+        self.events_raw()
+            .iter()
+            .filter(|ptr| !ptr.is_null())
+            // SAFETY: VST2 ABI: each non-null entry of the host's event array points at a
+            // valid event of the type its `event_type` names.
+            .map(|ptr| unsafe { crate::event::Event::from_raw_event(*ptr) })
+    }
+}
+
+/// The type of event that has occurred. See `api::Event.event_type`.
+#[repr(i32)]
+#[derive(Copy, Clone, Debug)]
+pub enum EventType {
+    /// Value used for uninitialized placeholder events.
+    _Placeholder = 0,
+
+    /// Midi event. See `api::MidiEvent`.
+    Midi = 1,
+
+    /// Deprecated.
+    _Audio,
+    /// Deprecated.
+    _Video,
+    /// Deprecated.
+    _Parameter,
+    /// Deprecated.
+    _Trigger,
+
+    /// System exclusive event. See `api::SysExEvent`.
+    SysEx,
+}
+
+/// A VST event intended to be casted to a corresponding type.
+///
+/// The event types are not all guaranteed to be the same size,
+/// so casting between them can be done
+/// via `mem::transmute()` while leveraging pointers, e.g.
+///
+/// ```
+/// # use tutti_vst2_ffi::api::{Event, EventType, MidiEvent, SysExEvent};
+/// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };
+/// // let event: *const Event = ...;
+/// let midi_event: &MidiEvent = unsafe { std::mem::transmute(event) };
+/// ```
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct Event {
+    /// The type of event. This lets you know which event this object should be casted to.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use tutti_vst2_ffi::api::{Event, EventType, MidiEvent, SysExEvent};
+    /// #
+    /// # // Valid for test
+    /// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };
+    /// #
+    /// // let mut event: *mut Event = ...
+    /// match unsafe { (*event).event_type } {
+    ///     EventType::Midi => {
+    ///         let midi_event: &MidiEvent = unsafe {
+    ///             std::mem::transmute(event)
+    ///         };
+    ///
+    ///         // ...
+    ///     }
+    ///     EventType::SysEx => {
+    ///         let sys_event: &SysExEvent = unsafe {
+    ///             std::mem::transmute(event)
+    ///         };
+    ///
+    ///         // ...
+    ///     }
+    ///     // ...
+    /// #     _ => {}
+    /// }
+    /// ```
+    pub event_type: EventType,
+
+    /// Size of this structure; `mem::sizeof::<Event>()`.
+    pub byte_size: i32,
+
+    /// Number of samples into the current processing block that this event occurs on.
+    ///
+    /// E.g. if the block size is 512 and this value is 123, the event will occur on sample
+    /// `samples[123]`.
+    pub delta_frames: i32,
+
+    /// Generic flags, none defined in VST api yet.
+    pub _flags: i32,
+
+    /// The `Event` type is cast appropriately, so this acts as reserved space.
+    ///
+    /// The actual size of the data may vary
+    ///as this type is not guaranteed to be the same size as the other event types.
+    pub _reserved: [u8; 16],
+}
+
+/// A midi event.
+#[repr(C)]
+#[derive(Debug)]
+pub struct MidiEvent {
+    /// Should be `EventType::Midi`.
+    pub event_type: EventType,
+
+    /// Size of this structure; `mem::sizeof::<MidiEvent>()`.
+    pub byte_size: i32,
+
+    /// Number of samples into the current processing block that this event occurs on.
+    ///
+    /// E.g. if the block size is 512 and this value is 123, the event will occur on sample
+    /// `samples[123]`.
+    pub delta_frames: i32,
+
+    /// See `MidiEventFlags`.
+    pub flags: i32,
+
+    /// Length in sample frames of entire note if available, otherwise 0.
+    pub note_length: i32,
+
+    /// Offset in samples into note from start if available, otherwise 0.
+    pub note_offset: i32,
+
+    /// 1 to 3 midi bytes. TODO: Doc
+    pub midi_data: [u8; 3],
+
+    /// Reserved midi byte (0).
+    pub _midi_reserved: u8,
+
+    /// Detuning between -63 and +64 cents,
+    /// for scales other than 'well-tempered'. e.g. 'microtuning'
+    pub detune: i8,
+
+    /// Note off velocity between 0 and 127.
+    pub note_off_velocity: u8,
+
+    /// Reserved for future use. Should be 0.
+    pub _reserved1: u8,
+    /// Reserved for future use. Should be 0.
+    pub _reserved2: u8,
+}
+
+/// A midi system exclusive event.
+///
+/// This event only contains raw byte data, and is up to the plugin to interpret it correctly.
+/// `plugin::CanDo` has a `ReceiveSysExEvent` variant which lets the host query the plugin as to
+/// whether this event is supported.
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct SysExEvent {
+    /// Should be `EventType::SysEx`.
+    pub event_type: EventType,
+
+    /// Size of this structure; `mem::sizeof::<SysExEvent>()`.
+    pub byte_size: i32,
+
+    /// Number of samples into the current processing block that this event occurs on.
+    ///
+    /// E.g. if the block size is 512 and this value is 123, the event will occur on sample
+    /// `samples[123]`.
+    pub delta_frames: i32,
+
+    /// Generic flags, none defined in VST api yet.
+    pub _flags: i32,
+
+    /// Size of payload in bytes.
+    pub data_size: i32,
+
+    /// Reserved for future use. Should be 0.
+    pub _reserved1: isize,
+
+    /// Pointer to payload.
+    pub system_data: *mut u8,
+
+    /// Reserved for future use. Should be 0.
+    pub _reserved2: isize,
+}
+
+// SAFETY: the struct is plain `#[repr(C)]` data, and moving it to another thread never
+// dereferences `system_data`: a raw pointer is only an address. Reading through it is an
+// `unsafe` act of whoever does, who owns the pointee's validity and aliasing there.
+unsafe impl Send for SysExEvent {}
+
+#[repr(C)]
+#[derive(Clone, Default, Copy)]
+/// Describes the time at the start of the block currently being processed
+#[derive(Debug)]
+pub struct TimeInfo {
+    /// current Position in audio samples (always valid)
+    pub sample_pos: f64,
+
+    /// current Sample Rate in Hertz (always valid)
+    pub sample_rate: f64,
+
+    /// System Time in nanoseconds (10^-9 second)
+    pub nanoseconds: f64,
+
+    /// Musical Position, in Quarter Note (1.0 equals 1 Quarter Note)
+    pub ppq_pos: f64,
+
+    /// current Tempo in BPM (Beats Per Minute)
+    pub tempo: f64,
+
+    /// last Bar Start Position, in Quarter Note
+    pub bar_start_pos: f64,
+
+    /// Cycle Start (left locator), in Quarter Note
+    pub cycle_start_pos: f64,
+
+    /// Cycle End (right locator), in Quarter Note
+    pub cycle_end_pos: f64,
+
+    /// Time Signature Numerator (e.g. 3 for 3/4)
+    pub time_sig_numerator: i32,
+
+    /// Time Signature Denominator (e.g. 4 for 3/4)
+    pub time_sig_denominator: i32,
+
+    /// SMPTE offset in SMPTE subframes (bits; 1/80 of a frame).
+    /// The current SMPTE position can be calculated using `sample_pos`, `sample_rate`, and `smpte_frame_rate`.
+    pub smpte_offset: i32,
+
+    /// See `SmpteFrameRate`
+    pub smpte_frame_rate: SmpteFrameRate,
+
+    /// MIDI Clock Resolution (24 Per Quarter Note), can be negative (nearest clock)
+    pub samples_to_next_clock: i32,
+
+    /// See `TimeInfoFlags`
+    pub flags: i32,
+}
+
+#[repr(i32)]
+#[derive(Copy, Clone, Debug)]
+/// SMPTE Frame Rates.
+#[derive(Default)]
+pub enum SmpteFrameRate {
+    /// 24 fps
+    #[default]
+    Smpte24fps = 0,
+    /// 25 fps
+    Smpte25fps = 1,
+    /// 29.97 fps
+    Smpte2997fps = 2,
+    /// 30 fps
+    Smpte30fps = 3,
+
+    /// 29.97 drop
+    Smpte2997dfps = 4,
+    /// 30 drop
+    Smpte30dfps = 5,
+
+    /// Film 16mm
+    SmpteFilm16mm = 6,
+    /// Film 35mm
+    SmpteFilm35mm = 7,
+
+    /// HDTV: 23.976 fps
+    Smpte239fps = 10,
+    /// HDTV: 24.976 fps
+    Smpte249fps = 11,
+    /// HDTV: 59.94 fps
+    Smpte599fps = 12,
+    /// HDTV: 60 fps
+    Smpte60fps = 13,
+}
+
+bitflags! {
+    /// Flags for VST channels.
+    pub struct ChannelFlags: i32 {
+        /// Indicates channel is active. Ignored by host.
+        const ACTIVE = 1;
+        /// Indicates channel is first of stereo pair.
+        const STEREO = 1 << 1;
+        /// Use channel's specified speaker_arrangement instead of stereo flag.
+        const SPEAKER = 1 << 2;
+    }
+}
+
+bitflags! {
+    /// Flags in [`ParameterProperties::flags`] — VST 2.4's `VstParameterFlags`.
+    ///
+    /// These are what make the rest of the struct meaningful: the integer range
+    /// fields, the display index and the category fields are all *only* valid
+    /// when the corresponding bit is set. A host that reads `min_integer` /
+    /// `max_integer` without checking `USES_INT_STEP` reads whatever the plugin
+    /// happened to leave there — usually zero, so the parameter silently
+    /// collapses to the degenerate range 0..0.
+    pub struct ParameterFlags: i32 {
+        /// `step_integer`, `min_integer` and `max_integer` are valid.
+        const USES_INT_STEP = 1;
+        /// `step_float`, `small_step_float` and `large_step_float` are valid.
+        const USES_FLOAT_STEP = 1 << 1;
+        /// `display_index` is valid.
+        const USES_INDEX = 1 << 2;
+        /// `category`, `num_parameters_in_category` and `category_label` are
+        /// valid. Categories are 1-based; 0 means the parameter is
+        /// uncategorised even when this bit is set.
+        const USES_CATEGORY = 1 << 3;
+        /// The parameter can be ramped — a host moving it may interpolate
+        /// between values rather than stepping. The doc here used to read "the
+        /// parameter cannot be automated", which is the opposite of what the
+        /// bit means and describes no VST2 flag at all; the name and the value
+        /// (`kVstParameterCanRamp`) were always right.
+        const CAN_RAMP = 1 << 4;
+    }
+}
+
+bitflags! {
+    /// Flags in [`MidiProgramName::flags`] — VST 2.4's `VstMidiProgramNameFlags`.
+    pub struct MidiProgramFlags: i32 {
+        /// The program is a General MIDI drum kit rather than a melodic sound,
+        /// so its keys are individual instruments and `effGetMidiKeyName` is
+        /// the way to label them.
+        const IS_OMNI = 1;
+    }
+}
+
+bitflags! {
+    /// Flags for VST plugins.
+    pub struct PluginFlags: i32 {
+        /// Plugin has an editor.
+        const HAS_EDITOR = 1;
+        /// Plugin can process 32 bit audio. (Mandatory in VST 2.4).
+        const CAN_REPLACING = 1 << 4;
+        /// Plugin preset data is handled in formatless chunks.
+        const PROGRAM_CHUNKS = 1 << 5;
+        /// Plugin is a synth.
+        const IS_SYNTH = 1 << 8;
+        /// Plugin does not produce sound when all input is silence.
+        const NO_SOUND_IN_STOP = 1 << 9;
+        /// Supports 64 bit audio processing.
+        const CAN_DOUBLE_REPLACING = 1 << 12;
+    }
+}
+
+bitflags! {
+    /// Cross platform modifier key flags.
+    pub struct ModifierKey: u8 {
+        /// Shift key.
+        const SHIFT = 1;
+        /// Alt key.
+        const ALT = 1 << 1;
+        /// Control on mac.
+        const COMMAND = 1 << 2;
+        /// Command on mac, ctrl on other.
+        const CONTROL = 1 << 3; // Ctrl on PC, Apple on Mac
+    }
+}
+
+bitflags! {
+    /// MIDI event flags.
+    pub struct MidiEventFlags: i32 {
+        /// This event is played live (not in playback from a sequencer track). This allows the
+        /// plugin to handle these flagged events with higher priority, especially when the
+        /// plugin has a big latency as per `plugin::Info::initial_delay`.
+        const REALTIME_EVENT = 1;
+    }
+}
+
+bitflags! {
+    /// Used in the `flags` field of `TimeInfo`, and for querying the host for specific values
+    pub struct TimeInfoFlags : i32 {
+        /// Indicates that play, cycle or record state has changed.
+        const TRANSPORT_CHANGED = 1;
+        /// Set if Host sequencer is currently playing.
+        const TRANSPORT_PLAYING = 1 << 1;
+        /// Set if Host sequencer is in cycle mode.
+        const TRANSPORT_CYCLE_ACTIVE = 1 << 2;
+        /// Set if Host sequencer is in record mode.
+        const TRANSPORT_RECORDING = 1 << 3;
+
+        /// Set if automation write mode active (record parameter changes).
+        const AUTOMATION_WRITING = 1 << 6;
+        /// Set if automation read mode active (play parameter changes).
+        const AUTOMATION_READING = 1 << 7;
+
+        /// Set if TimeInfo::nanoseconds is valid.
+        const NANOSECONDS_VALID = 1 << 8;
+        /// Set if TimeInfo::ppq_pos is valid.
+        const PPQ_POS_VALID = 1 << 9;
+        /// Set if TimeInfo::tempo is valid.
+        const TEMPO_VALID = 1 << 10;
+        /// Set if TimeInfo::bar_start_pos is valid.
+        const BARS_VALID = 1 << 11;
+        /// Set if both TimeInfo::cycle_start_pos and VstTimeInfo::cycle_end_pos are valid.
+        const CYCLE_POS_VALID = 1 << 12;
+        /// Set if both TimeInfo::time_sig_numerator and TimeInfo::time_sig_denominator are valid.
+        const TIME_SIG_VALID = 1 << 13;
+        /// Set if both TimeInfo::smpte_offset and VstTimeInfo::smpte_frame_rate are valid.
+        const SMPTE_VALID = 1 << 14;
+        /// Set if TimeInfo::samples_to_next_clock is valid.
+        const VST_CLOCK_VALID = 1 << 15;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::event;
+    use super::*;
+    use std::mem;
+
+    // This container is used because we have to store somewhere the events
+    // that are pointed to by raw pointers in the events object. We heap allocate
+    // the event so the pointer in events stays consistent when the container is moved.
+    pub struct EventContainer {
+        stored_event: Box<Event>,
+        pub events: Events,
+    }
+
+    // A convenience method which creates an api::Events object representing a midi event.
+    // This represents code that might be found in a VST host using this API.
+    fn encode_midi_message_as_events(message: [u8; 3]) -> EventContainer {
+        let midi_event: MidiEvent = MidiEvent {
+            event_type: EventType::Midi,
+            byte_size: mem::size_of::<MidiEvent>() as i32,
+            delta_frames: 0,
+            flags: 0,
+            note_length: 0,
+            note_offset: 0,
+            midi_data: [message[0], message[1], message[2]],
+            _midi_reserved: 0,
+            detune: 0,
+            note_off_velocity: 0,
+            _reserved1: 0,
+            _reserved2: 0,
+        };
+        // SAFETY: `MidiEvent` and `Event` are both 32-byte `#[repr(C)]` structs (sizes
+        // are checked by `transmute`) with the same leading fields, and any bit pattern
+        // of `MidiEvent`'s integer fields is valid for `Event`'s byte array.
+        let mut event: Event = unsafe { std::mem::transmute(midi_event) };
+        event.event_type = EventType::Midi;
+
+        let events = Events {
+            num_events: 1,
+            _reserved: 0,
+            events: [&mut event, &mut event], // Second one is a dummy
+        };
+        let mut ec = EventContainer {
+            stored_event: Box::new(event),
+            events,
+        };
+        ec.events.events[0] = &mut *(ec.stored_event); // Overwrite ptrs, since we moved the event into ec
+        ec
+    }
+
+    #[test]
+    fn encode_and_decode_gives_back_original_message() {
+        let message: [u8; 3] = [35, 16, 22];
+        let encoded = encode_midi_message_as_events(message);
+        assert_eq!(encoded.events.num_events, 1);
+        assert_eq!(encoded.events.events.len(), 2);
+        let e_vec: Vec<event::Event> = encoded.events.events().collect();
+        assert_eq!(e_vec.len(), 1);
+
+        match e_vec[0] {
+            event::Event::Midi(event::MidiEvent { data, .. }) => {
+                assert_eq!(data, message);
+            }
+            _ => {
+                panic!("Not a midi event!");
+            }
+        };
+    }
+
+    // This is a regression test for a bug fixed in PR #93
+    // We check here that calling events() on an api::Events object
+    // does not mutate the underlying events.
+    #[test]
+    fn message_survives_calling_events() {
+        let message: [u8; 3] = [35, 16, 22];
+        let encoded = encode_midi_message_as_events(message);
+
+        for e in encoded.events.events() {
+            match e {
+                event::Event::Midi(event::MidiEvent { data, .. }) => {
+                    assert_eq!(data, message);
+                }
+                _ => {
+                    panic!("Not a midi event!");
+                }
+            }
+        }
+
+        for e in encoded.events.events() {
+            match e {
+                event::Event::Midi(event::MidiEvent { data, .. }) => {
+                    assert_eq!(data, message);
+                }
+                _ => {
+                    panic!("Not a midi event!"); // FAILS here!
+                }
+            }
+        }
+    }
+
+    /// Pin the wire size of every struct the *plugin* fills in for us.
+    ///
+    /// These are host-allocated buffers a plugin writes through a raw pointer,
+    /// so the size and field order are the contract. The numbers are measured
+    /// against `aeffectx.h` layout on a 64-bit target, not copied from the
+    /// header text — a field inserted, widened or reordered changes one of them
+    /// and the plugin then writes past, or into the middle of, what we read.
+    /// Nothing else in the process can detect that: the dispatch still returns
+    /// 1 and the garbage looks like data.
+    #[test]
+    fn plugin_written_structs_keep_their_measured_layout() {
+        assert_eq!(mem::size_of::<ParameterProperties>(), 136);
+        assert_eq!(mem::size_of::<MidiProgramName>(), 80);
+        assert_eq!(mem::size_of::<MidiKeyName>(), 80);
+        assert_eq!(mem::size_of::<MidiProgramCategory>(), 76);
+    }
+
+    /// Pin each field's byte offset, which `size_of` alone cannot catch:
+    /// swapping two same-width fields leaves the total unchanged while
+    /// silently redirecting every read.
+    ///
+    /// `min_integer`/`max_integer` are the pair that matters most — reversing
+    /// them yields an inverted range that renders as a working slider running
+    /// backwards, the kind of bug no structural check reports.
+    #[test]
+    fn parameter_properties_field_offsets_match_the_header() {
+        assert_eq!(mem::offset_of!(ParameterProperties, step_float), 0);
+        assert_eq!(mem::offset_of!(ParameterProperties, small_step_float), 4);
+        assert_eq!(mem::offset_of!(ParameterProperties, large_step_float), 8);
+        assert_eq!(mem::offset_of!(ParameterProperties, label), 12);
+        assert_eq!(mem::offset_of!(ParameterProperties, flags), 76);
+        assert_eq!(mem::offset_of!(ParameterProperties, min_integer), 80);
+        assert_eq!(mem::offset_of!(ParameterProperties, max_integer), 84);
+        assert_eq!(mem::offset_of!(ParameterProperties, step_integer), 88);
+        assert_eq!(mem::offset_of!(ParameterProperties, large_step_integer), 92);
+        assert_eq!(mem::offset_of!(ParameterProperties, short_label), 96);
+        assert_eq!(mem::offset_of!(ParameterProperties, display_index), 104);
+        assert_eq!(mem::offset_of!(ParameterProperties, category), 106);
+        assert_eq!(
+            mem::offset_of!(ParameterProperties, num_parameters_in_category),
+            108
+        );
+        assert_eq!(mem::offset_of!(ParameterProperties, category_label), 112);
+        assert_eq!(mem::offset_of!(ParameterProperties, future), 120);
+    }
+
+    /// The MIDI structs put a host-written index first and plugin-written data
+    /// after it, so an offset slip means we hand the plugin the query in a
+    /// field it does not read and then decode the answer from the wrong place.
+    #[test]
+    fn midi_metadata_struct_offsets_match_the_header() {
+        assert_eq!(mem::offset_of!(MidiProgramName, this_program_index), 0);
+        assert_eq!(mem::offset_of!(MidiProgramName, name), 4);
+        assert_eq!(mem::offset_of!(MidiProgramName, midi_program), 68);
+        assert_eq!(mem::offset_of!(MidiProgramName, midi_bank_msb), 69);
+        assert_eq!(mem::offset_of!(MidiProgramName, midi_bank_lsb), 70);
+        assert_eq!(mem::offset_of!(MidiProgramName, parent_category_index), 72);
+        assert_eq!(mem::offset_of!(MidiProgramName, flags), 76);
+
+        assert_eq!(mem::offset_of!(MidiKeyName, this_program_index), 0);
+        assert_eq!(mem::offset_of!(MidiKeyName, this_key_number), 4);
+        assert_eq!(mem::offset_of!(MidiKeyName, keyname), 8);
+
+        assert_eq!(mem::offset_of!(MidiProgramCategory, this_category_index), 0);
+        assert_eq!(mem::offset_of!(MidiProgramCategory, name), 4);
+        assert_eq!(
+            mem::offset_of!(MidiProgramCategory, parent_category_index),
+            68
+        );
+    }
+
+    /// Pin the flag bit values against `aeffectx.h`. These gate whether the
+    /// integer-range and category fields are readable at all, so a wrong bit
+    /// makes the host trust uninitialised plugin memory.
+    #[test]
+    fn parameter_flag_bits_match_the_header() {
+        assert_eq!(ParameterFlags::USES_INT_STEP.bits(), 1);
+        assert_eq!(ParameterFlags::USES_FLOAT_STEP.bits(), 2);
+        assert_eq!(ParameterFlags::USES_INDEX.bits(), 4);
+        assert_eq!(ParameterFlags::USES_CATEGORY.bits(), 8);
+        assert_eq!(ParameterFlags::CAN_RAMP.bits(), 16);
+        assert_eq!(MidiProgramFlags::IS_OMNI.bits(), 1);
+    }
+
+    /// A negative event count is no events, not `usize::MAX` of them.
+    ///
+    /// Mutation (run): `num_events as usize` in `events_raw`: the slice is built
+    /// with a length of about 2^64 and iterating it dereferences a null pointer.
+    #[test]
+    fn a_negative_event_count_is_empty() {
+        let events = Events {
+            num_events: -3,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        assert_eq!(events.events().count(), 0);
+        let mut events = events;
+        events.num_events = i32::MIN;
+        assert_eq!(events.events().count(), 0);
+    }
+
+    /// A null entry in the event array is skipped, not read.
+    ///
+    /// Mutation (run): remove the `filter` in `Events::events`: the null entry is
+    /// dereferenced and the test aborts on a signal.
+    #[test]
+    fn a_null_event_entry_is_skipped() {
+        let events = Events {
+            num_events: 2,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        assert_eq!(events.events().count(), 0);
+    }
+}

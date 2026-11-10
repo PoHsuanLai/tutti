@@ -64,12 +64,21 @@ impl ChannelSumNode {
     /// A bus summing `sources` inputs, each `channels` wide. Both are clamped to
     /// at least 1 (a zero-wide or zero-source bus is meaningless — the graph
     /// would have nothing to sum).
+    ///
+    /// # Panics
+    ///
+    /// If `sources * channels` is above `u16::MAX`, the widest input a layout
+    /// holds.
     pub fn new(sources: usize, channels: impl Into<ChannelLayout>) -> Self {
         let layout = channels.into();
-        Self {
-            sources: sources.max(1),
-            layout: ChannelLayout::from(layout.count().max(1)),
-        }
+        let sources = sources.max(1);
+        let layout = ChannelLayout::from(layout.count().max(1));
+        assert!(
+            sources.saturating_mul(usize::from(layout.count())) <= usize::from(u16::MAX),
+            "a ChannelSumNode takes at most {} input channels",
+            u16::MAX
+        );
+        Self { sources, layout }
     }
 
     /// The channel width this bus sums at (its output count).
@@ -93,7 +102,8 @@ impl Node for ChannelSumNode {
     /// `sources * channels` in, `channels` out. Summing is per-frame, so it
     /// stops with its inputs.
     fn shape(&self) -> Shape {
-        let ins = ChannelLayout::from_count((self.sources * self.channels()) as u16);
+        let ins = ChannelLayout::try_from(self.sources * self.channels())
+            .expect("`new` refuses a bus wider than a layout");
         Shape::audio(ins, self.layout)
             .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
@@ -300,5 +310,16 @@ mod tests {
         let mut out = [0.0f32; 1];
         tick(&mut u, &[1.0, 1.0, 1.0, 1.0], &mut out);
         assert_eq!(out[0], 4.0, "must sum; averaging would give 1.0");
+    }
+
+    /// A bus wider than a layout holds is refused at construction, not built
+    /// with a wrapped input count.
+    ///
+    /// Mutation (run): dropping the assertion in `new` lets `shape` panic
+    /// later instead (or, with `as u16`, wrap to 4 inputs) and fails this.
+    #[test]
+    #[should_panic(expected = "at most 65535 input channels")]
+    fn a_bus_wider_than_a_layout_is_refused() {
+        let _ = ChannelSumNode::new(32_768, ChannelLayout::from(2u16));
     }
 }

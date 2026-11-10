@@ -27,7 +27,7 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{
     Event, ForkMode, ForkTarget, GraphBuilder, Offset, ParamRamp, Prepare, Transport,
 };
-use tutti_mod::ControlProgram;
+use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::handles::{Normalized, ParamId, PluginHandle};
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
@@ -86,7 +86,7 @@ impl Drop for ProbeEnv {
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
     let path = probe_path::probe_path();
-    in_process_vst2_client(path, SAMPLE_RATE)
+    in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
@@ -280,4 +280,10 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         "the export plays the held lane over the edit live playback keeps"
     );
     drop(handle);
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

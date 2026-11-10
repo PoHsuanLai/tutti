@@ -30,7 +30,7 @@ pub mod wire;
 /// - An **enum variant** is a varint discriminant over declaration order, so a
 ///   peer receiving a tag it has no arm for fails the decode mid-stream rather
 ///   than at a message boundary.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -228,20 +228,32 @@ mod tests {
     /// Pinning the *first* variant's tag is what makes this an append check
     /// rather than a restatement: tag 0 stays 0 only if nothing was inserted
     /// ahead of it, and the new variants land past every v13 tag.
+    ///
+    /// v21 removed `ProbePlugin` (the probe is its own binary and file now,
+    /// `tutti-plugin-probe`), which was tag 0: every tag after it moved down
+    /// one, and `LoadPlugin` is the first.
     #[test]
     fn the_preset_frames_are_appended_not_inserted() {
-        /// `SetRenderMode`'s tag — the last variant v13 shipped. Pinned as a
-        /// literal so a shift is a failure here rather than an agreement
-        /// between two expressions that move together.
-        const V13_LAST_TAG: u32 = 17;
+        /// `SetRenderMode`'s tag — the last variant v13 shipped (17 until v21
+        /// removed the request ahead of it). Pinned as a literal so a shift is
+        /// a failure here rather than an agreement between two expressions that
+        /// move together.
+        const V13_LAST_TAG: u32 = 16;
 
         let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
 
-        let first = bincode::serialize(&HostMessage::ProbePlugin {
+        let first = bincode::serialize(&HostMessage::UnloadPlugin).expect("serialize");
+        assert_eq!(tag(&first), 1, "UnloadPlugin follows LoadPlugin, the first");
+        let load = bincode::serialize(&HostMessage::LoadPlugin {
             path: PathBuf::new(),
+            sample_rate: SampleRate(48_000.0),
+            block_size: 64,
+            preferred_format: SampleFormat::Float32,
+            shm_name: String::new(),
+            state: None,
         })
         .expect("serialize");
-        assert_eq!(tag(&first), 0, "ProbePlugin must stay tag 0");
+        assert_eq!(tag(&load), 0, "LoadPlugin must stay tag 0");
 
         // Absolute tags, not a relative comparison. A variant inserted
         // *between* two existing ones keeps both the tag-0 anchor and any
@@ -350,8 +362,9 @@ mod tests {
     /// renumbering everything after it, so only literal numbers catch it.
     #[test]
     fn the_parameter_display_frames_are_appended_not_inserted() {
-        /// `GetCurrentPreset`'s tag — the last request variant v14 shipped.
-        const V16_LAST_REQUEST_TAG: u32 = 20;
+        /// `GetCurrentPreset`'s tag — the last request variant v14 shipped (20 until v21
+        /// removed the request ahead of it).
+        const V16_LAST_REQUEST_TAG: u32 = 19;
 
         let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
 

@@ -386,7 +386,7 @@ pub const PHASER_PARAMS: [UnitParam; 4] = [
 
 impl Node for PhaserNode {
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::from_count(self.width as u16);
+        let width = ChannelLayout::try_from(self.width).expect("the width came from a layout");
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
@@ -602,7 +602,13 @@ mod tests {
     // ── Per-block reads and width ────────────────────────────────────────────
 
     fn phaser_48k(channels: usize) -> PhaserNode {
-        at(PhaserNode::with_channels(channels, 6), 48_000.0)
+        at(
+            PhaserNode::with_channels(
+                ChannelLayout::try_from(channels).expect("a test width is small"),
+                6,
+            ),
+            48_000.0,
+        )
     }
 
     /// A mix change made between blocks fades across the next block.
@@ -613,7 +619,7 @@ mod tests {
         use crate::test_support::{change_between_node_blocks, noise};
         let x = noise(13, 128);
         let run = change_between_node_blocks(
-            || PhaserNode::with_channels(2usize, 6),
+            || PhaserNode::with_channels(2u16, 6),
             |n| n.set_mix(1.0),
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
@@ -656,7 +662,7 @@ mod tests {
         use crate::test_support::{drive_block, noise};
         let x = noise(14, 64);
         let mut node = at(
-            PhaserNode::with_channels(3usize, 4).with_phase_offsets(&[
+            PhaserNode::with_channels(3u16, 4).with_phase_offsets(&[
                 PhaseIncrement(0.0),
                 PhaseIncrement(0.25),
                 PhaseIncrement(1.0),

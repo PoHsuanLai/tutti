@@ -116,7 +116,7 @@ impl Observed {
         self.bus.store(n.bus, Ordering::SeqCst);
         let _ = self
             .order
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
                 Some(v.saturating_mul(10).saturating_add(digit))
             });
     }
@@ -529,18 +529,15 @@ fn a_scheduled_immediate_change_takes_effect() {
             if n.phase != RenderPhase::Pre {
                 return;
             }
-            // SAFETY: `unit` is the unit currently rendering, so it is live.
-            let r = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    unit.get(),
-                    p.id,
-                    ScheduleAddress::GLOBAL,
-                    &[ParamEvent::Immediate {
-                        buffer_offset: 0,
-                        value: target,
-                    }],
-                )
-            };
+            let r = tutti_au_host::render_notify::schedule(
+                &unit,
+                p.id,
+                ScheduleAddress::GLOBAL,
+                &[ParamEvent::Immediate {
+                    buffer_offset: 0,
+                    value: target,
+                }],
+            );
             st.store(if r.is_ok() { 0 } else { -1 }, Ordering::SeqCst);
         })
         .unwrap();
@@ -596,15 +593,12 @@ fn a_batch_of_scheduled_events_is_accepted() {
             if n.phase != RenderPhase::Pre {
                 return;
             }
-            // SAFETY: the unit is currently rendering.
-            let r = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    unit.get(),
-                    p.id,
-                    ScheduleAddress::GLOBAL,
-                    &events,
-                )
-            };
+            let r = tutti_au_host::render_notify::schedule(
+                &unit,
+                p.id,
+                ScheduleAddress::GLOBAL,
+                &events,
+            );
             st.store(if r.is_ok() { 0 } else { -1 }, Ordering::SeqCst);
         })
         .unwrap();
@@ -847,20 +841,17 @@ fn a_multi_block_ramp_is_rescheduled_each_render() {
             // Negative once the ramp began in an earlier block — the signed
             // field carrying the ramp's progress.
             let offset = -(done as i32);
-            // SAFETY: the unit is currently rendering.
-            let r = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    unit.get(),
-                    p.id,
-                    ScheduleAddress::GLOBAL,
-                    &[ParamEvent::Ramped {
-                        start_buffer_offset: offset,
-                        duration_frames: total,
-                        start_value: p.range.min,
-                        end_value: p.range.max,
-                    }],
-                )
-            };
+            let r = tutti_au_host::render_notify::schedule(
+                &unit,
+                p.id,
+                ScheduleAddress::GLOBAL,
+                &[ParamEvent::Ramped {
+                    start_buffer_offset: offset,
+                    duration_frames: total,
+                    start_value: p.range.min,
+                    end_value: p.range.max,
+                }],
+            );
             if r.is_err() {
                 f.fetch_add(1, Ordering::SeqCst);
             }
@@ -1018,15 +1009,12 @@ fn schedule_one_block(
             if n.phase != RenderPhase::Pre {
                 return;
             }
-            // SAFETY: the unit is currently rendering, so it is live.
-            let _ = unsafe {
-                tutti_au_host::render_notify::schedule(
-                    unit.get(),
-                    param,
-                    ScheduleAddress::GLOBAL,
-                    &[event],
-                )
-            };
+            let _ = tutti_au_host::render_notify::schedule(
+                &unit,
+                param,
+                ScheduleAddress::GLOBAL,
+                &[event],
+            );
         })
         .expect("the corpus units accept AudioUnitAddRenderNotify");
 

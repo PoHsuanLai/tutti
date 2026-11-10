@@ -31,13 +31,15 @@ tutti-graph = { path = "../tutti-graph" }
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
 tutti-io = { path = "../tutti-io", optional = true }
 tutti-codec = { path = "../tutti-codec", optional = true }
-tutti-export = { path = "../tutti-export", optional = true }
-tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
+tutti-export = { path = "../tutti-export", default-features = false, optional = true }
+tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
 tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
+tutti-sf2 = { path = "../tutti-sf2", optional = true }
 tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
 tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
+tutti-measure = { path = "../tutti-measure", optional = true }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
@@ -85,6 +87,9 @@ full = [
     "sampler",
     "audio-io",
     "export",
+    "export-flac",
+    "export-aiff",
+    "export-ogg",
     "spatial",
     "dsp",
     "modulation",
@@ -133,22 +138,30 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session?/midi-hardwar
 # Every one of these is bevy-tutti's feature MINUS its `/bevy` forwards. That
 # is the only systematic difference between the two tables, and it is the
 # whole point of this crate: `bevy-tutti`'s `modulation` pulls
-# `tutti-mod/bevy` + `tutti-types/bevy`, and its `sampler` pulls
+# `tutti-modulation/bevy` + `tutti-types/bevy`, and its `sampler` pulls
 # `tutti-sampler/bevy`. None of that belongs here. (Each also turns on the
 # session's feature of the same name, with `?` here because `session` is
 # optional; in bevy-tutti the session is always there.)
 synth = ["dep:tutti-polysynth", "tutti-session?/synth"]
-soundfont = ["midi", "dep:tutti-soundfont", "tutti-session?/soundfont"]
+soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2", "tutti-session?/soundfont"]
 sampler = ["wav", "dep:tutti-sampler", "tutti-session?/sampler"]
 audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
-export = ["dep:tutti-export", "tutti-session?/export"]
+# Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
+# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# with `export` alone reaches no C.
+export = ["dep:tutti-export", "tutti-export/wav", "tutti-session?/export"]
+export-wav = ["export"]
+export-flac = ["export", "tutti-export/flac", "tutti-session?/export-flac"]
+export-aiff = ["export", "tutti-export/aiff", "tutti-session?/export-aiff"]
+export-ogg = ["export", "tutti-export/ogg", "tutti-session?/export-ogg"]
 spatial = ["dep:tutti-spatial", "tutti-session?/spatial"]
-modulation = ["dep:tutti-mod", "tutti-session?/modulation"]
+modulation = ["dep:tutti-modulation", "tutti-session?/modulation"]
 convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 
 # Axes bevy-tutti does not have: bevy-tutti does not depend on
-# `tutti-dsp` at all.
-dsp = ["dep:tutti-dsp"]
+# `tutti-dsp` or `tutti-measure` at all. `tutti::dsp` and `tutti::measure` are both.
+dsp = ["dep:tutti-dsp", "dep:tutti-measure"]
 
 # --- plugin hosting ---------------------------------------------------------
 #

@@ -104,10 +104,12 @@ where
 
 fn reset_probe(path: &Path) {
     probe_call(path, b"tutti_vst2_probe_reset_capture\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
     probe_call(path, b"tutti_vst2_probe_reset_switches\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
@@ -116,8 +118,11 @@ fn reset_probe(path: &Path) {
 fn read_capture(path: &Path) -> ProcessCapture {
     let mut cap = ProcessCapture::empty();
     probe_call(path, b"tutti_vst2_probe_capture\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: unsafe extern "C" fn(*mut ProcessCapture) -> bool =
             unsafe { std::mem::transmute(*sym) };
+        // SAFETY: `f` is the probe's capture export; it writes one
+        // `ProcessCapture` through the pointer, and `cap` is a live local.
         unsafe { f(&mut cap) }
     });
     cap

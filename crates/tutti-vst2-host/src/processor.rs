@@ -78,12 +78,6 @@ impl std::fmt::Debug for Vst2Processor {
     }
 }
 
-// SAFETY: clause 2 of the invariant on `Shell`. The render handle, the scratch's
-// pointer tables and the staged events are reached from one thread at a time
-// (every method takes `&mut self`), and the plugin takes the audio-thread calls
-// from whichever thread holds the Processor.
-unsafe impl Send for Vst2Processor {}
-
 /// Everything a Processor is built from.
 pub(crate) struct ProcessorParts {
     pub shell: Arc<Shell>,
@@ -246,9 +240,8 @@ impl Vst2Processor {
         while start < num_samples {
             let len = (num_samples - start).min(self.block_size.max(1));
             self.begin_piece(ctx, start, len, num_samples);
-            self.scratch.prepare_f32_range(inputs, start, len);
-            self.process_block(len);
-            self.scratch.copy_out_f32_range(outputs, start, len);
+            self.scratch
+                .render_f32_piece(&mut self.render, inputs, outputs, start, len);
             self.midi.drain_from(start);
             start += len;
         }
@@ -296,14 +289,11 @@ impl Vst2Processor {
             let len = (num_samples - start).min(self.block_size.max(1));
             self.begin_piece(ctx, start, len, num_samples);
             if native_f64 {
-                self.scratch.prepare_f64_range(inputs, start, len);
-                self.process_block_f64(len);
-                self.scratch.copy_out_f64_range(outputs, start, len);
-            } else {
-                self.scratch.prepare_f64_as_f32_range(inputs, start, len);
-                self.process_block(len);
                 self.scratch
-                    .copy_out_f64_from_f32_range(outputs, start, len);
+                    .render_f64_piece(&mut self.render, inputs, outputs, start, len);
+            } else {
+                self.scratch
+                    .render_f64_as_f32_piece(&mut self.render, inputs, outputs, start, len);
             }
             self.midi.drain_from(start);
             start += len;
@@ -389,58 +379,9 @@ impl Vst2Processor {
     }
 
     fn dispatch_midi(&mut self, midi: &[MidiEvent], start: usize, len: usize, total: usize) {
-        if let Some(events_ptr) = self.midi.send.stage_piece(midi, start, len, total) {
-            // SAFETY: `stage_piece` returns a pointer valid until the next
-            // `stage` call or `drop`. It is used immediately and never
-            // retained. The VST2 spec requires the plugin to copy any event
-            // data it needs before `process_events` returns.
-            unsafe {
-                self.render.process_events(&*events_ptr);
-            }
-        }
-    }
-
-    fn process_block(&mut self, num_samples: usize) {
-        use vst::buffer::AudioBuffer as VstBuffer;
-
-        // SAFETY: the tables hold `len()` channel pointers into the scratch's
-        // own Vecs, each `block_size >= num_samples` elements long and refreshed
-        // by the `prepare_*` call immediately above. The output Vecs are
-        // distinct allocations from the inputs and from each other, and the
-        // scratch is borrowed mutably for the whole call, so nothing else
-        // touches them.
-        let mut vst_buffer = unsafe {
-            VstBuffer::from_raw(
-                self.scratch.input_ptrs.len(),
-                self.scratch.output_ptrs.len(),
-                self.scratch.input_ptrs.as_ptr(),
-                self.scratch.output_ptrs.as_mut_ptr(),
-                num_samples,
-            )
-        };
-        self.render.process(&mut vst_buffer);
-    }
-
-    /// [`process_block`](Self::process_block) against `processReplacingF64`.
-    ///
-    /// Only called once `supports_f64` is known true: the vendor's
-    /// `process_f64` zeroes the outputs when the plugin installed no f64
-    /// entry point, so reaching it unconditionally would render silence
-    /// rather than fall back.
-    fn process_block_f64(&mut self, num_samples: usize) {
-        use vst::buffer::AudioBuffer as VstBuffer;
-
-        // SAFETY: as `process_block`, against the f64 tables and Vecs.
-        let mut vst_buffer = unsafe {
-            VstBuffer::from_raw(
-                self.scratch.input_ptrs_f64.len(),
-                self.scratch.output_ptrs_f64.len(),
-                self.scratch.input_ptrs_f64.as_ptr(),
-                self.scratch.output_ptrs_f64.as_mut_ptr(),
-                num_samples,
-            )
-        };
-        self.render.process_f64(&mut vst_buffer);
+        self.midi
+            .send
+            .send_piece(&mut self.render, midi, start, len, total);
     }
 }
 

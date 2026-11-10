@@ -31,8 +31,8 @@ pub(crate) use text::MAX_EVENT_TEXT_LEN;
 /// `DataEvent.type` subtype marking the payload as a MIDI SysEx message.
 ///
 /// The bindings type this `u32` on Unix and `i32` on Windows.
-#[allow(clippy::unnecessary_cast)]
-pub const K_DATA_TYPE_MIDI_SYSEX: u32 = sdk::DataEvent_::DataTypes_::kMidiSysEx as u32;
+pub const K_DATA_TYPE_MIDI_SYSEX: u32 =
+    crate::sdk_enum_u32(sdk::DataEvent_::DataTypes_::kMidiSysEx);
 
 /// An SDK event ordinal as the `u16` of `Event::type`, which every ordinal fits.
 #[allow(clippy::cast_possible_truncation)]

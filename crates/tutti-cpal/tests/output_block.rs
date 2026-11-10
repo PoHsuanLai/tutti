@@ -118,7 +118,10 @@ fn an_oversized_callback_silences_its_tail() {
 #[test]
 fn the_block_renders_at_the_width_it_was_built_for() {
     for width in [1usize, 2, 6, 8] {
-        let mut block = OutputBlock::new(rolling_state(width).1, ChannelLayout::from(width));
+        let mut block = OutputBlock::new(
+            rolling_state(width).1,
+            ChannelLayout::try_from(width).expect("a test width is small"),
+        );
         assert_eq!(block.channels(), width);
         let mut out = vec![0.0f32; 32 * width];
         block.render(&mut out);

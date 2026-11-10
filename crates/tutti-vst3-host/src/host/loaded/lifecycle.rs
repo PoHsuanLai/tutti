@@ -1,6 +1,7 @@
 //! Loading, initialization and the plugin's requests and notifications.
 
 use super::*;
+use tutti_plugin_types::MainThread;
 
 impl Vst3Loaded {
     /// Reads a plugin's metadata without initializing it.
@@ -50,7 +51,7 @@ impl Vst3Loaded {
     /// a near-miss on a display name is the likely cause), or the component
     /// cannot be created; returns [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
-    pub fn load(path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
+    pub fn load(main: &MainThread, path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
         Self::reap_retired();
         let path = path.as_ref();
         let class_name = options.class.as_deref();
@@ -89,7 +90,10 @@ impl Vst3Loaded {
             class: options.class,
         };
         let mut loaded = Self::assemble(library, plugin, info, origin);
-        loaded.initialize()?;
+        loaded.initialize(main)?;
+        // Whether there is an editor is asked of the plugin here, on the main
+        // thread; `Control::info` has no token and reads the answer.
+        let _ = loaded.descriptor.set(loaded.measured_descriptor(main));
         Ok(loaded)
     }
 
@@ -154,16 +158,11 @@ impl Vst3Loaded {
     ///
     /// Must be called on the main thread; not while inside
     /// [`Vst3Processor::process`](crate::Vst3Processor::process).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn poll_plugin_notifications(
         &mut self,
+        _main: &MainThread,
         mut on_event: impl FnMut(PluginNotification),
     ) -> RestartOutcome {
-        tutti_plugin_types::assert_main_thread();
         // `kIoChanged` is deliberately NOT acted on here. The spec requires
         // deactivate → re-ask → reactivate (`ivsteditcontroller.h:125-127`),
         // and this method holds a `&mut Vst3Loaded`, which cannot deactivate
@@ -241,13 +240,7 @@ impl Vst3Loaded {
     /// `kMidiCCAssignmentChanged` restart, then disarm.
     ///
     /// No observable effect if the plugin doesn't implement `IMidiLearn`.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn arm_midi_learn(&mut self, armed: bool) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn arm_midi_learn(&mut self, _main: &MainThread, armed: bool) {
         self.midi_learn.arm(armed);
     }
 
@@ -258,15 +251,30 @@ impl Vst3Loaded {
         self.midi_learn.is_armed()
     }
 
-    pub(super) fn initialize(&mut self) -> Result<()> {
+    pub(super) fn initialize(&mut self, main: &MainThread) -> Result<()> {
         self.plugin
-            .initialize_component()
+            .initialize_component(main)
             .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: e.code(),
             })?;
 
-        self.reconcile_bus_counts();
+        for (direction, name) in [
+            (BusDirection::Input, "input"),
+            (BusDirection::Output, "output"),
+        ] {
+            if let Some((index, channels)) =
+                self.plugin.first_unrepresentable_audio_bus(main, direction)
+            {
+                return Err(Vst3Error::BusTooWide {
+                    direction: name,
+                    index,
+                    channels,
+                });
+            }
+        }
+
+        self.reconcile_bus_counts(main);
 
         self.plugin.read_process_context_requirements();
 
@@ -276,14 +284,14 @@ impl Vst3Loaded {
         // wired to the component. Neither answer is fatal: the plugin simply
         // runs unconnected.
         if separate_controller {
-            let _ = self.plugin.initialize_controller();
-            let _connected = self.plugin.connect_controller();
+            let _ = self.plugin.initialize_controller(main);
+            let _connected = self.plugin.connect_controller(main);
         }
 
-        self.plugin.attach_component_handler();
+        self.plugin.attach_component_handler(main);
 
-        if separate_controller && let Ok(state) = self.read_component_state() {
-            self.push_controller_state(&state);
+        if separate_controller && let Ok(state) = self.read_component_state(main) {
+            self.push_controller_state(main, &state);
         }
 
         Ok(())
@@ -325,13 +333,7 @@ impl Vst3Loaded {
     /// and unit news stay for
     /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) or
     /// [`discard_notifications`](Self::discard_notifications).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn take_requests(&self, out: &mut Vec<Request>) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn take_requests(&self, _main: &MainThread, out: &mut Vec<Request>) {
         out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
     }
 
@@ -346,15 +348,9 @@ impl Vst3Loaded {
     /// and publishes it, so the Processor routes against it from its next
     /// block. Call it when the plugin raised
     /// [`Request::MidiCcAssignmentChanged`]. Allocates.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn rebuild_midi_cc_mapping(&mut self) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn rebuild_midi_cc_mapping(&mut self, main: &MainThread) {
         self.midi_cc
-            .publish(MidiCcCell(MidiCcMapping::query(&self.plugin)));
+            .publish(MidiCcCell(MidiCcMapping::query(main, &self.plugin)));
         self.midi_cc.reclaim();
     }
 }

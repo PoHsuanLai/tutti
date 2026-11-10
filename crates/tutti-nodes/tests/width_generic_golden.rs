@@ -148,7 +148,7 @@ fn cases() -> Vec<Case> {
     ));
     v.push(node_case(
         "svf_wide6_highshelf",
-        SvfFilterNode::<f64>::with_channels(6usize, SvfType::HighShelf, 2_000.0, 0.7)
+        SvfFilterNode::<f64>::with_channels(6u16, SvfType::HighShelf, 2_000.0, 0.7)
             .with_gain_db(-4.0),
         noise_channels(6),
     ));
@@ -188,7 +188,7 @@ fn cases() -> Vec<Case> {
     ));
     v.push(node_case(
         "ladder_wide6_lp12",
-        LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP12, 1_500.0, 0.3),
+        LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP12, 1_500.0, 0.3),
         noise_channels(6),
     ));
     v.push(Case {
@@ -221,7 +221,7 @@ fn cases() -> Vec<Case> {
     node.set_cross_feedback(0.3);
     node.set_mix(0.7);
     v.push(node_case("delay_stereo_cross_fed", node, noise_channels(2)));
-    let node = DelayLineNode::with_channels(6usize, 0.5, 0.011, 0.45);
+    let node = DelayLineNode::with_channels(6u16, 0.5, 0.011, 0.45);
     node.set_mix(0.6);
     v.push(node_case("delay_wide6", node, noise_channels(6)));
     let feedback = (0..LEN).map(|i| 0.9 * (i as f32 / LEN as f32)).collect();
@@ -239,7 +239,13 @@ fn cases() -> Vec<Case> {
     for c in 0..n {
         ring[c * n + (c + n - 1) % n] = 1.0;
     }
-    let node = DelayLineNode::with_channels(n, 0.1, 0.004, 0.3).with_cross_feedback_matrix(&ring);
+    let node = DelayLineNode::with_channels(
+        ChannelLayout::try_from(n).expect("a test width is small"),
+        0.1,
+        0.004,
+        0.3,
+    )
+    .with_cross_feedback_matrix(&ring);
     node.set_cross_feedback(0.5);
     v.push(node_case("delay_wide6_ring", node, noise_channels(6)));
     let node = DelayLineNode::stereo(0.5, 0.01, 0.013, 0.3);
@@ -269,7 +275,7 @@ fn cases() -> Vec<Case> {
         ModDelayNode::flanger(ChannelLayout::STEREO),
         noise_channels(2),
     ));
-    let node = ModDelayNode::chorus(6usize);
+    let node = ModDelayNode::chorus(6u16);
     let automation = automate(node.mix(), |k| (k % 3) as f32 * 0.5);
     v.push(Case {
         automation,
@@ -285,7 +291,7 @@ fn cases() -> Vec<Case> {
     let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
     node.set_rate(2.0);
     v.push(node_case("phaser_stereo", node, noise_channels(2)));
-    let node = PhaserNode::with_channels(6usize, 8).with_phase_offsets(&[
+    let node = PhaserNode::with_channels(6u16, 8).with_phase_offsets(&[
         PhaseIncrement(0.0),
         PhaseIncrement(0.1),
         PhaseIncrement(0.2),

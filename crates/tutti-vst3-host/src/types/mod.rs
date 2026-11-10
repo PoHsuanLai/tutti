@@ -8,13 +8,13 @@ pub(crate) use tutti_vst3_ffi::K_SAMPLE_64_INT;
 use tutti_vst3_ffi::Vst3Error as FfiError;
 use tutti_vst3_ffi::{BoundBuses, BusBuffers, K_SAMPLE_32_INT, SampleWidth};
 use vst3::Steinberg::KeyModifier_ as Key;
-use vst3::Steinberg::Vst::ePrefetchableSupport_ as Prefetch;
 
 use crate::helpers::sdk_enum_i32;
 pub use tutti_vst3_ffi::{
-    BusInfo, ProcessMode, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
-    Vst3ProgramListInfo, Vst3UnitInfo, keyswitch_type, note_expression_flags, parameter_flags,
-    physical_ui_type, process_context_flags, to_process_context, unit_ids,
+    BusInfo, BusType, KeyswitchKind, NoteExpressionFlags, ParameterFlags, PhysicalUiType,
+    PrefetchSupport, ProcessContextRequirements, ProcessMode, UnitId, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
+    to_process_context,
 };
 
 pub use tutti_plugin_types::{
@@ -31,36 +31,6 @@ pub struct PlainRange {
     pub min: f64,
     /// The plain value at normalized 0 or 1, whichever is higher.
     pub max: f64,
-}
-
-/// A plugin's answer to `IPrefetchableSupport`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrefetchSupport {
-    /// The plugin can never be used in prefetch (offline look-ahead) mode.
-    Never,
-    /// The plugin supports prefetch now.
-    Yes,
-    /// The plugin does not support prefetch now, but may later.
-    NotYet,
-    /// A value the SDK does not define, as returned.
-    Unknown(u32),
-}
-
-impl PrefetchSupport {
-    /// The `ePrefetchableSupport` value the plugin returned.
-    #[must_use]
-    pub fn from_raw(raw: u32) -> Self {
-        let is = |sdk| raw == sdk_enum_i32(sdk) as u32;
-        if is(Prefetch::kIsNeverPrefetchable) {
-            Self::Never
-        } else if is(Prefetch::kIsYetPrefetchable) {
-            Self::Yes
-        } else if is(Prefetch::kIsNotYetPrefetchable) {
-            Self::NotYet
-        } else {
-            Self::Unknown(raw)
-        }
-    }
 }
 
 /// The modifier keys held during a key event (`KeyModifier`).
@@ -351,8 +321,42 @@ impl PluginInfo {
 /// process buffers.
 ///
 /// This is the host's own seam: the FFI crate's process path is not generic
-/// over the sample type.
-pub trait Vst3Sample: tutti_plugin_types::Sample {
+/// over the sample type. It is sealed: `f32` and `f64` are the two widths the
+/// SDK defines, and the constants below must agree with the buffers the FFI
+/// crate binds for each, so an outside impl could only get one wrong.
+///
+/// ```compile_fail,E0277
+/// use tutti_plugin_types::Sample;
+/// use tutti_plugin_types::SampleFormat;
+/// use tutti_vst3_ffi::{BoundBuses, BusBuffers, SampleWidth, Vst3Error};
+/// use tutti_vst3_host::Vst3Sample;
+///
+/// #[derive(Clone, Copy, Default)]
+/// struct Half(u16);
+/// impl Sample for Half {}
+///
+/// // The trait is sealed: `Half` cannot implement it, whatever it defines.
+/// impl Vst3Sample for Half {
+///     const FORMAT: SampleFormat = SampleFormat::Float32;
+///     const WIDTH: SampleWidth = SampleWidth::F32;
+///     const VST3_SYMBOLIC_SIZE: i32 = 0;
+///     fn bind_inputs<'a>(
+///         _: &'a mut BusBuffers,
+///         _: &'a [&'a [Self]],
+///     ) -> Result<BoundBuses<'a>, Vst3Error> {
+///         unimplemented!()
+///     }
+///     fn bind_outputs<'a, 'b: 'a>(
+///         _: &'a mut BusBuffers,
+///         _: &'a mut [&'b mut [Self]],
+///     ) -> Result<BoundBuses<'a>, Vst3Error> {
+///         unimplemented!()
+///     }
+/// }
+/// ```
+// Mutation (type-level): delete the `sealed::Sealed` supertrait and the doctest
+// above compiles (given the paths resolve), so it fails as a doctest.
+pub trait Vst3Sample: tutti_plugin_types::Sample + sealed::Sealed {
     /// The format of this sample type.
     const FORMAT: SampleFormat;
     /// The width of this sample type.
@@ -373,6 +377,13 @@ pub trait Vst3Sample: tutti_plugin_types::Sample {
         buses: &'a mut BusBuffers,
         channels: &'a mut [&'b mut [Self]],
     ) -> Result<BoundBuses<'a>, FfiError>;
+}
+
+mod sealed {
+    /// Implemented for the two widths the SDK defines, here and nowhere else.
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
 }
 
 impl Vst3Sample for f32 {
@@ -459,18 +470,17 @@ mod host_type_tests {
     /// `kIsNotYetPrefetchable` arms in `from_raw` fails the second and third
     /// rows; dropping the `Unknown` arm's payload (`Unknown(0)`) fails the last.
     #[test]
-    #[allow(clippy::unnecessary_cast)] // u32 on unix, c_int on Windows
     fn prefetch_support_maps_each_sdk_value() {
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsNeverPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsNeverPrefetchable)),
             PrefetchSupport::Never
         );
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsYetPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsYetPrefetchable)),
             PrefetchSupport::Yes
         );
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsNotYetPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsNotYetPrefetchable)),
             PrefetchSupport::NotYet
         );
         assert_eq!(PrefetchSupport::from_raw(77), PrefetchSupport::Unknown(77));

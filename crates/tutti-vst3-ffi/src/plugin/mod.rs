@@ -25,16 +25,17 @@ use vst3::Steinberg::{
         IXmlRepresentationControllerTrait, PhysicalUIMap, PhysicalUIMapList, ProcessSetup,
         RepresentationInfo, SpeakerArrangement, String128,
     },
-    kResultOk,
 };
 use vst3::{ComPtr, ComWrapper};
 
-use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, ParamId, WindowHandle};
+use tutti_plugin_types::{
+    ContentScale, EditorCapabilities, EditorSize, MainThread, ParamId, WindowHandle,
+};
 use tutti_types::ChannelLayout;
 
 use crate::audio::{Arrangement, AudioSide, Setup, Shared};
 use crate::com::{BStream, ComponentHandler, HostApplication, HostPlugFrame};
-use crate::error::{Vst3Error, check, check_bool};
+use crate::error::{Vst3Error, check, check_bool, is_ok};
 use crate::module::{CreateError, Module};
 use crate::sdk::{sdk_enum_i32, utf16_to_string, zeroed};
 use crate::types::{
@@ -107,6 +108,14 @@ pub enum MediaType {
 }
 
 impl MediaType {
+    /// The media type an SDK `MediaTypes` value names, or `None` for any other.
+    #[must_use]
+    pub fn from_raw(raw: i32) -> Option<Self> {
+        [Self::Audio, Self::Event]
+            .into_iter()
+            .find(|kind| kind.raw() == raw)
+    }
+
     pub(crate) fn raw(self) -> i32 {
         sdk_enum_i32(match self {
             Self::Audio => vst3::Steinberg::Vst::MediaTypes_::kAudio,
@@ -125,6 +134,14 @@ pub enum BusDirection {
 }
 
 impl BusDirection {
+    /// The direction an SDK `BusDirections` value names, or `None` for any other.
+    #[must_use]
+    pub fn from_raw(raw: i32) -> Option<Self> {
+        [Self::Input, Self::Output]
+            .into_iter()
+            .find(|direction| direction.raw() == raw)
+    }
+
     pub(crate) fn raw(self) -> i32 {
         sdk_enum_i32(match self {
             Self::Input => vst3::Steinberg::Vst::BusDirections_::kInput,
@@ -193,11 +210,28 @@ pub struct Plugin {
     handler: ComWrapper<ComponentHandler>,
     application: ComWrapper<HostApplication>,
     editor: Option<Editor>,
+    /// This plugin's claim on the module's run loop: what it registers there is
+    /// taken back when its editor closes and when it drops.
+    #[cfg(target_os = "linux")]
+    owner: crate::com::Owner,
+    /// Whether `initialize` succeeded on the component, and on a separate
+    /// controller: `terminate` follows a successful `initialize` only.
+    component_initialized: bool,
+    controller_initialized: bool,
     process_context_requirements: u32,
     shared: Arc<Shared>,
     _not_sync: PhantomData<Cell<()>>,
     module: Arc<Module>,
 }
+
+/// The guard [`Plugin::scoped`] returns.
+#[cfg(target_os = "linux")]
+pub(super) struct CallScope(
+    #[allow(dead_code, reason = "held for its drop")] crate::com::OwnedScope,
+);
+/// The guard [`Plugin::scoped`] returns: nothing to scope off Linux.
+#[cfg(not(target_os = "linux"))]
+pub(super) struct CallScope;
 
 impl std::fmt::Debug for Plugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -215,9 +249,15 @@ impl std::fmt::Debug for Plugin {
 // are refused while an `AudioSide` exists. What runs beside `process` is what the
 // SDK allows in the `Processing` state; a plugin that races its own `process`
 // breaks the SDK's contract, not this type's. The host objects are `Send + Sync`
-// and touch atomics, queues and mutexes only. The editor view is UI-thread by
-// spec: the host asserts the main thread before each editor call, except in
-// `Drop`, which detaches the view on whatever thread drops the plugin.
+// and touch atomics, queues and mutexes only. The editor view, the controller,
+// the component's buses and state, and the lifecycle calls are main-thread by
+// spec: each of those entries takes a `&MainThread`, which only the claiming
+// thread holds. The tokenless entries are `latency_samples` and `tail_samples`
+// (plain getters; see their docs), `is_active`, `set_processing` and
+// `audio_side` (audio-half bookkeeping under the claim), and the
+// `MidiLearn` handle, which forwards live MIDI. `Drop` has no token: with an
+// editor open and no main thread under it, it leaks the whole plugin (see
+// `Drop for Plugin`); otherwise it tears down as usual.
 unsafe impl Send for Plugin {}
 
 impl Plugin {
@@ -248,14 +288,23 @@ impl Plugin {
             audio_presentation_latency: processor.cast(),
         };
         let shared = Arc::new(Shared::new(&processor));
+        #[cfg(target_os = "linux")]
+        let owner = crate::com::Owner::next();
         Ok(Self {
             component,
             processor,
             controller,
             ext,
             handler: ComponentHandler::new(),
-            application: module.new_host_application(),
+            application: module.new_host_application(
+                #[cfg(target_os = "linux")]
+                owner,
+            ),
             editor: None,
+            #[cfg(target_os = "linux")]
+            owner,
+            component_initialized: false,
+            controller_initialized: false,
             // The real answer is read in `read_process_context_requirements`; until then the
             // plugin is assumed to need everything.
             process_context_requirements: u32::MAX,
@@ -263,6 +312,22 @@ impl Plugin {
             _not_sync: PhantomData,
             module: module.clone(),
         })
+    }
+
+    /// Until it drops, what the plugin registers with the module's run loop
+    /// through a context that names no owner is this plugin's. Every call into
+    /// the plugin that takes a `&MainThread` runs under one: a toolkit
+    /// registers lazily (in `onSize`, on an event, from a controller call), not
+    /// only inside `attached`.
+    pub(super) fn scoped(&self, _main: &MainThread) -> CallScope {
+        #[cfg(target_os = "linux")]
+        {
+            CallScope(self.module.run_loop().scope_owned(self.owner))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            CallScope
+        }
     }
 
     /// The module this plugin came from.

@@ -1,6 +1,6 @@
 //! IBStream COM implementation backed by an in-memory `Cursor<Vec<u8>>`.
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use std::ffi::c_void;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
@@ -8,11 +8,15 @@ use parking_lot::Mutex;
 use vst3::Steinberg::{
     IBStream,
     IBStream_::IStreamSeekMode_::{kIBSeekCur, kIBSeekEnd, kIBSeekSet},
-    IBStreamTrait, kInvalidArgument, kResultOk, tresult,
+    IBStreamTrait, kInternalError, kInvalidArgument, kResultOk, tresult,
 };
 use vst3::{Class, ComWrapper};
 
 use crate::sdk::sdk_enum_i32;
+
+/// The most a stream may hold (1 GiB): a plugin's state is far smaller, and a
+/// seek then a write otherwise zero-fills up to any position a plugin names.
+const MAX_STREAM_BYTES: u64 = 1 << 30;
 
 /// COM-wrapped in-memory stream.
 ///
@@ -56,43 +60,26 @@ impl IBStreamTrait for BStream {
         num_bytes: i32,
         num_bytes_read: *mut i32,
     ) -> tresult {
-        // Defined output even if the body panics.
-        if !num_bytes_read.is_null() {
-            // SAFETY: a COM out-parameter the plugin passes valid for this call.
-            unsafe { *num_bytes_read = 0 };
-        }
-        guard(vst3::Steinberg::kInternalError, || {
-            if num_bytes == 0 {
-                if !num_bytes_read.is_null() {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *num_bytes_read = 0 };
-                }
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let read = unsafe { Out::new(num_bytes_read) };
+        read.set(0);
+        guard(kInternalError, || {
+            let Ok(len) = usize::try_from(num_bytes) else {
+                return kInvalidArgument;
+            };
+            if len == 0 {
                 return kResultOk;
             }
-            if num_bytes < 0 || buffer.is_null() {
-                if !num_bytes_read.is_null() {
-                    // SAFETY: `num_bytes_read` is non-null (checked just above) and the ABI
-                    // passes it valid for
-                    // writes for the duration of the call.
-                    unsafe { *num_bytes_read = 0 };
-                }
+            if buffer.is_null() {
                 return kInvalidArgument;
             }
-            let mut cursor = self.cursor.lock();
-            // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the
-            // ABI makes `buffer` valid for `num_bytes` writable bytes for the call, and the
-            // plugin does not alias it while this method runs.
-            let buf =
-                unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, num_bytes as usize) };
-            match cursor.read(buf) {
+            // SAFETY: `buffer` is non-null and `len` positive (both checked
+            // above); the ABI makes it valid for `len` writable bytes for the
+            // call, and the plugin does not alias it while this method runs.
+            let buf = unsafe { std::slice::from_raw_parts_mut(buffer.cast::<u8>(), len) };
+            match self.cursor.lock().read(buf) {
                 Ok(n) => {
-                    if !num_bytes_read.is_null() {
-                        // SAFETY: `num_bytes_read` is non-null (checked just above) and the ABI
-                        // passes it valid for
-                        // writes for the duration of the call.
-                        unsafe { *num_bytes_read = n as i32 };
-                    }
+                    read.set(n as i32);
                     kResultOk
                 }
                 Err(_) => kInvalidArgument,
@@ -106,42 +93,32 @@ impl IBStreamTrait for BStream {
         num_bytes: i32,
         num_bytes_written: *mut i32,
     ) -> tresult {
-        // Defined output even if the body panics.
-        if !num_bytes_written.is_null() {
-            // SAFETY: a COM out-parameter the plugin passes valid for this call.
-            unsafe { *num_bytes_written = 0 };
-        }
-        guard(vst3::Steinberg::kInternalError, || {
-            if num_bytes == 0 {
-                if !num_bytes_written.is_null() {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *num_bytes_written = 0 };
-                }
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let written = unsafe { Out::new(num_bytes_written) };
+        written.set(0);
+        guard(kInternalError, || {
+            let Ok(len) = usize::try_from(num_bytes) else {
+                return kInvalidArgument;
+            };
+            if len == 0 {
                 return kResultOk;
             }
-            if num_bytes < 0 || buffer.is_null() {
-                if !num_bytes_written.is_null() {
-                    // SAFETY: `num_bytes_written` is non-null (checked just above) and the ABI
-                    // passes it valid for
-                    // writes for the duration of the call.
-                    unsafe { *num_bytes_written = 0 };
-                }
+            if buffer.is_null() {
                 return kInvalidArgument;
             }
             let mut cursor = self.cursor.lock();
-            // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the
-            // ABI makes `buffer` valid for `num_bytes` readable bytes for the call.
-            let buf =
-                unsafe { std::slice::from_raw_parts(buffer as *const u8, num_bytes as usize) };
+            // `Cursor<Vec<u8>>` zero-fills up to a seek position on write, so an
+            // unbounded position is an unbounded allocation.
+            if cursor.position().saturating_add(len as u64) > MAX_STREAM_BYTES {
+                return kInvalidArgument;
+            }
+            // SAFETY: `buffer` is non-null and `len` positive (both checked
+            // above); the ABI makes it valid for `len` readable bytes for the
+            // call.
+            let buf = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), len) };
             match cursor.write(buf) {
                 Ok(n) => {
-                    if !num_bytes_written.is_null() {
-                        // SAFETY: `num_bytes_written` is non-null (checked just above) and the
-                        // ABI passes it valid for
-                        // writes for the duration of the call.
-                        unsafe { *num_bytes_written = n as i32 };
-                    }
+                    written.set(n as i32);
                     kResultOk
                 }
                 Err(_) => kInvalidArgument,
@@ -150,10 +127,15 @@ impl IBStreamTrait for BStream {
     }
 
     unsafe fn seek(&self, pos: i64, mode: i32, result: *mut i64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let result = unsafe { Out::new(result) };
+        guard(kInternalError, || {
             let seek_from = match mode {
                 m if m == sdk_enum_i32(kIBSeekSet) => match u64::try_from(pos) {
-                    Ok(start) => SeekFrom::Start(start),
+                    Ok(start) if start <= MAX_STREAM_BYTES => SeekFrom::Start(start),
+                    // Past the cap no write could land: refuse it here too, so
+                    // `tell` never reports a position the stream cannot hold.
+                    Ok(_) => return kInvalidArgument,
                     // A negative absolute position is not a position (cast to
                     // `u64` it would wrap to about 2^64 and answer `kResultOk`).
                     Err(_) => return kInvalidArgument,
@@ -162,15 +144,9 @@ impl IBStreamTrait for BStream {
                 m if m == sdk_enum_i32(kIBSeekEnd) => SeekFrom::End(pos),
                 _ => return kInvalidArgument,
             };
-            let mut cursor = self.cursor.lock();
-            match cursor.seek(seek_from) {
+            match self.cursor.lock().seek(seek_from) {
                 Ok(new_pos) => {
-                    if !result.is_null() {
-                        // SAFETY: a COM method: the plugin passes pointers valid for this call,
-                        // per the
-                        // VST3 ABI.
-                        unsafe { *result = new_pos as i64 };
-                    }
+                    result.set(new_pos as i64);
                     kResultOk
                 }
                 Err(_) => kInvalidArgument,
@@ -179,14 +155,10 @@ impl IBStreamTrait for BStream {
     }
 
     unsafe fn tell(&self, pos: *mut i64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            let cursor = self.cursor.lock();
-            if !pos.is_null() {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3
-                // ABI.
-                unsafe { *pos = cursor.position() as i64 };
-            }
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let pos = unsafe { Out::new(pos) };
+        guard(kInternalError, || {
+            pos.set(self.cursor.lock().position() as i64);
             kResultOk
         })
     }
@@ -394,5 +366,39 @@ mod tests {
             assert_eq!(result, kResultOk);
             assert_eq!(&buf[..3], &[1, 2, 3]);
         });
+    }
+
+    /// **A plugin cannot make the host allocate past the cap by seeking far and
+    /// writing.** `Cursor<Vec<u8>>` zero-fills up to the position, so a seek to
+    /// 1 TiB and a one-byte write used to ask for a terabyte.
+    ///
+    /// Mutations (run, each fails): delete the position check in `write`; or the
+    /// `Ok(_)` arm of `seek` -> the write below succeeds, allocating 1 GiB, and the test
+    /// fails on its status.
+    #[test]
+    fn a_far_seek_then_a_write_is_refused() {
+        let stream = BStream::new();
+        with_ptr(&stream, |ptr| {
+            let mut at = 0i64;
+            // SAFETY: COM methods on a live object the test owns, with valid arguments.
+            unsafe {
+                assert_eq!(
+                    ptr.seek(1 << 40, sdk_enum_i32(kIBSeekSet), &mut at),
+                    kInvalidArgument
+                );
+                // The cap itself is a position; one more byte there is not room.
+                assert_eq!(
+                    ptr.seek(MAX_STREAM_BYTES as i64, sdk_enum_i32(kIBSeekSet), &mut at),
+                    kResultOk
+                );
+                let mut written = 0i32;
+                assert_eq!(
+                    ptr.write(b"x".as_ptr() as *mut c_void, 1, &mut written),
+                    kInvalidArgument
+                );
+                assert_eq!(written, 0);
+            }
+        });
+        assert!(stream.data().len() < 1 << 20, "nothing was allocated");
     }
 }

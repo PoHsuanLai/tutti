@@ -6,6 +6,7 @@
 
 use std::io;
 use thiserror::Error;
+use tutti_types::ChannelLayout;
 
 /// Anything that can go wrong rendering or writing an export.
 ///
@@ -48,22 +49,27 @@ pub enum Error {
     /// The frame width is a runtime `ChannelLayout`, so any positive count
     /// exports — including the 3- and 5-wide masters a fixed enumeration of
     /// widths could not express.
-    #[error("Unsupported channel count: {0} (a render needs at least one channel)")]
-    UnsupportedChannels(u16),
+    #[error("Unsupported channel count: 0 (a render needs at least one channel)")]
+    UnsupportedChannels,
 
-    /// A loudness measurement was asked for and could not be taken — EBU R128
-    /// accepts 1–64 channels at 16 Hz–2.8 MHz.
+    /// A loudness measurement was asked for and the audio cannot be
+    /// normalized by it (`reason` says why): the meter rejects it, or the
+    /// reading it gives is not a measurement of the programme.
     ///
-    /// An error rather than a skipped measurement, because a normalized export
-    /// that quietly writes un-normalized audio reports success and leaves no
-    /// trace: nothing in [`Written`](crate::Written) records that the gain the
-    /// caller asked for was never applied.
-    #[error("Cannot measure loudness: the meter rejected {channels} channels at {sample_rate} Hz")]
+    /// An error rather than a skipped or invented gain, because a normalized
+    /// export that quietly writes un-normalized audio (or applies +47 dB to a
+    /// hiss at the gate's floor) reports success and leaves no trace: nothing
+    /// in [`Written`](crate::Written) records that the gain the caller asked
+    /// for was never applied, or what it was. A file export leaves the target
+    /// as it was.
+    #[error("Cannot normalize: {channels:?} at {sample_rate:?} is unmeasurable: {reason}")]
     Unmeasurable {
-        /// The channel count of the audio.
-        channels: u16,
-        /// Its sample rate, in Hz.
-        sample_rate: f64,
+        /// The channel layout of the audio.
+        channels: ChannelLayout,
+        /// Its sample rate.
+        sample_rate: tutti_types::SampleRate,
+        /// Why the reading is not usable.
+        reason: Unmeasured,
     },
 
     /// The graph could not be forked for the render because the node at
@@ -92,13 +98,30 @@ pub enum Error {
     /// a full delay): the audio of a dropped note-on or note-off is wrong, and
     /// a note whose note-off was dropped may sound to the end. Raised under
     /// [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail), the default;
-    /// a file export removes the file. `count` is the executor's
-    /// `lost_event_count` over the render: events that never arrived, not a
-    /// note-off that was refused and sent again.
+    /// a file export removes the file. The render stops at the first block
+    /// that lost an event, so `count` is the executor's `lost_event_count`
+    /// from when the render began (or, for a graph that had a commit
+    /// installed since its last render, from that render's end) to the end of
+    /// that block: events that never arrived, not a note-off that was
+    /// refused and sent again. [`write_buffers`](crate::write_buffers) raises
+    /// it too, for planes whose render lost events.
     #[error("Export failed: the graph dropped {count} events during the render")]
     EventsDropped {
         /// How many.
         count: u64,
+    },
+
+    /// The render would hold its planes in memory ([`render_to_buffers`](crate::render_to_buffers),
+    /// [`render_normalized_to_file`](crate::render_normalized_to_file)) and
+    /// the allocation for `frames` frames of `channels` channels failed or
+    /// overflowed. Nothing was rendered. A file export streams and never asks
+    /// for this much.
+    #[error("Cannot hold the render in memory: {frames:?} frames of {channels:?} channels")]
+    RenderTooLarge {
+        /// Frames per plane the render needed.
+        frames: tutti_types::Samples,
+        /// The planes it needed them for.
+        channels: ChannelLayout,
     },
 
     /// A forked unit failed while the render ran: a hosted plugin's
@@ -106,8 +129,9 @@ pub enum Error {
     /// render holds silence where the unit's output belongs, so the export is
     /// reported as failed rather than written as if it had succeeded. The
     /// editor's `fork_health` is checked after every graph render
-    /// (see "When a forked unit fails" in tutti-graph's `fork` docs). A file
-    /// export may already have written the file; it is not a valid render.
+    /// (see "When a forked unit fails" in tutti-graph's `fork` docs), and for a
+    /// file export before the file is put in place: the file at the path keeps
+    /// what it held.
     #[error("Export failed: forked node {key:?} {kind:?} during the render: {cause}")]
     ForkFailed {
         /// The node, as the live graph keys it.
@@ -120,6 +144,35 @@ pub enum Error {
     },
 }
 
+/// Why audio cannot be normalized ([`Error::Unmeasurable`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Unmeasured {
+    /// The meter does not take this width or rate: EBU R128 accepts 1 to 64
+    /// channels at 16 Hz to 2.8 MHz.
+    Format,
+    /// [`Normalize::Lufs`](crate::Normalize::Lufs): no part of the audio
+    /// passed the integrated loudness gate. It is silent, quieter than the
+    /// absolute gate (-70 LUFS), or shorter than the 400 ms block the gate is
+    /// judged in; any gain chosen from that reading would be made up.
+    BelowGate,
+    /// [`Normalize::Peak`](crate::Normalize::Peak): the true peak is at the
+    /// floor ([`Db::FLOOR`](tutti_types::Db::FLOOR)), which is silence.
+    Silent,
+}
+
+impl std::fmt::Display for Unmeasured {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Format => "the meter does not take this width or rate",
+            Self::BelowGate => {
+                "nothing passed the loudness gate (silent, under -70 LUFS, or under 400 ms)"
+            }
+            Self::Silent => "the true peak is at the floor (silence)",
+        })
+    }
+}
+
 /// A config the export cannot act on ([`Error::InvalidConfig`]).
 #[derive(Error, Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -127,6 +180,15 @@ pub enum ConfigError {
     /// The graph's editor does not feed its executor.
     #[error("the graph's editor does not feed its executor; pass the pair built together")]
     UnpairedGraph,
+    /// `duration_seconds` is NaN, infinite or negative: not a length a
+    /// render can have.
+    #[error("the render's duration_seconds must be a finite, non-negative number")]
+    InvalidDuration,
+    /// The render is zero frames long: no duration (or one shorter than a
+    /// frame) and no tail. [`RenderConfig::default`](crate::RenderConfig)
+    /// has no duration, so a render that means to produce audio names one.
+    #[error("the render is zero frames long; set RenderConfig::duration_seconds")]
+    EmptyRender,
     /// The graph is prepared at another rate than the render.
     #[error(
         "the graph is prepared at {prepared} Hz and the render is at {render} Hz; \

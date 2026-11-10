@@ -79,7 +79,7 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
 /// per frame, for anything that reads a signal (a node's audio input, a
 /// meter). A param port is driven by a [`ControlLaneNode`](super::ControlLaneNode) instead
 /// (`ControlLaneNode::for_param` over
-/// [`ControlProgram::from_curve`](tutti_mod::ControlProgram::from_curve)),
+/// [`ControlProgram::from_curve`](tutti_modulation::ControlProgram::from_curve)),
 /// which sends the curve as curve-segment events
 /// ([`ParamSegment`](tutti_graph::ParamSegment)).
 ///
@@ -291,7 +291,7 @@ mod tests {
 
     /// Every [`CurveType`], one control-point pair standing in for
     /// `Bezier`. The `match` names each variant, so a new one is a compile
-    /// error here until it joins the list (and gets its own slot). tutti-mod
+    /// error here until it joins the list (and gets its own slot). tutti-modulation
     /// keeps its own copy (`shape.rs`); it is test-only there.
     fn every_curve() -> [CurveType; 22] {
         use CurveType as C;

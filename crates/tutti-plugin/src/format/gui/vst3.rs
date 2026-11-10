@@ -12,16 +12,17 @@ use crate::protocol::{Normalized, ParamId};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 use tutti_plugin_types::Control;
+use tutti_plugin_types::MainThread;
 
 pub(crate) struct Vst3GuiInstance {
     inner: tutti_vst3_host::Vst3Loaded,
 }
 
 impl Vst3GuiInstance {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(main: &MainThread, path: &Path) -> Result<Self> {
         let resolved = crate::host::subprocess::resolve_bundle(path)?;
         let inner =
-            tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new())
+            tutti_vst3_host::Vst3Loaded::load(main, &resolved, tutti_vst3_host::LoadOptions::new())
                 .map_err(|e| BridgeError::LoadFailed {
                     path: path.to_path_buf(),
                     stage: LoadStage::Opening,
@@ -32,7 +33,12 @@ impl Vst3GuiInstance {
 }
 
 impl PluginEditor for Vst3GuiInstance {
-    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> Result<EditorSize> {
         tracing::info!(
             "[vst3-gui] open_editor: parent handle {:?}",
             parent.as_ptr()
@@ -40,7 +46,7 @@ impl PluginEditor for Vst3GuiInstance {
         tracing::info!("[vst3-gui] open_editor: calling inner.open_editor");
         let size = self
             .inner
-            .open_editor(parent, scale)
+            .open_editor(main, parent, scale)
             .map_err(|e| BridgeError::ProtocolError(format!("VST3 open_editor failed: {e}")))?;
         tracing::info!(
             "[vst3-gui] open_editor: success {}x{}",
@@ -53,34 +59,34 @@ impl PluginEditor for Vst3GuiInstance {
         })
     }
 
-    fn close_editor(&mut self) {
-        self.inner.close_editor();
+    fn close_editor(&mut self, main: &MainThread) {
+        self.inner.close_editor(main);
     }
 
-    fn editor_idle(&mut self) {
+    fn editor_idle(&mut self, _main: &MainThread) {
         // VST3 editors don't have explicit idle.
     }
 
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         // VST3's `setParamNormalized` takes the host domain unchanged.
-        Control::set_parameter(&mut self.inner, id, value);
+        Control::set_parameter(&mut self.inner, main, id, value);
     }
 
-    fn set_automation_state(&mut self, mode: crate::protocol::AutomationMode) {
+    fn set_automation_state(&mut self, main: &MainThread, mode: crate::protocol::AutomationMode) {
         // Deliver the host automation-state advisory to the GUI instance: this
         // is the instance whose editor shows the knob-glow feedback. The host
         // crate encodes the format-neutral mode onto the VST3 `IAutomationState`
         // bitmask.
-        Control::set_automation_state(&mut self.inner, mode);
+        Control::set_automation_state(&mut self.inner, main, mode);
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
-        Control::load_state(&mut self.inner, data)
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
+        Control::load_state(&mut self.inner, main, data)
             .map_err(|e| BridgeError::ProtocolError(format!("VST3 set_state failed: {e}")))?;
         Ok(())
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(ParamId, f32)> {
+    fn poll_gui_param_changes(&mut self, main: &MainThread) -> Vec<(ParamId, f32)> {
         // Drain through the unified notification poll, which also forwards
         // pending MIDI-learn CCs. The GUI path forwards `PerformEdit`s up.
         //
@@ -92,7 +98,7 @@ impl PluginEditor for Vst3GuiInstance {
         // surfaced through the GUI param path either.
         use tutti_vst3_host::{ParameterEditEvent, PluginNotification};
         let mut edits = Vec::new();
-        let _restart = self.inner.poll_plugin_notifications(|n| {
+        let _restart = self.inner.poll_plugin_notifications(main, |n| {
             if let PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id, value }) = n
             {
                 // The plugin's editor reported one of its own `ParamID`s.
@@ -102,8 +108,8 @@ impl PluginEditor for Vst3GuiInstance {
         edits
     }
 
-    fn editor_capabilities(&mut self) -> EditorCapabilities {
-        let inner = self.inner.editor_capabilities();
+    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
+        let inner = self.inner.editor_capabilities(main);
         EditorCapabilities {
             resize: inner.resize,
             appkit_autoresize_friendly: true,
@@ -111,13 +117,16 @@ impl PluginEditor for Vst3GuiInstance {
         }
     }
 
-    fn set_editor_size(&mut self, requested: EditorSize) -> Result<EditorSize> {
+    fn set_editor_size(&mut self, main: &MainThread, requested: EditorSize) -> Result<EditorSize> {
         let snapped = self
             .inner
-            .resize_editor(tutti_vst3_host::EditorSize {
-                width: requested.width,
-                height: requested.height,
-            })
+            .resize_editor(
+                main,
+                tutti_vst3_host::EditorSize {
+                    width: requested.width,
+                    height: requested.height,
+                },
+            )
             .map_err(|e| BridgeError::ProtocolError(format!("VST3 resize_editor failed: {e}")))?;
         Ok(EditorSize {
             width: snapped.width,
@@ -125,9 +134,9 @@ impl PluginEditor for Vst3GuiInstance {
         })
     }
 
-    fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
         self.inner
-            .poll_editor_resize_request()
+            .poll_editor_resize_request(main)
             .map(|sz| EditorSize {
                 width: sz.width,
                 height: sz.height,

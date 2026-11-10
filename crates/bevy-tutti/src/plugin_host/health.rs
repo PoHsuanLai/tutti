@@ -66,6 +66,7 @@ use tutti_session::{
 use tutti_types::NodeKey;
 
 use crate::graph::{AudioGraphRes, CapturedControls};
+use crate::plugin_host::PluginEditorMainThread;
 use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
 
 /// What the session believes about a plugin's liveness: `Healthy`,
@@ -192,7 +193,7 @@ impl PluginHealth {
 /// Runs the session's `Phase::Plugins` at the frame's wall clock, and places
 /// what it reports (see the module docs).
 ///
-/// Pinned to the main thread ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)):
+/// Pinned to the main thread (its `NonSend<PluginEditorMainThread>` param):
 /// the phase hands latencies to the graph's editor, which collects, and a
 /// dead plugin's removal may drop an in-process plugin with an editor.
 ///
@@ -203,7 +204,7 @@ impl PluginHealth {
 /// a [`PluginHealth`] (a plugin a host inserted through
 /// [`Graph::insert_plugin`](crate::graph::Graph::insert_plugin) is watched too).
 pub fn plugin_health_poll(
-    _main: bevy_ecs::system::NonSendMarker,
+    main_thread: NonSend<PluginEditorMainThread>,
     #[cfg(feature = "modulation")] mut reads: Local<Vec<Task<tutti_session::PluginParamsRead>>>,
     mut reloads: Local<Vec<Task<PluginReloaded>>>,
     mut commands: Commands,
@@ -233,7 +234,12 @@ pub fn plugin_health_poll(
         let Some(done) = block_on(future::poll_once(task)) else {
             return true; // still loading
         };
-        landed.extend(graph.bypass_change_detection().session().land_reload(done));
+        landed.extend(
+            graph
+                .bypass_change_detection()
+                .session()
+                .land_reload(main_thread.token(), done),
+        );
         false
     });
     let mut events = graph
@@ -484,7 +490,11 @@ mod tests {
                 .clone()
                 .ok_or(tutti_plugin::error::StateError::NoStateRoute)
         }
-        fn load_state(&self, _data: &[u8]) -> Result<(), tutti_plugin::error::StateError> {
+        fn load_state(
+            &self,
+            _main: &tutti_plugin::MainThread,
+            _data: &[u8],
+        ) -> Result<(), tutti_plugin::error::StateError> {
             Ok(())
         }
     }
@@ -555,14 +565,23 @@ mod tests {
     #[test]
     fn the_poll_is_inert_without_a_graph() {
         let mut app = App::new();
+        app.insert_non_send(main_thread_res());
         app.add_systems(Update, (plugin_state_snapshot, plugin_health_poll).chain());
         app.world_mut().spawn(PluginHealth::default());
         app.update();
     }
 
+    /// The main-thread token the systems take, claimed by this test's process.
+    fn main_thread_res() -> PluginEditorMainThread {
+        PluginEditorMainThread::new(
+            tutti_plugin::MainThread::claim().expect("one test, one process"),
+        )
+    }
+
     /// An app running both systems over `graph`.
     fn app_over(graph: AudioGraphRes) -> App {
         let mut app = App::new();
+        app.insert_non_send(main_thread_res());
         app.insert_resource(graph);
         app.add_systems(Update, (plugin_state_snapshot, plugin_health_poll).chain());
         app

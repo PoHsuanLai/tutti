@@ -68,6 +68,7 @@ fn set_fire_update_display(enable: bool) {
     let sym: libloading::Symbol<*mut std::ffi::c_void> =
         unsafe { lib.get(b"tutti_vst2_probe_set_fire_update_display\0") }
             .expect("probe missing symbol tutti_vst2_probe_set_fire_update_display");
+    // SAFETY: the probe exports this symbol with exactly this signature.
     let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
     f(enable);
 
@@ -114,7 +115,7 @@ impl Drop for Probe {
 /// The requests the plugin has raised since the last call.
 fn requests(instance: &Active) -> Vec<Request> {
     let mut asked = Vec::new();
-    instance.take_requests(&mut asked);
+    instance.take_requests(&main_thread(), &mut asked);
     asked
 }
 
@@ -183,4 +184,10 @@ fn a_quiet_plugin_asks_for_nothing() {
         [],
         "nothing asked for a refresh, so nothing should be reported"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

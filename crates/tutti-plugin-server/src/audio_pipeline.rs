@@ -601,6 +601,14 @@ fn with_audio_buffer_f64<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    #[cfg(feature = "vst3")]
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     use tutti_plugin::server::{
         Normalized, ParamId, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
         PluginTail, Samples,
@@ -690,37 +698,55 @@ mod tests {
             }
             Ok(())
         }
-        fn set_sample_rate(&mut self, _rate: f64) -> PluginResult<()> {
+        fn set_sample_rate(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+            _rate: f64,
+        ) -> PluginResult<()> {
             Ok(())
         }
     }
     impl PluginParams for NanPlugin {
-        fn get_parameter(&self, _id: ParamId) -> f64 {
+        fn get_parameter(&self, _main: &tutti_plugin_types::MainThread, _id: ParamId) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamId, _value: Normalized) {}
-        fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
+        fn set_parameter(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+            _id: ParamId,
+            _value: Normalized,
+        ) {
+        }
+        fn get_parameter_list(
+            &self,
+            _main: &tutti_plugin_types::MainThread,
+        ) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
     }
     impl PluginEditorHost for NanPlugin {
         fn open_editor(
             &mut self,
+            _main: &tutti_plugin_types::MainThread,
             _parent: WindowHandle,
             _scale: tutti_plugin::server::ContentScale,
         ) -> PluginResult<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
-        fn close_editor(&mut self) {}
+        fn close_editor(&mut self, _main: &tutti_plugin_types::MainThread) {}
     }
     /// The probe has no presets; the defaults say so.
     impl tutti_plugin::server::PluginPresets for NanPlugin {}
 
     impl PluginState for NanPlugin {
-        fn get_state(&mut self) -> PluginResult<Vec<u8>> {
+        fn get_state(&mut self, _main: &tutti_plugin_types::MainThread) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
-        fn set_state(&mut self, _data: &[u8]) -> PluginResult<()> {
+        fn set_state(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+            _data: &[u8],
+        ) -> PluginResult<()> {
             Ok(())
         }
     }
@@ -771,37 +797,55 @@ mod tests {
             }
             Ok(())
         }
-        fn set_sample_rate(&mut self, _rate: f64) -> PluginResult<()> {
+        fn set_sample_rate(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+            _rate: f64,
+        ) -> PluginResult<()> {
             Ok(())
         }
     }
     impl PluginParams for EchoProbe {
-        fn get_parameter(&self, _id: ParamId) -> f64 {
+        fn get_parameter(&self, _main: &tutti_plugin_types::MainThread, _id: ParamId) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamId, _value: Normalized) {}
-        fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
+        fn set_parameter(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+            _id: ParamId,
+            _value: Normalized,
+        ) {
+        }
+        fn get_parameter_list(
+            &self,
+            _main: &tutti_plugin_types::MainThread,
+        ) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
     }
     impl PluginEditorHost for EchoProbe {
         fn open_editor(
             &mut self,
+            _main: &tutti_plugin_types::MainThread,
             _parent: WindowHandle,
             _scale: tutti_plugin::server::ContentScale,
         ) -> PluginResult<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
-        fn close_editor(&mut self) {}
+        fn close_editor(&mut self, _main: &tutti_plugin_types::MainThread) {}
     }
     /// The probe has no presets; the defaults say so.
     impl tutti_plugin::server::PluginPresets for EchoProbe {}
 
     impl PluginState for EchoProbe {
-        fn get_state(&mut self) -> PluginResult<Vec<u8>> {
+        fn get_state(&mut self, _main: &tutti_plugin_types::MainThread) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
-        fn set_state(&mut self, _data: &[u8]) -> PluginResult<()> {
+        fn set_state(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+            _data: &[u8],
+        ) -> PluginResult<()> {
             Ok(())
         }
     }
@@ -839,8 +883,14 @@ mod tests {
         Meta {
             descriptor: PluginDescriptor::default(),
             loaded: LoadedPlugin {
-                inputs: inputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
-                outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
+                inputs: inputs
+                    .iter()
+                    .map(|&c| ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    .collect(),
+                outputs: outputs
+                    .iter()
+                    .map(|&c| ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    .collect(),
                 latency_samples: Samples::ZERO,
                 tail: PluginTail::Unknown,
                 // This fixture is about bus widths; no capability is claimed,
@@ -1237,6 +1287,7 @@ mod tests {
 
         let _lock = crate::test_utils::plugin_load_lock();
         let mut plugin = Vst3Instance::load(
+            &main_thread(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
             SR,
             N,

@@ -52,7 +52,7 @@ fn render_root_to(outputs: usize, target: usize, wire: &[usize]) -> Vec<f32> {
     // construction rather than a second argument that could disagree with it.
     engine.process(&mut InterleavedMut::new(
         &mut out,
-        ChannelLayout::from(target),
+        ChannelLayout::try_from(target).expect("a test width is small"),
     ));
     out
 }

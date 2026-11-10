@@ -29,7 +29,7 @@ fn through_server<F: Format>(path: PathBuf) {
     let blob = patch_mode(F::extract_blob(&state), Mode::Level);
     handle
         .state()
-        .load_state(&F::embed_blob(&state, &blob))
+        .load_state(&main_thread(), &F::embed_blob(&state, &blob))
         .expect("loads");
 
     let saved = handle.state().save_state().expect("saves again");
@@ -61,4 +61,10 @@ fn vst3_mode_and_transcript_cross_the_process_boundary() {
 #[test]
 fn vst3_cpp_mode_and_transcript_cross_the_process_boundary() {
     through_server::<Vst3Cpp>(bundle_of(&vst3_cpp_module()));
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

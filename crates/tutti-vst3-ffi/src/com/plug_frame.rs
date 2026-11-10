@@ -33,9 +33,7 @@ use tutti_plugin_types::EditorSize;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
-use vst3::Steinberg::Linux::{
-    FileDescriptor, IEventHandler, IRunLoop, ITimerHandler, TimerInterval,
-};
+use vst3::Steinberg::Linux::IRunLoop;
 
 #[cfg(target_os = "linux")]
 use super::run_loop::RunLoop;
@@ -48,6 +46,9 @@ pub(crate) struct HostPlugFrame {
     /// Shared with `HostApplication` — see `run_loop.rs`.
     #[cfg(target_os = "linux")]
     run_loop: Arc<RunLoop>,
+    /// The plugin whose editor this frame serves: see `HostApplication::owner`.
+    #[cfg(target_os = "linux")]
+    owner: Option<super::run_loop::Owner>,
 }
 
 #[cfg(target_os = "linux")]
@@ -64,11 +65,16 @@ impl Class for HostPlugFrame {
 
 impl HostPlugFrame {
     /// A frame with no pending request and, on Linux, the shared `run_loop`.
-    pub(crate) fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
+    pub(crate) fn new(
+        #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
+        #[cfg(target_os = "linux")] owner: Option<super::run_loop::Owner>,
+    ) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             resize_request: Mutex::new(None),
             #[cfg(target_os = "linux")]
             run_loop,
+            #[cfg(target_os = "linux")]
+            owner,
         })
     }
 
@@ -106,43 +112,7 @@ impl vst3::Steinberg::IPlugFrameTrait for HostPlugFrame {
 }
 
 #[cfg(target_os = "linux")]
-impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
-    unsafe fn registerEventHandler(
-        &self,
-        handler: *mut IEventHandler,
-        fd: FileDescriptor,
-    ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            // SAFETY: the plugin passes a handler it keeps alive until it
-            // unregisters it, and calls from the UI thread (the `IRunLoop` contract).
-            unsafe { self.run_loop.register_event_handler(handler, fd) }
-        })
-    }
-
-    unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.unregister_event_handler(handler)
-        })
-    }
-
-    unsafe fn registerTimer(
-        &self,
-        handler: *mut ITimerHandler,
-        milliseconds: TimerInterval,
-    ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            // SAFETY: as for `registerEventHandler`: alive until unregistered, UI
-            // thread.
-            unsafe { self.run_loop.register_timer(handler, milliseconds) }
-        })
-    }
-
-    unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.unregister_timer(handler)
-        })
-    }
-}
+super::run_loop::delegate_run_loop!(HostPlugFrame);
 
 opaque_debug!(HostPlugFrame);
 
@@ -155,6 +125,8 @@ mod tests {
         HostPlugFrame::new(
             #[cfg(target_os = "linux")]
             RunLoop::new(),
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 

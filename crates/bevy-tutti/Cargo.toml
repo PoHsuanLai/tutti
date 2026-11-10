@@ -63,7 +63,7 @@ tutti-spatial = { path = "../tutti-spatial", default-features = false, optional 
 # Optional subsystems (gated by bevy-tutti features below).
 # The modulation compiler the declarations compile through; the `modulation`
 # feature turns on its `bevy` feature (Reflect on its vocabulary).
-tutti-mod = { path = "../tutti-mod", optional = true, default-features = false }
+tutti-modulation = { path = "../tutti-modulation", optional = true, default-features = false }
 tutti-sampler = { path = "../tutti-sampler", optional = true, default-features = false }
 # The I/O edge. Not optional: `AudioPump` (`graph::pump`, always compiled)
 # is a component around `tutti_io::Recorder`, the one pump loop. `audio-io`
@@ -78,7 +78,8 @@ tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 # SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
 # player shares no voice engine with a subtractive synth.
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
-tutti-export = { path = "../tutti-export", optional = true }
+tutti-sf2 = { path = "../tutti-sf2", optional = true }
+tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 # SMF / Clip File codecs. Separate from `tutti-midi-hardware` because reading a
 # `.mid` needs no OS MIDI port.
@@ -129,6 +130,7 @@ full = [
     "sampler",
     "audio-io",
     "export",
+    "export-flac", "export-aiff", "export-ogg",
     "spatial",
     "hrtf",
     "modulation",
@@ -146,10 +148,10 @@ convolution = ["tutti-nodes/convolution", "tutti-session/convolution"]
 
 # Modulation as declarations (`Mods`, `ModRoute`, `ModRange`) that compile to
 # control lanes.
-# `tutti-mod/bevy` is what makes the components reflectable — it carries the
+# `tutti-modulation/bevy` is what makes the components reflectable — it carries the
 # `Reflect` derives on the shape vocabulary and pulls the reflection features of
 # the units and the curve type underneath.
-modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy", "tutti-session/modulation"]
+modulation = ["dep:tutti-modulation", "tutti-modulation/bevy", "tutti-types/bevy", "tutti-session/modulation"]
 
 # Audio formats. The decoder is `tutti-codec`'s (always a dependency, see
 # above); the sampler forwards to it too when it is on.
@@ -183,7 +185,7 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session/midi-hardware
 synth = ["dep:tutti-polysynth", "tutti-session/synth"]
 # SoundFont does NOT imply `synth`: it is its own crate and pulls no voice
 # engine. It implies `midi`: a soundfont is played by MIDI.
-soundfont = ["midi", "dep:tutti-soundfont", "tutti-session/soundfont"]
+soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2", "tutti-session/soundfont"]
 # Clip playback: the butler streaming engine and the `.wav` asset loader
 # (`tutti-sampler` → `crate::sampler`).
 #
@@ -223,7 +225,15 @@ clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap", "tutti-sessio
 au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au", "tutti-session/au"]
 
 # Export.
-export = ["dep:tutti-export", "tutti-session/export"]
+# Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
+# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# with `export` alone reaches no C.
+export = ["dep:tutti-export", "tutti-export/wav", "tutti-session/export"]
+export-wav = ["export"]
+export-flac = ["export", "tutti-export/flac", "tutti-session/export-flac"]
+export-aiff = ["export", "tutti-export/aiff", "tutti-session/export-aiff"]
+export-ogg = ["export", "tutti-export/ogg", "tutti-session/export-ogg"]
 
 [dev-dependencies]
 # `contract::Direct`: a node driven by hand as a graph drives it, for the

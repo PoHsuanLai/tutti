@@ -204,11 +204,11 @@ impl SetEditorVisible {
 /// One [`EditorOpenFilter`] rather than two systems, so the tick happens once
 /// per entity even for a plugin that somehow carried both markers.
 pub fn plugin_editor_idle_system(
-    _main_thread: NonSend<PluginEditorMainThread>,
+    main_thread: NonSend<PluginEditorMainThread>,
     query: Query<&PluginEmitter, EditorOpenFilter>,
 ) {
     for emitter in query.iter() {
-        emitter.handle.editor_idle();
+        emitter.handle.editor_idle(main_thread.token());
     }
 }
 
@@ -232,7 +232,7 @@ pub type EditorOpenFilter = Or<(With<PluginEditorOpen>, With<PluginFloatingEdito
 /// harmless.
 pub fn set_editor_visible_observer(
     request: On<SetEditorVisible>,
-    _main_thread: NonSend<PluginEditorMainThread>,
+    main_thread: NonSend<PluginEditorMainThread>,
     // Main-thread-pinned: dropping the AppKit observer calls `removeObserver`,
     // which must not run off-main.
     #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
@@ -281,7 +281,7 @@ pub fn set_editor_visible_observer(
             .features
             .contains(tutti_plugin::Features::EDITOR_FLOATING)
         {
-            match emitter.handle.open_floating_editor() {
+            match emitter.handle.open_floating_editor(main_thread.token()) {
                 Ok(()) => {
                     commands.entity(entity).insert(PluginFloatingEditorOpen);
                     bevy_log::info!(
@@ -336,7 +336,7 @@ pub fn set_editor_visible_observer(
     // no `live_resize_registry` entry either — that observer is installed on a
     // window this host created, and no such window exists here.
     if floating.get(entity).is_ok() {
-        emitter.handle.close_editor();
+        emitter.handle.close_editor(main_thread.token());
         commands.entity(entity).remove::<PluginFloatingEditorOpen>();
         bevy_log::info!(
             "Plugin '{}' floating editor closed (entity {entity:?})",
@@ -352,7 +352,7 @@ pub fn set_editor_visible_observer(
     // component `Drop` that runs wherever the command queue is applied.
     #[cfg(target_os = "macos")]
     live_resize_registry.remove(entity);
-    emitter.handle.close_editor();
+    emitter.handle.close_editor(main_thread.token());
     commands.entity(editor.editor_window).try_despawn();
     commands.entity(entity).remove::<PluginEditorOpen>();
     bevy_log::info!(
@@ -368,7 +368,7 @@ pub fn set_editor_visible_observer(
 /// Main-thread pinned. On failure the window this host spawned is despawned and
 /// [`PendingPluginEditor`] removed, so a refused editor leaves no orphan.
 pub fn plugin_editor_attach_system(
-    _main_thread: NonSend<PluginEditorMainThread>,
+    main_thread: NonSend<PluginEditorMainThread>,
     // `NonSendMut` pins this system — and therefore every observer install and
     // every observer drop — to the main thread, which AppKit requires.
     #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
@@ -395,7 +395,10 @@ pub fn plugin_editor_attach_system(
             .map_or(1.0, bevy_window::Window::scale_factor);
         let content_scale = ContentScale::new(f64::from(scale)).unwrap_or_default();
 
-        match emitter.handle.open_editor(&thread_locked, content_scale) {
+        match emitter
+            .handle
+            .open_editor(main_thread.token(), &thread_locked, content_scale)
+        {
             Ok(size) => {
                 let (w, h) = (size.width, size.height);
                 // The window's size limits are logical units.
@@ -405,7 +408,10 @@ pub fn plugin_editor_attach_system(
                 // a missing one would report a non-resizable editor for a plugin
                 // that is resizable. Skipping instead keeps the window
                 // unconfigured rather than misconfigured.
-                let Some(capabilities) = emitter.handle.editor().map(|e| e.editor_capabilities())
+                let Some(capabilities) = emitter
+                    .handle
+                    .editor()
+                    .map(|e| e.editor_capabilities(main_thread.token()))
                 else {
                     continue;
                 };
@@ -520,7 +526,7 @@ pub fn plugin_editor_attach_system(
 /// the two sides trading resizes. A plugin that refuses outright has the
 /// window put back to the last size it accepted.
 pub fn plugin_editor_window_resize_system(
-    _main_thread: NonSend<PluginEditorMainThread>,
+    main_thread: NonSend<PluginEditorMainThread>,
     mut events: bevy_ecs::message::MessageReader<bevy_window::WindowResized>,
     mut editors: Query<(&PluginEmitter, &mut PluginEditorOpen)>,
     mut windows: Query<&mut bevy_window::Window>,
@@ -546,7 +552,10 @@ pub fn plugin_editor_window_resize_system(
                 width: event_size.0,
                 height: event_size.1,
             };
-            match emitter.handle.set_editor_size(requested) {
+            match emitter
+                .handle
+                .set_editor_size(main_thread.token(), requested)
+            {
                 Ok(snapped) => {
                     editor.last_applied = (snapped.width, snapped.height);
                     editor.width = snapped.width;
@@ -655,7 +664,7 @@ fn requested_editor_size(
 /// `set_editor_size` so it lays out at the new bounds (per Steinberg's
 /// `IPlugFrame::resizeView` contract).
 pub fn plugin_editor_resize_request_system(
-    _main_thread: NonSend<PluginEditorMainThread>,
+    main_thread: NonSend<PluginEditorMainThread>,
     mut editors: Query<(&PluginEmitter, &mut PluginEditorOpen)>,
     mut windows: Query<&mut bevy_window::Window>,
 ) {
@@ -664,7 +673,10 @@ pub fn plugin_editor_resize_request_system(
         // do" as a present editor with no pending request, so both collapse
         // into one `None` inside the handle method rather than at each call
         // site.
-        let Some(req) = emitter.handle.poll_editor_resize_request() else {
+        let Some(req) = emitter
+            .handle
+            .poll_editor_resize_request(main_thread.token())
+        else {
             continue;
         };
         if (req.width, req.height) == editor.last_applied {
@@ -690,7 +702,7 @@ pub fn plugin_editor_resize_request_system(
 
         // Drive onSize so the plugin lays out at the new bounds. A further
         // snap gets one follow-up update; this deliberately does not loop.
-        if let Ok(snapped) = emitter.handle.set_editor_size(req)
+        if let Ok(snapped) = emitter.handle.set_editor_size(main_thread.token(), req)
             && (snapped.width, snapped.height) != (req.width, req.height)
         {
             editor.last_applied = (snapped.width, snapped.height);

@@ -88,6 +88,7 @@ impl From<TimedSendError> for SendError {
 #[derive(Clone, Debug)]
 pub struct InstrumentHandle {
     node: NodeKey,
+    main: [u16; 2],
     strip: NodeKey,
     queue: NodeKey,
     sender: TimedSender,
@@ -99,6 +100,14 @@ impl InstrumentHandle {
     #[must_use]
     pub fn node(&self) -> NodeKey {
         self.node
+    }
+
+    /// The instrument's main pair, the output ports a host plays (the
+    /// instrument's `main_outputs`). Feed a wide root from it with
+    /// [`Graph::set_outputs_from_ports`](crate::Graph::set_outputs_from_ports).
+    #[must_use]
+    pub fn main_outputs(&self) -> [usize; 2] {
+        self.main.map(usize::from)
     }
 
     /// The strip after the main pair: what a mix wires from.
@@ -256,9 +265,10 @@ impl Session {
     #[cfg(feature = "plugin")]
     pub fn instrument_plugin(
         &mut self,
+        main: &tutti_plugin::MainThread,
         loaded: crate::PluginLoaded,
     ) -> Result<InstrumentHandle, crate::Error> {
-        let node = self.add_plugin(loaded).map_err(crate::Error::from)?;
+        let node = self.add_plugin(main, loaded).map_err(crate::Error::from)?;
         self.instrument(node).inspect_err(|_| {
             self.remove(node);
         })
@@ -311,6 +321,7 @@ impl Session {
         graph.set_source(strip, 1, GraphSource::node(node, usize::from(main[1])));
         Ok(InstrumentHandle {
             node,
+            main,
             strip,
             queue,
             sender,

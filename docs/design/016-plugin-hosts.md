@@ -8,6 +8,9 @@ operations. This design moves the decisions into a pure core in
 activation splits a plugin into a realtime Processor and a main-thread
 Controller, and leaves each host crate an interpreter of effects over its FFI.
 
+What a loaded plugin *declares* (units, voices, tail, layouts, presets) is
+typed in [023](023-plugin-capabilities.md).
+
 ## Summary
 
 - **A pure core.** `step(State, Event) -> (State, Effects)` decides activation,
@@ -933,7 +936,8 @@ and from CLAP and VST3:
   no rate or block size, and `Vst2Quirks` is step 9's. `RESTARTS` is
   `RestartRules::NONE`: the core reads a changed pin count, latency or tail again.
 - The Processor holds a `vst_tutti::RenderHandle` (a copy of the `AEffect` pointer and
-  the flags `process` checks; `PluginInstance::render_handle`), so the Controller's
+  the flags `process` checks, with an `Arc` of the instance's core so `effClose` waits
+  for it; `PluginInstance::render_handle`), so the Controller's
   `&mut Vst2Loaded` has no Rust-level alias of anything the Processor calls, and its
   own clone of the plugin's parameter object (`Sync`) for the block's automation. The
   `PluginInfo` it keeps is what the plugin declared at load; the pins, latency and tail
@@ -1446,8 +1450,9 @@ and goes in `tutti-rt` with a loom model beside `pos_ring_loom.rs` that runs
 the shipped code (two threads raising while a third takes: no bit lost, each bit
 taken exactly once) and a mutation record in it.
 
-**Thread affinity is the shell's job.** `assert_main_thread` stays at every
-control entry. The core never sees a thread. `Lifecycle::drive` and every
+**Thread affinity is the token's job** (§2.9, "Thread affinity: the
+`MainThread` token"). Every control entry takes a `&MainThread`. The core never
+sees a thread. `Lifecycle::drive` and every
 `Control` method run on the main thread; `Processor::process` runs on whatever
 thread holds the Processor, and it holds nothing else of the plugin.
 
@@ -1658,6 +1663,78 @@ F6).
   `types` and `topology` are private, its types are re-exported from the root,
   and `as_raw` / `as_raw_mut` are `pub(crate)`. `raw_unit` is `pub(crate)` in
   `tutti-au-host`.
+
+### 2.9a Thread affinity: the `MainThread` token
+
+The main-thread rule was `assert_main_thread`, a `debug_assert!` that did
+nothing in release and nothing while no thread was marked. It is now a type.
+
+- `tutti_plugin_types::MainThread` is `!Send` and `!Sync` and `Copy`. Its only
+  makers are `MainThread::claim()`, where the first thread to claim becomes the
+  process's main thread, a later claim on that thread succeeds again and a claim
+  on any other is refused (`NotMainThread`); and `MainThread::current()`, which
+  never claims and answers `Some` only on the claiming thread (for a `Drop`,
+  which cannot be handed a token).
+- The claim is once per process. Under `cargo nextest` a test is a process, so it
+  claims freely; under plain `cargo test` the tests of a binary share one.
+- An entry that must run on the main thread takes `&MainThread`; holding one is
+  the proof and nothing is checked. Converted: all of `Control` but `info`,
+  `Controller::{latency, tail}`, `Loaded::{activate, deactivate, rebuild}`,
+  `Lifecycle::{apply, drive}` and `Hosted`; `PluginParams`, `PluginState`,
+  `PluginPresets`, `PluginEditorHost` and `PluginAudio::{set_sample_rate,
+  set_render_mode}`; each host crate's editor, timer, run-loop, state and preset
+  methods; `tutti-plugin`'s `HostEditor`, `HostState::load_state` and the
+  in-process `PluginEditor`; `Session::{add_plugin, land_reload}`.
+- Hosts claim once on their UI thread: `bevy-tutti`'s `TuttiHostingPlugin`
+  inserts it as the `NonSend` resource `PluginEditorMainThread`, so Bevy runs a
+  system that takes it on the main thread; the plugin server claims in
+  `PluginServer::new`.
+- AU keeps its OS check (`pthread_main_np`) in `tutti-au-ffi` as well: the
+  claimed thread need not be AppKit's.
+- A `Drop` has no token. The editor of a dropped `PluginBridge` closes only when
+  `MainThread::current()` says so; `ClapLoaded` and `Vst2Handle` check with a
+  `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
+  claims); the VST3 `Plugin` tears down on the dropping thread. The per-format
+  lanes' main-thread handles make that the main thread by construction.
+- CLAP, below the host crate: every `Plugin` entry that calls into the plugin
+  takes `&MainThread` (`tutti-clap-ffi`), and `ThreadRoles::new(&MainThread)` is
+  the one place the main thread is named: `HostState` keeps no second copy, and
+  `thread-check`, the `[main-thread]` host callbacks and `Plugin`'s drop read
+  it. A `Plugin` dropped on another thread destroys the editor and the instance
+  nowhere: it leaks them (and the library) rather than call `[main-thread]`
+  entries off the thread, so the `ClapLoaded` `debug_assert!` above is gone. The
+  host callbacks CLAP marks `[main-thread]` (timers, descriptors, rescans,
+  `mark_dirty`, `latency.changed`, undo, ...) are refused, not forwarded, when
+  a plugin calls them from any other thread or from inside an audio claim.
+  `deactivate` and `destroy` run under the roles lock without becoming the
+  audio thread (`ThreadRoles::claim_lifecycle`; only their `stop_processing`
+  is answered as audio-side), so a timer a plugin unregisters from them is
+  accepted. `Control::info` has no token, so it measures a CLAP plugin's editor
+  on the first ask from the main thread and answers `EditorPresence::Unknown`
+  elsewhere.
+- CLAP, the rest of the audit's soundness findings. `TaskPool` is an `unsafe
+  trait` and `GraphPool::new` takes only a `WorkerPool`, whose gate keeps its
+  contract; a wrapped `dyn Pool` is an `unsafe` constructor behind
+  `test-support`. `activate` refuses an active plugin and numbers CLAP forbids
+  and reads the ports before it calls the plugin; `process` checks the block
+  against `[min_frames, max_frames]` and the ports against that layout. A param
+  event with a cookie is never lent (the host mints none). State is capped at
+  1 GiB and an undo delta at 64 MiB. Output pushes are one at a time (a
+  concurrent push is refused, which closes the aliased `&mut` sink). Deferred:
+  **S9**, `Bundle::open` is a safe fn that runs native code (the premise of
+  loading a plugin, argued at its `unsafe`); **S11**, `thread-check`'s
+  `is_audio_thread` answers `false` on a pool helper inside a served task (what
+  CLAP requires there is unchecked against the spec); **S12**, the blocking
+  claim mutex that `process`, `reset` and `stop` take and the sysex allocation
+  in `OutputEventList::push` when its pool is empty (both documented, neither
+  memory-unsafe); and the owned domain types for the clap-sys structs in the
+  public API (they are pointer-free once the cookie is gone), which go with the
+  typed-flags change.
+- `Session` paths that free a retired unit (collect, commit, update, drop) take
+  no token and check with the same `debug_assert!`; the entries that open an
+  in-process plugin (`add_plugin`, `land_reload`) take the token.
+- `claim` is first-come and does not ask the OS: the host claims from its UI
+  thread at startup, and an AU editor still re-checks `pthread_main_np`.
 
 ### 2.10 The VST2 quirk: serialized exclusive calls
 
@@ -2092,3 +2169,85 @@ plugin a host inserted itself (`Graph::insert_plugin`, `host_plugin`) has no
 recorded path. State changed since the last snapshot is lost. An export
 started while the plugin is being replaced is refused (the fork of a dead
 plugin cannot save its state).
+
+**As built (the VST2 FFI crate).** The fourth format moved to the rule of §2.9, as a
+mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2.9a, the
+`Dispatcher`, owned process buffers) are the next change.
+
+- `tutti-vst2-ffi` (layer 4; `tutti-vst2-host` is now layer 5) is the host half of the
+  vst-rs fork: the `AEffect` and ABI types, `PluginLoader` and `PluginInstance`, the
+  `audioMaster` callback (`callback_wrapper`, under `catch_unwind`, checked by
+  `scripts/check-guards.sh`), `HostBuffer`, `RenderHandle`, and from the host crate the
+  event buffers (`MidiSendBuffer`, `MidiIo`, `to_midi`) and `RenderScratch`. It keeps the
+  `Plugin`, `PluginParameters` and `Editor` traits, because `PluginInstance` implements
+  them; they leave with the typed handles. MIT, derived from vst-rs 0.3.0 (`LICENSE`).
+- `tutti-vst2-host` is `#![forbid(unsafe_code)]`, checked by
+  `scripts/check-plugin-ffi.sh`. What its `unsafe` did is a safe API of the FFI crate:
+  `PluginEvents` and `SysExMessage` (a view of a plugin's event list that only
+  `host_dispatch` can make, handed to the new `Host::process_plugin_events`; the raw `Events`
+  keeps its public ABI fields and dereferences nothing),
+  `RenderScratch::render_f32_piece` / `render_f64_piece` / `render_f64_as_f32_piece` (stage,
+  length-check, render and copy out in one call; the pointer tables are private) and
+  `MidiSendBuffer::send_piece` (the pointer tables behind a safe call),
+  `PluginInstance::take_editor` (a `SendEditor`), `Send` on `PluginInstance`, and
+  `ControlCell` / `ControlKey`: the shell's cell, opened by a key the Controller alone
+  holds, which replaces `Shell`'s `UnsafeCell` and `unsafe impl Sync` and makes the
+  Processor, Controller and `Vst2Loaded` `Send` by their fields. It is in the FFI crate and
+  not in `tutti-rt` because it is a type-level capability around an `UnsafeCell`, not a
+  lock-free structure: there is no protocol between threads, so nothing for loom to model. The server loader's
+  `unsafe impl Send for Vst2Instance` is gone for the same reason. The two
+  `WindowHandle::from_ptr` decodes in the callers stay pinned.
+- The plugin-authoring half (`plugin_main!`, `main`, the plugin-side dispatcher,
+  `PluginCache`, `util`) is `testing/tutti-vst2-author`, used only by the VST2 test
+  plugins; it re-exports the FFI crate's ABI modules, so a plugin names `vst::api` from one
+  place. Nothing under `crates/` depends on it.
+
+**As built (the AU FFI crate).** The third format moved to the rule of §2.9.
+It is staged: this change moves the `unsafe` in; the cleanliness pass over the
+FFI crate follows as its own change.
+
+- `tutti-au-ffi` (macOS only, empty elsewhere; layer 4, with `tutti-au-host` now
+  in layer 5) holds every raw AudioToolbox, CoreAudio, CoreFoundation and Cocoa
+  call. `tutti-au-host` is `#![forbid(unsafe_code)]`, checked by
+  `scripts/check-plugin-ffi.sh`; every `extern "C"` body in the FFI crate runs
+  under `guard`, checked by `scripts/check-guards.sh`.
+- Owned handles: `ComponentRef` (a registry component, `Copy`, built only by
+  the registry lookups), `Unit` (an `AudioComponentInstance`, disposed when the
+  last share goes; `Send`, not `Sync`), `RenderUnit` (the `Send + Sync` share the
+  render thread holds). A listener, a render notification, a MIDI output, an
+  editor and a renderer each hold a share, so none can outlive its unit. The
+  `Plain` sealed trait is the set of types a property can be read into
+  (`Unit::get`, `set`, `get_array`).
+- `Renderer` owns the heap-pinned scratch the unit's input callback reads and
+  withdraws the callback before freeing it; `HostCallbacks` owns the transport
+  state the AU pulls and withdraws the callbacks first; `AuParameterListener`
+  and `RenderNotify` unregister on drop.
+- Public API: `AuComponentInfo.component` is `AuComponentRef` and
+  `AuInstance::new`, `new_with_config` and the `AuLoaded` ones are safe and take
+  it by value; `raw_unit()` is behind `test-support` and `AuInstance::unit()`
+  (a `&Unit`) is what the free functions of `parameters`, `identity` and
+  `offline` take; the `pub unsafe fn` count is zero. The raw packet walkers
+  moved to `tutti-au-ffi/test-support`.
+- Not in this change, as §7 lists them with the `Loaded` impl: the `AuInstance`
+  façade stays (its callers are the server loader and the contract; deleting it
+  is the `Lifecycle<AuLoaded>` switch), `AuLoaded::new` keeps its explicit rate
+  and block size (they come from `Prepare` with the `Loaded` impl), and the
+  `AuProcessor` / `AuController` split. The server's and the GUI's `au.rs` keep
+  one `WindowHandle::from_raw` each (step 5) and are not in the `check-plugin-ffi`
+  scan yet.
+- `no_installed_third_party_unit_implements_the_mapping_family` is behind
+  `tutti-au-host`'s `installed-units` feature (as `tutti-midi-hardware`'s
+  `sequencer-tests`): CI lints it and `just test-au-installed` runs it.
+- CI lints both AU crates on `macos-latest` (`clippy (macos)`).
+- **Known gap: one thread at a time is a convention.** `Unit` is `Clone` and its
+  clones share one instance, so nothing in the types stops two clones from
+  driving the unit from two threads at once (the handles are `Send`, not `Sync`,
+  but a clone is a second handle). The registrations (listener, render notify,
+  renderer) need the share to stay alive, which is why it is `Clone`. The
+  `Loaded` / `Processor` / `Controller` split closes it: the processor owns the
+  render-side handle and the controller the main-thread one, and neither is
+  `Clone`. Until then the `AuInstance` facade is the single owner that
+  serializes the calls.
+- A registration whose withdrawing property write fails (`Renderer`,
+  `HostCallbacks`, `AuMidiOutput`) leaks its state instead of freeing memory the
+  unit may still read; an editor dropped off the main thread leaks its view.

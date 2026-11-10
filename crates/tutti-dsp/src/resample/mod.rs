@@ -1,8 +1,10 @@
 //! Sample-rate conversion: a fixed-input FFT block resampler.
 
 mod fft;
+mod streaming;
 
 pub use fft::FftResampler;
+pub use streaming::{ChunkSize, StreamingResampler};
 
 /// Why an [`FftResampler`] could not be built or fed.
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
@@ -49,5 +51,12 @@ pub enum ResampleError {
         frames_in: usize,
         /// Output frames per plane the call needs room for.
         frames_out: usize,
+    },
+    /// A streaming resampler's input carry stopped shrinking after `chunks`
+    /// chunks. A bug in the resampler, not in the caller's input.
+    #[error("the resample carry stopped shrinking after {chunks} chunks")]
+    Stalled {
+        /// The chunk count the carry should have drained within.
+        chunks: usize,
     },
 }

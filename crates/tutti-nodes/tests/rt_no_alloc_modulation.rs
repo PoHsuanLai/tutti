@@ -105,7 +105,7 @@ fn stereo_delay_line_node_process_is_allocation_free() {
 fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
     // The per-channel delay-line Vec must be built at construction; the wide
     // path must not allocate per buffer.
-    let node = DelayLineNode::with_channels(6usize, 2.0_f32, 0.30_f32, 0.4_f32);
+    let node = DelayLineNode::with_channels(6u16, 2.0_f32, 0.30_f32, 0.4_f32);
     node.set_mix(0.5_f32);
     gate(node, 0.5, 2_000, |_| {});
 }
@@ -154,14 +154,14 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
         d.set_delay_time(0.05 + 0.4 * t);
         d.set_mix(t);
     });
-    let chorus = ModDelayNode::chorus(6usize);
+    let chorus = ModDelayNode::chorus(6u16);
     let c = chorus.clone();
     gate(chorus, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
         c.set_depth(0.002 + 0.01 * t);
         c.set_mix(1.0 - t);
     });
-    let phaser = PhaserNode::with_channels(6usize, 8);
+    let phaser = PhaserNode::with_channels(6u16, 8);
     let p = phaser.clone();
     gate(phaser, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
@@ -214,7 +214,7 @@ impl tutti_nodes::automation::Curve for SineCurve {
 fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use std::sync::Arc;
     use tutti_graph::{EventOut, ParamIn, Prepare, Unforkable};
-    use tutti_mod::ControlProgram;
+    use tutti_modulation::ControlProgram;
     use tutti_nodes::automation::{
         AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
     };
@@ -451,9 +451,9 @@ impl tutti_graph::Node for Probe8 {
 /// Lane `k`'s program in generation `generation` (a republish moves its depths):
 /// five kinds in turn, beats, seconds, drawn, random, and automation under
 /// a layer.
-fn lane_program(k: usize, generation: u32) -> tutti_mod::ControlProgram {
+fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
     use std::sync::Arc;
-    use tutti_mod::{
+    use tutti_modulation::{
         Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, PeriodPoint, Polarity,
         Wave,
     };
@@ -519,7 +519,7 @@ fn lane_program(k: usize, generation: u32) -> tutti_mod::ControlProgram {
                 CurveType::Exponential,
             ));
             e.add_point(AutomationPoint::new(1.3, 800.0));
-            let curve: Arc<dyn tutti_mod::Curve> = Arc::new(e);
+            let curve: Arc<dyn tutti_modulation::Curve> = Arc::new(e);
             (Some(curve), vec![layer(seconds, shape(LfoShape::Sawtooth))])
         }
     };
@@ -836,7 +836,7 @@ const CHAINS: usize = 12;
 fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use std::sync::Arc;
     use tutti_graph::{EventEdge, EventIn, EventOut, ForkByClone, ParamIn, ParamRange, Prepare};
-    use tutti_mod::{
+    use tutti_modulation::{
         Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SourceId,
     };
     use tutti_nodes::automation::ControlLaneNode;
@@ -1122,7 +1122,7 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use std::sync::Arc;
     use tutti_graph::{Editor, ForkByClone, Prepare, Transport};
-    use tutti_mod::{
+    use tutti_modulation::{
         Clock, CurveType, Declarations, Polarity, RouteDecl, RouteKey, RouteTarget,
         Source as ModSource, SourceKey, TargetDecl, TargetKey, Wave,
     };
@@ -1203,7 +1203,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
             SourceKey(1),
             ModSource::Lfo {
                 wave: Wave::Shape {
-                    shape: tutti_mod::LfoShape::Sine,
+                    shape: tutti_modulation::LfoShape::Sine,
                     seed: 0,
                 },
                 clock: Clock::Seconds {

@@ -5,7 +5,7 @@ use tutti_graph::{
     Cost, Cx, Event, EventKind, Io, Node, Offset, ParamSegment, Prepare, SegmentShape, Shape,
     Status,
 };
-use tutti_mod::{Adsr, SignalKind, SourceId, SourceNode};
+use tutti_modulation::{Adsr, SignalKind, SourceId, SourceNode};
 use tutti_types::{ChannelLayout, SampleRate};
 use tutti_types::{Frame, SamplePosition, Samples};
 use tutti_ump::Ump;
@@ -135,7 +135,7 @@ impl NoteEnvelopeNode {
         node
     }
 
-    /// The node `decl` describes (what `tutti_mod::compile` gives each
+    /// The node `decl` describes (what `tutti_modulation::compile` gives each
     /// note envelope): `None` when `decl` is not a note envelope. The rate
     /// comes at `prepare`.
     #[must_use]

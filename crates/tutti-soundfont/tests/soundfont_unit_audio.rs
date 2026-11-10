@@ -12,7 +12,8 @@ mod support;
 use support::Hand;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_nodes::testing::assert_golden;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
 
@@ -90,9 +91,8 @@ fn render_process_blocks(
 ///
 /// The three offsets are chosen at multiples of 8 deliberately — that is the
 /// resolution `SoundFontUnit` actually achieves. `process` splits the block at
-/// each event offset exactly, but rustysynth serves frames from an internal
-/// `block_size` chunk it fills whole, and 8 is the smallest `block_size` it
-/// accepts. Offsets 16 and 20 would still collide; 16 and 24 do not.
+/// each event offset exactly, but the voices render in chunks of 8 frames that
+/// they fill whole. Offsets 16 and 20 would still collide; 16 and 24 do not.
 ///
 /// On this fixture the four renders first sound at frames 41, 57, 73 and 89:
 /// each exactly `offset + 41`, the 41 being the fixture's own attack ramp.
@@ -103,7 +103,7 @@ fn render_process_blocks(
 ///
 /// - Render the whole block ignoring offsets (apply every event, then one
 ///   `render_range(0..size)`).
-/// - Keep the split but build at rustysynth's default `block_size` of 64. The
+/// - Keep the split but render in chunks of 64 (`Render::BLOCK`). The
 ///   split alone is not enough, because the internal chunk is still filled
 ///   whole.
 #[test]
@@ -195,8 +195,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     // voices, so with them on the render of two notes together is genuinely not
     // the sum of each alone — the additivity this test rests on is a property
     // of the dry voice mix. Every other setting is the default.
-    let mut settings = Settings::new(SampleRate::SR_44K1);
-    settings.reverb_and_chorus = false;
+    let settings = Settings::new(SampleRate::SR_44K1);
     const BLOCK: usize = 64;
     // Long enough for a piano attack to clear the noise floor: the fixture's
     // envelope takes ~41 frames to leave zero and several hundred more to reach
@@ -281,8 +280,8 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
 /// Mutation: render the whole block ignoring offsets → fails (the note lands at
 /// frame 0, so the "silent before frame 63" assertion trips).
 ///
-/// Note what this one does **not** catch: building at rustysynth's default
-/// `block_size` of 64 while keeping the split leaves it green, because at that
+/// Note what this one does **not** catch: rendering in chunks of 64 while
+/// keeping the split leaves it green, because at that
 /// resolution offset 63 and offset 0 both round into the same chunk and the
 /// remaining assertions are inequalities rather than equalities. The
 /// resolution is pinned by `process_honors_frame_offset_within_block`; this test
@@ -629,5 +628,9 @@ fn a_preset_units_first_note_on_renders_that_preset() {
 
     let got = digest(&out);
     // RustySynth's voices call `sin`, `exp` and `pow`, so the digest is libm's.
-    assert_golden("the soundfont voice", got, 0xcf94_549c_015d_9f17);
+    // What this pins: the unit's dry pair (outputs 0 and 1) alone. The effects
+    // left the unit (stage 3b), so the pair has no reverb in it; the digest was
+    // 0xcf94_549c_015d_9f17 while the in-unit reverb was mixed in by default,
+    // and the dry pair equals what that code rendered with its effects off.
+    assert_golden("the soundfont voice", got, 0xfbb4_4b59_223f_1840);
 }

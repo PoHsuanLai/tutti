@@ -57,6 +57,7 @@ fn set_late_latency(samples: i32) {
     let sym: libloading::Symbol<*mut std::ffi::c_void> =
         unsafe { lib.get(b"tutti_vst2_probe_set_late_latency\0") }
             .expect("probe missing symbol tutti_vst2_probe_set_late_latency");
+    // SAFETY: the probe exports this symbol with exactly this signature.
     let f: extern "C" fn(i32) = unsafe { std::mem::transmute(*sym) };
     f(samples);
 
@@ -122,7 +123,7 @@ fn latency_declared_after_construction_reaches_the_metadata() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.wiring().latency_samples,
+        instance.wiring(&main_thread()).latency_samples,
         Samples(LATE_LATENCY as usize),
         "the host read `initialDelay` from the construction-time snapshot, \
          before the plugin had been told its sample rate"
@@ -141,7 +142,7 @@ fn a_plugin_with_no_latency_reports_none() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.wiring().latency_samples,
+        instance.wiring(&main_thread()).latency_samples,
         Samples(0),
         "a probe declaring no latency must not acquire one"
     );
@@ -167,7 +168,7 @@ fn the_latency_accessor_reads_the_live_field() {
     );
     assert_eq!(
         instance.latency_samples(),
-        instance.wiring().latency_samples,
+        instance.wiring(&main_thread()).latency_samples,
         "the accessor and the wiring read the same field"
     );
 }
@@ -201,4 +202,10 @@ fn a_sample_rate_change_can_be_followed_by_a_fresh_read() {
         Samples(recomputed as usize),
         "after a rate change the host must re-ask; the load-time figure is stale"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

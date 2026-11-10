@@ -10,7 +10,7 @@
 //! `IPlugView::attached` — a segfault on the first editor open. See
 //! `run_loop.rs` for the full mechanism and how it was confirmed.
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use std::ffi::c_void;
 
 use vst3::Steinberg::{
@@ -31,9 +31,7 @@ use super::message::Message;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
-use vst3::Steinberg::Linux::{
-    FileDescriptor, IEventHandler, IRunLoop, ITimerHandler, TimerInterval,
-};
+use vst3::Steinberg::Linux::IRunLoop;
 
 #[cfg(target_os = "linux")]
 use super::run_loop::RunLoop;
@@ -46,6 +44,11 @@ pub(crate) struct HostApplication {
     /// registered through either object land in one pumped loop.
     #[cfg(target_os = "linux")]
     run_loop: Arc<RunLoop>,
+    /// The plugin this object was made for, if one: its registrations are
+    /// taken back when its editor closes or it drops. `None` for the module's
+    /// own host context, whose registrations take the run loop's scope.
+    #[cfg(target_os = "linux")]
+    owner: Option<super::run_loop::Owner>,
 }
 
 #[cfg(target_os = "linux")]
@@ -64,6 +67,7 @@ impl HostApplication {
     pub(crate) fn new(
         name: &str,
         #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
+        #[cfg(target_os = "linux")] owner: Option<super::run_loop::Owner>,
     ) -> ComWrapper<Self> {
         let mut name_utf16 = [0u16; 128];
         for (i, c) in name.encode_utf16().take(127).enumerate() {
@@ -73,6 +77,8 @@ impl HostApplication {
             name: name_utf16,
             #[cfg(target_os = "linux")]
             run_loop,
+            #[cfg(target_os = "linux")]
+            owner,
         })
     }
 }
@@ -86,48 +92,14 @@ impl HostApplication {
             name,
             #[cfg(target_os = "linux")]
             super::run_loop::RunLoop::new(),
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 }
 
 #[cfg(target_os = "linux")]
-impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
-    unsafe fn registerEventHandler(
-        &self,
-        handler: *mut IEventHandler,
-        fd: FileDescriptor,
-    ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            // SAFETY: the plugin passes a handler it keeps alive until it
-            // unregisters it, and calls from the UI thread (the `IRunLoop` contract).
-            unsafe { self.run_loop.register_event_handler(handler, fd) }
-        })
-    }
-
-    unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.unregister_event_handler(handler)
-        })
-    }
-
-    unsafe fn registerTimer(
-        &self,
-        handler: *mut ITimerHandler,
-        milliseconds: TimerInterval,
-    ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            // SAFETY: as for `registerEventHandler`: alive until unregistered, UI
-            // thread.
-            unsafe { self.run_loop.register_timer(handler, milliseconds) }
-        })
-    }
-
-    unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.unregister_timer(handler)
-        })
-    }
-}
+super::run_loop::delegate_run_loop!(HostApplication);
 
 impl IHostApplicationTrait for HostApplication {
     unsafe fn getName(&self, name: *mut String128) -> tresult {
@@ -148,13 +120,11 @@ impl IHostApplicationTrait for HostApplication {
         iid: *mut TUID,
         obj: *mut *mut c_void,
     ) -> tresult {
-        // Defined output even if the body panics.
-        if !obj.is_null() {
-            // SAFETY: a COM out-parameter the plugin passes valid for this call.
-            unsafe { *obj = std::ptr::null_mut() };
-        }
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let out = unsafe { Out::new(obj) };
+        out.set(std::ptr::null_mut());
         guard(vst3::Steinberg::kInternalError, || {
-            if cid.is_null() || iid.is_null() || obj.is_null() {
+            if cid.is_null() || iid.is_null() || out.is_null() {
                 return kInvalidArgument;
             }
             // SAFETY: `cid` and `iid` are non-null (checked above) and the ABI
@@ -169,23 +139,18 @@ impl IHostApplicationTrait for HostApplication {
             if cid_bytes == imessage_iid && iid_bytes == imessage_iid {
                 let msg = Message::new();
                 if let Some(ptr) = msg.to_com_ptr::<IMessage>() {
-                    // SAFETY: `obj` is non-null (checked above) and a valid
-                    // out-pointer; it receives the +1 reference `into_raw`
-                    // releases ownership of, which the plugin now owns.
-                    unsafe { *obj = ptr.into_raw() as *mut c_void };
+                    // The plugin owns the +1 reference `into_raw` hands over.
+                    out.set(ptr.into_raw().cast());
                     return kResultOk;
                 }
             }
             if cid_bytes == iattrlist_iid && iid_bytes == iattrlist_iid {
                 let attrs = AttributeList::new();
                 if let Some(ptr) = attrs.to_com_ptr::<IAttributeList>() {
-                    // SAFETY: as above: a valid out-pointer receiving a +1 reference.
-                    unsafe { *obj = ptr.into_raw() as *mut c_void };
+                    out.set(ptr.into_raw().cast());
                     return kResultOk;
                 }
             }
-            // SAFETY: `obj` is non-null (checked above) and a valid out-pointer.
-            unsafe { *obj = std::ptr::null_mut() };
             kNotImplemented
         })
     }
@@ -244,8 +209,8 @@ impl IPlugInterfaceSupportTrait for HostApplication {
             if iid.is_null() {
                 return kInvalidArgument;
             }
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-            // VST3 ABI.
+            // SAFETY: `iid` is non-null (checked above) and, by the ABI, valid for
+            // a read of one `TUID` for this call.
             let queried = unsafe { *iid };
             if SUPPORTED_IIDS.contains(&queried) {
                 kResultTrue

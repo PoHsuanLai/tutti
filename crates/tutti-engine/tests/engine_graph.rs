@@ -157,7 +157,7 @@ impl Node for Surround {
     fn shape(&self) -> Shape {
         Shape::audio(
             ChannelLayout::EMPTY,
-            ChannelLayout::from_count(self.channels as u16),
+            ChannelLayout::try_from(self.channels).expect("a test width is small"),
         )
         .with_tail(Tail::Unbounded)
     }

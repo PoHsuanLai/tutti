@@ -73,7 +73,9 @@ impl OutputFolds {
             by_device: Vec::new(),
         };
         for device in 1..=widest {
-            let _ = folds.support(ChannelLayout::from(device));
+            let device = ChannelLayout::try_from(device)
+                .expect("a device width the engine holds ahead is small");
+            let _ = folds.support(device);
         }
         folds
     }
@@ -122,7 +124,10 @@ impl OutputFolds {
             .find(|root| usize::from(root.layout().count()) == width);
         match declared {
             Some(root) => Fold::declared(root, device),
-            None => Fold::widths(ChannelLayout::from(width), device),
+            None => Fold::widths(
+                ChannelLayout::try_from(width).expect("a root width is within MAX_ROOT_CHANNELS"),
+                device,
+            ),
         }
     }
 
@@ -241,12 +246,13 @@ impl OutputControl {
             }
             folds.roots = next;
             // Every held device is rebuilt against the new declaration.
-            let held: Vec<usize> = (1..=folds.by_device.len())
+            let held = (1..=folds.by_device.len())
                 .filter(|d| folds.has_device(*d))
-                .collect();
+                .map(|d| ChannelLayout::try_from(d).map_err(|_| FoldError::TooWide(d)))
+                .collect::<Result<Vec<_>, _>>()?;
             folds.by_device.clear();
             for device in held {
-                folds.support(ChannelLayout::from(device))?;
+                folds.support(device)?;
             }
             Ok(true)
         })

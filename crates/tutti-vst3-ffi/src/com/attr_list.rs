@@ -1,13 +1,14 @@
 //! IAttributeList COM implementation — key/value store for plugin messages.
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use vst3::Steinberg::{
     Vst::{IAttributeList, IAttributeList_::AttrID, IAttributeListTrait, TChar},
-    kInvalidArgument, kResultOk, tresult,
+    kInternalError, kInvalidArgument, kResultOk, tresult,
 };
 use vst3::{Class, ComWrapper};
 
@@ -16,11 +17,20 @@ enum AttributeValue {
     Int(i64),
     Float(f64),
     String(Vec<u16>),
-    Binary(Vec<u8>),
+    /// Shared, so `getBinary` can keep a value alive after the key is replaced.
+    Binary(Arc<[u8]>),
 }
 
 pub struct AttributeList {
     attributes: Mutex<HashMap<String, AttributeValue>>,
+    /// The value `getBinary` last handed a pointer to, per key.
+    /// `getBinary` returns a pointer with no lifetime and releases the lock, so
+    /// a `setBinary` on the same key must not free what the pointer points at.
+    /// The SDK states no lifetime; its reference host (`HostAttributeList`)
+    /// keeps the bytes until the attribute is next set. This keeps them longer,
+    /// until the next `getBinary` of the same key (or the list's drop), which
+    /// bounds the hold at one value per key however often a message is reused.
+    lent: Mutex<HashMap<String, Arc<[u8]>>>,
 }
 
 impl Class for AttributeList {
@@ -31,6 +41,7 @@ impl AttributeList {
     pub fn new() -> ComWrapper<Self> {
         ComWrapper::new(Self {
             attributes: Mutex::new(HashMap::new()),
+            lent: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -46,7 +57,7 @@ fn key_from_ptr(key: AttrID) -> Option<String> {
 
 impl IAttributeListTrait for AttributeList {
     unsafe fn setInt(&self, id: AttrID, value: i64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -56,7 +67,9 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn getInt(&self, id: AttrID, value: *mut i64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let value = unsafe { Out::new(value) };
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -65,9 +78,7 @@ impl IAttributeListTrait for AttributeList {
             }
             match self.attributes.lock().get(&k) {
                 Some(AttributeValue::Int(v)) => {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *value = *v };
+                    value.set(*v);
                     kResultOk
                 }
                 _ => kInvalidArgument,
@@ -76,7 +87,7 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn setFloat(&self, id: AttrID, value: f64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -88,7 +99,9 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn getFloat(&self, id: AttrID, value: *mut f64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let value = unsafe { Out::new(value) };
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -97,9 +110,7 @@ impl IAttributeListTrait for AttributeList {
             }
             match self.attributes.lock().get(&k) {
                 Some(AttributeValue::Float(v)) => {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *value = *v };
+                    value.set(*v);
                     kResultOk
                 }
                 _ => kInvalidArgument,
@@ -108,7 +119,7 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn setString(&self, id: AttrID, string: *const TChar) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -119,9 +130,9 @@ impl IAttributeListTrait for AttributeList {
             let mut ptr = string;
             const MAX_STRING_LEN: usize = 65536;
             while buf.len() < MAX_STRING_LEN {
-                // SAFETY: `string` is non-null (checked above) and the ABI passes
-                // a NUL-terminated `TChar` string valid for the call; `ptr` has
-                // only advanced past units that were not the terminator.
+                // SAFETY: `string` is a non-null NUL-terminated `TChar` string
+                // valid for the call, and `ptr` has only advanced past units
+                // that were not the terminator.
                 let unit = unsafe { *ptr };
                 if unit == 0 {
                     break;
@@ -140,7 +151,7 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn getString(&self, id: AttrID, string: *mut TChar, size_in_bytes: u32) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             if string.is_null() || size_in_bytes == 0 {
                 return kInvalidArgument;
             }
@@ -149,30 +160,22 @@ impl IAttributeListTrait for AttributeList {
             };
             match self.attributes.lock().get(&k) {
                 Some(AttributeValue::String(v)) => {
+                    // `size_in_bytes` is a byte count the caller may make odd; a
+                    // buffer under one `TChar` has no room for a terminator, and
+                    // `max_chars - 1` below must not wrap.
                     let max_chars = (size_in_bytes as usize) / std::mem::size_of::<TChar>();
-                    // A buffer too small to hold even one `TChar` cannot be given a
-                    // terminator, so there is nothing valid to return. `size_in_bytes`
-                    // is a BYTE count on this boundary — the caller is free to pass an
-                    // odd one — and `1` survives the `== 0` guard above only to divide
-                    // to zero here. Rejecting it is what stops `max_chars - 1` below
-                    // from wrapping to `usize::MAX` and writing through a wild pointer.
                     if max_chars == 0 {
                         return kInvalidArgument;
                     }
                     let copy_len = v.len().min(max_chars);
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len)
-                    };
-                    // The stored value already carries its own NUL terminator, so a
-                    // full copy is terminated. On truncation the terminator is lost,
-                    // leaving the caller with an unterminated buffer — write one back
-                    // into the final slot so the returned string is always valid.
+                    // SAFETY: `string` is non-null and valid for `max_chars`
+                    // units (`size_in_bytes / 2`), and `copy_len` is at most that.
+                    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), string, copy_len) };
+                    // A full copy carries the stored value's terminator; a
+                    // truncated one lost it, so the last slot gets one back.
                     if v.len() > max_chars {
-                        // SAFETY: `string` is non-null with room for `max_chars` units
-                        // (`size_in_bytes` / 2, at least 1 as checked above), so the last slot
-                        // is in bounds.
+                        // SAFETY: slot `max_chars - 1` is inside the buffer
+                        // (`max_chars` is at least 1, checked above).
                         unsafe { *string.add(max_chars - 1) = 0 };
                     }
                     kResultOk
@@ -183,60 +186,59 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn setBinary(&self, id: AttrID, data: *const c_void, size_in_bytes: u32) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
             if data.is_null() {
                 return kInvalidArgument;
             }
-            // SAFETY: a COM method: `data` is non-null (checked above) and, per the VST3 ABI, valid
-            // for `size_in_bytes` bytes for this call.
+            // SAFETY: `data` is non-null and the ABI makes it valid for
+            // `size_in_bytes` bytes for this call.
             let slice =
-                unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) };
+                unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size_in_bytes as usize) };
             self.attributes
                 .lock()
-                .insert(k, AttributeValue::Binary(slice.to_vec()));
+                .insert(k, AttributeValue::Binary(Arc::from(slice)));
             kResultOk
         })
     }
 
     /// Returns a borrowed pointer to the stored binary value.
     ///
-    /// # Caveat
+    /// # Lifetime
     ///
-    /// The returned `*data` pointer borrows the `Vec`'s current allocation and
-    /// is valid only until the next mutation of this attribute list (a
-    /// subsequent `setBinary`/`setString`/… on the same key may reallocate or
-    /// drop the backing buffer). The caller must copy out the bytes before
-    /// mutating the list, matching how VST3 hosts consume message attributes
-    /// synchronously inside `IConnectionPoint::notify`.
+    /// The pointer stays valid until the next `getBinary` of the same key or the
+    /// list's drop: the value is kept in `lent` when it is handed out, so a
+    /// `setBinary` on the key replaces the attribute and leaves the bytes this
+    /// pointer names alone. One value is held per key, so a message reused for
+    /// many rounds holds a bounded amount.
     unsafe fn getBinary(
         &self,
         id: AttrID,
         data: *mut *const c_void,
         size_in_bytes: *mut u32,
     ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // SAFETY: COM out-parameters: each null or valid for this call.
+        let (data, size) = unsafe { (Out::new(data), Out::new(size_in_bytes)) };
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
-            match self.attributes.lock().get(&k) {
-                Some(AttributeValue::Binary(v)) => {
-                    if !data.is_null() {
-                        // SAFETY: a COM method: the plugin passes pointers valid for this call,
-                        // per the
-                        // VST3 ABI.
-                        unsafe { *data = v.as_ptr() as *const c_void };
-                    }
-                    if !size_in_bytes.is_null() {
-                        // SAFETY: `size_in_bytes` is non-null (checked just above) and a valid
-                        // out-pointer for the call.
-                        unsafe { *size_in_bytes = v.len() as u32 };
-                    }
+            // Cloned out of the attribute map, then lent: the map's lock is not
+            // held past this statement.
+            let value = match self.attributes.lock().get(&k) {
+                Some(AttributeValue::Binary(v)) => Some(Arc::clone(v)),
+                _ => None,
+            };
+            match value {
+                Some(v) => {
+                    self.lent.lock().insert(k, Arc::clone(&v));
+                    data.set(v.as_ptr().cast());
+                    size.set(v.len() as u32);
                     kResultOk
                 }
-                _ => kInvalidArgument,
+                None => kInvalidArgument,
             }
         })
     }
@@ -429,5 +431,75 @@ mod tests {
             }
             other => panic!("Expected String, got {:?}", other),
         }
+    }
+
+    /// **A pointer `getBinary` returned stays readable after the key is set
+    /// again.** The lock is released on return, and the pointer used to name the
+    /// stored `Vec`, which `setBinary` dropped: a plugin that read it after the
+    /// sender reused the message read freed memory.
+    ///
+    /// The lifetime is observed through a `Weak` of the stored buffer, not by
+    /// reading freed memory: the buffer must still be alive after the key is
+    /// replaced.
+    ///
+    /// Mutations (run, each fails): have `getBinary` skip the `lent` insert ->
+    /// the `weak.upgrade()` assertion; make `lent` a list that only grows ->
+    /// the bounded assertion.
+    #[test]
+    fn a_binary_pointer_outlives_its_replacement() {
+        let attrs = AttributeList::new();
+        let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
+        let key = make_key("blob");
+        let first = [1u8, 2, 3, 4];
+        let mut data: *const c_void = std::ptr::null();
+        let mut size = 0u32;
+        // SAFETY: the test calls COM methods on a live object it owns, with arguments valid
+        // for each call.
+        unsafe {
+            assert_eq!(
+                ptr.setBinary(key.as_ptr(), first.as_ptr().cast(), 4),
+                kResultOk
+            );
+            assert_eq!(ptr.getBinary(key.as_ptr(), &mut data, &mut size), kResultOk);
+        }
+        let weak = match attrs.attributes.lock().get("blob") {
+            Some(AttributeValue::Binary(v)) => Arc::downgrade(v),
+            other => panic!("expected Binary, got {other:?}"),
+        };
+        // SAFETY: as above.
+        unsafe {
+            let second = [9u8; 4096];
+            assert_eq!(
+                ptr.setBinary(key.as_ptr(), second.as_ptr().cast(), 4096),
+                kResultOk
+            );
+        }
+        assert!(weak.upgrade().is_some(), "the lent buffer outlives its key");
+        // SAFETY: the buffer is alive (just asserted), held by `lent`.
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(data.cast::<u8>(), size as usize),
+                &first
+            );
+        }
+        assert_eq!(attrs.lent.lock().len(), 1, "one value lent");
+        // Rounds of set and get on the key hold one value, not one per round.
+        // SAFETY: as above.
+        unsafe {
+            for round in 0..1000u32 {
+                let bytes = round.to_le_bytes();
+                assert_eq!(
+                    ptr.setBinary(key.as_ptr(), bytes.as_ptr().cast(), 4),
+                    kResultOk
+                );
+                let (mut again, mut n) = (std::ptr::null(), 0u32);
+                assert_eq!(ptr.getBinary(key.as_ptr(), &mut again, &mut n), kResultOk);
+            }
+        }
+        assert_eq!(attrs.lent.lock().len(), 1, "bounded: one value per key");
+        assert!(
+            weak.upgrade().is_none(),
+            "the first buffer went at the next get"
+        );
     }
 }

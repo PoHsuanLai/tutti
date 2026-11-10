@@ -469,7 +469,7 @@ fn decode_flac_verified(path: &std::path::Path) -> (Vec<f32>, usize, Option<bool
 fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
     let d = tempfile::tempdir().unwrap();
     for width in [1usize, 2, 6] {
-        let layout = ChannelLayout::from(width);
+        let layout = ChannelLayout::try_from(width).expect("a test width is small");
         let graph = || {
             let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
             let id = g.add(

@@ -1,6 +1,7 @@
 //! The control surface of a VST2 plugin in the shared vocabulary, implemented by
 //! [`Vst2Loaded`] and, through it, by [`Vst2Controller`](crate::Vst2Controller).
 
+use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     Control, EditorPresence, Features, LoadedPlugin, Normalized, ParamId, ParameterInfo,
@@ -66,7 +67,7 @@ impl Control for Vst2Loaded {
 
     /// The wiring read from the plugin now: its pin counts, latency and tail are
     /// asked of the `AEffect` and the dispatcher, not remembered from load.
-    fn wiring(&self) -> LoadedPlugin {
+    fn wiring(&self, __main: &MainThread) -> LoadedPlugin {
         let (inputs, outputs) = self.pins();
         LoadedPlugin {
             // VST2 is single-bus: one main input bus, one main output bus.
@@ -91,7 +92,7 @@ impl Control for Vst2Loaded {
         }
     }
 
-    fn parameters(&self) -> Vec<ParameterInfo> {
+    fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
         self.parameter_list()
     }
 
@@ -99,17 +100,14 @@ impl Control for Vst2Loaded {
     /// declared parameter, or the plugin exposes no `getParameter`, which VST 2.4
     /// permits for a plugin declaring no parameters: that is not a parameter at
     /// zero.
-    fn parameter(&self, id: ParamId) -> Option<Normalized> {
-        let index = self.param_index(id)?;
-        self.params
-            .get_parameter(index)
-            .map(|v| Normalized::clamped(f64::from(v)))
+    fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
+        self.parameter_value(id)
     }
 
     /// Applied now, with `setParameter`, which the SDK allows from either thread.
     /// A write to a parameter the plugin does not have, or one it exposes no
     /// `setParameter` for, is discarded.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         let _ = self.write_parameter(id, value);
     }
 
@@ -131,11 +129,8 @@ impl Control for Vst2Loaded {
     /// `Normalized::get` did not rescale it — so a value that round-tripped
     /// through this seam compares bit-equal, and one that did not is not a value
     /// the plugin can describe anyway.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        let current = Control::parameter(self, id)?;
-        (current.get() == value.get())
-            .then(|| self.parameter_display(id))
-            .flatten()
+    fn parameter_text(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        self.display_if_current(id, value)
     }
 
     /// Parse `text` through the plugin's own `effString2Parameter`.
@@ -147,15 +142,20 @@ impl Control for Vst2Loaded {
     /// because the alternative — refusing to implement it — would leave a user
     /// unable to type a value into a VST2 field at all. The value is read back
     /// after the write, since the opcode reports only acceptance.
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
+    fn parameter_value_from_text(
+        &self,
+        _main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
         self.set_parameter_from_string(id, text)
     }
 
-    fn save_state(&mut self) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
         self.read_state().map_err(plugin_error)
     }
 
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
+    fn load_state(&mut self, _main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
         self.write_state(bytes).map_err(plugin_error)
     }
 
@@ -163,8 +163,8 @@ impl Control for Vst2Loaded {
     /// a position in `[0, numPrograms)` — so unlike AU's sparse selectors these
     /// are genuinely dense. Unnamed slots are kept: dropping one would renumber
     /// every program after it.
-    fn presets(&mut self) -> Vec<Preset> {
-        self.programs()
+    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+        self.programs(main)
             .into_iter()
             .map(|(index, name)| Preset::new(PresetId::Number(index), name))
             .collect()
@@ -172,14 +172,14 @@ impl Control for Vst2Loaded {
 
     /// Switch program, bracketed by `effBeginSetProgram`/`effEndSetProgram`.
     /// `false` for an id this format cannot address.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
         match id.number() {
-            Some(index) => self.set_program(index),
+            Some(index) => self.set_program(main, index),
             None => false,
         }
     }
 
-    fn current_preset(&mut self) -> Option<PresetId> {
-        Some(PresetId::Number(self.current_program()))
+    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+        Some(PresetId::Number(self.current_program(main)))
     }
 }

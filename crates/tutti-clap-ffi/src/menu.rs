@@ -1,6 +1,6 @@
 //! `clap.context-menu`: a plugin's menu for a target, read through a builder.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::c_void;
 use std::ptr;
 
 use clap_sys::ext::context_menu::{
@@ -12,8 +12,9 @@ use clap_sys::ext::context_menu::{
     clap_context_menu_item_title, clap_context_menu_submenu, clap_context_menu_target,
 };
 
-use crate::guard::guard;
+use crate::guard::{ctx_mut, guard, lossy as text};
 use crate::plugin::Plugin;
+use tutti_plugin_types::MainThread;
 
 /// What a context menu is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,19 +83,13 @@ pub enum MenuItem {
     EndSubmenu,
 }
 
-/// A nul-terminated string field the plugin passed, lossily.
+/// The struct a non-null `item_data` names, `None` for null.
 ///
 /// # Safety
-/// `ptr` is null or nul-terminated and readable.
-unsafe fn text(ptr: *const c_char) -> String {
-    if ptr.is_null() {
-        String::new()
-    } else {
-        // SAFETY: the contract.
-        unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned()
-    }
+/// `data` is null or points to a `T` readable for the call.
+unsafe fn item<'a, T>(data: *const c_void) -> Option<&'a T> {
+    // SAFETY: the contract.
+    unsafe { data.cast::<T>().as_ref() }
 }
 
 /// `clap_context_menu_builder.add_item`: appends to the `Vec<MenuItem>` the
@@ -116,17 +111,17 @@ extern "C" fn add_item(
         }
         // SAFETY: `ctx` is the `&mut Vec<MenuItem>` of `populate`, alive and
         // otherwise unused while the plugin runs inside it.
-        let items = unsafe { &mut *ctx.cast::<Vec<MenuItem>>() };
+        let items = unsafe { ctx_mut::<Vec<MenuItem>>(ctx) };
         // SAFETY (each arm): the plugin passes a struct of the kind
         // `item_kind` names (`context-menu.h`), readable for the call;
         // checked non-null; its strings are nul-terminated.
         let item = match item_kind {
             CLAP_CONTEXT_MENU_ITEM_ENTRY => {
-                if item_data.is_null() {
+                // SAFETY: the plugin passes a struct of the kind `item_kind` names,
+                // readable for the call (`context-menu.h`).
+                let Some(e) = (unsafe { item::<clap_context_menu_entry>(item_data) }) else {
                     return false;
-                }
-                // SAFETY: the plugin passes a struct of the kind `item_kind` names, readable for the call (`context-menu.h`).
-                let e = unsafe { &*item_data.cast::<clap_context_menu_entry>() };
+                };
                 MenuItem::Entry {
                     // SAFETY: its `label` is null or nul-terminated.
                     label: unsafe { text(e.label) },
@@ -135,11 +130,11 @@ extern "C" fn add_item(
                 }
             }
             CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY => {
-                if item_data.is_null() {
+                // SAFETY: the plugin passes a struct of the kind `item_kind` names,
+                // readable for the call (`context-menu.h`).
+                let Some(e) = (unsafe { item::<clap_context_menu_check_entry>(item_data) }) else {
                     return false;
-                }
-                // SAFETY: as the entry above.
-                let e = unsafe { &*item_data.cast::<clap_context_menu_check_entry>() };
+                };
                 MenuItem::CheckEntry {
                     // SAFETY: as above.
                     label: unsafe { text(e.label) },
@@ -150,11 +145,11 @@ extern "C" fn add_item(
             }
             CLAP_CONTEXT_MENU_ITEM_SEPARATOR => MenuItem::Separator,
             CLAP_CONTEXT_MENU_ITEM_TITLE => {
-                if item_data.is_null() {
+                // SAFETY: the plugin passes a struct of the kind `item_kind` names,
+                // readable for the call (`context-menu.h`).
+                let Some(t) = (unsafe { item::<clap_context_menu_item_title>(item_data) }) else {
                     return false;
-                }
-                // SAFETY: as above.
-                let t = unsafe { &*item_data.cast::<clap_context_menu_item_title>() };
+                };
                 MenuItem::Title {
                     // SAFETY: as above.
                     title: unsafe { text(t.title) },
@@ -162,11 +157,11 @@ extern "C" fn add_item(
                 }
             }
             CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU => {
-                if item_data.is_null() {
+                // SAFETY: the plugin passes a struct of the kind `item_kind` names,
+                // readable for the call (`context-menu.h`).
+                let Some(s) = (unsafe { item::<clap_context_menu_submenu>(item_data) }) else {
                     return false;
-                }
-                // SAFETY: as above.
-                let s = unsafe { &*item_data.cast::<clap_context_menu_submenu>() };
+                };
                 MenuItem::BeginSubmenu {
                     // SAFETY: as above.
                     label: unsafe { text(s.label) },
@@ -216,7 +211,11 @@ impl Plugin {
     /// `context-menu.populate`: the plugin's items for `target`, `None` when
     /// it has none to offer.
     #[must_use]
-    pub fn context_menu_populate(&self, target: MenuTarget) -> Option<Vec<MenuItem>> {
+    pub fn context_menu_populate(
+        &self,
+        _main: &MainThread,
+        target: MenuTarget,
+    ) -> Option<Vec<MenuItem>> {
         let populate = self.context_menu_ext()?.populate?;
         let target = target.raw();
         let mut items = Vec::new();
@@ -233,7 +232,12 @@ impl Plugin {
     }
 
     /// `context-menu.perform`.
-    pub fn context_menu_perform(&self, target: MenuTarget, action_id: u32) -> bool {
+    pub fn context_menu_perform(
+        &self,
+        _main: &MainThread,
+        target: MenuTarget,
+        action_id: u32,
+    ) -> bool {
         let Some(perform) = self.context_menu_ext().and_then(|e| e.perform) else {
             return false;
         };

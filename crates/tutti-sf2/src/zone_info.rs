@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
-use crate::error::SoundFontError;
+use crate::error::Error;
 
 #[non_exhaustive]
 pub(crate) struct ZoneInfo {
@@ -12,7 +12,7 @@ pub(crate) struct ZoneInfo {
 }
 
 impl ZoneInfo {
-    fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
+    fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let generator_index = reader.read_u16()? as i32;
         let modulator_index = reader.read_u16()? as i32;
 
@@ -27,9 +27,9 @@ impl ZoneInfo {
     pub(crate) fn read_from_chunk<R: Read>(
         reader: &mut R,
         size: usize,
-    ) -> Result<Vec<ZoneInfo>, SoundFontError> {
+    ) -> Result<Vec<ZoneInfo>, Error> {
         if size == 0 || !size.is_multiple_of(4) {
-            return Err(SoundFontError::InvalidZoneList);
+            return Err(Error::InvalidZoneList);
         }
 
         let count = size / 4;
@@ -37,6 +37,16 @@ impl ZoneInfo {
         let mut zones: Vec<ZoneInfo> = Vec::new();
         for _i in 0..count {
             zones.push(ZoneInfo::new(reader)?);
+        }
+
+        // The generator and modulator indices only grow (SF2 2.04 section 7.3);
+        // a file whose do not is structurally defective.
+        for pair in zones.windows(2) {
+            if pair[1].generator_index < pair[0].generator_index
+                || pair[1].modulator_index < pair[0].modulator_index
+            {
+                return Err(Error::InvalidZoneList);
+            }
         }
 
         for i in 0..(count - 1) {

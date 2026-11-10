@@ -515,7 +515,7 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
     // Ask the plugin to request the restart, then drain the notification the
     // way a host's poll loop does.
     inst.set_parameter(PARAM_REQUEST_IO_CHANGED, 1.0);
-    let restart = inst.poll_plugin_notifications(|_| {});
+    let restart = inst.poll_plugin_notifications(&main_thread(), |_| {});
     assert!(
         restart.io_changed,
         "the probe requested restartComponent(kIoChanged) but it did not reach \
@@ -1065,7 +1065,7 @@ fn reported_latency_matches_the_plugins_actual_delay() {
 
     // The probe only reports latency while in latency mode, so this must be
     // read after the mode switch.
-    let reported = inst.latency_samples();
+    let reported = inst.latency_samples(&main_thread());
     assert_eq!(
         reported, PROBE_LATENCY_SAMPLES,
         "host reported {reported} samples of latency; the plugin declares \
@@ -1313,7 +1313,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
     // parameter changes, so a static value produces nothing.
     let info = inst.plugin_info().clone();
     let param_ids: Vec<u32> = inst
-        .parameter_ids()
+        .parameter_ids(&main_thread())
         .into_iter()
         .map(|id| id.get())
         .collect();
@@ -1374,9 +1374,10 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 #[test]
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
-    let loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
+    let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
 
-    let want = Some(tutti_vst3_host::process_context_flags::NEED_TEMPO);
+    let want = Some(tutti_vst3_host::ProcessContextRequirements::NEED_TEMPO);
     assert_eq!(
         loaded.context_requirements(),
         want,
@@ -1411,7 +1412,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    let _ = inst.poll_plugin_notifications(|_| {});
+    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
 
     for i in 0..=NOTIFICATION_CAPACITY {
         plugin_perform_edit(&inst, 100, i as f64 / NOTIFICATION_CAPACITY as f64);
@@ -1419,7 +1420,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     assert_eq!(inst.dropped_notifications(), 1);
 
     let mut edits = 0;
-    let outcome = inst.poll_plugin_notifications(|n| {
+    let outcome = inst.poll_plugin_notifications(&main_thread(), |n| {
         if let PluginNotification::Edit(_) = n {
             edits += 1;
         }
@@ -1431,7 +1432,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     assert_eq!(edits, NOTIFICATION_CAPACITY, "the oldest are delivered");
 
     plugin_perform_edit(&inst, 100, 0.5);
-    let outcome = inst.poll_plugin_notifications(|_| {});
+    let outcome = inst.poll_plugin_notifications(&main_thread(), |_| {});
     assert!(
         !outcome.notifications_overflowed,
         "reported once, not on every later poll"
@@ -1495,24 +1496,25 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
     use tutti_plugin_types::{Control, Normalized};
 
     let _guard = plugin_guard();
-    let mut loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
+    let mut loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
 
-    let listed = loaded.parameter_ids();
+    let listed = loaded.parameter_ids(&main_thread());
     let unlisted = (0..=u32::MAX)
         .map(ParamId::new)
         .find(|c| !listed.contains(c))
         .expect("some id is unlisted");
 
-    assert!(loaded.parameter_info(unlisted).is_none());
-    assert_eq!(Control::parameter(&loaded, unlisted), None);
+    assert!(loaded.parameter_info(&main_thread(), unlisted).is_none());
+    assert_eq!(Control::parameter(&loaded, &main_thread(), unlisted), None);
 
     let before: Vec<_> = listed
         .iter()
         .map(|i| loaded.get_parameter(i.get()))
         .collect();
-    let saved_before = Control::save_state(&mut loaded).expect("the probe saves");
-    Control::set_parameter(&mut loaded, unlisted, Normalized::of(0.25));
-    assert_eq!(Control::parameter(&loaded, unlisted), None);
+    let saved_before = Control::save_state(&mut loaded, &main_thread()).expect("the probe saves");
+    Control::set_parameter(&mut loaded, &main_thread(), unlisted, Normalized::of(0.25));
+    assert_eq!(Control::parameter(&loaded, &main_thread(), unlisted), None);
     let after: Vec<_> = listed
         .iter()
         .map(|i| loaded.get_parameter(i.get()))
@@ -1521,7 +1523,7 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
     // The write is not remembered for the next activation either: it would be
     // in the saved state.
     assert_eq!(
-        Control::save_state(&mut loaded).expect("the probe saves"),
+        Control::save_state(&mut loaded, &main_thread()).expect("the probe saves"),
         saved_before
     );
 }
@@ -1540,15 +1542,23 @@ mod loaded_writes {
     const RAMP_LEVEL: f64 = 0.75;
 
     fn load() -> Vst3Loaded {
-        Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads")
+        Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+            .expect("audio-probe loads")
     }
 
     fn write(loaded: &mut Vst3Loaded, id: u32, value: f64) {
-        Control::set_parameter(loaded, ParamId::new(id), Normalized::clamped(value));
+        Control::set_parameter(
+            loaded,
+            &main_thread(),
+            ParamId::new(id),
+            Normalized::clamped(value),
+        );
     }
 
     fn read(plugin: &impl Control, id: u32) -> Option<f64> {
-        plugin.parameter(ParamId::new(id)).map(Normalized::get)
+        plugin
+            .parameter(&main_thread(), ParamId::new(id))
+            .map(Normalized::get)
     }
 
     /// A loaded probe in ramp mode at `RAMP_LEVEL`, by controller writes alone.
@@ -1597,11 +1607,11 @@ mod loaded_writes {
     fn a_write_to_a_loaded_plugin_survives_a_save_and_restore() {
         let _guard = plugin_guard();
         let mut source = written();
-        let blob = Control::save_state(&mut source).expect("the probe saves");
+        let blob = Control::save_state(&mut source, &main_thread()).expect("the probe saves");
 
         let mut restored = load();
         assert_eq!(read(&restored, PARAM_RAMP), Some(0.0), "a fresh probe");
-        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
         assert_eq!(read(&restored, PARAM_RAMP), Some(RAMP_LEVEL));
 
         let block = first_block(restored);
@@ -1628,19 +1638,24 @@ mod loaded_writes {
         let _guard = plugin_guard();
 
         let mut loaded = load();
-        let plain = Control::save_state(&mut loaded).expect("the probe saves");
+        let plain = Control::save_state(&mut loaded, &main_thread()).expect("the probe saves");
         assert_eq!(plain[VERSION_AT], 1);
 
         write(&mut loaded, PARAM_RAMP, RAMP_LEVEL);
-        let pending = Control::save_state(&mut loaded).expect("the probe saves");
+        let pending = Control::save_state(&mut loaded, &main_thread()).expect("the probe saves");
         assert_eq!(pending[VERSION_AT], 2, "a loaded write is stored");
 
         let mut inst = activated(load());
-        Control::set_parameter(&mut *inst, ParamId::new(PARAM_RAMP), Normalized::of(0.5));
+        Control::set_parameter(
+            &mut *inst,
+            &main_thread(),
+            ParamId::new(PARAM_RAMP),
+            Normalized::of(0.5),
+        );
         for _ in 0..3 {
             render(&mut inst, 64, &[], None, |_, _, _| 0.0);
         }
-        let blob = Control::save_state(&mut *inst).expect("the probe saves");
+        let blob = Control::save_state(&mut *inst, &main_thread()).expect("the probe saves");
         assert_eq!(blob[VERSION_AT], 1, "a write a block took is not stored");
     }
 
@@ -1661,10 +1676,10 @@ mod loaded_writes {
     fn a_save_between_activation_and_the_first_block_keeps_the_loaded_writes() {
         let _guard = plugin_guard();
         let mut inst = activated(written());
-        let blob = Control::save_state(&mut *inst).expect("the probe saves");
+        let blob = Control::save_state(&mut *inst, &main_thread()).expect("the probe saves");
 
         let mut restored = load();
-        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
         let block = first_block(restored);
         assert!(
             block.iter().all(|&v| v == RAMP_LEVEL as f32),
@@ -1684,10 +1699,10 @@ mod loaded_writes {
         let mut source = activated(load());
         write_active(&mut source, PARAM_MODE, MODE_RAMP);
         write_active(&mut source, PARAM_RAMP, RAMP_LEVEL);
-        let blob = Control::save_state(&mut *source).expect("the probe saves");
+        let blob = Control::save_state(&mut *source, &main_thread()).expect("the probe saves");
 
         let mut restored = load();
-        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
         let block = first_block(restored);
         assert!(
             block.iter().all(|&v| v == RAMP_LEVEL as f32),
@@ -1697,7 +1712,12 @@ mod loaded_writes {
     }
 
     fn write_active(inst: &mut Active, id: u32, value: f64) {
-        Control::set_parameter(&mut **inst, ParamId::new(id), Normalized::clamped(value));
+        Control::set_parameter(
+            &mut **inst,
+            &main_thread(),
+            ParamId::new(id),
+            Normalized::clamped(value),
+        );
     }
 
     /// A version 2 blob loaded into an active plugin reaches its next block: the
@@ -1709,13 +1729,13 @@ mod loaded_writes {
     #[test]
     fn a_blob_with_pending_writes_loaded_into_an_active_plugin_reaches_its_next_block() {
         let _guard = plugin_guard();
-        let blob = Control::save_state(&mut written()).expect("the probe saves");
+        let blob = Control::save_state(&mut written(), &main_thread()).expect("the probe saves");
 
         let mut inst = load()
             .activate_at::<f32>(48_000.0, 64)
             .map_err(|(_, e)| e)
             .expect("the probe activates");
-        Control::load_state(&mut *inst, &blob).expect("the blob loads");
+        Control::load_state(&mut *inst, &main_thread(), &blob).expect("the blob loads");
 
         let block = render(&mut inst, 64, &[], None, |_, _, _| 0.0).out[0][0].clone();
         assert!(
@@ -1737,9 +1757,9 @@ mod loaded_writes {
         let _guard = plugin_guard();
         let mut source = load();
         write(&mut source, PARAM_GAIN, 0.25);
-        let blob = Control::save_state(&mut source).expect("the probe saves");
+        let blob = Control::save_state(&mut source, &main_thread()).expect("the probe saves");
 
-        let listed = source.parameter_ids();
+        let listed = source.parameter_ids(&main_thread());
         let unlisted = (0..=u32::MAX)
             .find(|c| !listed.contains(&ParamId::new(*c)))
             .expect("some id is unlisted");
@@ -1751,9 +1771,9 @@ mod loaded_writes {
         crafted.extend_from_slice(&blob[TABLE_AT + 4..]);
 
         let mut restored = load();
-        Control::load_state(&mut restored, &crafted).expect("the blob loads");
+        Control::load_state(&mut restored, &main_thread(), &crafted).expect("the blob loads");
         assert_eq!(
-            Control::save_state(&mut restored).expect("the probe saves"),
+            Control::save_state(&mut restored, &main_thread()).expect("the probe saves"),
             blob
         );
     }
@@ -1789,7 +1809,7 @@ mod loaded_writes {
         let _guard = plugin_guard();
         let reference = {
             let mut source = written();
-            Control::save_state(&mut source).expect("the probe saves")
+            Control::save_state(&mut source, &main_thread()).expect("the probe saves")
         };
         // The reference's body, after its two-entry table.
         let body = &reference[13 + 2 * 12..];
@@ -1809,8 +1829,8 @@ mod loaded_writes {
         blob.extend_from_slice(body);
 
         let mut restored = load();
-        Control::load_state(&mut restored, &blob).expect("the blob loads");
-        let saved = Control::save_state(&mut restored).expect("the probe saves");
+        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
+        let saved = Control::save_state(&mut restored, &main_thread()).expect("the probe saves");
         assert_eq!(stored_writes(&saved), 2);
     }
 
@@ -1825,7 +1845,7 @@ mod loaded_writes {
         let blob = v2_blob(&[(PARAM_GAIN, 0.25)], &[], &[]);
         let mut restored = load();
         assert_eq!(read(&restored, PARAM_GAIN), Some(1.0), "the probe default");
-        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
         assert_eq!(read(&restored, PARAM_GAIN), Some(0.25));
     }
 
@@ -1845,7 +1865,7 @@ mod loaded_writes {
             &[],
         );
         let mut restored = load();
-        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
         let block = first_block(restored);
         assert!(
             block.iter().all(|&v| v == RAMP_LEVEL as f32),
@@ -1869,8 +1889,14 @@ mod loaded_writes {
             &[],
         );
         let mut restored = load();
-        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
         assert_eq!(read(&restored, PARAM_GAIN), Some(0.0), "NaN is 0");
         assert_eq!(read(&restored, PARAM_RAMP), Some(1.0), "infinity saturates");
     }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

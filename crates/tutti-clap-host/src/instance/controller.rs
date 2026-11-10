@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
     Control, Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail,
@@ -85,9 +86,19 @@ impl ClapController {
     /// pool never happens on the audio thread.
     pub fn set_thread_pool(
         &mut self,
-        pool: Option<Arc<dyn tutti_graph::Pool>>,
-    ) -> Option<Arc<dyn tutti_graph::Pool>> {
-        let old = ClapLoaded::set_thread_pool(self, pool);
+        pool: Option<Arc<tutti_graph::WorkerPool>>,
+    ) -> Option<Arc<tutti_clap_ffi::GraphPool>> {
+        self.set_task_pool(pool.map(|pool| Arc::new(tutti_clap_ffi::GraphPool::new(pool))))
+    }
+
+    /// [`set_thread_pool`](Self::set_thread_pool) with the served pool built by
+    /// the caller, for a test that gates a wrapped pool.
+    #[doc(hidden)]
+    pub fn set_task_pool(
+        &mut self,
+        pool: Option<Arc<tutti_clap_ffi::GraphPool>>,
+    ) -> Option<Arc<tutti_clap_ffi::GraphPool>> {
+        let old = ClapLoaded::set_task_pool(self, pool);
         let snapshot = self.pool_snapshot();
         self.pools.publish(PoolCell(snapshot));
         old
@@ -122,9 +133,13 @@ impl Drop for ClapController {
     fn drop(&mut self) {
         // The FFI plugin stops processing under the audio claim (waiting out a
         // `process` in flight), deactivates, and destroys on drop, so a
-        // Processor that outlives this renders nothing.
-        if let Some(mut loaded) = self.loaded.take() {
-            loaded.deactivate_plugin();
+        // Processor that outlives this renders nothing. A drop off the main
+        // thread has no token to deactivate with: the FFI plugin then leaks
+        // the instance instead (its drop).
+        if let Some(mut loaded) = self.loaded.take()
+            && let Some(main) = MainThread::current()
+        {
+            loaded.deactivate_plugin(&main);
         }
     }
 }
@@ -133,12 +148,12 @@ impl Controller for ClapController {
     type Loaded = ClapLoaded;
     type Processor = ClapProcessor;
 
-    fn latency(&self) -> Samples {
-        Samples(self.latency_samples() as usize)
+    fn latency(&self, main: &MainThread) -> Samples {
+        Samples(self.latency_samples(main) as usize)
     }
 
-    fn tail(&self) -> PluginTail {
-        self.tail_samples()
+    fn tail(&self, main: &MainThread) -> PluginTail {
+        self.tail_samples(main)
             .map_or(PluginTail::Unknown, PluginTail::from_clap_samples)
     }
 }
@@ -188,8 +203,8 @@ impl ClapController {
 
     /// Reads the parameters again and republishes the ranges the Processor
     /// denormalizes against. Allocates; main thread.
-    pub(crate) fn republish_ranges(&mut self) {
-        let table = self.read_param_ranges();
+    pub(crate) fn republish_ranges(&mut self, main: &MainThread) {
+        let table = self.read_param_ranges(main);
         self.ranges.publish(table);
     }
 }
@@ -200,6 +215,7 @@ impl ClapLoaded {
     // The error carries the halves and the whole plugin back, which is the point.
     #[allow(clippy::result_large_err)]
     fn rejoin(
+        main: &MainThread,
         mut processor: ClapProcessor,
         mut controller: ClapController,
     ) -> Result<ClapLoaded, (ClapProcessor, ClapController, PluginError)> {
@@ -229,11 +245,11 @@ impl ClapLoaded {
             .loaded
             .take()
             .expect("a Controller holds its plugin until it is consumed");
-        loaded.deactivate_plugin();
+        loaded.deactivate_plugin(main);
         // An inactive plugin takes a `params.flush` on the main thread, so the
         // writes land now and the next activation starts from them.
         for (id, value) in pending {
-            Control::set_parameter(&mut loaded, id, value);
+            Control::set_parameter(&mut loaded, main, id, value);
         }
         Ok(loaded)
     }
@@ -246,15 +262,20 @@ impl Loaded for ClapLoaded {
     /// CLAP restarts for latency and for the audio ports.
     const RESTARTS: RestartRules = RestartRules::CLAP;
 
-    fn activate(self, prepare: Prepare) -> Result<(ClapProcessor, ClapController), Refused<Self>> {
-        self.activate_now(prepare)
+    fn activate(
+        self,
+        main: &MainThread,
+        prepare: Prepare,
+    ) -> Result<(ClapProcessor, ClapController), Refused<Self>> {
+        self.activate_now(main, prepare)
     }
 
     fn deactivate(
+        main: &MainThread,
         processor: ClapProcessor,
         controller: ClapController,
     ) -> Result<Self, Stuck<ClapProcessor, ClapController>> {
-        Self::rejoin(processor, controller).map_err(|(processor, controller, reason)| Stuck {
+        Self::rejoin(main, processor, controller).map_err(|(processor, controller, reason)| Stuck {
             processor,
             controller,
             reason,

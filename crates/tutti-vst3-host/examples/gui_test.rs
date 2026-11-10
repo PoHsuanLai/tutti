@@ -45,23 +45,24 @@ impl ApplicationHandler for App {
 
         // Load plugin first to get editor size
         println!("Loading plugin: {}", PLUGIN_PATH);
-        let plugin = match Vst3Loaded::load(Path::new(PLUGIN_PATH), LoadOptions::new()) {
-            Ok(p) => {
-                println!(
-                    "Loaded: {} by {}",
-                    p.plugin_info().name,
-                    p.plugin_info().vendor
-                );
-                p
-            }
-            Err(e) => {
-                eprintln!("Failed to load plugin: {:?}", e);
-                event_loop.exit();
-                return;
-            }
-        };
+        let plugin =
+            match Vst3Loaded::load(&main_thread(), Path::new(PLUGIN_PATH), LoadOptions::new()) {
+                Ok(p) => {
+                    println!(
+                        "Loaded: {} by {}",
+                        p.plugin_info().name,
+                        p.plugin_info().vendor
+                    );
+                    p
+                }
+                Err(e) => {
+                    eprintln!("Failed to load plugin: {:?}", e);
+                    event_loop.exit();
+                    return;
+                }
+            };
 
-        if !plugin.has_editor() {
+        if !plugin.has_editor(&main_thread()) {
             eprintln!("Plugin has no editor");
             event_loop.exit();
             return;
@@ -91,7 +92,7 @@ impl ApplicationHandler for App {
                 println!("Closing...");
                 // Close editor before exiting
                 if let Some(plugin) = &mut self.plugin {
-                    plugin.close_editor();
+                    plugin.close_editor(&main_thread());
                 }
                 event_loop.exit();
             }
@@ -134,7 +135,7 @@ impl ApplicationHandler for App {
                     println!("Opening plugin editor...");
                     let handle = unsafe { WindowHandle::from_raw(parent) };
                     let scale = ContentScale::new(window.scale_factor()).unwrap_or_default();
-                    match plugin.open_editor(handle, scale) {
+                    match plugin.open_editor(&main_thread(), handle, scale) {
                         Ok(size) => {
                             println!("Editor opened: {}x{}", size.width, size.height);
                             // Resize window to fit editor
@@ -170,4 +171,10 @@ fn main() {
 
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("Event loop error");
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

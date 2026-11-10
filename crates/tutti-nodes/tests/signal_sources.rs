@@ -14,7 +14,7 @@ use tutti_graph::{
     ForkTarget, Io, Node, Offset, ParamIn, ParamRange, ParamSegment, Prepare, Shape, Status,
     Transport, TransportChanges,
 };
-use tutti_mod::{
+use tutti_modulation::{
     Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SignalKind, SourceId,
     SourceNode,
 };

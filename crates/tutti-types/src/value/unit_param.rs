@@ -100,6 +100,22 @@ pub enum UnitParam {
     /// Solo toggle: **`>= 0.5` is soloed**, below is not. Encoded as
     /// [`Mute`](Self::Mute) is.
     Solo = 24,
+    /// Reverb decay: the RT60, the time the tail takes to fall 60 dB
+    /// (`Seconds`, `>= 0`).
+    ///
+    /// A reverb has up to three, told apart by the [`UnitAddr`] index:
+    /// **0 is the mid band** (the only one a single-decay reverb has), **1 the
+    /// low band** and **2 the high band**. The band edges are the node's
+    /// [`Cutoff`](Self::Cutoff) params. Index 0 is the plain id.
+    Decay = 25,
+    /// Reverb diffusion: how much the echo density builds up, as a position
+    /// on a `0..1` scale (`Mix`; `0` is sparse, `1` is smooth). Each reverb
+    /// maps it onto its own scale (allpass gain, stage count).
+    Diffusion = 26,
+    /// Reverb freeze: **`>= 0.5` holds the tail**, below lets it decay. Encoded
+    /// as [`Mute`](Self::Mute) is. A frozen reverb loses nothing round its loop
+    /// and takes no input, so its tail never ends.
+    Freeze = 27,
 }
 
 /// The error converting a `u16` that is not a known [`UnitParam`]
@@ -156,6 +172,9 @@ impl TryFrom<u16> for UnitParam {
             22 => Knee,
             23 => Bypass,
             24 => Solo,
+            25 => Decay,
+            26 => Diffusion,
+            27 => Freeze,
             other => return Err(UnitParamOutOfRange(other)),
         })
     }
@@ -593,7 +612,7 @@ mod tests {
 
     #[test]
     fn u16_round_trips() {
-        for id in 0..=24u16 {
+        for id in 0..=27u16 {
             let p = UnitParam::try_from(id).expect("known id");
             assert_eq!(u16::from(p), id);
         }
@@ -615,11 +634,30 @@ mod tests {
         assert_eq!(u16::from(UnitParam::StereoSpread), 19);
     }
 
+    /// The reverb kinds are appended after `Solo` and the next id is still
+    /// unknown, so an older build meets `Decay` as an unknown id to ignore.
+    ///
+    /// Mutation (run): swap the two ids in `TryFrom<u16>` (`25 => Diffusion`)
+    /// → both asserts on the ids fail.
+    #[test]
+    fn the_reverb_kinds_are_appended() {
+        assert_eq!(u16::from(UnitParam::Decay), 25);
+        assert_eq!(u16::from(UnitParam::Diffusion), 26);
+        assert_eq!(UnitParam::try_from(25), Ok(UnitParam::Decay));
+        assert_eq!(UnitParam::try_from(26), Ok(UnitParam::Diffusion));
+        assert_eq!(UnitParam::try_from(27), Ok(UnitParam::Freeze));
+        assert_eq!(UnitParam::try_from(28), Err(UnitParamOutOfRange(28)));
+        // Decay's three bands are indices of one kind.
+        for (index, packed) in [(0u8, 0x0019u16), (1, 0x0119), (2, 0x0219)] {
+            assert_eq!(UnitAddr::new(UnitParam::Decay, index).to_u16(), packed);
+        }
+    }
+
     /// Every variant, with the id it has always had. The id is persisted
     /// (and is `AudioParam`'s `P`), so this table is the compatibility
     /// record: a renumbered or re-ordered variant fails here by name, which
     /// `u16_round_trips` (any id maps to *some* variant) cannot say.
-    const PINNED: [(UnitParam, u16); 25] = [
+    const PINNED: [(UnitParam, u16); 28] = [
         (UnitParam::Cutoff, 0),
         (UnitParam::Q, 1),
         (UnitParam::GainDb, 2),
@@ -645,6 +683,9 @@ mod tests {
         (UnitParam::Knee, 22),
         (UnitParam::Bypass, 23),
         (UnitParam::Solo, 24),
+        (UnitParam::Decay, 25),
+        (UnitParam::Diffusion, 26),
+        (UnitParam::Freeze, 27),
     ];
 
     /// **Index 0 is bit-identical to the id before indices existed**, for
@@ -691,7 +732,7 @@ mod tests {
     /// in `TryFrom<u16> for UnitAddr` → `0x010A` decodes the wrong param → fails.
     #[test]
     fn unknown_kinds_and_indexed_ids_are_refused_by_the_right_decoder() {
-        assert_eq!(UnitAddr::try_from(0x0119), Err(UnitParamOutOfRange(0x0119)));
+        assert_eq!(UnitAddr::try_from(0x011C), Err(UnitParamOutOfRange(0x011C)));
         assert_eq!(UnitAddr::try_from(0x00FF), Err(UnitParamOutOfRange(0x00FF)));
         // 9_999 is 0x270F: kind 15 at index 39, which is a known kind.
         assert_eq!(
@@ -710,8 +751,8 @@ mod tests {
     /// Mutation (run): drop the low byte from the `Display` text → fails.
     #[test]
     fn the_out_of_range_error_names_the_low_byte() {
-        let e = UnitAddr::try_from(0x0119).unwrap_err();
-        assert_eq!(e.to_string(), "unknown UnitParam id: 281 (low byte 25)");
+        let e = UnitAddr::try_from(0x011C).unwrap_err();
+        assert_eq!(e.to_string(), "unknown UnitParam id: 284 (low byte 28)");
     }
 
     /// An address is equal to a bare param only at index 0, in both

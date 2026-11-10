@@ -5,10 +5,15 @@
 //! for the span of one extension call ([`Plugin::state_save`](crate::Plugin)
 //! and friends build it on their own stack).
 
-use crate::guard::guard;
+use crate::guard::{ctx_mut, guard};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use std::ffi::c_void;
 use std::ptr;
+
+/// The most a plugin may write to one [`OutputStream`]: the bound on what a
+/// plugin that never stops writing takes from the host. 1 GiB holds any
+/// sampler state in practice.
+pub(crate) const MAX_STATE_BYTES: usize = 1 << 30;
 
 /// A writable stream the plugin appends bytes to during state save.
 #[derive(Debug, Default)]
@@ -71,10 +76,23 @@ extern "C" fn ostream_write(stream: *const clap_ostream, buffer: *const c_void, 
         // SAFETY: `ctx` is the `&mut OutputStream` the stream was built from
         // (`with_raw`/`raw`), which outlives the call it is handed to; the plugin
         // calls `write` only inside that call.
-        let out = unsafe { &mut *(*stream).ctx.cast::<OutputStream>() };
+        let out = unsafe { ctx_mut::<OutputStream>((*stream).ctx) };
+        // A size no slice can have is refused before it is made one, and a
+        // state that would pass the cap is refused whole: a plugin that writes
+        // without end gets `-1`, not the host's memory.
+        let Ok(len) = usize::try_from(size) else {
+            return -1;
+        };
+        if len > isize::MAX as usize
+            || len > MAX_STATE_BYTES - out.buffer.len().min(MAX_STATE_BYTES)
+            || out.buffer.try_reserve(len).is_err()
+        {
+            return -1;
+        }
         // SAFETY: the plugin guarantees `buffer` addresses `size` readable bytes
-        // for the duration of the call (`stream.h`).
-        let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), size as usize) };
+        // for the duration of the call (`stream.h`); `len` is that size, and
+        // is at most `isize::MAX` (checked above).
+        let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), len) };
         out.buffer.extend_from_slice(data);
         size as i64
     })
@@ -141,7 +159,7 @@ extern "C" fn istream_read(stream: *const clap_istream, buffer: *mut c_void, siz
         }
         // SAFETY: `ctx` is the `&mut InputStream` the stream was built from
         // (`with_raw`/`raw`), which outlives the call it is handed to.
-        let input = unsafe { &mut *(*stream).ctx.cast::<InputStream<'_>>() };
+        let input = unsafe { ctx_mut::<InputStream<'_>>((*stream).ctx) };
         let remaining = input.data.len() - input.position;
         let to_read = (size as usize).min(remaining);
         if to_read == 0 {
@@ -213,5 +231,37 @@ mod tests {
             }
         });
         assert_eq!(stream.data(), [1, 2, 3]);
+    }
+
+    /// A write that no slice can describe, or that would pass the cap, is
+    /// refused (`-1`) before the plugin's buffer is read: the buffer here is a
+    /// dangling pointer, so a read would crash. What was written stays.
+    ///
+    /// Mutation: drop the `MAX_STATE_BYTES` comparison in `ostream_write`: the
+    /// huge write builds a slice over the dangling pointer and the process
+    /// faults instead of answering `-1`.
+    #[test]
+    fn a_write_past_the_cap_is_refused_before_it_is_read() {
+        let mut stream = OutputStream::new();
+        let dangling = std::ptr::NonNull::<u8>::dangling()
+            .as_ptr()
+            .cast::<c_void>();
+        stream.with_raw(|raw| {
+            // SAFETY: `raw` is the live stream `with_raw` built. The buffer is
+            // never read: every call below is refused first.
+            unsafe {
+                let write = (*raw).write.unwrap();
+                assert_eq!(write(raw, dangling, MAX_STATE_BYTES as u64 + 1), -1);
+                assert_eq!(write(raw, dangling, u64::MAX), -1);
+                let one = [7u8];
+                assert_eq!(write(raw, one.as_ptr().cast(), 1), 1);
+                assert_eq!(
+                    write(raw, dangling, MAX_STATE_BYTES as u64),
+                    -1,
+                    "the cap counts what is already written"
+                );
+            }
+        });
+        assert_eq!(stream.data(), [7]);
     }
 }

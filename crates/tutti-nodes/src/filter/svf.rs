@@ -385,7 +385,7 @@ impl<F: Real + 'static> Node for SvfFilterNode<F> {
     /// input stops, for as long as its Q says, so the graph's tail fold (what
     /// an export renders past the end) must not read it as `None`.
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::from_count(self.width() as u16);
+        let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_params(&SVF_PARAMS)
@@ -790,7 +790,7 @@ mod tests {
     /// `param_base(2)` answering the Q cell → fails.
     #[test]
     fn the_shape_is_the_width_and_declares_cutoff_q_and_gain() {
-        let f = SvfFilterNode::<f64>::with_channels(6usize, SvfType::LowPass, 1000.0, 0.7);
+        let f = SvfFilterNode::<f64>::with_channels(6u16, SvfType::LowPass, 1000.0, 0.7);
         let shape = f.shape();
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (6, 6));
         assert_eq!(
@@ -816,7 +816,7 @@ mod tests {
         let mut frames: Vec<&[f32]> = vec![&silent; 6];
         frames[4] = &sig;
         let out = render_wide(
-            SvfFilterNode::<f64>::with_channels(6usize, SvfType::LowPass, 1000.0, 0.707),
+            SvfFilterNode::<f64>::with_channels(6u16, SvfType::LowPass, 1000.0, 0.707),
             &frames,
         );
         let mono_out = render(

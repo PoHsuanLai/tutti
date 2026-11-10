@@ -602,9 +602,10 @@ impl AuInstance {
     /// Delivers a block of UMP MIDI events to an instrument / music-effect AU as
     /// legacy `MusicDeviceMIDIEvent` calls.
     ///
-    /// Each channel-voice event is decoded to a 3-byte MIDI 1.0 message (status
-    /// byte + up to two data bytes, MIDI 2.0 resolutions scaled down per spec)
-    /// and delivered at its block offset through `MusicDeviceMIDIEvent`.
+    /// Each channel-voice event goes out as the MIDI 1.0 messages it stands for
+    /// (`tutti_midi_protocol::midi1`: MIDI 2.0 resolutions narrowed per spec,
+    /// and a banked Program Change as CC 0, CC 32, then the program), each at
+    /// the event's block offset through `MusicDeviceMIDIEvent`.
     ///
     /// **SysEx goes out through `MusicDeviceSysEx`** (`MusicDevice.h:237-241`),
     /// a separate entry point that takes a byte buffer rather than a packed
@@ -621,9 +622,9 @@ impl AuInstance {
     /// the caller gates on that. Errors from individual events are ignored so a
     /// single rejected message can't abort the whole block.
     pub fn send_midi(&self, events: &[UmpAt]) {
-        use tutti_midi_types::MidiMessage;
-        use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
+        use tutti_midi_protocol::midi1;
         use tutti_plugin_types::{SysExStep, is_framed};
+        use tutti_ump::{Message, decode};
 
         /// Hands a complete SysEx message to the AU.
         ///
@@ -650,72 +651,26 @@ impl AuInstance {
 
         let unit = self.unit();
         for &(offset, ev) in events {
-            // (status, data1, data2) for the legacy 3-byte message, or None if
-            // this message has no legacy channel-voice representation.
-            let (status, d1, d2) = match MidiMessage::from_ump(ev) {
-                MidiMessage::NoteOn {
-                    channel,
-                    note,
-                    velocity,
-                    ..
-                } => {
-                    // A zero-velocity note-on is a note-off; keep it as note-on
-                    // 0x90 with velocity 0 (a legal legacy note-off encoding).
-                    // Any other velocity stays at least 1.
-                    (
-                        0x90 | channel.get(),
-                        note & 0x7F,
-                        tutti_plugin_types::note_on_velocity_midi1(velocity),
-                    )
-                }
-                MidiMessage::NoteOff {
-                    channel,
-                    note,
-                    velocity,
-                    ..
-                } => {
-                    let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
-                    (0x80 | channel.get(), note & 0x7F, vel & 0x7F)
-                }
-                MidiMessage::PolyPressure {
-                    channel,
-                    note,
-                    pressure,
-                    ..
-                } => (
-                    0xA0 | channel.get(),
-                    note & 0x7F,
-                    midi2_cc_to_midi1(pressure) & 0x7F,
-                ),
-                MidiMessage::ControlChange {
-                    channel,
-                    index,
-                    value,
-                    ..
-                } => (
-                    0xB0 | channel.get(),
-                    index & 0x7F,
-                    midi2_cc_to_midi1(value) & 0x7F,
-                ),
-                MidiMessage::ProgramChange {
-                    channel, program, ..
-                } => (0xC0 | channel.get(), program & 0x7F, 0),
-                MidiMessage::ChannelPressure {
-                    channel, pressure, ..
-                } => (0xD0 | channel.get(), midi2_cc_to_midi1(pressure) & 0x7F, 0),
-                MidiMessage::PitchBend { channel, value, .. } => {
-                    let bend14 = midi2_pitch_bend_to_midi1(value);
-                    (
-                        0xE0 | channel.get(),
-                        (bend14 & 0x7F) as u8,
-                        (bend14 >> 7) as u8 & 0x7F,
-                    )
+            match decode(ev) {
+                // A channel voice message as the MIDI 1.0 messages it stands
+                // for (`midi1`: a MIDI 1.0 one as it came, a MIDI 2.0 one
+                // narrowed, a Note On never at velocity 0, and a banked
+                // Program Change as CC 0, CC 32, then the program; doc 027
+                // D16). One with no MIDI 1.0 form (per-note controllers,
+                // RPN/NRPN, per-note management) sends nothing.
+                Ok(message @ (Message::Midi1(..) | Message::Midi2(..))) => {
+                    for bytes in midi1(message) {
+                        let [status, d1, d2] = bytes.padded();
+                        let _ = unit.midi_event(status, d1, d2, offset.get());
+                    }
                 }
                 // SysEx has no 3-byte form; it goes out through a different
-                // AU entry point entirely. Reassembled across packets first —
+                // AU entry point entirely. Reassembled across packets first:
                 // a UMP SysEx7 packet carries at most 6 bytes, so anything
-                // longer than that arrives as START/CONTINUE.../END.
-                MidiMessage::Other(_) => {
+                // longer arrives as START/CONTINUE.../END. Anything else
+                // (system, stream, utility) has no AUv2 delivery and the
+                // assembler passes it by.
+                _ => {
                     if let SysExStep::Complete(message) = sysex.push(&ev) {
                         // `MusicDeviceSysEx` takes the complete message,
                         // `0xF0` and `0xF7` included (`MusicDevice.h`).
@@ -723,12 +678,7 @@ impl AuInstance {
                         debug_assert!(is_framed(bytes));
                         send_sysex(unit, bytes);
                     }
-                    continue;
                 }
-                _ => continue,
-            };
-            {
-                let _ = unit.midi_event(status, d1, d2, offset.get());
             }
         }
     }

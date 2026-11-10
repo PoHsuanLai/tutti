@@ -620,11 +620,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
   `Error`, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
-  float) and their models of doc 024 (`SvfModel`, an `Lti` with `SvfDesign` and
-  `SvfRealization`; the small-signal `LadderModel`; `CrossoverModel`, the crossover's
-  design apart from its state, a multi-output `Lti`; `Biquad`, the shared
-  second-order section; the SVF's `Cadence::Every(16)`: one `process` call ramps
-  across its segment, held by the `Lti` group's `segment_end` case), the dynamics curves, followers and kernels, the partitioned
+  float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
+  `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
+  multi-output `Lti`; `Biquad`, the shared second-order section; the realizations
+  and `Cadence::Every(16)` are step 2b's), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
@@ -639,8 +638,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   realization of a model and an `Effect<M>` its planar block shape, prepared from a
   `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
   over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` are the
-  engineering that sizes and schedules it: `Block`, or `Every(n)` for a control a lane
-  moves inside a block), the reverb model of doc 022 (`Network`,
+  engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
   a `System` and an `Lti`, with `Bounds` and `FreeverbDesign`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
   a realization must follow; a `Design` writes its model in place, `design_into`, because a

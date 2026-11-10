@@ -194,17 +194,7 @@ impl<F: Real> SvfCoefficients<F> {
         gain_db: Db,
         sample_rate: SampleRate,
     ) -> Self {
-        Self::from_coeffs(
-            &SvfCoeffs::new(filter_type, freq, q, gain_db, sample_rate),
-            freq,
-            q,
-            gain_db,
-        )
-    }
-
-    /// The set of `c`, which was solved at `freq`, `q` and `gain_db`.
-    #[must_use]
-    pub fn from_coeffs(c: &SvfCoeffs, freq: Hz, q: Q, gain_db: Db) -> Self {
+        let c = SvfCoeffs::new(filter_type, freq, q, gain_db, sample_rate);
         Self {
             a1: F::from_f64(c.a1),
             a2: F::from_f64(c.a2),

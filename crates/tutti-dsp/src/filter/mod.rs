@@ -8,8 +8,6 @@ mod ladder;
 mod ladder_model;
 mod real;
 mod svf;
-#[cfg(test)]
-mod svf_contract;
 mod svf_model;
 
 pub use biquad::Biquad;
@@ -19,4 +17,4 @@ pub use ladder::{LadderCoefficients, LadderCoeffs, LadderType, ladder_step};
 pub use ladder_model::LadderModel;
 pub use real::Real;
 pub use svf::{SvfCoefficients, SvfCoeffs, SvfType, svf_step};
-pub use svf_model::{SvfBounds, SvfControls, SvfDesign, SvfModel, SvfRealization};
+pub use svf_model::{SvfControls, SvfModel};

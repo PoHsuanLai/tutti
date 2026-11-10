@@ -2,7 +2,7 @@
 
 use super::harness::{MAX_BLOCK, built, noise, rate_of, render, widths};
 use super::{DesignCase, Hook, RealizationCase};
-use crate::{Cadence, Realization, Sizes, System};
+use crate::{Realization, Sizes, System};
 
 /// The hooks that return nothing and are not listed, and the listed ones that
 /// do return something: an error naming the first, or `Ok`.
@@ -325,14 +325,6 @@ pub(super) mod realization {
     /// Mutation (run, in `fdn_design.rs`): `FdnKernel::process` that restarts its
     /// chunk count at every call (a test-only flaw) fails.
     pub fn stream_clock<D: RealizationCase>(d: &D) -> Result<(), String> {
-        // A design with `Cadence::Every` ramps across the node's segment, which
-        // is cut from the block's start: its clock is the node's, not the
-        // stream's, and blocks of 1 and 17 differ from blocks of 512 by design
-        // (the old schedule of the filters, kept: Q21). The `segment_end` case of
-        // the `Lti` group holds its ramp to account instead.
-        if matches!(D::CADENCE, Cadence::Every(_)) {
-            return Ok(());
-        }
         const SPAN: usize = 8704;
         let rate = rate_of(d);
         let shape = widths(d);

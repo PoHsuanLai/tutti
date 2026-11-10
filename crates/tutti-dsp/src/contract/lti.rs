@@ -3,9 +3,9 @@
 use tutti_types::{Db, Hz, SampleRate};
 
 use super::basic::{check_vacuity, every};
-use super::harness::{MAX_BLOCK, WINDOW, built, burst, noise, rate_of, render, rms, widths};
+use super::harness::{WINDOW, built, burst, noise, rate_of, render, rms, widths};
 use super::{Hook, LtiCase, RealizationCase};
-use crate::{Cadence, Complex32, Complex64, Lti, RealFft, Realization, Ring, System};
+use crate::{Complex32, Complex64, Lti, RealFft, Realization, Ring, System};
 
 /// The frames an impulse response is rendered for: up to the model's tail at
 /// -100 dB, a power of two (an FFT of the response is exact), or `None` for a
@@ -31,41 +31,6 @@ fn impulse<D: LtiCase + RealizationCase>(
     let mut x = vec![0.0f32; frames];
     x[0] = 1.0;
     (render(&mut k, widths(d), &x, 512), model)
-}
-
-/// The relative error (`L2`, over the FFT bins) of each output's spectrum `ir`
-/// (an impulse response of `frames`, a power of two) against `model`'s response.
-fn response_errors<M: Lti>(
-    ir: &[Vec<f32>],
-    model: &M,
-    rate: SampleRate,
-    frames: usize,
-) -> Vec<f64> {
-    let fft = RealFft::new(frames);
-    let mut scratch = fft.new_scratch();
-    let stride = (fft.bins() / 16_384).max(1);
-    let freqs: Vec<Hz> = (0..fft.bins())
-        .step_by(stride)
-        .map(|k| Hz((k as f64 * rate.get() / frames as f64) as f32))
-        .collect();
-    ir.iter()
-        .enumerate()
-        .take(model.outputs())
-        .map(|(output, channel)| {
-            let mut bins = vec![Complex32::new(0.0, 0.0); fft.bins()];
-            fft.forward(channel, &mut bins, &mut scratch);
-            let mut want = vec![Complex64::new(0.0, 0.0); freqs.len()];
-            model.frequency_response(output, &freqs, &mut want);
-            let (mut num, mut den) = (0.0f64, 0.0f64);
-            for (i, w) in want.iter().enumerate() {
-                let m = bins[i * stride];
-                let got = Complex64::new(f64::from(m.re), f64::from(m.im));
-                num += (got - w).norm_sqr();
-                den += w.norm_sqr();
-            }
-            (num / den).sqrt()
-        })
-        .collect()
 }
 
 /// The design cases of the `Lti` group.
@@ -413,10 +378,26 @@ pub(super) mod realization {
                 continue;
             };
             let (ir, model) = impulse(d, &c, rate, frames);
-            for (output, err) in response_errors(&ir, &model, rate, frames)
-                .into_iter()
-                .enumerate()
-            {
+            let fft = RealFft::new(frames);
+            let mut scratch = fft.new_scratch();
+            let stride = (fft.bins() / 16_384).max(1);
+            let freqs: Vec<Hz> = (0..fft.bins())
+                .step_by(stride)
+                .map(|k| Hz((k as f64 * rate.get() / frames as f64) as f32))
+                .collect();
+            for (output, channel) in ir.iter().enumerate().take(model.outputs()) {
+                let mut bins = vec![Complex32::new(0.0, 0.0); fft.bins()];
+                fft.forward(channel, &mut bins, &mut scratch);
+                let mut want = vec![Complex64::new(0.0, 0.0); freqs.len()];
+                model.frequency_response(output, &freqs, &mut want);
+                let (mut num, mut den) = (0.0f64, 0.0f64);
+                for (i, w) in want.iter().enumerate() {
+                    let m = bins[i * stride];
+                    let got = Complex64::new(f64::from(m.re), f64::from(m.im));
+                    num += (got - w).norm_sqr();
+                    den += w.norm_sqr();
+                }
+                let err = (num / den).sqrt();
                 checked += 1;
                 if err.is_nan() || err > d.response_tolerance() {
                     return Err(format!(
@@ -546,57 +527,6 @@ pub(super) mod realization {
         }
         if checked == 0 {
             return Err("no probe with a finite tail".into());
-        }
-        Ok(())
-    }
-    /// At the end of a segment the realization is at the model: a design with a
-    /// [`Cadence::Every`] cadence ramps from one target to the next across **one
-    /// call**, the segment, and must land on it. Built at `a`, retargeted to `b`
-    /// and given one call of the cadence's length of silence (the state stays
-    /// zero, so only the coefficients move), the realization's impulse response
-    /// is `b`'s, `response_tolerance` from the model's response. A realization that
-    /// has not reached `b` is still ramping and its response is between the two.
-    ///
-    /// A [`Cadence::Block`] design has no segments, and the case is an error
-    /// there: it is listed only by a design that has a cadence (`Every` in the
-    /// macros).
-    ///
-    /// Mutation (run, in `svf_model.rs`): a realization that keeps its previous
-    /// coefficients after the call (never lands) fails; a ramp whose last frame is
-    /// `(i + 0) / n` of the way instead of `(i + 1) / n` fails the same way.
-    pub fn segment_end<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
-        let Cadence::Every(n) = D::CADENCE else {
-            return Err("a design with `Cadence::Block` has no segments".into());
-        };
-        let rate = rate_of(d);
-        let mut checked = 0;
-        for (a, b) in d.steps() {
-            let (mut k, _) = built(d, &a, rate);
-            let model = d.design(&b, rate);
-            k.retarget(&model);
-            render(&mut k, widths(d), &vec![0.0f32; n.get()], n.get());
-            let Some(frames) = ir_frames(&model, rate) else {
-                continue;
-            };
-            let mut x = vec![0.0f32; frames];
-            x[0] = 1.0;
-            let ir = render(&mut k, widths(d), &x, MAX_BLOCK);
-            for (output, err) in response_errors(&ir, &model, rate, frames)
-                .into_iter()
-                .enumerate()
-            {
-                checked += 1;
-                if err.is_nan() || err > d.response_tolerance() {
-                    return Err(format!(
-                        "output {output}: after a segment of {n} frames the realization's \
-                         response is {err:.3e} from the target's (tolerance {})",
-                        d.response_tolerance()
-                    ));
-                }
-            }
-        }
-        if checked == 0 {
-            return Err("no step with an impulse response to measure".into());
         }
         Ok(())
     }

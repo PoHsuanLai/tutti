@@ -181,12 +181,6 @@ macro_rules! __realization_group {
             $crate::contract::cases::realization::tail_tight(&$design).unwrap();
         }
     };
-    (Every, $design:expr) => {
-        #[test]
-        fn realization_contract_segment_end() {
-            $crate::contract::cases::realization::segment_end(&$design).unwrap();
-        }
-    };
     (reverb, $design:expr) => {
         #[test]
         fn realization_contract_rt60() {

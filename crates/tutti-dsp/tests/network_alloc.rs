@@ -9,7 +9,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use tutti_dsp::{Design, FreeverbControls, FreeverbDesign};
+use tutti_dsp::{Design, Effect, FreeverbControls, FreeverbDesign};
 use tutti_types::{Mix, SampleRate};
 
 struct Counting;
@@ -120,7 +120,7 @@ fn freeverb_retargets_and_renders_without_allocating() {
         let n = allocations(|| {
             design.design_into(&c, rate, &mut network);
             realization.retarget(&network);
-            Realization::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
+            Effect::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
         });
         assert_eq!(n, 0, "the block allocated");
     }
@@ -196,7 +196,7 @@ fn the_fdn_retargets_and_renders_without_allocating() {
         let n = allocations(|| {
             design.design_into(&c, rate, &mut network);
             realization.retarget(&network);
-            Realization::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
+            Effect::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
         });
         assert_eq!(n, 0, "the block allocated");
     }

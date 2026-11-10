@@ -35,16 +35,32 @@ libm = "0.2.15"
 # The `Error` enum's Display/Error impls.
 thiserror.workspace = true
 
+# Seeded noise for the `contract` feature's measured cases (`contract/harness.rs`).
+rand = { version = "0.8", optional = true }
+
 [features]
 # No `bevy` feature, and no default features. This crate is a library of
 # algorithms over `&[f32]` (filters, dynamics, convolution, delay, reverb);
 # a host that wants these results in an ECS wires them up on its own side.
 default = []
+# The contract suite, `tutti_dsp::contract` (design 024 section 6): the cases a
+# design and its realization are held to, the one public module of the crate.
+# Test support, so off by default: this crate's own tests turn it on through the
+# self dev-dependency below, and a crate with a design of its own turns it on in
+# its dev-dependency on this one. `rand` is its seeded noise.
+contract = ["dep:rand"]
 
 [dev-dependencies]
+# Turns `contract` on for this crate's own tests (the pattern `tutti-graph`
+# uses for its `contract`).
+tutti-dsp = { path = ".", features = ["contract"] }
 # Reproducible noise for the reverb's tests. Seeded, so an assertion is not
 # flaky.
 rand = "0.8"
+# `check_range_contract` for `MaxDecay`, and `Seconds`'s serde for it.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-types = { path = "../tutti-types", default-features = false, features = ["serde"] }
+serde = "1"
 
 [package.metadata.docs.rs]
 all-features = true

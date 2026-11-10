@@ -46,9 +46,10 @@ impl Event {
             Payload::LegacyCcOut(e) => out.__field0.midiCCOut = e.0,
             Payload::Data(e) => {
                 out.__field0.data = sdk::DataEvent {
-                    size: e.size,
-                    r#type: e.data_type,
-                    bytes: e.bytes.as_ptr(),
+                    // `size()` never exceeds the inline array (`Data`'s fields are private).
+                    size: e.size(),
+                    r#type: e.data_type(),
+                    bytes: e.payload().as_ptr(),
                 };
             }
             Payload::SysEx(r) => {
@@ -143,11 +144,7 @@ impl Event {
                     // is at most that and at most the destination's length.
                     unsafe { std::ptr::copy_nonoverlapping(e.bytes, bytes.as_mut_ptr(), n) };
                 }
-                Payload::Data(Data {
-                    size: e.size.min(16),
-                    data_type: e.r#type,
-                    bytes,
-                })
+                Payload::Data(Data::from_plugin(e.r#type, e.size, bytes))
             }
             EventKind::NoteExpressionText => {
                 let e = member!(event, noteExpressionText);

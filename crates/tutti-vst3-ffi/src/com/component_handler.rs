@@ -37,7 +37,7 @@
 use crate::guard::guard;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
-use tutti_plugin_types::{Request, RescanScope};
+use tutti_plugin_types::{Normalized, Request, RescanScope};
 use tutti_rt::RequestWord;
 
 use arrayvec::ArrayString;
@@ -467,7 +467,8 @@ impl IComponentHandlerTrait for ComponentHandler {
         guard(vst3::Steinberg::kInternalError, || {
             self.edit(ParameterEditEvent::PerformEdit {
                 param_id: id,
-                value: value_normalized,
+                // The plugin's `f64` is untrusted, as `addPoint`'s is.
+                value: Normalized::clamped(value_normalized).get(),
             });
             kResultOk
         })
@@ -595,7 +596,7 @@ impl IProgressTrait for ComponentHandler {
         guard(vst3::Steinberg::kInternalError, || {
             self.push(PluginNotification::Progress(ProgressEvent::Updated {
                 id,
-                progress: norm_value,
+                progress: Normalized::clamped(norm_value).get(),
             }));
             kResultOk
         })

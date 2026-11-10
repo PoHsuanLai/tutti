@@ -427,3 +427,28 @@ fn concurrent_edits_all_reach_the_host() {
     drop(ptr);
     drop(handler);
 }
+
+/// **A plugin's `performEdit` value reaches the host inside `0..=1`.** The
+/// event documents a normalized value and a host writes automation from it, so
+/// a plugin's `f64` is clamped at the edge, as `addPoint`'s is.
+///
+/// Mutation (run, fails): pass `value_normalized` through unclamped -> 7.5 and -3.0 come out
+/// as sent and the test fails.
+#[test]
+fn an_edit_value_is_clamped_to_the_unit_interval() {
+    let handler = ComponentHandler::new();
+    let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
+    // SAFETY: COM calls on a live object the test owns, with valid arguments.
+    unsafe {
+        ptr.performEdit(1, 7.5);
+        ptr.performEdit(2, -3.0);
+    }
+    let values: Vec<f64> = drain(&handler)
+        .into_iter()
+        .filter_map(|n| match n {
+            PluginNotification::Edit(ParameterEditEvent::PerformEdit { value, .. }) => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(values, [1.0, 0.0]);
+}

@@ -241,7 +241,7 @@ mod seq_scratch_tests {
             ..Default::default()
         };
         let list = EventList::input();
-        Stager::default().stage(&list, &events);
+        assert!(Stager::default().stage(&list, &events));
         list.with_events(|staged| match staged.events {
             [e] => match e.payload {
                 Payload::ExpressionInt(x) => {

@@ -69,7 +69,7 @@ fn context_requirements_are_read_from_the_plugin() {
 fn note_expression_types_enumerate_per_plugin() {
     let nes = require_sample("note-expression-synth.vst3");
 
-    let count = nes.note_expression_count(0, 0);
+    let count = nes.note_expression_count(&main_thread(), 0, 0);
     assert!(
         count > 1,
         "note-expression-synth advertises several expression types, got {count}"
@@ -77,12 +77,14 @@ fn note_expression_types_enumerate_per_plugin() {
 
     let mut ids = Vec::new();
     for i in 0..count {
-        let info = nes.note_expression_info(0, 0, i).unwrap_or_else(|| {
-            panic!(
-                "type {i} of {count} has no descriptor — the count and the \
+        let info = nes
+            .note_expression_info(&main_thread(), 0, 0, i)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {i} of {count} has no descriptor — the count and the \
                     per-index lookup disagree"
-            )
-        });
+                )
+            });
         ids.push(info.type_id);
     }
     let mut sorted = ids.clone();
@@ -97,7 +99,8 @@ fn note_expression_types_enumerate_per_plugin() {
 
     // Out of range must be None, not a wrapped or clamped entry.
     assert!(
-        nes.note_expression_info(0, 0, count + 1000).is_none(),
+        nes.note_expression_info(&main_thread(), 0, 0, count + 1000)
+            .is_none(),
         "an out-of-range note-expression index returned a descriptor"
     );
 }
@@ -108,7 +111,7 @@ fn note_expression_types_enumerate_per_plugin() {
 fn keyswitches_enumerate_and_bound_check() {
     let checker = require_sample("host-checker.vst3");
 
-    let count = checker.keyswitch_count(0, 0);
+    let count = checker.keyswitch_count(&main_thread(), 0, 0);
     assert!(
         count > 0,
         "host-checker implements IKeyswitchController but the host read 0 \
@@ -116,19 +119,21 @@ fn keyswitches_enumerate_and_bound_check() {
     );
     for i in 0..count {
         assert!(
-            checker.keyswitch_info(0, 0, i).is_some(),
+            checker.keyswitch_info(&main_thread(), 0, 0, i).is_some(),
             "keyswitch {i} of {count} has no descriptor"
         );
     }
     assert!(
-        checker.keyswitch_info(0, 0, count + 1000).is_none(),
+        checker
+            .keyswitch_info(&main_thread(), 0, 0, count + 1000)
+            .is_none(),
         "an out-of-range keyswitch index returned a descriptor"
     );
 
     // A plugin without the interface must answer 0 rather than guessing.
     if let Some(nes) = sample("note-expression-synth.vst3") {
         assert_eq!(
-            nes.keyswitch_count(0, 0),
+            nes.keyswitch_count(&main_thread(), 0, 0),
             0,
             "note-expression-synth does not implement IKeyswitchController, so \
              the count must be 0"
@@ -208,7 +213,7 @@ fn units_enumerate_with_resolvable_parents() {
     // whether the interface is there at all.
     let mut silent = 0usize;
     for (name, path) in sample_plugins() {
-        let Ok(loaded) = Vst3Loaded::load(&path, LoadOptions::new()) else {
+        let Ok(loaded) = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()) else {
             continue;
         };
         if loaded.units(&main_thread()).is_empty() {
@@ -236,7 +241,7 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
     let mut dangling = Vec::new();
 
     for (name, path) in sample_plugins() {
-        let Ok(loaded) = Vst3Loaded::load(&path, LoadOptions::new()) else {
+        let Ok(loaded) = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()) else {
             continue;
         };
         let lists = loaded.program_lists(&main_thread());

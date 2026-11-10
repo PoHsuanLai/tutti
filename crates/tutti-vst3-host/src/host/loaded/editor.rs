@@ -19,8 +19,8 @@ impl Vst3Loaded {
     ///
     /// A plugin with no controller at all answers `false`.
     #[must_use]
-    pub fn has_editor(&self) -> bool {
-        self.plugin.has_editor()
+    pub fn has_editor(&self, main: &MainThread) -> bool {
+        self.plugin.has_editor(main)
     }
 
     /// Creates the plugin editor, attach it to `parent`, and return its initial
@@ -82,8 +82,8 @@ impl Vst3Loaded {
     ///
     /// Returns the all-`false` default when no editor is open — a closed editor
     /// reports no capabilities rather than the ones it had while open.
-    pub fn editor_capabilities(&self) -> EditorCapabilities {
-        self.plugin.editor_capabilities()
+    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+        self.plugin.editor_capabilities(main)
     }
 
     /// Runs one iteration of the event loop this host lends the plugin
@@ -146,8 +146,8 @@ impl Vst3Loaded {
     /// The latest `IPlugFrame::resizeView` request since the last poll, if
     /// any. Earlier requests in between are superseded, not queued: only the
     /// size the plugin wants now matters.
-    pub fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
-        self.plugin.take_editor_resize_request()
+    pub fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
+        self.plugin.take_editor_resize_request(main)
     }
 
     /// Asks the plugin what it would snap `requested` to, without applying it.

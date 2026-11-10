@@ -264,6 +264,63 @@ and to the set of served formats (which excludes VST2).
   becomes "build `plugin-server` and `plugin-probe` first" for the tests that
   scan (`tutti-plugin`'s `db_probe`, `tutti-session`'s `plugin` suite).
 
+**As built (step 4c).**
+
+- **The crate.** `crates/tutti-plugin-probe`, binary `plugin-probe <path>
+  <result-file>`, layer 6, `#![forbid(unsafe_code)]`. Features `clap`, `vst3`,
+  `vst2` (all default). It depends on `tutti-plugin-types` and the three format
+  hosts and on no hosting; `check-layout.sh` holds both that and "nothing depends
+  on it". It calls `ClapLoaded::probe`, `Vst3Loaded::probe` and, for VST2,
+  `Vst2Loaded::load` (a load without activation, the instance dropped), then
+  `descriptor_of` / `Control::info`, so the loaders' own `probe` functions were
+  deleted rather than moved. Exit status is `0` once a result is written (a
+  plugin that would not load is a result), `2` for a bad command line, `3` if
+  the file could not be written.
+- **The wire** is `tutti_plugin_types::{ProbeOutcome, write_result, read_result}`
+  (feature `probe-wire`, which `tutti-plugin` and the probe both turn on): a
+  framed bincode payload (magic and version, length, bytes) staged at
+  `<result>.tmp` and renamed. The frame makes a file cut short some other way a
+  refused read (`ResultError::Truncated`), not a prefix decoded as far as it
+  goes. The failure carries the loader's message only; the stage a host crate
+  tagged it with is not on the wire (the old server wire did not carry one
+  either, and `LoadFailed` reports `Opening`).
+- **The redirect is the host's.** The probe cannot null its own stdout and
+  stderr without `unsafe`, so `tutti-plugin` spawns it with both on the null
+  device. Nothing a plugin prints can reach a result, or fill a pipe.
+- **The probe side** is `host/subprocess/probe.rs` (about 120 lines of code, tests aside):
+  `ProbeLocator` (`TUTTI_PLUGIN_PROBE`, beside the executable, `PATH`; `at` for
+  a test), spawn, poll `try_wait` to the five second deadline, kill and reap on
+  timeout, then read the file. The file is read after any exit, so a probe that
+  finished at the deadline counts. No file and an exit is
+  `BridgeError::ProcessCrashed`; no file at the deadline is `Timeout`; a file that
+  is not whole is `IpcError` (not blacklistable: it is a fault of ours, not
+  evidence about the plugin). `BridgeError::ProbeNotFound` replaces
+  `ServerNotFound` as the one error a scan answers with filename metadata.
+  `probe_plugin` and `probe_record` are switched; `Scanner` and `ProbeFailure`
+  are untouched.
+- **Deleted from the server:** `HostMessage::ProbePlugin` and its session arm
+  and `handle_probe`, `Plugin::probe`, the four `*Instance::probe` functions and
+  `a_probe_does_not_activate` (the VST2 loader's pin that a probe does not
+  resume; the property is now the probe's own code, which has no activation to
+  call). There was no `TUTTI_PROBE_MODE` in the server itself: it was set by the
+  host and never read, the server serving a probe as an ordinary request. Removing
+  a variant from the request enum renumbers the tags after it, so
+  `PROTOCOL_VERSION` is 21 and the tag test pins `LoadPlugin` as 0.
+- **Tests.** `tutti-plugin-contract`'s `probe` suite (`--features server`) runs
+  the real binary on the shared plugin in each format, and on the CLAP plugin
+  under file names its `init` reads (`init-crash`, `init-hang`, `init-print`,
+  `init-refuse`): a crash, a hang, a plugin that prints two thousand lines to
+  each stream, and a refusal. The other formats' plugins have no such mode; a
+  probe sends no state and no environment variable may configure a plugin. The
+  host's own cases (kill at the deadline, no file after an exit or a signal, a
+  partial file) run in `probe.rs` against shell stand-ins (Unix only).
+- **Corrections to this document.** `tutti-session`'s `plugin` suite does not
+  scan; it needs `plugin-server` and not `plugin-probe`. The suites that need
+  `plugin-probe` are the contract's `probe` suite and `db_probe`'s opt-in test.
+- **AU** joins by a `"component"` row in `describe` once `AuLoaded` exists,
+  with `tutti-au-host` behind an `au` feature (macOS only); no AU code is
+  in the crate until then.
+
 ### 2.4 Runtime selection stays typed
 
 A host picks hosting per plugin at runtime from a path. The facade holds one
@@ -578,7 +635,7 @@ a `Loaded`.
 | 3 | Extract `tutti-plugin-ipc`: protocol, transport, client, subprocess, batcher, `BridgeError`. Mechanical: no logic change; `check-layout.sh` rows, `check-plugin-ffi.sh` paths, CLAUDE.md | After #350 and #353 merge (they edit `tutti-plugin`'s features and `gui/au.rs`, and `check-layout.sh`'s layer rows move `tutti-au-host`); no AU dependency otherwise | moves about 13k lines |
 | 4a | Extract `tutti-plugin-host`; `PluginNode<H>` and `InProc<F>`; `Vst2` in-process runs through them; **delete** `vst2_in_process` (2,274) and its `Arc<Mutex>` / `try_lock` | No | -2.3k, +~0.9k |
 | 4b | `Ipc<F>: Loaded` over the existing bridge; `PluginNode<Ipc<F>>` replaces `PluginClient`'s node; **delete** `graph_node.rs`, the IPC `fork.rs` and `composite.rs` duplicates and the `Host*` capability traits where `Control` replaces them | No (CLAP and VST3 rows) | -1.5k |
-| 4c | **The probe binary.** Build `tutti-plugin-probe` (CLAP, VST3, VST2; AU's probe row joins when AU's `Loaded` lands), the file wire, `ProbeLocator` and `tutti-fixtures::plugin_probe`; switch `probe_plugin` (`db_probe.rs`) to it; then delete probe mode (`TUTTI_PROBE_MODE`, `ProbePlugin`, `Plugin::probe`) from the server. `check-layout.sh` row, CLAUDE.md "build first" note. Independent of 4a and 4b | No (AU row later) | -300 in server, +~300 new |
+| 4c (built) | **The probe binary.** Build `tutti-plugin-probe` (CLAP, VST3, VST2; AU's probe row joins when AU's `Loaded` lands), the file wire, `ProbeLocator` and `tutti-fixtures::plugin_probe`; switch `probe_plugin` (`db_probe.rs`) to it; then delete probe mode (`TUTTI_PROBE_MODE`, `ProbePlugin`, `Plugin::probe`) from the server. `check-layout.sh` row, CLAUDE.md "build first" note. Independent of 4a and 4b | No (AU row later) | -300 in server, +~300 new |
 | 5 | Generic server: `Served<F: OutOfProcess>` and `served!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` (the whole VST2 loader), `plugin.rs`, `format_host.rs`'s capability traits. Supersedes 016 step 4's `AnyPlugin` | AU row waits; the macro takes it later | -5.5k |
 | 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs` | No | `Backend` gone |
 | 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 4) | -2.1k |

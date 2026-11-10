@@ -23,15 +23,28 @@ tutti-shared-plugin = { path = "../tutti-shared-plugin" }
 tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp" }
 
 # Needs `cargo build -p tutti-plugin-server --no-default-features --features
-# clap,vst2,vst3` first: the server cannot be a dependency (it depends on
-# `tutti-plugin`).
+# clap,vst2,vst3` and `cargo build -p tutti-plugin-probe` first: the server
+# cannot be a dependency (it depends on `tutti-plugin`), and a dependency's
+# binary is not built for a test.
 tutti-plugin = { path = "../../crates/tutti-plugin", features = ["clap", "vst2", "vst3"], optional = true }
+# `tests/probe.rs` applies a probe's `Delta` to a `PluginDb` to read the descriptor.
+tutti-plugin-db = { path = "../../crates/tutti-plugin-db", optional = true }
 
 [features]
 # `tests/server.rs`: the same configuration and transcript through a real
 # `plugin-server` process.
-server = ["dep:tutti-plugin"]
+server = ["dep:tutti-plugin", "dep:tutti-plugin-db"]
 
 [[test]]
 name = "server"
 required-features = ["server"]
+
+# The same, for `tests/probe.rs`: a real `plugin-probe` process per plugin. Needs
+# `cargo build -p tutti-plugin-probe` first.
+[[test]]
+name = "probe"
+required-features = ["server"]
+
+[dev-dependencies]
+# `tests/probe.rs` copies the plugin under the file name its `init` reads.
+tempfile = "3"

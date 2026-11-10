@@ -180,6 +180,7 @@ jobs:
         run: |
           for f in vst2 vst3 clap; do
             cargo clippy --locked -p tutti-plugin-server --no-default-features --features "$f" --all-targets -- -D warnings
+            cargo clippy --locked -p tutti-plugin-probe --no-default-features --features "$f" --all-targets -- -D warnings
           done
 
   # The same lint, on Windows. The `clippy` job above cannot see a
@@ -348,7 +349,9 @@ jobs:
       #                         `real_plugin_pressure` did, by name.
       #   tutti-plugin-contract/server — tests/server.rs: the shared plugin's
       #                         mode and transcript through a real plugin-server,
-      #                         in all of CLAP, VST2 and VST3 (and the C++ plugin)
+      #                         in all of CLAP, VST2 and VST3 (and the C++ plugin);
+      #                         tests/probe.rs: their descriptors, and a crash, a
+      #                         hang and a print in init, through a real plugin-probe
       #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
       #                         (`headless_modulation`; `plugin_midi_export`,
       #                         `test = true`, which plays the reference
@@ -399,7 +402,9 @@ jobs:
       # `tutti-plugin`), so it is built here, before the tests, as the `test`
       # job does. Without `au`, which is macOS-only.
       - name: Build plugin-server (bevy-tutti/plugin, tutti-session/clap, tutti/clap and the plugin contract spawn it)
-        run: cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+        run: |
+          cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+          cargo build --locked -p tutti-plugin-probe
 
       - name: Test
         run: |
@@ -485,8 +490,10 @@ jobs:
       # subprocesses. If that proves too much for a shared runner, the honest
       # fix is to reduce the instance count here with the failure recorded —
       # not `continue-on-error`, which is how the pre-extraction workflow died.
-      - name: Build plugin-server
-        run: cargo build --locked -p tutti-plugin-server
+      - name: Build plugin-server and plugin-probe
+        run: |
+          cargo build --locked -p tutti-plugin-server
+          cargo build --locked -p tutti-plugin-probe
       - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
         run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
 
@@ -581,8 +588,10 @@ jobs:
       # suites hard-fail rather than silently skip, which is deliberate: a suite
       # that skips on a missing fixture is one typo away from reporting success
       # having executed nothing.
-      - name: Build plugin-server (three plugin-host suites spawn it)
-        run: cargo build --locked -p tutti-plugin-server
+      - name: Build plugin-server and plugin-probe (three plugin-host suites spawn the server)
+        run: |
+          cargo build --locked -p tutti-plugin-server
+          cargo build --locked -p tutti-plugin-probe
 
       # nextest, not `cargo test`: each test gets its own process, which is what
       # the audio suites need — they touch device and global state, and a panic

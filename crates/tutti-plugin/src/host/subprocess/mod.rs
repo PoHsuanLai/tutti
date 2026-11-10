@@ -1,5 +1,5 @@
-//! Subprocess lifecycle — locate, spawn, hand-shake, and probe the
-//! `plugin-server` child process.
+//! Subprocess lifecycle — locate, spawn and hand-shake the `plugin-server` child
+//! process, and probe a plugin in a `plugin-probe` one.
 
 pub mod bundle;
 mod launch;

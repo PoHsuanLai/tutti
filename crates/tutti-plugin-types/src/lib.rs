@@ -28,6 +28,8 @@ mod order;
 mod parameters;
 mod points;
 mod presets;
+#[cfg(feature = "probe-wire")]
+mod probe_wire;
 mod process;
 mod render_mode;
 mod requests;
@@ -105,6 +107,11 @@ pub use parameters::{
     InvalidNormalized, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
 };
 pub use presets::{Preset, PresetId, PresetSupport};
+#[cfg(feature = "probe-wire")]
+pub use probe_wire::{
+    ProbeOutcome, ResultError, decode_result, encode_result, read_result, result_tmp_path,
+    write_result,
+};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
 pub use sample_format::{SampleFormat, negotiate};

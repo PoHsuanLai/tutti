@@ -187,6 +187,15 @@ just test-all                      # both
   `--no-default-features --features clap,vst2,vst3`. They must fail
   rather than skip, and they cannot use a dev-dependency because that would
   be a cycle.
+- **Build `plugin-probe` first** for a suite that scans: `cargo build -p
+  tutti-plugin-probe` (`tutti_fixtures::plugin_probe()`, the same rules as
+  `plugin_server`: a dev-dependency builds a library, not a binary, and a
+  missing one is a failure, never a skip). `tutti-plugin-contract`'s `probe`
+  suite (`--features server`) spawns it, and so does `tutti-plugin`'s opt-in
+  `db_probe` test (`TUTTI_PROBE_PLUGIN`). `tutti-session`'s `plugin` suite loads
+  through the server and does not scan, so it needs the server alone. A scan
+  with no `plugin-probe` on hand degrades to filename metadata
+  (`ProbeNotFound`), so a suite that must see a real probe uses the fixture.
 - **Feature-gated suites** run only where a feature is on. A workspace run
   enables just what some member's dependency edge turns on (for example
   `tutti-nodes/convolution`), not a crate's own optional features. The rest
@@ -348,6 +357,9 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
+  tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
+                 into a result file, `tutti-plugin-types`' `probe_wire`; the format
+                 hosts and no hosting; nothing depends on it, design 021 §2.5),
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
   tutti-au-ffi (all AU unsafe; macOS only, empty elsewhere),
   vst-tutti (our fork of the vst crate; its split is a later lane)
@@ -375,7 +387,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
    `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`
-6. `tutti-plugin`
+6. `tutti-plugin`, `tutti-plugin-probe`
 7. `tutti-plugin-server`, `tutti-session`
 8. `tutti`, `bevy-tutti`
 

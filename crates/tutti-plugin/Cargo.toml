@@ -58,7 +58,7 @@ tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime" }
 
 # Shared value vocabulary used across host crates + IPC protocol.
-tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
 
 # Discovery: the scanner, the catalog and its records. This crate supplies the
 # subprocess probe.

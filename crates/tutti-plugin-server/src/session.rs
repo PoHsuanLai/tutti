@@ -167,10 +167,6 @@ impl Session {
     ) -> Result<Reaction> {
         use HostMessage as M;
         match msg {
-            M::ProbePlugin { path } => {
-                self.discard_staged();
-                Ok(self.handle_probe(main, &path).into())
-            }
             M::LoadPlugin {
                 path,
                 sample_rate,
@@ -419,21 +415,6 @@ impl Session {
                 plugin.instance_mut().close_editor(main);
             }
             self.editor = EditorState::Closed;
-        }
-    }
-
-    fn handle_probe(&self, main: &MainThread, path: &std::path::Path) -> BridgeMessage {
-        match Plugin::probe(main, path) {
-            Ok(descriptor) => BridgeMessage::PluginLoaded {
-                descriptor: Box::new(descriptor),
-                // A probe never activates the plugin, so there is no load data.
-                loaded: Default::default(),
-                negotiated_format: self.clock.format,
-                state_error: None,
-            },
-            Err(e) => BridgeMessage::Error {
-                message: format!("Probe failed: {e}"),
-            },
         }
     }
 
@@ -1672,23 +1653,14 @@ mod tests {
         }
     }
 
-    /// **A stage belongs to the load that declares it**: a probe or an unload
-    /// that comes between discards it, and so does a half-received one.
+    /// **A stage belongs to the load that declares it**: an unload that comes
+    /// between discards it, and so does a half-received one.
     ///
-    /// Mutation (run): `discard_staged` not called in the probe arm fails the
-    /// first assertion; not called in the unload arm, the second and third.
+    /// Mutation (run): `discard_staged` not called in the unload arm fails the
+    /// first and second assertions.
     #[test]
     fn a_stage_does_not_outlive_the_next_request() {
         let mut s = Session::new();
-        assert_state_loaded_reply(stage(&mut s, 0, true, &[1]));
-        let _ = s.handle(
-            &main_thread(),
-            HostMessage::ProbePlugin {
-                path: "/nonexistent/plugin.clap".into(),
-            },
-        );
-        assert!(s.staged.is_none(), "a probe discards the stage");
-
         assert_state_loaded_reply(stage(&mut s, 0, true, &[1]));
         let _ = s.handle(&main_thread(), HostMessage::UnloadPlugin);
         assert!(s.staged.is_none(), "an unload discards the stage");

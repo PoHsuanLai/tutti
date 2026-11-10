@@ -1,7 +1,7 @@
 //! Where the test suites find things: the repo's `assets/`, the reference plugin
-//! cdylibs and the `plugin-server` binary; [`check_range_contract`], the one
-//! check a range-checked type keeps its contract; and [`sf2`], a SoundFont built
-//! in memory.
+//! cdylibs and the `plugin-server` and `plugin-probe` binaries;
+//! [`check_range_contract`], the one check a range-checked type keeps its
+//! contract; and [`sf2`], a SoundFont built in memory.
 //!
 //! A test finds a repo file through [`repo_root`] and [`asset`], never through
 //! a relative `..` path, so moving a crate never changes what a test reads.
@@ -195,18 +195,30 @@ pub fn cdylib(lib_stem: &str, what: &str) -> PathBuf {
 /// tests spawn it (`tutti-plugin-server` depends on `tutti-plugin`, so the edge
 /// would be a cycle), so running tests does not build it.
 pub fn plugin_server() -> PathBuf {
-    let name = if cfg!(windows) {
-        "plugin-server.exe"
-    } else {
-        "plugin-server"
-    };
-    let tried = candidates_in(&profile_dir(), name);
+    workspace_binary("plugin-server", "tutti-plugin-server")
+}
+
+/// The `plugin-probe` binary under the running binary's profile directory.
+///
+/// # Panics
+///
+/// If it has not been built. A dev-dependency builds a crate's library, not its
+/// binary, and `tutti-plugin` spawns this one, so running tests does not build
+/// it.
+pub fn plugin_probe() -> PathBuf {
+    workspace_binary("plugin-probe", "tutti-plugin-probe")
+}
+
+/// The newest `bin` under the profile directory; `package` names what builds it.
+fn workspace_binary(bin: &str, package: &str) -> PathBuf {
+    let name = format!("{bin}{}", std::env::consts::EXE_SUFFIX);
+    let tried = candidates_in(&profile_dir(), &name);
     newest_existing(&tried).unwrap_or_else(|| {
         panic!(
-            "`plugin-server` not found.\nSearched:{}\n\
+            "`{bin}` not found.\nSearched:{}\n\
              It is not a dev-dependency (that would be a cycle through \
              `tutti-plugin`), so running tests does not build it. Build it \
-             first, then re-run:\n\n  cargo build -p tutti-plugin-server\n",
+             first, then re-run:\n\n  cargo build -p {package}\n",
             searched(&tried)
         )
     })

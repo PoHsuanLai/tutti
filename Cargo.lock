@@ -4604,10 +4604,12 @@ name = "tutti-plugin-contract"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "tempfile",
  "tutti-clap-host",
  "tutti-fixtures",
  "tutti-midi-types",
  "tutti-plugin",
+ "tutti-plugin-db",
  "tutti-plugin-types",
  "tutti-shared-plugin",
  "tutti-shared-plugin-vst3-cpp",
@@ -4626,6 +4628,16 @@ dependencies = [
  "tempfile",
  "tracing",
  "tutti-plugin-types",
+]
+
+[[package]]
+name = "tutti-plugin-probe"
+version = "0.0.1"
+dependencies = [
+ "tutti-clap-host",
+ "tutti-plugin-types",
+ "tutti-vst2-host",
+ "tutti-vst3-host",
 ]
 
 [[package]]

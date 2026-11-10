@@ -38,11 +38,13 @@ verified or not.
   a pan law and a rotation are order-0 `Lti`, a limiter is a `SteadyState`
   model with an inherent detector, an oversampled shaper is a class 6 pair around
   a class 3 map. What is added is small: two traits kept because more than one
-  family answers them (`GainMatrix`, `BandLimited`); three combinators
-  (`Controlled` for a dynamic EQ band, `Filtered` for a noise process through an
-  `Lti`, and `Lure<L, Phi>` for a nonlinearity inside a feedback loop); two query
-  amendments to doc 024 §4.2 (`pdc_delay`, a declared alignment delay separate
-  from the measured onset `latency`, and `h2_norm`); and structures
+  family answers them (`GainMatrix`, `BandLimited`); four combinators
+  justified by composition laws (`Controlled` for a dynamic EQ band, `Filtered`
+  for a noise process through an `Lti`, `Oversampled` for up, map, down, and
+  `Lure<L, Phi>` for a nonlinearity inside a feedback loop); three amendments
+  proposed to doc 024 §4.2 (`pdc_delay`, a declared alignment delay separate from
+  the measured onset `latency`; the MIMO norms with `h2_norm`; and `Lure`, which
+  needs the owner because it lifts doc 024 Q17); and structures
   (`PolyphaseFir`, `HalfbandIir`, `StftPair`). Single-family queries
   (antiderivatives, the overshoot bound, the formant shift) are inherent methods,
   as doc 024 §4.2 says until a second family answers them.
@@ -124,8 +126,9 @@ query, and a query only one family answers stays an inherent method of its model
 ### 2.1 Amendments proposed to doc 024
 
 Doc 024 is not edited by this document beyond a pointer. Three amendments to its
-§4.2 are proposed here, each marked **(proposal)** where used, to be made in the
-PR of the first family that needs them.
+§4.2 are proposed here, each marked **(proposal)** where used. P1 and P2 are
+additive and land in the PR of their first consumer (§9.2 Q2); P3 reverses a
+recorded recommendation of doc 024 and is the owner's.
 
 **P1. A declared alignment delay, separate from the measured onset.** Doc 024
 defines `System::latency` as the processing part of the onset of the impulse
@@ -152,8 +155,8 @@ The contract measures `latency` against the first non-zero output as today, and
 `pdc_delay` as the delay of a band-limited tone burst below `0.05 fs`, from the
 envelope's centre of mass, within half a frame. A linear-phase FIR declares
 `(L-1)/2` (exact, constant at every frequency); an IIR half-band declares its
-group delay at DC rounded to a frame, and its residual phase error above DC is
-a `Fidelity` term; an STFT effect declares `size - 1` (§3.8). `Shape`'s declared
+group delay at DC rounded to a frame, and its residual phase deviation above DC is
+a stated phase-error query beside `Fidelity` (which is a magnitude); an STFT effect declares `size - 1` (§3.8). `Shape`'s declared
 latency, which PDC reads, takes `pdc_delay`. A stage with real delay must declare
 it: doc 026's zero latency for the stretcher (D8 there) is a choice made because
 the position-driven voice reads ahead, not a precedent for declaring zero while
@@ -167,8 +170,17 @@ response matrix at the worst frequency, and the MIMO `l1_norm` as the induced
 infinity-norm of the impulse-response matrix (the largest row sum of absolute
 values). Add `h2_norm`, the square root of the energy of the impulse response
 (the power gain of unit white noise), provided by quadrature of `|H|^2` on the
-control side and overridden exactly by an FIR (the sum of squares). `l1_norm`
-squared is an upper bound on it, not the variance (§3.6).
+control side to a stated tolerance and overridden exactly by an FIR (the sum of
+squares). `h2_norm` is exact (or toleranced), the one norm outside doc 024 Q18's
+upper-bound convention, because `Filtered::variance` must be an equality that the
+contract tests against the measured variance. `l1_norm` squared is an upper bound
+on it, not the variance (§3.6). The MIMO definitions also change doc 024 §6.2's
+case `hinf_norm <= l1_norm` and the trait default `hinf = l1`, which hold for one
+input and one output only: for several they become
+`hinf_norm <= sqrt(outputs) * l1_norm` (the 2-norm of a matrix is at most
+`sqrt(rows)` times its infinity-norm), and a mono-to-stereo pan law
+`[cos, sin]` has `hinf = 1` against `l1 = 0.707` at the centre. `GainMatrix`
+overrides the default.
 
 **P3. `Lure<L, Phi>`, a feedback combinator for one narrow case** (§3.10). Doc 024
 §4.9 and Q17 decline a general `Feedback<A, B>` because closing a loop needs a
@@ -188,8 +200,25 @@ circle criterion) is stated once. It lifts Q17 for that case and no other.
 | `ShEncode`, `ShRotation`, `ShDecode` | models | 1 order 0 | degree energy (on `ShEncode`); isometry; commutation | 3.5 |
 | `Filtered<N, L>` | combinator | 5 (`Noise`) with 1 | shaped psd; variance from `h2_norm` | 3.6 |
 | `BandLimited` | trait | 5 | top harmonic at a floor; aliasing harmonics | 3.7 |
-| `StftPair`, `BinGain`, `StftEffect<G>` | structure, trait, model | 1 up to `Fidelity` | window-sum constant; `pdc_delay` | 3.8 |
+| `StftPair`, `StftEffect` | structure, model | 1 up to `Fidelity` | window-sum constant; `pdc_delay` | 3.8 |
 | `Lure<L, Phi>` | combinator | new, narrow | sector, circle limit, critical gain, small-signal system | 3.10 |
+
+**Why a combinator with one user is still right.** Doc 024's own combinators
+(`Series`, `Parallel`, `Wiener`, `GainControl`) are justified by composition laws,
+not by how many families use them: a combinator states how a query of the whole
+follows from the queries of its parts, once. The same holds here. `Filtered`: the
+psd is `psd_N |H|^2` and the white-noise variance is `variance_N h2_norm(H)^2`
+(users: noise-shaped dither today, any coloured noise source after). `Oversampled`:
+the delay is the sum of the stages' and the peak is `l1(down) sup|f|` over the up
+stage's overshoot (users: the oversampled saturator and clipper, the limiter's
+detector path, and `Lure` realizations, which need oversampling). `Lure`: the
+circle criterion, critical gain and small-signal system follow from `L` and `phi`
+(users: the ladder and the diode clipper, both on the roadmap, item 13).
+`Controlled`: the response at a settled level follows from the detector's steady
+state and the design map (user: dynamic EQ; an envelope-controlled filter is a
+possible second, not scheduled). Where no composition law exists, the item is a
+plain parameter: `StftEffect` takes its per-bin gains as a plain slice, not a
+`BinGain` trait, until a second implementer exists.
 
 ### 2.3 Types of the sketches
 
@@ -200,7 +229,9 @@ and an oversampling factor (2, 4, 8, 16) are range-checked newtypes with
 `check_range_contract`; the ADAA order is a two-variant enum; angles are
 `Azimuth` and `Elevation`; frame counts and delays are `Samples`, rates `Hz`,
 levels `Db`, times `Seconds`; a delay that is not a whole frame is a `group_delay`
-query, not a `Samples`. Where the types stop: a kernel narrows once at its edge,
+query, not a `Samples`. A harmonic floor, a window-sum error and a per-bin gain
+are `Amplitude` or plain ratios where an existing unit covers them; the sketches
+use bare floats for these, and the implementing PRs type them or state why not. Where the types stop: a kernel narrows once at its edge,
 and the antiderivatives take `f64` (not `f32`) because the quotient of two nearby
 `F1` values cancels, a stated precision the unit cannot carry.
 
@@ -259,7 +290,9 @@ is `f(x)` exactly (the quotient's limit), `tail` is `order` frames, `peak_gain`
 is the map's `max_gain`. With drive `h`: `tanh(h x)` has `F1 = ln cosh(h x) / h`,
 computed in the stable form `|u| + ln(1 + e^(-2|u|)) - ln 2` (a plain `ln cosh`
 overflows for large `|u|`); `atan` scaled by `2/pi` has
-`F1 = (u atan u - ln(1+u^2)/2) (2/pi)/h`; softsign has the even
+`F1 = (2/pi)(u atan u - ln(1+u^2)/2)/a` with `a = h pi/2` and `u = a x` (the
+shipped curve is `(2/pi) atan(a x)`, slope `h` at the origin; checked against it by
+central difference in the sketch); softsign has the even
 `F1 = (|u| - ln(1+|u|))/h`; hard clip has the piecewise quadratic. Constants of
 integration cancel in the quotient.
 
@@ -268,10 +301,10 @@ integration cancel in the quotient.
 | Case | Figure | Mutant |
 |---|---|---|
 | Antiderivative | `F1' = f` and `F2' = F1` by central difference at fixed points, per kind and at two drives (checked in the sketch to 1e-6) | `F1` unscaled by the drive |
-| Identity map | `f(x) = x` gives `y[n] = (x[n] + x[n-1])/2` to the ulp (hard clip inside its linear region, checked in the sketch) | the midpoint fallback always |
-| Box average | `y[n]` equals the mean of `f` over the segment `[x[n-1], x[n]]` by high-order quadrature, to 1e-9 | `f(x[n])` (the naive map) |
-| DC | a constant input gives `f(x)` to 1e-9 (the fallback branch) | threshold so small (`1e-12`) that the quotient cancels: non-finite or noisy output |
-| Continuity | across the threshold the output changes by at most `lipschitz * dx / 2` | fallback evaluated at `x[n]` instead of the midpoint |
+| Identity map | `f(x) = x` gives `y[n] = (x[n] + x[n-1])/2` to the ulp (hard clip inside its linear region, checked in the sketch) | the naive `f(x[n])`, which gives `x[n]` |
+| Box average | `y[n]` equals the mean of `f` over the segment `[x[n-1], x[n]]` by high-order quadrature, to 1e-9, for a curved `f` (`tanh`) | `f(x[n])` (the naive map), or the midpoint used for every `dx` |
+| DC | a constant input (`dx = 0`) gives `f(x)` to 1e-9 | the quotient taken without the fallback (0/0) |
+| Small step | for `dx` just below and just above the threshold the output differs from the box average by at most `max|f''| dx^2 / 24` (closed form for each kind); the naive `f(x[n])` is off by `f' dx / 2`, orders larger | fallback evaluated at `x[n]` instead of the midpoint; a threshold of `1e-12`, where the quotient cancels in f64 and the error is `eps * F1 / dx`, not `dx^2` |
 | Second-order fallbacks | each of the three fallback branches returns the limit of the exact expression to 1e-6 | omit the combined branch |
 
 **Not coverable here:** the aliasing floor of a given kind at a given `f0`. It
@@ -303,7 +336,7 @@ struct with a filter field (doc 024 §2.4 item 7):
   complementary (`|H(w)|^2 + |H(pi - w)|^2 = 1`), so passband ripple and stopband
   attenuation are tied, and `Fidelity` is answered from the coefficients.
 
-Both implement doc 026 §3.2's `TimeScale` (`ratio`, and `reach`, the base-rate
+Both are also `Lti` prototypes (so a `Decimator<P>` has the `l1_norm` the peak bound needs), and both implement doc 026 §3.2's `TimeScale` (`ratio`, and `reach`, the base-rate
 frames a realization reads either side) and `Fidelity`; a `Decimator<P>` is the
 `1/N` type, so an oversampled shaper is up, map, down, each a `TimeScale`:
 
@@ -311,7 +344,8 @@ frames a realization reads either side) and `Fidelity`; a `Decimator<P>` is the
 pub struct Oversampled<U, D> { /* up: U, a shaper kind and drive, down: D */ }
 impl<U: TimeScale, D: TimeScale> System for Oversampled<U, D> { /* latency 0; pdc_delay the sum of the stages' */ }
 impl<D: TimeScale> SteadyState for Oversampled<PolyphaseFir, D> {
-    /* steady_state(x) = f(x); peak_gain = sup |f(u)| over |u| <= overshoot_bound(up), as the up stage can lift |x| <= 1 */
+    /* steady_state(x) = f(x); peak_gain = l1(down) * sup |f(u)| over |u| <= overshoot_bound(up): the up stage
+       can lift |x| <= 1 to overshoot_bound, and the down stage can lift it again by its l1 (>= 1 for a unit-DC low-pass) */
 }
 ```
 
@@ -381,9 +415,15 @@ them. Options:
 3. **Move the polyphase kernel below both**, to a layer-1 crate. A layer-table
    change for the owner, for one kernel.
 
-Recommendation: option 1. It needs nothing new in the graph, and no consumer named
-here needs a meter that is sample-accurate with the block. Option 2 is the fallback
-if one appears.
+`tutti-measure`'s existing reading goes through `ebur128`, a loudness meter that
+also reports true peak at 4x or 2x; a second polyphase reader is wanted for a
+streaming figure and to share the limiter's own kernel and its `cos(pi/2N)`
+margin, so the meter and the limiter state one figure. A tap counts what a slow
+reader loses (`TapReader::take_lost`), so this is a metering reading, not a
+guarantee: the limiter's guarantee is the realization's own. Recommendation:
+option 1. It needs nothing new in the graph, and no consumer named here needs a
+meter that is sample-accurate with the block. Option 2 is the fallback if one
+appears.
 
 **The limiter: one design, a measured detector.** The detector takes the actual
 interpolated peak over the lookahead window; it does not use `overshoot_bound`,
@@ -392,8 +432,8 @@ ceiling. Let `x(t)` be the ideal reconstruction of the base-rate signal, band-li
 to `fs/2`, and `P_N` the maximum of `|x|` over the `N`-times grid in the window.
 
 *The margin, in closed form.* For a real signal band-limited to `sigma = pi fs`
-and bounded by `M`, with `|x(t0)| = M` at its maximum, Bernstein's inequality
-gives `x(t0 + s) >= M cos(sigma s)` for `|s| <= pi/(2 sigma)`. The nearest grid
+and bounded by `M` on the whole line, with `|x(t0)| = M` at its global maximum,
+Bernstein's inequality gives `x(t0 + s) >= M cos(sigma s)` for `|s| <= pi/(2 sigma)`. The nearest grid
 point to `t0` is within half a grid step, `s <= 1/(2 N fs)`, so
 `sigma s <= pi/(2N)` and
 
@@ -403,16 +443,26 @@ P_N >= M cos(pi / 2N)        so         true peak M <= P_N / cos(pi / 2N)
 
 The factor is `1.0824` (0.688 dB) at `N = 4` and `1.0196` (0.169 dB) at `N = 8`,
 and it is attained by a tone at `fs/2` whose peak falls midway between grid
-points (checked in the sketch: the grid peak is exactly `A cos(pi/2N)`). With a
+points (checked in the sketch for the continuous-time tone: the grid peak is exactly
+`A cos(pi/2N)`). With a
 finite interpolator the grid values carry its error: relative error `delta`
 (passband ripple plus stopband leakage, from `Fidelity`) gives
 `M <= P_hat_N (1 + delta) / cos(pi/2N)`. The Bernstein-type statement is
 standard in the peak-to-average literature for oversampled signals; citing and
-proving it is a first-PR obligation, and it is unverified here (§11).
+proving it is a first-PR obligation, and it is unverified here (§11). **Limit:**
+the inequality needs `|x| <= M` everywhere, so `M` is the global supremum of the
+signal; the detector sees a window, whose maximum `m` can be below the global one
+and then `P_N >= m cos(pi/2N)` does not follow (the curvature near a smaller
+local peak can be as large as `sigma^2 M`). The realization therefore takes the
+window long enough that the gain at `t` is the minimum over every window covering
+`t`, so the window holding the maximiser governs; the proof obligation includes
+that covering argument, and the contract's stimulus (below) is built to test it.
 
 *The gain, and what the guarantee is.* The gain `g` for a window is
-`c / (P_hat_N (1 + delta) / cos(pi/2N))`, `c` the ceiling. It is transparent
-(`g = 1`) exactly when `P_hat_N (1 + delta) <= c cos(pi/2N)`. The output is the
+`c_eff / (P_hat_N (1 + delta) / cos(pi/2N))`, where `c_eff = c - Dg_max B X_max`
+is the ceiling less the variation term below (`c_eff = c` when the gain is
+constant over the support). It is transparent (`g = 1`) exactly when
+`P_hat_N (1 + delta) <= c_eff cos(pi/2N)`. The output is the
 reconstruction `y(t) = sum_k h(t-k) g_k x_k` by the detector's interpolator of
 the gained samples. Write `g_c` for the gain at the sample nearest `t` and
 `Dg = max_k |g_k - g_c|` over the interpolator's support (`2S + 1` frames). Then
@@ -422,15 +472,14 @@ the gained samples. Write `g_c` for the gain at the sample nearest `t` and
 ```
 
 with `B` the interpolator's `overshoot_bound` and `X = max |x_k|` over the support.
-The first term is `<= c` by the choice of `g`. The second is the price of a gain
+The first term is `<= c_eff` by the choice of `g`. The second is the price of a gain
 that varies across the support: it vanishes when the gain is constant there. The
 two things the realization owes are therefore (i) the detector lane is taken as
 the peak over `+-S` frames so a protecting gain reaches every output point whose
 reconstruction the peak touches, and (ii) the attack ramp is long enough that `Dg`
 over `2S + 1` frames is as small as the design states (the cost is a slightly
 softer attack than today's instant one). The node's `Dg` is measured by the
-contract; the node lowers its internal target by `Dg_max * B * X_max` so the sum
-stays at the ceiling. The guarantee holds for the reconstruction by the detector's
+contract, and its internal target is `c_eff`, so the sum stays at `c`. The guarantee holds for the reconstruction by the detector's
 own interpolator; a DAC's differs by that interpolator's `Fidelity`.
 
 **Composition.** The model is `System` plus `SteadyState` (`steady_state` maps the
@@ -443,8 +492,8 @@ part must be `Lti`; an up-sample, `abs` and sliding maximum is not linear.
 
 | Case | Figure | Mutant |
 |---|---|---|
-| Margin | a tone at `fs/2` with the peak midway between grid points: the detector reads `A cos(pi/2N)` within the filter's `delta`, and the gain brings the 16x-oversampled output peak to `c` within `delta` | detector without the `cos` division |
-| Transparent | a signal with `P_hat_N (1 + delta) <= c cos(pi/2N)` has gain exactly 1 | a fixed headroom of 1 dB |
+| Margin | a tone at `(0.5 - e) fs` (a tone at exactly `fs/2` is not represented by its base-rate samples, which are `+-a`) over a long run with the phase swept: in every window `P_hat_N (1 - delta) <= true peak <= P_hat_N (1 + delta) / cos(pi/2N)`, the lower bound approached and the upper only in the limit `e -> 0`; and the limited output's 16x-oversampled peak is `<= c` | detector without the `cos` division (the upper bound fails) |
+| Transparent | a signal with `P_hat_N (1 + delta) <= c_eff cos(pi/2N)` has gain exactly 1 | a fixed headroom of 1 dB |
 | Inter-sample peak | a full-scale pair of alternating samples with the peak between them: sample peak `0.707`, true peak `1.0`; the limited true peak is `<= c` plus the stated `Dg` term | detect on the sample peak (today's limiter) |
 | Constant gain | when `g` is constant over the support the output peak equals `g` times the input's to `delta` | gain applied before the interpolator |
 | `Dg` | the measured gain variation over `2S+1` frames is at most the declared figure | an instant attack (`Dg` large) |
@@ -507,7 +556,7 @@ fails the phase case.
 
 **Match EQ and spectral dynamics** are not families: match EQ is a
 `tutti-measure` spectrum, a smoothing and the FIR design; frequency-selective
-dynamics is signal-dependent, so a `BinMap` (§3.8), not a `BinGain`.
+dynamics is signal-dependent, so a `BinMap` (§3.8), not a per-bin gain.
 
 **Lives in** `tutti-dsp/src/filter/` (the cascades, tilt, the FIR design) and
 `tutti-nodes` (one multi-band `EqNode`). **Hosted by** doc 024 steps 2 to 4 (SVF,
@@ -548,9 +597,12 @@ precision; the node narrows to `f32` once.
 balance (today's strip, doc 024 row 52) is the 2x2 case. Three existing laws are
 in the code and the work is to **consolidate them** (a doc 024 consolidation in
 kind): the strip's `balance_gains`, the polysynth voice's inline
-`sqrt((1 -+ p)/2)`, and `CrossfadeCurve::EqualPower`; the polysynth law is the
-constant-power law above (`theta` reparametrised), and the crossfade is its
-two-input form. Cases: power 1 at five positions (mutant: `sin` and `cos`
+`sqrt((1 -+ p)/2)`, and `CrossfadeCurve::EqualPower`; the polysynth law is constant power (`gl^2 + gr^2 = 1`) but a different position
+mapping, `gl = sqrt((1 - p)/2)`, not `cos((p+1) pi/4)` (at `p = 0.5` it gives 0.5
+against 0.383), so folding it onto the cos/sin mapping changes the polysynth's
+render. The consolidated module therefore offers both as named variants and the
+polysynth keeps its own, with no render change; unifying onto one mapping is an
+owner question (§9.2 Q8). The crossfade is the cos/sin law's two-input form. Cases: power 1 at five positions (mutant: `sin` and `cos`
 swapped, which preserves power and is caught only by the hard-left case below);
 hard left is `(1, 0)`; centre is `(1/sqrt 2, 1/sqrt 2)` (constant power) or
 `10^(-a/20)`; monotone in `p`.
@@ -611,7 +663,9 @@ the **noise transfer function** `NTF(z) = 1 - sum_k c_k z^-k`, monic by
 construction. `DitherNoise`'s dither is **non-subtractive**: the quantiser sees
 `v + d`. With `d` triangular on `[-1, 1]` LSB (variance `lsb^2/6`) and the
 quantisation error uniform (`lsb^2/12`), the total error variance of `y - x`
-unshaped is `lsb^2/4` for TPDF and `lsb^2/6` for rectangular dither; the
+unshaped is `lsb^2/4` for TPDF and, on average, `lsb^2/6` for rectangular dither
+(whose noise modulation makes the second moment signal-dependent, so only TPDF's
+figure is level-independent); the
 generator's own variance alone (`lsb^2/6`, doc 024 row 19) is not what a
 measurement of `y - x` shows. Whether the dither is fed back changes the result
 (it is shaped only if it is). The noise model holds only while the quantiser does
@@ -731,9 +785,9 @@ constant. This generalises `StftGeometry::is_cola`, which checks that the sum of
 ```rust
 pub struct StftPair { /* size, hop (size % hop == 0), periodic analysis and synthesis windows */ }
 impl StftPair { pub fn cola_constant(&self) -> f64; pub fn pr_error(&self) -> f64; }
-/// A per-bin real gain constant in time: a spectral EQ, a settled spectral gate.
-pub trait BinGain { fn gain(&self, bin: usize) -> f32; }
-pub struct StftEffect<G: BinGain> { /* pair, gains */ }   // latency 0 (onset), pdc_delay size - 1
+/// A per-bin real gain constant in time (a spectral EQ, a settled spectral gate) is a plain
+/// slice parameter: no trait until a second implementer exists.
+pub struct StftEffect { /* pair, per-bin gains: Vec<f32> */ }   // latency 0 (onset), pdc_delay size - 1
 ```
 
 **Delay.** The first output sample is ready only after a whole window
@@ -790,9 +844,9 @@ harmonic peaks. Pitch and formant are two independent controls.
 `transpose()` and `formant_shift()` methods (in cents). The estimator is a
 **processor's internal step**, so by doc 024 Q24's cut ("what a processor needs
 stays in `tutti-dsp`") it is private to the realization in `tutti-dsp`;
-`tutti-measure` (which depends on `tutti-dsp`) may offer a read-only analyser over
-it for a display, but a trait for it is not added, and the processor cannot
-depend upward on `tutti-measure`.
+the processor cannot depend upward on `tutti-measure`, and no trait is added. If a
+display ever wants the envelope, the estimator is exported from `tutti-dsp` at that
+point and `tutti-measure` offers an analyser over it; until then it is private.
 
 **Cases** (analytic, synthetic vowels): a harmonic stack shaped by a known
 all-pole envelope (a Klatt-style resonator pair), shifted by +7 semitones with
@@ -846,7 +900,8 @@ impl<L, Phi> Lure<L, Phi> {
     pub fn circle_ok(&self, grid: &[Hz]) -> bool;     // 1/beta + k Re L(e^jw) > 0 for all w
     pub fn critical_gain(&self, grid: &[Hz]) -> Option<f64>;   // None if L has no real negative crossing
     pub fn small_signal(&self) -> impl Lti;           // phi'(0) L / (1 + k phi'(0) L), Injection::Sum
-    pub fn output_bound(&self) -> f64;                // l1(L) * sup|phi|
+    pub fn output_bound(&self, x_max: f64) -> f64;    // Sum: l1(L) sup|phi|; Linear: l1(L)(x_max + k sup|phi|)
+    pub fn well_posed(&self, feedthrough: f64) -> bool;   // monotone phi and k * h[0] >= 0: one solution per sample
 }
 ```
 
@@ -858,20 +913,28 @@ impl<L, Phi> Lure<L, Phi> {
   four identical one-poles (continuous time, cutoff 1) and `tanh` (`beta = 1`),
   `min Re L = -0.3466`, so the circle bound is `k < 2.885`, against the exact
   small-signal critical gain `k* = 4` at `w = 1` (`L = -1/4` there). Both are
-  queries; the gap between them (a conditionally stable region) is conservatism of
-  the circle criterion (computed in the sketch; the trapezoidal discretisation
+  queries; between them the small-signal loop is stable but the circle criterion
+  cannot certify it, which is conservatism of the criterion, not conditional
+  stability (computed in the sketch; the trapezoidal discretisation
   moves the figures, which are for the continuous prototype).
 - **`critical_gain` is `Option<f64>`:** it is `-1/(phi'(0) Re L(e^jw_pc))` at the
   phase crossover `arg L = -pi`; two poles have none (unconditionally stable), a
   conditionally stable `L` has a band, and several crossings take the smallest.
 - **BIBO and `l2` are different.** For the bounded maps the doc names (`tanh`,
-  `atan`, softsign, hard clip) and a stable `L`, `|y| <= l1(L) sup|phi|` for **every**
-  `k`; boundedness is trivial and `output_bound` is that figure. The small-gain
+  `atan`, softsign, hard clip) and a stable `L`, the `Sum` form has
+  `|y| <= l1(L) sup|phi|` for **every** `k` and any `x`; the `Linear` form has
+  `|y| <= l1(L)(max|x| + k sup|phi|)`. Boundedness is trivial and `output_bound` is
+  that figure, injection-aware. The small-gain
   condition `hinf(L) lip(phi) k < 1` is an `l2` result, and for the ladder
   (`L(0) = 1`, `hinf >= 1`) it only certifies `k < 1`, which is why the circle
   criterion is the tool. `sup|phi|` is a field (`Memoryless` has only the secant
   `max_gain = sup |f(x)|/|x|`, which does not bound `|f|`), and `phi'(0)` is a field
   checked by finite difference against `eval`.
+- **Well-posedness.** The delay-free loop is an implicit equation per sample; with
+  `phi` monotone and `k h[0] >= 0` (`h[0]` the feedthrough of `L`) it has exactly
+  one solution, so a solver cannot fail to converge for want of one. `circle_ok` on
+  a finite grid is a numerical check, not a certificate: it holds only if `Re L` is
+  not underestimated between grid points.
 - **Not offered:** the limit-cycle amplitude (it needs a describing function), and
   nodal DK for several nonlinearities.
 
@@ -886,15 +949,15 @@ realization of the delay-free `Lure`.
 `small_signal.frequency_response`; below `critical_gain` an impulse decays, above
 it a small input grows at the rate of the small-signal poles until `phi` limits it;
 inside the circle bound the origin is stable at every tested level; output bounded
-by `output_bound` at any `k`; DC: the fixed point of the loop equation equals the
+by `output_bound` at any `k` for the stated injection; `well_posed` holds for every shipped design; DC: the fixed point of the loop equation equals the
 settled output; block independence; no allocation and a bounded solver iteration
 count. Mutants: `phi` applied after the sum instead of on it (the injection
 form); a solver stopping after zero iterations; the unit-delayed feedback, which
 moves `k*` and fails the critical-gain case.
 
 **Lives in** `tutti-dsp/src/filter/` and the `model` module; `Lure` goes to doc 024
-§4.2 at the PR of the first realization (§9 D8). Candidates: the nonlinear TPT
-ladder, a diode clipper. Wave digital filters author the same circuits another
+§4.2 at the PR of the first realization, subject to the owner's answer to Q2. Candidates: the nonlinear TPT
+ladder, a diode clipper, and Holters's stateful ADAA of a ladder (§3.1). Wave digital filters author the same circuits another
 way and are a non-goal (§7). **Hosted by** after §3.1, §3.2 (these circuits need
 oversampling) and doc 024 step 2. **Effort** M.
 
@@ -961,13 +1024,15 @@ stays a plain type with its own tests. These do:
 ("a pure algorithm over slices goes in `tutti-dsp`; a node file holds only the
 `Node` adapter"): over a third of its non-test source (3,109 lines) is pure
 algorithm. Moving it makes the HRTF and VBAP models able to live next to the
-traits and the `contract` feature, which AllRAD and binaural ambisonic decode
+traits and the contract machinery (a crate-root test module on `main`; a feature
+in doc 024 Q6's plan), which AllRAD and binaural ambisonic decode
 need: AllRAD is `Series<ShDecode, VbapColumns>` (§3.5) and binaural decode is a
 series with the HRTF pair. Encode, rotation and a plain decoder need neither
 move. The option taken here, algorithms into `tutti-dsp` and nodes staying in
-`tutti-spatial`, is the recommendation of a read-only review of the crate (the
-alternatives were to leave it, or to dissolve the crate into `tutti-nodes` now);
-it is **not yet an owner decision** and is §9 Q5.
+`tutti-spatial`, is a recommendation, weighed against two alternatives (leave the crate as it
+is, or dissolve it into `tutti-nodes` now, which moves every public path and has
+no benefit until `DesignNode` exists); it is **not yet an owner decision** and is
+§9 Q5.
 
 ### 4.1 What moves, what stays
 
@@ -1034,7 +1099,9 @@ only for an argued libm move, so the replacement keeps glam's **operation order*
 columns `tmp_i * (1/det)`, then transposed; `mat * vec` is
 `x_axis*v.x + y_axis*v.y + z_axis*v.z` left to right; `DMat2::inverse` is
 `(y.y, -x.y, -y.x, x.x) * (1/det)`; `dot` is `(x*x) + (y*y) + (z*z)`. The one
-operation that is a libm call inside glam is `angle_between`'s `acos`, which only
+operation that is a libm call inside glam is `angle_between`'s `acos` (glam's
+`acos_approx` is `libm::acos` or `f64::acos` depending on glam's features; the PR
+reads which one `Cargo.lock`'s build uses), which only
 feeds **tuple selection** (volume per side length, distances and their ordering),
 not the gains; for the symmetric presets equal distances tie, so a different
 `acos` rounding could reorder a tie. The PR therefore pins the selected tuples of
@@ -1110,7 +1177,7 @@ needs; "Pinned to" names the cases (§3). Effort is S, M or L.
 | 14 | Ambisonics: bus, encode, rotate, decode; AllRAD; binaural | 1 order 0 | new models | `tutti-dsp/spatial/`, `tutti-spatial` | doc 023 G11; §4 for AllRAD and binaural | degree energy, isometry, commutation (§3.5) | L |
 | 15 | Neural amp and pedal inference | inherent | own core | a new crate, later | after items 1 to 13; §9 Q3 | layer equations (§3.13) | L |
 
-The ranking follows the research behind this document, with two changes: the
+The ranking puts table stakes before differentiators, and folds two items in: the
 pan-law item joins the utility pack, because a law is an order-0 matrix with a
 small contract; and sampler interpolation tiers are doc 026's (026 Q5), not an
 item here.
@@ -1178,7 +1245,7 @@ doc 024 step 7's "stretch" item written first, as doc 026 §9 says.
 
 ## 8. What the contract gains
 
-No family needs a class group another could not reuse. The cases in §3 reduce to
+No family in §3 needs a class group of its own. The cases reduce to
 patterns doc 024 §6 already has, plus one:
 
 | Pattern | Used by | Query it reads |
@@ -1208,42 +1275,46 @@ Taken on the recommendation (the owner's standing delegation of lane decisions),
 | D3 | Shimmer is not a reverb `Design`; doc 022's exclusion stands. A shimmer after a live pitch shifter exists is a graph composition | §3.9, §3.11; it needs a live shifter that does not exist |
 | D4 | Antiderivatives, the FIR overshoot bound and the formant shift are inherent methods; only `GainMatrix` and `BandLimited` are new traits | doc 024 §4.2: a trait needs a second family; §2.2 names each implementer |
 | D5 | The oversampler is two types (`PolyphaseFir`, `HalfbandIir`) with one `TimeScale` and `Fidelity`; the tier is the node's and export uses the live tier | §3.2; doc 024 Q8 stands |
-| D6 | The STFT pair lives in `tutti-dsp/src/stft.rs`; `LockedVocoder` takes it as a dependency when it lands, and doc 026 stage 2 is not delayed | §3.8; a separate crate would cut `tutti-dsp` along a boundary every processor crosses |
+| D6 | The STFT pair lives in `tutti-dsp/src/stft.rs`. Doc 026 stage 2 is not delayed: `LockedVocoder` is written on `StftGeometry` as 026 says, and the pair is factored out afterwards (D3 follows stage 2) with the vocoder moved onto it only if the two share code | §3.8; a separate crate would cut `tutti-dsp` along a boundary every processor crosses |
 | D7 | The formant estimator is private to the realization in `tutti-dsp`; no trait | §3.9; doc 024 Q24's cut |
-| D8 | `Lure<L, Phi>` is a combinator, added to doc 024 §4.2 at the PR of its first realization, lifting Q17 for that loop shape | §3.10; the circle criterion is the stated stability argument |
-| D9 | `AngleSmoother` stays in `tutti-spatial`; the nodes own smoothing and the `Arc` of the HRTF set | §4.1; doc 024 row 46, consolidation 2 |
+| D8 | `AngleSmoother` stays in `tutti-spatial`; the nodes own smoothing and the `Arc` of the HRTF set | §4.1; doc 024 row 46, consolidation 2 |
 
 ### 9.2 Open questions (the owner's)
 
 | # | Question | Recommendation |
 |---|---|---|
 | Q1 | A live pitch shifter needs an input-fed push shape, which doc 026 §12 rejected for lack of a consumer. Amend 026 §12 when the shifter is built? | Yes, when it is built, and not before. The sampler realization (stage D2 of §6) does not need it |
-| Q2 | Doc 024 §4.2 amendments P1 (`pdc_delay`), P2 (MIMO norms, `h2_norm`) and P3 (`Lure`): approve the shapes? | Approve P1 and P2 for step 1b so every later family inherits them; P3 at the PR of its first realization |
+| Q2 | Doc 024 §4.2 amendments. P1 (`pdc_delay`) and P2 (MIMO norms, `h2_norm`) are additive; P3 (`Lure<L, Phi>`) lifts doc 024 Q17's "No feedback composition" for one loop shape, whose stability argument is the circle criterion (§3.10). Approve? | Approve P1 and P2 to land with their first consumers (P1 with the oversampler or linear-phase EQ, P2 with the dither work), not in step 1b, which does not grow. Approve P3 for the ladder and diode clipper only, at the PR of the first realization; a general `Feedback<A, B>` stays declined |
 | Q3 | Neural inference: an own minimal core, or none? | None now. Hosted plugins cover NAM-class models. If built: a pure-Rust core (LSTM, GRU, 1-D convolution, dense) in a new crate above `tutti-dsp`, weights as control-side data, no allocation on the audio thread, no `candle`/`ort` there, and §3.13's contract. Decide after items 1 to 13 |
 | Q4 | Commit to ambisonics? | Yes, to first through third order in ACN/SN3D, with the `Ambisonic` topology (G11) first and AllRAD and binaural decode as the deliverable. Not above order 3 until a consumer asks |
-| Q5 | Approve the spatial consolidation (§4: algorithms to `tutti-dsp`, nodes stay, the smoother stays), and, if a golden digest moves despite the bit-exact plan, an argued re-record? | Approve. Keep the digests bit-exact by pinning the preset tuples and glam's operation order first; a re-record only with the owner |
+| Q5 | Approve the spatial consolidation (§4: algorithms to `tutti-dsp`, nodes stay, the smoother stays)? | Approve, in the three PRs of §4.3 |
+| Q5b | If a golden digest moves despite the bit-exact plan, approve an argued re-record? | Only for a reason argued in the PR. The plan is to keep the digests bit-exact by pinning the preset tuples and glam's operation order first |
 | Q6 | The VBAP tuple selection's provenance and licence (§4.2) | Re-derive the selection from Pulkki's published method and hold it to the spec cases, so no code derived from Ardour's `vbap_speakers.cc` (LGPL per Debian's copyright file, unverified at the source) enters the workspace; keep the solve's mathematics as it is |
 | Q7 | An HRIR file format: SOFA (AES69-2022, a netCDF/HDF5 container) or the `hrir_sphere_builder` format? | Keep the sphere format as the runtime form. SOFA is read by an offline conversion tool outside `xtask` (which takes no dependencies) and the engine. Whether a maintained pure-Rust HDF5 reader exists is unverified, and the owner's rule asks before a C library |
+| Q8 | The polysynth's pan law (`sqrt((1-p)/2)`) and the shared cos/sin mapping differ, so unifying them changes the polysynth's render (§3.5). Unify? | No. Keep both as named variants of the consolidated law; the polysynth render is unchanged. Unify only if the owner wants one mapping, and then as an argued render change |
 
 ## 10. What was type-checked
 
-The sketches of §3 were checked in a scratch crate outside the repository, with
-`cargo check` and `cargo test` clean. Doc 024's class traits and the vocabulary
+The sketches of §3 were checked in a throwaway crate kept outside the repository,
+with `cargo check` and `cargo test` clean. Doc 024's class traits and the vocabulary
 types are **stand-ins** (the `model` module is not on `main`), `TimeScale` is
 restated as doc 026 §3.2 defines it (including `reach`), and the proposed `pdc_delay`
 and `h2_norm` are added to the stand-in traits. Every trait kept in this document
 has an implementer there (`GainMatrix`: a pan law, mid/side, `ShEncode`, a yaw
 rotation; `BandLimited`: a wavetable and a PM pair), and the combinators
-(`Filtered`, `Controlled`, `Lure`, `Oversampled`) are written and used, not just
-declared. The tests assert the figures this document states: the antiderivatives
+(`Filtered`, `Controlled`, `Lure`, `Oversampled`) are written and exercised by a
+test each (`Controlled` selecting a design by detector level, `Oversampled`'s peak
+gain with the down stage, `Lure`'s injection-aware bound and well-posedness). The tests assert the figures this document states: the antiderivatives (including
+the shipped atan curve)
 by central difference and the identity-map quotient; the true-peak margin for a
 tone at `fs/2` (grid peak `A cos(pi/2N)`, 0.688 dB at 4x, 0.169 dB at 8x); pan-law
 power and the isometry of mid/side and a rotation; rotation commuting with encode
 at first order, and the inverse-rotation mutant failing; first-order degree
-energy; `Filtered::variance` against `l1^2`; the Gerzon-Craven integral for two
+energy; the ADAA small-step error against the naive map's; `Filtered::variance` against `l1^2`; the Gerzon-Craven integral for two
 NTFs; Bessel amplitudes; the STFT window-sum constants (1.5 and 2); the DC-blocker
 corner and Nyquist gain; the circle bound (2.885) and the critical gain (4) of four
-one-poles. What was **not** checked: the limiter's output bound end to end (stated,
+one-poles. The TPDF `lsb^2/4` check is arithmetic on the two variances, not a
+simulation. What was **not** checked: the limiter's output bound end to end (stated,
 proved in two lines, a first-PR obligation), the aliasing floors, the oversampler's
 stopband numbers, higher-order harmonics, and anything that needs the real crates.
 No figure here is a measurement of tutti.

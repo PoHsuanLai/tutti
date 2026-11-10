@@ -630,7 +630,7 @@ static HOST_PARAMS: clap_host_params = clap_host_params {
 };
 
 trampoline!(host_params_rescan(flags: u32), main_only, (), |cb| cb
-    .params_rescan(ParamsRescanFlags::from_bits_truncate(flags)));
+    .params_rescan(ParamsRescanFlags::from_bits_retain(flags)));
 
 extern "C" fn host_params_clear(_host: *const clap_host, _param_id: u32, _flags: u32) {}
 
@@ -714,9 +714,7 @@ extern "C" fn host_audio_ports_is_rescan_flag_supported(
 }
 
 trampoline!(host_audio_ports_rescan(flags: u32), main_only, (), |cb| cb
-    .audio_ports_rescan(AudioPortsRescanFlags::from_bits_truncate(
-        flags
-    )));
+    .audio_ports_rescan(AudioPortsRescanFlags::from_bits_retain(flags)));
 
 static HOST_NOTE_PORTS: clap_host_note_ports = clap_host_note_ports {
     supported_dialects: Some(host_note_ports_supported_dialects),

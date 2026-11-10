@@ -1548,7 +1548,7 @@ impl AudioPortInfo {
         Self {
             id: info.id,
             name: crate::chars_to_string(&info.name),
-            flags: crate::AudioPortFlags::from_bits_truncate(info.flags),
+            flags: crate::AudioPortFlags::from_bits_retain(info.flags),
             channel_count: info.channel_count,
             port_type,
             in_place_pair: info.in_place_pair,

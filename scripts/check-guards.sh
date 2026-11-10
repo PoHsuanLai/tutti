@@ -49,6 +49,53 @@ ALLOW = {
 }
 
 
+# The host callbacks CLAP marks `[main-thread]` (`ext/*.h`): each must be a
+# `main_only` trampoline, and every other trampoline a `guarded` one, so a
+# plugin that calls one off the main thread is refused and a `[thread-safe]`
+# one never is.
+MAIN_THREAD = {
+    "host_ambisonic_changed",
+    "host_audio_ports_config_rescan",
+    "host_audio_ports_rescan",
+    "host_latency_changed",
+    "host_note_name_changed",
+    "host_note_ports_rescan",
+    "host_params_rescan",
+    "host_posix_fd_modify",
+    "host_posix_fd_register",
+    "host_posix_fd_unregister",
+    "host_preset_load_loaded",
+    "host_remote_controls_changed",
+    "host_remote_controls_suggest_page",
+    "host_resource_release_directory",
+    "host_resource_request_directory",
+    "host_state_mark_dirty",
+    "host_surround_changed",
+    "host_timer_register",
+    "host_timer_unregister",
+    "host_transport_request_continue",
+    "host_transport_request_enable_loop",
+    "host_transport_request_jump",
+    "host_transport_request_loop_region",
+    "host_transport_request_pause",
+    "host_transport_request_record",
+    "host_transport_request_start",
+    "host_transport_request_stop",
+    "host_transport_request_toggle_loop",
+    "host_transport_request_toggle_play",
+    "host_transport_request_toggle_record",
+    "host_triggers_rescan",
+    "host_tuning_get_count",
+    "host_undo_begin_change",
+    "host_undo_cancel_change",
+    "host_undo_change_made",
+    "host_undo_request_redo",
+    "host_undo_request_undo",
+    "host_undo_set_wants_context",
+    "host_voice_info_changed",
+}
+
+
 def skip(s, i):
     """Index after the comment/string/char literal at i, or i if none."""
     if s.startswith("//", i):
@@ -119,7 +166,9 @@ for path in matches("crates/tutti-clap-ffi/src/**/*.rs"):
 
 # A `trampoline!` (clap-ffi's host.rs) expands to a callback under `guarded` or
 # `main_only`; the kind is the second argument, so that is what is checked.
-# Mutation (run): change one `guarded` to `unchecked` in an invocation -> exits 1.
+# Mutation (run): change one `guarded` to `unchecked`, or `host_params_rescan`
+# from `main_only` to `guarded`, or a `[thread-safe]` one to `main_only` -> exits 1
+# naming the callback.
 for path in matches("crates/tutti-clap-ffi/src/**/*.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
@@ -127,8 +176,9 @@ for path in matches("crates/tutti-clap-ffi/src/**/*.rs"):
     for m in re.finditer(r"^trampoline!\(\s*(\w+)\(", s, re.M):
         seen += 1
         end = match(s, m.end() - 1, "(", ")")
-        kind = re.match(r"\s*,?\s*(?:->[^,]*)?,?\s*(\w+)\s*,", s[end + 1 : end + 80] if False else s[end + 1 :])
-        if kind is None or kind.group(1) not in ("guarded", "main_only"):
+        kind = re.match(r"\s*,?\s*(?:->[^,]*)?,?\s*(\w+)\s*,", s[end + 1 :])
+        want = "main_only" if m.group(1) in MAIN_THREAD else "guarded"
+        if kind is None or kind.group(1) != want:
             bad.append((path, m.group(1)))
 
 for path in matches("crates/tutti-au-ffi/src/**/*.rs"):

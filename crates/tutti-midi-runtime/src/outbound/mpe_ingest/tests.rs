@@ -2,11 +2,9 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
-use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::MpeZoneConfig;
 use tutti_types::Samples;
-use tutti_ump::CCNumber;
+use tutti_ump::{Address, CCNumber, Message, Voice2};
 
 /// What the ingest sends, collected: the tests read it as a list.
 trait Collected {
@@ -71,12 +69,12 @@ fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> UmpAt {
     )
 }
 
-/// True if the event is the given native CV2 kind — matched inline so the
-/// borrow of `words()` never escapes.
+/// True if the event decodes to the given MIDI 2.0 channel voice message:
+/// `$addr` binds its `Address`, `$pat` matches the `Voice2`.
 macro_rules! assert_cv2 {
-    ($ev:expr, $pat:pat $(if $guard:expr)?) => {
-        match UmpMessage::try_from($ev.1.words()).unwrap() {
-            UmpMessage::ChannelVoice2($pat) $(if $guard)? => {}
+    ($ev:expr, $addr:pat, $pat:pat $(if $guard:expr)?) => {
+        match tutti_ump::decode($ev.1) {
+            Ok(Message::Midi2($addr, $pat)) $(if $guard)? => {}
             other => panic!("unexpected message: {other:?}"),
         }
     };
@@ -100,8 +98,9 @@ fn member_channel_bend_becomes_per_note_pitch_bend() {
         .expect("emits");
     assert_cv2!(
         out,
-        ChannelVoice2::PerNotePitchBend(m)
-            if u8::from(m.channel()) == 2 && u8::from(m.note_number()) == 60
+        Address { channel, .. },
+        Voice2::PerNotePitchBend { note, .. }
+            if channel.get() == 2 && note.get() == 60
     );
 }
 
@@ -113,7 +112,7 @@ fn master_channel_bend_passes_through_as_channel_bend() {
         .translated(&pitch_bend14(0, 12288))
         .next()
         .expect("passes through");
-    assert_cv2!(out, ChannelVoice2::ChannelPitchBend(_));
+    assert_cv2!(out, _, Voice2::PitchBend(_));
 }
 
 #[test]
@@ -126,8 +125,9 @@ fn member_channel_cc74_becomes_per_note_controller() {
         .expect("emits");
     assert_cv2!(
         out,
-        ChannelVoice2::AssignablePerNoteController(m)
-            if u8::from(m.note_number()) == 64 && m.index() == 74
+        _,
+        Voice2::AssignablePerNote { note, controller, .. }
+            if note.get() == 64 && controller == 74
     );
 }
 
@@ -142,7 +142,7 @@ fn member_channel_pressure_becomes_per_note_pressure() {
         ))
         .next()
         .expect("emits");
-    assert_cv2!(out, ChannelVoice2::KeyPressure(m) if u8::from(m.note_number()) == 60);
+    assert_cv2!(out, _, Voice2::PolyPressure { note, .. } if note.get() == 60);
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn native_per_note_passes_through() {
         midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF),
     );
     let out = ingest.translated(&native).next().expect("passes");
-    assert_cv2!(out, ChannelVoice2::PerNotePitchBend(_));
+    assert_cv2!(out, _, Voice2::PerNotePitchBend { .. });
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn disabled_mode_passes_everything_through() {
         .translated(&pitch_bend14(2, 16383))
         .next()
         .expect("passes");
-    assert_cv2!(out, ChannelVoice2::ChannelPitchBend(_));
+    assert_cv2!(out, _, Voice2::PitchBend(_));
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
         .translated(&pitch_bend14(1, 16383))
         .next()
         .expect("emits");
-    assert_cv2!(out, ChannelVoice2::PerNotePitchBend(m) if u8::from(m.note_number()) == 60);
+    assert_cv2!(out, _, Voice2::PerNotePitchBend { note, .. } if note.get() == 60);
 }
 
 #[test]
@@ -232,18 +232,14 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
     events
         .into_iter()
         .map(|ev| {
-            let Ok(UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m))) =
-                UmpMessage::try_from(ev.1.words())
+            let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) =
+                tutti_ump::decode(ev.1)
             else {
                 panic!("{ev:?} is not a registered controller");
             };
-            assert_eq!(u8::from(m.bank()), Rpn::PITCH_BEND_SENSITIVITY.bank().get());
-            let range = PitchBendSensitivity::from_rpn_bits(m.controller_data());
-            (
-                u8::from(m.channel()),
-                u8::from(m.index()),
-                range.as_semitones_f32(),
-            )
+            assert_eq!(bank.get(), Rpn::PITCH_BEND_SENSITIVITY.bank().get());
+            let range = PitchBendSensitivity::from_rpn_bits(value);
+            (address.channel.get(), index.get(), range.as_semitones_f32())
         })
         .collect()
 }
@@ -266,7 +262,7 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
 /// zone's ranges are sent too → fails.
 #[test]
 fn an_mcm_resets_its_zones_bend_ranges() {
-    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_plugin_types::PerNoteBendRanges;
     let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(3)));
     let mut receiver = PerNoteBendRanges::default();
     for ev in ingest.translated(&bend_sensitivity(1, 12)) {
@@ -360,7 +356,7 @@ fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
 /// fails.
 #[test]
 fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
-    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_plugin_types::PerNoteBendRanges;
     let mut ingest = MpeIngest::new(MpeMode::DualZone {
         lower: MpeZoneConfig::lower(3),
         upper: MpeZoneConfig::upper(3),
@@ -411,5 +407,5 @@ fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
         .translated(&pitch_bend14(2, 16383))
         .next()
         .expect("the bend folds onto the note");
-    assert_cv2!(out, ChannelVoice2::PerNotePitchBend(m) if u8::from(m.note_number()) == 60);
+    assert_cv2!(out, _, Voice2::PerNotePitchBend { note, .. } if note.get() == 60);
 }

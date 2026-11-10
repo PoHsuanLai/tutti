@@ -16,7 +16,7 @@ use tutti_clap_host::{
 use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_midi_protocol::{channel_voice, midi1};
-use tutti_midi_types::PerNoteBendRanges;
+use tutti_plugin_types::PerNoteBendRanges;
 use tutti_types::Samples;
 use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2, decode};
 

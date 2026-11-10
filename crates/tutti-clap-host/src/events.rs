@@ -42,7 +42,7 @@ use tutti_midi_protocol::{
     PitchBendSensitivity, bend_u32_to_signed_f32, midi1, narrow, u16_to_unit_f32, u32_to_unit_f32,
     widen, widen_message,
 };
-use tutti_midi_types::PerNoteBendRanges;
+use tutti_plugin_types::PerNoteBendRanges;
 use tutti_ump::{
     Address, Attribute, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, SysexAssembler, SysexStep, Ump, Unknown, Voice1, Voice2, decode,

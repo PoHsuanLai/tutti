@@ -704,8 +704,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   snapshot and sends `Delta`s, and `PluginDb::apply` is the only code that
   changes a row. Consumers
   name its types from it, not through `tutti-plugin`.
-- `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
-  `tutti-midi-types` and `tutti-plugin-types` alone among workspace crates,
+- `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump` and
+  `tutti-plugin-types` alone among workspace crates,
   keeps every module private but `state_chunk` (the namespace both ends chunk
   a state with; CI runs the per-module path gate on the rest) and has no
   `bevy` feature. Its `unsafe` is the process edge's own (shared memory and

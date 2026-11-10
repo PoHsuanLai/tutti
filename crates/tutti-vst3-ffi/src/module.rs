@@ -138,6 +138,11 @@ fn lock_modules() -> std::sync::MutexGuard<'static, ()> {
 impl Drop for Module {
     fn drop(&mut self) {
         let _one_at_a_time = lock_modules();
+        // Whatever is still registered with the run loop (a registration
+        // through the module's own context belongs to no instance) points into
+        // code about to be unloaded.
+        #[cfg(target_os = "linux")]
+        self.parts.run_loop.clear_all();
         // SAFETY: `parts` is dropped here and nowhere else, and never used
         // again. Dropping it by hand is what lets the guard outlive the fields.
         unsafe { ManuallyDrop::drop(&mut self.parts) };
@@ -155,11 +160,16 @@ impl Module {
 
     /// The host application a plugin created from this module is handed, with
     /// the module's run loop. One per instance.
-    pub(crate) fn new_host_application(&self) -> ComWrapper<HostApplication> {
+    pub(crate) fn new_host_application(
+        &self,
+        #[cfg(target_os = "linux")] owner: crate::com::Owner,
+    ) -> ComWrapper<HostApplication> {
         HostApplication::new(
             HOST_NAME,
             #[cfg(target_os = "linux")]
             self.parts.run_loop.clone(),
+            #[cfg(target_os = "linux")]
+            Some(owner),
         )
     }
 
@@ -223,6 +233,9 @@ impl Module {
             HOST_NAME,
             #[cfg(target_os = "linux")]
             run_loop.clone(),
+            // The module's own context serves every plugin: it has no owner.
+            #[cfg(target_os = "linux")]
+            None,
         );
         if let Some(f3) = factory3.as_ref()
             && let Some(app) = host_context.as_com_ref::<IHostApplication>()

@@ -17,7 +17,8 @@ impl Plugin {
 
     /// Whether the plugin offers an editor view.
     #[must_use]
-    pub fn has_editor(&self) -> bool {
+    pub fn has_editor(&self, main: &MainThread) -> bool {
+        let _scope = self.scoped(main);
         self.create_view().is_some()
     }
 
@@ -41,24 +42,57 @@ impl Plugin {
         let frame = HostPlugFrame::new(
             #[cfg(target_os = "linux")]
             self.module.run_loop(),
+            #[cfg(target_os = "linux")]
+            Some(self.owner),
         );
-        let (editor, size) = Editor::open(view, parent, scale, frame)?;
+        // A plugin registers with the module's own run loop (the factory's host
+        // context) while `attached` runs; the scope says whose that is.
+        #[cfg(target_os = "linux")]
+        let run_loop = self.module.run_loop();
+        #[cfg(target_os = "linux")]
+        let _scope = run_loop.scope(self.owner);
+        let (editor, size) = match Editor::open(view, parent, scale, frame) {
+            Ok(opened) => opened,
+            Err(error) => {
+                // A view that fails `attached` may have registered before it
+                // failed, and nothing will ever unregister it.
+                self.purge_run_loop();
+                return Err(error);
+            }
+        };
         self.editor = Some(editor);
         Ok(size)
     }
 
     /// Detaches and releases the editor, if one is open.
-    pub fn close_editor(&mut self, _main: &MainThread) {
-        self.release_editor();
+    pub fn close_editor(&mut self, main: &MainThread) {
+        self.release_editor(Some(main));
     }
 
-    /// [`close_editor`](Self::close_editor) for `Drop`, which has no token: the
-    /// thread a drop runs on is the owner's, and the per-format lane that gives
-    /// the plugin a main-thread handle is what makes that the main thread.
-    pub(super) fn release_editor(&mut self) {
+    /// [`close_editor`](Self::close_editor), and for `Drop`, which has no
+    /// token: it passes what [`MainThread::current`] finds. An editor is
+    /// detached on the main thread only. `Drop` never gets here off the main
+    /// thread with an editor open (it leaks the whole plugin first, see
+    /// [`Plugin`]'s `Drop`), so the `None` arm is only the last guard: it leaks
+    /// the view rather than call it off its thread. The run loop is purged
+    /// either way, so nothing of it is ever called.
+    pub(super) fn release_editor(&mut self, main: Option<&MainThread>) {
         if let Some(editor) = self.editor.take() {
-            editor.close();
+            match main {
+                Some(main) => editor.close(main),
+                None => std::mem::forget(editor),
+            }
         }
+        // A timer or descriptor the view left registered (it was told to
+        // unregister in `removed`) is the plugin's leak; the run loop must not
+        // call it once the view is gone.
+        self.purge_run_loop();
+    }
+
+    /// Takes back whatever this plugin left registered with the run loop.
+    pub(super) fn purge_run_loop(&self) {
+        #[cfg(target_os = "linux")]
+        self.module.run_loop().purge(self.owner);
     }
 
     /// Whether an editor is open.
@@ -69,7 +103,8 @@ impl Plugin {
 
     /// What the open editor can do; the defaults when none is open.
     #[must_use]
-    pub fn editor_capabilities(&self) -> EditorCapabilities {
+    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+        let _scope = self.scoped(main);
         let Some(editor) = &self.editor else {
             return EditorCapabilities::default();
         };
@@ -83,7 +118,7 @@ impl Plugin {
     }
 
     /// The latest size the editor asked the host for, taken.
-    pub fn take_editor_resize_request(&self) -> Option<EditorSize> {
+    pub fn take_editor_resize_request(&self, _main: &MainThread) -> Option<EditorSize> {
         self.editor.as_ref()?.plug_frame.take_resize_request()
     }
 
@@ -92,9 +127,10 @@ impl Plugin {
     #[must_use]
     pub fn editor_size_constraint(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         requested: EditorSize,
     ) -> Option<EditorSize> {
+        let _scope = self.scoped(main);
         Some(self.editor.as_ref()?.constrain(requested).0)
     }
 
@@ -106,9 +142,10 @@ impl Plugin {
     /// refusal.
     pub fn resize_editor(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         requested: EditorSize,
     ) -> Result<EditorSize, Vst3Error> {
+        let _scope = self.scoped(main);
         self.editor
             .as_ref()
             .ok_or(Vst3Error::NotInitialized)?
@@ -124,6 +161,7 @@ impl Plugin {
         virtual_key: i16,
         modifiers: i16,
     ) -> bool {
+        let _scope = self.scoped(main);
         self.editor
             .as_ref()
             .is_some_and(|e| crate::view::send_key_down(main, &e.view, key, virtual_key, modifiers))
@@ -138,6 +176,7 @@ impl Plugin {
         virtual_key: i16,
         modifiers: i16,
     ) -> bool {
+        let _scope = self.scoped(main);
         self.editor
             .as_ref()
             .is_some_and(|e| crate::view::send_key_up(main, &e.view, key, virtual_key, modifiers))
@@ -146,15 +185,17 @@ impl Plugin {
     /// Delivers a wheel step to the open editor; `true` if it was consumed.
     #[must_use]
     pub fn editor_wheel(&self, main: &MainThread, distance: f32) -> bool {
+        let _scope = self.scoped(main);
         self.editor
             .as_ref()
             .is_some_and(|e| crate::view::send_wheel(main, &e.view, distance))
     }
 
     /// Tells the open editor whether it has focus.
-    pub fn set_editor_focus(&self, _main: &MainThread, focused: bool) {
+    pub fn set_editor_focus(&self, main: &MainThread, focused: bool) {
+        let _scope = self.scoped(main);
         if let Some(e) = &self.editor {
-            crate::view::set_view_focus(&e.view, focused);
+            crate::view::set_view_focus(main, &e.view, focused);
         }
     }
 

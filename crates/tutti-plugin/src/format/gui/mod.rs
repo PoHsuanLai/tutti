@@ -105,7 +105,7 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dy
 
     match format {
         #[cfg(feature = "vst3")]
-        PluginFormat::Vst3 => Ok(Box::new(vst3::Vst3GuiInstance::load(path)?)),
+        PluginFormat::Vst3 => Ok(Box::new(vst3::Vst3GuiInstance::load(main, path)?)),
         #[cfg(feature = "clap")]
         PluginFormat::Clap => Ok(Box::new(clap::ClapGuiInstance::load(main, path)?)),
         #[cfg(all(feature = "au", target_os = "macos"))]

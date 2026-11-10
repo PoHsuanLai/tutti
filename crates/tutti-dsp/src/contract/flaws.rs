@@ -137,9 +137,6 @@ impl<D: NetDesign + LtiCase> LtiCase for Mutant<D> {
     fn marginal(&self, c: &D::Controls) -> bool {
         self.inner.marginal(c)
     }
-    fn response_probes(&self) -> Option<Vec<D::Controls>> {
-        self.inner.response_probes()
-    }
     fn fill(&self, rate: SampleRate, trips: f32) -> usize {
         self.inner.fill(rate, trips)
     }
@@ -1040,9 +1037,6 @@ impl<D: NetDesign + LtiCase> LtiCase for Defective<D> {
     }
     fn marginal(&self, c: &D::Controls) -> bool {
         self.inner.marginal(c)
-    }
-    fn response_probes(&self) -> Option<Vec<D::Controls>> {
-        self.inner.response_probes()
     }
     fn fill(&self, rate: SampleRate, trips: f32) -> usize {
         self.inner.fill(rate, trips)

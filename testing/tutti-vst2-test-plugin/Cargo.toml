@@ -27,6 +27,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # `vst::buffer::AudioBuffer<T>` is bounded on `num_traits::Float`, so the one
 # generic `write_tagged` shared by the f32 and f64 render paths needs the same
-# bound in scope. Pinned to what vst-tutti already resolves, so no new tree.
+# bound in scope. Pinned to what tutti-vst2-ffi already resolves, so no new tree.
 num-traits = "0.2"
-vst-tutti = { path = "../../crates/vst-tutti" }
+tutti-vst2-author = { path = "../tutti-vst2-author" }

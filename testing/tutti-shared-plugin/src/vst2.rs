@@ -2,7 +2,7 @@
 //! indices and `f32`, there is no sample offset on a parameter, state is a
 //! chunk, events arrive before `processReplacing`.
 
-extern crate vst_tutti as vst;
+extern crate tutti_vst2_author as vst;
 
 use std::sync::{Arc, Mutex};
 

@@ -17,7 +17,7 @@
 //! recording the answer in `ProcessCapture::process_level`.
 //!
 //! Two halves had to exist for that to be possible, and the second was missing
-//! too: the host answered the opcode (`vst-tutti`'s `interfaces.rs`), but the
+//! too: the host answered the opcode (`tutti-vst2-ffi`'s `interfaces.rs`), but the
 //! plugin-side `Host` trait had no `get_process_level` to send it with. No VST2
 //! plugin hosted here could ask. Both halves ship together.
 //!

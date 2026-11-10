@@ -97,8 +97,8 @@ impl HostCallbacks for Recorder {
         self.restarts.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn audio_ports_rescan(&self, flags: u32) {
-        self.rescans.store(flags, Ordering::SeqCst);
+    fn audio_ports_rescan(&self, flags: tutti_clap_ffi::AudioPortsRescanFlags) {
+        self.rescans.store(flags.bits(), Ordering::SeqCst);
     }
 }
 
@@ -178,7 +178,7 @@ fn render(
     scratch: &mut PortScratch,
     outputs: &mut [&mut [f32]],
     frames: u32,
-) -> Result<i32, ProcessError> {
+) -> Result<tutti_clap_ffi::ProcessStatus, ProcessError> {
     let mut sink = Count::default();
     side.process(ProcessCall {
         scratch,

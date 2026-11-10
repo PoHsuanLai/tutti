@@ -23,6 +23,7 @@ test-support = []
 [dependencies]
 clap-sys = "0.5"
 libloading = "0.8"
+bitflags = "2"
 # `WindowHandle`, the one value whose unsafe constructor carries the claim that
 # a parent window is valid; the editor entries take it by reference.
 tutti-plugin-types = { path = "../tutti-plugin-types" }

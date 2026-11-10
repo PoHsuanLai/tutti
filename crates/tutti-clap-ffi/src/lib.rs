@@ -18,6 +18,7 @@ mod plugin;
 mod pool;
 mod roles;
 mod stream;
+mod types;
 
 pub use audio::{AudioSide, Planar, PortScratch, ProcessCall, ProcessError};
 pub use events::{EventRef, EventSink, EventSource, PluginEvent, header_size};
@@ -41,6 +42,11 @@ pub use plugin::{
 pub use pool::{GraphPool, PoolHandle, TaskPool};
 pub use roles::{AudioClaim, LifecycleClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};
+pub use types::{
+    AmbisonicDecl, AudioPortFlags, AudioPortsConfig, AudioPortsRescanFlags, AutomationState,
+    LogSeverity, NoteName, NotePortDecl, ParamInfo, ParamsRescanFlags, ProcessStatus,
+    RemoteControlsPageDecl, StateContext, TriggerDecl, UndoDeltaDecl, VoiceInfo,
+};
 
 // Test-only global allocator for the no-allocation gates.
 #[cfg(test)]

@@ -7,7 +7,6 @@ use super::control::descriptor_of;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::host::{ClapHost, HostState};
 use crate::types::PluginInfo;
-use clap_sys::ext::audio_ports::CLAP_AUDIO_PORT_SUPPORTS_64BITS;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tutti_clap_ffi::{AudioPortInfo, Bundle, DescriptorInfo, LoadError, PortKind, Stage};
@@ -265,7 +264,10 @@ fn check_f64_support(main: &MainThread, source: &impl AudioPortSource) -> bool {
             let Some(port) = source.port_info(main, i, is_input) else {
                 break;
             };
-            if port.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS == 0 {
+            if !port
+                .flags
+                .contains(tutti_clap_ffi::AudioPortFlags::SUPPORTS_64BIT)
+            {
                 return false;
             }
             presented += 1;
@@ -314,9 +316,9 @@ mod enumeration_hole_tests {
                 id: index,
                 name: String::new(),
                 flags: if flagged & (1 << index) != 0 {
-                    CLAP_AUDIO_PORT_SUPPORTS_64BITS
+                    tutti_clap_ffi::AudioPortFlags::SUPPORTS_64BIT
                 } else {
-                    0
+                    tutti_clap_ffi::AudioPortFlags::empty()
                 },
                 channel_count: index + 1,
                 port_type: PortKind::Unspecified,
@@ -507,7 +509,7 @@ mod enumeration_hole_tests {
         AudioPortInfo {
             id: 0,
             name: String::new(),
-            flags: 0,
+            flags: tutti_clap_ffi::AudioPortFlags::empty(),
             channel_count: channels,
             port_type: PortKind::Unspecified,
             in_place_pair: u32::MAX,

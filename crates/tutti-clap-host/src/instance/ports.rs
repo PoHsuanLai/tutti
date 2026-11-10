@@ -4,8 +4,8 @@
 use super::ClapLoaded;
 use super::load::layout_of_port;
 use crate::types::{
-    AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig, AudioPortFlags,
-    AudioPortInfo, NoteDialect, NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
+    AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig, AudioPortInfo,
+    NoteDialect, NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
 };
 use tutti_plugin_types::MainThread;
 use tutti_types::ChannelTopology;
@@ -25,7 +25,6 @@ use clap_sys::ext::note_ports::{
 use clap_sys::ext::voice_info::CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
 #[cfg(feature = "clap-extras")]
 use tutti_clap_ffi::PortConfigRequest;
-use tutti_clap_ffi::chars_to_string;
 
 impl ClapLoaded {
     /// Number of input or output audio ports exposed by the plugin.
@@ -117,7 +116,7 @@ impl ClapLoaded {
 
         Some(NotePortInfo {
             id: info.id,
-            name: chars_to_string(&info.name),
+            name: info.name,
             supported_dialects: NoteDialects::from_bits_truncate(info.supported_dialects),
             preferred_dialect,
         })
@@ -135,7 +134,7 @@ impl ClapLoaded {
 
         Some(AudioPortConfig {
             id: config.id,
-            name: chars_to_string(&config.name),
+            name: config.name,
             input_port_count: config.input_port_count,
             output_port_count: config.output_port_count,
             has_main_input: config.has_main_input,
@@ -234,7 +233,7 @@ impl ClapLoaded {
     pub fn note_name(&self, main: &MainThread, index: u32) -> Option<NoteName> {
         let info = self.plugin.note_name(main, index)?;
         Some(NoteName {
-            name: chars_to_string(&info.name),
+            name: info.name,
             port: info.port,
             channel: info.channel,
             key: info.key,
@@ -451,7 +450,7 @@ fn audio_port_info_from_ffi(info: &tutti_clap_ffi::AudioPortInfo) -> Option<Audi
         id: info.id,
         name: info.name.clone(),
         layout: layout_of_port(info).ok()?,
-        flags: AudioPortFlags::from_bits_truncate(info.flags),
+        flags: info.flags,
         in_place_pair_id: info.in_place_pair,
     })
 }

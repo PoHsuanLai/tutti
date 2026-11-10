@@ -14,10 +14,7 @@ use std::sync::Arc;
 
 use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, CLAP_PORT_AMBISONIC, clap_host_ambisonic};
 use clap_sys::ext::audio_ports::{
-    CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
-    CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, CLAP_AUDIO_PORTS_RESCAN_LIST,
-    CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE, CLAP_EXT_AUDIO_PORTS,
-    CLAP_PORT_MONO, CLAP_PORT_STEREO, clap_host_audio_ports,
+    CLAP_EXT_AUDIO_PORTS, CLAP_PORT_MONO, CLAP_PORT_STEREO, clap_host_audio_ports,
 };
 use clap_sys::ext::audio_ports_config::{
     CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
@@ -65,6 +62,7 @@ use clap_sys::host::clap_host;
 use clap_sys::version::CLAP_VERSION;
 
 use crate::guard::{guard, lossy, or_abort};
+use crate::types::{AudioPortsRescanFlags, LogSeverity, ParamsRescanFlags};
 
 /// A track-info answer the host fills in for a plugin that asked
 /// (`clap.track-info`).
@@ -220,7 +218,7 @@ pub trait HostCallbacks: Send + Sync + 'static {
     /// `clap.thread-check`: whether the calling thread is the audio thread.
     fn is_audio_thread(&self) -> bool;
     /// `clap.log`, off the audio thread. `message` is lossily decoded.
-    fn log(&self, severity: i32, message: &str) {
+    fn log(&self, severity: LogSeverity, message: &str) {
         let _ = (severity, message);
     }
     /// `clap.log` on the audio thread (or in a served pool task): the line is
@@ -233,7 +231,7 @@ pub trait HostCallbacks: Send + Sync + 'static {
     /// `clap_host.request_callback`.
     fn request_callback(&self) {}
     /// `clap.params` `rescan` with the plugin's flags.
-    fn params_rescan(&self, flags: u32) {
+    fn params_rescan(&self, flags: ParamsRescanFlags) {
         let _ = flags;
     }
     /// `clap.params` `request_flush`.
@@ -256,7 +254,7 @@ pub trait HostCallbacks: Send + Sync + 'static {
         let _ = was_destroyed;
     }
     /// `clap.audio-ports` `rescan` with the plugin's flags.
-    fn audio_ports_rescan(&self, flags: u32) {
+    fn audio_ports_rescan(&self, flags: AudioPortsRescanFlags) {
         let _ = flags;
     }
     /// `clap.note-ports` `rescan`.
@@ -621,7 +619,7 @@ trampoline!(
         // SAFETY: `msg` is a nul-terminated string valid for the call
         // (`log.h`); checked non-null.
         let text = unsafe { lossy(msg) };
-        cb.log(severity, &text);
+        cb.log(LogSeverity::from_raw(severity), &text);
     }
 );
 
@@ -632,7 +630,7 @@ static HOST_PARAMS: clap_host_params = clap_host_params {
 };
 
 trampoline!(host_params_rescan(flags: u32), main_only, (), |cb| cb
-    .params_rescan(flags));
+    .params_rescan(ParamsRescanFlags::from_bits_truncate(flags)));
 
 extern "C" fn host_params_clear(_host: *const clap_host, _param_id: u32, _flags: u32) {}
 
@@ -708,12 +706,7 @@ extern "C" fn host_audio_ports_is_rescan_flag_supported(
     flag: u32,
 ) -> bool {
     guard(false, || {
-        const KNOWN: u32 = CLAP_AUDIO_PORTS_RESCAN_NAMES
-            | CLAP_AUDIO_PORTS_RESCAN_FLAGS
-            | CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT
-            | CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE
-            | CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR
-            | CLAP_AUDIO_PORTS_RESCAN_LIST;
+        const KNOWN: u32 = AudioPortsRescanFlags::all().bits();
         // A plugin asks about one flag at a time, but a caller passing several
         // must not get a `true` that only covers some of them.
         flag != 0 && flag & !KNOWN == 0
@@ -721,7 +714,9 @@ extern "C" fn host_audio_ports_is_rescan_flag_supported(
 }
 
 trampoline!(host_audio_ports_rescan(flags: u32), main_only, (), |cb| cb
-    .audio_ports_rescan(flags));
+    .audio_ports_rescan(AudioPortsRescanFlags::from_bits_truncate(
+        flags
+    )));
 
 static HOST_NOTE_PORTS: clap_host_note_ports = clap_host_note_ports {
     supported_dialects: Some(host_note_ports_supported_dialects),
@@ -1197,6 +1192,11 @@ trampoline!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap_sys::ext::audio_ports::{
+        CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
+        CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, CLAP_AUDIO_PORTS_RESCAN_LIST,
+        CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE,
+    };
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[derive(Default)]

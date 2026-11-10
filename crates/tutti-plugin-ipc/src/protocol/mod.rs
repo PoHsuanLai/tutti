@@ -26,7 +26,7 @@ pub(crate) mod wire;
 ///   a payload from the newer side runs the decoder off the end or into the next
 ///   field's bytes. `serde(default)` does not rescue this — it covers the JSON
 ///   and struct-update paths, not this wire.
-/// - **Version 23** appended `ParameterInfo::measures` (an `Option<ParamUnit>`, a
+/// - **Version 24** appended `ParameterInfo::measures` (an `Option<ParamUnit>`, a
 ///   variant index) and `role` (an `Option<u16>`, a `UnitParam` discriminant)
 ///   to every entry of a `ParameterList` and `ParameterInfoResponse`: two
 ///   `0x00` bytes after `group` when both are `None`. No recorded golden holds
@@ -34,7 +34,7 @@ pub(crate) mod wire;
 /// - An **enum variant** is a varint discriminant over declaration order, so a
 ///   peer receiving a tag it has no arm for fails the decode mid-stream rather
 ///   than at a message boundary.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

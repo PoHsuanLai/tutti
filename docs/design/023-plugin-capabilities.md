@@ -628,8 +628,8 @@ Rules that keep it honest.
   everywhere; a macOS-only test cross-checks every number against
   `coreaudio-sys`.
 - **Wire**: `ParameterInfo` crosses the IPC (`ParameterList`,
-  `ParameterInfoResponse`), so `PROTOCOL_VERSION` went from 22 to 23. No recorded
-  golden holds a `ParameterInfo`. `role` serializes as the `UnitParam`'s `u16`
+  `ParameterInfoResponse`), so `PROTOCOL_VERSION` went from 23 to 24 (doc 020
+  stage 5b took 23). No recorded golden holds a `ParameterInfo`. `role` serializes as the `UnitParam`'s `u16`
   discriminant (`UnitParam` has no serde of its own); both fields are
   `serde(default)`, so saved JSON without them still reads.
 

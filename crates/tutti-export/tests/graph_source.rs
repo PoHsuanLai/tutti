@@ -57,7 +57,7 @@ use tutti_export::{
 use tutti_graph::{
     Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
 };
-use tutti_nodes::testing::{Const, Osc, assert_golden};
+use tutti_nodes::testing::{Const, Osc, assert_golden, vbap_mix};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Amplitude, Azimuth, Beat, Bpm, Hz, SampleRate};
 use tutti_types::{Db, Samples};
@@ -223,23 +223,19 @@ fn convolved_at(ir: &[f32], n: usize) -> f64 {
 /// Quad VBAP: a source at front-left and one at rear-left, each panned and
 /// summed (by fan-in) into a 4-wide master.
 fn quad_vbap() -> GraphBuilder {
-    use tutti_nodes::VbapPannerNode;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
-    for (az, f) in [(45.0, 300.0), (135.0, 500.0)] {
-        let src = g.add(
-            Osc::sine(Hz(f))
-                .with_amplitude(Amplitude(0.5))
-                .with_layout(ChannelLayout::STEREO),
-        );
-        let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
-        pan.controls()
-            .set_position(Azimuth::new(az), tutti_types::Elevation::LEVEL);
-        let (pan, _) = g.add_with_controls(pan);
-        g.pipe(src, pan);
-        for c in 0..4 {
-            g.connect_output(pan, c, c);
-        }
-    }
+    let sources: Vec<_> = [(45.0, 300.0), (135.0, 500.0)]
+        .into_iter()
+        .map(|(az, f)| {
+            let src = g.add(
+                Osc::sine(Hz(f))
+                    .with_amplitude(Amplitude(0.5))
+                    .with_layout(ChannelLayout::STEREO),
+            );
+            (src, Azimuth::new(az))
+        })
+        .collect();
+    vbap_mix(&mut g, ChannelLayout::QUAD, &sources).expect("quad");
     g
 }
 

@@ -8,7 +8,8 @@
 use super::curves::smooth_envelope;
 use tutti_types::{SampleRate, Seconds};
 
-const EPSILON: f32 = 0.00001;
+/// A time that moved by less than this (seconds) keeps its coefficient.
+const EPSILON: f64 = 0.00001;
 
 /// One-pole envelope follower with attack/release smoothing and lazy coefficient caching.
 ///
@@ -19,8 +20,8 @@ pub struct EnvelopeFollower {
     value: f32,
     attack_coeff: f32,
     release_coeff: f32,
-    last_attack: f32,
-    last_release: f32,
+    last_attack: Seconds,
+    last_release: Seconds,
     sample_rate: SampleRate,
 }
 
@@ -31,13 +32,13 @@ impl EnvelopeFollower {
         release: impl Into<Seconds>,
         sample_rate: impl Into<SampleRate>,
     ) -> Self {
-        let attack = attack.into().to_f32();
-        let release = release.into().to_f32();
+        let attack = attack.into();
+        let release = release.into();
         let sample_rate = sample_rate.into();
         Self {
             value: 0.0,
-            attack_coeff: Seconds::from_f32(attack).one_pole_coeff(sample_rate),
-            release_coeff: Seconds::from_f32(release).one_pole_coeff(sample_rate),
+            attack_coeff: attack.one_pole_coeff(sample_rate),
+            release_coeff: release.one_pole_coeff(sample_rate),
             last_attack: attack,
             last_release: release,
             sample_rate,
@@ -47,14 +48,14 @@ impl EnvelopeFollower {
     /// Lazily update coefficients if attack/release params changed.
     #[inline]
     pub fn update_coefficients(&mut self, attack: impl Into<Seconds>, release: impl Into<Seconds>) {
-        let attack = attack.into().to_f32();
-        let release = release.into().to_f32();
-        if (attack - self.last_attack).abs() > EPSILON {
-            self.attack_coeff = Seconds::from_f32(attack).one_pole_coeff(self.sample_rate);
+        let attack = attack.into();
+        let release = release.into();
+        if (attack.get() - self.last_attack.get()).abs() > EPSILON {
+            self.attack_coeff = attack.one_pole_coeff(self.sample_rate);
             self.last_attack = attack;
         }
-        if (release - self.last_release).abs() > EPSILON {
-            self.release_coeff = Seconds::from_f32(release).one_pole_coeff(self.sample_rate);
+        if (release.get() - self.last_release.get()).abs() > EPSILON {
+            self.release_coeff = release.one_pole_coeff(self.sample_rate);
             self.last_release = release;
         }
     }
@@ -115,11 +116,11 @@ impl EnvelopeFollower {
         release: impl Into<Seconds>,
     ) {
         let sample_rate = sample_rate.into();
-        let attack = attack.into().to_f32();
-        let release = release.into().to_f32();
+        let attack = attack.into();
+        let release = release.into();
         self.sample_rate = sample_rate;
-        self.attack_coeff = Seconds::from_f32(attack).one_pole_coeff(sample_rate);
-        self.release_coeff = Seconds::from_f32(release).one_pole_coeff(sample_rate);
+        self.attack_coeff = attack.one_pole_coeff(sample_rate);
+        self.release_coeff = release.one_pole_coeff(sample_rate);
         self.last_attack = attack;
         self.last_release = release;
     }
@@ -134,7 +135,7 @@ pub struct GateEnvelopeFollower {
     inner: EnvelopeFollower,
     hold_counter: usize,
     hold_samples: usize,
-    last_hold: f32,
+    last_hold: Seconds,
 }
 
 impl GateEnvelopeFollower {
@@ -155,7 +156,7 @@ impl GateEnvelopeFollower {
             // `_floor`: a hold is a countdown of whole elapsed frames, and
             // a truncating `as usize` would agree, since truncation is floor.
             hold_samples: hold.to_samples_floor(sample_rate).get(),
-            last_hold: hold.to_f32(),
+            last_hold: hold,
         }
     }
 
@@ -169,9 +170,9 @@ impl GateEnvelopeFollower {
     ) {
         let hold = hold.into();
         self.inner.update_coefficients(attack, release);
-        if (hold.to_f32() - self.last_hold).abs() > EPSILON {
+        if (hold.get() - self.last_hold.get()).abs() > EPSILON {
             self.hold_samples = hold.to_samples_floor(self.inner.sample_rate).get();
-            self.last_hold = hold.to_f32();
+            self.last_hold = hold;
         }
     }
 
@@ -216,13 +217,31 @@ impl GateEnvelopeFollower {
         let release = release.into();
         self.inner.set_sample_rate(sample_rate, attack, release);
         self.hold_samples = hold.to_samples_floor(sample_rate).get();
-        self.last_hold = hold.to_f32();
+        self.last_hold = hold;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The coefficient is the one-pole formula on the exact time:
+    /// `1 - exp(-1 / (0.01 * 48000))` in `f64`, rounded once to `f32`
+    /// (0.0020811646). Rounding 0.01 through `f32` first gives
+    /// 0.0020811649, a different `f32`.
+    ///
+    /// Mutation (run): `attack.to_f32()` then `Seconds::from_f32` before
+    /// `one_pole_coeff` (the old detour) fails the attack assert.
+    #[test]
+    fn coefficients_come_from_the_exact_times() {
+        let want = |t: f64| (1.0 - libm::exp(-1.0 / (t * 48_000.0))) as f32;
+        let mut env = EnvelopeFollower::new(0.01, 0.007, 48_000.0);
+        assert_eq!(env.attack_coeff(), want(0.01));
+        assert_eq!(env.release_coeff(), want(0.007));
+        env.update_coefficients(0.007, 0.01);
+        assert_eq!(env.attack_coeff(), want(0.007));
+        assert_eq!(env.release_coeff(), want(0.01));
+    }
 
     #[test]
     fn test_envelope_follower_attack() {

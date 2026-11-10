@@ -332,7 +332,7 @@ impl ClickNode {
         // where 30 ms is not whole — 22050 Hz gives 661 vs 662, while 44.1/48/
         // 88.2/96 k are unchanged. Correctness of the *name*, not a fix for
         // anything audible.
-        let num_samples = CLICK_LEN.narrowed().to_samples_ceil(sample_rate).get();
+        let num_samples = CLICK_LEN.to_samples_ceil(sample_rate).get();
 
         let freq = if is_accent { Hz(1200.0) } else { Hz(1000.0) };
         let accent_volume = if is_accent {

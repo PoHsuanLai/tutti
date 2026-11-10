@@ -121,7 +121,7 @@ impl Portamento {
             PortamentoMode::LegatoOnly => is_legato,
         };
 
-        let time = self.config.time.to_f32();
+        let time = self.config.time.get();
         if should_glide && time > 0.0 {
             self.start_freq = self.current_freq;
             self.target_freq = freq;
@@ -136,13 +136,13 @@ impl Portamento {
                 let interval =
                     (Semitones::from_pitch_ratio(freq.get() / self.start_freq.get()).get() / 12.0)
                         .abs();
-                time * interval.max(0.1) // At least 10% of base time
+                time * f64::from(interval.max(0.1)) // At least 10% of base time
             };
 
             // A fractional glide length feeding a reciprocal, not a frame
             // count: multiply in f64 and narrow once. Narrowing the rate first
             // computes the step at f32 precision and drifts over a long glide.
-            let glide_samples = (glide_time as f64 * self.sample_rate.get()) as f32;
+            let glide_samples = (glide_time * self.sample_rate.get()) as f32;
             self.rate = if glide_samples > 0.0 {
                 1.0 / glide_samples
             } else {

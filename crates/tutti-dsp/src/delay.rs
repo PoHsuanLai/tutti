@@ -86,7 +86,6 @@ impl DelayLine {
         // narrowing the sample rate to f32 first loses precision.
         let samples = max_delay_secs
             .into()
-            .narrowed()
             .to_samples_ceil(sample_rate.into().get());
         Self::new(samples.get())
     }
@@ -197,6 +196,18 @@ pub fn delay_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line for 0.1 s at 48 kHz holds 4800 frames: `0.1 * 48000` is 4800 in
+    /// `f64`, so its `_ceil` is 4800, where the `f32` nearest 0.1 times 48000
+    /// is 4800.00007 and rounds up to 4801.
+    ///
+    /// Mutation (run): `max_delay_secs.narrowed()` before `to_samples_ceil`
+    /// (the old `f32` detour) makes the line 4801 frames and fails.
+    #[test]
+    fn a_line_is_sized_from_the_exact_seconds() {
+        let from_secs = DelayLine::from_seconds(Seconds(0.1), SampleRate(48_000.0));
+        assert_eq!(from_secs.buffer.len(), DelayLine::new(4800).buffer.len());
+    }
 
     #[test]
     fn test_delay_line_basic() {

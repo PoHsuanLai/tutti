@@ -20,12 +20,46 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// can predict is a name they can claim first: a socket of theirs there is a
 /// plugin wire they speak.
 ///
+/// The directory is the temporary one when the path fits a Unix socket
+/// address there ([`socket_path_in`]), so a long `TMPDIR` (a deep worktree, or
+/// macOS's per-user `/var/folders/…/T/`) moves the socket rather than failing
+/// the launch.
+///
 /// # Panics
 ///
 /// If the operating system has no random source to read (`getrandom` fails).
 #[must_use]
 pub fn unique_socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!("{}.sock", unique_name("tutti-bridge")))
+    socket_path_in(
+        &std::env::temp_dir(),
+        &format!("{}.sock", unique_name("tutti-bridge")),
+    )
+}
+
+/// The longest socket path every Unix takes: `sun_path` is 104 bytes on macOS
+/// and the BSDs and 108 on Linux, and the path needs a terminating NUL in it.
+/// One figure for all, so a path that fits on Linux fits on macOS too.
+const SOCKET_PATH_MAX: usize = 103;
+
+/// `name` in the first of `temp`, `$XDG_RUNTIME_DIR` and `/tmp` where the whole
+/// path fits [`SOCKET_PATH_MAX`]. `/tmp` always fits a name
+/// [`unique_socket_path`] makes. On Windows the socket is a named pipe named by
+/// `name` alone ([`socket_name`](crate::transport::control::socket_name)), so
+/// the directory is `temp`'s whatever its length.
+///
+/// `$XDG_RUNTIME_DIR` comes before `/tmp` because it is the user's own (mode
+/// 0700); `temp` comes first because it is the one the user chose.
+fn socket_path_in(temp: &std::path::Path, name: &str) -> PathBuf {
+    let fits = |p: &PathBuf| cfg!(windows) || p.as_os_str().len() <= SOCKET_PATH_MAX;
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.is_absolute());
+    std::iter::once(temp.to_path_buf())
+        .chain(runtime)
+        .chain(std::iter::once(PathBuf::from("/tmp")))
+        .map(|dir| dir.join(name))
+        .find(fits)
+        .unwrap_or_else(|| temp.join(name))
 }
 
 /// `stem`, this process's id, a count shared by every name this process
@@ -148,6 +182,48 @@ mod tests {
         assert_eq!(random.len(), 16, "{stem}");
         assert!(random.chars().all(|c| c.is_ascii_hexdigit()), "{stem}");
         assert_ne!(unguessable(), unguessable(), "two draws should differ");
+    }
+
+    /// A temporary directory too deep for a socket address moves the socket
+    /// to a short one, which a listener binds and a client connects to; one
+    /// that fits keeps it. A deep `TMPDIR` (a worktree's scratch directory,
+    /// macOS's `/var/folders/…/T/`) failed the plugin server's launch with
+    /// "local socket name length exceeds capacity of sun_path".
+    ///
+    /// Mutation (run): `socket_path_in` returning `temp.join(name)` always →
+    /// the path stays under the deep directory, over [`SOCKET_PATH_MAX`] →
+    /// fails (and without the asserts, the bind fails as the launch did).
+    #[cfg(unix)]
+    #[test]
+    fn a_deep_temporary_directory_moves_the_socket() {
+        use interprocess::local_socket::ListenerOptions;
+        use interprocess::local_socket::traits::Listener as _;
+
+        let base = tempfile::tempdir().expect("a temporary directory");
+        let deep = base.path().join("d".repeat(SOCKET_PATH_MAX));
+        std::fs::create_dir_all(&deep).expect("the deep directory");
+        let name = format!("{}.sock", unique_name("tutti-bridge"));
+
+        let path = socket_path_in(&deep, &name);
+        assert!(!path.starts_with(&deep), "{path:?}");
+        assert!(path.as_os_str().len() <= SOCKET_PATH_MAX, "{path:?}");
+
+        let listener = ListenerOptions::new()
+            .name(crate::transport::control::socket_name(&path).expect("a name"))
+            .create_sync()
+            .expect("the moved path binds");
+        let connect = path.clone();
+        let client = std::thread::spawn(move || crate::transport::control::connect(&connect));
+        let _peer = listener.accept().expect("a peer");
+        client
+            .join()
+            .expect("no panic")
+            .expect("the client connects");
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+
+        let root = std::path::Path::new("/");
+        assert_eq!(socket_path_in(root, &name), root.join(&name));
     }
 
     /// A partial-update construction is the exact shape `to_bridge_config` uses,

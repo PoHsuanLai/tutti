@@ -29,6 +29,7 @@ use crate::protocol::{
     SlabLayout,
 };
 use crate::transport::shm::{AudioSlab, RING_SLOTS};
+use crate::unique_socket_path;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,16 +88,6 @@ fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(2));
     }
     false
-}
-
-fn unique_socket_path(label: &str) -> std::path::PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "tutti-hostile-{}-{}-{}.sock",
-        label,
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
 }
 
 fn unique_shm_name(label: &str) -> String {
@@ -242,7 +233,7 @@ impl MockServer {
         state_progress_timeout: Duration,
         respond: impl Fn(HostMessage) -> Action + Send + 'static,
     ) -> Self {
-        let path = unique_socket_path(label);
+        let path = unique_socket_path();
         let _ = std::fs::remove_file(&path);
         let name = crate::transport::control::socket_name(&path).expect("socket name");
         let listener = ListenerOptions::new()

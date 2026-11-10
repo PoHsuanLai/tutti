@@ -100,8 +100,8 @@ mod tests;
 
 // The shared node primitives (change sinks) live in `crate::util::node`;
 // re-exported here so `crate::host::node::...` paths resolve.
-pub use crate::util::node::ParameterChangeSink;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
+pub use crate::util::node::{Listener, ParameterChangeSink};
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
 pub use controls::{NodeControls, PluginControls};
@@ -405,7 +405,7 @@ impl PluginClient<Unbound> {
                 listener_invalidate_sink.fire(PluginInvalidation::Tail { tail });
             }
             BridgeEvent::ParameterChanged { index, value } => {
-                listener_param_sink.fire(index, value);
+                listener_param_sink.fire((index, value));
             }
             BridgeEvent::Resync(kind) => match kind.classify() {
                 ResyncClass::Refresh(r) => listener_refresh_sink.fire(r),

@@ -9,7 +9,7 @@
 #[path = "support/active.rs"]
 mod active;
 
-use active::Active;
+use active::{Active, ActiveExt};
 use tutti_vst3_host::{AudioBuffer, InputEvents, TransportInfo};
 
 /// **A block skipped for a busy input list is silence, and counted.** The

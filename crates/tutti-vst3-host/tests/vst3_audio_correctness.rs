@@ -65,7 +65,7 @@ fn at(k: u32) -> Offset {
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, LoadError, ParamExt, StateExt};
+use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 /// A VST3 `ParamID` as the automation vocabulary's address.
 ///

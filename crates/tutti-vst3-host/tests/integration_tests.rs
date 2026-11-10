@@ -21,7 +21,7 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, TransportInfo};
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, LoadError, ParamExt, StateExt};
+use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 /// Serialises every test that constructs an `Active`, which load real
 /// third-party plugins (macOS only; they skip elsewhere). `Module::open` and

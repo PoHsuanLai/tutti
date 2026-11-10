@@ -75,7 +75,7 @@ use tutti_vst3_host::{
 #[path = "active.rs"]
 pub mod active;
 #[allow(unused_imports)]
-pub use active::{Activate, Active, LoadError, ParamExt, StateExt};
+pub use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
 

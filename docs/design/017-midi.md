@@ -859,7 +859,7 @@ Audio, in `crates/tutti-graph`:
   `a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly`).
 - The session opens it (`Graph::open_tap`, `tutti-session/src/graph.rs:1739`) and
   reaps readers dropped first in `Phase::Reclaim` (`reap_taps`, `graph.rs:1792`).
-- The inlet is `InletNode` over a standalone `TapReader` (`inlet.rs`).
+- The inlet is `InletNode` over a `TapReader::pair` ring (`inlet.rs`).
   `Graph::open_inlet` and `add_inlet` (`graph.rs:722`, `739`) refuse a producer of
   another rate (`InletError::RateMismatch`). The node is unforkable.
 
@@ -1041,7 +1041,7 @@ impl EventInletWriter {
 pub enum Refused { Full, Beat }
 pub struct EventInletNode { /* ring consumer, waiting list, SeqWriter */ }
 impl EventInletNode {
-    pub fn standalone(capacity: usize) -> (Self, EventInletWriter);
+    pub fn pair(capacity: usize) -> (Self, EventInletWriter);
 }
 
 // tutti-session

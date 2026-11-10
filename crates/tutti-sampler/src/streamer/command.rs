@@ -9,6 +9,7 @@ use tutti_types::ChannelLayout;
 
 use super::open::Opened;
 use crate::OpenError;
+use crate::voice::Direction;
 
 /// One open stream's identity: minted on the control side when the open is
 /// asked for ([`DiskStreamer::open`](crate::DiskStreamer::open)), never
@@ -83,6 +84,21 @@ pub(crate) enum StreamerCommand {
     /// wrapping, repositioned as a loop change is. A stream the streamer no
     /// longer holds ignores it.
     ClearStreamLoop { stream: StreamId },
+
+    /// Turn a stream to `direction`. Reverse is a mapping (the file mirrored,
+    /// the loop ignored), so the change is the streamer's: a switch the reader
+    /// crossfades across just past the block it is in. The direction is
+    /// published in the stream's `RingControl`, where the voice and a fork read
+    /// it. A stream the streamer no longer holds ignores it.
+    SetDirection {
+        stream: StreamId,
+        direction: Direction,
+    },
+
+    /// The session rate moved (`DiskStreamer::set_sample_rate` stored it before
+    /// sending this): re-derive every open stream's conversion ratio against
+    /// the rate as it now is.
+    SessionRate,
 
     /// Shutdown the streamer thread.
     Shutdown,

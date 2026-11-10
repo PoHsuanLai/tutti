@@ -7,7 +7,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
@@ -15,20 +15,20 @@ use tutti_types::{SampleRate, SrcRatio};
 
 use super::StreamerSender;
 use super::cache::LruCache;
+use super::cells::Cells;
 use super::command::{Decoded, Reply, StreamId, StreamerCommand};
 use super::config::BufferConfig;
-use super::control::{StreamOrigin, StreamRecord};
+use super::control::StreamFile;
 use super::decode::{DecodeLane, Seams, panic_message};
 use super::loops::{LeadIn, Mapping, RingLoop, apply_mapping, buffer_size_for_file};
 use super::metrics::Metrics;
 use super::open::{OpenError, Opened};
 use super::prefetch::RegionBuffer;
 use super::record::{Cmd, Effect, LoopAsk, Record, Streams, step};
-use super::rt_state::RtState;
 use super::status::StatusCell;
 use crate::nonempty;
-use crate::voice::LoopSetting;
 use crate::voice::interp::Place;
+use crate::voice::{Direction, LoopSetting};
 use crate::voice_width;
 use tutti_types::ChannelLayout;
 
@@ -45,72 +45,35 @@ pub(super) struct Handles {
 }
 
 /// The session (graph) rate, one cell shared by the control side, the streamer
-/// and every [`Status`](crate::Status) snapshot, and the streams whose ratio
-/// follows it.
+/// and every [`Status`](crate::Status) snapshot.
 ///
 /// Shared rather than copied into each because a device restart moves it
 /// (`DiskStreamer::set_sample_rate`): a copy taken at build time is how a
 /// stream kept converting to 44.1 kHz on a 48 kHz device — every streamed clip
 /// ~8.8% sharp and fast, with no error anywhere.
+///
+/// It is a value and nothing more. A stream's conversion ratio is the
+/// streamer's own (it is the one writer, `Record::rerate`): it derives it from
+/// this cell when it builds the stream and again on each `SessionRate` command,
+/// which the control side sends after storing the rate here. A stream built
+/// between the store and the command reads the new rate either way, and the
+/// command re-derives it to the same ratio, so no lock orders the two.
 #[derive(Clone)]
-pub(crate) struct SessionRate(Arc<RateCell>);
-
-struct RateCell {
-    rate: AtomicF64,
-    /// Every stream whose conversion ratio follows the rate: its file's own
-    /// rate, and its control cell, weakly (a stream that ends is pruned at
-    /// the next call). The lock is what orders a stream's registering against
-    /// a rate change, below.
-    streams: Mutex<Vec<(SampleRate, Weak<RtState>)>>,
-}
+pub(crate) struct SessionRate(Arc<AtomicF64>);
 
 impl SessionRate {
     pub(crate) fn new(rate: SampleRate) -> Self {
-        Self(Arc::new(RateCell {
-            rate: AtomicF64::new(rate.get()),
-            streams: Mutex::new(Vec::new()),
-        }))
+        Self(Arc::new(AtomicF64::new(rate.get())))
     }
 
     pub(crate) fn get(&self) -> SampleRate {
-        SampleRate(self.0.rate.load(Ordering::SeqCst))
+        SampleRate(self.0.load(Ordering::SeqCst))
     }
 
-    fn streams(&self) -> std::sync::MutexGuard<'_, Vec<(SampleRate, Weak<RtState>)>> {
-        self.0
-            .streams
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Sets `rt_state`'s conversion ratio for a file at `file_rate` against the
-    /// session rate as it is now, and keeps it following the rate.
-    ///
-    /// The rate is read and the ratio set under the lock [`set`](Self::set)
-    /// takes to store the rate and re-derive every ratio, so a stream the
-    /// streamer opens concurrently either registered before the change (and
-    /// is re-derived by it) or after it (and reads the new rate). Neither
-    /// order leaves a stream on the old ratio. The ratio is the same derivation
-    /// the in-memory tier uses (`MemorySource::set_session_sample_rate`),
-    /// through the one shared constructor.
-    pub(super) fn register(&self, file_rate: SampleRate, rt_state: &Arc<RtState>) {
-        let mut streams = self.streams();
-        streams.retain(|(_, cell)| cell.strong_count() > 0);
-        rt_state.set_src_ratio(SrcRatio::for_rates(file_rate, self.get()));
-        streams.push((file_rate, Arc::downgrade(rt_state)));
-    }
-
-    /// Move the rate, then re-derive the ratio of every stream that is open.
+    /// Move the rate. Control thread; the streamer re-derives its ratios when
+    /// it is told ([`StreamerCommand::SessionRate`]).
     pub(super) fn set(&self, rate: SampleRate) {
-        let mut streams = self.streams();
-        self.0.rate.store(rate.get(), Ordering::SeqCst);
-        streams.retain(|(file_rate, cell)| match cell.upgrade() {
-            Some(rt_state) => {
-                rt_state.set_src_ratio(SrcRatio::for_rates(*file_rate, rate));
-                true
-            }
-            None => false,
-        });
+        self.0.store(rate.get(), Ordering::SeqCst);
     }
 }
 
@@ -118,9 +81,6 @@ impl SessionRate {
 pub(super) struct Local {
     /// Every open stream, one record each.
     pub streams: Streams,
-    /// Headroom multiplier on the refill threshold — a larger margin refills
-    /// earlier and more often.
-    pub buffer_margin: f64,
     /// Flat interleaved refill scratch. Streamer-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
     /// The thread whole-file decodes run on, started on first use.
@@ -145,7 +105,6 @@ impl Local {
     pub(super) fn new(base_chunk_size: usize, reports: StreamerSender) -> Self {
         Self {
             streams: Streams::new(),
-            buffer_margin: 1.0,
             interleave_buffer: Vec::with_capacity(base_chunk_size),
             lane: DecodeLane::new(reports),
             pending: Vec::new(),
@@ -208,6 +167,11 @@ pub(super) fn handle_command(
             handle_loop(stream, Some(ask), config, local);
         }
         StreamerCommand::ClearStreamLoop { stream } => handle_loop(stream, None, config, local),
+
+        StreamerCommand::SetDirection { stream, direction } => {
+            handle_direction(stream, direction, config, local);
+        }
+        StreamerCommand::SessionRate => local.streams.rerate(shared.session_rate.get()),
 
         StreamerCommand::Shutdown => {}
     }
@@ -435,6 +399,7 @@ fn build_stream(
         buffer_capacity,
         file_topology,
         file_length as usize,
+        config.seek_crossfade_frames,
     );
 
     // `mut` is used by the `set_decoder` call, which every codec feature
@@ -452,13 +417,14 @@ fn build_stream(
     }
     // A file that cannot seek is held whole by its writer, not only by the
     // cache: a file too large for the cache still streams.
+    let whole = resident.clone();
     if let Some(wave) = resident {
         producer.set_resident(wave);
     }
 
     // The window starts where the reader will play: the offset. A placed
     // voice reads at its clock; the compiler aligns the voice in the graph.
-    RegionBuffer::place(&mut producer, start, config.seek_crossfade_frames);
+    RegionBuffer::place(&mut producer, start);
 
     // Pin the streamed wave in the LRU cache for the stream's lifetime. On the
     // whole-file path the decode lane inserted the file into the cache, so this
@@ -469,20 +435,20 @@ fn build_stream(
     // the stream closes.
     let pin = shared.cache.pin(&file_path);
 
-    let rt_state = Arc::new(RtState::new());
-    shared.session_rate.register(file_sr, &rt_state);
+    // The conversion ratio is the streamer's to write: derived here against the
+    // session rate as it is now, and again on each rate event.
+    let cells = Arc::new(Cells::new());
+    cells.set_src_ratio(SrcRatio::for_rates(file_sr, shared.session_rate.get()));
     let status = Arc::new(StatusCell::new());
-    let fork = Arc::new(StreamRecord::new(
-        file_path,
-        file_sr,
-        Arc::downgrade(&shared.cache),
-    ));
-    let origin = StreamOrigin::new(Arc::clone(&fork));
+    // What a fork plays, immutable: the file's path and rate, and the wave when
+    // the writer holds it whole.
+    let file = Arc::new(StreamFile::new(file_path, file_sr, whole));
+    let control = ring.control_cell();
     let record = Record::new(
         producer,
-        Arc::clone(&rt_state),
+        Arc::clone(&cells),
+        file_sr,
         file_length,
-        fork,
         pin,
         Arc::clone(&status),
     );
@@ -492,10 +458,10 @@ fn build_stream(
             id,
             ring,
             pos,
-            rt_state,
+            cells,
             status,
-            file_rate: file_sr,
-            origin,
+            file,
+            control,
             place,
             width,
         },
@@ -514,8 +480,8 @@ fn build_stream(
 /// Only the frames the loop needs are read — its fade's lead-in, and its body
 /// when it is short (`RingLoop::capture`), through the region's decoder: a
 /// loop change never decodes the whole file. A lead-in that cannot be read
-/// plays the loop hard, is logged, and is what the stream's record says (so a
-/// fork plays it hard too).
+/// plays the loop hard, is logged, and is what the ring's published control
+/// says is applied (so a fork plays it hard too).
 fn handle_loop(stream: StreamId, ask: Option<LoopAsk>, config: &BufferConfig, local: &mut Local) {
     let Some(&Effect::Loop(id, ask)) = step(&mut local.streams, Cmd::Loop(stream, ask)).first()
     else {
@@ -533,7 +499,7 @@ fn handle_loop(stream: StreamId, ask: Option<LoopAsk>, config: &BufferConfig, lo
 /// work of [`handle_loop`].
 fn capture_loop(record: &mut Record, ask: Option<LoopAsk>, config: &BufferConfig) {
     let len = record.file_frames as usize;
-    let rate = record.rt_state.read_rate().get();
+    let rate = record.cells.read_rate().get();
     let writer = &mut record.out;
 
     let channels = writer.channels();
@@ -566,9 +532,51 @@ fn capture_loop(record: &mut Record, ask: Option<LoopAsk>, config: &BufferConfig
     };
     apply_mapping(writer, new, config.seek_crossfade_frames, rate);
 
-    record.set_loop(recorded.map_or(LoopSetting::Off, |ask| LoopSetting::On {
-        start: tutti_types::SamplePosition(ask.range.0 as f64),
-        end: tutti_types::SamplePosition(ask.range.1 as f64),
-        crossfade_frames: ask.crossfade_frames,
-    }));
+    // The loop as applied, published beside the map apply_mapping published
+    // (or kept, when the mapping did not change).
+    writer
+        .ring()
+        .publish_loop(recorded.map_or(LoopSetting::Off, |ask| LoopSetting::On {
+            start: tutti_types::SamplePosition(ask.range.0 as f64),
+            end: tutti_types::SamplePosition(ask.range.1 as f64),
+            crossfade_frames: ask.crossfade_frames,
+        }));
+}
+
+/// Turn a stream to `direction`: the driver's half of [`Effect::Direction`],
+/// which the pure step issues for a live stream only.
+///
+/// Reverse is a mapping (the file mirrored, the loop ignored), so the change is
+/// [`apply_mapping`]'s: a switch the reader crossfades across just past the
+/// block it is in. The direction is the published map's own, so the one
+/// publish carries it to the voice and to a fork.
+fn handle_direction(
+    stream: StreamId,
+    direction: Direction,
+    config: &BufferConfig,
+    local: &mut Local,
+) {
+    let Some(&Effect::Direction(id, direction)) =
+        step(&mut local.streams, Cmd::Direction(stream, direction)).first()
+    else {
+        return;
+    };
+    let Some(record) = local.streams.get_mut(id) else {
+        return;
+    };
+    let fade = config.seek_crossfade_frames;
+    let _ = record.contained(|record| {
+        let reverse = direction.is_reverse();
+        let rate = record.cells.read_rate().get();
+        let writer = &mut record.out;
+        if writer.content().current.reverse == reverse {
+            return;
+        }
+        let new = Mapping {
+            reverse,
+            ..writer.content().current.clone()
+        };
+        apply_mapping(writer, new, fade, rate);
+    });
+    local.streams.reap();
 }

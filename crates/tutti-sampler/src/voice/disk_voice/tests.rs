@@ -48,9 +48,9 @@ fn make_reader_at(samples: &[(f32, f32)], start: u64) -> (SharedReader, tutti_rt
     (reader, pos)
 }
 
-fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<RtState>) {
+fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<Cells>) {
     let (reader, pos) = make_reader_with_samples(samples);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let unit = DiskSource::new(reader, pos, Arc::clone(&state));
     (unit, state)
 }
@@ -105,7 +105,7 @@ fn make_clip_reader_at(
     start_beat: Beat,
     duration: Option<BeatDuration>,
 ) -> DiskVoice {
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let (ring, pos) = make_reader_at(samples, at);
     let inner = DiskSource::new(ring, pos, Arc::clone(&state));
     DiskVoice::new(
@@ -348,7 +348,7 @@ fn a_severed_copy_holds_no_live_reader() {
     let (mut writer, ring, pos) =
         RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), 4_096, 2u16);
     writer.push_interleaved(&[0.5; 2 * 1_000]);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let mut live = DiskVoice::new(
         DiskSource::new(ring, pos, Arc::clone(&state)),
         state,
@@ -503,7 +503,7 @@ fn clip_reader_stopped_transport_is_silent() {
 // --- DiskVoice: RT no-alloc (steady-state process inside window) ---
 //
 // The integration-test gate `tests/rt_no_alloc.rs` cannot reach the
-// crate-private ring / `RtState` needed to build a streaming reader, so the streaming-variant no-alloc guard lives here, in-crate, with
+// crate-private ring / `Cells` needed to build a streaming reader, so the streaming-variant no-alloc guard lives here, in-crate, with
 // a module-local `AllocDisabler`. The disabler only aborts inside an
 // `assert_no_alloc` region; every other unit test allocates normally.
 
@@ -643,7 +643,7 @@ fn wide_clip(width: usize) -> DiskVoice {
         .flat_map(|k| (0..width).map(move |c| wide_value(k, c)))
         .collect();
     writer.push_interleaved(&flat);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     DiskVoice::new(
         inner,
@@ -731,14 +731,14 @@ fn placed_clip(topology: tutti_types::ChannelTopology) -> DiskVoice {
     const AT: u64 = 22_000;
     let width = topology.positions().len();
     let (mut writer, reader, pos) =
-        RegionBuffer::for_file(StreamId(1), PathBuf::new(), 4096, topology, usize::MAX);
+        RegionBuffer::for_file(StreamId(1), PathBuf::new(), 4096, topology, usize::MAX, 0);
     writer.reset(AT);
     writer.set_play(AT);
     let flat: Vec<f32> = (AT..AT + 2_000)
         .flat_map(|k| (0..width).map(move |c| wide_value(k, c)))
         .collect();
     writer.push_interleaved(&flat);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     DiskVoice::new(
         inner,
@@ -917,7 +917,6 @@ fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
     const BLOCK: usize = 64;
     for (width, pool_width) in [(2usize, 1usize), (6, 2)] {
         let mut pool = VoicePool::with_channels(
-            None,
             ChannelLayout::try_from(pool_width).expect("a test width is small"),
         )
         .expect("a sampler width");
@@ -1056,7 +1055,7 @@ fn outside_the_window_silences_every_channel() {
     for width in [1usize, 6] {
         let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
         let (ring, pos) = make_wide_reader(&frames, width);
-        let state = Arc::new(RtState::new());
+        let state = Arc::new(Cells::new());
         let inner = DiskSource::new(ring, pos, state.clone());
         assert_eq!(
             inner.channels(),
@@ -1140,7 +1139,7 @@ fn cached_stride_reads_every_channel_at_width_six() {
         .flat_map(|_| (1..=width).map(|c| c as f32))
         .collect();
     let (ring, pos) = make_wide_reader(&frames, width);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let mut voice = DiskVoice::new(
         DiskSource::new(ring, pos, state.clone()),
         state,
@@ -1199,7 +1198,7 @@ fn cached_stride_reads_every_channel_at_width_six() {
 /// The clone half of the live-value rule, at the disk tier: a gain stored
 /// by value in `DiskSource` would be written on one copy and never
 /// reach the one that renders. The gain lives in the stream's control
-/// cell (`RtState`), which every clone shares (a fork detaches it,
+/// cell (`Cells`), which every clone shares (a fork detaches it,
 /// `fork_copy`).
 ///
 /// The graph renders the node it was given, and the only copy it takes
@@ -1280,7 +1279,7 @@ fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
     use crate::voice::{Playback, SlotId, Voice, VoicePool, VoiceSource};
     const BLOCK: usize = 64;
     let _guard = NoSkip::on(no_skip);
-    let mut pool = VoicePool::with_channels(None, 2u16).expect("a sampler width");
+    let mut pool = VoicePool::with_channels(2u16).expect("a sampler width");
     pool.insert_voice(
         SlotId(0),
         Voice {
@@ -1427,12 +1426,12 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
     let (mut writer, reader, pos) =
-        RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), 4096, 1u16);
-    RegionBuffer::place(&mut writer, AT, 256);
+        RegionBuffer::with_fade(StreamId(1), PathBuf::new(), 4096, 1u16, 256);
+    RegionBuffer::place(&mut writer, AT);
     let from = writer.window().0;
     let flat: Vec<f32> = (from..from + 2_000).map(|k| k as f32).collect();
     writer.push_interleaved(&flat);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     let mut voice = DiskVoice::new(
         inner,
@@ -1487,7 +1486,7 @@ fn a_skipped_block_releases_the_ring_to_the_writer() {
     writer.set_play(AT);
     let flat: Vec<f32> = (AT..AT + 2_000).map(|k| k as f32).collect();
     writer.push_interleaved(&flat);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     let mut voice = DiskVoice::new(
         inner,

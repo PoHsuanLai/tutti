@@ -1,42 +1,48 @@
-//! Shared state between streamer and audio thread.
+//! A stream's scalar cells: the controls and counts the audio thread and the
+//! streamer share without a lock.
 //!
-//! Every field is atomic or lock-free, so both sides read and publish without a
-//! lock ever reaching the audio callback. The fields are grouped into orthogonal
-//! sub-structs (playback, health) — one `Arc`, one allocation — each
-//! `#[repr(align(64))]` so a streamer write to one group cannot false-share a
-//! cache line with an audio-thread read of another.
+//! One [`Cells`] per open stream (a re-open is a new stream with new cells), held
+//! by the streamer's `Record`, the stream's handle and its one voice. Nothing a
+//! second voice can reach: two voices opened in sequence on one file share no
+//! cell (doc 025 §2.7, review S3). Every field is a scalar atomic and has
+//! one writer:
 //!
-//! # Which side writes what
+//! | Field | Writer | Readers |
+//! |---|---|---|
+//! | `speed`, `stretch_rate` | the voice's command drain (`DiskVoice::set_speed`, the slot's stretch step), or the control thread through `DiskVoiceControls`; the audio thread cannot publish, so these stay scalars | the voice's per-sample step; the streamer, to size a fill (`read_rate`) |
+//! | `gain` | the voice's command drain, or the control thread through `DiskVoiceControls` | the voice |
+//! | `src_ratio` | the streamer alone, derived from the session rate when a stream opens and on a rate event | the voice, until `prepare` tells it a rate |
+//! | `underruns` | the voice (audio thread) | the stream's handle, which drains it |
 //!
-//! * Streamer (or control) writes, audio reads — speed, direction,
-//!   `src_ratio`, gain, the stretch rate. `src_ratio` is re-derived by the
-//!   control thread when the session rate moves (`SessionRate::set`, a device
-//!   restart), under the plan's lock, which the streamer also holds when it
-//!   writes one.
-//! * Audio writes, the stream's handle reads — `underrun_count`
-//!   ([`Stream::status`](crate::Stream::status) drains it into its total); the
-//!   streamer writes `buffer_fill_level` for its own pacing.
+//! What is not here: the direction and the applied loop are the ring's
+//! published `RingControl` (the streamer is their one writer, on a command), and
+//! the ring's occupancy is `refill_one`'s return, not a shared cell.
 //!
 //! Where a stream stands and how to read it is the ring's, not this cell's
 //! (`prefetch::Ring`): the reader publishes the position it plays and the
 //! streamer follows it, so there is nothing to request and nothing to flush.
 
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_types::{Amplitude, AtomicF32, Param64, PlaybackRate, ReadRate, SrcRatio};
 
-use crate::voice::types::Direction;
-
-/// Varispeed, direction, rate conversion, stretch and gain — the cells the audio
-/// thread loads on the per-sample path.
+/// A stream's scalar controls and counts: see the module docs for who writes
+/// each.
 ///
-/// Cache-line aligned so streamer writes here do not false-share with
-/// [`BufferHealth`], which the audio thread writes on the same block.
+/// Cache-line aligned in two groups, so the streamer's reads of the controls do
+/// not false-share with the audio thread's per-block write of the underrun
+/// count.
+#[derive(Debug)]
+pub struct Cells {
+    /// Varispeed, conversion ratio, stretch and gain.
+    playback: PlaybackParams,
+    /// Underruns the voice counted since the handle last drained them.
+    health: BufferHealth,
+}
+
 #[repr(align(64))]
 #[derive(Debug)]
-pub struct PlaybackParams {
+struct PlaybackParams {
     speed: AtomicF32,
-    /// 0 = forward, 1 = reverse.
-    direction: AtomicU8,
     /// file_sample_rate / session_sample_rate. 1.0 = no conversion.
     ///
     /// A [`Param64`]: [`SrcRatio`] is `f64`, so the cell keeps the bits a
@@ -44,16 +50,17 @@ pub struct PlaybackParams {
     src_ratio: Param64<SrcRatio>,
     /// Linear output gain, an [`Amplitude`] in the cell.
     ///
-    /// Here rather than on `DiskSource` for the reason `tutti_nodes`' crate docs
-    /// give: a live control is a shared cell the control thread writes through
-    /// `&self`, never a field of the node.
+    /// A cell rather than a field of `DiskVoice` for the reason `tutti_nodes`'
+    /// crate docs give: a live control is a shared cell the control thread
+    /// writes through `&self` (`DiskVoiceControls::set_gain`), never a field of
+    /// the node.
     gain: AtomicF32,
     /// Source samples consumed per output sample by a wrapping time-stretcher:
     /// `1 / stretch`. 1.0 when the voice does not stretch.
     ///
     /// Held here rather than in `DiskSource` because the stretch filter and the
     /// ring reader never meet: the filter lives in the `PlaybackSlot`, the reader
-    /// behind the streamer's `SharedReader`. `RtState` is the cell both already
+    /// behind the streamer's `SharedReader`. This is the cell both already
     /// share, and it is where the other two rate factors compose.
     ///
     /// A [`Param64`], not an `AtomicF32` like its neighbours: [`ReadRate`] is
@@ -61,92 +68,51 @@ pub struct PlaybackParams {
     stretch_rate: Param64<ReadRate>,
 }
 
-impl Default for PlaybackParams {
-    fn default() -> Self {
-        Self {
-            speed: AtomicF32::new(1.0),
-            direction: AtomicU8::new(0),
-            src_ratio: Param64::new(SrcRatio::UNITY),
-            gain: AtomicF32::new(1.0),
-            stretch_rate: Param64::new(ReadRate::UNITY),
-        }
-    }
-}
-
-/// Ring occupancy and underrun counts.
-///
-/// Cache-line aligned: the audio thread writes `buffer_fill_level` and
-/// `underrun_count` every block, and that must not evict [`PlaybackParams`]
-/// out from under the streamer.
 #[repr(align(64))]
 #[derive(Debug)]
-pub struct BufferHealth {
-    /// Underruns since the last [`RtState::take_underruns`]. Audio thread
+struct BufferHealth {
+    /// Underruns since the last [`Cells::take_underruns`]. Audio thread
     /// increments, the stream's handle drains.
     underrun_count: AtomicU64,
-    /// Ring occupancy as 0-1000, i.e. 0.0-1.0 in thousandths. Fixed-point
-    /// because the cell is an integer atomic; the accessors do the scaling.
-    buffer_fill_level: AtomicU32,
 }
 
-impl Default for BufferHealth {
-    fn default() -> Self {
-        Self {
-            underrun_count: AtomicU64::new(0),
-            buffer_fill_level: AtomicU32::new(0),
-        }
-    }
-}
-
-/// The one cell a streaming channel's streamer side and audio side both hold.
-///
-/// Lives behind an `Arc` shared by the streamer's `Record`
-/// and the disk voice, which is why every publisher below takes `&self`: no
-/// exclusive reference exists on either side, and none is needed.
-///
-/// Outlives any single stream — closing a stream keeps the
-/// `Arc` alive, because the audio thread may still hold its clone.
-#[derive(Debug)]
-pub struct RtState {
-    /// Varispeed, direction, conversion ratio, stretch and gain.
-    pub playback: PlaybackParams,
-    /// Ring occupancy and underruns.
-    pub health: BufferHealth,
-    // No crossfaders: a loop's fade is written into the ring, and a jump's
-    // fade is the reader's own, from the ring.
-}
-
-impl Default for RtState {
+impl Default for Cells {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RtState {
-    /// A state at rest: unity speed and conversion ratio, unity gain,
-    /// forward, all counters zero.
+impl Cells {
+    /// Cells at rest: unity speed, conversion ratio and gain, no stretch, no
+    /// underruns.
     pub fn new() -> Self {
         Self {
-            playback: PlaybackParams::default(),
-            health: BufferHealth::default(),
+            playback: PlaybackParams {
+                speed: AtomicF32::new(1.0),
+                src_ratio: Param64::new(SrcRatio::UNITY),
+                gain: AtomicF32::new(1.0),
+                stretch_rate: Param64::new(ReadRate::UNITY),
+            },
+            health: BufferHealth {
+                underrun_count: AtomicU64::new(0),
+            },
         }
     }
 
-    /// A new state holding this one's playback controls (speed, direction,
-    /// gain, conversion ratio, stretch rate) at their current values, and
-    /// nothing else: no counters.
+    /// New cells holding these cells' playback controls (speed, gain,
+    /// conversion ratio, stretch rate) at their current values, and nothing
+    /// else: no counters.
     ///
     /// What a disk voice severed for an offline render keeps
     /// (`DiskVoice::fork_copy`): its controls as a snapshot, like every other
-    /// forked unit's, in a cell no streamer and no live voice shares.
+    /// forked unit's, in cells no streamer and no live voice shares.
     pub(crate) fn detached(&self) -> Self {
-        let state = Self::new();
-        state.set_speed(self.speed());
-        state.set_direction(self.direction());
-        state.set_gain(self.gain());
-        state.set_src_ratio(self.src_ratio());
-        state.set_stretch_rate(self.stretch_rate());
-        state
+        let cells = Self::new();
+        cells.set_speed(self.speed());
+        cells.set_gain(self.gain());
+        cells.set_src_ratio(self.src_ratio());
+        cells.set_stretch_rate(self.stretch_rate());
+        cells
     }
 
     /// The current varispeed. [`PlaybackRate::UNITY`] is normal speed.
@@ -229,36 +195,6 @@ impl RtState {
         self.playback.stretch_rate.store(rate);
     }
 
-    /// Current playback direction. Backed by the `AtomicU8` (0 = forward,
-    /// 1 = reverse); the [`Direction`] enum is the API surface.
-    #[inline]
-    pub fn direction(&self) -> Direction {
-        if self.playback.direction.load(Ordering::Acquire) == 1 {
-            Direction::Reverse
-        } else {
-            Direction::Forward
-        }
-    }
-
-    /// Publish the playback direction. The streamer reads it each refill cycle to
-    /// choose the forward or the reversed refill path.
-    pub fn set_direction(&self, direction: Direction) {
-        self.playback
-            .direction
-            .store(u8::from(direction.is_reverse()), Ordering::Release);
-    }
-
-    /// Whether playback currently runs backwards through the file.
-    #[inline]
-    pub fn is_reverse(&self) -> bool {
-        self.direction().is_reverse()
-    }
-
-    #[cfg(test)]
-    pub fn set_reverse(&self, reverse: bool) {
-        self.set_direction(Direction::from(reverse));
-    }
-
     /// Sample-rate conversion ratio: file rate over session rate.
     /// [`SrcRatio::UNITY`] means the file already plays at the session rate.
     #[inline]
@@ -266,8 +202,8 @@ impl RtState {
         self.playback.src_ratio.load()
     }
 
-    /// Publish the conversion ratio. Written by the streamer when a stream starts,
-    /// and re-derived when the session rate moves, from [`SrcRatio::for_rates`]
+    /// Publish the conversion ratio. Written by the streamer alone: when a stream starts,
+    /// and when the session rate moves, from [`SrcRatio::for_rates`]
     /// — the same derivation the in-memory tier uses, so neither tier can pick
     /// the ratio up backwards.
     pub fn set_src_ratio(&self, ratio: SrcRatio) {
@@ -286,22 +222,6 @@ impl RtState {
     /// per-interval rate instead of an ever-growing total.
     pub fn take_underruns(&self) -> u64 {
         self.health.underrun_count.swap(0, Ordering::Relaxed)
-    }
-
-    /// Publish ring occupancy as a fraction, clamped to `0.0..=1.0` and stored
-    /// in thousandths. The streamer compares it against a refill threshold to
-    /// decide both chunk size and whether it may park on a timer.
-    pub fn set_buffer_fill(&self, level: f32) {
-        let scaled = (level.clamp(0.0, 1.0) * 1000.0) as u32;
-        self.health
-            .buffer_fill_level
-            .store(scaled, Ordering::Relaxed);
-    }
-
-    /// 0.0 = empty, 1.0 = full. Near 0.0 means underrun risk.
-    #[inline]
-    pub fn buffer_fill(&self) -> f32 {
-        self.health.buffer_fill_level.load(Ordering::Relaxed) as f32 / 1000.0
     }
 }
 
@@ -323,7 +243,7 @@ mod tests {
     /// installation piece, and free to avoid.
     #[test]
     fn the_stretch_rate_cell_does_not_narrow_what_it_is_given() {
-        let state = RtState::new();
+        let state = Cells::new();
         // Not representable in f32 — 1/3 at f64 width, the ratio a triplet
         // stretch actually produces.
         let rate = ReadRate::new(1.0 / 3.0);
@@ -347,7 +267,7 @@ mod tests {
         // The clamp lives in `PlaybackRate`, not in this setter, so BOTH
         // playback tiers get it — the in-memory sampler never calls this
         // setter, and a clamp here would leave it accepting out-of-range speeds.
-        let state = RtState::new();
+        let state = Cells::new();
 
         // A fresh cell reads UNITY, not the atomic's zero — which would be
         // silence rather than normal speed, and is what `PlaybackParams`'
@@ -366,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_underrun_reporting() {
-        let state = RtState::new();
+        let state = Cells::new();
 
         state.report_underrun();
         state.report_underrun();
@@ -376,27 +296,5 @@ mod tests {
 
         state.report_underrun();
         assert_eq!(state.take_underruns(), 1);
-    }
-
-    #[test]
-    fn test_buffer_fill_level() {
-        let state = RtState::new();
-
-        assert_eq!(state.buffer_fill(), 0.0);
-
-        state.set_buffer_fill(0.5);
-        assert!((state.buffer_fill() - 0.5).abs() < 0.01);
-
-        state.set_buffer_fill(1.0);
-        assert!((state.buffer_fill() - 1.0).abs() < 0.01);
-
-        state.set_buffer_fill(0.0);
-        assert!((state.buffer_fill() - 0.0).abs() < 0.01);
-
-        state.set_buffer_fill(-0.5);
-        assert_eq!(state.buffer_fill(), 0.0);
-
-        state.set_buffer_fill(1.5);
-        assert!((state.buffer_fill() - 1.0).abs() < 0.01);
     }
 }

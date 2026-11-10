@@ -343,7 +343,7 @@ fn a_transport_seek_flushes_stretch_state() {
     let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::of(120.0));
-    let (mut unit, handle) = VoicePool::with_channels(None, 1u16)
+    let (mut unit, handle) = VoicePool::with_channels(1u16)
         .expect("a width the sampler reads")
         .with_handle();
 
@@ -668,7 +668,7 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
 ///
 /// The memory tier's fix scales a cursor; the disk tier has no cursor to
 /// scale. It pops from a streamer-fed ring, advancing an internal
-/// `fractional_pos` by `RtState::read_rate` (speed × src_ratio), so the rate
+/// `fractional_pos` by `Cells::read_rate` (speed × src_ratio), so the rate
 /// has to reach *that* accumulator instead.
 ///
 /// Asserted as source consumption, not as pitch. A ring-fed reader has no
@@ -682,7 +682,7 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
 /// where it shows up differently.
 #[test]
 fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
-    use crate::streamer::RtState;
+    use crate::streamer::Cells;
 
     const BLOCK: usize = 64;
     const BLOCKS: usize = 8;
@@ -713,10 +713,10 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
             RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), 8192 + 64, 2u16);
         writer.push_interleaved(&flat);
         let ring = std::sync::Arc::clone(&reader);
-        // ONE `RtState`, shared by the source and the gate — `DiskVoice::new`
+        // ONE `Cells`, shared by the source and the gate — `DiskVoice::new`
         // requires it, and the published stretch rate is read back through
         // the same cell. Two separate states here made the fix look inert.
-        let state = Arc::new(RtState::new());
+        let state = Arc::new(Cells::new());
         let inner = DiskSource::new(reader, pos, Arc::clone(&state));
         let voice = DiskVoice::new(
             inner,
@@ -823,7 +823,7 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
     let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
-    let (mut unit, handle) = VoicePool::with_channels(None, 1u16)
+    let (mut unit, handle) = VoicePool::with_channels(1u16)
         .expect("a width the sampler reads")
         .with_handle();
 
@@ -1347,7 +1347,7 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
 /// and a fork.
 #[test]
 fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
-    use crate::streamer::{RegionBuffer, RtState, StreamId};
+    use crate::streamer::{Cells, RegionBuffer, StreamId};
     use crate::voice::disk_voice::DiskSource;
     use crate::voice::disk_voice::{DiskVoice, DiskVoiceConfig};
 
@@ -1358,7 +1358,7 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
     let (writer, reader, pos) =
         RegionBuffer::with_capacity(StreamId(1), std::path::PathBuf::new(), 128, 2u16);
     drop(writer);
-    let state = std::sync::Arc::new(RtState::new());
+    let state = std::sync::Arc::new(Cells::new());
     let inner = DiskSource::new(reader, pos, state.clone());
     let clip_reader = DiskVoice::new(
         inner,
@@ -1407,20 +1407,20 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
 }
 
 /// A streaming voice over a ring whose writer is gone: enough for a loop
-/// forward, which reads only the tier and the ring's stream.
+/// to be set on its stream, which reads only the tier and the ring's stream.
 fn streaming_voice() -> Voice {
     streaming_voice_of(1)
 }
 
 /// [`streaming_voice`] over stream `StreamId(region)`.
 fn streaming_voice_of(region: u64) -> Voice {
-    use crate::streamer::{RegionBuffer, RtState, StreamId};
+    use crate::streamer::{Cells, RegionBuffer, StreamId};
     use crate::voice::disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
 
     let (writer, reader, pos) =
         RegionBuffer::with_capacity(StreamId(region), std::path::PathBuf::new(), 128, 2u16);
     drop(writer);
-    let state = Arc::new(RtState::new());
+    let state = Arc::new(Cells::new());
     let inner = DiskSource::new(reader, pos, state.clone());
     Voice {
         source: VoiceSource::Disk(DiskVoice::new(
@@ -1439,11 +1439,16 @@ fn streaming_voice_of(region: u64) -> Voice {
 }
 
 fn loop_on(id: SlotId) -> VoiceCommand {
+    loop_to(id, 64.0)
+}
+
+/// The loop command `[0, end)` for slot `id`.
+fn loop_to(id: SlotId, end: f64) -> VoiceCommand {
     VoiceCommand::UpdateLoop {
         id,
         setting: LoopSetting::On {
             start: SamplePosition::new(0.0),
-            end: SamplePosition::new(64.0),
+            end: SamplePosition::new(end),
             crossfade_frames: 0,
         },
     }
@@ -1462,11 +1467,32 @@ fn one_block(pool: &mut VoicePool) {
 fn test_streamer(
     capacity: usize,
 ) -> (
-    crate::StreamerPort,
+    crate::streamer::StreamerPort,
     crossbeam_channel::Receiver<crate::streamer::StreamerCommand>,
 ) {
     let (tx, rx) = bounded(capacity);
-    (crate::StreamerPort::new(tx), rx)
+    (crate::streamer::StreamerPort::new(tx), rx)
+}
+
+/// The stream of `voice` on `port`: a handle whose commands the test sees.
+fn stream_of(voice: &Voice, port: &crate::streamer::StreamerPort) -> crate::Stream {
+    let VoiceSource::Disk(disk) = &voice.source else {
+        unreachable!("a streaming voice")
+    };
+    crate::Stream::detached(disk.stream(), port.clone())
+}
+
+/// Adds `voice` at `id` with a stream on `port`.
+fn add_with_stream(
+    handle: &VoicePoolHandle,
+    id: SlotId,
+    voice: Voice,
+    port: &crate::streamer::StreamerPort,
+) {
+    let stream = stream_of(&voice, port);
+    handle
+        .add_streaming(id, voice, stream, None)
+        .expect("the command queue has room in a test");
 }
 
 fn looped(mut voice: Voice) -> Voice {
@@ -1478,53 +1504,50 @@ fn looped(mut voice: Voice) -> Voice {
     voice
 }
 
-/// A loop the streamer takes is recorded, and it was sent by the
-/// handle, before the drain ran: the add's own loop and the update's,
-/// each naming the voice's stream.
+/// A loop the stream takes is recorded, and it was set on the stream by the
+/// handle, before the drain ran: the add's own loop and the update's, each
+/// naming the voice's stream.
 ///
 /// Mutation (run): `apply_loop` not recording a streaming slot's loop →
-/// fails. Mutation (run): `send_loop` queueing without forwarding → one
-/// command at the streamer, not two → fails.
+/// fails. Mutation (run): `send_loop` queueing without setting the loop on
+/// the stream → one command at the streamer, not two → fails.
 #[test]
-fn a_loop_the_streamer_takes_is_recorded() {
+fn a_loop_the_stream_takes_is_recorded() {
     let (commands, streamer) = test_streamer(4);
-    let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(3);
-    let voice = streaming_voice();
+    let voice = looped(streaming_voice());
     let VoiceSource::Disk(disk) = &voice.source else {
         unreachable!()
     };
     let stream = disk.stream();
+    add_with_stream(&handle, id, voice, &commands);
     handle
-        .send(VoiceCommand::AddVoice {
-            id,
-            voice: Box::new(voice),
-            stretch: None,
-        })
-        .expect("the command queue has room in a test");
-    handle
-        .send(loop_on(id))
+        .send(loop_to(id, 32.0))
         .expect("the command queue has room in a test");
     let sent: Vec<_> = streamer.try_iter().collect();
     assert!(
         matches!(
             sent.as_slice(),
             [
-                crate::streamer::StreamerCommand::ClearStreamLoop {
+                crate::streamer::StreamerCommand::SetStreamLoop {
                     stream: a,
+                    range: (0, 64),
+                    ..
                 },
                 crate::streamer::StreamerCommand::SetStreamLoop {
                     stream: b,
+                    range: (0, 32),
                     ..
                 },
             ] if *a == stream && *b == stream
         ),
-        "the add's loop and the update's, forwarded by the handle: {sent:?}"
+        "the add's loop and the update's, set by the handle: {sent:?}"
     );
     one_block(&mut pool);
     assert!(matches!(
         pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::On { .. }
+        LoopSetting::On { end, .. } if end == SamplePosition::new(32.0)
     ));
     assert_eq!(handle.drops(), PoolDrops::default());
 }
@@ -1534,25 +1557,19 @@ fn a_loop_the_streamer_takes_is_recorded() {
 /// queues the command; once queued, the streamer can be gone and the
 /// drain records the loop all the same, counting nothing.
 ///
-/// Mutation (run): `apply_loop`'s streaming arm sending
-/// a loop command on `self.streamer` and returning on an error → the
-/// gone streamer leaves the loop unrecorded → fails.
+/// Mutation (run): the drain's streaming arm setting the loop on a stream
+/// of its own and returning on an error → the gone streamer leaves the loop
+/// unrecorded → fails.
 #[test]
 fn the_drain_sends_nothing_to_the_streamer() {
     let (commands, streamer) = test_streamer(8);
-    let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(3);
-    handle
-        .send(VoiceCommand::AddVoice {
-            id,
-            voice: Box::new(looped(streaming_voice())),
-            stretch: None,
-        })
-        .expect("the command queue has room in a test");
+    add_with_stream(&handle, id, looped(streaming_voice()), &commands);
     handle
         .send(loop_on(id))
         .expect("the command queue has room in a test");
-    assert_eq!(streamer.len(), 2, "both forwarded by the handle");
+    assert_eq!(streamer.len(), 2, "both set by the handle");
     drop(streamer);
     one_block(&mut pool);
     assert!(matches!(
@@ -1565,24 +1582,18 @@ fn the_drain_sends_nothing_to_the_streamer() {
 /// A loop a gone streamer never received is not recorded, on an add
 /// or an update, and the loss is counted.
 ///
-/// Mutation (run): `forward_loop` answering `true` when the send fails
-/// → the add keeps its `On` → fails. Mutation (run): `send_loop`
-/// queueing the command when the forward fails → the update records
-/// `On` → fails. Mutation (run): deleting the `loops_streamer_gone` bump
-/// → fails on the count.
+/// Mutation (run): `add_stream_voice` keeping the voice's `On` when its
+/// stream refuses it → the add records it → fails. Mutation (run):
+/// `send_loop` not re-queueing the previous loop when the stream refuses
+/// the update → the update records `On` → fails. Mutation (run): deleting
+/// the `loops_streamer_gone` bumps → fails on the count.
 #[test]
 fn a_loop_a_gone_streamer_never_received_is_not_recorded() {
     let (commands, streamer) = test_streamer(8);
     drop(streamer);
-    let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(4);
-    handle
-        .send(VoiceCommand::AddVoice {
-            id,
-            voice: Box::new(looped(streaming_voice())),
-            stretch: None,
-        })
-        .expect("the command queue has room in a test");
+    add_with_stream(&handle, id, looped(streaming_voice()), &commands);
     one_block(&mut pool);
     assert_eq!(handle.drops().loops_streamer_gone, 1);
     assert_eq!(
@@ -1603,48 +1614,51 @@ fn a_loop_a_gone_streamer_never_received_is_not_recorded() {
     );
 }
 
-/// A handle knows the streaming voices inserted before it was made:
-/// a loop sent for one is forwarded to its stream, not handed to the
-/// drain unforwarded.
+/// A streaming voice inserted with no stream cannot have its loop or its
+/// direction set, so it plays unlooped and forward and says so in the counts:
+/// what it asked for is not recorded either, where `insert_voice` would
+/// otherwise replay it as if it were real. The same for an `AddVoice` through
+/// the handle.
 ///
-/// Mutation (run): `with_handle` starting the handle's stream table
-/// empty → the update is queued unforwarded → one command at the
-/// streamer, not two → fails.
+/// Mutation (run): `insert_voice_with_stretch` not calling `without_stream`
+/// → the slot records `On` and `Reverse` → fails. Mutation (run): deleting
+/// the `directions_dropped` bump in `without_stream` → fails on the count.
 #[test]
-fn a_handle_knows_the_voices_inserted_before_it() {
-    let (commands, streamer) = test_streamer(8);
-    let mut pool = VoicePool::with_streamer(commands);
+fn a_streaming_voice_without_a_stream_drops_its_loop_and_direction_and_counts_them() {
+    let mut pool = VoicePool::new();
     let id = SlotId(5);
-    pool.insert_voice(id, streaming_voice());
-    assert_eq!(streamer.len(), 1, "the insert forwards its own loop");
+    let mut voice = looped(streaming_voice());
+    voice.play.direction = Direction::Reverse;
+    pool.insert_voice(id, voice);
+    let play = pool.playback_of(id).expect("slot exists");
+    assert_eq!(play.loop_, LoopSetting::Off);
+    assert_eq!(play.direction, Direction::Forward);
+
     let (mut pool, handle) = pool.with_handle();
+    let drops = handle.drops();
+    assert_eq!((drops.loops_no_streamer, drops.directions_dropped), (1, 1));
+    let mut voice = looped(streaming_voice_of(2));
+    voice.play.direction = Direction::Reverse;
     handle
-        .send(loop_on(id))
+        .send(add(SlotId(6), voice))
         .expect("the command queue has room in a test");
-    assert_eq!(streamer.len(), 2, "the update is forwarded by the handle");
-    assert!(matches!(
-        streamer.try_iter().last(),
-        Some(crate::streamer::StreamerCommand::SetStreamLoop {
-            stream: StreamId(1),
-            ..
-        })
-    ));
     one_block(&mut pool);
-    assert!(matches!(
-        pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::On { .. }
-    ));
+    let play = pool.playback_of(SlotId(6)).expect("slot exists");
+    assert_eq!(play.loop_, LoopSetting::Off);
+    assert_eq!(play.direction, Direction::Forward);
+    let drops = handle.drops();
+    assert_eq!((drops.loops_no_streamer, drops.directions_dropped), (2, 2));
 }
 
 /// The drain's other silent drops are counted, not logged: a loop
-/// turned on for a streaming voice with no streamer, and a `ReplaceWave`
+/// turned on for a streaming voice with no stream, and a `ReplaceWave`
 /// aimed at a streaming voice. Clearing a loop there (the add's own
 /// `Off`) loses nothing and is not counted.
 ///
-/// Mutation (run): deleting the `loops_no_streamer` bump → fails.
+/// Mutation (run): deleting the `loops_not_forwarded` bump → fails.
 /// Mutation (run): counting `Off` too (the `matches!(setting, On)` guard
-/// removed) → fails on the add's count. Mutation (run): deleting the
-/// `wave_swaps_ignored` bump → fails.
+/// removed in `without_stream`) → fails on the add's count. Mutation (run):
+/// deleting the `wave_swaps_ignored` bump → fails.
 #[test]
 fn the_drains_silent_drops_are_counted() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -1662,7 +1676,7 @@ fn the_drains_silent_drops_are_counted() {
     assert_eq!(
         handle.drops().loops_no_streamer,
         0,
-        "the add's loop is `Off`: there is nothing to lose without a streamer"
+        "the add's loop is `Off`: there is nothing to lose without a stream"
     );
 
     handle
@@ -1676,7 +1690,7 @@ fn the_drains_silent_drops_are_counted() {
         .expect("the command queue has room in a test");
     tick(&mut pool, &transport, SR, &mut out);
     let drops = handle.drops();
-    assert_eq!(drops.loops_no_streamer, 1, "the lost `On` is counted");
+    assert_eq!(drops.loops_not_forwarded, 1, "the lost `On` is counted");
     assert_eq!(drops.wave_swaps_ignored, 1);
     assert_eq!(
         handle.collect_retired(),
@@ -1689,22 +1703,20 @@ fn the_drains_silent_drops_are_counted() {
 /// rather than dropping it: the handle is control-thread code, and
 /// sends as the control thread does.
 ///
-/// Mutation (run): `forward_loop` sending with `try_send` (refusing on
+/// Mutation (run): `Stream::set_loop` sending with `try_send` (refusing on
 /// a full queue) → the loop is dropped → fails.
 #[test]
 fn a_handle_send_waits_for_the_streamer() {
     let (commands, streamer) = test_streamer(1);
-    let (mut pool, handle) = VoicePool::with_streamer(commands.clone()).with_handle();
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(1);
-    handle
-        .send(VoiceCommand::AddVoice {
-            id,
-            voice: Box::new(streaming_voice()),
-            stretch: None,
+    add_with_stream(&handle, id, streaming_voice(), &commands);
+    // The streamer's one slot is taken; it catches up a moment later.
+    commands
+        .send(crate::streamer::StreamerCommand::Close {
+            stream: StreamId(9),
         })
-        .expect("the command queue has room in a test");
-    // The add's forward fills the one slot; the streamer catches up a
-    // moment later.
+        .expect("room for one");
     let drainer = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(20));
         assert!(streamer.recv().is_ok());
@@ -1725,29 +1737,30 @@ fn a_handle_send_waits_for_the_streamer() {
     ));
 }
 
-/// A control-thread `insert_voice` waits for the streamer's room rather
-/// than dropping its loop. It is control-thread code (it allocates the
-/// slot's box), so it sends as the control thread does.
+/// An add of a looping streaming voice waits for the streamer's room rather
+/// than dropping its loop: it is control-thread code (it allocates the slot's
+/// box), so it sends as the control thread does.
 ///
-/// Mutation (run): `forward_loop` sending with `try_send` (refusing on
-/// a full queue) → the loop is dropped → fails.
+/// Mutation (run): `Stream::set_loop` sending with `try_send` (refusing on
+/// a full queue) → the add drops its loop → fails.
 #[test]
-fn a_control_thread_insert_waits_for_the_streamer() {
+fn an_add_waits_for_the_streamer() {
     let (commands, streamer) = test_streamer(1);
     commands
         .send(crate::streamer::StreamerCommand::Close {
             stream: StreamId(9),
         })
         .expect("room for one");
-    let mut pool = VoicePool::with_streamer(commands);
+    let (mut pool, handle) = VoicePool::new().with_handle();
     // The streamer catches up a moment later.
     let drainer = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(20));
         assert!(streamer.recv().is_ok());
         streamer
     });
-    pool.insert_voice(SlotId(1), looped(streaming_voice()));
+    add_with_stream(&handle, SlotId(1), looped(streaming_voice()), &commands);
     let streamer = drainer.join().unwrap();
+    one_block(&mut pool);
     assert!(matches!(
         pool.playback_of(SlotId(1)).expect("slot exists").loop_,
         LoopSetting::On { .. }
@@ -1756,6 +1769,121 @@ fn a_control_thread_insert_waits_for_the_streamer() {
         streamer.try_recv(),
         Ok(crate::streamer::StreamerCommand::SetStreamLoop { .. })
     ));
+}
+
+/// A direction set through the handle reaches the voice's stream, which owns
+/// it: the stream is told (a `SetDirection` naming it), and the slot records
+/// it once the drain runs. A direction on the add is set the same way. A
+/// gone streamer's is counted and not recorded.
+///
+/// Mutation (run): `send_reverse` queueing without setting the direction on
+/// the stream → no `SetDirection` at the streamer → fails. Mutation (run):
+/// `apply_queued_direction` recording without checking `forwarded` → the
+/// unforwarded slot below records `Reverse` → fails. Mutation (run): deleting
+/// the `directions_dropped` bump in `send_reverse` → fails on the count.
+#[test]
+fn a_direction_set_through_the_handle_reaches_the_stream() {
+    use crate::streamer::StreamerCommand as C;
+    let (commands, streamer) = test_streamer(8);
+    let (mut pool, handle) = VoicePool::new().with_handle();
+    let id = SlotId(2);
+    let mut voice = streaming_voice();
+    voice.play.direction = Direction::Reverse;
+    add_with_stream(&handle, id, voice, &commands);
+    handle
+        .send(VoiceCommand::UpdateReverse {
+            id,
+            direction: Direction::Forward,
+        })
+        .expect("room");
+    let sent: Vec<_> = streamer.try_iter().collect();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [
+                C::SetDirection { stream: a, direction: Direction::Reverse },
+                C::SetDirection { stream: b, direction: Direction::Forward },
+            ] if *a == StreamId(1) && *b == StreamId(1)
+        ),
+        "the add's direction, then the update's: {sent:?}"
+    );
+    one_block(&mut pool);
+    assert_eq!(
+        pool.playback_of(id).expect("slot exists").direction,
+        Direction::Forward
+    );
+
+    // A slot the handle holds no stream for does not record a direction no
+    // stream was told.
+    pool.insert_voice(SlotId(3), streaming_voice_of(3));
+    handle
+        .send(VoiceCommand::UpdateReverse {
+            id: SlotId(3),
+            direction: Direction::Reverse,
+        })
+        .expect("room");
+    one_block(&mut pool);
+    assert_eq!(
+        pool.playback_of(SlotId(3)).expect("slot exists").direction,
+        Direction::Forward
+    );
+    assert_eq!(handle.drops().directions_dropped, 1);
+
+    // A streamer that is gone: counted, and the record put back.
+    drop(streamer);
+    handle
+        .send(VoiceCommand::UpdateReverse {
+            id,
+            direction: Direction::Reverse,
+        })
+        .expect("a lost direction is counted, not an error");
+    one_block(&mut pool);
+    assert_eq!(handle.drops().directions_dropped, 2);
+    assert_eq!(
+        pool.playback_of(id).expect("slot exists").direction,
+        Direction::Forward
+    );
+}
+
+/// A stream ends with its voice: the handle holds it from the add, and a
+/// `Remove` (or an add at the same id) drops it, which sends the streamer
+/// its close.
+///
+/// Mutation (run): `send` not removing the stream from the table on a
+/// `Remove` → no close reaches the streamer → fails. Mutation (run): the
+/// replacing add not removing the displaced stream → fails on the second
+/// close.
+#[test]
+fn a_stream_ends_when_its_voice_is_removed_or_replaced() {
+    use crate::streamer::StreamerCommand as C;
+    let (commands, streamer) = test_streamer(8);
+    let (_pool, handle) = VoicePool::new().with_handle();
+    let id = SlotId(1);
+    add_with_stream(&handle, id, streaming_voice_of(1), &commands);
+    assert_eq!(
+        streamer.len(),
+        0,
+        "an add with nothing to set sends nothing"
+    );
+    handle.send(VoiceCommand::Remove(id)).expect("room");
+    assert!(matches!(
+        streamer.try_iter().collect::<Vec<_>>().as_slice(),
+        [C::Close {
+            stream: StreamId(1)
+        }]
+    ));
+
+    add_with_stream(&handle, id, streaming_voice_of(2), &commands);
+    add_with_stream(&handle, id, streaming_voice_of(3), &commands);
+    assert!(
+        matches!(
+            streamer.try_iter().collect::<Vec<_>>().as_slice(),
+            [C::Close {
+                stream: StreamId(2)
+            }]
+        ),
+        "the replaced voice's stream ended, the replacing one's did not"
+    );
 }
 
 fn add(id: SlotId, voice: Voice) -> VoiceCommand {
@@ -1807,7 +1935,7 @@ fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
     };
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     for silent_gain in [3.0f32, f32::INFINITY, f32::NAN] {
-        let mut pool = VoicePool::with_channels(None, 2u16).expect("stereo");
+        let mut pool = VoicePool::with_channels(2u16).expect("stereo");
         pool.insert_voice(SlotId(0), voice(0.0, None, 0.5));
         pool.insert_voice(SlotId(1), voice(1_000.0, None, silent_gain));
         // In its window for 20 frames, then out of it: audible only at a
@@ -1870,41 +1998,36 @@ fn fill_queue(handle: &VoicePoolHandle, queued: usize, room: usize) {
     }
 }
 
-/// A loop for a streaming voice the handle does not know is not
+/// A loop for a streaming voice the handle holds no stream for is not
 /// recorded: a voice inserted with `insert_voice` after the handle was
-/// taken. The handle has no stream to forward to, so the drain must
-/// refuse it from the command alone, and count it. The pool gave its
-/// streamer to the handle, so the insert itself sends nothing either.
+/// taken. The handle has no stream to set it on, so the drain must refuse it
+/// from the command alone, and count it.
 ///
 /// Mutation (run): `apply_queued_loop` recording without checking
-/// `forwarded` → the slot records `On` → fails. Mutation (run):
-/// `with_handle` cloning the streamer instead of moving it → the pool
-/// still holds one → fails. Mutation (run): deleting the
+/// `forwarded` → the slot records `On` → fails. Mutation (run): deleting the
 /// `loops_not_forwarded` bump → fails on the count.
 #[test]
 fn a_loop_for_a_voice_inserted_after_the_handle_is_not_recorded() {
-    let (commands, streamer) = test_streamer(8);
-    let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
-    assert!(pool.streamer.is_none(), "the streamer moved to the handle");
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(6);
     pool.insert_voice(id, streaming_voice());
     handle
         .send(loop_on(id))
         .expect("the command queue has room in a test");
     one_block(&mut pool);
-    assert_eq!(streamer.len(), 0, "nothing was forwarded");
     assert_eq!(
         pool.playback_of(id).expect("slot exists").loop_,
         LoopSetting::Off,
-        "a loop the streamer never received must not be recorded"
+        "a loop no stream received must not be recorded"
     );
     assert_eq!(handle.drops().loops_not_forwarded, 1);
 }
 
-/// A loop forwarded to a stream the slot no longer reads is not
-/// recorded: the handle's table names the stream the slot held when
-/// the handle was made, and the slot has since been replaced by
-/// `insert_voice` with another stream on the same channel.
+/// A loop set on a stream the slot no longer reads is not recorded: the
+/// handle holds the stream the slot had when it was added, and the slot has
+/// since been replaced by `insert_voice` with another stream's voice. The old
+/// stream still gets the loop (it is the stream the handle holds), and the
+/// slot, which plays another, does not claim it.
 ///
 /// Mutation (run): `apply_queued_loop` accepting any `Some` forward
 /// (not comparing it with the slot's stream) → the slot records `On`
@@ -1912,16 +2035,16 @@ fn a_loop_for_a_voice_inserted_after_the_handle_is_not_recorded() {
 #[test]
 fn a_loop_forwarded_to_a_replaced_stream_is_not_recorded() {
     let (commands, streamer) = test_streamer(8);
-    let mut pool = VoicePool::with_streamer(commands);
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(6);
-    pool.insert_voice(id, streaming_voice_of(1));
-    let (mut pool, handle) = pool.with_handle();
+    add_with_stream(&handle, id, streaming_voice_of(1), &commands);
+    one_block(&mut pool);
     pool.clear_voices();
     pool.insert_voice(id, streaming_voice_of(2));
     handle
         .send(loop_on(id))
         .expect("the command queue has room in a test");
-    assert_eq!(streamer.len(), 2, "the first insert's loop, and the update");
+    assert_eq!(streamer.len(), 1, "the update, set on the stream held");
     one_block(&mut pool);
     assert_eq!(
         pool.playback_of(id).expect("slot exists").loop_,
@@ -1931,49 +2054,63 @@ fn a_loop_forwarded_to_a_replaced_stream_is_not_recorded() {
 }
 
 /// A streaming loop or add that meets a full command queue is refused
-/// before the streamer hears of it: `Err` means the command is gone, and
-/// the streamer stays on the loop it had.
+/// before the stream hears of it: `Err` means the command is gone, and the
+/// stream stays on the loop it had (the add's stream is handed back).
 ///
-/// Mutation (run): deleting `send_loop`'s full-queue check → the loop
-/// is forwarded and rolled back (three commands at the streamer, not one)
-/// → fails. Mutation (run): deleting `send_stream_add`'s → the add's
-/// loop is forwarded and rolled back → fails.
+/// Mutation (run): `send_loop` setting the loop on the stream before
+/// queueing (the queue-first order reversed) → the stream hears the refused
+/// loop (two commands at the streamer, not one) → fails. Mutation (run):
+/// deleting `add_stream_voice`'s full-queue check → the add's loop is set on
+/// the stream and put back (three commands, not one) → fails.
 #[test]
 fn a_full_queue_refuses_a_streaming_loop_or_add_before_the_streamer() {
     let (commands, streamer) = test_streamer(8);
-    let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(2);
-    handle
-        .send(add(id, streaming_voice()))
-        .expect("the command queue has room in a test");
+    add_with_stream(&handle, id, looped(streaming_voice()), &commands);
     fill_queue(&handle, 1, 0);
     let err = handle.send(loop_on(id)).expect_err("the queue is full");
     assert!(matches!(
         err,
         SendError::Full(VoiceCommand::UpdateLoop { .. })
     ));
-    assert_eq!(streamer.len(), 1, "only the add's own loop was forwarded");
-    let err = handle
-        .send(add(SlotId(5), looped(streaming_voice_of(5))))
+    assert_eq!(streamer.len(), 1, "only the add's own loop was set");
+    let voice = looped(streaming_voice_of(5));
+    let stream = stream_of(&voice, &commands);
+    let refused = handle
+        .add_streaming(SlotId(5), voice, stream, None)
         .expect_err("the queue is full");
     assert!(matches!(
-        err,
+        refused.error,
         SendError::Full(VoiceCommand::AddVoice { .. })
     ));
-    assert_eq!(streamer.len(), 1, "the refused add forwarded nothing");
-    one_block(&mut pool);
     assert_eq!(
-        pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::Off
+        refused.stream.loop_(),
+        LoopSetting::Off,
+        "the stream is handed back as it came"
     );
+    assert_eq!(streamer.len(), 1, "the refused add set nothing");
+    one_block(&mut pool);
+    assert!(matches!(
+        pool.playback_of(id).expect("slot exists").loop_,
+        LoopSetting::On { .. }
+    ));
 }
 
-/// Waits until another thread holds `handle`'s forwarding lock: its
-/// streaming loop is past its lookup and at (or about to reach) the
+/// Waits until another thread holds the lock of the stream `handle` holds for
+/// `id`: its streaming loop is past its lookup and at (or about to reach) the
 /// streamer send.
-fn wait_for_forward(handle: &VoicePoolHandle) {
+fn wait_for_forward(handle: &VoicePoolHandle, id: SlotId) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while handle.forwarding.try_lock().is_ok() {
+    // A table lock held by another thread is a send in progress too (it must
+    // never be, but the wait must not itself block on it).
+    let sending = || match handle.streams.try_lock() {
+        Ok(table) => table
+            .get(&id)
+            .is_some_and(|stream| stream.try_lock().is_err()),
+        Err(_) => true,
+    };
+    while !sending() {
         assert!(
             std::time::Instant::now() < deadline,
             "the other thread never started its forward"
@@ -1982,103 +2119,85 @@ fn wait_for_forward(handle: &VoicePoolHandle) {
     }
 }
 
-/// A forward whose command another thread's send then crowds out of
-/// the queue is undone: the streamer is put back on the loop the slot
-/// had, so `Err` leaves both the streamer and the pool where they were.
+/// An add whose queueing fails after its loop reached the stream puts the
+/// stream back: `Err` hands the stream back on the loop it came with, so the
+/// streamer is not left on the refused loop.
 ///
-/// The race is staged: the streamer's one-slot queue is full, so the
-/// loop's forward waits there (past the full-queue check) while another
-/// thread takes the command queue's last slot, and this one drains the
-/// streamer only once that send has returned. If the forward has not
-/// reached its full-queue check by then, the check refuses it instead,
-/// and the streamer ends on the same loop either way.
+/// The race is staged: the streamer's one-slot queue is full, so the add's
+/// loop waits there (past the full-queue check) while the command queue is
+/// filled to its last slot, and the streamer is drained only once that has
+/// happened. If the add has not reached its check by then, the check refuses
+/// it instead, and the streamer ends on the same loop either way.
 ///
-/// Mutation (run, `--stress-count 20`): `send_loop` returning the
-/// queueing error without `roll_back` → the streamer ends on the refused
-/// loop → fails 20/20.
+/// Mutation (run, `--stress-count 20`): `add_stream_voice` returning the
+/// queueing error without putting the stream back → the streamer ends on the
+/// refused loop → fails 20/20.
 #[test]
 #[cfg_attr(miri, ignore = "threads and wall-clock waits")]
-fn a_loop_crowded_out_of_the_queue_rolls_the_streamer_back() {
+fn an_add_crowded_out_of_the_queue_puts_the_stream_back() {
     use std::time::Duration;
     let (commands, streamer) = test_streamer(1);
-    let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
-    let id = SlotId(2);
-    handle
-        .send(add(id, looped(streaming_voice())))
-        .expect("the command queue has room in a test");
-    fill_queue(&handle, 1, 1);
-    let racer = handle.clone();
-    let refused = std::thread::spawn(move || {
-        racer.send(VoiceCommand::UpdateLoop {
-            id,
-            setting: LoopSetting::On {
-                start: SamplePosition::new(0.0),
-                end: SamplePosition::new(32.0),
-                crossfade_frames: 0,
-            },
+    let (_pool, handle) = VoicePool::new().with_handle();
+    commands
+        .send(crate::streamer::StreamerCommand::Close {
+            stream: StreamId(9),
         })
+        .expect("room for one");
+    let racer = handle.clone();
+    let port = commands.clone();
+    let refused = std::thread::spawn(move || {
+        let voice = looped(streaming_voice());
+        let stream = stream_of(&voice, &port);
+        racer.add_streaming(SlotId(2), voice, stream, None)
     });
-    wait_for_forward(&handle);
-    // From another thread, so a remove that waited on the forward would
-    // fail this test rather than hang it; and awaited before the streamer
-    // is drained, so the forward cannot queue into the last slot first.
-    let crowder = handle.clone();
-    let (done_tx, done) = bounded(1);
-    std::thread::spawn(move || {
-        crowder
-            .send(VoiceCommand::Remove(SlotId(999)))
-            .expect("the last slot");
-        done_tx.send(()).unwrap();
-    });
-    done.recv_timeout(Duration::from_secs(2))
-        .expect("the remove waited on the forward");
+    // The add's loop is waiting on the streamer; take the command queue's
+    // last slots meanwhile.
+    std::thread::sleep(Duration::from_millis(150));
+    fill_queue(&handle, 0, 0);
     let mut sent = Vec::new();
     while let Ok(c) = streamer.recv_timeout(Duration::from_millis(300)) {
         sent.push(c);
     }
     let result = refused.join().unwrap();
-    assert!(
-        matches!(
-            result,
-            Err(SendError::Full(VoiceCommand::UpdateLoop { .. }))
-        ),
-        "{result:?}"
-    );
-    assert_eq!(
+    let Err(refused) = result else {
+        panic!("the queue was full")
+    };
+    assert!(matches!(
+        refused.error,
+        SendError::Full(VoiceCommand::AddVoice { .. })
+    ));
+    assert_eq!(refused.stream.loop_(), LoopSetting::Off);
+    assert_ne!(
         last_loop(&sent, StreamId(1)),
         Some(Some((0, 64))),
-        "the streamer is back on the add's loop: {sent:?}"
+        "the streamer is left on the refused loop: {sent:?}"
     );
-    one_block(&mut pool);
-    assert!(matches!(
-        pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::On { end, .. } if end == SamplePosition::new(64.0)
-    ));
 }
 
 /// A remove, and an in-memory add, never wait on another thread's
-/// streamer forward: they touch no streamer, so a stalled one must not
-/// hold them. The loop whose forward was waiting is ordered before the
-/// remove: it is not queued once its slot is gone.
+/// stream: they touch no streamer, so a stalled one must not hold them. The
+/// loop whose send was waiting was queued before it, so the remove still
+/// orders after it.
 ///
-/// Mutation (run): `send_loop` holding the stream table's lock across
-/// the forward → the remove waits for the stalled streamer → fails on the
-/// timeout. Mutation (run): `send_loop` queueing without re-checking the
-/// slot after the forward → four commands queued, not three → fails.
+/// Mutation (run): `send_loop` holding the stream table's lock across the
+/// send → the remove waits for the stalled streamer → fails on the timeout.
 #[test]
 #[cfg_attr(miri, ignore = "threads and wall-clock waits")]
 fn a_remove_never_waits_on_another_threads_forward() {
     use std::time::Duration;
     let (commands, streamer) = test_streamer(1);
-    let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
+    let (mut pool, handle) = VoicePool::new().with_handle();
     let id = SlotId(2);
-    handle
-        .send(add(id, streaming_voice()))
-        .expect("the command queue has room in a test");
+    add_with_stream(&handle, id, streaming_voice(), &commands);
+    commands
+        .send(crate::streamer::StreamerCommand::Close {
+            stream: StreamId(9),
+        })
+        .expect("room for one");
     assert_eq!(streamer.len(), 1, "the streamer's queue is full");
     let looper = handle.clone();
     let looping = std::thread::spawn(move || looper.send(loop_on(id)));
-    wait_for_forward(&handle);
+    wait_for_forward(&handle, id);
     let (done_tx, done) = bounded(1);
     let other = handle.clone();
     std::thread::spawn(move || {
@@ -2087,8 +2206,8 @@ fn a_remove_never_waits_on_another_threads_forward() {
         done_tx.send(()).unwrap();
     });
     let waited = done.recv_timeout(Duration::from_secs(2));
-    // Unblock the forward whatever happened, so a failure is reported
-    // rather than hung on.
+    // Unblock the send whatever happened, so a failure is reported rather
+    // than hung on.
     let mut sent = Vec::new();
     while let Ok(c) = streamer.recv_timeout(Duration::from_millis(300)) {
         sent.push(c);
@@ -2098,11 +2217,25 @@ fn a_remove_never_waits_on_another_threads_forward() {
         "the remove waited on another thread's forward"
     );
     assert!(looping.join().unwrap().is_ok());
-    assert_eq!(sent.len(), 2, "the add's loop and the update's: {sent:?}");
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [
+                crate::streamer::StreamerCommand::Close {
+                    stream: StreamId(9)
+                },
+                crate::streamer::StreamerCommand::SetStreamLoop { .. },
+                crate::streamer::StreamerCommand::Close {
+                    stream: StreamId(1)
+                },
+            ]
+        ),
+        "the prefill, the loop, and the removed voice's stream ending: {sent:?}"
+    );
     assert_eq!(
         pool.rx.len(),
-        3,
-        "the add, the remove and the in-memory add: the loop is not queued"
+        4,
+        "the add, the loop, the remove and the in-memory add"
     );
     one_block(&mut pool);
     assert!(pool.playback_of(id).is_none());
@@ -2141,14 +2274,10 @@ fn reader_and_voice_node_default_to_stereo() {
 fn a_pool_wider_than_the_sampler_reads_is_refused() {
     let ceiling = crate::MAX_SAMPLER_CHANNELS;
     assert!(
-        VoicePool::with_channels(
-            None,
-            ChannelLayout::try_from(ceiling).expect("a test width is small")
-        )
-        .is_ok()
+        VoicePool::with_channels(ChannelLayout::try_from(ceiling).expect("a test width is small"))
+            .is_ok()
     );
     let err = VoicePool::with_channels(
-        None,
         ChannelLayout::try_from(ceiling + 1).expect("a test width is small"),
     )
     .expect_err("a pool past the ceiling must be refused");
@@ -2206,11 +2335,9 @@ fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
 #[test]
 fn both_nodes_declare_their_width() {
     for w in [1usize, 2, 6, 8] {
-        let unit = VoicePool::with_channels(
-            None,
-            ChannelLayout::try_from(w).expect("a test width is small"),
-        )
-        .expect("a width the sampler reads");
+        let unit =
+            VoicePool::with_channels(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("a width the sampler reads");
         let sampler = MemorySource::with_config(
             indexed_wave(6, 64),
             MemorySourceConfig {
@@ -2246,7 +2373,7 @@ fn both_nodes_declare_their_width() {
 #[test]
 fn six_channel_clip_reaches_all_six_reader_outputs() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, _h) = VoicePool::with_channels(None, 6u16)
+    let (mut unit, _h) = VoicePool::with_channels(6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let sampler = MemorySource::with_config(
@@ -2291,7 +2418,7 @@ fn six_channel_clip_reaches_all_six_reader_outputs() {
 #[test]
 fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, _h) = VoicePool::with_channels(None, 6u16)
+    let (mut unit, _h) = VoicePool::with_channels(6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let sampler = MemorySource::with_config(
@@ -2359,7 +2486,7 @@ fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
 #[test]
 fn send_builds_the_stretch_filter_not_the_drain() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, handle) = VoicePool::with_channels(None, 6u16)
+    let (mut unit, handle) = VoicePool::with_channels(6u16)
         .expect("a width the sampler reads")
         .with_handle();
 
@@ -2398,9 +2525,7 @@ fn send_builds_the_stretch_filter_not_the_drain() {
             channels: ChannelLayout::from(6u16),
             rate: SharedRate::new(SampleRate::SR_44K1),
             counters: Default::default(),
-            streamer: None,
             streams: Default::default(),
-            forwarding: Default::default(),
         };
         probe
             .send(VoiceCommand::AddVoice {
@@ -2471,7 +2596,7 @@ fn send_builds_the_stretch_filter_not_the_drain() {
 #[test]
 fn a_missing_stretch_filter_reads_dry_not_silent() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, _h) = VoicePool::with_channels(None, 6u16)
+    let (mut unit, _h) = VoicePool::with_channels(6u16)
         .expect("a width the sampler reads")
         .with_handle();
 

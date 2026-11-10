@@ -16,8 +16,8 @@
 use tutti_types::{Cents, Confidence, Hz, Note, SampleRate, Samples};
 
 use crate::pitch::PitchDetector;
+use crate::{Error, Result};
 use tutti_dsp::FrameCount;
-use tutti_dsp::{Error, Result};
 
 /// YIN parameters. Validated once, on construction.
 #[derive(Debug, Clone, Copy, PartialEq)]

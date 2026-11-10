@@ -51,11 +51,11 @@
 
 use tutti_types::{Cents, Db, Hz, Note, Samples, Semitones};
 
+use crate::{Error, Result};
 use tutti_dsp::Complex;
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
 use tutti_dsp::{BinCount, Grid};
-use tutti_dsp::{Error, Result};
 
 /// The pitch classes in a chroma frame.
 pub(crate) const CLASSES: usize = 12;

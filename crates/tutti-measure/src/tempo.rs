@@ -33,9 +33,9 @@ use tutti_types::{Bpm, Confidence, Db, SampleRate, Samples, Seconds};
 use crate::beat;
 use crate::onset::{DetectionFunction, OnsetConfig, OnsetState, onset_lag, step_onset};
 use crate::xcorr::cross_correlate;
+use crate::{Error, Result};
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
-use tutti_dsp::{Error, Result};
 
 /// The default analysis window, in samples.
 const WINDOW: usize = 1024;
@@ -102,7 +102,11 @@ impl TempoConfig {
     /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
     /// NaN.
     pub fn geometry(sample_rate: impl Into<SampleRate>) -> Result<StftGeometry> {
-        StftGeometry::new(sample_rate, Samples(WINDOW), Samples(HOP))
+        Ok(StftGeometry::new(
+            sample_rate,
+            Samples(WINDOW),
+            Samples(HOP),
+        )?)
     }
 
     /// Search tempi from `min` to `max` inclusive. The estimate never leaves

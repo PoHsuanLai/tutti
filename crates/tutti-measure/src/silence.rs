@@ -15,7 +15,7 @@ use core::ops::Range;
 
 use tutti_types::{Db, SampleRate, Samples, Seconds};
 
-use tutti_dsp::{Error, Result};
+use crate::{Error, Result};
 
 /// A half-open span of samples, `start..end`.
 ///

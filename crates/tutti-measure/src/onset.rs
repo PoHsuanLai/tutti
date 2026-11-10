@@ -13,10 +13,10 @@
 
 use tutti_types::{Amplitude, SampleRate, Samples, Seconds};
 
+use crate::Result;
 use tutti_dsp::Complex;
 use tutti_dsp::FftScratch;
 use tutti_dsp::FrameIndex;
-use tutti_dsp::Result;
 use tutti_dsp::StftGeometry;
 
 /// How novelty is measured frame to frame.

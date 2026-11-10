@@ -275,7 +275,7 @@ fn process_matches_the_per_sample_solver() {
 /// here. (Writing the ramp as `from + (to - from) * 1.0` does *not*: frame to
 /// frame the two gains are within a factor of two, so by Sterbenz the
 /// difference is exact and the sum lands on `to` anyway. The subtraction form
-/// in `render_channel` is exact without relying on that.)
+/// in `VbapGains::render_channel` is exact without relying on that.)
 #[test]
 fn tick_matches_the_per_sample_solver() {
     let mut node = prep(VbapPannerNode::surround_5_1().unwrap());

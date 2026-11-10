@@ -162,7 +162,7 @@ backend.
 
 ## Where it sits
 
-Builds on `tutti-ump` (the wire vocabulary), `tutti-midi-types` (the decoded view) and `tutti-midi-runtime`
+Builds on `tutti-ump` (the wire vocabulary and its decoded `Message`) and `tutti-midi-runtime`
 (the graph's MIDI nodes and mailbox), and re-exports the parts of both a
 hardware consumer needs. It does **not** include the file codecs: SMF and the
 path-level Clip File codec are in `tutti-midi-file`, so a consumer that only

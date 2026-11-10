@@ -22,7 +22,7 @@ use tutti_graph::{
 };
 use tutti_graph::{OutPort, Source};
 use tutti_modulation::ControlProgram;
-use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, Law};
+use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{At, Frame};
 use tutti_types::{Beat, SampleRate, Samples};

@@ -10,7 +10,10 @@
 //! layout with height) of speakers a source can be placed between and keeps
 //! the inverse of each tuple's direction matrix. [`SpeakerLayout::gains_into`] then
 //! turns a bearing, a height and a spread into the speaker gains with no
-//! allocation, every control passed per call.
+//! allocation, every control passed per call. A [`VbapKernel`] holds a layout and
+//! solves one block's [`VbapGains`] (the mono fold of a narrow width, two virtual
+//! sources otherwise, the last solve kept), and [`VbapGains::render_channel`] ramps one
+//! output channel between two of them.
 //!
 //! The mathematics is Pulkki's (1997): a source direction `p` is the sum of
 //! the tuple's speaker directions weighted by gains, `g = L^-1 p`, the tuple
@@ -31,6 +34,7 @@ mod layout;
 mod math;
 mod select;
 mod sphere;
+mod vbap;
 
 pub use error::SpeakerGeometryError;
 pub use hrtf::{
@@ -38,6 +42,7 @@ pub use hrtf::{
     MIN_SPHERE_RATE,
 };
 pub use layout::{MAX_SPEAKERS, PanningMode, SpeakerLayout, Tuple};
+pub use vbap::{VbapGains, VbapKernel};
 
 #[cfg(test)]
 mod tests;

@@ -1312,7 +1312,7 @@ Stage 5b part (a) moved three more groups, with no shim left behind:
   holds the Q7.9 and Q7.25 words and `Pitch::note_number` is the one conversion.
 
 Stage 5b part (b) emptied `tutti-midi-types` of everything but `MidiMessage` and
-`translation/` (part (c) deletes those), again with no shim, and `midi2` has no user
+`translation/` (part (c) deleted those), again with no shim, and `midi2` had no user
 left but them and `tutti-ump`'s oracle test. The rule that decided each item: what `tutti_ump` already has is
 deleted and its callers move to `tutti_ump` (`Ump::from(Message)` to build, `decode` to
 read); a packet-level item `tutti_ump` lacks is added there; state and policy go to the
@@ -1378,6 +1378,35 @@ one crate that owns them; an item with no caller outside its own tests is delete
   (the session takes `tutti-midi-protocol` for `MpeMode`); `tutti` re-exports
   `tutti-midi-protocol` as `tutti::midi_protocol`.
 
+Stage 5b part (c) deleted `MidiMessage`, `translation/` and then `tutti-midi-types`
+and `midi2` themselves, with no shim and no re-export (`tutti::midi` became `tutti::ump`,
+the one place `tutti_ump` is reachable from the umbrella). Each user moved to what the
+earlier stages built:
+
+- **`MidiMessage` is `tutti_ump::Message`**, through `decode` and `From<Message> for Ump`;
+  its four companions (`ControllerNamespace`, `NoteAttribute`, `PerNoteController`,
+  `UnencodableMessage`) are deleted, because `Voice2` already distinguishes them
+  (`Registered` and `Assignable`, `Attribute`, `RegisteredPerNote` and `AssignablePerNote`)
+  and nothing used them. Its accessors had users only in tests, and each is covered by
+  what `tutti_ump` has: `Ump::key_event` (a note on or off by key, either protocol),
+  `Ump::is_note_off`, `tutti_midi_protocol::channel_voice` (the packet as MIDI 2.0, so
+  a velocity is 16 bits whichever protocol it came in), and `Voice2::note`, added here
+  (the note byte of the seven note-addressed messages, M2-104 section 7.4, with a
+  spec-words test). `MidiMessage::NoteId` minting is gone: `NoteId::from_channel_note`
+  is the one formula.
+- **MIDI 1.0 bytes in** (`from_midi1_bytes`, `parse_midi1_bytes`, `normalize`) are
+  `tutti_ump::Midi1Parser` (`message` for one padded message, `feed` for a stream),
+  widened by `tutti_midi_protocol::widen_message` or a `Translator` where MIDI 2.0 is
+  wanted. **Bytes out** (`to_midi1_bytes`, `to_midi1_messages`, `Midi1Messages`) are
+  `tutti_midi_protocol::midi1` over `Voice1::bytes` and `System::bytes`.
+- **The velocity-0 fold.** `normalize` folded a MIDI 1.0 Note On at velocity 0 into a Note
+  Off (right: MIDI 1.0 Detailed Specification, "a Note On with a velocity of 0 is a Note
+  Off"; M2-104 Appendix D.3.1) and, wrongly by §7.4.2, a MIDI 2.0 one too. Its one user
+  was `MidiFile::iter`, which is where the fold now lives (`as_midi2` in `file.rs`), with
+  the Note Off's release at 0 as a Clip File writes it. The MIDI 2.0 half is kept as it
+  was and is pinned by a test that says it is this reader's choice and not the
+  specification's; changing it is a decision for the owner.
+
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
 out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and
 routes (stage 3b deleted `gather_midi` and `BlockSplitter`), about 3,100 of its 5,700 production lines. Its
@@ -1418,24 +1447,28 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
 - `tutti-graph` depends on `tutti-ump`, so `midi2` and its build tree (`fixed`,
   `typenum`, `half`, `zerocopy`, `derive_more`) cannot be a normal dependency. Every
   message, including Flex and Stream, is written directly.
-- It is removed from the workspace at stage 5b, with the old types. Until then, while
-  the old types still depend on it anyway, it serves as a test-only oracle: random
-  words go through both decoders, and each disagreement is settled by reading the
-  specification and pinned as an analytic test. What survives its removal is what
-  those tests name: a swap of two neighbouring numbers in a number-to-name table, or
-  of two fields or flags, fails a spec-literal test in `tests/spec_words.rs` or
-  `tests/spec_tables.rs` with `tests/midi2_oracle.rs` deleted. The round-trip
-  properties and the fuzz target check the codec only against itself (decode,
-  encode, decode), so a mistake made the same way in both directions passes them;
-  they do not replace the oracle. What stage 5b does lose is independent agreement
-  with a second decoder on words no table or figure pins, and the name-only
-  comparison of the Flex and Stream families. The fuzz target is not run in CI
-  yet; nothing here leans on it.
+- It was removed from the workspace at stage 5b part (c), with the old types, and
+  `Cargo.lock` no longer names it. Until then, while the old types still depended on
+  it anyway, it served as a test-only oracle: random words went through both
+  decoders, and each disagreement was settled by reading the specification and pinned
+  as an analytic test. The owner decided on 2026-11-07 that the specification is the
+  only oracle, so `tests/midi2_oracle.rs` and the dev-dependency are deleted. What
+  survives is what those tests named: a swap of two neighbouring numbers in a
+  number-to-name table, or of two fields or flags, fails a spec-literal test in
+  `tests/spec_words.rs` or `tests/spec_tables.rs`. Its SysEx7 comparison (the
+  fragmenter's packets for every length around the 6-byte boundary) is
+  `tests/sysex_packets.rs`'s literal cases (one, seven, twelve and thirteen bytes, and
+  a long run). The round-trip properties and the fuzz target check the codec only
+  against itself (decode, encode, decode), so a mistake made the same way in both
+  directions passes them; the spec-literal tests are what catch it. What the removal
+  loses is independent agreement with a second decoder on words no table or figure
+  pins, and the name-only comparison of the Flex and Stream families. The fuzz target
+  is not run in CI yet; nothing here leans on it.
 
-`midly` stays in `tutti-midi-file`. `tutti-midi-types` no longer parses with it:
-`MidiEvent::from_midi1_bytes` goes through `tutti_ump::Midi1Parser::message`, and only
-the re-export is left. The `midly` parse error allocates, so a plugin's stray status
-byte (`[0xF7, 1, 2]`) aborted a debug build under `assert_no_alloc`.
+`midly` stays in `tutti-midi-file`, which uses it for the SMF container only: a
+`midly` event is written to MIDI 1.0 bytes and read back by
+`tutti_ump::Midi1Parser::message`. The `midly` parse error allocates, so a plugin's
+stray status byte (`[0xF7, 1, 2]`) aborted a debug build under `assert_no_alloc`.
 
 ## 8. Not losing events
 
@@ -1908,9 +1941,9 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
    to its owner (§6) or is deleted (`clip_file` is in `tutti-midi-file`, `sync/` in
    `tutti-midi-runtime`, `PerNoteMap` in `tutti-polysynth` and `fixed` is gone), then the crate, and `midi2` from the workspace
-   and `Cargo.lock`. Part (a) did `clip_file`, `sync/` and `PerNoteMap`; part (b) did
-   the rest but `MidiMessage` and `translation/` (§6, "Stage 5b part (b)"); part (c)
-   deletes those, the crate and `midi2`. With `mpe/` (part (b), done): `MpeZoneConfig`
+   and `Cargo.lock`. **Done.** Part (a) did `clip_file`, `sync/` and `PerNoteMap`; part
+   (b) did the rest but `MidiMessage` and `translation/` (§6, "Stage 5b part (b)");
+   part (c) deleted those, the crate and `midi2` (§6, "Stage 5b part (c)"). With `mpe/` (part (b), done): `MpeZoneConfig`
    had public fields, so a literal could hold a member count or master channel its
    constructors would refuse, and a `DualZone` pair totalling more than 14 members (the
    two spans overlap) was not rejected, only documented as the sender's duty. It has
@@ -1929,8 +1962,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
 
 - **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115
   are analytic tests.
-- **`midi2` as an oracle** until stage 5b, a dev-dependency. What it finds becomes
-  spec-pinned tests.
+- **`midi2` was an oracle** until stage 5b part (c), a dev-dependency. What it found is
+  spec-pinned tests, and the specification is the only oracle now (§7).
 - **Properties.** `decode` never panics on any words, and `encode(decode(x)) == x`
   for a canonical `x`.
 - **Fuzzing.** `cargo-fuzz` targets for UMP, SysEx, MIDI-CI and clip files, none of

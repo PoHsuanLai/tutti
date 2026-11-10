@@ -69,7 +69,6 @@ members = [
     "crates/tutti-alsa-ump-sys",
     "crates/tutti-midi-hardware",
     "crates/tutti-midi-file",
-    "crates/tutti-midi-types",
     "crates/tutti-midi-runtime",
     "crates/tutti-sampler",
     "crates/tutti-polysynth",
@@ -186,19 +185,6 @@ thiserror = "2"
 criterion = "0.8"
 
 midly = { version = "0.5", default-features = false }
-midi2 = { version = "0.11", default-features = false, features = [
-    "channel-voice1",
-    "channel-voice2",
-    "system-common",
-    "sysex7",
-    "sysex8",
-    "utility",
-    "ump-stream",
-    "flex-data",
-    # Growable `Vec` message buffers, needed by the variable-length UMP-Stream
-    # text notifications (Endpoint Name / Product Instance Id).
-    "std",
-] }
 coremidi = "0.9"
 # Raw CoreMIDI FFI + Core Foundation strings — needed only for the native-UMP
 # virtual source (MIDISourceCreateWithProtocol / MIDIReceivedEventList), which

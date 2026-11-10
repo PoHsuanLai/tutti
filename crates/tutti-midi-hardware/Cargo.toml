@@ -41,7 +41,6 @@ tracing = "0.1"
 
 # Core types
 tutti-midi-device = { path = "../tutti-midi-device" }
-tutti-midi-types = { path = "../tutti-midi-types" }
 # `Offset`: an event in a block is `(Offset, Ump)`.
 tutti-graph = { path = "../tutti-graph" }
 # NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
@@ -84,6 +83,7 @@ tutti-midi-hardware = { path = ".", features = ["test-support"] }
 # allocator.
 assert_no_alloc = { version = "1", default-features = false }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# `channel_voice` (the examples' and tests' read of a packet as MIDI 2.0), `narrow_velocity`.
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 [package.metadata.docs.rs]

@@ -1,13 +1,6 @@
 use super::*;
 use tutti_types::Seconds;
 
-/// The offset the stereo path applies to each virtual source, extracted so
-/// the seam behaviour is testable without a speaker layout.
-fn virtual_sources(bearing: Azimuth, width: f32) -> (Azimuth, Azimuth) {
-    let offset = ArcDegrees(15.0 * width);
-    (bearing.rotate_by(offset), bearing.rotate_by(-offset))
-}
-
 /// `solve_block` lands on the exact one-pole response: after `N`
 /// frames the bearing and height are `target - (target - start) *
 /// (1 - coeff)^N`, with the arc taken the short way, to within 0.005
@@ -85,10 +78,11 @@ fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
     let state = panner.smoother.current();
     let again = panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, 64);
     assert!(same_bits(state, panner.smoother.current()));
-    assert_eq!(gains.a, again.a);
-    assert_eq!(gains.b, again.b);
+    assert_eq!(gains, again);
     assert!((state.0.get() - 40.0).abs() < 0.001, "{state:?}");
-    let want = panner.solve_frame(target.0, target.1, StereoWidth::NATURAL, Spread::POINT);
+    let want = panner
+        .kernel
+        .gains(target.0, target.1, StereoWidth::NATURAL, Spread::POINT);
     for s in 0..2 {
         let (g, w) = (again.pair(s), want.pair(s));
         assert!(
@@ -208,43 +202,4 @@ fn a_block_across_the_seam_takes_the_short_arc() {
         let az = panner.smoother.current().0.get();
         assert!(az.abs() > 169.0, "left the short arc: {az}");
     }
-}
-
-#[test]
-fn the_stereo_spread_wraps_instead_of_leaving_the_canonical_range() {
-    // Near the rear seam at full width, one source crosses 180. A raw
-    // `f32` sum would hand vbap 185 degrees, outside the -180..180 range
-    // every other path maintains.
-    let (a, b) = virtual_sources(Azimuth(170.0), 1.0);
-    assert_eq!(a, Azimuth(-175.0));
-    assert_eq!(b, Azimuth(155.0));
-
-    // The mirrored case, crossing the other way.
-    let (a, b) = virtual_sources(Azimuth(-170.0), 1.0);
-    assert_eq!(a, Azimuth(-155.0));
-    assert_eq!(b, Azimuth(175.0));
-
-    // Both stay in range for every bearing and width, which is the
-    // property the raw-f32 form could not offer.
-    for deg in -180..=180 {
-        for w in [0.0, 0.25, 0.5, 1.0] {
-            let (a, b) = virtual_sources(Azimuth(deg as f32), w);
-            assert!(a.get() >= -180.0 && a.get() <= 180.0, "a={a:?}");
-            assert!(b.get() >= -180.0 && b.get() <= 180.0, "b={b:?}");
-        }
-    }
-}
-
-#[test]
-fn the_spread_is_symmetric_about_the_bearing_away_from_the_seam() {
-    // Front and centre: no wrapping involved, so the two sources should
-    // straddle the bearing by exactly the offset.
-    let (a, b) = virtual_sources(Azimuth::FRONT, 1.0);
-    assert_eq!(a, Azimuth(15.0));
-    assert_eq!(b, Azimuth(-15.0));
-
-    // Width scales the offset; zero width collapses both onto the bearing.
-    let (a, b) = virtual_sources(Azimuth(30.0), 0.0);
-    assert_eq!(a, Azimuth(30.0));
-    assert_eq!(b, Azimuth(30.0));
 }

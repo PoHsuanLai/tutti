@@ -41,6 +41,14 @@ bytemuck = "1.16"
 # This can live here, unlike `tutti-shm-model`, because nothing in this crate's
 # dependency closure breaks under the flag. The one dependency that reacts to
 # it, `arc-lend`, does so by the same design (its atomics become loom's too).
+# `monotonic_ns`: the OS clock read, `clock_gettime` on Unix and
+# `QueryPerformanceCounter` on Windows.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Performance"] }
+
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
 

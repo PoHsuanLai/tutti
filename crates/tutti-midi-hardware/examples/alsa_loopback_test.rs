@@ -22,8 +22,14 @@ use tutti_types::SampleRate;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::Offset;
-use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiMessage, MidiSession};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiSession};
+use tutti_midi_protocol::channel_voice;
+use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, Ump};
+
+/// Whether `ev` starts a note, in either protocol.
+fn is_note_on(ev: Ump) -> bool {
+    matches!(ev.key_event(), Some(KeyEvent::On(_)))
+}
 
 /// Pick the loopback endpoint. See the module doc for why this is not VirMIDI.
 fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware::DeviceInfo> {
@@ -68,13 +74,10 @@ fn main() {
             }
         });
         match first {
-            Some(ev) if check(ev) => println!("  PASS [{label}]: {:?}", MidiMessage::from_ump(ev)),
+            Some(ev) if check(ev) => println!("  PASS [{label}]: {:?}", channel_voice(ev)),
             Some(ev) => {
                 failures += 1;
-                println!(
-                    "  FAIL [{label}]: unexpected {:?}",
-                    MidiMessage::from_ump(ev)
-                );
+                println!("  FAIL [{label}]: unexpected {:?}", channel_voice(ev));
             }
             None => {
                 failures += 1;
@@ -87,14 +90,14 @@ fn main() {
     roundtrip(
         "note-on",
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-        &|ev| MidiMessage::from_ump(ev).is_note_on(),
+        &is_note_on,
     );
 
     println!("\n=== Test 2: Note Off ===");
     roundtrip(
         "note-off",
         note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
-        &|ev| MidiMessage::from_ump(ev).is_note_off(),
+        &|ev| ev.is_note_off(),
     );
 
     println!("\n=== Test 3: Burst (10 notes) ===");
@@ -109,7 +112,7 @@ fn main() {
     let mut all_on = true;
     drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
         count += 1;
-        all_on &= MidiMessage::from_ump(ev).is_note_on();
+        all_on &= is_note_on(ev);
     });
     if count == 10 && all_on {
         println!("  PASS: received 10/10, all note_on");

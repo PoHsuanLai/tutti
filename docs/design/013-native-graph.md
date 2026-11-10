@@ -6171,6 +6171,27 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    `Graph` never had an adding call, so `set_source` callers are unaffected.
 5. **Migration.** `add_general_midi`, VBAP, the tests and benches. The node
    stays one more PR so each of those compiles and passes beside it.
+   *As built (PR 5).* `add_general_midi` has no `sum`: the fader's ports 0 and
+   1 each take `[dry, chorus, reverb]` through `add_source`, `GeneralMidi`
+   loses `sum()`, and `tests/general_midi.rs` pins the fader's source sets
+   (the sum node's width row is now the fader's). The two PDC tests
+   (`reported_latency.rs`, `clap_pdc_alignment.rs`) wire both paths into output
+   channel 0 and are tests of the sum's per-source alignment, with the same
+   figures. `graph_source.rs`'s quad rig and the three `cost_classes.rs` files
+   fan each panner, synth or read into the outputs; the benches measure the op
+   through a graph (`node_kernels`' `channel_sum` is a graph of global inputs
+   into outputs; `parallel_render`'s `mixed` shape is now one flat fan-in of
+   `lanes * fan` gains, as no sink holds a sub-sum without a node; `render_load`
+   fans the sends into the convolver and the strips into the master). No
+   figure and no golden moved. **Left for PR 6**, because they hold the node
+   itself or wait on another lane: `mix_bus.rs` and its tests,
+   `rt_no_alloc.rs`'s `channel_sum_process_is_allocation_free`,
+   `isolate_snapshots.rs`' list (it names the units that are *not* rows, so it
+   is true while the node exists), `node.rs`'s impl, the READMEs, and
+   `tutti-spatial`'s `vbap/mix.rs` with the `tutti-export` tests that call
+   `build_vbap_mix`, which the tutti-dsp lane deletes or rewrites. The
+   `ChannelSumNode` doc link in `BusStripNode::with_channels` and the doc
+   comments of `tutti-soundfont` and `hrtf` no longer name it.
 6. **Delete.** `ChannelSumNode`, its exports, `SessionNode` impl, README and
    the lists; CLAUDE.md, `graph.rs`, `spec.rs`, `engineering-notes.md`.
 

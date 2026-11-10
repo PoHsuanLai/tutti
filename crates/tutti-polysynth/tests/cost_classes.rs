@@ -13,11 +13,10 @@ use tutti_graph::{
     Cost, Cx, Editor, EventEdge, EventIn, EventOut, Executor, Io, Node, Prepare, Schedule, Shape,
     Status, Transport, Unforkable,
 };
-use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_nodes::ChannelSumNode;
 use tutti_polysynth::{OscillatorType, PolySynth, SynthConfig, UnisonConfig};
-use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const SR: f64 = 48_000.0;
@@ -79,7 +78,7 @@ fn notes(k: u64) -> Vec<TimedMidiEvent> {
 }
 
 /// [`LIGHT`] eight-voice synths and [`HEAVY`] 32-voice ones, each played
-/// by a clip of its own, summed (a `Light` bus) onto two global outputs;
+/// by a clip of its own, summed by the graph (a fan-in onto each of two global outputs);
 /// on a pool of `workers` when more than one. `declared`: the eight-voice
 /// synths as shipped, or wrapped to declare nothing.
 fn graph(workers: usize, declared: bool) -> Executor {
@@ -92,13 +91,9 @@ fn graph(workers: usize, declared: bool) -> Executor {
                 .expect("a worker pool"),
         )));
     }
-    const SUM: NodeKey = NodeKey(1_000);
     let sources = LIGHT + HEAVY;
-    ed.insert(
-        SUM,
-        "sum",
-        ChannelSumNode::new(sources as usize, ChannelLayout::STEREO),
-    );
+    // Two silent global outputs, which the fan-in below fills.
+    ed.spec_mut().topology.set_outputs([Source::Zero; 2]);
     for k in 0..sources {
         let (clip, key) = (NodeKey(100 + k), NodeKey(k + 1));
         ed.insert(clip, "clip", MidiClipNode::new(notes(k)));
@@ -120,21 +115,13 @@ fn graph(workers: usize, declared: bool) -> Executor {
                 port: 0,
             }),
         );
+        // The bus is the graph's fan-in: each output channel holds every
+        // synth's matching port, and the graph sums them.
         for c in 0..2u16 {
-            let port = InPort {
-                node: SUM,
-                port: k as u16 * 2 + c,
-            };
             let from = Source::Node(OutPort { node: key, port: c });
-            ed.spec_mut()
-                .topology
-                .edges
-                .insert(port, vec![Edge::Direct(from)]);
+            ed.spec_mut().topology.connect_output(c as usize, from);
         }
     }
-    ed.spec_mut()
-        .topology
-        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: SUM, port })));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

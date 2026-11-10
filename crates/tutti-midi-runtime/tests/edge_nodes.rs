@@ -14,14 +14,26 @@ use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Io, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges,
 };
+use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
     MidiInputNode, MidiOutNode, MidiQueueNode,
 };
-use tutti_midi_types::{MidiMessage, from_midi1_bytes};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
-use tutti_ump::Ump;
-use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Voice2, decode};
+use tutti_ump::{
+    CCNumber, KeyEvent, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2,
+    decode,
+};
+
+/// The note a channel voice message addresses, either protocol.
+fn note_of(ump: Ump) -> Option<u8> {
+    channel_voice(ump)?.1.note().map(NoteNumber::get)
+}
+
+/// One MIDI 1.0 message's bytes as the packet of the first group.
+fn from_midi1_bytes(bytes: &[u8]) -> Option<Ump> {
+    Midi1Parser::message(MidiGroup::FIRST, bytes).map(Ump::from)
+}
 
 const RATE: f64 = 48_000.0;
 
@@ -249,10 +261,7 @@ fn a_requested_mpe_mode_is_adopted_once() {
     let resets: Vec<u64> = seen.iter().filter(|s| is_rpn(&s.2)).map(|s| s.1).collect();
     assert_eq!(resets, vec![0; 7], "the ranges, once, at frame 0: {seen:?}");
     let music: Vec<_> = seen.iter().filter(|s| !is_rpn(&s.2)).collect();
-    let folded: Vec<Option<u8>> = music[1..]
-        .iter()
-        .map(|s| MidiMessage::from_ump(s.2).note())
-        .collect();
+    let folded: Vec<Option<u8>> = music[1..].iter().map(|s| note_of(s.2)).collect();
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
 }
 
@@ -339,7 +348,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     }
     let notes: Vec<(usize, u64)> = seen
         .iter()
-        .filter(|s| MidiMessage::from_ump(s.2).is_note_on())
+        .filter(|s| matches!(s.2.key_event(), Some(KeyEvent::On(_))))
         .map(|s| (s.0, s.1))
         .collect();
     assert_eq!(notes, vec![(1, 5)]);
@@ -379,10 +388,7 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
         "no range went out"
     );
     assert_eq!(seen.len(), 508);
-    assert!(
-        seen.iter()
-            .any(|s| s.0 == 1 && MidiMessage::from_ump(s.2).note() == Some(61))
-    );
+    assert!(seen.iter().any(|s| s.0 == 1 && note_of(s.2) == Some(61)));
     assert_eq!(controls.dropped_events(), 7);
 }
 
@@ -452,7 +458,7 @@ fn the_queue_sends_in_offset_order() {
         .lock()
         .unwrap()
         .iter()
-        .map(|s| (s.1, MidiMessage::from_ump(s.2).note()))
+        .map(|s| (s.1, note_of(s.2)))
         .collect();
     assert_eq!(got, vec![(3, Some(62)), (511, Some(60))]);
 }

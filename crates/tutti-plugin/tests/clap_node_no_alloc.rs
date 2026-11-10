@@ -129,7 +129,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     for k in 0..200 {
         let v = if k % 2 == 0 { 0.2 } else { 0.9 };
         env.add_point(AutomationPoint::with_curve(
-            f64::from(k) * 2.0,
+            Beat::new(f64::from(k) * 2.0),
             v,
             Law::PowerIn(2.0),
         ));

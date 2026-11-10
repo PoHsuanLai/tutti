@@ -12,9 +12,9 @@ use std::path::Path;
 
 use midly::Smf;
 use midly::live::LiveEvent;
-use tutti_midi_types::{from_midi1_bytes, normalize};
+use tutti_midi_protocol::widen_message;
 use tutti_types::{Beat, Bpm, Seconds};
-use tutti_ump::Ump;
+use tutti_ump::{Attribute, Message, Midi1Parser, MidiGroup, Ump, Voice1, Voice2, decode};
 
 use crate::clip_file::ParsedClipFile;
 use crate::flex;
@@ -31,7 +31,8 @@ use crate::{Error, MidiFileKind, Result};
 /// ```
 /// use tutti_types::Beat;
 /// use tutti_ump::MidiChannel;
-/// use tutti_midi_types::MidiMessage;
+/// use tutti_midi_protocol::channel_voice;
+/// use tutti_ump::Voice2;
 /// use tutti_midi_file::{smf, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 ///
 /// let bytes = smf::to_bytes(
@@ -47,7 +48,10 @@ use crate::{Error, MidiFileKind, Result};
 /// let (beat, note) = file.iter().next().expect("one note");
 /// assert_eq!(beat, Beat(2.0));
 /// // Widened to MIDI 2.0: full-scale 7-bit velocity is full-scale 16-bit.
-/// assert_eq!(MidiMessage::from_ump(note).velocity(), Some(0xFFFF));
+/// let Some((_, Voice2::NoteOn { velocity, .. })) = channel_voice(note) else {
+///     panic!("a note-on");
+/// };
+/// assert_eq!(velocity, 0xFFFF);
 /// assert_eq!(file.end_beat(), Beat(2.0));
 /// # Ok::<(), tutti_midi_file::Error>(())
 /// ```
@@ -171,7 +175,7 @@ impl MidiFile {
     /// start of the file, in file order (an SMF's tracks merged by position,
     /// ties kept in track order).
     ///
-    /// Each event is [`normalize`]d to MIDI 2.0 Channel Voice, so the two
+    /// Each event is widened to MIDI 2.0 Channel Voice, so the two
     /// containers speak one vocabulary: an SMF's 7-bit values are widened by
     /// the spec's Min-Center-Max scaler, and a velocity-0 note-on is a
     /// note-off. An SMF and a Clip File of the same channel-voice messages
@@ -191,7 +195,7 @@ impl MidiFile {
         // One arm of each is empty: a single return type without boxing.
         let smf_events = smf.into_iter().flat_map(|smf| {
             // Reused across events: midly writes the message's wire bytes
-            // here, and `from_midi1_bytes` reads them back as a UMP.
+            // here, and `Midi1Parser::message` reads them back as a message.
             let mut wire = Vec::with_capacity(3);
             smf.stream.events.iter().filter_map(move |e| {
                 wire.clear();
@@ -201,13 +205,14 @@ impl MidiFile {
                 }
                 .write(&mut wire)
                 .ok()?;
-                let event = from_midi1_bytes(&wire)?;
-                Some((e.time_beats, normalize(&event)))
+                let event = Midi1Parser::message(MidiGroup::FIRST, &wire)?;
+                Some((e.time_beats, as_midi2(event)?))
             })
         });
-        let clip_events = clip
-            .into_iter()
-            .flat_map(|clip| clip.iter().map(|(beat, e)| (beat, normalize(&e))));
+        let clip_events = clip.into_iter().flat_map(|clip| {
+            clip.iter()
+                .map(|(beat, e)| (beat, decode(e).ok().and_then(as_midi2).unwrap_or(e)))
+        });
         smf_events.chain(clip_events)
     }
 
@@ -284,4 +289,38 @@ impl MidiFile {
         };
         Beat(0.0) + length
     }
+}
+
+/// `message` as the MIDI 2.0 packet [`MidiFile::iter`] yields: a MIDI 1.0
+/// channel voice message widened (M2-104 Appendix D.3, `widen_message`), and
+/// `None` for any other message, which is yielded as its own packet.
+///
+/// A MIDI 1.0 Note On at velocity 0 is a Note Off at velocity 0. That is
+/// the Note On's own meaning (MIDI 1.0 Detailed Specification, "Note On
+/// with velocity 0 is a Note Off"; M2-104 Appendix D.3.1 translates it so),
+/// and the SMF reader relies on it: a file ends its notes this way. `widen`
+/// would give the Note Off the release velocity `0x8000`; a file has none to
+/// give, so the fold is spelled here and the release stays 0, as a Clip File's
+/// own Note Off at zero reads. A MIDI 2.0 Note On at velocity 0 is not folded:
+/// M2-104 section 7.4.2 reads it as a note, and the instruments do.
+fn as_midi2(message: Message) -> Option<Ump> {
+    let folded = match message {
+        Message::Midi1(address, Voice1::NoteOn { note, velocity }) if velocity.get() == 0 => {
+            Some((address, note))
+        }
+        _ => None,
+    };
+    let out = match folded {
+        Some((address, note)) => Message::Midi2(
+            address,
+            Voice2::NoteOff {
+                note,
+                velocity: 0,
+                attribute: Attribute::None,
+            },
+        ),
+        None if matches!(message, Message::Midi1(..)) => widen_message(message),
+        None => return None,
+    };
+    Some(out.into())
 }

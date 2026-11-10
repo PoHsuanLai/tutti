@@ -15,12 +15,12 @@ use std::sync::{Arc, Mutex};
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::TimedMidiEvent;
-use tutti_midi_types::MidiMessage;
 use tutti_session::{Session, SessionNode};
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, Ump, Voice2};
 
 /// The mezzo-forte default: MIDI 2.0's center velocity.
 const MF: u16 = 0x8000;
@@ -91,9 +91,8 @@ fn velocity_keeps_its_full_width() {
         .lock()
         .unwrap()
         .iter()
-        .map(|(_, e)| MidiMessage::from_ump(*e))
-        .filter_map(|m| match m {
-            MidiMessage::NoteOn { velocity, .. } => Some(velocity),
+        .filter_map(|(_, e)| match channel_voice(*e) {
+            Some((_, Voice2::NoteOn { velocity, .. })) => Some(velocity),
             _ => None,
         })
         .collect();

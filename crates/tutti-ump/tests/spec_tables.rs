@@ -2,7 +2,7 @@
 //! `spec_words.rs` leaves partly open, pinned by literal numbers copied from
 //! the table, in both directions. A wrong number used consistently by
 //! `decode` and `encode` passes every round trip, so these are the only tests
-//! that see it. None of them uses the `midi2` oracle.
+//! that see it. None of them reads another implementation.
 //!
 //! Beyond the tables, the last tests pin fields whose values `spec_words.rs`
 //! leaves equal or only set together (the UMP version, the Endpoint Info and

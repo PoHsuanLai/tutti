@@ -7,7 +7,7 @@ threads on, and the engine's outbound clocks. Re-exported by `tutti` as
 
 ## What this is
 
-Pure MIDI values live in `tutti-midi-types`; OS ports live in
+Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
 `tutti-midi-hardware`. This crate owns the runtime state that connects them:
 
 - **MIDI as graph nodes**, sending on `tutti-graph` event ports:
@@ -34,15 +34,14 @@ The MPE zone types (`MpeMode`, `MpeZoneConfig`, ...) are
 
 ## What it does not own
 
-`tutti-midi-types` is pure values with no state; this crate is state with **no
+`tutti-ump` and `tutti-midi-protocol` are pure values with no state; this crate is state with **no
 OS API**; `tutti-midi-hardware` is the OS edge. So a synth that plays a clip,
 or an offline export, gets its MIDI without linking CoreMIDI or ALSA.
 
 - **No ports, and no `cfg(target_os)`.** Enumerating, opening and sending on a
   real endpoint belongs to `tutti-midi-hardware`.
 - **No wire vocabulary.** `Ump`, `NoteId` and the MIDI 1↔2 scaling belong to
-  `tutti-ump` and `tutti-midi-protocol` (MPE zone values included), and the decoded
-  `MidiMessage` to `tutti-midi-types`.
+  `tutti-ump` and `tutti-midi-protocol` (MPE zone values included).
 - **No files.** SMF and the path-level Clip File codec belong to
   `tutti-midi-file`.
 - **No audio, and no ECS.** Nothing here touches a sample buffer; the Bevy
@@ -82,15 +81,15 @@ allocates or locks, which is what lets either half sit on the audio thread.
 
 ```rust
 use tutti_midi_runtime::MidiMailbox;
-use tutti_midi_types::MidiMessage;
-use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
+use tutti_ump::{KeyEvent, MidiChannel, NoteNumber, U7, Ump};
 
 let (tx, rx) = MidiMailbox::pair();
 assert!(tx.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800));
 
 let mut block = [(0, Ump([0; 4])); 8];
 assert_eq!(rx.poll_into(&mut block), 1);
-assert_eq!(MidiMessage::from_ump(block[0].1).note(), Some(60));
+let Some(KeyEvent::On(key)) = block[0].1.key_event() else { panic!("a note-on") };
+assert_eq!(key.note(), 60);
 ```
 
 ## MPE folded to native per-note messages
@@ -103,8 +102,7 @@ has to know what MPE is.
 use tutti_midi_runtime::MpeIngest;
 use tutti_fixtures::midi::{lower_zone, note_on, pitch_bend, wide_velocity};
 use tutti_graph::Offset;
-use tutti_midi_types::MidiMessage;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Message, MidiChannel, MidiGroup, Voice2, decode};
 
 let mut ingest = MpeIngest::new(lower_zone(7));
 
@@ -122,7 +120,10 @@ let bend = pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
 sent.clear();
 ingest.translate(&(Offset::ZERO, bend), |e| sent.push(e));
 let [(_, folded)] = sent[..] else { panic!("the channel holds a note") };
-assert_eq!(MidiMessage::from_ump(folded).note(), Some(60));
+let Ok(Message::Midi2(_, Voice2::PerNotePitchBend { note, .. })) = decode(folded) else {
+    panic!("a per-note bend")
+};
+assert_eq!(note.get(), 60);
 ```
 
 ## Constraint: [`MpeIngest::set_mode`] drops all held-note state
@@ -136,12 +137,12 @@ sounding voices separately — reconfiguring is not a panic.
 
 This crate has no `Error` type. Everything here runs on or feeds the audio
 thread, where refusal is shaped as a value: a full mailbox drops and reports a
-count, and [`MpeIngest::translate`] yields nothing for an event it drops. The MIDI parse errors are
-in `tutti-midi-types` (`ClipFileError`, `MidiParseError`).
+count, and [`MpeIngest::translate`] yields nothing for an event it drops. The file codec's error
+is `tutti-midi-file`'s `ClipFileError`; `Midi1Parser` refuses a message with `None`.
 
 ## Where it sits
 
-Builds on `tutti-midi-types`, `tutti-transport` and `tutti-graph`. Used by the
+Builds on `tutti-ump`, `tutti-midi-protocol`, `tutti-transport` and `tutti-graph`. Used by the
 synth, SoundFont and plugin crates and by `tutti-midi-hardware`; re-exported by
 `tutti` and used by `bevy-tutti`.
 

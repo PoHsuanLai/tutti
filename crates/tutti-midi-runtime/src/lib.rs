@@ -6,7 +6,7 @@
 // Everything here runs on or feeds the audio thread, where refusal is shaped as
 // a value, not an error: a full mailbox drops and reports a count, and
 // `MpeIngest::translate` sends nothing for an event it drops. The MIDI parse errors live one crate
-// down (`tutti_midi_file::ClipFileError`, `tutti_midi_types::MidiParseError`).
+// down (`tutti_midi_file::ClipFileError`, `tutti_ump::Midi1Parser`'s refusal, `None`).
 
 mod ledger;
 mod live;

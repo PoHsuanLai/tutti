@@ -91,19 +91,6 @@ tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
 # The probe's private result directory (pure Rust; removed on drop, panic included).
 tempfile = "3"
 
-# Platform-specific
-
-[target.'cfg(unix)'.dependencies]
-# `clock_gettime`: the OS monotonic clock a hosted plugin's `systemTime` /
-# `nanoSeconds` is on (`transport_source::HostClock`).
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.52", features = [
-    # `QueryPerformanceCounter`: the host clock (`transport_source::HostClock`).
-    "Win32_System_Performance",
-] }
-
 [dev-dependencies]
 # The node tests' mock plugin-server speaks the wire by hand.
 interprocess = { version = "2" }

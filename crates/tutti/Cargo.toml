@@ -39,7 +39,6 @@ tutti-sf2 = { path = "../tutti-sf2", optional = true }
 tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
 tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
 tutti-measure = { path = "../tutti-measure", optional = true }
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
 tutti-midi-protocol = { path = "../tutti-midi-protocol", optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
@@ -127,7 +126,6 @@ io = ["session", "tutti-session/record", "codec", "tutti-codec/encode-wav"]
 
 # --- MIDI, two axes (identical to bevy-tutti) -------------------------------
 midi = [
-    "dep:tutti-midi-types",
     "dep:tutti-midi-protocol",
     "dep:tutti-midi-file",
     "dep:tutti-midi-runtime",

@@ -10,19 +10,54 @@
 //! forwarding method would only rename it.
 
 use super::state::AtomicBpm;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use tutti_rt::{ArcLend, Reader};
+use tutti_tempo::TempoMap;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use tutti_types::{Beat, Bpm};
+
+/// [`TransportSettings::set_tempo_map`] refused a map that changes tempo: the
+/// engine's clock follows one tempo until the walker that follows a map lands
+/// (doc 020, stage 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotConstant;
+
+impl std::fmt::Display for NotConstant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the transport follows a constant tempo map only")
+    }
+}
+
+impl std::error::Error for NotConstant {}
 
 /// Transport values shared between threads.
 ///
 /// Clone shares every field — this is a handle, not a snapshot.
 #[derive(Clone, Debug)]
 pub struct TransportSettings {
-    /// Beats per minute. Read by the clock every buffer.
+    /// The project's tempo map, published by the control side
+    /// ([`set_tempo_map`](Self::set_tempo_map), [`set_tempo`](Self::set_tempo))
+    /// and lent to the engine's clock once per block through the one `Reader`
+    /// its [`TransportAudio`](super::TransportAudio) registers. The session's
+    /// `Reclaim` phase sweeps it ([`reclaim_tempo`](Self::reclaim_tempo)).
+    pub(crate) tempo_map: Arc<ArcLend<TempoMap>>,
+    /// Moves on after every publish to [`tempo_map`](Self::tempo_map), which is
+    /// stored first: a clock that sees a new count lends the new map or a later
+    /// one, never an older one.
+    pub(crate) map_generation: Arc<AtomicU64>,
+    /// Held across a publish and its mirror store, so two control threads cannot
+    /// leave the map and [`tempo`](Self::tempo) on different tempos. Never taken
+    /// by the audio thread.
+    pub(crate) publishing: Arc<Mutex<()>>,
+    /// The tempo of the map's first point, for readers that want a scalar
+    /// without the map (a [`Timeline`](super::Timeline), `samples_per_beat`):
+    /// stored beside every publish. A timed [`TransportCommand::Tempo`]
+    /// (super::TransportCommand::Tempo) stores here too, being applied on the
+    /// audio thread, which cannot publish; the clock keeps it until the next
+    /// publish (doc 020, stage 6 retires the command).
     pub(crate) tempo: Arc<AtomicBpm>,
     /// The playhead, in beats. Written by `TransportClock` via its position
     /// writeback (and by a locate, which moves the readout at once); read by
@@ -91,6 +126,9 @@ impl TransportSettings {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            tempo_map: Arc::new(ArcLend::new(Self::default_map())),
+            map_generation: Arc::new(AtomicU64::new(0)),
+            publishing: Arc::new(Mutex::new(())),
             tempo: Arc::new(AtomicBpm::new(Bpm::default())),
             beat: Arc::new(AtomicF64::new(0.0)),
             segment_generation: Arc::new(AtomicU64::new(0)),
@@ -114,16 +152,75 @@ impl TransportSettings {
         self.steady_time.load(Ordering::Relaxed)
     }
 
-    /// The tempo in force.
+    /// The tempo the transport was last given, from beat 0: what
+    /// [`set_tempo`](Self::set_tempo) stored, or the published map's first
+    /// point's.
     pub fn tempo(&self) -> Bpm {
         self.tempo.load(Ordering::Acquire)
     }
 
-    /// Stores a new tempo, the live override: constant tempo from the next
-    /// block. A [`Bpm`] is finite and above zero, so a caller holding a raw
-    /// number checks it with [`Bpm::new`] first.
+    /// Sets a constant tempo from the next block: sugar for publishing
+    /// `TempoMap::constant(bpm)` ([`set_tempo_map`](Self::set_tempo_map)), so it
+    /// **replaces** any map. A [`Bpm`] is finite and above zero, so a caller
+    /// holding a raw number checks it with [`Bpm::new`] first.
+    ///
+    /// A tempo so small that a beat's rate underflows (a denormal)
+    /// is no map: it is stored for [`tempo`](Self::tempo) and the clock keeps
+    /// the map it had.
     pub fn set_tempo(&self, bpm: Bpm) {
+        let _publishing = self
+            .publishing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(map) = TempoMap::constant(bpm) {
+            self.tempo_map.publish(map);
+        }
         self.tempo.store(bpm, Ordering::Release);
+        self.map_generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// Publishes `map` as the project's tempo: the engine takes it at the next
+    /// block start.
+    ///
+    /// # Errors
+    ///
+    /// [`NotConstant`] for a map of more than one point. The clock follows one
+    /// tempo until the walker lands (doc 020, stage 3), and a map it cannot
+    /// follow is refused rather than followed wrongly.
+    pub fn set_tempo_map(&self, map: Arc<TempoMap>) -> Result<(), NotConstant> {
+        let tempo = map.constant_tempo().ok_or(NotConstant)?;
+        let _publishing = self
+            .publishing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.tempo_map.publish(map);
+        self.tempo.store(tempo, Ordering::Release);
+        self.map_generation.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    /// The map as published now. Control thread: it takes the cell's lock and
+    /// an owning handle, as [`ArcLend::current`] does.
+    #[must_use]
+    pub fn tempo_map(&self) -> Arc<TempoMap> {
+        self.tempo_map.current()
+    }
+
+    /// Frees the maps no block holds any more, and returns how many are still
+    /// held. Control thread, on a tick it already has: the session's `Reclaim`
+    /// phase.
+    pub fn reclaim_tempo(&self) -> usize {
+        self.tempo_map.reclaim()
+    }
+
+    fn default_map() -> TempoMap {
+        TempoMap::constant(Bpm::default()).expect("120 BPM is a map")
+    }
+
+    /// A reader of the map, registered here on the control side for the one
+    /// engine that lends it once per block.
+    pub(crate) fn tempo_reader(&self) -> Reader<TempoMap> {
+        self.tempo_map.reader()
     }
 
     /// The playhead as last published by the clock.
@@ -193,5 +290,84 @@ mod tests {
 
         a.set_tempo(Bpm::of(140.0));
         assert_eq!(b.tempo().get(), 140.0, "clones must share, not copy");
+        assert_eq!(b.tempo_map().constant_tempo(), Some(Bpm::of(140.0)));
+    }
+
+    /// `set_tempo` is the constant map of that tempo, to the bit, and the
+    /// beats fall where the definition puts them: a beat is `60 / bpm`
+    /// seconds, so beat 4 at 48 kHz is `4 x 60 x 48 000 / bpm` frames.
+    ///
+    /// Mutation (run): `set_tempo` not publishing (the `publish` line
+    /// removed) -> the map is still the 120 BPM default -> fails; publishing
+    /// `bpm / 60 * 60` instead of `bpm` -> the odd tempo is not the same bits
+    /// -> fails.
+    #[test]
+    fn set_tempo_publishes_the_constant_map_of_that_tempo() {
+        let rate = tutti_types::SampleRate(48_000.0);
+        let s = TransportSettings::new();
+        for bpm in [120.0, 90.0, 97.123_456_789_012_35, 120.587_389_506_707_47] {
+            s.set_tempo(Bpm::of(bpm));
+            let map = s.tempo_map();
+            assert_eq!(map.constant_tempo(), Some(Bpm::of(bpm)), "{bpm} to the bit");
+            let frames = 4.0 * 60.0 * 48_000.0 / bpm;
+            assert_eq!(
+                map.frame_at_or_after(Beat(4.0), rate).get(),
+                tutti_types::first_frame_at_or_after(frames) as u64,
+                "beat 4 at {bpm}"
+            );
+            assert_eq!(s.tempo(), Bpm::of(bpm));
+        }
+    }
+
+    /// A constant map is the transport's tempo; a map that changes is refused
+    /// whole (the clock cannot follow it yet), and the tempo stays.
+    ///
+    /// Mutation (run): `set_tempo_map` taking the first point's tempo of any
+    /// map instead of `?` on `constant_tempo` -> the two-point map is
+    /// accepted and the tempo moves -> fails.
+    #[test]
+    fn a_map_that_changes_is_refused_and_a_constant_one_is_taken() {
+        use tutti_tempo::{Shape, TempoPoint};
+        let s = TransportSettings::new();
+        let constant = TempoMap::constant(Bpm::of(75.5)).unwrap();
+        assert_eq!(s.set_tempo_map(Arc::new(constant)), Ok(()));
+        assert_eq!(s.tempo(), Bpm::of(75.5));
+        assert_eq!(s.tempo_map().constant_tempo(), Some(Bpm::of(75.5)));
+
+        let step = TempoMap::new([
+            TempoPoint {
+                beat: Beat(0.0),
+                tempo: Bpm::of(100.0),
+                shape: Shape::Step,
+            },
+            TempoPoint {
+                beat: Beat(4.0),
+                tempo: Bpm::of(200.0),
+                shape: Shape::Step,
+            },
+        ])
+        .unwrap();
+        assert_eq!(s.set_tempo_map(Arc::new(step)), Err(NotConstant));
+        assert_eq!(s.tempo(), Bpm::of(75.5), "unmoved");
+        assert_eq!(s.tempo_map().constant_tempo(), Some(Bpm::of(75.5)));
+    }
+
+    /// A map a block holds when it is replaced stays retired until the sweep
+    /// after the block, then is freed: `reclaim_tempo` is that sweep.
+    ///
+    /// Mutation (run): `reclaim_tempo` returning 0 without scanning -> the
+    /// old map is still alive after the loan ends -> fails.
+    #[test]
+    fn the_tempo_map_is_swept_by_reclaim_tempo() {
+        let s = TransportSettings::new();
+        let mut reader = s.tempo_reader();
+        let held = reader.lend();
+        let old = Arc::downgrade(&s.tempo_map());
+        s.set_tempo(Bpm::of(90.0));
+        assert!(old.upgrade().is_some(), "a block still reads it");
+        assert_eq!(s.reclaim_tempo(), 1, "pinned by the loan");
+        drop(held);
+        assert_eq!(s.reclaim_tempo(), 0);
+        assert!(old.upgrade().is_none(), "freed on the control side");
     }
 }

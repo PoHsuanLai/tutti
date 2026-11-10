@@ -169,6 +169,53 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
 
+/// A tempo map published between blocks reaches the engine's clock without
+/// the audio thread allocating or freeing: the block lends the cell once, and
+/// the maps it replaced are freed by the control side's sweep. The publish and
+/// the sweep run outside the gate (they allocate and free, as they may); the
+/// blocks run inside it, and the clock really takes each tempo (a lend that
+/// never happened would pass by measuring nothing).
+///
+/// Mutation (run): a `Box::new(0u8)` in `TransportAudio::tempo_for_block`'s
+/// lend branch -> the gate panics -> fails; the clock not taking the map (the
+/// lend removed) -> `tempo_in_force` stays 120 -> the assertion fails.
+#[test]
+fn a_published_tempo_map_is_taken_without_allocating() {
+    use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_types::graph::{OutPort, Source};
+    use tutti_types::{Bpm, NodeKey};
+
+    let transport = Transport::new(48_000.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        tutti_types::Samples(512),
+    ));
+    ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
+    ed.spec_mut().topology.outputs = (0..2)
+        .map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    let mut output = vec![0.0f32; 1024 * 2];
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    for round in 0..20u32 {
+        let bpm = Bpm::of(80.0 + f64::from(round));
+        transport.settings.set_tempo(bpm);
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..3 {
+                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            }
+        });
+        assert_eq!(transport.settings.tempo_in_force(), bpm, "round {round}");
+        transport.settings.reclaim_tempo();
+    }
+}
+
 /// The master meter on the audio thread: the meter op over a stereo and a
 /// wide root never allocates, and the meter really reads (a gated-off meter
 /// would pass by measuring nothing).

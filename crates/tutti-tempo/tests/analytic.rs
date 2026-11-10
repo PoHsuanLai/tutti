@@ -10,7 +10,7 @@
 mod common;
 
 use common::{Lcg, R, pt};
-use tutti_tempo::{Cursor, Shape, TempoError, TempoMap};
+use tutti_tempo::{Cursor, Shape, TempoError, TempoMap, TempoPoint};
 use tutti_types::{Beat, Bpm, Frame};
 
 /// 4 beats at 120 are 2.0 s, frame 96 000; a step reads back the tempo it was
@@ -476,4 +476,34 @@ fn an_edit_at_negative_zero_replaces_the_first_point() {
         0.0f64.to_bits(),
         "stored as +0.0"
     );
+}
+
+/// `constant_tempo` is the one point's tempo to the bit, and `None` for any
+/// map that changes, whatever its tempos: two points of the same tempo are
+/// still a map with a step in it as far as a reader that follows one tempo
+/// goes.
+///
+/// Mutation (run): `constant_tempo` returning the first point's tempo for any
+/// map (`self.pts.first().map(|p| p.tempo)`) -> the two-point maps give
+/// `Some` -> fails.
+#[test]
+fn constant_tempo_is_the_single_points_tempo_to_the_bit() {
+    let odd = Bpm::of(97.123_456_789_012_35);
+    assert_eq!(TempoMap::constant(odd).unwrap().constant_tempo(), Some(odd));
+    for shape in [Shape::Step, Shape::RampTime, Shape::RampBeats] {
+        let two = TempoMap::new([
+            TempoPoint {
+                beat: Beat(0.0),
+                tempo: odd,
+                shape,
+            },
+            TempoPoint {
+                beat: Beat(4.0),
+                tempo: odd,
+                shape: Shape::Step,
+            },
+        ])
+        .unwrap();
+        assert_eq!(two.constant_tempo(), None, "{shape:?}");
+    }
 }

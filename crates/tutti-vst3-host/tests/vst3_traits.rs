@@ -173,12 +173,12 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     assert!(!processor.is_f64());
     assert_eq!(
         controller.latency(&main_thread()),
-        Samples(controller.latency_samples(&main_thread()) as usize),
+        Samples(controller.loaded().latency_samples(&main_thread()) as usize),
         "the trait's figure is the plugin's"
     );
     assert_eq!(
         controller.tail(&main_thread()),
-        PluginTail::from_vst3_samples(controller.tail_samples(&main_thread()))
+        PluginTail::from_vst3_samples(controller.loaded().tail_samples(&main_thread()))
     );
     render_f32(&mut processor);
     assert!(processor.is_processing());
@@ -562,7 +562,7 @@ fn a_rebuild_keeps_the_state() {
 /// and the state a save reads is that controller's.
 ///
 /// Mutation (run): `Vst3Controller::set_parameter` queueing without applying
-/// (the `Control::set_parameter(&mut **self, ..)` line removed) → the saved
+/// (the `Control::set_parameter(self.loaded_mut(), ..)` line removed) → the saved
 /// state holds the old value → fails.
 #[test]
 fn a_write_is_in_the_state_saved_before_any_block() {

@@ -3,7 +3,6 @@
 
 use std::cell::Cell;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tutti_plugin_types::MainThread;
 
@@ -31,6 +30,17 @@ use super::shell::Shell;
 /// `Sync`, and never used from two threads at once. Dropping it releases its
 /// share of the activation; the plugin is destroyed when the Processor's goes
 /// too (see the invariant on the shell).
+///
+/// It does not `Deref` to [`Vst3Loaded`]: the control surface is the
+/// [`Control`] trait and the methods here, and the format's own surface is
+/// [`loaded`](Self::loaded) and [`loaded_mut`](Self::loaded_mut).
+///
+/// ```compile_fail
+/// // No `Deref`: a `&Vst3Controller` is not a `&Vst3Loaded`.
+/// fn loaded(c: &tutti_vst3_host::Vst3Controller) -> &tutti_vst3_host::Vst3Loaded {
+///     c
+/// }
+/// ```
 pub struct Vst3Controller {
     /// The plugin of the activation. `None` only once `deactivate` has taken it,
     /// or the drop has handed it on.
@@ -112,9 +122,28 @@ impl Vst3Controller {
         &self.shell
     }
 
-    fn loaded(&self) -> &Vst3Loaded {
+    /// The loaded plugin, for the surface the [`Control`] impl and this type's
+    /// own methods do not cover. The Controller does not `Deref` to it (doc 016
+    /// section 2.2).
+    ///
+    /// # Panics
+    ///
+    /// Never in use: the plugin is taken only when the Controller is consumed.
+    #[must_use]
+    pub fn loaded(&self) -> &Vst3Loaded {
         self.loaded
             .as_ref()
+            .expect("a live Controller holds its plugin")
+    }
+
+    /// [`loaded`](Self::loaded), mutably.
+    ///
+    /// # Panics
+    ///
+    /// Never in use: the plugin is taken only when the Controller is consumed.
+    pub fn loaded_mut(&mut self) -> &mut Vst3Loaded {
+        self.loaded
+            .as_mut()
             .expect("a live Controller holds its plugin")
     }
 
@@ -189,37 +218,21 @@ impl Drop for Vst3Controller {
     }
 }
 
-impl Deref for Vst3Controller {
-    type Target = Vst3Loaded;
-
-    fn deref(&self) -> &Vst3Loaded {
-        self.loaded()
-    }
-}
-
-impl DerefMut for Vst3Controller {
-    fn deref_mut(&mut self) -> &mut Vst3Loaded {
-        self.loaded
-            .as_mut()
-            .expect("a live Controller holds its plugin")
-    }
-}
-
 impl Control for Vst3Controller {
     fn info(&self) -> &PluginDescriptor {
-        Control::info(&**self)
+        Control::info(self.loaded())
     }
 
     fn wiring(&self, main: &MainThread) -> LoadedPlugin {
-        Control::wiring(&**self, main)
+        Control::wiring(self.loaded(), main)
     }
 
     fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        Control::parameters(&**self, main)
+        Control::parameters(self.loaded(), main)
     }
 
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        Control::parameter(&**self, main, id)
+        Control::parameter(self.loaded(), main, id)
     }
 
     /// Applied to the edit controller now, so a read-back and the plugin's
@@ -227,12 +240,12 @@ impl Control for Vst3Controller {
     /// block's `inputParameterChanges`: a plugin whose component is separate
     /// from its controller has no other way to hear of it.
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        Control::set_parameter(&mut **self, main, id, value);
+        Control::set_parameter(self.loaded_mut(), main, id, value);
         self.queue_edit(id, value);
     }
 
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(&**self, main, id, value)
+        Control::parameter_text(self.loaded(), main, id, value)
     }
 
     fn parameter_value_from_text(
@@ -241,21 +254,21 @@ impl Control for Vst3Controller {
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
-        Control::parameter_value_from_text(&**self, main, id, text)
+        Control::parameter_value_from_text(self.loaded(), main, id, text)
     }
 
     /// Saves the state, with the writes no block has taken yet beside the
     /// component's stream, which does not hold them.
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         let undrained = self.undrained();
-        self.save_state_with(main, &undrained)
+        self.loaded_mut().save_state_with(main, &undrained)
     }
 
     /// Restores the state, and makes the writes queued before it stale. The
     /// writes the blob carries are queued to the Processor, which the
     /// component's own stream did not hold.
     fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let result = self.restore_state(main, bytes);
+        let result = self.loaded_mut().restore_state(main, bytes);
         self.reset_edits();
         for (id, value) in result? {
             self.queue_edit(id, value);
@@ -264,11 +277,11 @@ impl Control for Vst3Controller {
     }
 
     fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
-        Control::presets(&mut **self, main)
+        Control::presets(self.loaded_mut(), main)
     }
 
     fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        match self.program_write(main, id) {
+        match self.loaded_mut().program_write(main, id) {
             Some((param, value)) => {
                 // A program replaces the plugin's other parameters too: what
                 // was queued before it is stale.
@@ -281,25 +294,25 @@ impl Control for Vst3Controller {
     }
 
     fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
-        Control::current_preset(&mut **self, main)
+        Control::current_preset(self.loaded_mut(), main)
     }
 
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
-        Control::set_automation_state(&mut **self, main, mode);
+        Control::set_automation_state(self.loaded_mut(), main, mode);
     }
 
     fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        Control::rescan_parameters(&mut **self, main, scope);
+        Control::rescan_parameters(self.loaded_mut(), main, scope);
     }
 
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {
-        Control::rebuild_midi_mapping(&mut **self, main);
+        Control::rebuild_midi_mapping(self.loaded_mut(), main);
     }
 
     /// Retries what the ring refused, oldest first, and lets the retired
     /// midi-mapping tables go.
     fn flush_edits(&mut self, _main: &MainThread) {
-        self.midi_cc.reclaim();
+        self.loaded_mut().midi_cc.reclaim();
         // A tick is a control-side moment: plugins whose last holder was a
         // Processor are destroyed here, not on its thread.
         super::shell::reap();
@@ -326,11 +339,11 @@ impl Controller for Vst3Controller {
     type Processor = ProcessorAny;
 
     fn latency(&self, main: &MainThread) -> Samples {
-        Samples(self.latency_samples(main) as usize)
+        Samples(self.loaded().latency_samples(main) as usize)
     }
 
     fn tail(&self, main: &MainThread) -> PluginTail {
-        PluginTail::from_vst3_samples(self.tail_samples(main))
+        PluginTail::from_vst3_samples(self.loaded().tail_samples(main))
     }
 }
 

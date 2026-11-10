@@ -755,7 +755,8 @@ one; what differs is VST3's.
 
 - `Vst3Loaded` implements `Loaded` and `Control`; activating it gives a
   `ProcessorAny` (or `Vst3Processor<T>` through `activate_typed::<T>`) and a
-  `Vst3Controller`, which derefs to `Vst3Loaded`. `Vst3Active<T>` is gone, with
+  `Vst3Controller`, which does not deref to `Vst3Loaded` (`loaded()` and
+  `loaded_mut()` reach it). `Vst3Active<T>` is gone, with
   `load_with_mode`, `load_class`, `Vst3Active::load`, `set_sample_rate`,
   `restart_bus_configuration` and `activate_with_mode`: `Vst3Loaded::load(path,
   LoadOptions)` takes the class (`LoadOptions::class`) and no rate or block size,

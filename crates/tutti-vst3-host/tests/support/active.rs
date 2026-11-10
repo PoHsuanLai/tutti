@@ -285,17 +285,31 @@ impl<T: Vst3Sample> Active<T> {
     }
 }
 
-impl<T: Vst3Sample> Deref for Active<T> {
-    type Target = Vst3Controller;
+impl<T: Vst3Sample> Active<T> {
+    /// The Controller, for what it does and the loaded plugin does not: a
+    /// parameter write or a state load that is also queued to the Processor.
+    /// `Deref` reaches the loaded plugin, whose `Control` impl does neither.
+    pub fn controller_mut(&mut self) -> &mut Vst3Controller {
+        &mut self.pair_mut().1
+    }
 
-    fn deref(&self) -> &Vst3Controller {
+    /// The Controller, shared.
+    pub fn controller(&self) -> &Vst3Controller {
         &self.pair().1
     }
 }
 
+impl<T: Vst3Sample> Deref for Active<T> {
+    type Target = Vst3Loaded;
+
+    fn deref(&self) -> &Vst3Loaded {
+        self.pair().1.loaded()
+    }
+}
+
 impl<T: Vst3Sample> DerefMut for Active<T> {
-    fn deref_mut(&mut self) -> &mut Vst3Controller {
-        &mut self.pair_mut().1
+    fn deref_mut(&mut self) -> &mut Vst3Loaded {
+        self.pair_mut().1.loaded_mut()
     }
 }
 
@@ -342,11 +356,11 @@ impl ParamExt for Vst3Controller {
 
 impl<T: Vst3Sample> ParamExt for Active<T> {
     fn get_parameter(&self, id: u32) -> f64 {
-        ParamExt::get_parameter(&**self, id)
+        ParamExt::get_parameter(self.controller(), id)
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        ParamExt::set_parameter(&mut **self, id, value);
+        ParamExt::set_parameter(self.controller_mut(), id, value);
     }
 }
 
@@ -381,11 +395,11 @@ impl StateExt for Vst3Controller {
 
 impl<T: Vst3Sample> StateExt for Active<T> {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        StateExt::get_state(&mut **self)
+        StateExt::get_state(self.controller_mut())
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
-        StateExt::set_state(&mut **self, bytes)
+        StateExt::set_state(self.controller_mut(), bytes)
     }
 }
 

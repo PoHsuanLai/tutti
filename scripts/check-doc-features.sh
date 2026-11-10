@@ -4,7 +4,7 @@
 # feature-gated.
 #
 # `cargo doc --workspace` builds every crate with its default features, which
-# for these three is none, so it documents almost nothing of them; the
+# for these two is none, so it documents almost nothing of them; the
 # `--features full,plugin` line beside it sees the union but not a link that
 # only resolves with two features on. A doc comment under `#[cfg(feature =
 # "x")]` is compiled by rustdoc only when `x` is on, so a link out of it into
@@ -13,12 +13,13 @@
 #
 # The feature list is read from each Cargo.toml, so a new feature is covered
 # without editing this file. Run from the repo root; `RUSTDOCFLAGS` defaults to
-# `-D warnings`. `jack` is skipped: it links libjack, as in `cargo xtask check-features`.
+# `-D warnings`. (`crates/bevy-tutti` is parked, out of the workspace, so it is
+# not documented here; its feature docs come back with it.) `jack` is skipped: it links libjack, as in `cargo xtask check-features`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export RUSTDOCFLAGS="${RUSTDOCFLAGS:--D warnings}"
-crates=(crates/bevy-tutti crates/tutti-session crates/tutti)
+crates=(crates/tutti-session crates/tutti)
 failed=()
 
 for dir in "${crates[@]}"; do

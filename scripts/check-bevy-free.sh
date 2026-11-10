@@ -5,11 +5,12 @@
 #
 # 1. No Bevy crate in its normal dependency closure, with every feature on.
 #    `cargo tree`, not `cargo metadata`: metadata resolves features once for
-#    the whole workspace, so `bevy-tutti`'s Bevy features leak into every
-#    member's closure. `--all-features` is required: a Bevy crate behind an
-#    optional feature is absent from the default tree. `-e normal`, because
-#    `bevy-tutti` is a workspace member and a dev-dependency walk would reach
-#    it.
+#    the whole workspace. `--all-features` is required: a Bevy crate behind an
+#    optional feature is absent from the default tree. `-e normal` keeps a
+#    dev-dependency walk out. (`bevy-tutti` is parked, out of the workspace, so
+#    no Bevy crate is in the workspace's lock file at all; this guard still
+#    holds for the day it comes back, and for an optional Bevy edge of an
+#    engine crate.)
 # 2. No `bevy` feature in its manifest. Some engine crates have one, off
 #    by default; this crate must never grow one, which is a stronger rule
 #    than (1) can state while the feature has no dependency behind it yet.

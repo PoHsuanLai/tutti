@@ -381,7 +381,6 @@ impl Planner<'_> {
             "doc" => self.lines(&[
                 r#"RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps"#,
                 r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract"#,
-                r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p bevy-tutti --no-deps --features full,plugin"#,
                 "scripts/check-doc-features.sh",
                 r#"RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps"#,
             ]),
@@ -454,7 +453,7 @@ impl Planner<'_> {
             ));
         };
         win(
-            "--workspace --all-targets --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude bevy-tutti --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract",
+            "--workspace --all-targets --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract",
         );
         for a in [
             "-p tutti-shared-plugin --all-targets",
@@ -475,12 +474,7 @@ const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p bevy-tutti --features audio-io --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p bevy-tutti --features soundfont --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p bevy-tutti --features sampler --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p bevy-tutti --features full,plugin --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings"#,
@@ -523,11 +517,7 @@ const TEST_FEATURES: &[&str] = &[
     r#"cargo build --locked -p tutti-plugin-probe"#,
     r#"cargo nextest run --locked -p tutti-cpal --features capture"#,
     r#"cargo nextest run --locked -p tutti-session --features audio-io"#,
-    r#"cargo nextest run --locked -p bevy-tutti --features audio-io"#,
-    r#"cargo nextest run --locked -p bevy-tutti --features soundfont"#,
-    r#"cargo nextest run --locked -p bevy-tutti --features sampler"#,
-    r#"cargo nextest run --locked -p bevy-tutti --features full,plugin"#,
-    r#"cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont"#,
+    r#"cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device"#,
     r#"cargo nextest run --locked -p tutti --features clap,export,modulation"#,
     r#"cargo nextest run --locked -p tutti --features audio-io"#,
     r#"cargo nextest run --locked -p tutti --no-default-features --features io"#,
@@ -547,8 +537,6 @@ const TEST_FEATURES: &[&str] = &[
     r#"cargo nextest run --locked -p tutti-plugin-db --features json"#,
     r#"cargo nextest run --locked -p tutti-plugin-contract --features server"#,
     r#"cargo nextest run --locked -p tutti-plugin --features clap,vst2,json"#,
-    r#"cargo nextest run --locked -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'"#,
-    r#"cargo nextest run --locked -p bevy-tutti --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded -E 'not test(a_batch_spawned_in_one_frame_starts_one_at_a_time)'"#,
 ];
 
 const MIRI: &[&str] = &[

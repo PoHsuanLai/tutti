@@ -4203,6 +4203,7 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
+ "tutti-measure",
  "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
@@ -4349,14 +4350,10 @@ dependencies = [
 name = "tutti-dsp"
 version = "0.0.1"
 dependencies = [
- "criterion",
- "ebur128",
  "libm",
- "pitch-detection",
  "rand 0.8.8",
  "rustfft",
  "thiserror 2.0.21",
- "tutti-graph",
  "tutti-types",
 ]
 
@@ -4390,6 +4387,7 @@ dependencies = [
  "tutti-dsp",
  "tutti-export",
  "tutti-graph",
+ "tutti-measure",
  "tutti-nodes",
  "tutti-sampler",
  "tutti-spatial",
@@ -4431,6 +4429,20 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-codec",
  "tutti-fixtures",
+ "tutti-graph",
+ "tutti-types",
+]
+
+[[package]]
+name = "tutti-measure"
+version = "0.0.1"
+dependencies = [
+ "criterion",
+ "ebur128",
+ "pitch-detection",
+ "rand 0.8.8",
+ "thiserror 2.0.21",
+ "tutti-dsp",
  "tutti-graph",
  "tutti-types",
 ]

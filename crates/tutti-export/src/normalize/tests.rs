@@ -1,5 +1,5 @@
 use super::*;
-use tutti_dsp::Loudness;
+use tutti_measure::Loudness;
 
 fn reading(lufs: f32, true_peak: f32) -> Loudness {
     Loudness {

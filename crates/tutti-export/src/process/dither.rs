@@ -3,7 +3,7 @@
 //! Dither is the only mastering step that is genuinely streamable: it needs no
 //! look-ahead, only a continuous RNG across block boundaries. Resampling is also
 //! block-based (an FFT overlap-add resampler), and normalization is the caller's two-pass composition
-//! (see `tutti_dsp::measure_loudness`), so this is the whole of what a "mastering"
+//! (see `tutti_measure::measure_loudness`), so this is the whole of what a "mastering"
 //! stage would otherwise hold.
 
 use crate::config::ExportConfig;

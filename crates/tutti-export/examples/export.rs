@@ -9,12 +9,12 @@
 //!
 //! Run: `cargo run --example export -- <outdir>`
 
-use tutti_dsp::{LoudnessConfig, measure_loudness};
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, Pcm, Quality,
     RenderConfig, RenderGraph, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
+use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_transport::FrozenClock;
 use tutti_types::{Amplitude, Hz, SampleRate};
@@ -141,7 +141,7 @@ fn main() -> tutti_export::Result<()> {
     // `render_to_file` never normalizes: choosing a gain means measuring the
     // whole signal first, and a stage that hides two passes has to hold the
     // signal to do it. `render_normalized_to_file` is the named two-pass entry
-    // point. Done by hand, as here, the measurement streams (`tutti_dsp` wraps
+    // point. Done by hand, as here, the measurement streams (`tutti_measure` wraps
     // an online R128 meter) and the gain is one value you apply where you
     // like — including on a second render, without ever holding the audio.
     let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;

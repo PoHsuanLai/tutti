@@ -35,10 +35,13 @@ tutti-codec = { path = "../tutti-codec" }
 # `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
 # tutti-graph depends on no tutti crate but tutti-types, tutti-rt and tutti-ump.
 tutti-graph = { path = "../tutti-graph" }
-# EBU R128 loudness measurement lives in tutti-dsp (the crate's
-# Config/State/step analysis home) — `render_normalized_to_file` measures with
-# it — and so does the resampler's `RealFft`. Acyclic: tutti-dsp does NOT depend on tutti-export.
+# The resampler's `RealFft` and the dither noise. Acyclic: tutti-dsp does NOT
+# depend on tutti-export.
 tutti-dsp = { path = "../tutti-dsp", default-features = false }
+# EBU R128 loudness measurement (the Config/State/step analysis home):
+# `render_normalized_to_file` measures with it. Acyclic: tutti-measure does NOT
+# depend on tutti-export.
+tutti-measure = { path = "../tutti-measure" }
 
 [dev-dependencies]
 # Every format on for this crate's own tests, examples and bench (none is

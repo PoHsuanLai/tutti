@@ -932,6 +932,9 @@ jobs:
       # borrow sees the last one's writes), against the shipped code: one
       # model, unbounded, under a second.
       - run: cargo test --locked -p tutti-rt --release --test cell_loom
+      # `handoff`'s slot (a value is never moved out twice, never lost, and a
+      # recall is never dropped), against the shipped code: unbounded.
+      - run: cargo test --locked -p tutti-rt --release --test handoff_loom -- --nocapture
       # `Doorbell` (a ring before, during or between parks is never lost),
       # against the shipped code. Unbounded (about 45 s): the plain-store
       # variant its model guards against needs 4 preemptions, and

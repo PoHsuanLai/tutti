@@ -1530,6 +1530,17 @@ one slot plus a state word in `tutti-types` (a move into preallocated storage,
 `Release`/`Acquire`, no allocation and no lock on either side; loom model and
 mutation record).
 
+As built (2026-11, doc 021 step 4a-2): the slot is `tutti_rt::handoff()`, in
+`tutti-rt` where the lock-free structure lives, generic over the value and
+naming nothing of plugins. `Hand::lend`, `Hand::recall` (a value still on offer
+is withdrawn at once), `Hand::take`, and `Rt::poll(last)` between blocks, which
+takes an offer or returns the held value on a recall after running `last` (a
+Processor's `stop`). A lend into a full slot is refused with its value, so no
+misuse can lose or duplicate one. Swap (two Processors through one slot) is
+not built: the VST2 shadow it served is not in the graph path. The model is
+`tutti-rt/tests/handoff_loom.rs`. `Lifecycle`'s `Hand` joins it with the node
+that uses it (step 4a-3).
+
 - **Lend.** `apply(Lend)` moves the Processor into the slot. The realtime loop
   calls `rt.poll(&mut slot)` at the head of each request, between blocks, and
   takes it. Until it does, the plugin renders silence, as a refused plugin does

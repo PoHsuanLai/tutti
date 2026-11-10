@@ -352,8 +352,9 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
                  `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
                  the parallel executor's claims and job gate, `with_no_denormals`,
-                 and the `ArcLend`/`Loan`/`Reader` re-export. Holds the lock-free
-                 and `unsafe` runtime structure, with every loom model, the one
+                 `handoff` (a Processor's way to the audio thread and back, doc
+                 016 §2.6), and the `ArcLend`/`Loan`/`Reader` re-export. Holds the
+                 lock-free and `unsafe` runtime structure, with every loom model, the one
                  thread-priority call (`request_priority`, which reports what the OS
                  granted) and the one OS clock read (`monotonic_ns`, the clock a
                  plugin's system time is on); depends on `arc-lend` alone (and

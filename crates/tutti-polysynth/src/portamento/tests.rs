@@ -178,12 +178,11 @@ fn glide_render_digests() {
         }
         hash
     }
-    for (name, curve) in [
-        ("linear", Law::Linear),
-        ("quadratic", Law::PowerIn(2.0)),
-        ("square-root", Law::PowerIn(0.5)),
+    for (name, curve, recorded) in [
+        ("linear", Law::Linear, 0xdf0c_b95a_5395_87d9),
+        ("quadratic", Law::PowerIn(2.0), 0xb127_e94e_c43e_399e),
+        ("square-root", Law::PowerIn(0.5), 0x4a68_7e6b_1b1a_9839),
     ] {
-        // Recorded values are placeholders (0) until the lead records them on glibc 2.39.
-        tutti_nodes::testing::assert_golden(name, digest(curve), 0);
+        tutti_nodes::testing::assert_golden(name, digest(curve), recorded);
     }
 }

@@ -114,6 +114,18 @@ impl TempoMap {
         &self.pts
     }
 
+    /// The tempo, when the whole map is one point (what
+    /// [`constant`](Self::constant) builds): `Some` of that point's tempo to
+    /// the bit, `None` for a map that changes. A reader that can follow only
+    /// one tempo asks this and refuses the rest.
+    #[must_use]
+    pub fn constant_tempo(&self) -> Option<Bpm> {
+        match self.pts.as_slice() {
+            [only] => Some(only.tempo),
+            _ => None,
+        }
+    }
+
     /// The segment holding `x` by `key` (`beat0` or `sec0`), starting from the
     /// hint. Segment `i` holds `key(i) <= x < key(i + 1)`; below the first it is
     /// the first.

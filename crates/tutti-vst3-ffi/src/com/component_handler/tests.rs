@@ -271,7 +271,7 @@ fn progress_start_mints_an_id_that_update_and_finish_quote_back() {
             description,
         })) => {
             assert_eq!(id, out_id);
-            assert_eq!(progress_type, 1);
+            assert_eq!(progress_type, ProgressKind::UiBackgroundTask);
             assert_eq!(description.as_str(), "Test");
         }
         other => panic!("expected Started, got {other:?}"),

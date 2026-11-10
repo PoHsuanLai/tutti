@@ -56,20 +56,42 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
+/// What an `IProgress` operation is, by the SDK's `ProgressType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressKind {
+    /// The plugin is restoring state asynchronously.
+    AsyncStateRestoration,
+    /// A background task the UI reports.
+    UiBackgroundTask,
+    /// A `ProgressType` the SDK does not define, as the plugin sent it.
+    Other(u32),
+}
+
+impl ProgressKind {
+    fn from_raw(raw: u32) -> Self {
+        use vst3::Steinberg::Vst::IProgress_::ProgressType_;
+        match raw {
+            ProgressType_::AsyncStateRestoration => Self::AsyncStateRestoration,
+            ProgressType_::UIBackgroundTask => Self::UiBackgroundTask,
+            other => Self::Other(other),
+        }
+    }
+}
+
 /// Long-running progress notifications emitted by plugins (sample loading,
 /// offline rendering, etc.). Delivered via
 /// the host's notification poll.
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
     /// A new progress operation has begun. `id` uniquely identifies this
-    /// operation across its lifetime; `progress_type` is the raw VST3
-    /// `ProgressType` value; `description` is a human-readable label.
+    /// operation across its lifetime; `progress_type` is what kind of operation
+    /// it is; `description` is a human-readable label.
     Started {
         /// Identifies this operation across its lifetime; matches the `id` of
         /// the later `Updated` and `Finished` events.
         id: u64,
-        /// The raw VST3 `ProgressType` value.
-        progress_type: u32,
+        /// What kind of operation this is.
+        progress_type: ProgressKind,
         /// Human-readable label supplied by the plugin, truncated to
         /// [`PROGRESS_DESCRIPTION_CAPACITY`] bytes.
         description: ProgressDescription,
@@ -587,7 +609,7 @@ impl IProgressTrait for ComponentHandler {
             let desc = unsafe { ProgressDescription::from_utf16_nul(optional_description) };
             self.push(PluginNotification::Progress(ProgressEvent::Started {
                 id,
-                progress_type: r#type,
+                progress_type: ProgressKind::from_raw(r#type),
                 description: desc,
             }));
             if !out_id.is_null() {

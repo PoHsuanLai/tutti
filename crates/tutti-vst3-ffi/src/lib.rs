@@ -29,8 +29,8 @@ pub use com::RunLoopActivity;
 pub use com::{
     ComponentHandler, EVENT_CAPACITY, EventList, MIN_POINT_ROOM, NOTE_EXPRESSION_ROOM,
     NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterChangesImpl, ParameterEditEvent,
-    PluginNotification, ProgressDescription, ProgressEvent, RestartFlags, SYSEX_OUT_ROOM, Staged,
-    Staging, UnitEvent,
+    PluginNotification, ProgressDescription, ProgressEvent, ProgressKind, RestartFlags,
+    SYSEX_OUT_ROOM, Staged, Staging, UnitEvent,
 };
 #[cfg(feature = "conformance")]
 pub use conformance::{Observer, clear_observer, set_observer};

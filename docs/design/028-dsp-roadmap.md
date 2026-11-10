@@ -1079,7 +1079,7 @@ no benefit until `DesignNode` exists); it is taken as a decision on the recommen
 | Moves to `tutti-dsp/src/spatial/` (private module; types exported at the root) | Stays in `tutti-spatial` |
 |---|---|
 | The pure VBAP solve of `vbap/panner.rs`: direction (and spread, width) to gains, over a speaker layout | `AngleSmoother`, `ExponentialSmoother` and `SpatialTarget`: doc 024 row 46 and consolidation 2 (#451) keep the angle variant in spatial over `tutti_dsp::Smoother`, and this document does not reverse that |
-| `hrtf/panner.rs`'s `HrtfBinaural` convolution core and `ring_out`; the public `HrtfBinauralError`, `MIN_SPHERE_RATE`, `MAX_SPHERE_RATE`, `MAX_PREPARED_RATE` | `VbapPannerNode`, `HrtfBinauralNode` and their controls, `speaker_of_channel`, `render_channel` |
+| `hrtf/panner.rs`'s `HrtfBinaural` convolution core and `ring_out`; the public `HrtfBinauralError`, `MIN_SPHERE_RATE`, `MAX_SPHERE_RATE`, `MAX_PREPARED_RATE` | `VbapPannerNode`, `HrtfBinauralNode` and their controls, `speaker_of_channel` |
 | `hrtf/sphere.rs`: `HrirSphere::parse(&[u8])`, `HrtfSet::build`, `resample_into`/`resample_batched` (on `WindowedSinc`), `Face`, the barycentric lookup | `layout.rs`, `fork.rs`, `hold_finite`, `mix.rs` (graph assembly; its `tutti-nodes` edge keeps the crate at layer 5), `VbapError` |
 
 **The smoothing seam.** `VbapPanner` and `HrtfBinaural` today own an
@@ -1197,6 +1197,15 @@ re-derive it.
    `HrtfBinauralError` and the constants re-exported unchanged. Proof:
    `hrtf_render.rs` and the contract suite unedited; the scalar-planner determinism
    note of `RealFft` applies.
+2b. **The VBAP block kernel.** (**Landed**, `dsp/vbap-kernel`: `tutti-dsp`'s `VbapKernel`
+   (a layout and the `last_solve` cache; `gains` is the mono branch below width 0.001 and
+   the two virtual sources otherwise) and `VbapGains` (a ramp's end point, with
+   `render_channel`, the per-channel ramp and its signed-zero held-gain shortcut). The
+   node keeps the `Param` reads and guards, the smoother and `settled_at`, the speaker map
+   and the `Io` loop; `BlockGains`, `frame_gains`, `solve_frame` and `render_channel` are
+   gone from `tutti-spatial`, no shim left. Every digest is identical and `tests/vbap_*`
+   pass unedited. The mono fold stays as it was: a gain-matrix form changes bits and is
+   its own PR.)
 3. **Cleanup.** Trim or drop `tutti-spatial`'s `hrtf` feature, update CLAUDE.md's
    `tutti-dsp` paragraph, doc 024 rows 44 to 46, the "already a crate" sentence, and
    the stale comment in `tutti-nodes`' `Cargo.toml` about the convolution.

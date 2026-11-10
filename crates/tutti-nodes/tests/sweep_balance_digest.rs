@@ -93,5 +93,5 @@ fn the_strip_renders_what_it_always_did() {
     assert_eq!(got, STRIP_DIGEST);
 }
 
-const PHASER_DIGEST: u64 = 0;
+const PHASER_DIGEST: u64 = 0x7630_ea29_6734_f7c6;
 const STRIP_DIGEST: u64 = 0x634e_f470_49ef_23e3;

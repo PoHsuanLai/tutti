@@ -16,9 +16,8 @@ use tutti_midi_runtime::MidiClockDecoder;
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-const PPQN: u32 = 24;
 fn us_per_tick(bpm: f64) -> u64 {
-    (60_000_000.0 / (bpm * PPQN as f64)) as u64
+    (60_000_000.0 / (bpm * f64::from(tutti_ump::System::TIMING_CLOCKS_PER_QUARTER))) as u64
 }
 
 #[test]

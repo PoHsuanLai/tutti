@@ -17,11 +17,8 @@
 //! `c`; output port `c` is the sum of channel `c` across all sources. With
 //! `channels == 2` this is exactly the classic stereo fan-in.
 //!
-//! Deliberately **ungated**. The unit is pure arity/width arithmetic with no
-//! geometry in it, and its consumers are not all spatial: `tutti-spatial`'s
-//! `build_vbap_mix` uses it, but so does any mixer. Gating it under a spatial
-//! feature would make a VBAP dependency the price of summing two stereo
-//! signals.
+//! Deliberately **ungated**: the unit is pure arity/width arithmetic with no
+//! geometry in it, and any mixer uses it.
 
 use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::{ChannelLayout, Tail};
@@ -157,7 +154,7 @@ mod tests {
     /// Input arity is `sources * channels` -- the fan-in is flattened, so a
     /// miscounted product silently reads a neighbouring source's channel.
     /// A degenerate argument clamps to 1 rather than producing a 0-input node,
-    /// which `build_vbap_mix` relies on for an empty mix.
+    /// which an empty mix relies on.
     #[test]
     fn arity_is_the_product_of_sources_and_width() {
         // (sources, layout) -> (inputs, outputs/channels, clamped sources)

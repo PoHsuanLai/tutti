@@ -362,7 +362,6 @@ plugin crates, and `core/` is the floor.
 | `tutti-midi-hardware` | `midi-hardware` | |
 | `tutti-sampler` | `sampler` | streamer, voices |
 | `tutti-soundfont`, `tutti-polysynth` | `soundfont`, `synth` | |
-| `tutti-spatial` | `spatial` | the `SessionNode` impls only |
 | `tutti-export` | `export` | |
 | `tutti-plugin` | `plugin` (+ `vst2`/`vst3`/`clap`/`au`) | |
 

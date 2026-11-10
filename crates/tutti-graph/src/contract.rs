@@ -80,7 +80,7 @@ use crate::OutPort;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail, UnitAddr,
 };
-use tutti_ump::{Message, NoteNumber, Ump, Voice2, decode};
+use tutti_ump::{KeyEvent, Message, NoteNumber, Ump, Voice2, decode};
 
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
@@ -796,7 +796,11 @@ impl Row {
         let EventKind::Midi(on) = kind else {
             panic!("{ctx}: an onset-release row is excited by a note");
         };
-        let key = |u: Ump| (u.0[0] >> 8) & 0x7F;
+        // The held key a note-on or off names (protocol, group, channel, note).
+        let key = |u: Ump| match u.key_event() {
+            Some(KeyEvent::On(k) | KeyEvent::Off(k)) => Some(k),
+            _ => None,
+        };
         assert_eq!(
             seen.len(),
             2,

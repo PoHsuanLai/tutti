@@ -407,3 +407,23 @@ fn the_clock_is_allocation_free_from_its_first_read() {
         }
     });
 }
+
+/// The audio end of a `handoff` trades without allocating or freeing: taking
+/// a lent value, holding it, and returning it on a recall, with the control
+/// end's lend and recall inside the gate too.
+///
+/// Mutation (run): `poll` boxing the value it takes -> aborts.
+#[test]
+fn a_handoff_trades_without_allocating() {
+    let (mut hand, mut rt) = tutti_rt::handoff::<[u64; 8]>();
+    assert_no_alloc::assert_no_alloc(|| {
+        for round in 0..1_000u64 {
+            assert!(hand.lend([round; 8]).is_ok());
+            assert_eq!(rt.poll(|_| {}).map(|v| v[0]), Some(round));
+            assert!(hand.recall().is_none());
+            assert!(rt.poll(|v| v[1] = 0).is_none());
+            let back = hand.take().expect("returned");
+            core::hint::black_box(back);
+        }
+    });
+}

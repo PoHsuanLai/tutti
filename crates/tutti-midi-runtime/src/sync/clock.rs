@@ -9,9 +9,8 @@
 //! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
 
 use tutti_types::Bpm;
-use tutti_ump::Ump;
+use tutti_ump::{Message, System, Ump, decode};
 
-const PPQN: u32 = 24;
 const TEMPO_WINDOW: usize = 24;
 
 /// Whether the decoded transport is running.
@@ -68,18 +67,15 @@ impl MidiClockDecoder {
     /// Any other packet is ignored.
     /// Returns `true` if the packet was a recognised transport message.
     pub fn feed(&mut self, ump: &Ump, timestamp_us: u64) -> bool {
-        // System Real-Time is UMP type 0x1; the status byte is in bits 16..24.
-        let w0 = ump.0[0];
-        if (w0 >> 28) & 0x0F != 0x1 {
+        let Ok(Message::System(_, system)) = decode(*ump) else {
             return false;
-        }
-        match ((w0 >> 16) & 0xFF) as u8 {
-            0xF8 => self.tick(timestamp_us),
-            // LSB first, then MSB: two 7-bit halves of the position.
-            0xF2 => self.song_position_msg((((w0 & 0x7F) as u16) << 7) | ((w0 >> 8) & 0x7F) as u16),
-            0xFA => self.start_msg(),
-            0xFB => self.continue_msg(),
-            0xFC => self.stop_msg(),
+        };
+        match system {
+            System::TimingClock => self.tick(timestamp_us),
+            System::SongPosition(position) => self.song_position_msg(position.get()),
+            System::Start => self.start_msg(),
+            System::Continue => self.continue_msg(),
+            System::Stop => self.stop_msg(),
             _ => return false,
         }
         true
@@ -136,7 +132,7 @@ impl MidiClockDecoder {
 
     /// Current position in beats (based on tick count at 24 PPQN).
     pub fn beat_position(&self) -> f64 {
-        self.tick_count as f64 / f64::from(PPQN)
+        self.tick_count as f64 / f64::from(System::TIMING_CLOCKS_PER_QUARTER)
     }
 
     /// Whether the decoded transport is currently running.
@@ -169,7 +165,7 @@ impl MidiClockDecoder {
             // avg_us = microseconds per tick
             // beats_per_second = 1_000_000 / (avg_us * PPQN)
             // BPM = beats_per_second * 60
-            let bpm = 60_000_000.0 / (avg_us * f64::from(PPQN));
+            let bpm = 60_000_000.0 / (avg_us * f64::from(System::TIMING_CLOCKS_PER_QUARTER));
             if (20.0..=300.0).contains(&bpm) {
                 self.derived_tempo = Bpm::new(bpm);
             }

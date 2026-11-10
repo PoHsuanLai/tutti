@@ -31,7 +31,7 @@ static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
 /// `event` on frame 0 of a 64-frame block.
 fn at_start(event: Ump) -> Event {
-    Event::midi(Offset::new(0, Samples(64)).expect("inside"), event.0)
+    Event::midi(Offset::new(0, Samples(64)).expect("inside"), event)
 }
 
 #[test]

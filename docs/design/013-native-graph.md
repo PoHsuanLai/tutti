@@ -1636,8 +1636,8 @@ nothing to move):
 | `AtomicSourceNode` (deleted with compiler-owned modulation) | tutti-nodes | base cell | fresh cell | yes | `atomic_source` |
 | `ParamShaperNode` (deleted with compiler-owned modulation), `AutomationLaneNode` | tutti-nodes | none: an immutable LUT / `Arc<dyn Curve>` (`set_curve` is `&mut`) | — | yes | — |
 | `ChannelSumNode`, `DownmixNode`, `testing::*` | tutti-nodes | none | — | yes | — |
-| `VbapPannerNode` | tutti-spatial | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `vbap` |
-| `HrtfBinauralNode` | tutti-spatial | azimuth, elevation, blend | detaches all | yes | `hrtf` |
+| `VbapPannerNode` | tutti-nodes | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `vbap` |
+| `HrtfBinauralNode` | tutti-nodes | azimuth, elevation, blend | detaches all | yes | `hrtf` |
 | `ClickNode` | tutti-nodes | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
 | `TransportClock` | tutti-transport | tempo, pause, seek, loop, writeback, steady time | `ClockLinks::severed`: tempo snapshotted, a fork always rolls | yes | `clock::…::isolate_snapshots_the_tempo` |
 | `MemorySource` | tutti-sampler | gain; the live timeline (re-pointed by `rebind_offline`) | detaches gain | yes | `isolate_snapshots_gain` |
@@ -5161,7 +5161,7 @@ slices are ignored on every path, and fewer is a caller bug (a
 | `Convolver` + `StereoConvolver` | Stored once, IR as `Arc<[f32]>`, planar block convolution, width-generic, and the dry path delayed inside the node (the dry half no longer leads). Needs `Fork` |
 | `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (no mute click). Batching strips was measured and does not pay; its own kernel does. The kernel is channel-major, so it vectorises along time (measurements under "Same-kind sibling batching") |
 | `Compressor` / `Gate` (thin) | An optional sidechain port: when it is unconnected in `Io`, the node keys off its own input (today's fallback can never fire). Params read once per block. Readings go out through `Controls` (no meter read off a clone). Block detector kernels |
-| `VbapPannerNode` `process` | Solve the gains once per block, or every 32 samples, then ramp the gain vector. Today it does two VBAP solves per sample, which is probably the largest waste per node in `tutti-nodes`. `build_vbap_mix` becomes a `Topology` fragment |
+| `VbapPannerNode` `process` | Solve the gains once per block, or every 32 samples, then ramp the gain vector. Today it does two VBAP solves per sample, which is probably the largest waste per node in `tutti-nodes`. `build_vbap_mix` is deleted (a panner per source, wired by fan-in) |
 | `ClickNode` | `Env::for_each_beat` gives sample-accurate onsets (no block-boundary jitter) |
 
 **Port mechanically (drop the shell, keep the body):** `DistortionNode` (curves
@@ -5991,7 +5991,7 @@ the source count changes".
 | Site | Change |
 |---|---|
 | `tutti-session/src/general_midi.rs` (`add_general_midi`) | No `sum` node. The strip's port `c` gets sources `[dry c, chorus c, reverb c]` through `set_sources`. `GeneralMidi` loses its `sum` field. The order is by `NodeKey`: the unit's dry strip (inserted first), the chorus, the reverb, the order the node summed in, so the render keeps its bits provided the keys are in creation order; the build checks this against `tests/general_midi.rs` rather than assuming it. |
-| `tutti-spatial/src/vbap/mix.rs` (`VbapMixParts`, `VbapLfeSend`, `build_vbap_mix`) | The main sum and the LFE sum are no longer nodes. The mix has no single output node: it reports, per output channel, the ports that feed it (panner `s` port `c` for channel `c`; the LFE low-pass for the LFE channel), and the caller wires each list into its sink's port (or the root's channel). `VbapMixNode::Sum` and `LfeSum` go; `VbapMixEdge` into them go; the LFE send keeps its low-pass and feeds it from every source's channel 0 through a fan-in. `insert_into` returns those lists instead of "the sum's key". An API change to a public type, so it is in the PR notes. |
+| `tutti-spatial/src/vbap/mix.rs` (`VbapMixParts`, `VbapLfeSend`, `build_vbap_mix`) | **Deleted, not rewritten** (`dsp/nospatial`): the mix had no production user, and with fan-in a VBAP mix is a panner per source wired to the output channels, the LFE send a low-pass every source's channel 0 joins. The tests that wire it do so directly (`tutti-export/tests/surround_export.rs`, `graph_source.rs`). |
 | `tutti-session/src/node.rs` | `impl SessionNode for ChannelSumNode` goes. |
 | `tutti-nodes/src/lib.rs`, `README.md` (lines 39, 66), and the READMEs of `tutti-spatial` and `tutti-soundfont` | Drop the export and the sentences naming it the mixing node. |
 | `tutti-nodes/src/strip.rs` | Comment mentions only; no code change. |
@@ -6171,6 +6171,27 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    `Graph` never had an adding call, so `set_source` callers are unaffected.
 5. **Migration.** `add_general_midi`, VBAP, the tests and benches. The node
    stays one more PR so each of those compiles and passes beside it.
+   *As built (PR 5).* `add_general_midi` has no `sum`: the fader's ports 0 and
+   1 each take `[dry, chorus, reverb]` through `add_source`, `GeneralMidi`
+   loses `sum()`, and `tests/general_midi.rs` pins the fader's source sets
+   (the sum node's width row is now the fader's). The two PDC tests
+   (`reported_latency.rs`, `clap_pdc_alignment.rs`) wire both paths into output
+   channel 0 and are tests of the sum's per-source alignment, with the same
+   figures. `graph_source.rs`'s quad rig and the three `cost_classes.rs` files
+   fan each panner, synth or read into the outputs; the benches measure the op
+   through a graph (`node_kernels`' `channel_sum` is a graph of global inputs
+   into outputs; `parallel_render`'s `mixed` shape is now one flat fan-in of
+   `lanes * fan` gains, as no sink holds a sub-sum without a node; `render_load`
+   fans the sends into the convolver and the strips into the master). No
+   figure and no golden moved. **Left for PR 6**, because they hold the node
+   itself or wait on another lane: `mix_bus.rs` and its tests,
+   `rt_no_alloc.rs`'s `channel_sum_process_is_allocation_free`,
+   `isolate_snapshots.rs`' list (it names the units that are *not* rows, so it
+   is true while the node exists), `node.rs`'s impl, the READMEs, and
+   `tutti-spatial`'s `vbap/mix.rs` with the `tutti-export` tests that call
+   `build_vbap_mix`, which the tutti-dsp lane deletes or rewrites. The
+   `ChannelSumNode` doc link in `BusStripNode::with_channels` and the doc
+   comments of `tutti-soundfont` and `hrtf` no longer name it.
 6. **Delete.** `ChannelSumNode`, its exports, `SessionNode` impl, README and
    the lists; CLAUDE.md, `graph.rs`, `spec.rs`, `engineering-notes.md`.
 
@@ -8936,8 +8957,8 @@ converts at its edges in an f64 graph.
 | `PhaserNode`, `DownmixNode` | tutti-nodes | Both | an allpass chain and a mixing matrix |
 | `ModulatorNode<M>` (LFO), `AutomationLaneNode` | tutti-nodes | Both | they write a control signal on an audio port; writing it in the graph's format saves a conversion on every edge it feeds |
 | `ConvolverNode` | tutti-nodes | f32, converted at its edges; an f64 convolution is a type parameter | the f64 FFT costs about 2.5× and doubles the IR spectra (1.5 → 2.9 MiB per channel for a 2 s IR); a reverb's tail does not need it. An f64 convolver is a choice, as an f64 filter state is today |
-| `VbapPannerNode` | tutti-spatial | Both | a gain matrix |
-| `HrtfBinauralNode` | tutti-spatial | f32, converted at its edges | as the convolver |
+| `VbapPannerNode` | tutti-nodes | Both | a gain matrix |
+| `HrtfBinauralNode` | tutti-nodes | f32, converted at its edges | as the convolver |
 | `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (rustfft f32) and its output widens |
 | `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
 | `SoundFontUnit` | tutti-soundfont | f32 | the voices render in f32 internally |

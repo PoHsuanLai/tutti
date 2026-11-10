@@ -57,7 +57,10 @@ impl Node for Emitter {
             let f = cx.env.frame_at(at).get();
             if f % self.period == u64::from(self.id) % self.period {
                 io.event_out(0)
-                    .push(Event::midi(at, [self.id, f as u32, (f >> 32) as u32, 0]))
+                    .push(Event::midi(
+                        at,
+                        Ump([self.id, f as u32, (f >> 32) as u32, 0]),
+                    ))
                     .expect("capacity is sized for the test's rate");
                 self.ledger.lock().unwrap().push((self.id, f));
             }
@@ -626,7 +629,7 @@ impl Node for Clock {
         for at in cx.env.offsets() {
             let f = cx.env.frame_at(at).get();
             io.event_out(0)
-                .push(Event::midi(at, [0, f as u32, 0, 0]))
+                .push(Event::midi(at, Ump([0, f as u32, 0, 0])))
                 .expect("one per frame fits");
         }
         Status::Modified

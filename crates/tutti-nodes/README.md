@@ -38,6 +38,11 @@ node without a lock.
   audio input.
 - **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
   `DownmixNode`, `BusStripNode` (volume / balance / mute).
+- **Spatial** — `VbapPannerNode` (stereo in, one output per speaker of a 2, 4,
+  6, 8 or 12 channel layout) and `HrtfBinauralNode` (two outputs, by FFT
+  convolution against a caller-supplied HRIR sphere), both steered by lock-free
+  controls and a de-zippered `SpatialTarget`. A mix of several panned sources
+  is plain fan-in: wire each panner's outputs to the same graph ports.
 - **Param ports** — each modulatable node declares its params (its
   `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) as param ports, filled per
   frame from one event source each (read through `Io::param`).
@@ -62,9 +67,8 @@ to insert the moment it is built.
 
 ## Scope
 
-- **No spatial panning.** The VBAP and binaural panners are `tutti-spatial`,
-  which builds its mixes from this crate's `ChannelSumNode` and
-  `SvfFilterNode`.
+- **No room simulation and no HRIR data.** The panners place a source; the
+  HRIR dataset is supplied by the caller as bytes.
 - **No Bevy.** ECS bindings are the host's; `bevy-tutti` drives the graph.
 - **No sample playback and no synthesis.** Those are `tutti-sampler`,
   `tutti-polysynth` and `tutti-soundfont`.
@@ -132,7 +136,7 @@ unchanged, so it never reaches their state.
 ## Where it sits
 
 The `tutti` crate re-exports this one as `tutti::nodes`; `bevy-tutti`,
-`tutti-spatial`, `tutti-polysynth`, `tutti-export` and `tutti-plugin` build on
+`tutti-polysynth`, `tutti-export` and `tutti-plugin` build on
 it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
 `tutti-types`.
 

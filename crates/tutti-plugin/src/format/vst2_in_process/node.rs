@@ -212,7 +212,7 @@ impl Node for BoundInProcessVst2Client {
             for e in &out_events {
                 let at = (e.offset as usize).min(size - 1);
                 if let Some(at) = Offset::new(at, block) {
-                    let _ = writer.push(Event::midi(at, e.ump.0));
+                    let _ = writer.push(Event::midi(at, e.ump));
                 }
             }
         }
@@ -417,7 +417,7 @@ mod owed_tests {
                     .expect("a 7-bit payload"),
             );
             let at = Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block");
-            out.iter().map(|e| Event::midi(at, e.0)).collect::<Vec<_>>()
+            out.iter().map(|e| Event::midi(at, *e)).collect::<Vec<_>>()
         };
         (packets(60), packets(12))
     }

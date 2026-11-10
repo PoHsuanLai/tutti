@@ -139,6 +139,61 @@ pub mod normalized_f64_opt {
     }
 }
 
+/// A byte field (a state chunk) as one byte string on the wire.
+///
+/// Serde writes a plain `Vec<u8>` as a sequence, which bincode encodes one
+/// `u8` call at a time; a state chunk is megabytes. As bytes it is one copy
+/// each way (doc 027 P2b). The encoding is the same: bincode writes a byte
+/// string and a byte sequence alike, as a `u64` length and the bytes, so this
+/// is not a protocol change.
+pub mod bytes {
+    use std::fmt;
+
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    /// Encodes the bytes as one byte string.
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(bytes)
+    }
+
+    /// Decodes a byte string (or, from a format that writes one, a sequence of
+    /// bytes).
+    ///
+    /// # Errors
+    ///
+    /// The input is neither.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        struct Bytes;
+
+        impl<'de> Visitor<'de> for Bytes {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a byte string")
+            }
+
+            fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(v.to_vec())
+            }
+
+            fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(v)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+                while let Some(b) = seq.next_element()? {
+                    out.push(b);
+                }
+                Ok(out)
+            }
+        }
+
+        d.deserialize_byte_buf(Bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};
@@ -309,5 +364,36 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
+    }
+
+    /// **`wire::bytes` is not a protocol change**: a byte field encodes to the
+    /// bytes a plain `Vec<u8>` did, and decodes them. (What it buys, one copy
+    /// rather than a call per byte, is speed, which no test here asserts.)
+    ///
+    /// Mutation (run): `serialize` writing `&bytes[1..]` → the encodings differ
+    /// → fails.
+    #[test]
+    fn a_byte_field_encodes_as_a_plain_vec_did() {
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct Plain {
+            bytes: Vec<u8>,
+        }
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct Coded {
+            #[serde(with = "super::bytes")]
+            bytes: Vec<u8>,
+        }
+        let data: Vec<u8> = (0..=255).collect();
+        let plain = bincode::serialize(&Plain {
+            bytes: data.clone(),
+        })
+        .unwrap();
+        let coded = bincode::serialize(&Coded {
+            bytes: data.clone(),
+        })
+        .unwrap();
+        assert_eq!(coded, plain);
+        let back: Coded = bincode::deserialize(&plain).unwrap();
+        assert_eq!(back.bytes, data);
     }
 }

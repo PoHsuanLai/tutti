@@ -907,7 +907,7 @@ mod tests {
             ("SaveState", HostMessage::SaveState, EmptyPayload),
             (
                 "ProcessAudio",
-                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 256,
                     midi_events: MidiEventVec::new(),
@@ -915,7 +915,7 @@ mod tests {
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
                     ..Default::default()
-                })),
+                }),
                 Refusal("No plugin loaded"),
             ),
             (
@@ -1157,11 +1157,11 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
                     seq,
                     num_samples: F64_FRAMES,
                     ..Default::default()
-                })),
+                }),
             )
             .unwrap()
             .into_reply();
@@ -1309,11 +1309,11 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
                     seq: SEQ,
                     num_samples: F64_FRAMES,
                     ..Default::default()
-                })),
+                }),
             )
             .unwrap()
             .into_reply();
@@ -1391,11 +1391,11 @@ mod tests {
             let reply = s
                 .handle(
                     &main_thread(),
-                    HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                    HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
                         seq,
                         num_samples: F64_FRAMES,
                         ..Default::default()
-                    })),
+                    }),
                 )
                 .unwrap()
                 .into_reply();
@@ -1458,11 +1458,11 @@ mod tests {
             let reply = s
                 .handle(
                     &main_thread(),
-                    HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                    HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
                         seq,
                         num_samples: frames,
                         ..Default::default()
-                    })),
+                    }),
                 )
                 .unwrap()
                 .into_reply();
@@ -2203,7 +2203,7 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 512,
                     midi_events: MidiEventVec::new(),
@@ -2211,7 +2211,7 @@ mod tests {
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
                     ..Default::default()
-                })),
+                }),
             )
             .unwrap()
             .into_reply();
@@ -2269,11 +2269,11 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
                     seq,
                     num_samples: frames,
                     ..Default::default()
-                })),
+                }),
             )
             .expect("a failed block does not end the server")
             .into_reply();

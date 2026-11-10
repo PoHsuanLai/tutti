@@ -415,7 +415,7 @@ pub(super) fn handle(
             let before = payload.midi_events.len();
             payload.midi_events.retain(|e| owed.intake.admit(e));
             channels.note_dropped_midi((before - payload.midi_events.len()) as u64);
-            let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
+            let msg = HostMessage::ProcessAudio(ProcessAudioData {
                 seq: payload.seq,
                 num_samples: payload.num_samples,
                 midi_events: payload.midi_events.clone(),
@@ -426,7 +426,7 @@ pub(super) fn handle(
                 expr_texts: core::mem::take(&mut payload.expr_texts),
                 expr_ints: core::mem::take(&mut payload.expr_ints),
                 transport: core::mem::take(&mut payload.transport),
-            }));
+            });
 
             payloads.recycle(payload);
 

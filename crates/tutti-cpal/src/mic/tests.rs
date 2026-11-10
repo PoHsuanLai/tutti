@@ -131,7 +131,7 @@ fn mic_without_a_device() -> MicIn {
 /// [`mic_without_a_device`] `width` wide, and the writer its callback would
 /// hold.
 fn mic_with_ring(width: u16, frames: usize) -> (MicIn, TapWriter) {
-    let (reader, writer) = TapReader::standalone(TapId(0), usize::from(width), Samples(frames));
+    let (reader, writer) = TapReader::pair(TapId(0), usize::from(width), Samples(frames));
     let mic = MicIn {
         tap: reader,
         sample_rate: SampleRate(48_000.0),
@@ -162,9 +162,8 @@ fn a_full_ring_counts_the_frames_the_callback_dropped() {
 fn capture(device: u16, inputs: &[usize], frames: usize) -> (Capture, MicIn, TapReader) {
     let select = Fold::select(ChannelLayout::from(device), inputs).expect("a selection");
     let width = select.dst_layout();
-    let (reader, rec) =
-        TapReader::standalone(TapId(0), usize::from(width.count()), Samples(frames));
-    let (ring, mon) = TapReader::standalone(TapId(0), usize::from(width.count()), Samples(frames));
+    let (reader, rec) = TapReader::pair(TapId(0), usize::from(width.count()), Samples(frames));
+    let (ring, mon) = TapReader::pair(TapId(0), usize::from(width.count()), Samples(frames));
     let capture = Capture::new(select, ChannelLayout::from(device), rec, Some(mon));
     let mic = MicIn {
         tap: reader,

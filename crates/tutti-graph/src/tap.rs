@@ -176,9 +176,12 @@ impl Drop for TapReader {
 }
 
 impl TapReader {
-    /// A reader and the writer the executor will fill it with: `width` lanes,
-    /// each holding `capacity` frames (at least one).
-    pub(crate) fn pair(id: TapId, width: usize, capacity: Samples) -> (Self, TapWriter) {
+    /// A reader and the writer that fills it: `width` lanes, each holding
+    /// `capacity` frames (at least one). A plan's tap gets one from the editor;
+    /// a writer that is not an op of a plan (the engine's, after the fader; an
+    /// inlet's producer) takes one here.
+    #[must_use]
+    pub fn pair(id: TapId, width: usize, capacity: Samples) -> (Self, TapWriter) {
         let lost = Arc::new(AtomicU64::new(0));
         let (cons, prods): (Vec<_>, Vec<_>) = (0..width)
             .map(|_| HeapRb::<f32>::new(capacity.get().max(1)).split())
@@ -191,13 +194,6 @@ impl TapReader {
             alive: Arc::new(()),
         };
         (reader, TapWriter { lanes: prods, lost })
-    }
-
-    /// A reader and its writer, for a writer that is not an op of a plan (the
-    /// engine's, after the fader): `width` lanes of `capacity` frames each.
-    #[must_use]
-    pub fn standalone(id: TapId, width: usize, capacity: Samples) -> (Self, TapWriter) {
-        Self::pair(id, width, capacity)
     }
 
     /// A handle to see whether this reader is still alive: its strong count

@@ -177,7 +177,7 @@ Header citations are by file name.
 | C22 | note choke event | cut a voice now, no release | Partial: `Command::Cut` exists in `tutti-voicing`; no host sends a choke | host |
 | C23 | note end event (plugin to host) | the plugin's voice has finished | Gap G19: `VoiceEnded` | host |
 | C24 | note expression events: volume, pan, tuning, vibrato, expression, brightness, pressure | per-note continuous control | Partial: `NoteExpressionType` is the vocabulary; no graph event type carries it (G2) | types |
-| C25 | MIDI, MIDI sysex and MIDI2 events | raw wire messages | Covered: `Ump`, `SysExRef`, `SysExAssembler` | types |
+| C25 | MIDI, MIDI sysex and MIDI2 events | raw wire messages | Covered: `Ump`, `tutti_ump::SysexRef`, `tutti_ump::SysexAssembler` | types |
 | C26 | event flags: is-live, dont-record | the event came from a person; do not record it | Host-only: sequencer policy | no |
 | C27 | `clap.event-registry` | host lets a plugin register its own event space | Host-only: `tutti-clap-ffi` answers; no space is used | ffi |
 | C28 | transport event: tempo and its increment, beats and seconds timeline, loop start and end, bar start and number, time signature, flags (has-*, playing, recording, loop active, within pre-roll) | what the plugin may read about time | Partial: `TransportInfo` (tempo, position, loop, bar); tempo increment and the pre-roll flag are not carried | types |
@@ -240,7 +240,7 @@ Interfaces are in `vendor/vst3-sdk/pluginterfaces/vst` and `.../base`.
 | V17 | `IPrefetchableSupport` | never, yes, or always prefetchable | Gap G14: `PrefetchSupport` | host |
 | V18 | `ProcessData`: parameter changes in and out with sample offsets | automation, and parameter values the plugin reports back | Partial: `ParameterChanges` in; the output queue (a meter parameter, say) is dropped | types |
 | V19 | events: note on (id, channel, pitch, tuning, length, velocity), note off, poly pressure | notes | Partial: `Ump` notes; per-note tuning and note length are not carried | types |
-| V20 | events: data (sysex) | raw bytes | Covered: `SysExRef` | types |
+| V20 | events: data (sysex) | raw bytes | Covered: `tutti_ump::SysexRef` | types |
 | V21 | events: note expression value, text, integer value | per-note control, text and integer forms | Partial: value is `NoteExpressionValue`; text and integer are in `harmony` (`NoteExpressionTextValue`, `NoteExpressionIntValue`) | types |
 | V22 | events: chord, scale | what the sequencer's harmony track says | Partial: `ChordValue`, `ScaleValue` in `harmony.rs`; no graph event, no tutti node reads it (VST3-only, `SEQUENCER_CONTEXT`) | types |
 | V23 | event: legacy MIDI CC out | plugin emits CC, pitch bend, aftertouch, program change | Covered: `Features::MIDI_OUT`, `Ump` | types |
@@ -349,7 +349,7 @@ most of the optional ones.
 | S11 | `effSetSpeakerArrangement`, `effGetSpeakerArrangement` | speaker placement, proposed and read | Gap G1: `LayoutOptions` (placement is not reported, so `LayoutSupport::None`) | host |
 | S12 | `effSetSampleRate`, `effSetBlockSize`, `effMainsChanged`, `effStartProcess`, `effStopProcess`, `effSetProcessPrecision` | lifecycle | Covered: `Loaded::activate`, `Prepare` | types |
 | S13 | `effSetBypass` | soft bypass | Covered: `UnitParam::Bypass` | host |
-| S14 | `effProcessEvents`: MIDI event (delta frames, note length, note offset, detune in cents, note-off velocity) and sysex | events | Partial: `Ump`, `SysExRef`; detune (per-note tuning) and note length are not carried | types |
+| S14 | `effProcessEvents`: MIDI event (delta frames, note length, note offset, detune in cents, note-off velocity) and sysex | events | Partial: `Ump`, `tutti_ump::SysexRef`; detune (per-note tuning) and note length are not carried | types |
 | S15 | `effGetNumMidiInputChannels`, `effGetNumMidiOutputChannels` | how many MIDI channels it uses | Partial: `Features::MIDI_IN/OUT`; the counts are not stored | host |
 | S16 | `effGetMidiProgramName`, `effGetCurrentMidiProgram`, `effGetMidiProgramCategory`, `effHasMidiProgramsChanged` | programs tied to bank and program-change numbers | Partial: `Preset` has a name, an id and a bank name; the MIDI bank and program numbers and the category are dropped (G3) | host |
 | S17 | `effGetMidiKeyName` | a name for a key | Gap G4: `NoteNames` | host |

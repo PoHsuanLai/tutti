@@ -745,12 +745,12 @@ impl Graph {
         capacity: Samples,
         producer_rate: SampleRate,
     ) -> Result<(NodeKey, TapWriter), InletError> {
-        let (ring, writer) = TapReader::standalone(TapId(0), usize::from(width.count()), capacity);
+        let (ring, writer) = TapReader::pair(TapId(0), usize::from(width.count()), capacity);
         Ok((self.add_inlet(ring, producer_rate)?, writer))
     }
 
     /// [`open_inlet`](Self::open_inlet) over a ring the producer's layer
-    /// already built ([`TapReader::standalone`]), for a producer that must
+    /// already built ([`TapReader::pair`]), for a producer that must
     /// choose its width and rate before the graph sees it (a capture device).
     ///
     /// # Errors

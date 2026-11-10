@@ -2,19 +2,33 @@
 //! step 1c).
 //!
 //! `N` delay lines read with linear interpolation (so a length may move), a
-//! three-band absorption in each loop, a reflection `A = I - 2 v v^T` to mix
-//! them and a stereo output. The wet signal is the lines' own outputs (before
-//! their absorption), so nothing sounds before the shortest line has gone
-//! round, and the loop gain is exactly the network's.
+//! three-band absorption in each loop, a mix `A = I - 2 m v v^T` (`m` is 1 for a
+//! reflection and 0 for the identity of `Matrix::Diagonal`) and a stereo output.
+//! The wet signal is the lines' own outputs (before their absorption), so
+//! nothing sounds before the shortest line has gone round, and the loop gain is
+//! exactly the network's.
 //!
 //! **Retargeting ramps.** `retarget` only sets targets. Every parameter that
-//! sounds (the loop gains, the reflection vector (renormalised to its length every chunk, so the loop is orthogonal at every step of a ramp), the input and output gains,
-//! the wet gain, the width and the modulation depth) is a [`Slew`] that moves
-//! to it in a fixed 20 ms of whole [`CHUNK`]s, landing on it exactly; a length
-//! moves at a bounded half frame a chunk (about 1.6% of a frame a frame, a
-//! pitch bend of 27 cents), and the pre-delay at two. The chunks are counted
+//! sounds (the loop gains, the reflection vector (renormalised to its length
+//! every chunk) and its mix `m`, the input and output gains, the wet gain, the
+//! width and the modulation depth) is a [`Slew`] that moves to it in a fixed
+//! 20 ms of whole [`CHUNK`]s, landing on it exactly; a length moves at a
+//! bounded half frame a chunk (about 1.6% of a frame a frame, a pitch bend of 27 cents), and the pre-delay at two. The chunks are counted
 //! from the first frame since the last reset, not from a block's edge, so the
 //! output does not depend on how the input is cut into blocks.
+//!
+//! **The mix.** The identity of a diagonal network and the reflection of a
+//! mixing one have determinants +1 and -1, so no path of orthogonal matrices
+//! joins them, and a straight line `I - 2 m v v^T` between them has eigenvalue
+//! `1 - 2m` along `v`, a contraction that would lose a frozen tail's energy.
+//! The matrix is therefore never between the two: `m` is 0 or 1, and it
+//! switches at the end of a ramp that leaves a mixing matrix (when `v` has
+//! reached line 0, where `I - 2 v v^T` flips one line's sign) and at the start
+//! of one that reaches it. Every step of a ramp is then orthogonal, `v` moves
+//! between unit vectors (a diagonal network aims it at line 0), and a mixing
+//! network is bit-identical to a kernel without `m`. The switch is a step in
+//! the sign of line 0's loop, as the model's own matrix steps between
+//! `Diagonal` and the first `Reflection` near line 0.
 //!
 //! **The absorption** of a line is `y = g_high x + (g_mid - g_high) L2(x) +
 //! (g_low - g_mid) L1(x)` with `L1` and `L2` two cascaded one-poles at the
@@ -141,6 +155,10 @@ pub struct FdnKernel {
     /// reflection is renormalised to it every chunk, so it is orthogonal at
     /// every step of a ramp and not only at its ends.
     v_len: Slew,
+    /// `m` of `I - 2 m v v^T`: 0 for a diagonal network, 1 for a reflection. Only
+    /// its target and its ramp's clock are read (see the module docs): the
+    /// kernel's `m` is 1 while it ramps or aims at 1, else 0.
+    mix: Slew,
     input: Vec<Slew>,
     out: Vec<[Slew; 2]>,
     wet: Slew,
@@ -158,6 +176,8 @@ pub struct FdnKernel {
     c_mod_next: Vec<f32>,
     c_gain: Vec<[f32; 3]>,
     c_v: Vec<f32>,
+    /// 0 or 1: the chunk's `m`.
+    c_mix: f32,
     c_in: Vec<f32>,
     c_out: Vec<[f32; 2]>,
     c_wet: f32,
@@ -189,6 +209,7 @@ impl FdnKernel {
             gain: Vec::new(),
             v: Vec::new(),
             v_len: Slew::default(),
+            mix: Slew::default(),
             input: Vec::new(),
             out: Vec::new(),
             wet: Slew::default(),
@@ -202,6 +223,7 @@ impl FdnKernel {
             c_mod_next: Vec::new(),
             c_gain: Vec::new(),
             c_v: Vec::new(),
+            c_mix: 0.0,
             c_in: Vec::new(),
             c_out: Vec::new(),
             c_wet: 0.0,
@@ -259,6 +281,7 @@ impl FdnKernel {
             }
             self.pre_len.snap();
             self.v_len.snap();
+            self.mix.snap();
             self.depth.snap();
             self.wet.snap();
             self.width.snap();
@@ -307,6 +330,7 @@ impl FdnKernel {
         self.wet.advance();
         self.width.advance();
         self.v_len.advance();
+        self.mix.advance();
         let dphi = std::f64::consts::TAU * f64::from(self.rate_hz) * CHUNK as f64 / self.rate;
         for j in 0..n {
             self.gain[j].iter_mut().for_each(Slew::advance);
@@ -330,6 +354,7 @@ impl FdnKernel {
             let k = self.v_len.cur / len;
             self.c_v[..n].iter_mut().for_each(|x| *x *= k);
         }
+        self.c_mix = f32::from(u8::from(self.mix.target > 0.5 || self.mix.left > 0));
         self.c_wet = self.wet.cur;
         self.c_width = self.width.cur;
         self.c_pre = self.pre_len.cur;
@@ -422,6 +447,7 @@ impl Realization<Network> for FdnKernel {
         self.gain = vec![[Slew::default(); 3]; lines];
         self.v = vec![Slew::default(); lines];
         self.v_len = Slew::default();
+        self.mix = Slew::default();
         self.input = vec![Slew::default(); lines];
         self.out = vec![[Slew::default(); 2]; lines];
         self.state = vec![[0.0; 4]; lines];
@@ -466,9 +492,9 @@ impl Realization<Network> for FdnKernel {
             for (s, t) in self.gain[j].iter_mut().zip(g) {
                 s.aim(t, ramp);
             }
-            // A diagonal network is the reflection along line 0: a sign on one
-            // line, which changes no decay, and a unit vector like the rest, so a
-            // ramp from it stays orthogonal.
+            // A diagonal network is `m = 0`; its `v` is a unit vector (line 0)
+            // like the rest, so a ramp to a mixing matrix moves between unit
+            // vectors and `v_len` stays 1.
             let v = match &f.matrix {
                 Matrix::Diagonal => f32::from(u8::from(j == 0)),
                 Matrix::Householder => flat,
@@ -501,6 +527,8 @@ impl Realization<Network> for FdnKernel {
             .sum::<f32>()
             .sqrt();
         self.v_len.aim(want, ramp);
+        let mix = f32::from(u8::from(!matches!(f.matrix, Matrix::Diagonal)));
+        self.mix.aim(mix, ramp);
         for j in n..self.max_lines {
             self.input[j].aim(0.0, ramp);
             self.out[j].iter_mut().for_each(|s| s.aim(0.0, ramp));
@@ -617,6 +645,8 @@ impl Effect<Network> for FdnKernel {
                 d[j] = high * d[j] + c2 * s[3] + c1 * s[1];
                 sum += self.c_v[j] * d[j];
             }
+            // `m` scales the projection, so `m = 1` is the reflection to the bit.
+            let sum = self.c_mix * sum;
             for j in 0..n {
                 self.buf[j * self.cap + self.w] =
                     self.c_in[j] * xd + d[j] - 2.0 * self.c_v[j] * sum;

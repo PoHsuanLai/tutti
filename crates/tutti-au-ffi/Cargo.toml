@@ -22,11 +22,15 @@ workspace = true
 test-support = []
 
 [dependencies]
-# `WindowHandle` (the parent window of an editor), `TransportInfo`, `WireMidi`
-# and the MIDI 1.0 decoder: the values the AU surface is spoken in.
+# The MIDI 2.0 widening of what a plugin emits.
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+# `WindowHandle` (the parent window of an editor), `TransportInfo` and
+# `WireMidi`: the values the AU surface is spoken in.
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # `Bpm`, `Beat` on the host transport figures.
 tutti-types = { path = "../tutti-types", default-features = false }
+# `Midi1Parser`, which reads a plugin's MIDI 1.0 output.
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
@@ -50,7 +54,6 @@ objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeo
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
-tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [package.metadata.docs.rs]
 all-features = true

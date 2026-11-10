@@ -610,3 +610,48 @@ mod default_arrangement_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod scratch_resolution_tests {
+    use super::*;
+
+    /// **A layout no scratch can be built for leaves the old scratch alone.**
+    /// The second bus is wider than a layout holds (the ffi layer never reports
+    /// one), so `BusBuffers::new` refuses it; `resolve_scratch_from_counts` used
+    /// to panic there and now keeps the layout the instance already has.
+    ///
+    /// Mutation (run, fails at the channel assertions): update
+    /// `num_output_channels` in the refusal branch before returning.
+    #[test]
+    fn a_bus_too_wide_for_a_layout_keeps_the_old_scratch() {
+        let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
+        let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
+        let loaded = Vst3Loaded::load(&main, &library, crate::LoadOptions::new())
+            .expect("the shared plugin loads");
+        let mut staged = Staged::<f32>::stage(&main, loaded, 48_000.0, 64, ProcessMode::Realtime)
+            .unwrap_or_else(|(_, error)| panic!("the plugin stages: {error}"));
+        let (buses_in, buses_out) = (
+            staged.audio.input.buses.num_buses(),
+            staged.audio.output.buses.num_buses(),
+        );
+        let (channels_in, channels_out) = (
+            staged.audio.config.num_input_channels,
+            staged.audio.config.num_output_channels,
+        );
+
+        staged.resolve_scratch_from_counts(&[2, 70_000], &[1]);
+
+        assert_eq!(staged.audio.input.buses.num_buses(), buses_in);
+        assert_eq!(staged.audio.output.buses.num_buses(), buses_out);
+        assert_eq!(staged.audio.config.num_input_channels, channels_in);
+        assert_eq!(staged.audio.config.num_output_channels, channels_out);
+
+        // A layout that does fit is taken (so the test is not vacuous).
+        staged.resolve_scratch_from_counts(&[2, 1], &[1]);
+        assert_eq!(staged.audio.input.buses.num_buses(), 2);
+        assert_eq!(
+            staged.audio.config.num_output_channels,
+            ChannelLayout::from(1u16)
+        );
+    }
+}

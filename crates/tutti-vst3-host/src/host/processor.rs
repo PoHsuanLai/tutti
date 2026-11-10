@@ -34,8 +34,8 @@ pub(super) const EDIT_CAPACITY: usize = 256;
 /// returned, or why the host did not make the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessFailed {
-    /// What failed, by name; [`StatusError::code`](tutti_vst3_ffi::Vst3Error::code)
-    /// is the raw `tresult`.
+    /// What failed, by name; [`StatusError::code`](crate::StatusError::code) is
+    /// the raw `tresult`.
     pub error: tutti_vst3_ffi::Vst3Error,
 }
 

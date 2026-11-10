@@ -11,9 +11,10 @@ use vst3::Steinberg::KeyModifier_ as Key;
 
 use crate::helpers::sdk_enum_i32;
 pub use tutti_vst3_ffi::{
-    BusInfo, KeyswitchKind, NoteExpressionFlags, ParameterFlags, PhysicalUiType, PrefetchSupport,
-    ProcessContextRequirements, ProcessMode, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
-    Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo, to_process_context, unit_ids,
+    BusInfo, BusType, KeyswitchKind, NoteExpressionFlags, ParameterFlags, PhysicalUiType,
+    PrefetchSupport, ProcessContextRequirements, ProcessMode, UnitId, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
+    to_process_context,
 };
 
 pub use tutti_plugin_types::{

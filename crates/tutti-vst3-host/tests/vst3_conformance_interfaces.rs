@@ -169,14 +169,18 @@ fn units_enumerate_with_resolvable_parents() {
         "host-checker implements IUnitInfo but the host read no units"
     );
 
-    let ids: Vec<i32> = units.iter().map(|u| u.id).collect();
+    let ids: Vec<_> = units.iter().map(|u| u.id).collect();
     let mut orphans = Vec::new();
     for unit in &units {
         if let Some(parent) = unit.parent
-            && parent != tutti_vst3_host::unit_ids::ROOT
+            && parent != tutti_vst3_host::UnitId::ROOT
             && !ids.contains(&parent)
         {
-            orphans.push(format!("unit {} names absent parent {parent}", unit.id));
+            orphans.push(format!(
+                "unit {} names absent parent {}",
+                unit.id.get(),
+                parent.get()
+            ));
         }
     }
     assert!(
@@ -260,13 +264,14 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
                     "{name}: unit {} resolved to program list {list_id}, which \
                      the plugin does not publish — resolution let a dangling \
                      id through",
-                    unit.id
+                    unit.id.get()
                 );
             }
             if unit.has_dangling_program_list() {
                 dangling.push(format!(
                     "{name}: unit {} names absent list {}",
-                    unit.id, unit.program_list_id_raw
+                    unit.id.get(),
+                    unit.program_list_id_raw
                 ));
             }
         }
@@ -521,10 +526,10 @@ fn param_id_for_function_name_resolves_known_functions() {
     let checker = require_sample("host-checker.vst3");
 
     let dry_wet = checker
-        .param_id_for_function_name(&main_thread(), 0, "DryWetMix")
+        .param_id_for_function_name(&main_thread(), tutti_vst3_host::UnitId::ROOT, "DryWetMix")
         .expect("host-checker maps the DryWetMix function name");
     let randomize = checker
-        .param_id_for_function_name(&main_thread(), 0, "Randomize")
+        .param_id_for_function_name(&main_thread(), tutti_vst3_host::UnitId::ROOT, "Randomize")
         .expect("host-checker maps the Randomize function name");
 
     assert_ne!(
@@ -533,7 +538,11 @@ fn param_id_for_function_name_resolves_known_functions() {
          ({dry_wet:?}) — the name is being ignored"
     );
     assert_eq!(
-        checker.param_id_for_function_name(&main_thread(), 0, "NotAFunctionName"),
+        checker.param_id_for_function_name(
+            &main_thread(),
+            tutti_vst3_host::UnitId::ROOT,
+            "NotAFunctionName"
+        ),
         None,
         "an unknown function name resolved to a parameter id"
     );

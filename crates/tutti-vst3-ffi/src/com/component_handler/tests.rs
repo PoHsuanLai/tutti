@@ -1,5 +1,6 @@
 use super::*;
 use vst3::Steinberg::Vst::RestartFlags_;
+use vst3::Steinberg::kInvalidArgument;
 
 /// Everything queued so far, oldest first.
 fn drain(handler: &ComponentHandler) -> Vec<PluginNotification> {
@@ -451,4 +452,64 @@ fn an_edit_value_is_clamped_to_the_unit_interval() {
         })
         .collect();
     assert_eq!(values, [1.0, 0.0]);
+}
+
+/// **A bus activation request names a defined media type and direction, or it
+/// is refused and not forwarded.** The request is typed now (`MediaType`,
+/// `BusDirection`), so a value the SDK does not define has no bus to name:
+/// `kInvalidArgument`, nothing queued. A defined pair is forwarded typed.
+///
+/// Mutation (run, fails at the first `kInvalidArgument` assertion): forward a
+/// refused request again, falling back to `Audio`/`Input`.
+#[test]
+fn an_undefined_bus_activation_is_refused_and_not_forwarded() {
+    let handler = ComponentHandler::new();
+    let bus = handler
+        .to_com_ptr::<IComponentHandlerBusActivation>()
+        .unwrap();
+    // SAFETY: COM calls on a live object the test owns, with valid arguments.
+    unsafe {
+        assert_eq!(bus.requestBusActivation(99, 0, 0, 1), kInvalidArgument);
+        assert_eq!(bus.requestBusActivation(0, 99, 0, 1), kInvalidArgument);
+    }
+    assert!(drain(&handler).is_empty(), "nothing was forwarded");
+
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            bus.requestBusActivation(
+                crate::MediaType::Event.raw(),
+                crate::BusDirection::Output.raw(),
+                3,
+                1
+            ),
+            kResultOk
+        );
+    }
+    assert!(matches!(
+        drain(&handler).as_slice(),
+        [PluginNotification::Edit(
+            ParameterEditEvent::RequestBusActivation {
+                media_type: crate::MediaType::Event,
+                direction: crate::BusDirection::Output,
+                index: 3,
+                state: true,
+            }
+        )]
+    ));
+}
+
+/// **`IProgress::start` keeps what kind of operation it is**: the two SDK
+/// values name their variants and any other is carried as `Other`.
+///
+/// Mutation (run, fails): swap the two arms in `ProgressKind::from_raw` -> the
+/// named rows fail; return `Other(0)` for the fallback -> the `77` row fails.
+#[test]
+fn a_progress_kind_names_the_sdk_values_and_carries_the_rest() {
+    assert_eq!(
+        ProgressKind::from_raw(0),
+        ProgressKind::AsyncStateRestoration
+    );
+    assert_eq!(ProgressKind::from_raw(1), ProgressKind::UiBackgroundTask);
+    assert_eq!(ProgressKind::from_raw(77), ProgressKind::Other(77));
 }

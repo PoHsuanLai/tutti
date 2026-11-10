@@ -57,7 +57,7 @@ impl Vst3Loaded {
     /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
     /// returns the id directly with no result code, so a plugin that
     /// implements the interface always answers. Main/UI thread.
-    pub fn selected_unit(&self, main: &MainThread) -> Option<i32> {
+    pub fn selected_unit(&self, main: &MainThread) -> Option<crate::UnitId> {
         self.plugin.selected_unit(main)
     }
 
@@ -66,10 +66,10 @@ impl Vst3Loaded {
     /// implement `IUnitInfo` or refuses the id.
     ///
     /// The one write on this interface. Pass
-    /// [`unit_ids::ROOT`] to select the implicit
+    /// [`UnitId::ROOT`] to select the implicit
     /// top-level unit. Main/UI thread.
     #[must_use]
-    pub fn select_unit(&mut self, main: &MainThread, unit_id: i32) -> bool {
+    pub fn select_unit(&mut self, main: &MainThread, unit_id: crate::UnitId) -> bool {
         self.plugin.select_unit(main, unit_id)
     }
 
@@ -84,7 +84,7 @@ impl Vst3Loaded {
         direction: crate::BusDirection,
         bus_index: i32,
         channel: i32,
-    ) -> Option<i32> {
+    ) -> Option<crate::UnitId> {
         self.plugin
             .unit_by_bus(main, media_type, direction, bus_index, channel)
     }

@@ -82,9 +82,7 @@ pub fn to_process_context(
     // guessed rate (the 44.1 kHz fallback below) is not a fact to flag.
     let to_clock = t.samples_to_nearest_clock();
 
-    // `StatesAndFlags_::*` is `u32` on unix, `c_int` (i32) on Windows — the casts
-    // below are no-ops on one target and sign-changes on the other. Cleanest is
-    // to normalise to `u32` at the edge.
+    // `sdk_enum_u32` normalises the platform-varying SDK constants to `u32`.
     let state = {
         let mut state = 0u32;
         // The play/record/cycle bits are part of the transport state the plugin
@@ -234,10 +232,6 @@ pub fn to_process_context(
 }
 
 #[cfg(test)]
-// `StatesAndFlags_::*` is `u32` on unix and `c_int` (i32) on Windows, so the
-// `as u32` normalisations below are redundant on one target and load-bearing on
-// the other — the same reason `to_process_context` carries this allow. Taking
-// clippy's suggestion here would compile on macOS and break Windows.
 mod tests {
     use super::ProcessContextRequirements as need;
     use super::*;

@@ -78,8 +78,8 @@ mod tests {
 
     #[test]
     fn an_out_writes_through_a_pointer_and_skips_a_null_one() {
-        // Mutation: drop the null check in `set` -> the null case writes through
-        // a null pointer and crashes the test.
+        // Mutations (run, each fails): `set` without the null check -> SIGSEGV on
+        // the null case; `set` that drops the value -> the slot stays 0.
         let mut slot = 0;
         // SAFETY: `slot` outlives `out`.
         let out = unsafe { Out::new(&mut slot) };

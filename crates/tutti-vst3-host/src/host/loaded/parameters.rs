@@ -1,7 +1,7 @@
 //! The parameter tree and the controller's optional interfaces: note expression, keyswitches, remaps, representations.
 
 use super::*;
-use crate::types::{PlainRange, ProcessContextRequirements};
+use crate::types::{PlainRange, ProcessContextRequirements, UnitId};
 use tutti_plugin_types::AutomationMode;
 use tutti_plugin_types::MainThread;
 
@@ -220,7 +220,7 @@ impl Vst3Loaded {
     pub fn param_id_for_function_name(
         &self,
         main: &MainThread,
-        unit_id: i32,
+        unit_id: crate::UnitId,
         function_name: &str,
     ) -> Option<ParamId> {
         self.plugin
@@ -306,17 +306,17 @@ pub(crate) fn requirements(raw: u32) -> Option<ProcessContextRequirements> {
 ///
 /// Two exclusions, both deliberate:
 ///
-/// - **The root unit** (`unit_ids::ROOT`, id 0) is every plugin's implicit
+/// - **The root unit** (`UnitId::ROOT`, id 0) is every plugin's implicit
 ///   top-level unit, and its name is the plugin's own. Every parameter that
 ///   declares no unit reports 0, so mapping it would label the entire flat
 ///   majority with the plugin name — noise on exactly the parameters that have
 ///   no group.
 /// - **Unnamed units.** A unit with an empty name resolves to no group rather
 ///   than to an empty label, which is the same answer by a shorter route.
-pub(super) fn unit_names(units: &[Vst3UnitInfo]) -> HashMap<i32, &str> {
+pub(super) fn unit_names(units: &[Vst3UnitInfo]) -> HashMap<UnitId, &str> {
     units
         .iter()
-        .filter(|u| u.id != unit_ids::ROOT && !u.name.is_empty())
+        .filter(|u| u.id != UnitId::ROOT && !u.name.is_empty())
         .map(|u| (u.id, u.name.as_str()))
         .collect()
 }
@@ -331,7 +331,7 @@ pub(super) fn unit_names(units: &[Vst3UnitInfo]) -> HashMap<i32, &str> {
 pub(super) fn build_param_info(
     info: Vst3ParameterInfo,
     plain: Option<PlainRange>,
-    groups: &HashMap<i32, &str>,
+    groups: &HashMap<UnitId, &str>,
 ) -> ParameterInfo {
     // VST3 reports every one of these, so all six are known.
     const KNOWN: ParamFlags = ParamFlags::AUTOMATABLE
@@ -408,13 +408,14 @@ mod unit_group_tests {
     use super::*;
 
     /// Builds a unit as the plugin would report it, with no program list.
-    fn unit(id: i32, name: &str) -> Vst3UnitInfo {
+    fn unit(id: impl Into<UnitId>, name: &str) -> Vst3UnitInfo {
         Vst3UnitInfo {
-            id,
-            parent: Some(unit_ids::ROOT),
+            id: id.into(),
+            parent: Some(UnitId::ROOT),
             name: name.to_string(),
             program_list: None,
-            program_list_id_raw: unit_ids::NO_PROGRAM_LIST,
+            // `kNoProgramListId`: the unit has no list.
+            program_list_id_raw: -1,
         }
     }
 
@@ -423,8 +424,8 @@ mod unit_group_tests {
     fn a_parameter_takes_the_name_of_the_unit_it_declares() {
         let units = [unit(1, "Filter"), unit(2, "Amp")];
         let groups = unit_names(&units);
-        assert_eq!(groups.get(&1).copied(), Some("Filter"));
-        assert_eq!(groups.get(&2).copied(), Some("Amp"));
+        assert_eq!(groups.get(&UnitId::new(1)).copied(), Some("Filter"));
+        assert_eq!(groups.get(&UnitId::new(2)).copied(), Some("Amp"));
     }
 
     /// The root unit names no group.
@@ -435,14 +436,14 @@ mod unit_group_tests {
     /// labelled with the plugin's own name.
     #[test]
     fn the_root_unit_is_not_a_group() {
-        let units = [unit(unit_ids::ROOT, "TAL-NoiseMaker"), unit(1, "Filter")];
+        let units = [unit(UnitId::ROOT, "TAL-NoiseMaker"), unit(1, "Filter")];
         let groups = unit_names(&units);
         assert_eq!(
-            groups.get(&unit_ids::ROOT),
+            groups.get(&UnitId::ROOT),
             None,
             "the root unit's name is the plugin's, not a group's"
         );
-        assert_eq!(groups.get(&1).copied(), Some("Filter"));
+        assert_eq!(groups.get(&UnitId::new(1)).copied(), Some("Filter"));
     }
 
     /// A `unitId` naming a unit the plugin never published resolves to no
@@ -457,7 +458,7 @@ mod unit_group_tests {
     fn a_unit_id_that_names_nothing_yields_no_group() {
         let units = [unit(1, "Filter")];
         let groups = unit_names(&units);
-        assert_eq!(groups.get(&7), None);
+        assert_eq!(groups.get(&UnitId::new(7)), None);
     }
 
     /// A unit the plugin published without a name yields no group, rather than
@@ -466,7 +467,7 @@ mod unit_group_tests {
     fn an_unnamed_unit_is_not_a_group() {
         let units = [unit(1, "")];
         let groups = unit_names(&units);
-        assert_eq!(groups.get(&1), None);
+        assert_eq!(groups.get(&UnitId::new(1)), None);
     }
 }
 
@@ -486,6 +487,18 @@ mod requirements_tests {
         assert_eq!(requirements(u32::MAX), None);
         assert_eq!(requirements(0), Some(f::empty()));
         assert_eq!(requirements(f::NEED_TEMPO.bits()), Some(f::NEED_TEMPO));
+    }
+
+    /// **A requirement bit this host does not name survives the decode**, so
+    /// the figure a caller reads is what the plugin returned.
+    ///
+    /// Mutation (run, fails): `from_bits_truncate` in `requirements` together
+    /// with removing the `const _ = !0` of `ProcessContextRequirements` (alone,
+    /// `from_bits_truncate` passes: that const makes every bit "named").
+    #[test]
+    fn an_unnamed_requirement_bit_survives() {
+        let raw = f::NEED_TEMPO.bits() | (1 << 30);
+        assert_eq!(requirements(raw).map(|r| r.bits()), Some(raw));
     }
 
     /// A plugin without the interface wants every field; one that has it wants

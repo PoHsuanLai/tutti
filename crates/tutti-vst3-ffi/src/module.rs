@@ -271,12 +271,7 @@ impl Module {
         let mut info: PFactoryInfo = zeroed();
         // SAFETY: `info` is a valid out-parameter for the call.
         let result = unsafe { self.parts.factory.getFactoryInfo(&mut info) };
-        check(result).ok().map(|()| FactoryInfo {
-            vendor: c_str_to_string(&info.vendor),
-            url: c_str_to_string(&info.url),
-            email: c_str_to_string(&info.email),
-            flags: FactoryFlags::from_bits_retain(info.flags),
-        })
+        check(result).ok().map(|()| FactoryInfo::from_c(&info))
     }
 
     /// Number of plugin classes exposed by this factory (audio processors,
@@ -466,6 +461,16 @@ pub struct FactoryInfo {
 }
 
 impl FactoryInfo {
+    /// Reads the plugin's `PFactoryInfo`, keeping every flag bit it sent.
+    fn from_c(info: &PFactoryInfo) -> Self {
+        Self {
+            vendor: c_str_to_string(&info.vendor),
+            url: c_str_to_string(&info.url),
+            email: c_str_to_string(&info.email),
+            flags: FactoryFlags::from_bits_retain(info.flags),
+        }
+    }
+
     /// The plugin declares that its exported class list can change between
     /// loads (`kClassesDiscardable`), so a host must not answer "what does this
     /// bundle contain?" from a cache. Nothing in tutti acts on it yet: the scan
@@ -560,6 +565,22 @@ fn non_empty(s: String) -> Option<String> {
 #[cfg(test)]
 mod factory_flag_tests {
     use super::{FactoryFlags, FactoryInfo};
+    use crate::sdk::zeroed;
+
+    /// **A bit the plugin sets that this host does not name survives the
+    /// decode**, so a caller sees exactly what the plugin said.
+    ///
+    /// Mutation (run, fails): `from_bits_truncate` in `FactoryInfo::from_c`
+    /// together with removing `FactoryFlags`'s `const _ = !0` -> the unnamed bit
+    /// is gone (`from_bits_truncate` alone passes: the const names every bit).
+    #[test]
+    fn an_unnamed_factory_flag_bit_survives() {
+        let mut raw: vst3::Steinberg::PFactoryInfo = zeroed();
+        raw.flags = FactoryFlags::UNICODE.bits() | (1 << 9);
+        let info = FactoryInfo::from_c(&raw);
+        assert_eq!(info.flags.bits(), FactoryFlags::UNICODE.bits() | (1 << 9));
+        assert!(info.unicode_strings());
+    }
 
     fn with_flags(flags: FactoryFlags) -> FactoryInfo {
         FactoryInfo {
@@ -626,7 +647,7 @@ mod factory_flag_tests {
     /// Pinned because everything above reads by mask: were a constant ever
     /// wrong, every assertion would still pass while silently matching a
     /// different flag. `1 << 1` (`kLicenseCheck`, deprecated) and `1 << 2`
-    /// (unassigned) are deliberately absent from the module.
+    /// (unassigned) are deliberately absent from `FactoryFlags`.
     #[test]
     fn the_factory_flag_bits_are_the_ones_the_sdk_defines() {
         assert_eq!(FactoryFlags::CLASSES_DISCARDABLE.bits(), 1 << 0);

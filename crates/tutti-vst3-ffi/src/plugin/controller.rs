@@ -203,7 +203,7 @@ impl Plugin {
     pub fn param_id_for_function_name(
         &self,
         main: &MainThread,
-        unit_id: i32,
+        unit_id: crate::UnitId,
         function_name: &str,
     ) -> Option<u32> {
         let _scope = self.scoped(main);
@@ -213,7 +213,7 @@ impl Plugin {
         // SAFETY: `c_name` is a NUL-terminated string that outlives the call and
         // `param_id` a valid out-parameter.
         check(unsafe {
-            ctrl.getParameterIDFromFunctionName(unit_id, c_name.as_ptr(), &mut param_id)
+            ctrl.getParameterIDFromFunctionName(unit_id.get(), c_name.as_ptr(), &mut param_id)
         })
         .ok()?;
         Some(param_id)
@@ -284,22 +284,22 @@ impl Plugin {
 
     /// The selected unit.
     #[must_use]
-    pub fn selected_unit(&self, main: &MainThread) -> Option<i32> {
+    pub fn selected_unit(&self, main: &MainThread) -> Option<crate::UnitId> {
         let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         // SAFETY: a plain getter on a live interface.
-        Some(unsafe { ctrl.getSelectedUnit() })
+        Some(crate::UnitId::new(unsafe { ctrl.getSelectedUnit() }))
     }
 
     /// Selects a unit; `false` without the interface or if refused.
     #[must_use]
-    pub fn select_unit(&self, main: &MainThread, unit_id: i32) -> bool {
+    pub fn select_unit(&self, main: &MainThread, unit_id: crate::UnitId) -> bool {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return false;
         };
         // SAFETY: a plain call on a live interface.
-        is_ok(unsafe { ctrl.selectUnit(unit_id) })
+        is_ok(unsafe { ctrl.selectUnit(unit_id.get()) })
     }
 
     /// The unit a bus channel belongs to.
@@ -311,7 +311,7 @@ impl Plugin {
         direction: BusDirection,
         bus_index: i32,
         channel: i32,
-    ) -> Option<i32> {
+    ) -> Option<crate::UnitId> {
         let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         let mut unit_id: i32 = 0;
@@ -326,7 +326,7 @@ impl Plugin {
             )
         })
         .ok()?;
-        Some(unit_id)
+        Some(crate::UnitId::new(unit_id))
     }
 
     /// `(physical UI type, note-expression type)` for the three physical

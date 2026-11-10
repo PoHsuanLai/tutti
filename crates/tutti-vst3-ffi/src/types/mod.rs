@@ -14,8 +14,8 @@ pub use events::{
     TextRef, UnknownEventKind,
 };
 pub use info::{
-    AutomationStates, BusInfo, KeyswitchKind, NoteExpressionFlags, ParameterFlags, PhysicalUiType,
-    PrefetchSupport, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
-    Vst3ProgramListInfo, Vst3UnitInfo, unit_ids,
+    AutomationStates, BusInfo, BusType, KeyswitchKind, NoteExpressionFlags, ParameterFlags,
+    PhysicalUiType, PrefetchSupport, UnitId, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
+    Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
 };
 pub use transport::{ProcessContextRequirements, to_process_context};

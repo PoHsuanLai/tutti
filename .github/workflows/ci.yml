@@ -238,6 +238,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked -p tutti-au-ffi -p tutti-au-host --all-targets -- -D warnings
       - run: cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
+      # The server with AU alone: the one-format loop in `clippy` runs on Linux,
+      # where the AU loader compiles to nothing, so a helper only the other
+      # formats use (`loaders/common`'s `standing`) is dead only here.
+      - run: cargo clippy --locked -p tutti-plugin-server --no-default-features --features au --all-targets -- -D warnings
 
   # The plugin contract on Windows. Not a required check: nothing else runs a
   # test there, and whether the shared plugin loads on a Windows runner is what

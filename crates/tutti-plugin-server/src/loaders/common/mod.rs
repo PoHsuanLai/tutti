@@ -36,7 +36,10 @@ pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
 }
 
 /// Where a plugin stands after a refused rate, for the error: the rate it runs
-/// at, or that it is deactivated.
+/// at, or that it is deactivated. The CLAP, VST2 and VST3 loaders word their
+/// refused rates through this; AU reports its own, so an AU-only build (macOS,
+/// `--no-default-features --features au`) leaves it out.
+#[cfg(any(feature = "clap", feature = "vst2", feature = "vst3"))]
 pub(crate) fn standing(active: bool, rate: SampleRate) -> String {
     if active {
         format!("running at {}", rate.0)
@@ -58,6 +61,7 @@ mod tests {
     /// "deactivated" assertion fails; always the inactive arm -> the "running at"
     /// assertion fails.
     #[test]
+    #[cfg(any(feature = "clap", feature = "vst2", feature = "vst3"))]
     fn a_standing_says_running_or_deactivated() {
         assert_eq!(standing(true, SampleRate(48_000.0)), "running at 48000");
         assert_eq!(standing(false, SampleRate(48_000.0)), "deactivated");

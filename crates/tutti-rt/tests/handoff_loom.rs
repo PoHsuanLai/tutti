@@ -17,6 +17,8 @@
 //!   the audio end returns the first) loses and duplicates neither;
 //! - **lends overlapping the polls** are ordered with them: the take sees the
 //!   lend's write, and a second lend writes only after the first was taken.
+//! - **a lend never erases a recall** for a value the audio end still holds
+//!   (Core's review of #494): the lend is refused and the value comes back.
 //!
 //! # Mutation record
 //!
@@ -35,6 +37,9 @@
 //!   violation (the take reads the slot before the lend's write is visible);
 //! - `recall` raising the bit with a plain `store` → the first model: the slot
 //!   field it overwrote is lost, so the recall never returns the value.
+//! - `lend` claiming without `not_while_recalled` (as first written, where it
+//!   cleared the bit) → the fourth model: B is lent, the bit is gone, and A is
+//!   never returned ("A comes back").
 //!
 //! The test prints the number of executions loom ran.
 
@@ -199,6 +204,39 @@ fn lends_overlapping_the_polls_are_ordered_with_them() {
         ids.sort_unstable();
         assert_eq!(ids, [1, 2], "each value in one place");
         drop((refused, offered, hand, rt));
+        assert_eq!(drops.load(Ordering::SeqCst), 2, "each dropped once");
+    });
+}
+
+/// Core's sequence on #494: the audio end holds A, a recall is raised, and the
+/// control end lends B while the audio end polls. The recall is never erased:
+/// A comes back (now or at the next poll), and B is refused, never offered in
+/// A's place.
+#[test]
+fn a_lend_never_erases_a_recall_for_a_held_value() {
+    loom::model(|| {
+        let drops = std::sync::Arc::new(AtomicUsize::new(0));
+        let (mut hand, mut rt) = handoff::<Tracked>();
+        assert!(hand.lend(Tracked::new(1, &drops)).is_ok());
+        assert!(rt.poll(stop).is_some(), "A taken");
+        assert!(hand.recall().is_none(), "A is held: the bit is raised");
+
+        let audio = thread::spawn(move || {
+            let _ = rt.poll(stop);
+            rt
+        });
+        let refused = hand.lend(Tracked::new(2, &drops)).err();
+        let mut rt = audio.join().unwrap();
+
+        assert_eq!(refused.as_ref().map(|v| v.id), Some(2), "B is refused");
+        // A was returned by the poll, or is returned by the next one: the
+        // recall is still raised.
+        let _ = rt.poll(stop);
+        let back = hand.take().expect("A comes back");
+        assert_eq!(back.id, 1);
+        assert!(back.stopped);
+        assert!(rt.held().is_none());
+        drop((refused, back, hand, rt));
         assert_eq!(drops.load(Ordering::SeqCst), 2, "each dropped once");
     });
 }

@@ -1535,8 +1535,9 @@ As built (2026-11, doc 021 step 4a-2): the slot is `tutti_rt::handoff()`, in
 naming nothing of plugins. `Hand::lend`, `Hand::recall` (a value still on offer
 is withdrawn at once), `Hand::take`, and `Rt::poll(last)` between blocks, which
 takes an offer or returns the held value on a recall after running `last` (a
-Processor's `stop`). A lend into a full slot is refused with its value, so no
-misuse can lose or duplicate one. Swap (two Processors through one slot) is
+Processor's `stop`). A lend into a full slot, or while a recall is raised, is
+refused with its value, so no misuse can lose or duplicate one or erase a
+recall (Core's review); the audio end clears a recall it holds nothing for. Swap (two Processors through one slot) is
 not built: the VST2 shadow it served is not in the graph path. The model is
 `tutti-rt/tests/handoff_loom.rs`. `Lifecycle`'s `Hand` joins it with the node
 that uses it (step 4a-3).

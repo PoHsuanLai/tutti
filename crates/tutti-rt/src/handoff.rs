@@ -28,7 +28,10 @@
 //!   recall bit, so a recall raised meanwhile is never lost.
 //! - A recall of a value still on offer cancels the offer at once (the control
 //!   end takes it back without the audio end); one already taken raises the
-//!   bit, which the audio end clears when it returns the value.
+//!   bit, which the audio end clears when it returns the value. Only the audio
+//!   end clears the bit: when it returns the value, or at a poll where it holds
+//!   none (a stale recall). A lend is refused while the bit is raised, so a
+//!   recall is never erased while the value it asks for still runs.
 //!
 //! The ends are `&mut self` and not `Clone`, so each side is one thread at a
 //! time. The protocol does not trust the caller to lend only what the audio
@@ -114,18 +117,18 @@ impl<T> Drop for Shared<T> {
 }
 
 impl<T> Shared<T> {
-    /// Claims an empty slot for writing as `busy`, keeping the recall bit
-    /// (or clearing it, with `clear_recall`). `false` if the slot is not empty.
-    fn claim(&self, busy: u32, clear_recall: bool) -> bool {
+    /// Claims an empty slot for writing as `busy`, keeping the recall bit.
+    /// `false` if the slot is not empty, or, with `not_while_recalled`, if a
+    /// recall is raised.
+    fn claim(&self, busy: u32, not_while_recalled: bool) -> bool {
         let mut seen = self.state.load(Ordering::Relaxed);
         loop {
-            if seen & SLOT != EMPTY {
+            if seen & SLOT != EMPTY || (not_while_recalled && seen & RECALL != 0) {
                 return false;
             }
-            let keep = if clear_recall { 0 } else { seen & RECALL };
             match self.state.compare_exchange_weak(
                 seen,
-                keep | busy,
+                (seen & RECALL) | busy,
                 Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
@@ -171,6 +174,24 @@ impl<T> Shared<T> {
         }
     }
 
+    /// Clears a raised recall unless an offer is in the slot (the audio end
+    /// takes that first). One read-modify-write; it publishes nothing, so
+    /// `Relaxed`.
+    fn clear_stale_recall(&self) {
+        let mut seen = self.state.load(Ordering::Relaxed);
+        while seen & RECALL != 0 && seen & SLOT != OFFERED {
+            match self.state.compare_exchange_weak(
+                seen,
+                seen & !RECALL,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(now) => seen = now,
+            }
+        }
+    }
+
     /// Moves `value` into a slot this side claimed.
     fn write(&self, value: T) {
         self.slot.with_mut(|slot| {
@@ -202,6 +223,10 @@ pub struct Hand<T> {
 
 /// The audio end of a [`handoff`]: holds the value it was lent and trades it
 /// at [`poll`](Self::poll), between blocks.
+///
+/// A value it holds drops with it, wherever it is dropped. Drop it on the
+/// control side (a graph node's retirement path does), or recall the value
+/// first: a Processor's drop must not run on the audio thread.
 pub struct Rt<T> {
     shared: Arc<Shared<T>>,
     held: Option<T>,
@@ -224,13 +249,17 @@ pub fn handoff<T: Send>() -> (Hand<T>, Rt<T>) {
 }
 
 impl<T> Hand<T> {
-    /// Offers `value` to the audio end, which takes it at its next poll. Clears
-    /// a recall still raised from an earlier value.
+    /// Offers `value` to the audio end, which takes it at its next poll.
     ///
     /// # Errors
     ///
-    /// `value`, back, when the slot is not empty: an earlier offer the audio
-    /// end has not taken, or a returned value not yet [`take`](Self::take)n.
+    /// `value`, back, when the slot is not empty (an earlier offer the audio
+    /// end has not taken, or a returned value not yet [`take`](Self::take)n)
+    /// or while a recall is raised. A lend never clears a recall: the audio end
+    /// may still hold the value it was for, and a lend that cleared it would
+    /// leave that value running with nothing asking for it. The audio end
+    /// clears a recall it has nothing for at its next poll, so a refused lend
+    /// is retried on a later tick.
     pub fn lend(&mut self, value: T) -> Result<(), T> {
         if !self.shared.claim(MAIN_BUSY, true) {
             return Err(value);
@@ -281,14 +310,22 @@ impl<T> Rt<T> {
                 self.held = Some(self.shared.read());
                 self.shared.set_slot(EMPTY, false);
             }
-        } else if state & RECALL != 0
-            && self.held.is_some()
-            && self.shared.claim(RT_BUSY, false)
-            && let Some(mut value) = self.held.take()
-        {
-            last(&mut value);
-            self.shared.write(value);
-            self.shared.set_slot(RETURNED, true);
+        } else if state & RECALL != 0 {
+            if self.held.is_some() {
+                if self.shared.claim(RT_BUSY, false)
+                    && let Some(mut value) = self.held.take()
+                {
+                    last(&mut value);
+                    self.shared.write(value);
+                    self.shared.set_slot(RETURNED, true);
+                }
+            } else {
+                // A recall with nothing here to answer it (raised when nothing
+                // was lent, or again after a return): cleared, so the next lend
+                // is not refused for it. Only here, where it is known that no
+                // value is held.
+                self.shared.clear_stale_recall();
+            }
         }
         self.held.as_mut()
     }

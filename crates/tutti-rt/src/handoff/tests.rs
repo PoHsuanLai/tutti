@@ -83,15 +83,37 @@ fn a_lend_into_a_full_slot_is_refused() {
     assert_eq!(rt.poll(|_| {}).copied(), Some(3));
 }
 
-/// A recall raised while the audio end holds nothing is cleared by the next
-/// lend: the new value is not sent straight back.
+/// A lend while a recall is raised is refused: the audio end may still hold
+/// the value the recall is for (Core's review of #494: lend A, the audio end
+/// takes it, recall, lend B; clearing the bit there left A running with
+/// nothing asking for it). That value then comes back at the next poll.
 ///
-/// Mutation (run): `lend` keeping the recall bit -> the poll returns the new
-/// value at once -> fails.
+/// Mutation (run): `lend` claiming without `not_while_recalled` -> B is lent,
+/// the poll keeps A -> fails.
 #[test]
-fn a_lend_clears_a_stale_recall() {
+fn a_lend_is_refused_while_a_recall_is_raised() {
+    let (mut hand, mut rt) = handoff::<u32>();
+    hand.lend(1).unwrap();
+    assert_eq!(rt.poll(|_| unreachable!()).copied(), Some(1));
+    assert_eq!(hand.recall(), None);
+    assert_eq!(hand.lend(2), Err(2), "the recall is pending");
+    assert_eq!(rt.poll(|_| {}), None, "returned");
+    assert_eq!(hand.take(), Some(1));
+    hand.lend(2).unwrap();
+    assert_eq!(rt.poll(|_| unreachable!()).copied(), Some(2));
+}
+
+/// A recall with nothing lent is stale: the audio end clears it at its next
+/// poll, and a lend after that is taken and kept, not sent straight back.
+///
+/// Mutation (run): `poll` not clearing a stale recall -> the lend stays
+/// refused -> fails.
+#[test]
+fn the_audio_end_clears_a_stale_recall() {
     let (mut hand, mut rt) = handoff::<u32>();
     assert_eq!(hand.recall(), None);
+    assert_eq!(hand.lend(5), Err(5), "refused until the audio end polls");
+    assert_eq!(rt.poll(|_| unreachable!()), None);
     hand.lend(5).unwrap();
     assert_eq!(rt.poll(|_| unreachable!()).copied(), Some(5));
     assert_eq!(rt.poll(|_| unreachable!()).copied(), Some(5), "kept");

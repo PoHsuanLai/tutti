@@ -35,7 +35,7 @@ use tutti_vst3_host::{ContentScale, EditorSize, KeyEvent, WindowHandle};
 
 #[path = "active.rs"]
 mod active;
-use active::Active;
+use active::{Active, ActiveExt};
 
 /// Compile-time default, baked in by `build.rs`.
 const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");

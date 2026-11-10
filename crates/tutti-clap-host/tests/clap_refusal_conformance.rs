@@ -13,7 +13,7 @@
 //! and resets the probe at the top.
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
 
 use std::sync::{Mutex, MutexGuard};
@@ -374,7 +374,7 @@ fn accepted_sample_rate_change_reaches_the_plugin() {
     let mut active = probe.activate();
 
     active
-        .reconfigure(96_000.0, BASE_FRAMES)
+        .reconfigure_at(96_000.0, BASE_FRAMES)
         .expect("the probe accepts 96k when nothing is armed");
 
     assert_eq!(activate_refusals(), 0);

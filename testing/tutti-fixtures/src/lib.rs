@@ -43,7 +43,7 @@ pub mod sf2;
 
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
-pub use plugin::main_thread;
+pub use plugin::{Activation, Active, Whole, main_thread};
 pub use range_contract::{RangeContract, check_range_contract};
 
 use std::path::{Path, PathBuf};

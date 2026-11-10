@@ -15,7 +15,8 @@ use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::spec::{self, Mode, Param};
 use crate::{
-    Active, BLOCK, Format, Kind, ParamTiming, RATE, prepare, set_level, set_mode, transcript,
+    Active, BLOCK, Format, Kind, ParamTiming, RATE, Render, prepare, set_level, set_mode,
+    transcript,
 };
 
 fn read<C: Control + ?Sized>(c: &C, param: Param) -> Option<f64> {
@@ -90,11 +91,12 @@ pub fn routing_tag_oracle<F: Format>() {
 pub fn reconfigure_keeps_rendering<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     a.silent(BLOCK);
-    a.reconfigure(prepare(44_100.0, 128, SampleFormat::Float32));
+    a.reconfigure(prepare(44_100.0, 128, SampleFormat::Float32))
+        .expect("the reference plugin takes 44.1k");
     let out = a.render(&silence(128), 128, &ProcessContext::new());
     assert!(out[0].iter().all(|&v| v == spec::tag(0)));
     assert!(out[1].iter().all(|&v| v == spec::tag(1)));
-    let t = transcript::<F, _>(a.controller());
+    let t = transcript::<F, _>(a.controller_mut());
     assert_eq!((t.rate, t.max_block), (44_100.0, 128), "what it was told");
     assert_eq!(t.prepares, 2);
     assert_eq!((t.calls, t.frames), (1, 128), "counted from the activation");
@@ -207,7 +209,7 @@ pub fn parameter_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Aux, 0.75);
     assert_eq!(read(&loaded, Param::Aux), Some(0.75), "loaded");
-    let mut a = activate(loaded, BLOCK);
+    let a = activate(loaded, BLOCK);
     assert_eq!(read(a.controller(), Param::Aux), Some(0.75), "active");
 }
 
@@ -221,7 +223,7 @@ pub fn unlisted_parameter_is_none<F: Format>() {
         None,
         "loaded"
     );
-    let mut a = activate(loaded, BLOCK);
+    let a = activate(loaded, BLOCK);
     assert_eq!(
         a.controller().parameter(&main_thread(), spec::UNLISTED),
         None,
@@ -239,7 +241,7 @@ pub fn active_write_applied<F: Format>() {
         a.silent(BLOCK)[0].iter().all(|&v| v == 0.5),
         "default level"
     );
-    write(a.controller(), Param::Level, 0.75);
+    write(a.controller_mut(), Param::Level, 0.75);
     let out = a.silent(BLOCK);
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
 }
@@ -285,7 +287,7 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     for frames in [1, 7, 33] {
         a.silent(frames);
     }
-    let t = transcript::<F, _>(a.controller());
+    let t = transcript::<F, _>(a.controller_mut());
     assert_eq!(t.blocks, [64, 1, 7, 33], "block sizes the host sent");
     for kind in [Kind::Param, Kind::NoteOn, Kind::NoteOff] {
         let offsets: Vec<u32> = t.of(kind).map(|e| e.offset).collect();
@@ -429,7 +431,7 @@ pub fn overflowing_log_fails_the_oracle<F: Format>() {
         a.silent(BLOCK);
     }
     let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        transcript::<F, _>(a.controller())
+        transcript::<F, _>(a.controller_mut())
     }));
     let why = read.expect_err("a transcript past the log's room is refused");
     let text = why

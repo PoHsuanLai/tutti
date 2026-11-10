@@ -37,7 +37,7 @@ use tutti_plugin_types::{Control, Normalized, ParamFlags, ParamId, ParamSteps};
 #[path = "support/active.rs"]
 mod active;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 /// The id of the parameter at `index`; a negative index is the id its bits make.
 fn pid(index: i32) -> ParamId {

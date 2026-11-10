@@ -29,7 +29,7 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_graph::UmpAt;
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
 
 use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapLoaded, ClapProcessContext, LoadOptions};
@@ -1025,7 +1025,7 @@ fn a_sysex_open_across_a_reset_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 1);
 
     drive_midi_block(&mut inst, first);
-    inst.reconfigure(SAMPLE_RATE * 2.0, MAX_FRAMES)
+    inst.reconfigure_at(SAMPLE_RATE * 2.0, MAX_FRAMES)
         .expect("the probe accepts the new rate");
     drive_midi_block(&mut inst, rest);
     assert_eq!(

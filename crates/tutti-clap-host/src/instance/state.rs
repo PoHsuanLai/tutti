@@ -81,7 +81,7 @@ impl ClapLoaded {
         let mut stream = OutputStream::new();
         match self
             .plugin
-            .state_save_with_context(main, &mut stream, context.into())
+            .state_save_with_context(main, &mut stream, context)
         {
             Ok(()) => Ok(stream.into_data()),
             Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
@@ -120,7 +120,7 @@ impl ClapLoaded {
         let mut stream = InputStream::new(data);
         match self
             .plugin
-            .state_load_with_context(main, &mut stream, context.into())
+            .state_load_with_context(main, &mut stream, context)
         {
             Ok(()) => Ok(()),
             Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(

@@ -197,24 +197,66 @@ extensions! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Extension {
+    /// `clap.audio-ports`.
+    AudioPorts,
+    /// `clap.audio-ports-config`.
+    AudioPortsConfig,
+    /// `clap.audio-ports-config-info`.
+    AudioPortsConfigInfo,
+    /// `clap.audio-ports-activation`.
+    AudioPortsActivation,
+    /// `clap.configurable-ports`.
+    ConfigurableAudioPorts,
+    /// `clap.extensible-ports`.
+    ExtensibleAudioPorts,
+    /// `clap.ambisonic`.
+    Ambisonic,
+    /// `clap.surround`.
+    Surround,
     /// `clap.params`.
     Params,
+    /// `clap.param-indication`.
+    ParamIndication,
+    /// `clap.remote-controls`.
+    RemoteControls,
     /// `clap.state`.
     State,
     /// `clap.state-context`.
     StateContext,
     /// `clap.preset-load`.
     PresetLoad,
+    /// `clap.undo-delta`.
+    UndoDelta,
+    /// `clap.undo-context`.
+    UndoContext,
     /// `clap.gui`.
     Gui,
+    /// `clap.context-menu`.
+    ContextMenu,
+    /// `clap.note-ports`.
+    NotePorts,
+    /// `clap.note-name`.
+    NoteName,
+    /// `clap.latency`.
+    Latency,
+    /// `clap.tail`.
+    Tail,
+    /// `clap.render`.
+    Render,
+    /// `clap.voice-info`.
+    VoiceInfo,
     /// `clap.timer-support`.
     TimerSupport,
     /// `clap.thread-pool`.
     ThreadPool,
-    /// `clap.audio-ports`.
-    AudioPorts,
-    /// `clap.note-ports`.
-    NotePorts,
+    /// `clap.track-info`.
+    TrackInfo,
+    /// `clap.triggers`.
+    Triggers,
+    /// `clap.tuning`.
+    Tuning,
+    /// `clap.resource-directory`.
+    ResourceDirectory,
     /// `clap.posix-fd-support`.
     PosixFdSupport,
 }
@@ -404,16 +446,13 @@ impl Plugin {
         }
         let mut cleanup = Destroy(raw, true);
         // SAFETY: a created instance.
-        let init = unsafe { (*raw).init }.ok_or_else(|| LoadError {
+        let init = unsafe { (*raw).init }.ok_or(LoadError::MissingFunction {
             stage: Stage::Initialization,
-            reason: "No plugin init function".to_string(),
+            name: "plugin init",
         })?;
         // SAFETY: the instance's own `init`, once, right after creation.
         if !unsafe { init(raw) } {
-            return Err(LoadError {
-                stage: Stage::Initialization,
-                reason: "Plugin init failed".to_string(),
-            });
+            return Err(LoadError::PluginInitFailed);
         }
         cleanup.1 = false;
         let core = Arc::new(Core {
@@ -469,15 +508,36 @@ impl Plugin {
     pub fn supports(&self, extension: Extension) -> bool {
         let e = &self.core.exts;
         let p: *const c_void = match extension {
+            Extension::AudioPorts => e.audio_ports.cast(),
+            Extension::AudioPortsConfig => e.audio_ports_config.cast(),
+            Extension::AudioPortsConfigInfo => e.audio_ports_config_info.cast(),
+            Extension::AudioPortsActivation => e.audio_ports_activation.cast(),
+            Extension::ConfigurableAudioPorts => e.configurable_ports.cast(),
+            Extension::ExtensibleAudioPorts => e.extensible_ports.cast(),
+            Extension::Ambisonic => e.ambisonic.cast(),
+            Extension::Surround => e.surround.cast(),
             Extension::Params => e.params.cast(),
+            Extension::ParamIndication => e.param_indication.cast(),
+            Extension::RemoteControls => e.remote_controls.cast(),
             Extension::State => e.state.cast(),
             Extension::StateContext => e.state_context.cast(),
             Extension::PresetLoad => e.preset_load.cast(),
+            Extension::UndoDelta => e.undo_delta.cast(),
+            Extension::UndoContext => e.undo_context.cast(),
             Extension::Gui => e.gui.cast(),
+            Extension::ContextMenu => e.context_menu.cast(),
+            Extension::NotePorts => e.note_ports.cast(),
+            Extension::NoteName => e.note_name.cast(),
+            Extension::Latency => e.latency.cast(),
+            Extension::Tail => e.tail.cast(),
+            Extension::Render => e.render.cast(),
+            Extension::VoiceInfo => e.voice_info.cast(),
             Extension::TimerSupport => e.timer_support.cast(),
             Extension::ThreadPool => e.thread_pool.cast(),
-            Extension::AudioPorts => e.audio_ports.cast(),
-            Extension::NotePorts => e.note_ports.cast(),
+            Extension::TrackInfo => e.track_info.cast(),
+            Extension::Triggers => e.triggers.cast(),
+            Extension::Tuning => e.tuning.cast(),
+            Extension::ResourceDirectory => e.resource_directory.cast(),
             #[cfg(unix)]
             Extension::PosixFdSupport => e.posix_fd_support.cast(),
             #[cfg(not(unix))]
@@ -632,18 +692,12 @@ impl Plugin {
 
     /// `params.get_info` for the parameter at `index`.
     #[must_use]
-    pub fn param_info(
-        &self,
-        _main: &MainThread,
-        index: u32,
-    ) -> Option<clap_sys::ext::params::clap_param_info> {
+    pub fn param_info(&self, _main: &MainThread, index: u32) -> Option<crate::ParamInfo> {
         let mut info: clap_sys::ext::params::clap_param_info = Plain::zeroed();
         // The cookie is the plugin's own pointer, for the plugin to read back
-        // in an event; `EventRef` refuses any cookie, so none is handed out.
-        call!(self.params.get_info(index, &mut info) else false).then(|| {
-            info.cookie = ptr::null_mut();
-            info
-        })
+        // in an event; `ParamInfo` has none, and `EventRef` refuses any.
+        call!(self.params.get_info(index, &mut info) else false)
+            .then(|| crate::ParamInfo::from_raw(&info))
     }
 
     /// `params.get_value`.
@@ -689,6 +743,7 @@ impl Plugin {
         true
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `param-indication.set_mapping`.
     pub fn set_param_mapping(
         &self,
@@ -707,16 +762,17 @@ impl Plugin {
         call!(self.param_indication.set_mapping(param_id, has_mapping, color_ptr, label_ptr, desc_ptr) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `param-indication.set_automation`.
     pub fn set_param_automation(
         &self,
         _main: &MainThread,
         param_id: u32,
-        state: u32,
+        state: crate::AutomationState,
         color: Option<clap_sys::color::clap_color>,
     ) {
         let color_ptr = color.as_ref().map_or(ptr::null(), ptr::from_ref);
-        call!(self.param_indication.set_automation(param_id, state, color_ptr) else ());
+        call!(self.param_indication.set_automation(param_id, state.raw(), color_ptr) else ());
     }
 
     // ---- state -----------------------------------------------------------
@@ -774,7 +830,7 @@ impl Plugin {
         &self,
         _main: &MainThread,
         out: &mut crate::OutputStream,
-        context: u32,
+        context: crate::StateContext,
     ) -> Result<(), CallError> {
         let f = self
             .ext(self.core.exts.state_context)
@@ -782,7 +838,7 @@ impl Plugin {
             .save
             .ok_or(CallError::NoFunction)?;
         // SAFETY: as `state_save`.
-        out.with_raw(|raw| unsafe { f(self.core.raw(), raw, context) })
+        out.with_raw(|raw| unsafe { f(self.core.raw(), raw, context.raw()) })
             .then_some(())
             .ok_or(CallError::Failed)
     }
@@ -795,7 +851,7 @@ impl Plugin {
         &mut self,
         _main: &MainThread,
         input: &mut crate::InputStream<'_>,
-        context: u32,
+        context: crate::StateContext,
     ) -> Result<(), CallError> {
         let f = self
             .ext(self.core.exts.state_context)
@@ -804,7 +860,7 @@ impl Plugin {
             .ok_or(CallError::NoFunction)?;
         // SAFETY: as `state_save`.
         input
-            .with_raw(|raw| unsafe { f(self.core.raw(), raw, context) })
+            .with_raw(|raw| unsafe { f(self.core.raw(), raw, context.raw()) })
             .then_some(())
             .ok_or(CallError::Failed)
     }
@@ -871,12 +927,9 @@ impl Plugin {
 
     /// `voice-info.get`.
     #[must_use]
-    pub fn voice_info(
-        &self,
-        _main: &MainThread,
-    ) -> Option<clap_sys::ext::voice_info::clap_voice_info> {
+    pub fn voice_info(&self, _main: &MainThread) -> Option<crate::VoiceInfo> {
         let mut info = Plain::zeroed();
-        call!(self.voice_info.get(&mut info) else false).then_some(info)
+        call!(self.voice_info.get(&mut info) else false).then(|| crate::VoiceInfo::from_raw(&info))
     }
 
     /// `note-name.count`.
@@ -887,13 +940,10 @@ impl Plugin {
 
     /// `note-name.get`.
     #[must_use]
-    pub fn note_name(
-        &self,
-        _main: &MainThread,
-        index: u32,
-    ) -> Option<clap_sys::ext::note_name::clap_note_name> {
+    pub fn note_name(&self, _main: &MainThread, index: u32) -> Option<crate::NoteName> {
         let mut info = Plain::zeroed();
-        call!(self.note_name.get(index, &mut info) else false).then_some(info)
+        call!(self.note_name.get(index, &mut info) else false)
+            .then(|| crate::NoteName::from_raw(&info))
     }
 
     // ---- ports -----------------------------------------------------------
@@ -911,9 +961,10 @@ impl Plugin {
         _main: &MainThread,
         index: u32,
         is_input: bool,
-    ) -> Option<clap_sys::ext::note_ports::clap_note_port_info> {
+    ) -> Option<crate::NotePortDecl> {
         let mut info = Plain::zeroed();
-        call!(self.note_ports.get(index, is_input, &mut info) else false).then_some(info)
+        call!(self.note_ports.get(index, is_input, &mut info) else false)
+            .then(|| crate::NotePortDecl::from_raw(&info))
     }
 
     /// `audio-ports.count`.
@@ -947,9 +998,10 @@ impl Plugin {
         &self,
         _main: &MainThread,
         index: u32,
-    ) -> Option<clap_sys::ext::audio_ports_config::clap_audio_ports_config> {
+    ) -> Option<crate::AudioPortsConfig> {
         let mut config = Plain::zeroed();
-        call!(self.audio_ports_config.get(index, &mut config) else false).then_some(config)
+        call!(self.audio_ports_config.get(index, &mut config) else false)
+            .then(|| crate::AudioPortsConfig::from_raw(&config))
     }
 
     /// `audio-ports-config.select`, `[main-thread && !active]`.
@@ -987,6 +1039,7 @@ impl Plugin {
             .then(|| AudioPortInfo::from_raw(&info))
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `configurable-audio-ports.can_apply_configuration`, `[main-thread &&
     /// !active]`.
     ///
@@ -1004,6 +1057,7 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `configurable-audio-ports.apply_configuration`, `[main-thread &&
     /// !active]`.
     ///
@@ -1021,12 +1075,14 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `audio-ports-activation.can_activate_while_processing`.
     #[must_use]
     pub fn can_activate_audio_port_while_processing(&self, _main: &MainThread) -> bool {
         call!(self.audio_ports_activation.can_activate_while_processing() else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `audio-ports-activation.set_active`, `[active ? audio-thread :
     /// main-thread]`: on an active plugin it takes the audio claim, and while
     /// the plugin is processing it is refused unless the plugin said it can
@@ -1053,6 +1109,7 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `extensible-audio-ports.add_port`, `[main-thread && !active]`.
     ///
     /// # Errors
@@ -1072,6 +1129,7 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `extensible-audio-ports.remove_port`, `[main-thread && !active]`.
     ///
     /// # Errors
@@ -1103,10 +1161,10 @@ impl Plugin {
         _main: &MainThread,
         is_input: bool,
         port_index: u32,
-    ) -> Option<clap_sys::ext::ambisonic::clap_ambisonic_config> {
+    ) -> Option<crate::AmbisonicDecl> {
         let mut config = Plain::zeroed();
         call!(self.ambisonic.get_config(is_input, port_index, &mut config) else false)
-            .then_some(config)
+            .then(|| crate::AmbisonicDecl::from_raw(&config))
     }
 
     /// `surround.is_channel_mask_supported`.
@@ -1195,11 +1253,13 @@ impl Plugin {
 
     // ---- notifications ---------------------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `track-info.changed`.
     pub fn notify_track_info_changed(&self, _main: &MainThread) {
         call!(self.track_info.changed() else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `tuning.changed`.
     pub fn notify_tuning_changed(&self, _main: &MainThread) {
         call!(self.tuning.changed() else ());
@@ -1207,46 +1267,46 @@ impl Plugin {
 
     // ---- remote controls, triggers ---------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `remote-controls.count`.
     #[must_use]
     pub fn remote_controls_count(&self, _main: &MainThread) -> u32 {
         call!(self.remote_controls.count() else 0)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `remote-controls.get`.
     #[must_use]
     pub fn remote_controls_page(
         &self,
         _main: &MainThread,
         index: u32,
-    ) -> Option<clap_sys::ext::remote_controls::clap_remote_controls_page> {
+    ) -> Option<crate::RemoteControlsPageDecl> {
         let mut page = Plain::zeroed();
-        call!(self.remote_controls.get(index, &mut page) else false).then_some(page)
+        call!(self.remote_controls.get(index, &mut page) else false)
+            .then(|| crate::RemoteControlsPageDecl::from_raw(&page))
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `triggers.count`.
     #[must_use]
     pub fn trigger_count(&self, _main: &MainThread) -> u32 {
         call!(self.triggers.count() else 0)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `triggers.get_info`.
     #[must_use]
-    pub fn trigger_info(
-        &self,
-        _main: &MainThread,
-        index: u32,
-    ) -> Option<clap_sys::ext::draft::triggers::clap_trigger_info> {
-        let mut info: clap_sys::ext::draft::triggers::clap_trigger_info = Plain::zeroed();
-        // As `param_info`: the plugin's own pointer is not handed out.
-        call!(self.triggers.get_info(index, &mut info) else false).then(|| {
-            info.cookie = ptr::null_mut();
-            info
-        })
+    pub fn trigger_info(&self, _main: &MainThread, index: u32) -> Option<crate::TriggerDecl> {
+        let mut info = Plain::zeroed();
+        // As `param_info`: `TriggerDecl` carries no cookie.
+        call!(self.triggers.get_info(index, &mut info) else false)
+            .then(|| crate::TriggerDecl::from_raw(&info))
     }
 
     // ---- resource directory ----------------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.set_directory`.
     pub fn resource_set_directory(&self, _main: &MainThread, path: &Path, is_shared: bool) {
         if let Ok(cstr) = CString::new(path.to_string_lossy().as_ref()) {
@@ -1254,17 +1314,20 @@ impl Plugin {
         }
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.collect`.
     pub fn resource_collect(&self, _main: &MainThread, all: bool) {
         call!(self.resource_directory.collect(all) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.get_files_count`.
     #[must_use]
     pub fn resource_file_count(&self, _main: &MainThread) -> u32 {
         call!(self.resource_directory.get_files_count() else 0)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.get_file_path`.
     #[must_use]
     pub fn resource_file_path(&self, _main: &MainThread, index: u32) -> Option<String> {
@@ -1276,24 +1339,24 @@ impl Plugin {
 
     // ---- undo ------------------------------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.get_delta_properties`.
     #[must_use]
-    pub fn undo_delta_properties(
-        &self,
-        _main: &MainThread,
-    ) -> Option<clap_sys::ext::draft::undo::clap_undo_delta_properties> {
+    pub fn undo_delta_properties(&self, _main: &MainThread) -> Option<crate::UndoDeltaDecl> {
         self.ext(self.core.exts.undo_delta)?.get_delta_properties?;
         let mut props = Plain::zeroed();
         call!(self.undo_delta.get_delta_properties(&mut props) else ());
-        Some(props)
+        Some(crate::UndoDeltaDecl::from_raw(&props))
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.can_use_delta_format_version`.
     #[must_use]
     pub fn undo_can_use_format_version(&self, _main: &MainThread, version: u32) -> bool {
         call!(self.undo_delta.can_use_delta_format_version(version) else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.undo`.
     pub fn undo_apply_delta(
         &mut self,
@@ -1304,6 +1367,7 @@ impl Plugin {
         call!(self.undo_delta.undo(format_version, delta.as_ptr().cast(), delta.len()) else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.redo`.
     pub fn redo_apply_delta(
         &mut self,
@@ -1314,16 +1378,19 @@ impl Plugin {
         call!(self.undo_delta.redo(format_version, delta.as_ptr().cast(), delta.len()) else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_can_undo`.
     pub fn undo_set_can_undo(&self, _main: &MainThread, can_undo: bool) {
         call!(self.undo_context.set_can_undo(can_undo) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_can_redo`.
     pub fn undo_set_can_redo(&self, _main: &MainThread, can_redo: bool) {
         call!(self.undo_context.set_can_redo(can_redo) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_undo_name`.
     pub fn undo_set_undo_name(&self, _main: &MainThread, name: &str) {
         if let Ok(cstr) = CString::new(name) {
@@ -1331,6 +1398,7 @@ impl Plugin {
         }
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_redo_name`.
     pub fn undo_set_redo_name(&self, _main: &MainThread, name: &str) {
         if let Ok(cstr) = CString::new(name) {
@@ -1344,6 +1412,7 @@ impl Plugin {
         self.ext(self.core.exts.gui)
     }
 
+    #[cfg(feature = "clap-extras")]
     pub(crate) fn context_menu_ext(&self) -> Option<&clap_plugin_context_menu> {
         self.ext(self.core.exts.context_menu)
     }
@@ -1427,8 +1496,8 @@ pub struct AudioPortInfo {
     pub id: u32,
     /// Display name.
     pub name: String,
-    /// `CLAP_AUDIO_PORT_*` flags.
-    pub flags: u32,
+    /// The port's capability flags.
+    pub flags: crate::AudioPortFlags,
     /// Channel count.
     pub channel_count: u32,
     /// The declared port type.
@@ -1479,7 +1548,7 @@ impl AudioPortInfo {
         Self {
             id: info.id,
             name: crate::chars_to_string(&info.name),
-            flags: info.flags,
+            flags: crate::AudioPortFlags::from_bits_retain(info.flags),
             channel_count: info.channel_count,
             port_type,
             in_place_pair: info.in_place_pair,
@@ -1488,6 +1557,7 @@ impl AudioPortInfo {
 }
 
 /// One entry of a `configurable-audio-ports` request.
+#[cfg(feature = "clap-extras")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortConfigRequest {
     /// Input or output.
@@ -1498,6 +1568,7 @@ pub struct PortConfigRequest {
     pub channel_count: u32,
 }
 
+#[cfg(feature = "clap-extras")]
 impl PortConfigRequest {
     fn to_raw(
         requests: &[Self],

@@ -97,8 +97,8 @@ impl HostCallbacks for Recorder {
         self.restarts.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn audio_ports_rescan(&self, flags: u32) {
-        self.rescans.store(flags, Ordering::SeqCst);
+    fn audio_ports_rescan(&self, flags: tutti_clap_ffi::AudioPortsRescanFlags) {
+        self.rescans.store(flags.bits(), Ordering::SeqCst);
     }
 }
 
@@ -178,7 +178,7 @@ fn render(
     scratch: &mut PortScratch,
     outputs: &mut [&mut [f32]],
     frames: u32,
-) -> Result<i32, ProcessError> {
+) -> Result<tutti_clap_ffi::ProcessStatus, ProcessError> {
     let mut sink = Count::default();
     side.process(ProcessCall {
         scratch,
@@ -215,7 +215,7 @@ fn a_bundle_selects_by_id_and_refuses_an_unknown_one() {
     );
     assert!(bundle.select(Some(PLUGIN_ID.to_str().unwrap())).is_ok());
     let err = bundle.select(Some("no.such.plugin")).unwrap_err();
-    assert!(err.reason.contains("no.such.plugin"), "{err}");
+    assert!(err.reason().contains("no.such.plugin"), "{err}");
 }
 
 /// The main-thread half answers extension reads, and a `Plugin` is not

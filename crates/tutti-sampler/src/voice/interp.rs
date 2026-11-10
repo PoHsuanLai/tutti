@@ -119,7 +119,7 @@ pub fn window_position(
     {
         return None;
     }
-    Some(gate.origin(now, tempo))
+    Some(gate.origin(now, tempo, None))
 }
 
 /// A placed read's gate: its window, the rate the window is measured in
@@ -145,12 +145,22 @@ impl Gate {
     /// The source position of a playhead at `now` (inside the window): its
     /// elapsed time since the window's start, in the source's frames at the
     /// gate's rate.
+    ///
+    /// The time is what the playhead took from the window's start to `now`:
+    /// at one tempo, the beats over `tempo`; over a tempo map that changes,
+    /// the map's own seconds between the two beats ([`BlockClock::seconds`]),
+    /// so a voice that plays through a step or a ramp stays where the map
+    /// puts it rather than being re-seated at the new tempo. `clock` is
+    /// `None` where no block is in hand ([`window_position`]): the tempo is
+    /// the transport's.
     #[inline]
-    fn origin(&self, now: Beat, tempo: Bpm) -> SamplePosition {
+    fn origin(&self, now: Beat, tempo: Bpm, clock: Option<&BlockClock<'_>>) -> SamplePosition {
         // Reached within the tolerance may be a hair before the start: that
         // is the start itself.
-        let beat_offset = (now - self.window.start).get().max(0.0);
-        let seconds_offset = beat_offset * 60.0 / tempo.get();
+        let seconds_offset = match clock {
+            Some(clock) => clock.seconds(self.window.start, now, tempo),
+            None => (now - self.window.start).get().max(0.0) * 60.0 / tempo.get(),
+        };
         let position = seconds_offset * self.source_rate.get() * self.rate.get();
         // The clock's beat is its frame count in closed form; back through
         // seconds it lands a hair off the whole frame it is (frame 128 of a
@@ -270,7 +280,7 @@ pub(crate) fn place(
         slots[x - a..].fill(None);
         if e < x {
             sounds = true;
-            let origin = gate.origin(run.beat_at(e), run.tempo());
+            let origin = gate.origin(run.beat_at(e), run.tempo(), Some(clock));
             for (k, p) in slots[e - a..x - a].iter_mut().enumerate() {
                 *p = Some(origin + step.advance(Samples(k)));
             }
@@ -311,7 +321,7 @@ pub(crate) fn place_tail(
             None => b,
         };
         if a < x {
-            let origin = gate.origin(run.beat_at(a) + wrap.back, tempo);
+            let origin = gate.origin(run.beat_at(a) + wrap.back, tempo, Some(clock));
             for (k, p) in out[a - base..x - base].iter_mut().enumerate() {
                 *p = Some(origin + step.advance(Samples(k)));
             }

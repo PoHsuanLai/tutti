@@ -65,6 +65,12 @@ tutti-codec = { path = "../tutti-codec" }
 tutti-graph = { path = "../tutti-graph" }
 
 tutti-types = { path = "../tutti-types", default-features = false }
+
+# The project's tempo map, and the reader a placed voice lends it through
+# (doc 020, stage 5): over a map that changes, how long the playhead took
+# from a clip's start to now is the map's, not the current tempo's.
+tutti-tempo = { path = "../tutti-tempo" }
+tutti-transport = { path = "../tutti-transport" }
 tutti-rt = { path = "../tutti-rt" }
 
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
@@ -110,9 +116,8 @@ tutti-sampler = { path = ".", features = ["test-support", "flac", "mp3", "serde"
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # `contract` for the node harnesses (`drive_input`, `Direct`, `BlockRig`).
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
-# The engine and transport the clock tests render through.
+# The engine the clock tests render through.
 tutti-engine = { path = "../tutti-engine" }
-tutti-transport = { path = "../tutti-transport" }
 # `ControlProgram`, for a control lane on a voice's gain port
 # (`voice_gain_survives_commit.rs`). No cycle: `tutti-modulation` names no tutti
 # crate but `tutti-types`.

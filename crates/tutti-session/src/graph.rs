@@ -373,12 +373,12 @@ pub struct Graph {
     /// happen.
     #[cfg(feature = "plugin")]
     pub(crate) plugins: BTreeMap<NodeKey, crate::HostedPlugin>,
-    /// A reader of the session's tempo map, the template each plugin
-    /// inserted through the graph is bound with (a clone of it: the plugin
-    /// node lends the map once per block and a fork clones its reader on the
-    /// control side). The publisher is the session's `TransportSettings`,
-    /// whose `Reclaim` sweep already covers the cell.
-    #[cfg(feature = "plugin")]
+    /// A reader of the session's tempo map, the template each plugin and
+    /// each sampler node inserted through the graph is bound with (a clone
+    /// of it: the node lends the map once per block and a fork clones its
+    /// reader on the control side; [`SessionNode::bind_tempo`]). The
+    /// publisher is the session's `TransportSettings`, whose `Reclaim` sweep
+    /// already covers the cell.
     pub(crate) tempo: tutti_transport::TempoReader,
 }
 
@@ -479,8 +479,6 @@ impl Graph {
         quantum: Option<Samples>,
         tempo: tutti_transport::TempoReader,
     ) -> Self {
-        #[cfg(not(feature = "plugin"))]
-        let _ = tempo;
         let (mut editor, exec) = Editor::new(prepare_for(rate, max_block, quantum));
         let topology = &mut editor.spec_mut().topology;
         topology.inputs = inputs;
@@ -518,7 +516,6 @@ impl Graph {
             widen_refusal: None,
             #[cfg(feature = "plugin")]
             plugins: BTreeMap::new(),
-            #[cfg(feature = "plugin")]
             tempo,
         }
     }
@@ -817,7 +814,7 @@ impl Graph {
     /// [`SessionNode::params`] and its reclaimer kept
     /// ([`SessionNode::reclaimer`]).
     pub fn add<N: SessionNode>(&mut self, node: N) -> (NodeKey, N::Controls) {
-        let (id, controls) = self.insert(node);
+        let (id, controls) = self.insert(node.bind_tempo(&self.tempo));
         self.address::<N>(id, &controls);
         (id, controls)
     }
@@ -1120,6 +1117,7 @@ impl Graph {
         N: SessionNode,
         N::Controls: Send + 'static,
     {
+        let incoming = incoming.bind_tempo(&self.tempo);
         if self.parked.iter().any(|p| p.node == node) {
             return Ok(Crossfade::Waiting(self.park(
                 node,

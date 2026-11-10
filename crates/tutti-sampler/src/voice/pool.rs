@@ -30,6 +30,7 @@ use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,
     Status,
 };
+use tutti_transport::TempoReader;
 use tutti_types::{ChannelLayout, SampleRate, Tail};
 
 // ---------------------------------------------------------------------------
@@ -350,6 +351,11 @@ pub struct VoicePool {
     /// and not others, which is worse than flushing none.
     pub(crate) clock: Clock,
 
+    /// The project's tempo map, when the pool reads one (doc 020, stage 5):
+    /// lent once per block to the clock every slot's placement reads. Without
+    /// one, a voice takes the tempo of the transport as the block carries it.
+    tempo: Option<TempoReader>,
+
     /// The lanes every slot's block read renders through, one voice at a
     /// time (`PlaybackSlot::render_into`). Built with the pool and sized
     /// from `Prepare::max_block` in `prepare`, on the control thread.
@@ -392,8 +398,25 @@ impl VoicePool {
             rate: SharedRate::new(sample_rate),
             channels,
             clock: Clock::new(),
+            tempo: None,
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
         }
+    }
+
+    /// This pool reading the project's tempo map through `tempo`
+    /// ([`TransportSettings::tempo_reader`](tutti_transport::TransportSettings::tempo_reader)).
+    ///
+    /// A placed voice plays at its own speed from the frame the playhead
+    /// reaches its start, so over a map whose tempo changes (steps, ramps)
+    /// how long it has played is the map's seconds between its start and
+    /// the playhead, not the beats over the tempo of the moment: without the
+    /// map a voice is re-seated at every change as though it had started at
+    /// the new tempo. A voice with no map (and a constant one) keeps the
+    /// transport's tempo, bit for bit. A fork reads the same map.
+    #[must_use]
+    pub fn with_tempo(mut self, tempo: TempoReader) -> Self {
+        self.tempo = Some(tempo);
+        self
     }
 
     /// Output width — the node's audio outputs, as a [`ChannelLayout`]
@@ -886,6 +909,7 @@ impl Clone for VoicePool {
             sample_rate: self.sample_rate,
             rate: SharedRate::new(self.sample_rate),
             clock: Clock::new(),
+            tempo: self.tempo.clone(),
             channels: self.channels,
             scratch: BlockScratch::sized_like(&self.scratch),
         }
@@ -931,7 +955,11 @@ impl Node for VoicePool {
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         self.drain_commands();
-        let clock = self.clock.observe(cx.env);
+        // Lent for the block and given back after it: `render_in_pieces`
+        // borrows the whole pool.
+        let mut reader = self.tempo.take();
+        let map = reader.as_mut().map(TempoReader::lend);
+        let clock = self.clock.observe_with(cx.env, map.as_deref());
         let frames = io.frames();
         let (_, mut outs) = io.split();
         for ch in outs.iter_mut() {
@@ -958,6 +986,8 @@ impl Node for VoicePool {
         } else {
             self.render_in_pieces(&clock, frames, n, &mut refs[..n]);
         }
+        drop(map);
+        self.tempo = reader;
         Status::Modified
     }
 
@@ -973,11 +1003,14 @@ impl Node for VoicePool {
 /// A pool's fork: an empty pool at its width (see "As a graph node").
 struct PoolFork {
     channels: ChannelLayout,
+    tempo: Option<TempoReader>,
 }
 
 impl ForkSource for PoolFork {
     fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
-        Ok(Forked::new(Box::new(VoicePool::from_parts(self.channels))))
+        let mut pool = VoicePool::from_parts(self.channels);
+        pool.tempo = self.tempo.clone();
+        Ok(Forked::new(Box::new(pool)))
     }
 }
 
@@ -987,6 +1020,7 @@ impl IntoNode for VoicePool {
     fn into_parts(self) -> NodeParts<VoicePoolHandle> {
         let fork = PoolFork {
             channels: self.channels,
+            tempo: self.tempo.clone(),
         };
         let (pool, handle) = self.with_handle();
         NodeParts {

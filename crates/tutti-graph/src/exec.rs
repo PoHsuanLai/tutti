@@ -1937,6 +1937,15 @@ impl Executor {
                                 frames,
                             );
                         }
+                        Op::Sum { srcs, dst } => {
+                            sum_op(
+                                &mut *st.arena,
+                                &mut *st.flags,
+                                &plan.audio_list[srcs.range()],
+                                dst,
+                                frames,
+                            );
+                        }
                         Op::EventDelay { delay, src, dst } => {
                             let lost = event_delay_op(
                                 event_ring(&mut rings[delay as usize]),
@@ -2124,6 +2133,80 @@ pub(crate) fn delay_op<A: AudioSlots, F: SlotFlags + ?Sized>(
         ring.run(s, d, src_silent)
     };
     flags.set(dst, flag(out_silent, out_silent));
+}
+
+/// [`Op::Sum`] of the slots `list` into `dst`: the left fold `((+0.0 + a_0) +
+/// a_1) + ..` in `f32`, one rounding per add, never fused (doc 013, "Audio
+/// fan-in sums", points 1, 2 and 4).
+///
+/// An addend flagged [`SILENT`] is skipped: the accumulator starts at `+0.0`
+/// and so is never `-0.0`, and `acc + (+0.0)` is `acc` bit for bit. When no
+/// addend is live the output is zero-filled and flagged silent; otherwise it
+/// is constant when every live addend is. The flags are a claim made from the
+/// addends' flags, never from scanning samples. The loop is source-major (it
+/// vectorises); each sample still sees the same sequence of adds as the
+/// frame-major fold.
+///
+/// `dst` is the first addend's own slot in the in-place form. That addend is
+/// then not borrowed for reading: `dst += +0.0` (which turns a `-0.0` into
+/// `+0.0`, as `+0.0 + a_0` does) and the rest are added into it.
+#[inline]
+pub(crate) fn sum_op<A: AudioSlots, F: SlotFlags + ?Sized>(
+    arena: &mut A,
+    flags: &mut F,
+    list: &[u32],
+    dst: u32,
+    frames: usize,
+) {
+    debug_assert!((2..=MAX_PORTS).contains(&list.len()));
+    // Requests, then sorted by slot; the order of addition is the `Read`
+    // index, among the live addends.
+    let mut reqs = [(0u32, Role::Read(0)); MAX_PORTS + 1];
+    let (mut live, mut m) = (0usize, 0usize);
+    let (mut in_place, mut constant) = (false, true);
+    for &s in list {
+        let f = flags.get(s);
+        if f & SILENT != 0 {
+            continue;
+        }
+        constant &= f & CONSTANT != 0;
+        if live == 0 && s == dst {
+            in_place = true;
+        } else {
+            reqs[m] = (s, Role::Read(live as u8));
+            m += 1;
+        }
+        live += 1;
+    }
+    if live == 0 {
+        arena.slot_mut(dst, frames).fill(0.0);
+        flags.set(dst, SILENT | CONSTANT);
+        return;
+    }
+    reqs[m] = (dst, Role::Write(0));
+    m += 1;
+    reqs[..m].sort_unstable();
+    let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
+    let mut outs: [&mut [f32]; 1] = [&mut [][..]];
+    arena.borrow(frames, &reqs[..m], &mut ins, &mut outs);
+    let [out] = outs;
+    let rest = if in_place {
+        for o in out.iter_mut() {
+            *o += 0.0;
+        }
+        &ins[1..live]
+    } else {
+        for (o, &a) in out.iter_mut().zip(ins[0]) {
+            *o = 0.0 + a;
+        }
+        &ins[1..live]
+    };
+    for a in rest {
+        for (o, &x) in out.iter_mut().zip(*a) {
+            *o += x;
+        }
+    }
+    flags.set(dst, flag(false, constant));
 }
 
 /// [`Op::EventDelay`]. Returns the events its FIFO refused.

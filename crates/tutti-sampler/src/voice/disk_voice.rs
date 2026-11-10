@@ -36,6 +36,7 @@ use super::offline_read::OfflineRead;
 use super::types::Direction;
 use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES, audible};
 use crate::streamer::{Cells, SharedReader, StatusCell, StreamFile, StreamId, StreamReader};
+use tutti_transport::TempoReader;
 
 /// The streaming tier's bare reader: the streamer's ring, its control cell
 /// and its width. A [`DiskVoice`] wraps one and reads the ring by the clock.
@@ -255,6 +256,10 @@ pub struct DiskVoice {
     /// own (a voice in a pool or a `VoiceNode` reads its owner's).
     clock: Clock,
 
+    /// The project's tempo map, when this voice reads one: lent once per
+    /// block to its clock ([`with_tempo`](Self::with_tempo)).
+    tempo: Option<TempoReader>,
+
     /// A block's positions when this voice is a graph node of its own,
     /// sized from `Prepare::max_block` in `prepare` (empty until then and in
     /// a clone, so a voice that only ever plays in a pool or a `VoiceNode`,
@@ -369,6 +374,7 @@ impl Clone for DiskVoice {
             offline: self.offline.clone(),
             sample_rate: self.sample_rate,
             clock: Clock::new(),
+            tempo: self.tempo.clone(),
             // Unsized, so a clone stays allocation-free as it was: a copy
             // inserted as a node is prepared, which sizes it.
             positions: Vec::new(),
@@ -393,6 +399,7 @@ impl DiskVoice {
             offline: None,
             sample_rate: None,
             clock: Clock::new(),
+            tempo: None,
             positions: Vec::new(),
         }
     }
@@ -837,6 +844,21 @@ impl DiskVoice {
     }
 }
 
+impl DiskVoice {
+    /// This voice reading the project's tempo map through `tempo`
+    /// ([`TransportSettings::tempo_reader`](tutti_transport::TransportSettings::tempo_reader)).
+    /// Over a map whose tempo changes, how long a placed voice has played is
+    /// the map's seconds between its start and the playhead, not the beats
+    /// over the tempo of the moment; see
+    /// [`VoicePool::with_tempo`](super::VoicePool::with_tempo). It matters
+    /// only when the voice is a graph node of its own (a voice in a pool or a `VoiceNode` reads its owner's). A fork reads the same map.
+    #[must_use]
+    pub fn with_tempo(mut self, tempo: TempoReader) -> Self {
+        self.tempo = Some(tempo);
+        self
+    }
+}
+
 impl Node for DiskVoice {
     /// No inputs, the file's width out; a generator, never skipped.
     fn shape(&self) -> Shape {
@@ -861,7 +883,11 @@ impl Node for DiskVoice {
     /// voice driven by hand unprepared (or past its `max_block`) through
     /// `render_unprepared`'s stack pieces.
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let clock = self.clock.observe(cx.env);
+        // Lent for the block and given back after it: the render borrows the
+        // whole voice.
+        let mut reader = self.tempo.take();
+        let map = reader.as_mut().map(TempoReader::lend);
+        let clock = self.clock.observe_with(cx.env, map.as_deref());
         let frames = io.frames();
         let (_, mut outs) = io.split();
         let n = self.width().min(outs.len()).min(MAX_SAMPLER_CHANNELS);
@@ -880,6 +906,8 @@ impl Node for DiskVoice {
         } else {
             self.render_unprepared(&clock, frames, &mut refs[..n]);
         }
+        drop(map);
+        self.tempo = reader;
         Status::Modified
     }
 

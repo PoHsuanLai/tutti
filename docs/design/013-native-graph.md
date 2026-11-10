@@ -471,7 +471,7 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   every output cannot be delayed to it and is read as it leaves, as `Raw`.
 - **The consumers.** `tutti-session`'s `Graph::open_tap` and
   `Graph::open_output_tap` (whose sources follow the outputs when they are
-  re-wired), and the `TapReader` itself as an `AudioIn` (`impl AudioIn for
+  re-wired), and the `TapReader` itself as a `Source` (`impl Source for
   TapReader`, as wide as the tap; there is no adapter type). Offline and
   headless sessions feed them: the op runs wherever the plan runs.
 

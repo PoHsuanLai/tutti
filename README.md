@@ -37,7 +37,7 @@ Every crate sits in one of four tiers, and the arrows only ever point down.
 
 **The floor.** `tutti-types` is the vocabulary every other crate speaks — the
 unit newtypes (`Hz`, `Db`, `Beat`, `Samples`, `SampleRate`), the channel
-layouts, the `AudioIn`/`AudioOut` edge traits, and `ArcLend` (re-exported from
+layouts, the `Source`/`Sink` edge traits, and `ArcLend` (re-exported from
 the dependency-free `arc-lend` crate), the one sanctioned way to hand
 non-scalar state to the audio thread: the audio thread only borrows, so it
 never frees. `tutti-graph` is
@@ -48,7 +48,7 @@ runtime on both: the `Engine` that renders the graph, over the `Transport` of
 ops in the graph's plan).
 
 **The edges.** `tutti-cpal` is the only path to a sound card. The live edge is
-spread over the crates that own its parts: a tap (`TapReader`) is an `AudioIn`
+spread over the crates that own its parts: a tap (`TapReader`) is a `Source`
 and an inlet (`InletNode`) copies outside audio into the graph (`tutti-graph`),
 `FileOut` is the file sink (`tutti-codec`), and `Recorder` pumps one into the
 other (`tutti-session`). `tutti-export` is its

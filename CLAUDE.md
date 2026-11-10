@@ -45,7 +45,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
 - Copying audio out of the graph is a **tap**, read through one `TapReader`
-  (it is an `AudioIn` as it is: `impl AudioIn for TapReader`), and there are two
+  (it is a `Source` as it is: `impl Source for TapReader`), and there are two
   kinds:
   - **The plan tap** (`Graph::open_tap`, `open_output_tap`; opening refuses a
     source that does not exist then with `MissingSource`, and a lane whose port
@@ -65,7 +65,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
     queues and the one it replaces goes back to the control side
     (`tutti-engine/src/hearing.rs`).
   Both count what a slow reader loses (`TapReader::take_lost`, and
-  `AudioIn::take_lost` through `Recorder::lost`).
+  `Source::take_lost` through `Recorder::lost`).
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
   `InletNode` (`tutti-graph`) copies a standalone ring (`TapReader::standalone`)
   a thread of your own fills (a capture callback) into the graph, and
@@ -360,14 +360,14 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink, and `FileOut` (the file sink: the
-                 `AudioOut` over an `Encoder`, any `Format`); the `Pcm` widths and
+                 `Sink` over an `Encoder`, any `Format`); the `Pcm` widths and
                  their one quantization. In: `Wave` (the resident sample buffer), `Wave::read`,
-                 `Wave::read_metadata`, `FileIn` (the streaming `AudioIn`, `FileOut`'s mirror),
+                 `Wave::read_metadata`, `FileIn` (the streaming `Source`, `FileOut`'s mirror),
                  `DecodeError`, `can_decode`. Depends on `tutti-types` alone
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
-                 `PrerollTable`, `MAX_ROOT_CHANNELS`, the tap (`TapReader`, an
-                 `AudioIn`) and its inverse the inlet (`InletNode`); `Engine` renders it
+                 `PrerollTable`, `MAX_ROOT_CHANNELS`, the tap (`TapReader`, a
+                 `Source`) and its inverse the inlet (`InletNode`); `Engine` renders it
   tutti-dsp      pure algorithms over slices: the real FFT, the cosine windows and `StftGeometry`, filters,
                  dynamics, convolver, delay lines, reverb, waveshapers, the export
                  resampler
@@ -535,7 +535,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   sink is `Write + Seek + Send + 'static` on `Encoder` whatever the features,
   because bounds that followed the features would be worse; a `FormatWriter`
   asks only for what its own format needs. The
-  WAV writer is one: `tutti-export` and `FileOut` (the codec's `AudioOut`, the
+  WAV writer is one: `tutti-export` and `FileOut` (the codec's `Sink`, the
   mirror of `FileIn`) both write
   through it. Each format's writer implements `FormatWriter` (its boundary: it writes
   blocks of interleaved samples into a sink as one file of its format), with
@@ -759,9 +759,10 @@ Scalars use `Param<U>`.
 
 ## Buffers: edges vs graph nodes
 
-- **`AudioIn` / `AudioOut`** (`tutti-types::io`) are engine **edges** (mic,
-  `FileOut`, a `TapReader`, `FileIn`, the sampler's butler ring). They take flat
-  interleaved `&[S]` with a runtime `ChannelLayout`. **Every count on this
+- **`Source` / `Sink`** (`tutti-types::io`) are engine **edges** (`MicIn`,
+  `FileIn`, a `TapReader`; `FileOut`): a stream on a clock the graph does not
+  keep, not the disk streamer's positional ring. They take flat
+  interleaved `&[f32]` with a runtime `ChannelLayout`. **Every count on this
   boundary is in frames**, typed as `Samples` (the frame count). Cross to a
   slice length only with `Samples::interleaved_len` /
   `Samples::from_interleaved_len`.
@@ -793,8 +794,11 @@ Scalars use `Param<U>`.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
   `Recorder::start`'s error, in `tutti-session`) are mandatory.
-- **Every `AudioIn` impl must state `ON_EMPTY` correctly** (live "not yet" vs
-  finite "never again"). Getting it wrong ends a recording with no error.
+- **Every `Source::pull` must answer `Starved` (live "not yet") or `Ended`
+  (finite "never again") correctly**, and `Failed` only after the frames
+  before it (a live source reads its fault flag before its ring:
+  `tutti_rt::FaultLatch`). `Pull` is `#[must_use]`; getting it wrong ends a
+  recording with no error.
 - **A new trait must state its boundary in one sentence without "and".**
 
 ## Wiring is declared, not called
@@ -920,11 +924,13 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti-io` → dissolved: `TapIn` is gone (`TapReader` is an
-  `AudioIn`), `WavOut` → `tutti_codec::FileOut` (any `Format`, beside `FileIn`),
+- **Dead crate names:** `tutti-io` → dissolved: `TapIn` is gone (`TapReader` is a
+  `Source`), `WavOut` → `tutti_codec::FileOut` (any `Format`, beside `FileIn`),
   `MicMonitorNode` and `MicRing` → `tutti_graph::InletNode` (opened by
   `Graph::open_inlet`), `Recorder` and `PumpLoop` → `tutti-session` (feature
-  `record`, implied by `audio-io`), `vst-tutti` → `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
+  `record`, implied by `audio-io`), `AudioIn` → `Source`, `AudioOut` → `Sink`, `OnEmpty`/`ON_EMPTY` → the `Pull` a
+  `Source::pull` answers (`Starved`, `Ended`, `Failed`), `tutti_types::pump` → a private
+  step of `PumpLoop`, `vst-tutti` → `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
   host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
   render; the note logic went to `tutti-voicing`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`

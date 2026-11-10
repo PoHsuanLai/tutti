@@ -199,13 +199,14 @@ const fn meter_work(lanes: u64) -> Work {
     }
 }
 
-/// A sum of `addends`: a copy's fixed cost, and one unit per addend per
-/// frame (doc 013, "Audio fan-in sums", point 6). An estimate; `graph_render`
-/// measures it.
-const fn sum_work(addends: u64) -> Work {
+/// A sum of `addends`, `weighted` of them lanes with a gain: a copy's fixed
+/// cost, and one unit per addend per frame, two for a weighted one (a
+/// multiply and an add; doc 013, "Audio fan-in sums", point 6, and "Edge
+/// gain"). An estimate; `graph_render` measures it.
+const fn sum_work(addends: u64, weighted: u64) -> Work {
     Work {
         fixed: COPY.fixed,
-        per_frame: COPY.per_frame * addends,
+        per_frame: COPY.per_frame * (addends + weighted),
     }
 }
 
@@ -217,7 +218,7 @@ const EVENTS: Work = Work {
 
 /// The estimated work of `op`, whose node ops run units of `shapes` (by
 /// plan unit index).
-pub(crate) fn op_work(op: &Op, shapes: &[Shape]) -> Work {
+pub(crate) fn op_work(op: &Op, shapes: &[Shape], sum_lanes: &[Option<crate::EdgeId>]) -> Work {
     match *op {
         Op::GlobalIn { .. }
         | Op::Delay { .. }
@@ -225,7 +226,11 @@ pub(crate) fn op_work(op: &Op, shapes: &[Shape]) -> Work {
         | Op::Capture { .. }
         | Op::Tap { .. } => COPY,
         Op::Meter { srcs, .. } => meter_work(u64::from(srcs.len)),
-        Op::Sum { srcs, .. } => sum_work(u64::from(srcs.len)),
+        Op::Sum { srcs, .. } => sum_work(u64::from(srcs.len), 0),
+        Op::WeightedSum { srcs, lanes, .. } => sum_work(
+            u64::from(srcs.len),
+            sum_lanes[lanes.range()].iter().flatten().count() as u64,
+        ),
         Op::EventDelay { .. }
         | Op::EventMerge { .. }
         | Op::EventCapture { .. }

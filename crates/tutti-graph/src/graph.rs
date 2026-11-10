@@ -102,6 +102,20 @@ pub enum Sink {
     Output(u16),
 }
 
+/// One audio edge, named: the sink it arrives at and the [`Edge`] that feeds
+/// it. The key of [`GraphSpec::gains`](crate::GraphSpec::gains) and of the
+/// state a weighted lane keeps across commits (doc 013, "Edge gain").
+///
+/// A global output channel's source is a `Direct` edge, as
+/// [`Invalid::DuplicateEdge`] names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeId {
+    /// Where the edge arrives.
+    pub sink: Sink,
+    /// What feeds it.
+    pub from: Edge,
+}
+
 /// What feeds one sink port.
 ///
 /// An [`InPort`] is a map *key* and its value is a list of sources

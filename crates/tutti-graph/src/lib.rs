@@ -230,6 +230,7 @@ mod event_tap;
 mod exec;
 mod fade;
 mod fork;
+mod gain;
 mod graph;
 mod held;
 mod history;
@@ -275,9 +276,11 @@ pub use fork::{
 };
 // The audio graph as a value, and the two passes over it. `plan` is the
 // latency pass and is exported as `latency_plan`.
+pub use gain::EdgeGain;
 pub use graph::{
-    Edge, EventTapId, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec, NodeKey,
-    NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology, Valid,
+    Edge, EdgeId, EventTapId, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec,
+    NodeKey, NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology,
+    Valid,
 };
 pub use history::TransportHistory;
 pub use inlet::InletNode;

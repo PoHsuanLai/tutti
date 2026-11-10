@@ -32,7 +32,7 @@ pub use types::{
 
 pub use tutti_vst3_ffi::{
     NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterEditEvent, PluginNotification,
-    ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
+    ProgressDescription, ProgressEvent, RestartFlags, UnitEvent, Vst3Error as StatusError,
 };
 
 #[cfg(feature = "conformance")]

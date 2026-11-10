@@ -30,16 +30,18 @@ use super::shell::{Hold, Shell};
 /// How many of the Controller's writes the ring holds between two blocks.
 pub(super) const EDIT_CAPACITY: usize = 256;
 
-/// The plugin's `process` returned a result other than `kResultOk`.
+/// The plugin's `process` (or the call that readies it) failed: the status it
+/// returned, or why the host did not make the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessFailed {
-    /// The raw VST3 `tresult`.
-    pub code: i32,
+    /// What failed, by name; [`StatusError::code`](tutti_vst3_ffi::Vst3Error::code)
+    /// is the raw `tresult`.
+    pub error: tutti_vst3_ffi::Vst3Error,
 }
 
 impl std::fmt::Display for ProcessFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the plugin's process returned code {}", self.code)
+        write!(f, "the plugin's process failed: {}", self.error)
     }
 }
 
@@ -355,7 +357,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
                 Ok(()) | Err(tutti_vst3_ffi::Vst3Error::NotImplemented) => self.processing = true,
                 Err(error) => {
                     buffer.clear_outputs();
-                    return Err(ProcessFailed { code: error.code() });
+                    return Err(ProcessFailed { error });
                 }
             }
         }
@@ -431,7 +433,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             Ok(buses) => buses,
             Err(error) => {
                 buffer.clear_outputs();
-                return Err(ProcessFailed { code: error.code() });
+                return Err(ProcessFailed { error });
             }
         };
         let result = self.audio_side.process(ProcessIo {
@@ -449,7 +451,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
 
         if let Err(error) = result {
             buffer.clear_outputs();
-            return Err(ProcessFailed { code: error.code() });
+            return Err(ProcessFailed { error });
         }
 
         self.audio.output.drain_emitted();

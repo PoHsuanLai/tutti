@@ -25,7 +25,7 @@ pub use tutti_session as session;
 // Whole-crate re-exports, ALIASED. Flattening would collide at once —
 // `Error`/`Result` exist in about eight of these crates, `Unit` in two,
 // `Source` in two — and aliasing away the `tutti_` prefix is also what keeps
-// `scripts/check-canonical-paths.sh` honest: with no `tutti_x::` spelling
+// `cargo xtask check-paths` honest: with no `tutti_x::` spelling
 // reachable through this crate, the redundant path it exists to catch cannot
 // be written in the first place. `bevy-tutti` aliases the same way.
 

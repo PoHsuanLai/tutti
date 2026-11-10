@@ -259,7 +259,9 @@ both relative to the same origin as the timeline. The session supplies the map
 (`Vec<(Beat, Bpm)>`) builds a step-only `TempoMap` (`TempoPoint { shape: Step }`),
 and `seconds_at` is `map.seconds_at`. A file's tempo track is the file's data,
 not the project's, so the file builds its own map and the project adopts it on
-import (an explicit session call), never implicitly. The same figures come out
+import (an explicit session call), never implicitly. [017](017-midi.md) gives
+`MidiFile` that map as a field (`tempo_map: TempoMap`, built from the file's tempo
+meta events); this design is what makes `seconds_at` read it. The same figures come out
 for step lists, which the existing `midi_file.rs` tests pin. An export
 config's `duration_seconds` is then derived from the project's map.
 

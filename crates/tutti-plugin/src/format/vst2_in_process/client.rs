@@ -23,12 +23,12 @@ use arrayvec::ArrayVec;
 use parking_lot::Mutex;
 use tutti_graph::{Cx, Offset};
 use tutti_tempo::{Cursor, TempoMap};
-use tutti_transport::{MeterSlotReader, ProjectMeter, TempoReader};
-use tutti_types::{MeterMap, Samples};
+use tutti_transport::{ProjectMeter, TempoReader};
+use tutti_types::Samples;
 use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, WireMidi};
 
 use super::instance::Instance;
-use crate::host::node::transport_source::{self, HostClock, ProjectMaps, ProjectTime, SteadyTime};
+use crate::host::node::transport_source::TransportSource;
 use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
 use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, TransportInfo};
 
@@ -170,23 +170,11 @@ pub(super) struct TransportFeed {
     /// ([`InProcessVst2Client::meter`]), so a meter installed through them
     /// reaches the node the audio thread runs; a fork has a slot of its own
     /// ([`forked`](Self::forked)). Control side only: the block reads
-    /// through `reader`.
+    /// through `source`.
     meter: PluginMeter,
-    /// A reader of the slot's cell, registered when the feed is built: the
-    /// one cell the block reads the project meter from. Installing or
-    /// clearing a meter publishes into it; nothing swaps it.
-    reader: MeterSlotReader,
-    /// The meter read when none is installed (4/4 from bar 0), held so a
-    /// block never builds one.
-    default_meter: MeterMap,
-    /// The free-running sample counter: frames this node rendered.
-    steady: SteadyTime,
-    /// Project time: rolls with playback, holds while stopped, re-seated at
-    /// a jump.
-    project: ProjectTime,
-    /// The host's monotonic clock, read once per block; `None` on an
-    /// offline fork (no clock relates to the render's speed).
-    host_clock: Option<HostClock>,
+    /// The slot's reader and the clocks (`TransportSource`), the out-of-process
+    /// node's own.
+    source: TransportSource,
     /// The last snapshot handed out: what an empty block (no frame to read
     /// the transport at) repeats.
     last: TransportInfo,
@@ -203,12 +191,8 @@ impl TransportFeed {
     /// registering may allocate.
     fn over(meter: PluginMeter) -> Self {
         Self {
-            reader: meter.reader(),
+            source: TransportSource::new(meter.reader()),
             meter,
-            default_meter: MeterMap::default(),
-            steady: SteadyTime::default(),
-            project: ProjectTime::default(),
-            host_clock: Some(HostClock),
             last: TransportInfo::default(),
         }
     }
@@ -220,7 +204,7 @@ impl TransportFeed {
     pub(super) fn forked(&self, offline: bool) -> Self {
         let mut feed = Self::over(PluginMeter::holding(self.meter.installed()));
         if offline {
-            feed.host_clock = None;
+            feed.source.go_offline();
         }
         feed
     }
@@ -239,27 +223,17 @@ impl TransportFeed {
         cursor: &mut Cursor,
     ) -> TransportInfo {
         if !features.contains(Features::TRANSPORT) {
-            self.steady.advance(frames);
+            self.source.advance(frames);
             return TransportInfo::default();
         }
         let Some(at) = Offset::new(0, Samples(frames)) else {
             return self.last;
         };
-        let installed = self.reader.lend();
-        self.last = transport_source::from_cx(
-            cx,
-            at,
-            frames,
-            self.steady.at(0),
-            &mut self.project,
-            self.host_clock.map(HostClock::now_ns),
-            &mut ProjectMaps {
-                meter: installed.as_deref().unwrap_or(&self.default_meter),
-                tempo,
-                cursor,
-            },
-        );
-        self.steady.advance(frames);
+        self.last = self
+            .source
+            .block(features)
+            .at(cx, at, frames, tempo, cursor);
+        self.source.advance(frames);
         self.last
     }
 }
@@ -604,7 +578,9 @@ mod transport_tests {
     use tutti_graph::{Env, Transport, TransportChanges, TransportHistory};
     use tutti_types::Latency;
     use tutti_types::TimeSignature;
-    use tutti_types::{Beat, BeatsPerBar, Bpm, Frame, MeterChange, NoteValue, SampleRate};
+    use tutti_types::{
+        Beat, BeatsPerBar, Bpm, Frame, MeterChange, MeterMap, NoteValue, SampleRate,
+    };
 
     /// A rolling block of 64 frames at 132 BPM from beat 4, at 48 kHz: 132,
     /// not the 120 the default snapshot carries, so a live read is told

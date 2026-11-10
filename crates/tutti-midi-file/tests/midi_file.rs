@@ -524,18 +524,18 @@ fn an_smf_note_on_at_velocity_zero_is_a_note_off() {
     assert!(events[1].is_note_off());
 }
 
-/// A Clip File's MIDI 2.0 Note On at velocity 0 is yielded as a Note Off at 0:
-/// what `iter` did before the fold was spelled in the reader. M2-104 section
-/// 7.4.2 reads such a Note On as a note, so this pins a choice of this reader,
-/// not the specification; it changes only on purpose.
+/// A Clip File's MIDI 2.0 Note On at velocity 0 is a Note On: M2-104 section
+/// 7.4.2 reads it as a note, unlike MIDI 1.0's spelling of a Note Off, so the
+/// reader yields it as written.
 ///
-/// Mutation (run): drop the `Voice2::NoteOn` arm of `as_midi2` -> the Note On
-/// comes through as it was written -> fails.
+/// Mutation (run): fold a `Voice2::NoteOn` at velocity 0 into a Note Off in
+/// `as_midi2` -> the clip yields a Note Off -> fails.
 #[test]
-fn a_clip_note_on_at_velocity_zero_is_yielded_as_a_note_off() {
+fn a_clip_note_on_at_velocity_zero_stays_a_note_on() {
     let (g, c) = (MidiGroup::FIRST, MidiChannel::FIRST);
     let clip = write_clip_file_from_beats(TPQ, [(Beat(0.0), note_on(g, c, 60, 0))]);
     let clip = MidiFile::from_bytes(&clip).expect("the clip decodes");
     let events: Vec<Ump> = clip.iter().map(|(_, e)| e).collect();
-    assert_eq!(events, [note_off(g, c, 60, 0)]);
+    assert_eq!(events, [note_on(g, c, 60, 0)]);
+    assert!(!events[0].is_note_off());
 }

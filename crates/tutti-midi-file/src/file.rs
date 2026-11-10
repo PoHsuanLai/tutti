@@ -295,27 +295,19 @@ impl MidiFile {
 /// channel voice message widened (M2-104 Appendix D.3, `widen_message`), and
 /// `None` for any other message, which is yielded as its own packet.
 ///
-/// A Note On at velocity 0 is a Note Off at velocity 0. For MIDI 1.0 that is
+/// A MIDI 1.0 Note On at velocity 0 is a Note Off at velocity 0. That is
 /// the Note On's own meaning (MIDI 1.0 Detailed Specification, "Note On
 /// with velocity 0 is a Note Off"; M2-104 Appendix D.3.1 translates it so),
 /// and the SMF reader relies on it: a file ends its notes this way. `widen`
 /// would give the Note Off the release velocity `0x8000`; a file has none to
 /// give, so the fold is spelled here and the release stays 0, as a Clip File's
-/// own Note Off at zero reads. A MIDI 2.0 Note On at velocity 0 folds the same
-/// way: that is what the reader did before the fold moved here, kept so a
-/// Clip File's stream does not change, though M2-104 section 7.4.2 reads such a
-/// Note On as a note.
+/// own Note Off at zero reads. A MIDI 2.0 Note On at velocity 0 is not folded:
+/// M2-104 section 7.4.2 reads it as a note, and the instruments do.
 fn as_midi2(message: Message) -> Option<Ump> {
     let folded = match message {
         Message::Midi1(address, Voice1::NoteOn { note, velocity }) if velocity.get() == 0 => {
             Some((address, note))
         }
-        Message::Midi2(
-            address,
-            Voice2::NoteOn {
-                note, velocity: 0, ..
-            },
-        ) => Some((address, note)),
         _ => None,
     };
     let out = match folded {

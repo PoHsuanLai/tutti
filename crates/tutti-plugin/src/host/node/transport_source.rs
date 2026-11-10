@@ -413,16 +413,6 @@ impl Snapshot {
     }
 }
 
-/// The tempo reader of a node nobody gave one: a fixed constant 120 BPM map
-/// (`Bpm::default`), which nothing republishes. A host that wants the
-/// project's tempo hands the node its own reader (`PluginClient::bind`,
-/// `Plugin::with_tempo`); this is the stand-in for a node driven without a
-/// session. Control thread: it allocates.
-pub(crate) fn fixed_default_tempo() -> tutti_transport::TempoReader {
-    let map = TempoMap::constant(Bpm::default()).expect("the default tempo is a map");
-    tutti_transport::TempoReader::fixed(std::sync::Arc::new(map))
-}
-
 /// What a block reads of the project besides its transport: the meter (the
 /// signature and bar) and the tempo map (the tempo and its slope), each lent
 /// once for the block, with the node's cursor into the map. Built per block

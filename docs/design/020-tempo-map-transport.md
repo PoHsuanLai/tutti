@@ -454,9 +454,11 @@ not the graph's chord, and CLAP its slope.
   `Graph` holds a template reader from the session's settings and binds every
   plugin it inserts or replaces with a clone (`insert_plugin`, `replace_plugin`);
   a host that binds itself uses `session.transport().settings.tempo_reader()`.
-  The in-process VST2 node and `Plugin` (which stays an `IntoNode`) take it
-  with `with_tempo`, reading a fixed 120 BPM map until a host gives one;
-  `Session::add_plugin` does.
+  The in-process VST2 client (`InProcessVst2Client::bind`, giving a
+  `BoundInProcessVst2Client`) and `Plugin` (`Plugin::bind`, giving a
+  `BoundPlugin`) are bound the same way, and only the bound types are nodes
+  (`IntoNode`): no node has a default tempo. `Session::add_plugin` binds with
+  the graph's reader.
 - Per chunk, from the snapshot's own beat `b0` (latency, loops and seeks
   already applied) and its length `n` frames (`Snapshot::follow`): `tempo` is
   `tempo_at(b0)` (a step's own tempo, a ramp's curve at the beat), and

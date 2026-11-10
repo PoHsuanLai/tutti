@@ -126,7 +126,10 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
 
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(
+            ForkMode::Offline,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
         .expect("the probe forks");
     assert_eq!(fork.descriptor().id, probe.client.descriptor().id);
 
@@ -186,7 +189,10 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
 
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(
+            ForkMode::Offline,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
         .expect("the probe forks");
     let state_at_fork = handle.state().save_state().expect("the probe saves");
 
@@ -274,7 +280,10 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
 
     let err = probe
         .client
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(
+            ForkMode::Offline,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
         .expect_err("the fresh instance refuses the state");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),
@@ -319,7 +328,10 @@ fn a_plugin_that_cannot_save_its_state_is_a_named_fork_error() {
     let probe = load_probe(SAMPLE_RATE);
     let err = probe
         .client
-        .fork_instance(ForkMode::Live)
+        .fork_instance(
+            ForkMode::Live,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
         .expect_err("the live instance refuses to save");
     assert!(
         matches!(err, PluginForkError::SaveState(_)),
@@ -533,7 +545,10 @@ fn a_dropped_forks_server_is_reaped() {
 
     let fork = probe
         .client
-        .fork_instance(ForkMode::Live)
+        .fork_instance(
+            ForkMode::Live,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
         .expect("the probe forks");
     let handle = PluginHandle::from_client(&fork);
     let pid = handle.server_pid().expect("the fork has its own server");
@@ -569,7 +584,13 @@ fn a_failed_forks_server_is_reaped() {
     assert!(!baseline.is_empty(), "the live server is a child");
 
     let _refuse = ProbeEnv::new().refuse_state_load(true);
-    let err = probe.client.fork_instance(ForkMode::Live).err();
+    let err = probe
+        .client
+        .fork_instance(
+            ForkMode::Live,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
+        .err();
     assert!(
         matches!(err, Some(PluginForkError::LoadState(_))),
         "{err:?}"

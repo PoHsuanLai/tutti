@@ -163,7 +163,14 @@ impl GraphUnit {
             plugin.loaded().total_inputs(),
             plugin.loaded().total_outputs(),
         );
-        Self::new(plugin, inputs, outputs)
+        Self::new(
+            plugin.bind(
+                tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0))
+                    .expect("a tempo"),
+            ),
+            inputs,
+            outputs,
+        )
     }
 
     fn inputs(&self) -> usize {

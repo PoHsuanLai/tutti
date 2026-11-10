@@ -35,7 +35,7 @@ use tutti_graph::{
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, Samples};
 
-use super::client::{InProcessVst2Client, drive_f32};
+use super::client::{BoundInProcessVst2Client, InProcessVst2Client, drive_f32};
 use crate::host::node::{DeliveryCounters, ParamDeliveryStats, PluginMeter, param_input};
 use tutti_plugin_types::{Features, WireMidi};
 
@@ -44,27 +44,28 @@ use tutti_plugin_types::{Features, WireMidi};
 /// its graph outputs past it are silent.
 const MAX_CHANNELS: usize = 16;
 
-impl Node for InProcessVst2Client {
+impl Node for BoundInProcessVst2Client {
     /// The plugin's channels, one event input (MIDI and parameter events),
     /// and a MIDI event output for a plugin that declared MIDI out; its
     /// latency and tail as the control side last read them. The plugin reports its tail apart from
     /// its latency, so the tail excludes latency as [`Shape::tail`] asks.
     fn shape(&self) -> Shape {
-        let midi_out = u16::from(self.features.contains(Features::MIDI_OUT));
+        let this = &self.client;
+        let midi_out = u16::from(this.features.contains(Features::MIDI_OUT));
         // The plugin's figures as the control side last re-read them
         // (`poll_changes` keeps them current; nothing is dispatched to the
         // plugin here), falling back to this node's copy while the control
         // thread holds the instance.
-        let (latency, tail) = match self.inner.try_lock() {
+        let (latency, tail) = match this.inner.try_lock() {
             Some(instance) => {
                 let (latency, tail) = instance.figures();
                 (Latency::new(latency), tail)
             }
-            None => (Latency::new(self.declared.latency), self.declared.tail),
+            None => (Latency::new(this.declared.latency), this.declared.tail),
         };
         Shape::audio(
-            ChannelLayout::from_count(self.declared.inputs.count()),
-            ChannelLayout::from_count(self.declared.outputs.count()),
+            ChannelLayout::from_count(this.declared.inputs.count()),
+            ChannelLayout::from_count(this.declared.outputs.count()),
         )
         .with_events(1, midi_out)
         .with_latency(latency)
@@ -78,20 +79,26 @@ impl Node for InProcessVst2Client {
     /// the segments in flight are dropped (as a re-prepare starts the node
     /// over); what was delivered to the plugin is kept.
     fn prepare(&mut self, p: &Prepare) {
-        self.set_rate(p.sample_rate());
-        self.params.prepare(p.max_block().get());
-        self.segments.prepare(self.params.room());
+        let this = &mut self.client;
+        this.set_rate(p.sample_rate());
+        this.params.prepare(p.max_block().get());
+        this.segments.prepare(this.params.room());
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let Self {
+            client: this,
+            tempo,
+            cursor,
+        } = self;
         let size = io.frames();
-        if self.rate_refused {
+        if this.rate_refused {
             // The plugin was not told this node's rate (`set_rate`): silence,
             // not audio at another rate.
             return Status::Silent;
         }
-        let n_in = (self.declared.inputs.count() as usize).min(MAX_CHANNELS);
-        let n_out = (self.declared.outputs.count() as usize).min(MAX_CHANNELS);
+        let n_in = (this.declared.inputs.count() as usize).min(MAX_CHANNELS);
+        let n_out = (this.declared.outputs.count() as usize).min(MAX_CHANNELS);
         // No clamp and no size check: the Processor splits a block longer than
         // the one the plugin was told.
         // The event input: its MIDI, in its (sorted) order, past the cap
@@ -100,15 +107,15 @@ impl Node for InProcessVst2Client {
         // parameter events
         // into the block's changes (`param_input`, the out-of-process node's
         // walk, with the block as the chunk).
-        self.midi.clear();
-        self.params.begin();
+        this.midi.clear();
+        this.params.begin();
         let events = if io.event_input_count() > 0 {
             io.events(0)
         } else {
             SortedEvents::EMPTY
         };
-        let midi = &mut self.midi;
-        let intake = &mut self.intake;
+        let midi = &mut this.midi;
+        let intake = &mut this.intake;
         intake.new_chunk();
         let mut midi_dropped = 0u64;
         param_input::take(
@@ -117,8 +124,8 @@ impl Node for InProcessVst2Client {
             size,
             0,
             cx,
-            &mut self.segments,
-            &mut self.params,
+            &mut this.segments,
+            &mut this.params,
             |e, _| match e.kind {
                 EventKind::Midi(ump) => {
                     let event = WireMidi::at(e.offset, ump);
@@ -132,18 +139,22 @@ impl Node for InProcessVst2Client {
                 | EventKind::Resync => {}
             },
         );
-        self.params.count_midi_dropped(midi_dropped);
+        this.params.count_midi_dropped(midi_dropped);
         io.count_lost(midi_dropped);
         // Built before the plugin is entered: `drive_f32` publishes it to the
         // cell `audioMasterGetTime` reads, then calls `process`.
-        let transport = self.transport.block(cx, size, self.features);
-        let sends = self.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
+        let transport = {
+            // One lend of the project's tempo map for the block, ended with it.
+            let map = tempo.lend();
+            this.transport.block(cx, size, this.features, &map, cursor)
+        };
+        let sends = this.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
         let mut out_events = tutti_plugin_types::MidiEventVec::new();
         // The graph's buffers go to the plugin as they are: `vst2-host`
         // copies them into its render scratch and the plugin's output back
         // out, the one copy each way its pointer tables need. Scoped so the
         // tables release `io` before the event output is taken.
-        let block_midi = self.midi.len();
+        let block_midi = this.midi.len();
         let processed = {
             let (inputs, mut outputs) = io.split();
             // A plugin wider than the tables is handed their first
@@ -160,10 +171,10 @@ impl Node for InProcessVst2Client {
                 .map(|out| &mut out[..size])
                 .collect();
             let processed = drive_f32(
-                &self.inner,
-                &self.contention_count,
-                &self.params,
-                &mut self.midi,
+                &this.inner,
+                &this.contention_count,
+                &this.params,
+                &mut this.midi,
                 &mut |events| {
                     if sends {
                         // Past the cap the rest are dropped.
@@ -178,7 +189,7 @@ impl Node for InProcessVst2Client {
                 &ins,
                 &mut outs,
                 size,
-                self.sample_rate,
+                this.sample_rate,
             );
             if !processed {
                 for out in &mut outs {
@@ -188,13 +199,13 @@ impl Node for InProcessVst2Client {
             processed
         };
         // Set on the plugin with the block, or owed to the next one.
-        self.params.handed_off(processed);
+        this.params.handed_off(processed);
         if !processed {
             // The block's MIDI was dropped with it (`drive_f32`): counted,
             // and the rest of every SysEx open in it is skipped.
-            self.params.count_midi_dropped(block_midi as u64);
+            this.params.count_midi_dropped(block_midi as u64);
             io.count_lost(block_midi as u64);
-            self.intake.lost();
+            this.intake.lost();
         }
         if sends {
             tutti_plugin_types::insertion_sort_by_key(&mut out_events, |e| e.offset);
@@ -211,15 +222,16 @@ impl Node for InProcessVst2Client {
     }
 
     fn reset(&mut self) {
+        let this = &mut self.client;
         // The segments in flight stop, as on the out-of-process node; what
         // was delivered to the plugin is kept (the plugin keeps its
         // parameters), and no block's changes are in flight between blocks.
-        self.segments.clear();
-        self.params.abandon();
+        this.segments.clear();
+        this.params.abandon();
         // A SysEx open across the reset is not completed past it: its rest
         // is skipped (the instance's reassembler keeps its open message, so
         // it is dropped there, counted, at the next `START`).
-        self.intake.lost();
+        this.intake.lost();
         // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
         // opcode that clears DSP state on its own: the only two that touch it
         // are `effMainsChanged`, where plugins allocate and free their
@@ -238,16 +250,16 @@ impl Node for InProcessVst2Client {
 /// counters, as an out-of-process plugin's `PluginControls` are. Its
 /// [`ForkSource`] forks it **by state transfer**: a second instance of the
 /// plugin from the same library, restored from this one's saved state
-/// ([`InProcessVst2Client::fork_instance`]). So `Editor::fork` (an offline
+/// ([`BoundInProcessVst2Client::fork_instance`]). So `Editor::fork` (an offline
 /// export) renders a graph holding it.
 ///
 /// [`ForkSource`]: tutti_graph::ForkSource
-impl IntoNode for InProcessVst2Client {
+impl IntoNode for BoundInProcessVst2Client {
     type Controls = InProcessVst2Controls;
 
     fn into_parts(self) -> NodeParts<InProcessVst2Controls> {
         let fork = super::fork::Vst2Fork::of(&self);
-        let controls = self.controls();
+        let controls = self.client.controls();
         NodeParts {
             node: Box::new(self),
             controls,
@@ -350,6 +362,11 @@ mod owed_tests {
 
     use crate::handles::{ParamId, PluginHandle};
 
+    /// A reader of a constant 120 BPM map, for nodes these tests drive.
+    fn tempo() -> tutti_transport::TempoReader {
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
+    }
+
     const BLOCK: usize = 64;
 
     fn read(handle: &PluginHandle, i: i32) -> Option<f32> {
@@ -374,6 +391,7 @@ mod owed_tests {
             super::super::load_client(&main, tutti_fixtures::vst2_probe(), SampleRate(48_000.0))
                 .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
         let fork = client
+            .bind(tempo())
             .fork_instance(&main, tutti_graph::ForkMode::Live)
             .expect("the fork loads on the main thread");
         let (fork, refused) = std::thread::spawn(move || {
@@ -417,7 +435,7 @@ mod owed_tests {
         let inner = std::sync::Arc::clone(&client.inner);
         let contention = std::sync::Arc::clone(&client.contention_count);
         let controls = client.controls();
-        let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
+        let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
         assert_eq!(read(&handle, 1), Some(1.0 / 16.0), "the probe's default");
 
         {
@@ -492,7 +510,7 @@ mod owed_tests {
         });
         let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
-        let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
+        let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
         let (cut, next) = dumps();
 
         unit.events(0, &cut[..3]);
@@ -537,7 +555,7 @@ mod owed_tests {
         });
         let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
-        let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
+        let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
         let (cut, next) = dumps();
 
         unit.events(0, &cut[..3]);

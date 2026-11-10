@@ -29,6 +29,8 @@ use tutti_graph::{Editor, Prepare};
 use tutti_plugin::catalog::Plugin;
 use tutti_types::Samples;
 use tutti_graph::NodeKey;
+use tutti_transport::TempoReader;
+use tutti_types::Bpm;
 
 // `sample_rate` takes anything convertible to `SampleRate` — the engine's
 // unit type, not a bare rate that could be a block size.
@@ -40,11 +42,14 @@ println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 let handle = plugin.handle().clone();
 println!("reported latency: {:?}", handle.loaded().latency());
 
-// A `Plugin` is an `IntoNode`: inserting it hands back its controls (a
-// subprocess plugin's `PluginControls`), and a fork source so an export can
-// render it.
+// Binding the plugin to the project's tempo map (`Plugin::bind`) makes it a
+// node, an `IntoNode`: inserting it hands back its controls (a subprocess
+// plugin's `PluginControls`), and a fork source so an export can render it.
+// A session hands every plugin it adds a reader of its own; with none, a fixed
+// map does.
+let tempo = TempoReader::constant(Bpm::of(120.0)).expect("a tempo");
 let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::new(48_000.0), Samples(512)));
-let _controls = editor.insert(NodeKey(1), "plugin", plugin);
+let _controls = editor.insert(NodeKey(1), "plugin", plugin.bind(tempo));
 # Ok::<(), tutti_plugin::BridgeError>(())
 ```
 

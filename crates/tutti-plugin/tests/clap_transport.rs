@@ -231,8 +231,7 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
         .client
-        .bind(scene_tempo())
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(ForkMode::Offline, scene_tempo())
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
     // A 64-frame device quantum in 128-frame blocks: two chunks a block.
@@ -315,8 +314,7 @@ fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() 
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
         .client
-        .bind(scene_tempo())
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(ForkMode::Offline, scene_tempo())
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
     const ARRIVAL: usize = 40;
@@ -387,8 +385,7 @@ fn the_plugin_is_told_the_maps_tempo_and_slope() {
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
         .client
-        .bind(ramp_tempo())
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(ForkMode::Offline, ramp_tempo())
         .expect("the probe forks");
     let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK))
         .with_quantum(Samples(CHUNK));

@@ -134,7 +134,7 @@ use tutti_types::Samples;
 use tutti_types::{Latency, SampleRate};
 
 use super::controls::ForkedSources;
-use super::{Bound, PluginClient, PluginControls, ProcessGuard};
+use super::{Bound, PluginClient, PluginControls, ProcessGuard, Unbound};
 use tutti_plugin_ipc::PluginBridge;
 use tutti_plugin_ipc::{BridgeConfig, unique_socket_path};
 use tutti_plugin_ipc::{PluginForkError, PluginRenderFault};
@@ -303,32 +303,15 @@ struct PluginFork {
     tempo: tutti_transport::TempoReader,
 }
 
-/// The reader of the tempo map a fork's node lends, from the state of the
-/// client being forked. Sealed: only [`Unbound`] and [`Bound`] are states.
-pub trait ForkTempo {
-    /// A reader of its own for the fork (registered here, control side). A
-    /// bound node's is a clone of the live node's; an unbound client has no
-    /// project, so its fork reads the fixed default tempo.
-    #[doc(hidden)]
-    fn fork_tempo(&self) -> tutti_transport::TempoReader;
-}
-
-impl ForkTempo for super::Unbound {
-    fn fork_tempo(&self) -> tutti_transport::TempoReader {
-        super::transport_source::fixed_default_tempo()
-    }
-}
-
-impl ForkTempo for Bound {
-    fn fork_tempo(&self) -> tutti_transport::TempoReader {
-        self.tempo.clone()
-    }
-}
-
 impl PluginFork {
-    fn of<S: ForkTempo>(client: &PluginClient<S>) -> Self {
+    fn of(client: &PluginClient<Bound>) -> Self {
+        Self::reading(client, client.state.tempo.clone())
+    }
+
+    /// A source over any client, its fork lending the map through `tempo`.
+    fn reading<S>(client: &PluginClient<S>, tempo: tutti_transport::TempoReader) -> Self {
         Self {
-            tempo: client.state.fork_tempo(),
+            tempo,
             bridge: Arc::downgrade(&client.bridge),
             origin: Arc::clone(&client.origin),
             id: client.descriptor.id.clone(),
@@ -485,7 +468,24 @@ impl ForkSource for PluginFork {
     }
 }
 
-impl<S: ForkTempo> PluginClient<S> {
+impl PluginClient<Unbound> {
+    /// [`PluginClient::fork_instance`] of a client that is not bound: the fork
+    /// is bound to `tempo`, the project's tempo map, since an unbound client
+    /// has no reader to clone. The fork is a bound node.
+    ///
+    /// # Errors
+    ///
+    /// As [`PluginClient::fork_instance`].
+    pub fn fork_instance(
+        &self,
+        mode: ForkMode,
+        tempo: tutti_transport::TempoReader,
+    ) -> Result<PluginClient<Bound>, PluginForkError> {
+        PluginFork::reading(self, tempo).instance(mode)
+    }
+}
+
+impl PluginClient<Bound> {
     /// Creates a fresh instance of this plugin carrying this one's saved state,
     /// bound and ready to insert.
     ///

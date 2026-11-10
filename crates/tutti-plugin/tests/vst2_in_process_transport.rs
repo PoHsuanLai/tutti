@@ -23,7 +23,7 @@ use tutti_graph::{
     Unforkable,
 };
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
 use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
 use tutti_types::{
@@ -95,11 +95,12 @@ fn read_capture() -> ProcessCapture {
     cap
 }
 
-fn load() -> (InProcessVst2Client, PluginHandle) {
+fn load() -> (BoundInProcessVst2Client, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    let (client, handle) = in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
-        .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
-    (client.with_tempo(scene_tempo()), handle)
+    let (client, handle) =
+        in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
+            .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
+    (client.bind(scene_tempo()), handle)
 }
 
 /// The project's tempo map behind [`scene`]: 120 BPM, 90 around the tempo
@@ -382,7 +383,7 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     .expect("the probe opens");
     let handle = plugin.handle().clone();
     assert!(plugin.set_meter(seven_eight()), "a VST2 takes the meter");
-    let (mut r, _) = rig(plugin, 0);
+    let (mut r, _) = rig(plugin.bind(scene_tempo()), 0);
     let seen = render_scenes(&mut r, 1);
     assert_eq!(seen[0].1.numerator, 7);
     drop(handle);

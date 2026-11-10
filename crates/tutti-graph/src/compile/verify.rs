@@ -52,7 +52,7 @@
 //! run it on every proptest graph.
 
 use crate::io::PortKind;
-use crate::node::InPlaceMask;
+use crate::node::{InPlaceMask, MAX_PORTS};
 use crate::plan::{Delta, EMPTY_SLOT, EventSlotCapacity, Op, Plan, ZERO_SLOT};
 
 use super::colour::Reach;
@@ -90,6 +90,11 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
     match *op {
         Op::GlobalIn { dst, .. } => vec![a(dst, true)],
         Op::Delay { src, dst, .. } => vec![a(src, false), a(dst, true)],
+        Op::Sum { srcs, dst } => plan.audio_list[srcs.range()]
+            .iter()
+            .map(|&s| a(s, false))
+            .chain([a(dst, true)])
+            .collect(),
         Op::EventDelay { src, dst, .. } => vec![e(src, false), e(dst, true)],
         Op::EventMerge { srcs, dst } => plan.event_list[srcs.range()]
             .iter()
@@ -147,6 +152,25 @@ fn param_reads(plan: &Plan, params: crate::plan::Span) -> impl Iterator<Item = u
         .unwrap_or(&[])
         .iter()
         .map(|p| p.slot)
+}
+
+/// Each sum op adds at least two addends and at most [`MAX_PORTS`] (a wider
+/// fan-in is a chain of ops, doc 013 "Audio fan-in sums"): one is an alias the
+/// compiler emits no op for, and the executor's request table holds no more.
+/// That its write may alias only the first read is rule 4's; that each read is
+/// of a written value, rule 3's.
+fn verify_sums(plan: &Plan) -> Result<(), VerifyError> {
+    for (i, op) in plan.ops.iter().enumerate() {
+        if let Op::Sum { srcs, .. } = *op
+            && !(2..=MAX_PORTS).contains(&(srcs.len as usize))
+        {
+            return Err(VerifyError(format!(
+                "sum op {i} adds {} addends, not 2 to {MAX_PORTS}",
+                srcs.len
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Rule 9: each node op's driven params.
@@ -244,6 +268,12 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
                 .any(|y| !y.write && y.kind == x.kind && y.slot == x.slot);
             let declared = match *op {
                 Op::Delay { src, dst, .. } => src == dst,
+                // The in-place form: the written slot is the first addend's,
+                // and no other addend's.
+                Op::Sum { srcs, dst } => {
+                    let ins = &plan.audio_list[srcs.range()];
+                    ins.first() == Some(&dst) && ins.iter().filter(|&&t| t == dst).count() == 1
+                }
                 Op::Node {
                     audio_in,
                     audio_out,
@@ -376,6 +406,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
     }
 
     verify_params(plan)?;
+    verify_sums(plan)?;
     verify_in_place(plan)?;
     verify_tasks(plan)?;
     verify_tables(plan)?;

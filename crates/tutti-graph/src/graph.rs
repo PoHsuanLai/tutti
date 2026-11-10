@@ -105,9 +105,8 @@ pub enum Sink {
 /// What feeds one sink port.
 ///
 /// An [`InPort`] is a map *key* and its value is a list of sources
-/// ([`Topology::edges`]), so the representation holds several. This crate does
-/// not compile that yet: a port with two or more sources is a
-/// `CompileError::FanInNotCompiled`.
+/// ([`Topology::edges`]), so the representation holds several, and the compiler sums them
+/// in source order (`Op::Sum`, doc 013, "Audio fan-in sums").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
     /// An output port of another node in this topology.

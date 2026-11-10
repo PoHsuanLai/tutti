@@ -225,49 +225,50 @@ fn compiled(t: &Topology) -> tutti_graph::Plan {
 // Fan-in.
 // ---------------------------------------------------------------------------
 
-/// A topology holds a set of sources per sink, and the compiler does not sum
-/// one yet: two or more sources at an input port or at a global output
-/// channel is `FanInNotCompiled`, naming the sink. One source and none
-/// compile as before (every shape above), and a port that is not fanned in
-/// is not named even beside one that is.
+/// One source stays an alias (no `Op::Sum`), none is silence, two or more at
+/// an input port or a global output channel are one sum op; 65 are a chain
+/// of two.
 ///
-/// Mutation (run, recorded here): change the check's `edges.len() > 1` to
-/// `> 2` -> the two-source port compiles and the test fails; change the
-/// output check's `> 1` to `> 2` -> the test fails at the output case.
+/// Mutation (run, recorded here): make `sum_chain` emit an op for one addend
+/// -> the one-source plan holds a sum and the first assert fails; cut the
+/// first run at `MAX_PORTS - 1` -> the 65-source chain has the wrong shape.
 #[test]
-fn a_set_of_two_sources_is_refused_and_one_or_none_compile() {
+fn one_source_is_an_alias_and_a_fan_in_is_a_sum_op() {
+    let sums = |t: &Topology| {
+        let valid = GraphSpec::new(t.clone()).validate().expect("valid");
+        let (plan, _) =
+            compile(&valid, &shapes_of_spec(t), &common::prepare(PREP), None).expect("compiles");
+        plan.ops()
+            .iter()
+            .filter(|o| matches!(o, tutti_graph::Op::Sum { .. }))
+            .count()
+    };
     let mut t = Topology::default();
     t.nodes.insert(A, spec("dc", 0, 1));
     t.nodes.insert(B, spec("dc", 0, 1));
     t.nodes.insert(C, spec("sum", 2, 1));
     edge(&mut t, at(C, 0), out(A, 0));
     t.set_outputs(vec![Source::Node(out(C, 0))]);
-    let refuse = |t: &Topology| {
-        let valid = GraphSpec::new(t.clone()).validate().expect("valid");
-        compile(&valid, &shapes_of_spec(t), &common::prepare(PREP), None).err()
-    };
-    // One source on port 0, none on port 1.
-    assert_eq!(refuse(&t), None, "one source and none compile");
+    assert_eq!(sums(&t), 0, "one source and none are aliases");
 
-    // A second source on port 0: named, though port 1 is bare.
     t.connect(at(C, 0), Edge::Direct(Source::Node(out(B, 0))));
-    assert_eq!(
-        refuse(&t),
-        Some(CompileError::FanInNotCompiled {
-            at: Sink::Port(at(C, 0))
-        })
-    );
+    assert_eq!(sums(&t), 1, "two sources at a port");
 
-    // Back to one, then two at the output channel.
     assert!(t.disconnect(at(C, 0), Edge::Direct(Source::Node(out(B, 0)))));
-    assert_eq!(refuse(&t), None);
+    assert_eq!(sums(&t), 0, "back to one source: an alias again");
     t.outputs = vec![vec![Source::Node(out(C, 0)), Source::Node(out(A, 0))]];
-    assert_eq!(
-        refuse(&t),
-        Some(CompileError::FanInNotCompiled {
-            at: Sink::Output(0)
-        })
-    );
+    assert_eq!(sums(&t), 1, "two sources at an output channel");
+
+    // 65 addends: 64 in the first op, the chain's result and one more.
+    let mut t = Topology::default();
+    t.nodes.insert(C, spec("sum", 1, 1));
+    for k in 0..65u32 {
+        let n = NodeKey(100 + u64::from(k));
+        t.nodes.insert(n, spec("dc", 0, 1));
+        t.connect(at(C, 0), Edge::Direct(Source::Node(out(n, 0))));
+    }
+    t.set_outputs(vec![Source::Node(out(C, 0))]);
+    assert_eq!(sums(&t), 2, "a chain of two ops");
 }
 
 // ---------------------------------------------------------------------------

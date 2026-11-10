@@ -105,8 +105,8 @@ impl EventEdge {
 /// [`compile`](fn@crate::compile) takes.
 ///
 /// Audio edges live in the embedded `Topology`, a set of sources per input
-/// port; the compiler does not sum a set of two or more yet
-/// (`CompileError::FanInNotCompiled`). Event ports
+/// port; the compiler sums a set of two or more in source
+/// order (`Op::Sum`). Event ports
 /// ([`EventIn`], [`EventOut`]) are separate types, so an audio port cannot be
 /// used as an event port by accident, and an event input may have several
 /// sources, merged by offset.

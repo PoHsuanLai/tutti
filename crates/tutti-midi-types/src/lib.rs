@@ -49,7 +49,7 @@ pub use message::{
 };
 pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator, PerNoteBendRanges,
-    PitchBendSensitivity, ZoneInfo,
+    ZoneInfo,
 };
 pub use note_id::PerNoteMap;
 pub use translation::{

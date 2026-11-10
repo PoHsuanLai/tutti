@@ -6,7 +6,7 @@
 //! distinction bites is the two zone anchors: the lower zone's master is `0` and
 //! the upper zone's is `15`.
 
-use super::PitchBendSensitivity;
+use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// Which of the two RP-053 zones (or neither) a configuration describes.
@@ -180,8 +180,8 @@ impl MpeZoneConfig {
 
     /// Encodes this zone as an **MPE Configuration Message** (MCM): a MIDI 2.0
     /// Registered Controller (RPN) on the zone's *master* channel, bank
-    /// [`RPN_BANK_MPE`](crate::ump::RPN_BANK_MPE), index
-    /// [`RPN_INDEX_MCM`](crate::ump::RPN_INDEX_MCM), data = member count. Per
+    /// [`Rpn::MPE_CONFIGURATION`](tutti_ump::Rpn::MPE_CONFIGURATION), data = member
+    /// count. Per
     /// RP-053 / M2-104, the master channel (Ch1 lower / Ch16 upper) is what a
     /// receiver reads to know which zone is being configured; `member_count`
     /// = `0` would disable the zone.
@@ -196,8 +196,8 @@ impl MpeZoneConfig {
                 channel: MidiChannel::masked(self.master_channel),
             },
             tutti_ump::Voice2::Registered {
-                bank: tutti_ump::U7::new(crate::ump::RPN_BANK_MPE & 0x7F).unwrap_or_default(),
-                index: tutti_ump::U7::new(crate::ump::RPN_INDEX_MCM & 0x7F).unwrap_or_default(),
+                bank: tutti_ump::Rpn::MPE_CONFIGURATION.bank(),
+                index: tutti_ump::Rpn::MPE_CONFIGURATION.index(),
                 value: (self.member_count as u32) << 25,
             },
         )
@@ -223,9 +223,11 @@ impl MpeZoneConfig {
         else {
             return None;
         };
-        if u8::from(m.bank()) != crate::ump::RPN_BANK_MPE
-            || u8::from(m.index()) != crate::ump::RPN_INDEX_MCM
-        {
+        let rpn = tutti_ump::Rpn::new(
+            tutti_ump::U7::new(u8::from(m.bank()))?,
+            tutti_ump::U7::new(u8::from(m.index()))?,
+        );
+        if rpn != tutti_ump::Rpn::MPE_CONFIGURATION {
             return None;
         }
         let master_channel = u8::from(m.channel());

@@ -91,7 +91,14 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    // The root is read at run time (`cargo run` and the `xtask` alias set
+    // CARGO_MANIFEST_DIR), never only from `env!`: sccache's key does not hold
+    // the path, so a binary it serves can carry another worktree's path, and
+    // every gate would then read that tree. `env!` is the fallback for a binary
+    // run by hand.
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    let root = manifest_dir
         .parent()
         .expect("xtask sits directly under the repo root")
         .to_path_buf();

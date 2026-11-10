@@ -5,7 +5,6 @@ use crate::active::main_thread;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
     ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, SampleFormat,
@@ -55,7 +54,7 @@ fn note(offset: u32, on: bool) -> UmpAt {
     let (group, channel) = (MidiGroup::FIRST, MidiChannel::of(0));
     let ump = if on {
         // 7-bit 100, widened (M2-115).
-        midi::note_on(group, channel, 60, midi1_velocity_to_midi2(100))
+        midi::note_on(group, channel, 60, tutti_fixtures::midi::wide_velocity(100))
     } else {
         midi::note_off(group, channel, 60, 0)
     };

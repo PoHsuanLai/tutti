@@ -90,13 +90,13 @@ impl CCMapping {
     /// Maps a 7-bit CC value linearly onto `min_value..=max_value`.
     ///
     /// This is the **MIDI 1.0** width — 0..=127 — normalized through
-    /// [`crate::convert::u7_to_unit_f32`], which is Min-Center-Max scaling and
+    /// `tutti_midi_protocol::u7_to_unit_f32`, which is Min-Center-Max scaling and
     /// therefore does *not* put CC 64 exactly at the midpoint. A MIDI 2.0
     /// controller carries 32 bits and should be narrowed by the caller before it
     /// arrives here; this entry point cannot represent that resolution.
     #[inline]
     pub fn map_value(&self, cc_value: u8) -> f32 {
-        let normalized = crate::convert::u7_to_unit_f32(cc_value);
+        let normalized = tutti_midi_protocol::u7_to_unit_f32(cc_value);
         self.min_value + normalized * (self.max_value - self.min_value)
     }
 

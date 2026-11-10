@@ -1,7 +1,9 @@
 //! System Exclusive: a checked complete message, and the one reassembler of
 //! SysEx7 packets into such messages.
 
-use crate::{Message, MidiGroup, Sysex7Packet, SysexStatus, Ump, decode};
+use core::iter::FusedIterator;
+
+use crate::{Message, MidiGroup, Sysex7Packet, SysexStatus, U7, Ump, decode};
 
 /// The most bytes one SysEx7 packet adds to a buffer: six payload bytes and
 /// both delimiters (a `Complete`).
@@ -46,7 +48,107 @@ impl<'a> SysexMessage<'a> {
     pub fn payload(self) -> &'a [u8] {
         self.0.split_at(1).1.split_at(self.0.len() - 2).0
     }
+
+    /// The message as SysEx7 packets on `group` (M2-104 section 7.7): see
+    /// [`sysex7_packets`].
+    #[must_use]
+    pub fn packets(self, group: MidiGroup) -> Sysex7Packets<'a> {
+        // Checked in `new`: every byte between the delimiters is below 128.
+        Sysex7Packets::over(group, self.payload())
+    }
 }
+
+/// The SysEx7 packets (M2-104 section 7.7) of one payload: the bytes between
+/// `0xF0` and `0xF7`, without them.
+///
+/// A payload of up to six bytes is one `Complete` packet (an empty one is a
+/// `Complete` with no bytes). A longer one is a `Start`, any number of
+/// `Continue`, then an `End`, each carrying six bytes except the last, which
+/// carries one to six. Nothing is allocated, and the packets carry no timing:
+/// the caller pairs each with an offset. [`SysexAssembler`] is the inverse.
+///
+/// ```
+/// use tutti_ump::{MidiGroup, SysexStatus, U7, decode, Message, sysex7_packets};
+///
+/// let payload = [U7::of(1); 7];
+/// let mut packets = sysex7_packets(MidiGroup::of(0), &payload);
+/// assert_eq!(packets.len(), 2);
+/// let Ok(Message::Sysex7(_, first)) = decode(packets.next().unwrap()) else { unreachable!() };
+/// assert_eq!(first.status(), SysexStatus::Start);
+/// ```
+#[must_use]
+pub fn sysex7_packets(group: MidiGroup, payload: &[U7]) -> Sysex7Packets<'_> {
+    Sysex7Packets::over(group, bytemuck::cast_slice(payload))
+}
+
+/// The packets of one SysEx payload; see [`sysex7_packets`].
+#[derive(Clone, Debug)]
+pub struct Sysex7Packets<'a> {
+    group: MidiGroup,
+    /// The payload not yet packed: every byte below 128, checked by the caller's
+    /// type (`U7`, `SysexMessage`).
+    rest: &'a [u8],
+    /// Whether a packet has been yielded, so an empty payload is one packet.
+    started: bool,
+}
+
+impl<'a> Sysex7Packets<'a> {
+    /// The packets of `payload` (the bytes between `0xF0` and `0xF7`, without
+    /// them) from plain bytes, or `None` if a byte is 128 or more: the entry
+    /// for a payload that arrives unchecked, such as a plugin's. Nothing is
+    /// masked and nothing is allocated; a message with its delimiters is a
+    /// [`SysexMessage`].
+    #[must_use]
+    pub fn checked(group: MidiGroup, payload: &'a [u8]) -> Option<Self> {
+        payload
+            .iter()
+            .all(|&b| b < 0x80)
+            .then(|| Self::over(group, payload))
+    }
+
+    fn over(group: MidiGroup, payload: &'a [u8]) -> Self {
+        Self {
+            group,
+            rest: payload,
+            started: false,
+        }
+    }
+}
+
+impl Iterator for Sysex7Packets<'_> {
+    type Item = Ump;
+
+    fn next(&mut self) -> Option<Ump> {
+        if self.started && self.rest.is_empty() {
+            return None;
+        }
+        let status = match (self.started, self.rest.len() > 6) {
+            (false, false) => SysexStatus::Complete,
+            (false, true) => SysexStatus::Start,
+            (true, true) => SysexStatus::Continue,
+            (true, false) => SysexStatus::End,
+        };
+        let (chunk, rest) = self.rest.split_at(self.rest.len().min(6));
+        self.rest = rest;
+        self.started = true;
+        let mut data = [0u8; 6];
+        data[..chunk.len()].copy_from_slice(chunk);
+        let packet = Sysex7Packet::new(status, &data[..chunk.len()])
+            .expect("at most six bytes, each below 128");
+        Some(Ump::from(Message::Sysex7(self.group, packet)))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = match (self.started, self.rest.len()) {
+            (true, 0) => 0,
+            (_, len) => len.div_ceil(6).max(1),
+        };
+        (n, Some(n))
+    }
+}
+
+impl ExactSizeIterator for Sysex7Packets<'_> {}
+impl FusedIterator for Sysex7Packets<'_> {}
 
 /// The slice [`SysexMessage::new`] refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +191,18 @@ pub struct SysexRef {
 }
 
 impl SysexRef {
+    /// The message at `start..start + len` of a buffer the caller owns: a
+    /// host that copies a SysEx into its own byte arena names it with the
+    /// type [`SysexStep::Complete`] hands out.
+    ///
+    /// The range is the caller's to keep valid. [`SysexAssembler::message`]
+    /// reads only refs that assembler made itself, so a ref built here is
+    /// read back from the caller's own buffer through [`range`](Self::range).
+    #[must_use]
+    pub const fn new(start: usize, len: usize) -> Self {
+        Self { start, len }
+    }
+
     /// The message's byte range in [`SysexAssembler::bytes`].
     #[must_use]
     pub const fn range(self) -> core::ops::Range<usize> {
@@ -258,8 +372,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
             Err(_) if packet.message_type() == 0x3 => return SysexStep::Held,
             Err(_) => return SysexStep::NotSysex,
         };
-        let mut data = [0u8; 6];
-        let payload = payload_of(&packet, &mut data);
+        let payload = packet.data();
         match packet.status() {
             SysexStatus::Complete => {
                 if self.run_group() == Some(group) {
@@ -431,13 +544,4 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
         }
         SysexStep::Complete(SysexRef { start: at, len })
     }
-}
-
-/// The packet's data bytes as plain bytes, copied into `out`.
-fn payload_of<'a>(packet: &Sysex7Packet, out: &'a mut [u8; 6]) -> &'a [u8] {
-    let data = packet.bytes();
-    for (slot, byte) in out.iter_mut().zip(data) {
-        *slot = byte.get();
-    }
-    &out[..data.len()]
 }

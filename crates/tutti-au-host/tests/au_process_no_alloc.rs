@@ -324,7 +324,6 @@ fn send_midi_decode_does_not_allocate() {
 /// is dropped and the first `assert_eq!` fails.
 #[test]
 fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
-    use tutti_midi_types::sysex7_fragments;
     use tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD;
 
     let _lock = lock();
@@ -333,10 +332,15 @@ fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
     // Built before the guarded region: the harness allocates, the host must not.
     let body: Vec<u8> = (0..3000).map(|i| (i % 0x7F) as u8).collect();
     let mut packets = Vec::new();
-    sysex7_fragments(MidiGroup::FIRST, &body, &mut packets);
+    packets.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &body).expect("a 7-bit payload"),
+    );
     let long: Vec<UmpAt> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
     let oversized_body = vec![1u8; SYSEX7_MAX_PAYLOAD + 10];
-    sysex7_fragments(MidiGroup::FIRST, &oversized_body, &mut packets);
+    packets.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &oversized_body)
+            .expect("a 7-bit payload"),
+    );
     let oversized: Vec<UmpAt> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
 
     au.send_midi(&long);

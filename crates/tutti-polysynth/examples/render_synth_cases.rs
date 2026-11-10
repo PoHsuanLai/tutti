@@ -20,7 +20,6 @@ use std::path::Path;
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
-use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
@@ -56,7 +55,7 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 n,
-                midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             )
         })
         .map(|e: Ump| Event::midi(at, e.0))

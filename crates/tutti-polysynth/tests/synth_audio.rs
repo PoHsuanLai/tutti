@@ -19,7 +19,6 @@ mod support;
 
 use support::{BLOCK, Hand};
 use tutti_fixtures::midi;
-use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
@@ -33,7 +32,7 @@ fn note_on(note: u8, vel: u8) -> Ump {
         MidiGroup::FIRST,
         MidiChannel::FIRST,
         note,
-        midi1_velocity_to_midi2(vel),
+        tutti_fixtures::midi::wide_velocity(vel),
     )
 }
 
@@ -488,7 +487,12 @@ fn a_non_finite_master_volume_write_leaves_the_synth_at_its_volume() {
 fn a_key_struck_twice_then_released_once_goes_silent() {
     let group_one = MidiGroup::new(1).expect("a second group");
     let on = |group: MidiGroup| {
-        midi::note_on(group, MidiChannel::FIRST, 69, midi1_velocity_to_midi2(100))
+        midi::note_on(
+            group,
+            MidiChannel::FIRST,
+            69,
+            tutti_fixtures::midi::wide_velocity(100),
+        )
     };
     let off = |group: MidiGroup| midi::note_off(group, MidiChannel::FIRST, 69, 0);
     let cases: [(&str, Vec<Ump>, Vec<Ump>); 2] = [

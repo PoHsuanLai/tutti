@@ -29,7 +29,6 @@ use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 
 use crate::host::RenderHandle;
-use tutti_midi_types::UmpMessageType;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, SysExAssembler, SysExRef, SysExStep};
 
 /// Per-block MIDI plumbing for one `Vst2Processor` (in `tutti-vst2-host`): the host→plugin
@@ -371,7 +370,7 @@ impl MidiSendBuffer {
         // stable sort below keeps input order at equal frames.
         let mut next_sysex = 0;
         for (index, (offset, ev)) in midi_events.iter().enumerate() {
-            if tutti_midi_types::message_type(ev) == UmpMessageType::Sysex7 {
+            if ev.message_type() == 0x3 {
                 let Some(&(end, at, message)) = self.completed.get(next_sysex) else {
                     continue;
                 };
@@ -607,9 +606,6 @@ mod tests {
         assert_eq!(io.out_overflow(), 2 * 256, "the second piece's, counted");
     }
 
-    use tutti_midi_types::convert::{
-        midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
-    };
     use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     #[test]
@@ -619,7 +615,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 60,
-                midi1_velocity_to_midi2(127),
+                tutti_fixtures::midi::wide_velocity(127),
             ),
             10,
         );
@@ -634,7 +630,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(9),
                 48,
-                midi1_velocity_to_midi2(64),
+                tutti_fixtures::midi::wide_velocity(64),
             ),
             0,
         );
@@ -662,7 +658,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
-                midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
             u32::MAX,
         );
@@ -693,7 +689,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 CCNumber::BRIGHTNESS,
-                midi1_cc_to_midi2(100),
+                tutti_fixtures::midi::wide_value(100),
             ),
             0,
         );
@@ -709,7 +705,7 @@ mod tests {
             midi::pitch_bend(
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
-                midi1_pitch_bend_to_midi2(8192),
+                tutti_fixtures::midi::wide_bend(8192),
             ),
             0,
         );
@@ -726,7 +722,7 @@ mod tests {
             midi::pitch_bend(
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
-                midi1_pitch_bend_to_midi2(0),
+                tutti_fixtures::midi::wide_bend(0),
             ),
             0,
         );
@@ -738,7 +734,7 @@ mod tests {
             midi::pitch_bend(
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
-                midi1_pitch_bend_to_midi2(16383),
+                tutti_fixtures::midi::wide_bend(16383),
             ),
             0,
         );
@@ -783,7 +779,11 @@ mod tests {
     #[test]
     fn channel_pressure_roundtrip() {
         let event = wire(
-            midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(1), midi1_cc_to_midi2(100)),
+            midi::channel_pressure(
+                MidiGroup::FIRST,
+                MidiChannel::of(1),
+                tutti_fixtures::midi::wide_value(100),
+            ),
             0,
         );
         let api = from_midi(&event).expect("ChannelPressure should convert");
@@ -799,7 +799,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 60,
-                midi1_cc_to_midi2(80),
+                tutti_fixtures::midi::wide_value(80),
             ),
             0,
         );
@@ -844,7 +844,10 @@ mod tests {
                 assert_eq!(u8::from(m.channel()), 1);
                 assert_eq!(u8::from(m.control()), 74);
                 // Widened to 32-bit, not left as 7-bit.
-                assert_eq!(m.control_change_data(), midi1_cc_to_midi2(100));
+                assert_eq!(
+                    m.control_change_data(),
+                    tutti_fixtures::midi::wide_value(100)
+                );
             }
             other => panic!("expected CV2 ControlChange, got {other:?}"),
         }
@@ -879,7 +882,7 @@ mod tests {
                         MidiGroup::FIRST,
                         MidiChannel::of(1),
                         60 + i as u8,
-                        midi1_velocity_to_midi2(100),
+                        tutti_fixtures::midi::wide_velocity(100),
                     ),
                 )
             })
@@ -1043,7 +1046,9 @@ mod tests {
 
     fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
         let mut out = Vec::new();
-        tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out.extend(
+            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
+        );
         out.into_iter().map(|e| at(frame as usize, e)).collect()
     }
 
@@ -1085,7 +1090,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 60,
-                midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
         );
         let mut tight = MidiSendBuffer::with_capacity(3);
@@ -1120,7 +1125,7 @@ mod tests {
             MidiGroup::FIRST,
             MidiChannel::of(0),
             60,
-            midi1_velocity_to_midi2(100),
+            tutti_fixtures::midi::wide_velocity(100),
         );
         let mut midi = vec![at(1, note)];
         midi.extend(sysex_packets(&body, 3));
@@ -1170,7 +1175,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(0),
                 60,
-                midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
         );
         let single = sysex_packets(&[1, 2, 3], 0);
@@ -1244,7 +1249,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(0),
                 60,
-                midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
         );
         let mut buf = MidiSendBuffer::new();

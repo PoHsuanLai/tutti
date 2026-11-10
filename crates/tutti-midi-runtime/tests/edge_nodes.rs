@@ -18,7 +18,6 @@ use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
     MidiInputNode, MidiOutNode, MidiQueueNode,
 };
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
 use tutti_midi_types::{MidiMessage, cc, from_midi1_bytes};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
@@ -137,7 +136,7 @@ fn note(channel: u8, note: u8, offset: u32) -> UmpAt {
             MidiGroup::FIRST,
             MidiChannel::of(channel),
             note,
-            midi1_velocity_to_midi2(100),
+            tutti_fixtures::midi::wide_velocity(100),
         ),
     )
 }
@@ -217,7 +216,12 @@ fn a_requested_mpe_mode_is_adopted_once() {
     let wire = Wire::new(vec![
         vec![at(
             0,
-            note_on(MidiGroup::FIRST, member, 60, midi1_velocity_to_midi2(100)),
+            note_on(
+                MidiGroup::FIRST,
+                member,
+                60,
+                tutti_fixtures::midi::wide_velocity(100),
+            ),
         )],
         vec![bend],
         vec![bend],

@@ -18,8 +18,8 @@
 // agree.
 unit! {
     /// A count of audio frames: reported latency, compensation delay, ring length,
-    /// and every count crossing the [`AudioIn`](crate::io::AudioIn) /
-    /// [`AudioOut`](crate::io::AudioOut) edge.
+    /// and every count crossing the [`Source`](crate::io::Source) /
+    /// [`Sink`](crate::io::Sink) edge.
     ///
     /// "Samples" in the *sample-frame* sense — one tick of the clock, however many
     /// channels wide — which is how the plugin formats and `Seconds::to_samples`
@@ -103,9 +103,9 @@ impl Samples {
     ///
     /// The one sanctioned way from a frame count to a slice length.
     ///
-    /// Returns a bare `usize` on purpose: the result indexes a `&[S]`, and a
+    /// Returns a bare `usize` on purpose: the result indexes a `&[f32]`, and a
     /// slice has no other unit. It is the *only* place on the
-    /// [`AudioIn`](crate::io::AudioIn) / [`AudioOut`](crate::io::AudioOut) edge
+    /// [`Source`](crate::io::Source) / [`Sink`](crate::io::Sink) edge
     /// where a count leaves this type, so a stride mistake has one site to live
     /// in rather than one per caller.
     ///

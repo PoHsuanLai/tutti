@@ -37,9 +37,7 @@ arrayvec = "0.7"
 # Plugin capability flag set (`Features`) — wgpu-style bitflags.
 bitflags = "2"
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
-# The engine's AudioIn/AudioOut I/O vocabulary — this crate's `Sample` is the
-# plugin-width narrowing of that vocabulary's element type, and `AudioBuffer`
-# names its roles in the doc contract.
+# The engine's unit vocabulary (`Samples`, `Tail`).
 tutti-types = { path = "../tutti-types" }
 # `Offset`: where a block's MIDI sits (`ProcessContext::midi_events`, `WireMidi::at`).
 tutti-graph = { path = "../tutti-graph" }

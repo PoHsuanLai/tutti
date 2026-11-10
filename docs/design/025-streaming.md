@@ -9,10 +9,10 @@ they are described by one vocabulary that fits the first and not the second.
 This design gives each its own shape, removes the runtime rules a type can
 carry, and orders the work as PRs that each stay green.
 
-Status: design. Stages 0, 1 and 2 have landed (§8). Stage 3 waits for the
-`tutti-io` dissolution PR (§8); the rest is not started. Nothing in this doc
-changes code. The decisions are the owner's of 2026-11-07, all taken as
-recommended, and are recorded with their grounds in §9.
+Status: design, stages 0 to 3 landed (§8); stages 4 and on are not started. The
+sections that describe a defect (§1) describe the tree before stage 3. The
+decisions are the owner's of 2026-11-07, all taken as recommended, and are
+recorded with their grounds in §9.
 
 ## Summary
 
@@ -50,7 +50,7 @@ file, disk stream, plugin boundary, WAV encoder". Four of those do not:
 
 - the **disk stream** has its own positional reader (`PosReader`, `PosClaim`);
 - the **plugin shm slab** says in its own docs that it does not implement them
-  (`crates/tutti-plugin/src/util/transport/shm/slab.rs`), because it is planar;
+  (`crates/tutti-plugin-ipc/src/transport/shm/slab.rs`), because it is planar;
 - `tutti-plugin-types`' `channels.rs` frames a plugin as "an `AudioOut`
   back-to-back with an `AudioIn`", though in the graph a plugin is a node and
   the slab is a transport;
@@ -154,7 +154,9 @@ The rules:
   stage 0.
 - A live source reads its fault flag **before** it reads the ring, and returns
   `Failed` only if the ring was empty. This moves the one ordering obligation
-  from every caller's `pump_once` into `MicIn::pull`.
+  from every caller's `pump_once` into `MicIn::pull`. As built, the rule is
+  `tutti_rt::FaultLatch::drain` (§8, stage 3), which `MicIn` calls through
+  `StreamFaults`.
 - A synchronous source (`FileIn`, export's planes, a graph render) never
   returns `Starved`. One enum serves both: two types would make every adapter
   generic over both, and the cost of one is a match arm that cannot occur,
@@ -174,10 +176,9 @@ over its destination, and a second sink is likely (§9, decision 4).
 Dropping the generic `S`: every production impl is `f32`, only tests use
 another element type, and the twenty test impls change anyway.
 
-`pump` is behaviour sitting in `tutti-types`, which is meant to be vocabulary.
-It is small (poll a block, write it, return frames), but stage 3 is where to
-decide whether it moves into `PumpLoop` in `tutti-session` or stays as the one
-primitive (§10).
+`pump` was behaviour sitting in `tutti-types`, which is meant to be vocabulary.
+Stage 3 moved it out (§10, question 6): it is a private function of
+`tutti-session`'s recorder module, one step of `PumpLoop::pump_once`.
 
 ### 2.3 The disk streamer (`tutti-sampler`)
 
@@ -321,8 +322,8 @@ those with `Stream`, `Opening` and `StreamReader` removes an estimated 300 to
 
 ### 5.1 Homes after the `tutti-io` dissolution
 
-Another lane is dissolving `tutti-io` (branch `refactor/dissolve-tutti-io`, not
-merged when this was written). Stage 3 is written against its end state:
+The `tutti-io` dissolution has merged; stage 3 was written against its end
+state:
 
 | Today | After |
 |---|---|
@@ -395,14 +396,15 @@ cannot be a graph node, since it changes the frame count per block; only
 `GraphSource` and `PlaneSource`, and its own `pump_blocks` in `encode/mod.rs`.
 That is the offline pull and a pump: a third source shape beside `AudioIn` and
 `WaveIn`, deliberately not an `AudioIn` today because it is infallible and
-block-sized. With `Pull`, `GraphSource` is a `Source` that never returns
+block-sized. With `Pull`, `GraphSource` would be a `Source` that never returns
 `Starved`, and `check_health` maps onto `Failed`. Whether stage 3 folds
-`FrameSource` into `Source` depends on where `lost_events` and `max_block` live
-(they are the driver's, not the source's). Left open (§10, unknown 5).
+`FrameSource` into `Source` depended on where `lost_events` and `max_block` live
+(they are the driver's, not the source's). Decided at stage 3: it does not
+(§10, unknown 5).
 
 ### 5.5 Stage 3 fixes the docs that overclaim
 
-Stage 3 rewrites, in the same PR:
+Stage 3 rewrote, in the same PR (done):
 
 - the module docs of `crates/tutti-types/src/io.rs`: the traits are the edge
   vocabulary (§2.1), not every source and sink; drop "disk stream, plugin
@@ -503,9 +505,9 @@ Each stage is one PR that stays green. Line figures are estimates.
 2. **Done (#315, #321, #331).** `tutti-codec` (one `Encoder` over WAV, AIFF,
    FLAC and Ogg Vorbis; `Wave`, `FileIn` and the decoders moved in). `Pull`
    is written once in the final files.
-3. **`Pull`, `Source`, `Sink`** in `tutti-types`, replacing `AudioIn`,
-   `AudioOut`, `OnEmpty`; the generic `S` dropped. **This follows the
-   `tutti-io` dissolution PR** and is written against the homes in §5.1:
+3. **Done.** **`Pull`, `Source`, `Sink`** in `tutti-types`, replacing `AudioIn`,
+   `AudioOut`, `OnEmpty`; the generic `S` dropped. **This followed the
+   `tutti-io` dissolution PR** and was written against the homes in §5.1:
    `MicIn`, `FileIn`, `TapReader` as sources, `FileOut` as the sink, `Recorder`
    and `PumpLoop` in `tutti-session`, preludes, about twenty test impls, plus the
    doc fixes of §5.5. Includes the flag-before-ring rule in `MicIn::pull`, with
@@ -513,6 +515,50 @@ Each stage is one PR that stays green. Line figures are estimates.
    lines. Breaking for consumers (`pump`, the traits and `OnEmpty` are
    re-exported by the sampler, `bevy-tutti` and `tutti`), so one workspace-wide
    PR. Decides `pump`'s home and `FrameSource` (§10).
+
+   *As built.* `bevy-tutti` is parked out of the workspace and was not touched:
+   its `io` module still names the old traits and will not build until it is
+   revived.
+   - **The traits** are `Pull<V = Samples>`, `Stop`, `Source` and `Sink` plus the
+     `SinkFailed` marker, as in §2.2, in `tutti-types/src/io.rs` and the root and
+     prelude. `Source` keeps `take_lost` (a defaulted method: the frames a
+     bounded source dropped, which `Recorder::lost` reads), which §2.2 did not
+     list. `frames_or_silence` was not built: nothing on the audio side calls it
+     yet (`ready`, `map` and `stop` have tests but no production caller
+     either). The root `Source` is `io::Source`; the graph edge origin stays
+     `graph::Source`, module-qualified (a file that needs both aliases one).
+   - **Implementors**: `MicIn`, `FileIn`, `TapReader` (sources), `FileOut` (the
+     sink); `PumpLoop` and `Recorder` are no longer generic over a sample type;
+     `PumpPass` is unchanged. `FileIn::pull` answers `Failed` where a clean end
+     read before stage 0, and `Ended` only with no fault. The sampler's `WaveIn`
+     stays an inherent reader (it never ends, so it has no verdict to give) and
+     lost its page of rationale. The twenty-odd test impls moved to `Pull`; the
+     fixtures that lived in `io.rs` for `pump`'s tests moved to the recorder
+     tests with `pump`.
+   - **`ON_EMPTY` became the verdict itself.** A source answers `Starved`,
+     `Ended` or `Failed` from every `pull`, so there is no per-type constant to
+     state and no second poll. The mistake the const guarded against (a mic that
+     "ends") is now a source writing `Pull::Ended` where it means `Starved`,
+     which the recorder tests pin per source: `TapReader`'s empty tap is
+     `Starved` (`tap_audio_in`, `tap_to_wav_roundtrip`), `MicIn`'s is `Starved`
+     and `Failed` only on an empty ring (`mic/tests.rs`), `FileIn`'s end is
+     `Ended` and its fault `Failed` (`file_in/tests.rs`, `file_in_pump.rs`).
+   - **The flag-before-ring rule** is `tutti_rt::FaultLatch` (`Release` raise,
+     `Acquire` read, `drain(pop)` reading the flag first). The ordering
+     primitive moved to `tutti-rt` because the rule has to be checked under loom
+     and `tutti-cpal` cannot be a loom target (it links cpal); `StreamFaults`
+     holds a `FaultLatch` for its disconnect and `MicIn::pull` goes through
+     `StreamFaults::drain`. The model, `tests/fault_latch_loom.rs`, runs the
+     shipped `FaultLatch` over `edit_ring` (a shipped, loom-checked ring) as
+     the stand-in for a capture ring: the claim it checks is the order of the
+     two reads, which is the same whatever ring is behind the pop. It does not
+     model `ringbuf`'s own atomics (that is the ring's claim, not this rule's).
+     Four mutations fail it (record in the file). It runs in `cargo xtask loom`
+     and CI.
+   - **The doc fixes of §5.5** are in: `io.rs`'s module docs, `channels.rs`
+     (a plugin is a node, `AudioBuffer` is not an edge), the slab (a transport,
+     not an edge), the `Cargo.toml` comments that called the plugin crates'
+     `tutti-types` edge the I/O vocabulary, and the root and crate READMEs.
 4. **Rename butler to disk streamer** (§6). Mechanical, net 0, with
    `DiskStreamer` in `streamer/mod.rs`.
 5. **`Stream`, `Opening`, `StreamReader`, `Block`.** Removes the plan map,
@@ -583,8 +629,12 @@ push `Resample` and `Dither` together and accept the Ogg change.
    Settle by porting `render` on a branch.
 3. **Is the fault-flag ordering sound under real interleavings?** The rule is
    "read the flag, then the ring, `Failed` only if the ring was empty".
-   Single-threaded tests cannot show it. Settle with a loom model (flag store,
-   push, claim, flag load) beside `pos_ring_loom.rs`, as stage 3 requires.
+   Single-threaded tests cannot show it. **Settled at stage 3: yes.** A loom
+   model (`tutti-rt/tests/fault_latch_loom.rs`, 4,961 executions) runs the
+   shipped `FaultLatch` and checks that a `Failed` is never read before the
+   frames pushed ahead of the raise; reading the ring first, or weakening
+   either ordering, fails it. The ordering primitive lives in `tutti-rt` (see
+   §8, stage 3).
 4. **Is a `StreamRecord` ever dropped on the audio thread?** Two comments
    disagree. `butler/prefetch.rs` says a ring's last handle is never dropped on
    the audio thread, because retired units travel back to the control thread
@@ -601,10 +651,28 @@ push `Resample` and `Dither` together and accept the Ogg change.
 5. **Does stage 3 fold export's `FrameSource` into `Source`?** (§5.4.) Settle by
    trying the fold on `GraphSource` and seeing what is left over: if
    `lost_events` and `max_block` have no home on `Source`, they stay on a driver
-   type and `FrameSource` shrinks to them.
+   type and `FrameSource` shrinks to them. **Decided at stage 3: no,
+   `FrameSource` stays as it is.** The fold was worked through on `GraphSource`
+   and `PlaneSource` on paper, not built. What a `Source` would carry (a runtime
+   layout and a verdict per pull) the driver does not read: it renders to a
+   count it already knows, and it hands the encoder a typed `InterleavedMut`
+   block, not a bare slice. What `FrameSource` carries beyond `fill`
+   (`produced`, `max_block`, `lost_events`, `check_health`) is the driver's and
+   has no home on `Source`, and the trait is used as a `dyn` object by `drive`
+   and `pump_blocks`. So a fold would add a second impl per source type and
+   leave `FrameSource` whole. A `Source` adapter over a graph can be added by
+   whoever has a consumer that polls a graph until dry; none does.
 6. **Where does `pump` live?** It is behaviour in the vocabulary crate. Settle
    in stage 3: into `PumpLoop` (`tutti-session`) if nothing else calls it, or
    it stays as the one primitive if `FileOut`'s tests and `bevy-tutti` still do.
+   **Decided at stage 3: into `tutti-session`, as a private function of the
+   recorder module that `PumpLoop::pump_once` calls.** Its only callers in the
+   workspace were `PumpLoop` and one `tutti-cpal` test, which now pulls and
+   writes by hand (a test of the mic cannot depend on `tutti-session`);
+   `FileOut`'s tests never called it, and `bevy-tutti`, which did, is parked. It
+   stays a separate function rather than inline so that the debug width
+   assertion has a test (`PumpLoop::new` refuses a mismatch first, so only the
+   function can be driven with one).
 7. **Does any test or consumer pin Ogg bytes?** Not searched. It decides whether
    the block-size change in §5.3 matters.
 8. **`Opening` for a file that cannot seek.** The streamer decodes it whole

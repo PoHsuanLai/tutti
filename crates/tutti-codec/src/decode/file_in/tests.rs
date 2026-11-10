@@ -1,6 +1,7 @@
 use super::super::read::probe_path;
 use super::*;
 use crate::Wave;
+use tutti_types::Stop;
 
 /// Write `wave` as a 16-bit WAV named `name` and return its path.
 ///
@@ -64,8 +65,8 @@ fn full_sequential_read_matches_full_load() {
     let mut pos = 0usize;
     while pos < frames {
         let end = (pos + chunk).min(frames);
-        let n = dec.poll_into(got[pos..end].as_flattened_mut());
-        assert_eq!(n, Samples(end - pos));
+        let n = dec.pull(got[pos..end].as_flattened_mut());
+        assert_eq!(n, Pull::Frames(Samples(end - pos)));
         pos = end;
     }
 
@@ -94,8 +95,8 @@ fn seek_then_poll_matches_slice() {
     dec.seek(Samples(start as usize)).expect("seek");
     assert_eq!(dec.cursor(), Samples(start as usize));
     let mut got = vec![[0.0f32; 2]; len];
-    let n = dec.poll_into(got.as_flattened_mut());
-    assert_eq!(n, Samples(len));
+    let n = dec.pull(got.as_flattened_mut());
+    assert_eq!(n, Pull::Frames(Samples(len)));
 
     for i in 0..len {
         let e = expected[start as usize + i];
@@ -125,8 +126,12 @@ fn poll_past_eof_returns_short_count() {
     dec.seek(Samples(start as usize)).expect("seek");
     // Pre-fill with a sentinel so we can assert the untouched tail stays put.
     let mut got = vec![[1.0f32; 2]; len];
-    let n = dec.poll_into(got.as_flattened_mut());
-    assert_eq!(n, Samples(500), "only 500 frames of real audio remain");
+    let n = dec.pull(got.as_flattened_mut());
+    assert_eq!(
+        n,
+        Pull::Frames(Samples(500)),
+        "only 500 frames of real audio remain"
+    );
 
     for i in 0..500 {
         let e = expected[start as usize + i];
@@ -136,13 +141,13 @@ fn poll_past_eof_returns_short_count() {
             i
         );
     }
-    // AudioIn leaves the tail past the returned count untouched (no zero-pad).
+    // `pull` leaves the tail past the returned count untouched (no zero-pad).
     for (i, frame) in got.iter().enumerate().skip(500) {
         assert_eq!(*frame, [1.0, 1.0], "frame {} should be left untouched", i);
     }
-    // A further poll at EOF yields nothing.
+    // A further pull at EOF is a clean end.
     let mut more = [[0.0f32; 2]; 8];
-    assert_eq!(dec.poll_into(more.as_flattened_mut()), Samples::ZERO);
+    assert_eq!(dec.pull(more.as_flattened_mut()), Pull::Ended);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -160,16 +165,15 @@ fn truncated_asset(name: &str, keep: f64) -> std::path::PathBuf {
     path
 }
 
-/// Frames a poll loop reads before `0`.
+/// Frames a pull loop reads before any verdict.
 fn drain(dec: &mut FileIn) -> usize {
     let mut buf = vec![0.0f32; 1024 * usize::from(dec.layout().count())];
     let mut frames = 0;
     loop {
-        let n = dec.poll_into(&mut buf).get();
-        if n == 0 {
-            return frames;
+        match dec.pull(&mut buf) {
+            Pull::Frames(n) => frames += n.get(),
+            _ => return frames,
         }
-        frames += n;
     }
 }
 
@@ -201,7 +205,7 @@ fn a_truncated_flac_is_a_fault_not_a_clean_end() {
     assert!(frames > 0 && frames < total, "{frames} of {total}");
     assert!(dec.error().is_some());
     assert!(dec.fill_sequential_interleaved(&mut buf).is_err(), "sticky");
-    assert_eq!(dec.poll_into(&mut buf), Samples::ZERO);
+    assert_eq!(dec.pull(&mut buf), Pull::Failed);
     dec.seek(Samples(0)).expect("seek");
     assert!(dec.error().is_none(), "a successful seek clears the fault");
     let _ = std::fs::remove_file(&path);
@@ -278,8 +282,8 @@ impl symphonia::core::formats::FormatReader for FailAfter {
 }
 
 /// A decode error in mid-stream keeps the frames before it: the first
-/// read returns them as `Ok`, the next returns the cause, `poll_into`
-/// returns the same frames then `0`, and `error()` holds the cause.
+/// read returns them as `Ok`, the next returns the cause, `pull`
+/// returns the same frames then `Failed`, and `error()` holds the cause.
 ///
 /// Mutation (run): returning `Err` at once when the fill is cut short
 /// (dropping `filled`, as `unwrap_or(0)` did) fails the frame-count
@@ -302,7 +306,7 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
 
     let mut clean = FileIn::open(&path).expect("open");
     let mut first = vec![0.0f32; 4096 * 2];
-    assert_eq!(clean.poll_into(&mut first).get(), 4096);
+    assert_eq!(clean.pull(&mut first), Pull::Frames(Samples(4096)));
 
     // Fail on the packet after the first: the first packet's frames are
     // what the stream holds. Read more than they cover.
@@ -326,33 +330,33 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
         &{
             let mut c = FileIn::open(&path).expect("open");
             let mut v = vec![0.0f32; got * 2];
-            c.poll_into(&mut v);
+            assert_eq!(c.pull(&mut v), Pull::Frames(Samples(got)));
             v
         }[..]
     );
 
     let mut dec = open(1);
-    assert_eq!(dec.poll_into(&mut buf).get(), got);
-    assert_eq!(dec.poll_into(&mut buf), Samples::ZERO);
+    assert_eq!(dec.pull(&mut buf), Pull::Frames(Samples(got)));
+    assert_eq!(dec.pull(&mut buf), Pull::Failed);
     let _ = std::fs::remove_file(&path);
 }
 
-/// Through the trait alone, a cut FLAC yields its frames and then reads as
-/// failed, and a whole file ends without failing. (The pump over the cut file
+/// Through the trait alone, a cut FLAC yields its frames and then answers
+/// `Failed`, and a whole file ends with `Ended`. (The pump over the cut file
 /// finishes as `Failed` rather than `Ended`: `tutti-session`'s
 /// `tests/file_in_pump.rs`.)
 ///
-/// Mutation (run): removing the `is_failed` override from `impl AudioIn for
-/// FileIn` fails the failed assertions.
+/// Mutation (run): answering `Ended` where `FileIn::pull` answers `Failed` for
+/// a fault fails the first verdict assertion.
 #[test]
 fn a_decode_fault_reads_as_failed_through_the_trait() {
-    fn frames_then_failed<I: AudioIn>(src: &mut I) -> (usize, bool) {
+    fn frames_then_stop<I: Source>(src: &mut I) -> (usize, Stop) {
         let mut buf = vec![0.0f32; 1024 * usize::from(src.layout().count())];
         let mut frames = 0;
         loop {
-            match src.poll_into(&mut buf).get() {
-                0 => return (frames, src.is_failed()),
-                n => frames += n,
+            match src.pull(&mut buf) {
+                Pull::Frames(n) => frames += n.get(),
+                verdict => return (frames, verdict.stop().expect("not frames")),
             }
         }
     }
@@ -360,15 +364,19 @@ fn a_decode_fault_reads_as_failed_through_the_trait() {
     let cut = truncated_asset("stereo.flac", 0.9);
     let mut dec = FileIn::open(&cut).expect("a cut file still opens");
     let total = dec.total_frames().expect("flac reports a length").get();
-    let (frames, failed) = frames_then_failed(&mut dec);
+    let (frames, stop) = frames_then_stop(&mut dec);
     assert!(frames > 0 && frames < total, "{frames} of {total}");
-    assert!(failed);
+    assert_eq!(stop, Stop::Failed);
     dec.seek(Samples(0)).expect("seek");
-    assert!(!dec.is_failed(), "a seek clears the fault");
+    let mut buf = vec![0.0f32; 1024 * 2];
+    assert!(
+        matches!(dec.pull(&mut buf), Pull::Frames(_)),
+        "a seek clears the fault"
+    );
 
-    let (whole, failed) = frames_then_failed(&mut FileIn::open(asset("stereo.flac")).unwrap());
+    let (whole, stop) = frames_then_stop(&mut FileIn::open(asset("stereo.flac")).unwrap());
     assert_eq!(whole, total);
-    assert!(!failed);
+    assert_eq!(stop, Stop::Ended);
 
     let _ = std::fs::remove_file(&cut);
 }
@@ -381,7 +389,13 @@ fn a_clean_end_of_file_has_no_error() {
     let path = write_test_wav(3_000, "clean_end");
     let mut dec = FileIn::open(&path).expect("open");
     let mut buf = vec![0.0f32; 4096 * 2];
-    while dec.poll_into(&mut buf).get() > 0 {}
+    let end = loop {
+        match dec.pull(&mut buf) {
+            Pull::Frames(_) => {}
+            verdict => break verdict,
+        }
+    };
+    assert_eq!(end, Pull::Ended);
     assert!(dec.error().is_none());
     let _ = std::fs::remove_file(&path);
 }
@@ -472,11 +486,11 @@ fn interleaved_read_stays_frame_aligned_across_packets() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// **`poll_into` preserves every channel.** A centre-only 5.1 file must come
+/// **`pull` preserves every channel.** A centre-only 5.1 file must come
 /// back with the energy still in channel 2 and the other five silent — no
 /// fold, no truncation.
 #[test]
-fn poll_into_delivers_the_files_own_width() {
+fn pull_delivers_the_files_own_width() {
     let frames = 64;
     let sample_rate = 44100.0;
     // 5.1 order L R C LFE Ls Rs — centre only.
@@ -490,8 +504,7 @@ fn poll_into_delivers_the_files_own_width() {
     assert_eq!(decoder.layout().count(), 6u16, "the trait reports the file");
 
     let mut out = [0.0f32; 6 * 16];
-    let got = decoder.poll_into(&mut out);
-    assert!(!got.is_zero());
+    assert!(matches!(decoder.pull(&mut out), Pull::Frames(_)));
 
     // Frame 0, channel by channel: the centre survived and nothing leaked
     // into the front pair. A fold would put ~0.35 in both L and R.
@@ -527,8 +540,7 @@ fn a_mono_file_is_not_widened() {
     assert_eq!(decoder.layout(), ChannelLayout::MONO, "no widening");
 
     let mut out = [0.0f32; 16];
-    let got = decoder.poll_into(&mut out);
-    assert!(!got.is_zero());
+    assert!(matches!(decoder.pull(&mut out), Pull::Frames(_)));
 
     // One sample per frame, so consecutive slots differ by one ramp step.
     // A duplicating read would deliver them in equal pairs.
@@ -555,8 +567,7 @@ fn a_caller_can_still_fold_to_stereo_itself() {
     let mut decoder = FileIn::open(&path).expect("open");
     let ch = decoder.layout().count() as usize;
     let mut native = vec![0.0f32; ch * 16];
-    let got = decoder.poll_into(&mut native);
-    assert!(!got.is_zero());
+    assert!(matches!(decoder.pull(&mut native), Pull::Frames(_)));
 
     let mut stereo = [0.0f32; 2];
     tutti_types::Fold::to_width(decoder.topology(), tutti_types::ChannelLayout::STEREO)

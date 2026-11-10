@@ -1,20 +1,22 @@
 //! Mock-server integration tests for `PluginHandle`.
 //!
-//! Each test stands up a real [`crate::host::ipc_client::PluginBridge`] against a
+//! Each test stands up a real [`tutti_plugin_ipc::PluginBridge`] against a
 //! mock plugin-server running on a std thread over an interprocess
 //! socket, then drives `PluginHandle` IPC round-trips through it. The
 //! `respond` callback lets each test script the server's replies.
 
 use crate::host::handles::control_handle::PluginHandle;
-use crate::host::ipc_client::PluginBridge;
-use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
-use crate::protocol::{
-    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, Normalized,
-    PROTOCOL_VERSION, ParamId, ParameterInfo, PluginDescriptor, PluginTail, Samples,
-};
-use crate::protocol::{EditorPresence, PluginClass, SampleFormat, SlabLayout};
-use crate::util::transport::shm::AudioSlab;
 use std::sync::Arc;
+use tutti_plugin_ipc::AudioSlab;
+use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::SlabLayout;
+use tutti_plugin_ipc::{BridgeEvent, BridgeThread};
+use tutti_plugin_ipc::{BridgeMessage, HostMessage, PROTOCOL_VERSION};
+use tutti_plugin_types::{
+    ChannelLayout, Features, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
+    PluginTail, Samples,
+};
+use tutti_plugin_types::{EditorPresence, PluginClass, SampleFormat};
 use tutti_types::SampleRate;
 
 fn unique_socket_path(label: &str) -> std::path::PathBuf {
@@ -71,26 +73,29 @@ fn handle_with_mock_server(
 
     let path = unique_socket_path("handle");
     let _ = std::fs::remove_file(&path);
-    let name = crate::util::transport::control::socket_name(&path).unwrap();
+    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
-    let buffer = Arc::new(
+    // The test writes no audio: only the shared, read-only slab is kept.
+    let buffer = Arc::clone(
         AudioSlab::create(
             unique_shm_name("handle"),
             SlabLayout {
-                slots: crate::util::transport::shm::RING_SLOTS as u32,
+                slots: tutti_plugin_ipc::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
                 inputs: vec![ChannelLayout::STEREO],
                 outputs: vec![ChannelLayout::STEREO],
             },
         )
-        .unwrap(),
+        .unwrap()
+        .slab(),
     );
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         buffer,
         std::path::PathBuf::from("test.vst3"),
+        crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -173,26 +178,29 @@ fn handle_with_multi_reply_server(
 
     let path = unique_socket_path("handle-multi");
     let _ = std::fs::remove_file(&path);
-    let name = crate::util::transport::control::socket_name(&path).unwrap();
+    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
-    let buffer = Arc::new(
+    // The test writes no audio: only the shared, read-only slab is kept.
+    let buffer = Arc::clone(
         AudioSlab::create(
             unique_shm_name("handle-multi"),
             SlabLayout {
-                slots: crate::util::transport::shm::RING_SLOTS as u32,
+                slots: tutti_plugin_ipc::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
                 inputs: vec![ChannelLayout::STEREO],
                 outputs: vec![ChannelLayout::STEREO],
             },
         )
-        .unwrap(),
+        .unwrap()
+        .slab(),
     );
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         buffer,
         std::path::PathBuf::from("test.vst3"),
+        crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
     .unwrap();

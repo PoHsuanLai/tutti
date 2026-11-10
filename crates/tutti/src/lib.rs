@@ -71,7 +71,7 @@ pub use tutti_codec as codec;
 
 /// The live I/O edge: recording a source into a sink. `Recorder` and the
 /// `PumpLoop` it runs (`tutti-session`); the sink is `tutti-codec`'s `FileOut`
-/// (`tutti::codec`), and a graph tap is an `AudioIn` as it is. Feature `io`,
+/// (`tutti::codec`), and a graph tap is a `Source` as it is. Feature `io`,
 /// which `audio-io` implies.
 #[cfg(feature = "io")]
 pub mod io {

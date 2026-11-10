@@ -1,12 +1,12 @@
-//! A tap's reader is an `AudioIn` (`impl AudioIn for TapReader`), so a pump
+//! A tap's reader is a `Source` (`impl Source for TapReader`), so a pump
 //! or a recorder takes it as it is.
 
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
 };
-use tutti_types::graph::{OutPort, Source};
+use tutti_types::graph::{OutPort, Source as Origin};
 use tutti_types::{
-    AudioIn, Beat, Bpm, ChannelLayout, NodeKey, OnEmpty, SampleRate, Samples, TapAlign, TapId,
+    Beat, Bpm, ChannelLayout, NodeKey, Pull, SampleRate, Samples, Source, TapAlign, TapId,
 };
 
 /// A stereo source that plays `frames` in order, then silence: the graph the
@@ -56,7 +56,7 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
         }),
     );
     let port = |port| {
-        Source::Node(OutPort {
+        Origin::Node(OutPort {
             node: NodeKey(1),
             port,
         })
@@ -85,7 +85,7 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
 
 /// Frames the graph rendered come back out in order, interleaved L then R.
 ///
-/// The tap keeps one ring a lane and `AudioIn` speaks a flat interleaved
+/// The tap keeps one ring a lane and `Source` speaks a flat interleaved
 /// slice; this is the conversion, so a transposition here would silently
 /// swap every recording's channels.
 ///
@@ -98,9 +98,9 @@ fn rendered_frames_come_back_in_order_and_channel_side() {
     let mut tap = tap_with(&frames);
     let mut out = [0.0f32; 8 * 2];
     assert_eq!(
-        AudioIn::poll_into(&mut tap, &mut out),
-        Samples(4),
-        "the return is FRAMES, not samples"
+        Source::pull(&mut tap, &mut out),
+        Pull::Frames(Samples(4)),
+        "the count is FRAMES, not samples"
     );
 
     for i in 0..4 {
@@ -109,7 +109,7 @@ fn rendered_frames_come_back_in_order_and_channel_side() {
     }
 }
 
-/// A poll is bounded by the output slice, not by what the ring holds.
+/// A pull is bounded by the output slice, not by what the ring holds.
 ///
 /// The pump hands a fixed scratch buffer every pass; writing past it would
 /// be the kind of overrun no test above would notice.
@@ -118,43 +118,46 @@ fn a_poll_never_writes_past_the_output_slice() {
     let mut tap = tap_with(&[(1.0, 1.0); 32]);
     let mut out = [0.0f32; 4 * 2];
     assert_eq!(
-        AudioIn::poll_into(&mut tap, &mut out),
-        Samples(4),
+        Source::pull(&mut tap, &mut out),
+        Pull::Frames(Samples(4)),
         "must fill exactly the slice"
     );
 
     // The rest is still queued, not dropped.
     let mut rest = [0.0f32; 32 * 2];
-    assert_eq!(AudioIn::poll_into(&mut tap, &mut rest), Samples(28));
+    assert_eq!(Source::pull(&mut tap, &mut rest), Pull::Frames(Samples(28)));
 }
 
-/// An empty tap yields nothing and says so — without claiming the end.
+/// An empty tap yields nothing and says so, without claiming the end.
 ///
-/// The `ON_EMPTY` assertion is the load-bearing half: a `Starved` source
-/// makes a pump park and retry, and the recording survives the gap between
-/// audio callbacks. `EndOfStream` here would end every take immediately.
+/// The `Starved` verdict is the load-bearing half: a `Starved` source makes a
+/// pump park and retry, and the recording survives the gap between audio
+/// callbacks. `Ended` here would end every take immediately.
+///
+/// Mutation (run, recorded here): `TapReader::pull` answering `Pull::Ended` for
+/// an empty tap fails this, and `tutti-session`'s `tap_to_wav_roundtrip`
+/// (its pump reads `Ended` as the take's end).
 #[test]
 fn an_empty_tap_starves_rather_than_ending() {
     let mut tap = tap_with(&[]);
 
     let mut out = [0.0f32; 4 * 2];
-    assert_eq!(AudioIn::poll_into(&mut tap, &mut out), Samples::ZERO);
     assert_eq!(
-        <TapReader as AudioIn>::ON_EMPTY,
-        OnEmpty::Starved,
+        Source::pull(&mut tap, &mut out),
+        Pull::Starved,
         "the graph does not end; an empty tap is a gap, not a finish"
     );
 }
 
 /// The join this type exists for: a tap consumer satisfies the bound
-/// `pump` and a recorder require.
+/// a recorder requires.
 ///
 /// Asserted as a compile-time bound rather than by running a recorder — the
-/// defect it guards against is `TapReader` failing to *be* an `AudioIn`, which
+/// defect it guards against is `TapReader` failing to *be* a `Source`, which
 /// is a type error, not a behaviour.
 #[test]
 fn a_tap_is_accepted_where_a_live_source_is_required() {
-    fn takes_a_live_source<I: AudioIn + Send + 'static>(_: I) {}
+    fn takes_a_live_source<I: Source + Send + 'static>(_: I) {}
 
     takes_a_live_source(tap_with(&[]));
 }
@@ -162,7 +165,7 @@ fn a_tap_is_accepted_where_a_live_source_is_required() {
 /// Its layout is the tap's width, not a fixed stereo: a six-lane tap is a
 /// six-channel source.
 ///
-/// Mutation (run, recorded here): `impl AudioIn for TapReader`'s `layout` returning
+/// Mutation (run, recorded here): `impl Source for TapReader`'s `layout` returning
 /// `ChannelLayout::STEREO` -> a one-lane and a six-lane tap read as stereo
 /// and this fails.
 #[test]
@@ -173,13 +176,13 @@ fn the_layout_follows_the_taps_width() {
         let reader = ed
             .open_tap(
                 TapId(width as u32),
-                vec![Source::Zero; width],
+                vec![Origin::Zero; width],
                 TapAlign::Raw,
                 Samples(8),
             )
             .expect("the sources exist");
         assert_eq!(
-            AudioIn::layout(&reader),
+            Source::layout(&reader),
             ChannelLayout::try_from(width).expect("a test width is small")
         );
     }
@@ -192,10 +195,6 @@ fn the_layout_follows_the_taps_width() {
 #[test]
 fn a_tap_reports_the_frames_it_lost() {
     let mut tap = tap_with_ring(&[(1.0, 1.0); 8], 5);
-    assert_eq!(AudioIn::take_lost(&mut tap), Samples(3));
-    assert_eq!(
-        AudioIn::take_lost(&mut tap),
-        Samples::ZERO,
-        "reading clears"
-    );
+    assert_eq!(Source::take_lost(&mut tap), Samples(3));
+    assert_eq!(Source::take_lost(&mut tap), Samples::ZERO, "reading clears");
 }

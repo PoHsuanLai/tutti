@@ -19,10 +19,8 @@ fn sink(path: &std::path::Path, channels: u16, pcm: Pcm) -> FileOut {
     .expect("sink opens")
 }
 
-/// A finite in-memory [`AudioIn`] standing in for a live mic: hands out its
-/// frames in bounded chunks, returning a short-then-zero count at
-/// end-of-stream. Has a runtime width, like the `SliceSource` fixture in
-/// `tutti_types::io`'s own tests.
+/// A finite in-memory [`Source`]: hands out its frames in bounded chunks,
+/// answering [`Pull::Ended`] once they are gone. Has a runtime width.
 struct SliceSource {
     /// Flat interleaved at `layout`'s width.
     samples: Vec<f32>,
@@ -31,31 +29,31 @@ struct SliceSource {
     layout: ChannelLayout,
 }
 
-impl AudioIn for SliceSource {
-    const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
-
+impl Source for SliceSource {
     fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
         let ch = self.layout.count() as usize;
         let total = self.samples.len() / ch;
         let n = (total - self.pos).min(out.len() / ch);
+        if n == 0 {
+            return Pull::Ended;
+        }
         out[..n * ch].copy_from_slice(&self.samples[self.pos * ch..(self.pos + n) * ch]);
         self.pos += n;
-        Samples(n)
+        Pull::Frames(Samples(n))
     }
 }
 
 /// Runs passes until one writes nothing, or `budget` passes have run, and
 /// returns the total frames written. The budget bounds a source that never
 /// runs dry.
-fn pump_until_dry<I, O, S>(pump_loop: &mut PumpLoop<I, O, S>, budget: usize) -> Samples
+fn pump_until_dry<I, O>(pump_loop: &mut PumpLoop<I, O>, budget: usize) -> Samples
 where
-    S: Copy + Default,
-    I: AudioIn<S>,
-    O: AudioOut<S>,
+    I: Source,
+    O: Sink,
 {
     let mut total = Samples::ZERO;
     for _ in 0..budget {
@@ -155,7 +153,7 @@ fn start_rejects_a_source_sink_width_mismatch() {
 ///
 /// At six channels a sample-denominated count is 6x off, so the frame total
 /// read back off the finished file is a direct check on the whole chain:
-/// `poll_into`, `pump`, `write`, header.
+/// `pull`, `pump`, `write`, header.
 #[test]
 fn a_six_channel_source_records_at_its_own_width() {
     let dir = tempfile::tempdir().unwrap();
@@ -190,33 +188,31 @@ fn a_six_channel_source_records_at_its_own_width() {
 }
 
 /// A live (starving) source records until stopped: the composability a generic
-/// `AudioIn` bound buys over a signature that opens a device itself.
+/// `Source` bound buys over a signature that opens a device itself.
 ///
 /// The fixture withholds frames without being exhausted, so a loop that
-/// mistook a zero-frame poll for end-of-stream would stop early.
+/// mistook an empty pull for end-of-stream would stop early.
 #[test]
 fn a_non_mic_live_source_records_until_stopped() {
     struct Starving {
         polls: usize,
     }
 
-    impl AudioIn for Starving {
-        const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+    impl Source for Starving {
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
 
-        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        fn pull(&mut self, out: &mut [f32]) -> Pull {
             let n = self.polls;
             self.polls += 1;
-            // Every other poll is empty: never exhausted.
+            // Every other pull is empty: never exhausted.
             if n % 2 == 1 || out.len() < 2 {
-                return Samples::ZERO;
+                return Pull::Starved;
             }
             out[0] = 0.25;
             out[1] = -0.25;
-            Samples(1)
+            Pull::Frames(Samples(1))
         }
     }
 
@@ -229,7 +225,7 @@ fn a_non_mic_live_source_records_until_stopped() {
     )
     .expect("matching stereo widths");
 
-    // Six passes of a fixture that yields on every *other* poll: passes
+    // Six passes of a fixture that yields on every *other* pull: passes
     // 0, 2, 4 write a frame each and 1, 3, 5 report `Starved`. The sequence
     // fails if a `Starved` pass is treated as end-of-stream (writes stop at 1),
     // and if the parity of the fixture changes.
@@ -256,53 +252,53 @@ fn a_non_mic_live_source_records_until_stopped() {
     );
 }
 
-/// A sink that is not a WAV, over an element that is not `f32`: the pump is
-/// generic over both, and a test sink can be read back directly.
+/// A sink that is not a WAV: a test sink can be read back directly.
 #[derive(Clone)]
-struct Collect(Arc<std::sync::Mutex<Vec<i16>>>);
+struct Collect(Arc<std::sync::Mutex<Vec<f32>>>);
 
-impl AudioOut<i16> for Collect {
+impl Sink for Collect {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
-    fn write(&mut self, interleaved: &[i16]) {
+    fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed> {
         self.0.lock().unwrap().extend_from_slice(interleaved);
+        Ok(())
     }
     fn finalize(self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-/// A finite stereo `i16` ramp: frame `k` is `(k, -k)`.
-struct RampI16 {
+/// A finite stereo ramp: frame `k` is `(k, -k)`.
+struct Ramp {
     frames: usize,
     pos: usize,
 }
 
-impl AudioIn<i16> for RampI16 {
-    const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
-
+impl Source for Ramp {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [i16]) -> Samples {
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
         let fits = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
         let n = (self.frames - self.pos).min(fits);
+        if n == 0 {
+            return Pull::Ended;
+        }
         for i in 0..n {
-            let k = (self.pos + i) as i16;
+            let k = (self.pos + i) as f32;
             out[i * 2] = k;
             out[i * 2 + 1] = -k;
         }
         self.pos += n;
-        Samples(n)
+        Pull::Frames(Samples(n))
     }
 }
 
-/// **A named capacity bounds every pass**, over any sink and element.
+/// **A named capacity bounds every pass**, over any sink.
 ///
-/// `bevy-tutti`'s `AudioPump` hands its capacity through here, so this is the
-/// property its `Samples(64)` relies on: 1000 frames at 64 per pass is fifteen
+/// 1000 frames at 64 per pass is fifteen
 /// full passes and a 40-frame tail, then `Ended`. The values are read back from
 /// the sink, so a pass that skipped or repeated frames fails on the content,
 /// not just the count.
@@ -314,7 +310,7 @@ impl AudioIn<i16> for RampI16 {
 fn a_named_capacity_bounds_each_pass_over_any_sink() {
     let seen = Collect(Arc::new(std::sync::Mutex::new(Vec::new())));
     let mut pump_loop = PumpLoop::new(
-        RampI16 {
+        Ramp {
             frames: 1000,
             pos: 0,
         },
@@ -339,46 +335,46 @@ fn a_named_capacity_bounds_each_pass_over_any_sink() {
     let got = seen.0.lock().unwrap();
     assert_eq!(got.len(), 2000, "1000 stereo frames are 2000 samples");
     for (k, frame) in got.as_chunks::<2>().0.iter().enumerate() {
-        assert_eq!(*frame, [k as i16, -(k as i16)], "frame {k}");
+        assert_eq!(*frame, [k as f32, -(k as f32)], "frame {k}");
     }
 }
 
 /// **A zero capacity is one frame, not a take that never moves.**
 ///
-/// An empty scratch makes every poll return zero, and the source's `ON_EMPTY`
-/// then reads that zero as its own: a finite take ends before its first frame,
-/// a live one parks forever. `AudioPump` has always clamped to one frame; the
-/// clamp lives in `PumpLoop::new`.
+/// An empty scratch makes every pull find no room, and the source's verdict
+/// then stands for it: a finite take ends before its first frame, a live one
+/// parks forever. The clamp lives in `PumpLoop::new`.
 ///
 /// *Mutation:* drop the clamp (`let frames = capacity;`). The first pass then
 /// reports `Ended` with nothing written and this fails.
 #[test]
 fn a_zero_capacity_moves_one_frame_per_pass() {
     let seen = Collect(Arc::new(std::sync::Mutex::new(Vec::new())));
-    let mut pump_loop = PumpLoop::new(RampI16 { frames: 3, pos: 0 }, seen.clone(), Samples::ZERO)
+    let mut pump_loop = PumpLoop::new(Ramp { frames: 3, pos: 0 }, seen.clone(), Samples::ZERO)
         .expect("stereo into stereo");
 
     assert_eq!(pump_until_dry(&mut pump_loop, 16), Samples(3));
     assert_eq!(pump_loop.pump_once(), PumpPass::Ended);
     pump_loop.finalize().expect("finalize");
-    assert_eq!(*seen.0.lock().unwrap(), [0, 0, 1, -1, 2, -2]);
+    assert_eq!(*seen.0.lock().unwrap(), [0.0, 0.0, 1.0, -1.0, 2.0, -2.0]);
 }
 
 /// A live source whose device can die: serves its queued frames, then reads
-/// empty, and `dead` makes `is_failed` true.
+/// empty, and `dead` makes an empty read `Failed`. Like `MicIn`, it reads the
+/// flag **before** the queue and fails only if the queue was empty, so frames
+/// queued before the death are delivered first.
 struct DyingMic {
     queued: std::collections::VecDeque<[f32; 2]>,
     dead: Arc<AtomicBool>,
 }
 
-impl AudioIn for DyingMic {
-    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+impl Source for DyingMic {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
+        let dead = self.dead.load(Ordering::Acquire);
         let mut n = 0;
         for chunk in out.as_chunks_mut::<2>().0 {
             let Some(frame) = self.queued.pop_front() else {
@@ -387,11 +383,11 @@ impl AudioIn for DyingMic {
             *chunk = frame;
             n += 1;
         }
-        Samples(n)
-    }
-
-    fn is_failed(&self) -> bool {
-        self.dead.load(Ordering::Acquire)
+        match (n, dead) {
+            (0, true) => Pull::Failed,
+            (0, false) => Pull::Starved,
+            (n, _) => Pull::Frames(Samples(n)),
+        }
     }
 }
 
@@ -404,10 +400,9 @@ fn frames(n: usize) -> std::collections::VecDeque<[f32; 2]> {
 /// A mic that dies mid-take ends the take as failed, keeps the frames it
 /// delivered and finalizes them. A healthy but quiet mic does not fail.
 ///
-/// Mutation: making `is_failed` unread in `pump_once` (dropping the
-/// `n.is_zero() && self.src.is_failed()` arm) fails the `Failed` assertion;
-/// checking `is_failed` before the frames are drained (dropping `n.is_zero()`)
-/// fails the frame count.
+/// Mutation: mapping `Pull::Failed` to `PumpPass::Ended` in `pump_once` fails the
+/// `Failed` assertion; not recording `source_failed` leaves `finalize` `Ok` and
+/// fails the `SourceFailed` assertion.
 #[test]
 fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
     let dir = tempfile::tempdir().unwrap();
@@ -449,7 +444,8 @@ fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
 /// Frames still buffered when the device dies are written before the take is
 /// declared failed.
 ///
-/// Mutation: see above (dropping `n.is_zero() &&`) fails this one.
+/// Mutation: `DyingMic::pull` answering `Failed` whenever `dead` is set, ring or
+/// not, hides the five frames and fails this.
 #[test]
 fn frames_buffered_at_the_fault_are_written_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -473,8 +469,8 @@ fn frames_buffered_at_the_fault_are_written_first() {
 /// disk sets) fails the take, and the sink's error still comes out of
 /// finalize.
 ///
-/// Mutation: deleting the `self.sink.is_failed()` arm in `pump_once` fails the
-/// `Failed` assertion; deleting `FileOut::is_failed` does too.
+/// Mutation: mapping `Err(SinkFailed)` to `PumpPass::Wrote` in `pump_once` fails
+/// the `Failed` assertion.
 #[test]
 fn a_failed_sink_fails_the_take() {
     let dir = tempfile::tempdir().unwrap();
@@ -496,80 +492,67 @@ fn a_failed_sink_fails_the_take() {
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 8);
 }
 
-/// A source that pushes its last frame and disconnects between a poll that came
-/// back empty and the failure check: poll 1 is empty, then the late frame lands
-/// and the flag flips.
-struct RacingMic {
-    polls: usize,
-    failed: AtomicBool,
+/// A source that answers from a script: an empty read, a frame, then the
+/// failure. `Frames` and a verdict never arrive together, so the frame and the
+/// `Failed` are two passes.
+struct Scripted {
+    answers: std::vec::IntoIter<Pull>,
 }
 
-impl AudioIn for RacingMic {
-    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+impl Source for Scripted {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        self.polls += 1;
-        match self.polls {
-            // Empty; the producer's last push and the disconnect follow.
-            1 => {
-                self.failed.store(true, Ordering::Release);
-                Samples::ZERO
-            }
-            2 => {
-                out[..2].copy_from_slice(&[0.5, -0.5]);
-                Samples(1)
-            }
-            _ => Samples::ZERO,
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
+        let answer = self.answers.next().unwrap_or(Pull::Ended);
+        if let Pull::Frames(_) = answer {
+            out[..2].copy_from_slice(&[0.5, -0.5]);
         }
-    }
-
-    fn is_failed(&self) -> bool {
-        self.failed.load(Ordering::Acquire)
+        answer
     }
 }
 
-/// The frame pushed just before the disconnect is recorded, not lost.
+/// The frame delivered just before the failure is recorded, not lost: the
+/// loop writes a pass's frames before it acts on the next pass's verdict.
 ///
-/// Mutation: failing on the first empty poll that sees `is_failed` (removing
-/// the second `pump` in `pump_once`) returns `Failed` first and fails this.
+/// (The race this once guarded, a frame landing between an empty poll and the
+/// failure check, is closed in the source now: `MicIn::pull` reads its flag
+/// before its ring, and `tutti-rt`'s `fault_latch_loom` model checks that.)
+///
+/// Mutation: mapping `Pull::Frames` to `PumpPass::Starved` in `pump_once` drops
+/// the frame and fails the second assertion.
 #[test]
-fn a_frame_pushed_just_before_the_fault_is_not_lost() {
+fn a_frame_delivered_before_the_failure_is_recorded() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("race.wav");
+    let path = dir.path().join("script.wav");
     let mut pump_loop = PumpLoop::new(
-        RacingMic {
-            polls: 0,
-            failed: AtomicBool::new(false),
+        Scripted {
+            answers: vec![Pull::Starved, Pull::Frames(Samples(1)), Pull::Failed].into_iter(),
         },
         sink(&path, 2, Pcm::Float32),
         SCRATCH_FRAMES,
     )
     .unwrap();
+    assert_eq!(pump_loop.pump_once(), PumpPass::Starved);
     assert_eq!(pump_loop.pump_once(), PumpPass::Wrote(Samples(1)));
     assert_eq!(pump_loop.pump_once(), PumpPass::Failed);
     let _ = pump_loop.finalize();
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 2);
 }
 
-/// `Failed` outranks `Ended`: a finite source that failed and drained is a
-/// failure.
+/// A finite source that failed is a failure, not a clean end.
+///
+/// Mutation: mapping `Pull::Failed` to `PumpPass::Ended` fails this.
 #[test]
 fn a_failed_finite_source_is_failed_not_ended() {
     struct DeadFile;
-    impl AudioIn for DeadFile {
-        const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+    impl Source for DeadFile {
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn poll_into(&mut self, _: &mut [f32]) -> Samples {
-            Samples::ZERO
-        }
-        fn is_failed(&self) -> bool {
-            true
+        fn pull(&mut self, _: &mut [f32]) -> Pull {
+            Pull::Failed
         }
     }
     let dir = tempfile::tempdir().unwrap();
@@ -584,30 +567,196 @@ fn a_failed_finite_source_is_failed_not_ended() {
 #[test]
 fn the_loop_sums_what_the_source_lost() {
     struct Dropping;
-    impl AudioIn for Dropping {
-        const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+    impl Source for Dropping {
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn poll_into(&mut self, _: &mut [f32]) -> Samples {
-            Samples::ZERO
+        fn pull(&mut self, _: &mut [f32]) -> Pull {
+            Pull::Starved
         }
         fn take_lost(&mut self) -> Samples {
             Samples(7)
         }
     }
     struct F32Collect;
-    impl AudioOut for F32Collect {
+    impl Sink for F32Collect {
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn write(&mut self, _: &[f32]) {}
+        fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+            Ok(())
+        }
         fn finalize(self) -> std::io::Result<()> {
             Ok(())
         }
     }
     let mut pump_loop = PumpLoop::new(Dropping, F32Collect, SCRATCH_FRAMES).unwrap();
-    pump_loop.pump_once();
-    pump_loop.pump_once();
+    assert_eq!(pump_loop.pump_once(), PumpPass::Starved);
+    assert_eq!(pump_loop.pump_once(), PumpPass::Starved);
     assert_eq!(pump_loop.lost(), Samples(14));
+}
+
+// The pump's own tests: a source moved into a sink one block at a time. The
+// four below are the ones `tutti_types::pump`'s had before it moved here.
+
+/// A finite source with a per-pull cap, so chunks straddle the buffer.
+struct Chunked {
+    samples: Vec<f32>,
+    pos: usize,
+    layout: ChannelLayout,
+    chunk: usize,
+}
+
+impl Source for Chunked {
+    fn layout(&self) -> ChannelLayout {
+        self.layout
+    }
+
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
+        let ch = self.layout.count() as usize;
+        let total = self.samples.len() / ch;
+        let n = (total - self.pos).min(out.len() / ch).min(self.chunk);
+        if n == 0 {
+            return Pull::Ended;
+        }
+        out[..n * ch].copy_from_slice(&self.samples[self.pos * ch..(self.pos + n) * ch]);
+        self.pos += n;
+        Pull::Frames(Samples(n))
+    }
+}
+
+/// A sink that keeps every sample it is handed, at any width.
+struct Tally {
+    written: Vec<f32>,
+    layout: ChannelLayout,
+}
+
+impl Sink for Tally {
+    fn layout(&self) -> ChannelLayout {
+        self.layout
+    }
+    fn write(&mut self, frames: &[f32]) -> Result<(), SinkFailed> {
+        self.written.extend_from_slice(frames);
+        Ok(())
+    }
+    fn finalize(self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Pumping a finite source to exhaustion moves every frame exactly once, in
+/// order, and never writes past the pulled count even when the buffer is larger
+/// than what the source produces that pass.
+///
+/// Mutation: writing the whole `buf` instead of `buf[..n * ch]` fails the
+/// equality.
+#[test]
+fn pump_drains_a_finite_source_exactly() {
+    let samples: Vec<f32> = (0..1000).flat_map(|i| [i as f32, -(i as f32)]).collect();
+    let mut src = Chunked {
+        samples: samples.clone(),
+        pos: 0,
+        layout: ChannelLayout::STEREO,
+        chunk: 37, // coprime with the buffer so chunks straddle
+    };
+    let mut dst = Tally {
+        written: Vec::new(),
+        layout: ChannelLayout::STEREO,
+    };
+    let mut buf = vec![0.0f32; 64 * 2];
+
+    let mut total = Samples::ZERO;
+    while let Ok(Pull::Frames(n)) = pump(&mut src, &mut dst, &mut buf) {
+        assert!(
+            n <= Samples::from_interleaved_len(buf.len(), ChannelLayout::STEREO),
+            "pump reported more FRAMES than the buffer holds"
+        );
+        total += n;
+    }
+    assert_eq!(total, Samples(1000));
+    assert_eq!(dst.written, samples, "frames arrive intact and in order");
+}
+
+/// **Frames, not samples**, at a width where the two visibly differ: six
+/// channels, a buffer of ten frames' worth of samples. The pull returns frames
+/// (10, not 60) and the sink receives frames x channels samples.
+///
+/// Mutation: returning the sample count from `Chunked::pull` fails the first
+/// assertion; handing the sink `buf[..n]` (frames as a slice length) fails the
+/// second.
+#[test]
+fn every_count_on_this_boundary_is_denominated_in_frames() {
+    const CH: usize = 6;
+    let six = ChannelLayout::from(6u16);
+    let mut src = Chunked {
+        samples: vec![1.0f32; 100 * CH],
+        pos: 0,
+        layout: six,
+        chunk: 100,
+    };
+    let mut dst = Tally {
+        written: Vec::new(),
+        layout: six,
+    };
+    let mut buf = vec![0.0f32; 10 * CH];
+    assert_eq!(
+        pump(&mut src, &mut dst, &mut buf),
+        Ok(Pull::Frames(Samples(10))),
+        "pump returns FRAMES (10), not samples (60)"
+    );
+    assert_eq!(src.pos, 10, "the source advanced by 10 FRAMES");
+    assert_eq!(
+        dst.written.len(),
+        10 * CH,
+        "the sink received frames * channels SAMPLES"
+    );
+}
+
+/// A sink that refuses is the pump's `Err`, and the pulled frames are not
+/// silently dropped into a `Wrote`.
+///
+/// Mutation: ignoring the write's `Result` in `pump` (`let _ = dst.write(..)`)
+/// returns `Ok(Frames)` and fails this.
+#[test]
+fn a_refusing_sink_is_the_pumps_error() {
+    struct Refuse;
+    impl Sink for Refuse {
+        fn layout(&self) -> ChannelLayout {
+            ChannelLayout::STEREO
+        }
+        fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+            Err(SinkFailed)
+        }
+        fn finalize(self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut src = Ramp { frames: 4, pos: 0 };
+    assert_eq!(pump(&mut src, &mut Refuse, &mut [0.0; 8]), Err(SinkFailed));
+}
+
+/// The width check, **inner half**: pumping a mismatched pair trips the
+/// `debug_assert` rather than quietly writing a stream whose channels rotate
+/// every frame. The outer half is `PumpLoop::new`'s error, tested above.
+///
+/// Mutation: deleting the `debug_assert_eq!` in `pump` fails this.
+// It tests a `debug_assert`, so it exists only where that assertion does: a
+// release build has no check to test, and the test would fail there for that
+// reason alone.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "must agree on channel width")]
+fn pump_rejects_a_width_mismatch() {
+    let mut src = Chunked {
+        samples: vec![0.0f32; 32],
+        pos: 0,
+        layout: ChannelLayout::STEREO,
+        chunk: 8,
+    };
+    let mut dst = Tally {
+        written: Vec::new(),
+        layout: ChannelLayout::from(6u16),
+    };
+    let mut buf = vec![0.0f32; 16];
+    let _ = pump(&mut src, &mut dst, &mut buf);
 }

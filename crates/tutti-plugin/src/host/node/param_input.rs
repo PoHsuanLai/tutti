@@ -12,7 +12,7 @@
 use tutti_graph::{Cx, Event, EventKind, Offset, ParamSegment};
 use tutti_types::{ParamAddr, Samples};
 
-use crate::protocol::{ParamId, ParameterQueue};
+use tutti_plugin_types::{ParamId, ParameterQueue};
 
 use super::param_delivery::ParamDelivery;
 use super::segment_points::SegmentPoints;
@@ -171,12 +171,12 @@ fn address(id: u32) -> Option<ParamId> {
 mod tests {
     use super::*;
     use crate::host::node::param_delivery::DeliveryCounters;
-    use crate::protocol::ParamId;
     use std::sync::Arc;
     use tutti_graph::{
         Env, ParamRamp, PlayClock, PlayReading, SegmentShape, Transport, TransportChanges,
         TransportHistory,
     };
+    use tutti_plugin_types::ParamId;
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
 
     /// The block's `Env` at absolute frame 0, its play clock starting at

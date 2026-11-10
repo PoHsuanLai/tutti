@@ -78,7 +78,7 @@ pub use downmix::{
 pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 
 // I/O edge + latency.
-pub use io::{AudioIn, AudioOut, OnEmpty, pump};
+pub use io::{Pull, Sink, SinkFailed, Source, Stop};
 pub use latency::{Compensation, Delays, Feed, LatencyGraph, delays};
 
 // How long a graph rings after its input stops.
@@ -87,8 +87,8 @@ pub use tail::{GraphTail, TailGraph, graph_tail};
 // The audio graph as a value. Only the four names a consumer spells outside a
 // builder come to the root: `Source`, `Edge`, `InPort`, `OutPort`, `NodeSpec`
 // and `Invalid` stay module-qualified, because each is a generic word that reads
-// wrong unprefixed — `graph::Source` is an edge's origin, and a root `Source`
-// beside `io::AudioIn` would be read as an input device.
+// wrong unprefixed — `graph::Source` is an edge's origin, while the root `Source`
+// is `io::Source`, the I/O edge's input.
 pub use graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec, Topology, Valid};
 
 // Musical meter.
@@ -113,7 +113,7 @@ pub mod prelude {
     pub use crate::interleaved::{Interleaved, InterleavedMut, StereoPlanes};
     pub use crate::topology::{ChannelTopology, Speaker};
 
-    pub use crate::io::{AudioIn, AudioOut, OnEmpty, pump};
+    pub use crate::io::{Pull, Sink, SinkFailed, Source, Stop};
 
     pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
 }

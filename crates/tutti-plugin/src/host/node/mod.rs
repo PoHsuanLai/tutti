@@ -70,7 +70,6 @@ mod controls;
 mod fork;
 mod graph_node;
 mod meter;
-mod midi_intake;
 mod param_delivery;
 // `pub(crate)` for the in-process VST2 node, which reads its event input's
 // parameter events through the same walk (see `param_delivery` below).
@@ -107,36 +106,34 @@ pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
 pub use controls::PluginControls;
 pub use meter::PluginMeter;
-pub(crate) use midi_intake::MidiIntake;
 pub use param_delivery::ParamDeliveryStats;
+pub(crate) use tutti_plugin_ipc::MidiIntake;
 // The in-process VST2 node (`crate::format::vst2_in_process`) delivers its
 // parameters through the same slots, segments and event walk as this node:
 // one copy of each.
-// (And for the bridge's pool test, which fills its buffers through one.)
-#[cfg(any(test, feature = "vst2"))]
+#[cfg(feature = "vst2")]
 pub(crate) use param_delivery::{DeliveryCounters, ParamDelivery};
 pub(crate) use process::ProcessGuard;
 #[cfg(feature = "vst2")]
 pub(crate) use segment_points::SegmentPoints;
-// The largest chunk that can cross the process edge. Re-exported because
-// `subprocess::launch` sizes the shared-memory slab from it — the slab and the
-// batcher must agree on the per-chunk ceiling or one of them is wrong.
+// The largest chunk that can cross the process edge: `tutti-plugin-ipc`'s,
+// which sizes the shared-memory slab from it, so the slab and the batcher
+// agree on the per-chunk ceiling.
 pub(crate) use batcher::MAX_CHUNK;
 
-use crate::error::Result;
-use crate::host::ipc_client::PluginBridge;
-use crate::host::ipc_client::audio::HarmonyInputs;
-use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
-use crate::host::subprocess;
-use crate::protocol::{
-    LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat, TransportInfo,
-};
-use crate::util::config::BridgeConfig;
 use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tutti_plugin_ipc::BridgeConfig;
+use tutti_plugin_ipc::HarmonyInputs;
+use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::Result;
+use tutti_plugin_ipc::{BridgeEvent, PluginInvalidation, ResyncClass};
 use tutti_plugin_types::PluginTail;
+use tutti_plugin_types::{
+    LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat, TransportInfo,
+};
 use tutti_types::MeterMap;
 use tutti_types::{SampleRate, Samples};
 
@@ -145,7 +142,9 @@ use tutti_types::{SampleRate, Samples};
 /// [`PluginClient::new`] returns this state; [`PluginClient::bind`] leaves it.
 #[derive(Debug)]
 pub struct Unbound {
-    _private: (),
+    /// The slab's input writer, until [`PluginClient::bind`] gives it to the
+    /// node's batcher, the one thing that writes a chunk.
+    slab: tutti_plugin_ipc::SlabWriter,
 }
 
 /// The typestate of a [`PluginClient`] that owns its audio path and can go into
@@ -294,8 +293,8 @@ impl<S> std::fmt::Debug for PluginClient<S> {
 /// (`Chunks::params`), so nothing is allocated or freed per chunk.
 #[derive(Default)]
 pub(super) struct BlockPayload {
-    pub midi: crate::protocol::MidiEventVec,
-    pub note_expression: crate::protocol::NoteExpressionChanges,
+    pub midi: tutti_plugin_types::MidiEventVec,
+    pub note_expression: tutti_plugin_types::NoteExpressionChanges,
     pub harmony: HarmonyInputs,
     pub transport: TransportInfo,
 }
@@ -338,7 +337,7 @@ impl PluginClient<Unbound> {
         state: Option<&[u8]>,
     ) -> Result<(Self, Option<std::result::Result<(), String>>)> {
         let sample_rate = sample_rate.into();
-        let server = subprocess::launch(&config, &plugin_path, sample_rate, state)?;
+        let server = tutti_plugin_ipc::launch(&config, &plugin_path, sample_rate, state)?;
         let state_restore = server.state_restore.clone();
         // Guard the process before the first fallible step below: an `Err`
         // from `PluginBridge::new` would otherwise drop a bare `Child`, which
@@ -359,8 +358,9 @@ impl PluginClient<Unbound> {
 
         let (bridge, bridge_thread) = PluginBridge::new(
             config.socket_path.clone(),
-            server.audio_buffer,
+            std::sync::Arc::clone(server.slab.slab()),
             plugin_path,
+            crate::format::gui::load_gui_instance,
             sample_rate,
         )?;
 
@@ -456,7 +456,7 @@ impl PluginClient<Unbound> {
             origin,
             fork_watch: None,
             params,
-            state: Unbound { _private: () },
+            state: Unbound { slab: server.slab },
         };
         Ok((client, state_restore))
     }
@@ -478,7 +478,8 @@ impl PluginClient<Unbound> {
         self.controls
             .delivery_counters()
             .attach_bridge_midi(self.bridge.dropped_midi_cell());
-        let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling)
+        let Unbound { slab } = self.state;
+        let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling, slab)
             .with_counters(chunks);
         // A slot per parameter: every parameter can move in one chunk. The
         // chunk's point room, here and in the bridge's buffers, is sized in
@@ -504,7 +505,7 @@ impl PluginClient<Unbound> {
             origin,
             fork_watch,
             params: addresses,
-            state: Unbound { _private: () },
+            state: _,
         } = self;
         PluginClient {
             bridge,
@@ -666,16 +667,16 @@ impl<S> PluginClient<S> {
         let _ = self.bridge.set_parameter_rt(param_id, value);
     }
 
-    /// Sends the host [`AutomationMode`](crate::protocol::AutomationMode) to the
+    /// Sends the host [`AutomationMode`](tutti_plugin_types::AutomationMode) to the
     /// plugin.
     ///
     /// RT-safe, fire-and-forget; a no-op for plugins and formats without an
     /// automation-state concept.
-    pub fn set_automation_state(&self, mode: crate::protocol::AutomationMode) {
+    pub fn set_automation_state(&self, mode: tutti_plugin_types::AutomationMode) {
         let _ = self.bridge.set_automation_state_rt(mode);
     }
 
-    /// Sends the [`RenderMode`](crate::protocol::RenderMode) to the plugin.
+    /// Sends the [`RenderMode`](tutti_plugin_types::RenderMode) to the plugin.
     ///
     /// Queued on the same command bus as the blocks around it, so the change
     /// lands between two blocks rather than overtaking one in flight.
@@ -683,10 +684,10 @@ impl<S> PluginClient<S> {
     /// Returns whether the command was *queued*, which is not whether the
     /// plugin honoured it: the server applies it asynchronously, and whether a
     /// given plugin acts on the mode is the load-time
-    /// [`Features::RENDER_MODE`](crate::protocol::Features) capability the
+    /// [`Features::RENDER_MODE`](tutti_plugin_types::Features) capability the
     /// caller already has. `false` here means the bridge is crashed or its
     /// queue is full.
-    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+    pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         self.bridge.set_render_mode_rt(mode)
     }
 

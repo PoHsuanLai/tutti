@@ -1,644 +1,281 @@
-//! The engine's two-trait I/O vocabulary: [`AudioIn`] (pull frames from a
-//! source) and [`AudioOut`] (push frames to a destination). Every audio source
-//! and sink in tutti — mic, decoded file, disk stream, plugin boundary, WAV
-//! encoder — speaks one of these two shapes.
+//! The engine's edge vocabulary: [`Source`] (frames pulled in) and [`Sink`]
+//! (frames written out), and [`Pull`], what a pull answers.
+//!
+//! An **edge** is a stream on a clock other than the graph's, read by pulling
+//! interleaved frames that may starve or end: a microphone, a decoded file, a
+//! graph tap's reader, a file encoder. A `tutti_graph::Node`, by contrast, is
+//! called by the graph's clock, planar, one block at a time; the rings in
+//! `tutti-graph` (the tap going out, the inlet coming in) are where an edge
+//! meets the graph. Disk streaming inside the sampler is positional and is not
+//! this vocabulary (doc 025). A future edge (a network socket, a generator) would
+//! implement these traits; none exists today.
 //!
 //! ```text
-//!   AudioIn  ──poll_into──▶  [your buffer]  ──write──▶  AudioOut
-//!   (mic, file, disk, …)                                (WAV file, …)
+//!   Source  ──pull──▶  [your buffer]  ──write──▶  Sink
+//!   (mic, file, tap)                              (a file)
 //! ```
 //!
-//! Recording is nothing more than pumping an [`AudioIn`] into an [`AudioOut`]:
-//! poll a block from the source, write that block to the sink, repeat. Mic,
-//! decoded file, disk stream, neural generator — all are just an `AudioIn`; a
-//! WAV file, a network socket, another ring — all are just an `AudioOut`.
+//! Recording is a source pumped into a sink: pull a block, write it, repeat.
+//! `tutti-session`'s `PumpLoop` is that pass and its `Recorder` the thread that
+//! runs it.
 //!
-//! Homed in `tutti-types`, the root leaf, so every subsystem (sampler, export,
-//! analysis, the plugin hosts) can implement these without depending on any
-//! particular engine crate.
+//! Homed in `tutti-types`, the root leaf, so every subsystem can implement
+//! these without depending on any particular engine crate.
 //!
-//! # The buffer: a flat interleaved `&[S]`, width from [`ChannelLayout`]
+//! # The verdict comes back from the call
 //!
-//! Both methods take a **flat interleaved slice** of the sample element `S`
-//! (`f32` by default; `f64` for a 64-bit plugin bus or a high-precision
-//! render). The channel count is **not** in the type — it is a runtime
-//! [`ChannelLayout`] the source or sink reports from [`AudioIn::layout`] /
-//! [`AudioOut::layout`].
+//! An empty read means nothing by itself: the producer may be behind, finished,
+//! or broken, and only the source knows which. [`Pull`] says so with each call
+//! ([`Starved`](Pull::Starved), [`Ended`](Pull::Ended),
+//! [`Failed`](Pull::Failed)), so a source cannot be written without answering,
+//! and a caller cannot ignore the answer ([`Pull`] is `#[must_use]`). Treating a
+//! live microphone as finished would end a recording at its first empty ring,
+//! with no error anywhere; the type makes that a match arm the source wrote, not a
+//! flag a caller had to remember.
 //!
-//! That is deliberate. A const width can only carry a width that is a property
-//! of the *code* — a stereo device, a stereo ring. It cannot carry one that is a
-//! property of the *data*, which is what a decoded file, a streamed region, or
-//! the device a user just plugged in actually has. A runtime width is what lets
-//! a data-determined source be expressed here at all.
+//! # The buffer: a flat interleaved `&[f32]`, width from [`ChannelLayout`]
+//!
+//! Both traits take a flat interleaved slice. The channel count is a runtime
+//! [`ChannelLayout`] the source or sink reports from `layout`, because a width
+//! that is a property of the *data* (a decoded file, a device a user just plugged
+//! in) cannot be a const parameter.
 //!
 //! # Counts are in FRAMES. Always. Everywhere.
 //!
-//! **This is the entire risk surface of the flat-slice form, so it is stated
-//! once, loudly, and never relaxed:**
-//!
-//! - [`poll_into`](AudioIn::poll_into) **returns a frame count**, never a sample
-//!   count, and the type says so: it is a [`Samples`], the engine's frame
-//!   count. The samples it wrote are
+//! - [`Source::pull`] answers [`Pull::Frames`] with a frame count, a
+//!   [`Samples`]. The samples it wrote are
 //!   [`returned.interleaved_len(layout())`](Samples::interleaved_len).
-//! - [`write`](AudioOut::write) is handed
+//! - [`Sink::write`] is handed
 //!   [`Samples::from_interleaved_len(interleaved.len(), layout())`](Samples::from_interleaved_len)
 //!   frames. A trailing partial frame is not a frame.
-//! - [`pump`] returns frames, as a [`Samples`]. Its `buf` is *sized* in samples
-//!   only because a flat slice has no other unit — a caller writes
-//!   `frames.interleaved_len(layout)` and gets frames back.
 //!
 //! Those two conversions are the only crossings between the units, so a stride
-//! mistake has one home instead of one per call site. A bare `usize` from a
-//! slice length does not type-check where a frame count is expected: the
-//! caller has to *say* which conversion it means.
-//!
-//! Exposing samples anywhere on this boundary is not a cosmetic slip. A
-//! consumer compares a returned count against a loop range, a region length, or
-//! a file position — every one of which is denominated in frames. Return
-//! samples and a 6-channel looped clip wraps at one sixth of its length.
+//! mistake has one home. A bare `usize` from a slice length does not type-check
+//! where a frame count is expected.
 //!
 //! # Width agreement is a runtime check
 //!
-//! With a runtime width, "a stereo source cannot feed a 6-channel sink" is not a
-//! type error. Two runtime checks carry it instead, and both are load-bearing:
-//! [`pump`]'s `debug_assert_eq!` and a checked constructor's returned error
-//! (a recorder's `start`). See [`pump`]'s docs for why there are two.
-//!
-//! # Deliberately minimal
-//!
-//! Three items total: one method per direction, plus the width. No
-//! rate/length/seek/format vocabulary lives here — those are properties of a
-//! *particular* source or sink, not of "can be read from" or "can be written
-//! to". A caller that needs a source's sample rate holds the concrete type; the
-//! trait is only the frame-transfer contract.
+//! "A stereo source cannot feed a 6-channel sink" is not a type error with a
+//! runtime width. Two runtime checks carry it, both load-bearing: a recorder's
+//! `start` returns an error, and its pump asserts in debug builds (see
+//! `tutti-session`'s `Recorder` and `PumpLoop`).
 //!
 //! # Not the RT hot path
 //!
-//! Neither trait is invoked per-sample on the audio thread. They move frames in
-//! *blocks* on a cold/background path (a capture pump, an offline render). The
-//! audio graph's own per-sample reads do not go through them.
+//! Neither trait is invoked per sample on the audio thread. They move frames in
+//! blocks on a cold or background path (a capture pump, an offline render).
 
 use crate::{ChannelLayout, Samples};
 
-/// What a 0-frame [`poll_into`](AudioIn::poll_into) means for a given source.
+/// What one [`Source::pull`] found.
 ///
-/// A zero count is ambiguous on its own — "the producer has not caught up" and
-/// "there will never be more" are the same return value — and **only the source
-/// knows which it is**. A microphone is live; a decoded file is finite. That is
-/// a property of the type, so the type states it once rather than every caller
-/// restating it per call and being able to get it wrong.
-///
-/// The consequence of guessing is silent: treating a mic as finite ends a
-/// recording at the first empty ring, milliseconds in, producing a near-empty
-/// file with no error anywhere.
-///
-/// Orthogonal to width: this says nothing about how many channels a frame has.
+/// `Frames` and a verdict never arrive together: frames now, [`Failed`](Self::Failed)
+/// or [`Ended`](Self::Ended) on the next call. `V` is the frame count
+/// ([`Samples`]) unless an adapter carries more.
+#[must_use = "a pull's verdict (starved, ended, failed) is the only way to tell a late source from a finished one"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnEmpty {
-    /// Live source (microphone, socket): the producer has not caught up. A
-    /// consumer that loops should back off and poll again.
+pub enum Pull<V = Samples> {
+    /// At least one frame was produced.
+    Frames(V),
+    /// Nothing yet; more may come. A live source (a microphone, a tap) says
+    /// this when its producer has not caught up. A consumer that loops should
+    /// back off and pull again.
     Starved,
-    /// Finite source (decoded file, rendered graph): there is no more. A consumer
-    /// that loops should stop.
-    ///
-    /// **This is a promise about the *first* zero, not an eventual one.** A
-    /// looping consumer stops on it immediately, so a source that can return `0`
-    /// and then more later — a decoder awaiting a refill, a file read over a
-    /// socket — must not declare `EndOfStream`: it would end the read mid-stream
-    /// with no error. Such a source is `Starved` (the consumer retries), and it
-    /// signals completion by some means of its own.
-    EndOfStream,
+    /// Nothing more, ever. A finite source (a decoded file) says this. A
+    /// consumer that loops should stop.
+    Ended,
+    /// Broken: nothing more will come however long a consumer waits. The frames
+    /// before the break came with earlier pulls.
+    Failed,
 }
 
-/// A pull source of audio frames.
-///
-/// Fills a caller-owned **flat interleaved** buffer and reports how many
-/// **frames** it produced.
-///
-/// Generic over the sample element `S` (default `f32`). The channel count is
-/// runtime, reported by [`layout`](Self::layout) — see the [module docs](self)
-/// for why it is not a const parameter, and for the frames-not-samples rule
-/// that governs every count on this boundary.
-///
-/// # Why a returned count
-///
-/// A *live* source (a microphone, a socket) may have fewer frames ready than
-/// the buffer asks for — it returns what it has. A *finite* source (a decoded
-/// file) returns a short count at end-of-stream, then `0`. The caller owns the
-/// buffer, so polling never allocates; the count tells the caller how much of
-/// `out` was written this call.
-///
-/// # Why the count alone is not enough
-///
-/// `0` is the same value in both cases, so a consumer that *loops* — a capture
-/// pump, a refill — cannot tell "not yet" from "never again" without knowing
-/// what kind of source it holds. [`ON_EMPTY`](Self::ON_EMPTY) is that knowledge,
-/// carried on the type. It is an associated const rather than a method because
-/// it is fixed per source and callable from a generic context without a value.
-/// The trait is therefore not object-safe; take it generically.
-pub trait AudioIn<S = f32> {
-    /// What a 0-frame poll means for *this* source. See [`OnEmpty`].
-    const ON_EMPTY: OnEmpty;
+/// Why a [`Pull`] produced no frames: [`Pull::ready`]'s error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// [`Pull::Starved`].
+    Starved,
+    /// [`Pull::Ended`].
+    Ended,
+    /// [`Pull::Failed`].
+    Failed,
+}
 
+impl<V> Pull<V> {
+    /// The frames, or why there are none: the stable stand-in for `?`.
+    ///
+    /// # Errors
+    ///
+    /// The [`Stop`] a verdict stands for.
+    pub fn ready(self) -> Result<V, Stop> {
+        match self {
+            Self::Frames(v) => Ok(v),
+            Self::Starved => Err(Stop::Starved),
+            Self::Ended => Err(Stop::Ended),
+            Self::Failed => Err(Stop::Failed),
+        }
+    }
+
+    /// Maps the frames and keeps the verdict.
+    pub fn map<U>(self, f: impl FnOnce(V) -> U) -> Pull<U> {
+        match self {
+            Self::Frames(v) => Pull::Frames(f(v)),
+            Self::Starved => Pull::Starved,
+            Self::Ended => Pull::Ended,
+            Self::Failed => Pull::Failed,
+        }
+    }
+
+    /// Why there are no frames, or `None` when there are some.
+    #[must_use]
+    pub fn stop(&self) -> Option<Stop> {
+        match self {
+            Self::Frames(_) => None,
+            Self::Starved => Some(Stop::Starved),
+            Self::Ended => Some(Stop::Ended),
+            Self::Failed => Some(Stop::Failed),
+        }
+    }
+}
+
+/// A source of audio frames, pulled in order on a clock the graph does not keep.
+///
+/// Fills a caller-owned **flat interleaved** buffer and answers with a
+/// [`Pull`]. The channel count is runtime, reported by [`layout`](Self::layout):
+/// see the [module docs](self) for why, and for the frames-not-samples rule that
+/// governs every count here.
+///
+/// # Rules
+///
+/// - [`Frames`](Pull::Frames) and a verdict never arrive together.
+/// - A live source reads its fault flag **before** it reads its ring and
+///   answers [`Failed`](Pull::Failed) only if the ring was empty, so a failure
+///   never hides frames pushed before it (`tutti_rt::FaultLatch`).
+/// - A synchronous source (a file) never answers [`Starved`](Pull::Starved).
+///   One enum serves both kinds: [`Pull::ready`] maps the arm that cannot occur
+///   to an `Err`.
+pub trait Source {
     /// How many channels one frame of this source carries.
     ///
     /// Fixed for the life of the source: a caller sizes its buffer from this
-    /// once, before the loop, and `poll_into` never changes it underneath.
+    /// once, before the loop, and `pull` never changes it underneath.
     fn layout(&self) -> ChannelLayout;
 
-    /// Fills the front of `out` with the next available frames and returns the
-    /// number of **frames** written, not samples.
+    /// Fills the front of `out` with the next available frames.
     ///
     /// `out` is flat interleaved at [`layout`](Self::layout)'s width, so it
     /// holds [`Samples::from_interleaved_len(out.len(), layout())`](Samples::from_interleaved_len)
-    /// frames and the return is bounded by that. Samples past
-    /// `returned.interleaved_len(layout())` are left untouched, and a trailing
-    /// partial frame (an `out` whose length is not a whole multiple of the
-    /// width) is never partly filled — a short frame desynchronises the
+    /// frames and a [`Frames`](Pull::Frames) count is bounded by that. Samples
+    /// past `n.interleaved_len(layout())` are left untouched, and a trailing
+    /// partial frame is never partly filled: a short frame desynchronises the
     /// interleave for everything after it.
-    ///
-    /// Returned as [`Samples`] rather than `usize` because the consumer's next
-    /// move is to compare it against a loop range, a region length or a file
-    /// position — all frame counts. A bare `usize` would accept a sample count
-    /// just as easily.
-    ///
-    /// `0` means "nothing available right now" for a live source, or
-    /// end-of-stream for a finite one — which of the two is
-    /// [`ON_EMPTY`](Self::ON_EMPTY).
-    fn poll_into(&mut self, out: &mut [S]) -> Samples;
-
-    /// Whether the source broke and will produce no more frames, however long
-    /// a consumer waits.
-    ///
-    /// A [`Starved`](OnEmpty::Starved) source reads `0` both while the
-    /// producer is late and after its device is gone. This is the second case.
-    /// Frames already buffered stay readable: a consumer polls until `0`, then
-    /// checks this. The default is `false`, right for a source that cannot break
-    /// mid-stream.
-    fn is_failed(&self) -> bool {
-        false
-    }
+    fn pull(&mut self, out: &mut [f32]) -> Pull;
 
     /// The frames this source discarded since the last call, and clears the
-    /// count: a gap in what `poll_into` delivered.
+    /// count: a gap in what `pull` delivered.
     ///
     /// A live source with a bounded buffer (a graph tap's ring, a capture
     /// ring) drops what a slow consumer does not drain in time. The stream a
-    /// consumer reads then has those frames missing and **closes up over the
-    /// gap**: a recording of it is shorter than the take by the frames lost,
-    /// with no marker in the audio. This is the marker. The default is zero,
-    /// right for a source that never discards.
+    /// consumer reads then **closes up over the gap**: a recording of it is
+    /// shorter than the take by the frames lost, with no marker in the audio.
+    /// This is the marker. The default is zero, right for a source that never
+    /// discards.
     fn take_lost(&mut self) -> Samples {
         Samples::ZERO
     }
 }
 
-/// A push destination for audio frames.
+/// A sink for audio frames: written incrementally, then closed once.
 ///
-/// Takes blocks of **flat interleaved** samples incrementally, then is closed
-/// once with [`finalize`](Self::finalize).
-///
-/// Generic over the sample element `S` (default `f32`), matching [`AudioIn`].
-/// The channel count is runtime, reported by [`layout`](Self::layout).
+/// Takes blocks of **flat interleaved** samples, then is closed with
+/// [`finalize`](Self::finalize). The channel count is runtime, reported by
+/// [`layout`](Self::layout).
 ///
 /// # Why `finalize` consumes `self`
 ///
 /// A destination may need a final commit that can fail and must happen exactly
-/// once (a WAV sink back-patches its header; a socket flushes and closes).
-/// Taking `self` by value makes "you cannot write after finalizing" a
-/// compile-time guarantee and gives the commit a place to surface I/O errors.
-pub trait AudioOut<S = f32> {
+/// once (a WAV sink back-patches its header). Taking `self` makes "you cannot
+/// write after finalizing" a compile-time guarantee and gives the commit a
+/// place to surface I/O errors.
+pub trait Sink {
     /// How many channels one frame of this destination carries.
     ///
-    /// Fixed for the life of the sink — it is what the file header (or the
-    /// peer) was already told, and it cannot be renegotiated mid-stream.
+    /// Fixed for the life of the sink: it is what the file header was already
+    /// told, and it cannot be renegotiated mid-stream.
     fn layout(&self) -> ChannelLayout;
 
-    /// Appends `interleaved` — flat interleaved **samples** at
-    /// [`layout`](Self::layout)'s width — to the destination. That is
-    /// [`Samples::from_interleaved_len(interleaved.len(), layout())`](Samples::from_interleaved_len)
-    /// **frames**; a trailing partial frame is ignored rather than written
+    /// Appends `interleaved`, flat interleaved **samples** at
+    /// [`layout`](Self::layout)'s width: [`Samples::from_interleaved_len(interleaved.len(), layout())`](Samples::from_interleaved_len)
+    /// **frames**. A trailing partial frame is ignored rather than written
     /// short, because a short frame desynchronises the interleave for
     /// everything after it.
     ///
-    /// The slice's length is not a frame count and is not typed as one: it is
-    /// `frames × channels`, which a caller computes with
-    /// [`Samples::interleaved_len`] — as [`pump`] does — never by hand.
+    /// A caller computes the slice length with [`Samples::interleaved_len`],
+    /// never by hand.
     ///
-    /// Called repeatedly as data arrives; implementations write incrementally
-    /// and never buffer the whole stream.
-    fn write(&mut self, interleaved: &[S]);
+    /// # Errors
+    ///
+    /// [`SinkFailed`] once a write has failed; later writes are skipped and
+    /// fail the same way. The detail of the *first* failure comes from
+    /// [`finalize`](Self::finalize).
+    fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed>;
 
     /// Closes the destination, flushing and committing.
     ///
     /// For a file sink this is where the header is back-patched, so a failure
     /// here can mean an unreadable file: surface it rather than swallowing it.
+    /// It also reports the first [`write`](Self::write) failure, with its detail.
     ///
     /// # Errors
     ///
-    /// Any I/O error from the final flush or commit.
+    /// The first write failure, or any I/O error from the final flush or commit.
     fn finalize(self) -> std::io::Result<()>;
+}
 
-    /// Whether an earlier [`write`](Self::write) failed and later ones are
-    /// discarded.
-    ///
-    /// `write` returns `()`, so a sink that can fail (a full disk) reports it
-    /// here, mid-take, as well as from [`finalize`](Self::finalize). The default
-    /// is `false`, right for a sink that cannot fail.
-    fn is_failed(&self) -> bool {
-        false
+/// A [`Sink::write`] that failed, now or earlier.
+///
+/// A marker, not the detail: a sink is synchronous on the caller's thread, so
+/// "write, then ask whether it failed" is a `Result`, and the first
+/// `io::Error` waits for [`Sink::finalize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SinkFailed;
+
+impl std::fmt::Display for SinkFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a write to the sink failed; finalize reports the first failure")
     }
 }
 
-/// Moves one block from an [`AudioIn`] to an [`AudioOut`] and returns how many
-/// **frames** moved.
-///
-/// Polls as many frames as `buf` holds from `src` and writes exactly what it
-/// produced to `dst`. This is the whole of "recording", minus the loop and the
-/// stop condition, both of which are the *caller's* policy. A recorder runs it
-/// on a background thread until its stop flag is set, backing off on `0` from
-/// a [`Starved`](OnEmpty::Starved) source and stopping on `0` from an
-/// [`EndOfStream`](OnEmpty::EndOfStream) one:
-///
-/// ```
-/// use tutti_types::{pump, AudioIn, AudioOut, ChannelLayout, OnEmpty, Samples};
-///
-/// // A finite stereo source of `left` frames, all 0.5.
-/// struct Dc { left: usize }
-/// impl AudioIn for Dc {
-///     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
-///     fn layout(&self) -> ChannelLayout { ChannelLayout::STEREO }
-///     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-///         let room = Samples::from_interleaved_len(out.len(), self.layout());
-///         let n = room.get().min(self.left);
-///         out[..n * 2].fill(0.5);
-///         self.left -= n;
-///         Samples(n)
-///     }
-/// }
-///
-/// // A sink that keeps what it is given.
-/// struct Take(Vec<f32>);
-/// impl AudioOut for Take {
-///     fn layout(&self) -> ChannelLayout { ChannelLayout::STEREO }
-///     fn write(&mut self, interleaved: &[f32]) { self.0.extend_from_slice(interleaved) }
-///     fn finalize(self) -> std::io::Result<()> { Ok(()) }
-/// }
-///
-/// let (mut src, mut dst) = (Dc { left: 1000 }, Take(Vec::new()));
-/// // The caller owns the buffer, sized in samples from a frame count.
-/// let mut buf = vec![0.0f32; Samples(256).interleaved_len(src.layout())];
-/// while !pump(&mut src, &mut dst, &mut buf).is_zero() {}
-/// assert_eq!(dst.0.len(), 2000); // 1000 stereo frames
-/// dst.finalize()?;
-/// # Ok::<(), std::io::Error>(())
-/// ```
-///
-/// `buf` is flat interleaved and therefore *sized* in samples
-/// ([`Samples::interleaved_len`]) — a flat slice has no other unit. Everything
-/// **returned** is in frames, as a [`Samples`].
-///
-/// Generic over the element `S` and, not `dyn`, over the concrete source and
-/// sink: the caller picks both at the call site, so `poll_into` and `write`
-/// inline and the pump allocates nothing (the buffer is caller-owned).
-/// Returning `0` means the source had nothing this pass — the caller decides
-/// whether that's back-off (live source) or end-of-stream (finite source).
-///
-/// # Panics
-///
-/// In debug builds, if `src` and `dst` report different widths (see below).
-/// In any build, if `src` claims more frames than `buf` holds, which breaks
-/// the [`AudioIn::poll_into`] contract.
-///
-/// # The width check
-///
-/// The source and sink must agree on width, and with a runtime width that is not
-/// a compile error. Two checks carry it instead — here, and at the one entry
-/// point that owns a pairing:
-///
-/// - **this `debug_assert_eq!`**, which fires in every test and debug build the
-///   moment a mismatched pair is pumped;
-/// - **a checked constructor** (a recorder's `start`), which returns an error
-///   for the same condition, so a release build refuses the pairing up front rather than
-///   writing a file whose channels rotate every frame.
-///
-/// A `debug_assert` rather than a hard panic because this is the *inner* check:
-/// the constructor-level check is what a shipped binary relies on, and panicking
-/// here would abort a pump thread mid-take over a condition its caller was
-/// already given a chance to reject.
-pub fn pump<S, I, O>(src: &mut I, dst: &mut O, buf: &mut [S]) -> Samples
-where
-    S: Copy,
-    I: AudioIn<S> + ?Sized,
-    O: AudioOut<S> + ?Sized,
-{
-    debug_assert_eq!(
-        src.layout(),
-        dst.layout(),
-        "pump source and sink must agree on channel width; \
-         a mismatch rotates the sink's channels every frame"
-    );
-    let n = src.poll_into(buf);
-    // The one frames → samples crossing on this path, and it is named: an
-    // `n * ch` written by hand here is where a count in the wrong unit would
-    // slip through.
-    dst.write(&buf[..n.interleaved_len(src.layout())]);
-    n
-}
+impl std::error::Error for SinkFailed {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A finite in-memory [`AudioIn`], generic over element `S` and carrying a
-    /// **runtime** width: hands out its frames in bounded chunks, returning a
-    /// short-then-zero count at end-of-stream — the shape a decoded file has,
-    /// and a stand-in for a live source in a test.
-    ///
-    /// The width is a *field*, not a type parameter, so the same fixture
-    /// exercises stereo and any other width — the shape a data-determined
-    /// source needs and a per-width type cannot give.
-    struct SliceSource<S> {
-        /// Flat interleaved at `layout`'s width.
-        samples: Vec<S>,
-        /// Read cursor, in FRAMES.
-        pos: usize,
-        layout: ChannelLayout,
-        /// Cap per poll, in frames, to exercise the "source produces fewer than
-        /// asked" path.
-        chunk: usize,
-    }
-
-    impl<S: Copy> AudioIn<S> for SliceSource<S> {
-        const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
-
-        fn layout(&self) -> ChannelLayout {
-            self.layout
-        }
-
-        fn poll_into(&mut self, out: &mut [S]) -> Samples {
-            let ch = self.layout.count() as usize;
-            let total = self.samples.len() / ch;
-            let n = (total - self.pos).min(out.len() / ch).min(self.chunk);
-            out[..n * ch].copy_from_slice(&self.samples[self.pos * ch..(self.pos + n) * ch]);
-            self.pos += n;
-            Samples(n)
-        }
-    }
-
-    /// A sink that tallies every sample it's handed — no I/O, so the pump
-    /// contract (write exactly the polled count, never the untouched tail) can
-    /// be asserted without touching disk. Carries its own width, so a
-    /// mismatched pair is *expressible* — which is exactly what the runtime
-    /// check has to catch, since the type system cannot.
-    struct CountingSink<S> {
-        written: Vec<S>,
-        layout: ChannelLayout,
-    }
-
-    impl<S> CountingSink<S> {
-        fn new(layout: ChannelLayout) -> Self {
-            Self {
-                written: Vec::new(),
-                layout,
-            }
-        }
-    }
-
-    impl<S: Copy> AudioOut<S> for CountingSink<S> {
-        fn layout(&self) -> ChannelLayout {
-            self.layout
-        }
-        fn write(&mut self, frames: &[S]) {
-            self.written.extend_from_slice(frames);
-        }
-        fn finalize(self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Pumping a finite source to exhaustion moves every frame exactly once, in
-    /// order, and never writes past the polled count even when the buffer is
-    /// larger than what the source produces that pass.
+    /// `ready`, `map` and `stop` agree on every arm, so a caller can use any of
+    /// them. Mutation: map `Ended` to `Stop::Starved` in `ready` and the first
+    /// assertion fails.
     #[test]
-    fn pump_drains_a_finite_source_exactly() {
-        let samples: Vec<f32> = (0..1000).flat_map(|i| [i as f32, -(i as f32)]).collect();
-        let mut src = SliceSource {
-            samples: samples.clone(),
-            pos: 0,
-            layout: ChannelLayout::STEREO,
-            chunk: 37, // deliberately coprime with the buffer so chunks straddle
-        };
-        let mut dst = CountingSink::new(ChannelLayout::STEREO);
-        let mut buf = vec![0.0f32; 64 * 2];
+    fn a_pull_names_why_it_has_no_frames() {
+        assert_eq!(Pull::Frames(Samples(3)).ready(), Ok(Samples(3)));
+        assert_eq!(Pull::<Samples>::Starved.ready(), Err(Stop::Starved));
+        assert_eq!(Pull::<Samples>::Ended.ready(), Err(Stop::Ended));
+        assert_eq!(Pull::<Samples>::Failed.ready(), Err(Stop::Failed));
 
-        let mut total = Samples::ZERO;
-        loop {
-            let n = pump(&mut src, &mut dst, &mut buf);
-            if n.is_zero() {
-                break;
-            }
-            assert!(
-                n <= Samples::from_interleaved_len(buf.len(), ChannelLayout::STEREO),
-                "pump reported more FRAMES than the buffer holds"
-            );
-            total += n;
-        }
-
-        assert_eq!(total, Samples(1000));
-        assert_eq!(
-            dst.written, samples,
-            "frames must arrive intact and in order"
-        );
+        assert_eq!(Pull::Frames(Samples(3)).stop(), None);
+        assert_eq!(Pull::<Samples>::Starved.stop(), Some(Stop::Starved));
+        assert_eq!(Pull::<Samples>::Ended.stop(), Some(Stop::Ended));
+        assert_eq!(Pull::<Samples>::Failed.stop(), Some(Stop::Failed));
     }
 
-    /// The same pump over a non-default frame — `f64`, six channels — the shape
-    /// a 64-bit surround plugin bus wants. Proves the runtime width and the
-    /// element type actually thread through `pump`, not just the stereo-`f32`
-    /// default that would pass even if the generality were vestigial.
+    /// `map` changes the frames and keeps the verdict.
     #[test]
-    fn pump_carries_a_64bit_six_channel_frame() {
-        let samples: Vec<f64> = (0..500 * 6).map(|i| i as f64).collect();
-        let mut src = SliceSource {
-            samples: samples.clone(),
-            pos: 0,
-            layout: ChannelLayout::from(6u16),
-            chunk: 41,
-        };
-        let mut dst: CountingSink<f64> = CountingSink::new(ChannelLayout::from(6u16));
-        let mut buf = vec![0.0f64; 64 * 6];
-
-        while !pump(&mut src, &mut dst, &mut buf).is_zero() {}
-
+    fn map_keeps_the_verdict() {
         assert_eq!(
-            dst.written, samples,
-            "wide frames must survive the pump intact"
+            Pull::Frames(Samples(2)).map(|n| n.get() * 2),
+            Pull::Frames(4)
         );
-    }
-
-    /// **Frames, not samples** — the invariant the module docs are entirely
-    /// about, checked at a width where the two visibly differ.
-    ///
-    /// At stereo a sample-denominated count is only 2× off and can hide in a
-    /// round number; at six channels it is 6× off and unmissable. Every count
-    /// crossing this boundary is asserted: `poll_into`'s return, `pump`'s
-    /// return, and the *sample* length the sink actually received.
-    #[test]
-    fn every_count_on_this_boundary_is_denominated_in_frames() {
-        const CH: usize = 6;
-        const FRAMES: usize = 100;
-
-        let mut src = SliceSource {
-            samples: vec![1.0f32; FRAMES * CH],
-            pos: 0,
-            layout: ChannelLayout::from(6u16),
-            chunk: FRAMES, // no artificial short poll — measure the real ceiling
-        };
-
-        // A buffer holding exactly 10 frames' worth of samples.
-        let mut buf = vec![0.0f32; 10 * CH];
-        assert_eq!(
-            src.poll_into(&mut buf),
-            Samples(10),
-            "poll_into returns FRAMES (10), not samples (60)"
-        );
-        assert_eq!(src.pos, 10, "and the source advanced by 10 FRAMES");
-
-        // And through the pump: the return is frames, the sink got frames * ch.
-        let mut src2 = SliceSource {
-            samples: vec![1.0f32; FRAMES * CH],
-            pos: 0,
-            layout: ChannelLayout::from(6u16),
-            chunk: FRAMES,
-        };
-        let mut dst = CountingSink::new(ChannelLayout::from(6u16));
-        assert_eq!(
-            pump(&mut src2, &mut dst, &mut buf),
-            Samples(10),
-            "pump returns FRAMES"
-        );
-        assert_eq!(
-            dst.written.len(),
-            10 * CH,
-            "the sink received frames * channels SAMPLES"
-        );
-    }
-
-    /// A live source stands in for a mic: it withholds frames (returning `0`)
-    /// without being exhausted, then yields them later.
-    ///
-    /// This is the shape that makes [`OnEmpty`] load-bearing — a consumer that
-    /// treats its `0` as end-of-stream stops with frames still to come.
-    struct StarvingSource {
-        samples: Vec<f32>,
-        pos: usize,
-        /// Poll counter; odd polls return nothing, mimicking a ring the
-        /// producer has not refilled yet.
-        polls: usize,
-    }
-
-    impl AudioIn for StarvingSource {
-        const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
-        fn layout(&self) -> ChannelLayout {
-            ChannelLayout::STEREO
-        }
-
-        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-            self.polls += 1;
-            if self.polls % 2 == 1 {
-                return Samples::ZERO; // "nothing ready yet" — but not finished
-            }
-            let total = self.samples.len() / 2;
-            let n = (total - self.pos).min(out.len() / 2).min(4);
-            out[..n * 2].copy_from_slice(&self.samples[self.pos * 2..(self.pos + n) * 2]);
-            self.pos += n;
-            Samples(n)
-        }
-    }
-
-    /// A generic drain loop that branches on `I::ON_EMPTY` — the exact shape a
-    /// consumer needs, and the reason the const exists rather than a method.
-    ///
-    /// Reading the const off a type parameter is only possible because
-    /// `AudioIn` is never a trait object; this function is the compile-time
-    /// proof of that, and it would not build if the const were on a `dyn`-safe
-    /// path.
-    fn drain<I: AudioIn>(src: &mut I, dst: &mut CountingSink<f32>, max_polls: usize) {
-        let mut buf = [0.0f32; 16 * 2];
-        for _ in 0..max_polls {
-            if pump(src, dst, &mut buf).is_zero() {
-                match I::ON_EMPTY {
-                    // A live source has more coming — keep polling.
-                    OnEmpty::Starved => continue,
-                    // A finite one does not.
-                    OnEmpty::EndOfStream => break,
-                }
-            }
-        }
-    }
-
-    /// The same generic loop reaches every frame of a starving source but stops
-    /// promptly on a finite one — driven entirely by `ON_EMPTY`.
-    ///
-    /// Both halves matter. Without the `Starved` arm the live source would be
-    /// cut off at its first empty poll (4 of 40 frames, the bug this const
-    /// prevents); without `EndOfStream` the finite source would spin to the
-    /// poll ceiling instead of finishing.
-    #[test]
-    fn a_generic_consumer_branches_on_the_sources_own_verdict() {
-        let samples: Vec<f32> = (0..40).flat_map(|i| [i as f32, -(i as f32)]).collect();
-
-        let mut live = StarvingSource {
-            samples: samples.clone(),
-            pos: 0,
-            polls: 0,
-        };
-        let mut live_sink: CountingSink<f32> = CountingSink::new(ChannelLayout::STEREO);
-        drain(&mut live, &mut live_sink, 100);
-        assert_eq!(
-            live_sink.written, samples,
-            "a starving source must be drained past its empty polls, not truncated at the first"
-        );
-
-        let mut finite = SliceSource {
-            samples: samples.clone(),
-            pos: 0,
-            layout: ChannelLayout::STEREO,
-            chunk: 7,
-        };
-        let mut finite_sink: CountingSink<f32> = CountingSink::new(ChannelLayout::STEREO);
-        drain(&mut finite, &mut finite_sink, 100);
-        assert_eq!(
-            finite_sink.written, samples,
-            "and a finite source must still deliver everything before stopping"
-        );
-        assert_eq!(
-            finite.pos, 40,
-            "the finite source is exhausted, so the loop ended by verdict not by ceiling"
-        );
-    }
-
-    /// The width check, **inner half**: pumping a mismatched pair trips the
-    /// `debug_assert` rather than quietly writing a stream whose channels
-    /// rotate every frame.
-    ///
-    /// The outer half is a checked constructor that errors in release builds
-    /// too, at the one place both endpoints are in scope before any frame moves.
-    // It tests a `debug_assert`, so it exists only where that assertion does: a release build has no
-    // check to test, and the test would fail there for that reason alone.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "must agree on channel width")]
-    fn pump_rejects_a_width_mismatch() {
-        let mut src = SliceSource {
-            samples: vec![0.0f32; 32],
-            pos: 0,
-            layout: ChannelLayout::STEREO,
-            chunk: 8,
-        };
-        let mut dst = CountingSink::new(ChannelLayout::from(6u16));
-        let mut buf = vec![0.0f32; 16];
-        pump(&mut src, &mut dst, &mut buf);
+        assert_eq!(Pull::<Samples>::Ended.map(|n| n.get()), Pull::Ended);
+        assert_eq!(Pull::<Samples>::Starved.map(|n| n.get()), Pull::Starved);
+        assert_eq!(Pull::<Samples>::Failed.map(|n| n.get()), Pull::Failed);
     }
 }

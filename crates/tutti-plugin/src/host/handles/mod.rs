@@ -17,10 +17,10 @@ pub(crate) mod control_handle;
 // The public plugin→host notification vocabulary: `on_refresh` delivers
 // `PluginRefresh` (cosmetic), `on_invalidate` delivers `PluginInvalidation`
 // (structural). `ResyncKind` stays exported as the underlying wire signal.
-pub use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh, ResyncKind};
 pub use crate::host::node::{
     Bound, ParamDeliveryStats, PluginClient, PluginControls, PluginMeter, Unbound,
 };
+pub use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh, ResyncKind};
 // The per-block installer, reachable only when the plugin can receive that
 // input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.
@@ -34,10 +34,10 @@ pub use crate::host::node::TransportView;
 // `HostParams::set_parameter_value` takes one, so a caller that cannot name it
 // cannot call the method, and an out-of-crate backend cannot implement the
 // trait at all.
-pub use crate::protocol::{ChordValue, Normalized, ParamId, Preset, PresetId, ScaleValue};
 pub use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
 pub use capabilities::BlockCounts;
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
+pub use tutti_plugin_types::{ChordValue, Normalized, ParamId, Preset, PresetId, ScaleValue};
 
 /// In-process VST2 graph node, and the controls inserting it hands back. Used
 /// when a host loads VST2 plugins directly in the host process (via

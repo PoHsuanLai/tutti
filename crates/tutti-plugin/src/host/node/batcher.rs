@@ -57,7 +57,7 @@
 //!
 //! Whether N−1's output is really there is decided by the slab's per-slot
 //! sequence numbers, not by a reply arriving: a mismatch yields silence. See
-//! `util::transport::shm::header`.
+//! `tutti-plugin-ipc`'s `transport::shm::header`.
 //!
 //! # `f32` in the graph, the plugin's format on the wire
 //!
@@ -67,29 +67,18 @@
 //! else: the `f64` stays inside the node.
 
 use super::fork::ForkWatch;
-use crate::error::Result;
-use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
-use crate::protocol::{MidiEventVec, ParameterChanges, SampleFormat, WireMidi};
-use crate::util::transport::shm::AudioSlab;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tutti_graph::Prepare;
+use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::Result;
+use tutti_plugin_ipc::{AudioSlab, SlabWriter};
+use tutti_plugin_types::{MidiEventVec, ParameterChanges, SampleFormat, WireMidi};
 use tutti_types::Samples;
 
-/// The largest chunk that crosses the process edge: the largest device
-/// callback a live plugin keeps in step with, and so the ceiling on the
-/// pipeline's declared latency (85 ms at 48 kHz).
-///
-/// The shared-memory slab is sized to this at launch (`subprocess::launch`,
-/// the other consumer of this constant; or to the host's smaller
-/// `max_buffer_size`), before the node is prepared — so [`Batcher::prepare`]
-/// can only narrow the chunk, never widen it, and the slab and the batcher
-/// agree on the per-chunk ceiling by construction. A device calling back
-/// with more frames than this gets a chunk of this many, which no longer
-/// lines up with its callbacks (module docs).
-pub(crate) const MAX_CHUNK: usize = 4096;
+pub(crate) use tutti_plugin_ipc::MAX_CHUNK;
 
 /// Single-chunk wire scratch in the plugin-negotiated format. Allocated at
 /// [`Batcher::new`] for the chunk ceiling, because the wire format is known
@@ -116,20 +105,20 @@ impl WireStorage {
     /// Stage `samples` as channel `ch` of chunk `seq`, converting to the
     /// wire's format. Staging only — the caller publishes once, after the
     /// last channel.
-    fn stage(&mut self, bridge: &PluginBridge, seq: u64, ch: usize, samples: &[f32]) -> Result<()> {
+    fn stage(&mut self, slab: &mut SlabWriter, seq: u64, ch: usize, samples: &[f32]) -> Result<()> {
         let n = samples.len();
         match self {
             Self::F32 { input, .. } => {
                 let wire = &mut input[..n];
                 wire.copy_from_slice(samples);
-                bridge.audio_buffer().write_input(seq, ch, wire)
+                slab.write(seq, ch, wire)
             }
             Self::F64 { input, .. } => {
                 let wire = &mut input[..n];
                 for (d, &s) in wire.iter_mut().zip(samples) {
                     *d = f64::from(s);
                 }
-                bridge.audio_buffer().write_input(seq, ch, wire)
+                slab.write(seq, ch, wire)
             }
         }
     }
@@ -216,6 +205,10 @@ pub(super) trait Chunks {
 /// chunk's output is read from.
 pub(crate) struct Batcher {
     wire: WireStorage,
+    /// The slab's input writer: the one in this process, so the node is the
+    /// only thing that writes a chunk (`SlabWriter`). Reads go through the
+    /// bridge's shared slab, which cannot write.
+    slab: SlabWriter,
 
     /// The slab's per-chunk size: the most [`chunk`](Self::chunk) can be.
     ceiling: usize,
@@ -292,13 +285,21 @@ struct OfflineWait {
 }
 
 impl Batcher {
-    /// A batcher for a plugin with these widths and wire format, over a slab
-    /// whose chunks hold `ceiling` frames. Control thread: allocates the wire
-    /// scratch, the FIFO and the ring. The chunk starts at the ceiling;
-    /// [`prepare`](Self::prepare) narrows it to the graph's `MaxBlock`.
-    pub(super) fn new(inputs: usize, outputs: usize, format: SampleFormat, ceiling: usize) -> Self {
+    /// A batcher for a plugin with these widths and wire format, writing
+    /// into `slab`, whose chunks hold `ceiling` frames. Control thread:
+    /// allocates the wire scratch, the FIFO and the ring. The chunk starts at
+    /// the ceiling; [`prepare`](Self::prepare) narrows it to the graph's
+    /// `MaxBlock`.
+    pub(super) fn new(
+        inputs: usize,
+        outputs: usize,
+        format: SampleFormat,
+        ceiling: usize,
+        slab: SlabWriter,
+    ) -> Self {
         Self {
             wire: WireStorage::new(format, ceiling),
+            slab,
             ceiling,
             chunk: ceiling,
             fifo: vec![vec![0.0; ceiling]; inputs],
@@ -533,7 +534,11 @@ impl Batcher {
         let seq = self.next_seq;
         let mut staged = true;
         for (ch, row) in self.fifo.iter().enumerate() {
-            if self.wire.stage(bridge, seq, ch, &row[..chunk]).is_err() {
+            if self
+                .wire
+                .stage(&mut self.slab, seq, ch, &row[..chunk])
+                .is_err()
+            {
                 staged = false;
                 break;
             }
@@ -547,7 +552,7 @@ impl Batcher {
             host.unsent();
             return;
         }
-        bridge.audio_buffer().publish_input(seq);
+        self.slab.publish(seq);
         let p = host.payload(chunk);
         let midi = p.midi.len();
         let mut none = ParameterChanges::new();
@@ -629,11 +634,36 @@ mod tests {
     use super::*;
     use tutti_types::SampleRate;
 
+    /// A real slab's input writer, `samples` frames per channel, stereo both
+    /// ways: these tests stage nothing, but a batcher cannot exist without the
+    /// writer its chunks go through.
+    fn slab(samples: usize) -> SlabWriter {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let name = format!(
+            "batcher_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        );
+        let stereo = tutti_plugin_types::ChannelLayout::STEREO;
+        AudioSlab::create(
+            name,
+            tutti_plugin_ipc::SlabLayout {
+                samples_per_channel: samples,
+                format: SampleFormat::Float32,
+                slots: tutti_plugin_ipc::RING_SLOTS as u32,
+                inputs: vec![stereo],
+                outputs: vec![stereo],
+            },
+        )
+        .unwrap()
+    }
+
     /// A fresh batcher has nothing in flight, so its first chunk must be silence
     /// rather than whatever the output slot happens to contain.
     #[test]
     fn a_fresh_batcher_expects_nothing() {
-        let b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        let b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
         assert_eq!(b.expect_seq, None);
         assert_eq!(b.next_seq, 1, "0 means 'never published' in the slab");
     }
@@ -644,7 +674,7 @@ mod tests {
     /// fragment of pre-seek audio.
     #[test]
     fn reset_drops_the_in_flight_block_without_rewinding() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
         b.next_seq = 100;
         b.expect_seq = Some(99);
 
@@ -676,7 +706,7 @@ mod tests {
     /// would have been pinning the artifact.
     #[test]
     fn no_post_seek_sequence_can_collide_with_a_pre_seek_one() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
 
         let mut pre_seek = Vec::new();
         for _ in 0..5 {
@@ -722,7 +752,7 @@ mod tests {
     #[test]
     fn the_pipeline_chunk_is_the_device_quantum_else_the_max_block() {
         let prepare = |max: usize| Prepare::new(SampleRate(48_000.0), Samples(max));
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
         b.prepare(&prepare(1024).with_quantum(Samples(480)));
         assert_eq!(b.pipeline_latency(), Samples(480));
         b.prepare(&prepare(64).with_quantum(Samples(2048)));
@@ -736,7 +766,7 @@ mod tests {
         b.prepare(&prepare(32));
         assert_eq!(b.pipeline_latency(), Samples(32));
 
-        let mut small_slab = Batcher::new(2, 2, SampleFormat::Float32, 16);
+        let mut small_slab = Batcher::new(2, 2, SampleFormat::Float32, 16, slab(16));
         small_slab.prepare(&prepare(1024));
         assert_eq!(small_slab.pipeline_latency(), Samples(16));
     }
@@ -749,7 +779,7 @@ mod tests {
     /// fails.
     #[test]
     fn prepare_drops_the_chunk_in_flight() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
         b.next_seq = 7;
         b.expect_seq = Some(6);
         b.prepare(&Prepare::new(SampleRate(48_000.0), Samples(128)));

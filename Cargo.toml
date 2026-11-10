@@ -74,6 +74,7 @@ members = [
     "crates/tutti-spatial",
     "crates/tutti-dsp",
     "crates/tutti-measure",
+    "crates/tutti-plugin-ipc",
     "crates/tutti-plugin",
     "crates/tutti-plugin-server",
     # The probe binary (design 021 section 2.5): reads a plugin's descriptor into a

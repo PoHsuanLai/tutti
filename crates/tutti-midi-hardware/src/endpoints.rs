@@ -14,7 +14,7 @@
 //! consumer in different traits.
 //!
 //! What is deliberately **not** here: a `UmpIn`/`UmpOut` pair mirroring
-//! `AudioIn`/`AudioOut`. [`Ump`](tutti_ump::Ump) already
+//! `Source`/`Sink`. [`Ump`](tutti_ump::Ump) already
 //! *is* a UMP message — `words()` hands back the `&[u32]` a driver wants —
 //! so a `UmpOut::send_ump` would restate `MidiOut::queue`'s boundary exactly.
 //! Two names for one behaviour is not a type.

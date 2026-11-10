@@ -37,85 +37,74 @@ use tutti_types::{
     reason = "resolution IS the assertion — nothing uses these"
 )]
 use tutti_types::prelude::{
-    AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
-    InterleavedMut as _, MeterMap as _, NoteValue as _, Speaker as _, StereoPlanes as _,
-    TimeSignature as _,
+    ChannelLayout as _, ChannelTopology as _, Interleaved as _, InterleavedMut as _, MeterMap as _,
+    NoteValue as _, Pull as _, Sink as _, SinkFailed as _, Source as _, Speaker as _,
+    StereoPlanes as _, Stop as _, TimeSignature as _,
 };
 #[allow(
     unused_imports,
     reason = "resolution IS the assertion — nothing uses these"
 )]
 use tutti_types::{
-    AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
-    InterleavedMut as _, MeterMap as _, NoteValue as _, Speaker as _, StereoPlanes as _,
-    TimeSignature as _,
+    ChannelLayout as _, ChannelTopology as _, Interleaved as _, InterleavedMut as _, MeterMap as _,
+    NoteValue as _, Pull as _, Sink as _, SinkFailed as _, Source as _, Speaker as _,
+    StereoPlanes as _, Stop as _, TimeSignature as _,
 };
 
-/// `pump` is a function rather than a type, so it needs a reference rather than
-/// a `use ... as _` to prove both paths name the same item.
-#[test]
-fn the_pump_helper_resolves_through_both_paths() {
-    type Fn_ = fn(&mut Silence, &mut Sink, &mut [f32]) -> tutti_types::Samples;
-    let via_root: Fn_ = tutti_types::pump;
-    let via_prelude: Fn_ = {
-        use tutti_types::prelude::pump;
-        pump
-    };
-    assert_eq!(via_root as usize, via_prelude as usize);
-}
-
-struct Silence;
-impl tutti_types::AudioIn<f32> for Silence {
-    const ON_EMPTY: tutti_types::OnEmpty = tutti_types::OnEmpty::EndOfStream;
-    fn layout(&self) -> tutti_types::ChannelLayout {
-        tutti_types::ChannelLayout::MONO
-    }
-    fn poll_into(&mut self, out: &mut [f32]) -> tutti_types::Samples {
-        out.fill(0.0);
-        tutti_types::Samples::from_interleaved_len(out.len(), tutti_types::ChannelLayout::MONO)
-    }
-}
-
-struct Sink;
-impl tutti_types::AudioOut<f32> for Sink {
-    fn layout(&self) -> tutti_types::ChannelLayout {
-        tutti_types::ChannelLayout::MONO
-    }
-    fn write(&mut self, _samples: &[f32]) {}
-    // `finalize` returns `std::io::Error`, which is std's — nothing this crate
-    // could put in a prelude. Noted here so the omission reads as deliberate.
-    fn finalize(self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-}
-
-/// The prelude carries the whole `AudioIn` contract, not just the trait name.
+/// The prelude carries the whole `Source` contract, not just the trait name.
 ///
-/// `ON_EMPTY` is an associated const on `AudioIn`, and `OnEmpty` is its type;
-/// `poll_into` returns a `Samples` frame count. A consumer writing an impl
-/// needs all three, so a prelude that carried the trait alone would be an
-/// incomplete forward — the caller could name the trait but not write the impl.
+/// `Pull` is what `pull` answers, and `Samples` the frame count inside it. A
+/// consumer writing an impl needs all three, so a prelude that carried the trait
+/// alone would be an incomplete forward: the caller could name the trait but not
+/// write the impl.
 #[test]
-fn implementing_audio_in_needs_nothing_beyond_the_prelude() {
+fn implementing_source_needs_nothing_beyond_the_prelude() {
     use tutti_types::prelude::*;
 
     struct Quiet;
-    impl AudioIn<f32> for Quiet {
-        const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+    impl Source for Quiet {
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::MONO
         }
-        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        fn pull(&mut self, out: &mut [f32]) -> Pull {
             out.fill(0.0);
-            Samples::from_interleaved_len(out.len(), self.layout())
+            Pull::Frames(Samples::from_interleaved_len(out.len(), self.layout()))
         }
     }
 
     let mut s = Quiet;
     let mut buf = [1.0f32; 4];
-    assert_eq!(s.poll_into(&mut buf), Samples(4));
+    assert_eq!(s.pull(&mut buf), Pull::Frames(Samples(4)));
     assert_eq!(buf, [0.0; 4]);
     assert_eq!(s.layout(), ChannelLayout::MONO);
+}
+
+/// The same for `Sink`: the trait, the `SinkFailed` its `write` returns and the
+/// layout are all in the prelude. (`finalize` returns `std::io::Result`, which is
+/// std's and nothing this crate could put in a prelude.)
+#[test]
+fn implementing_sink_needs_nothing_beyond_the_prelude() {
+    use tutti_types::prelude::*;
+
+    struct Count(usize);
+    impl Sink for Count {
+        fn layout(&self) -> ChannelLayout {
+            ChannelLayout::MONO
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), SinkFailed> {
+            self.0 += samples.len();
+            Ok(())
+        }
+        fn finalize(self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut c = Count(0);
+    c.write(&[0.0; 3]).expect("a counting sink never fails");
+    assert_eq!(c.0, 3);
+    assert_eq!(c.layout(), ChannelLayout::MONO);
+    c.finalize().expect("closes");
 }
 
 /// Every name the prelude exports is also exported at the root, whether or not

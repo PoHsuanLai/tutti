@@ -99,7 +99,7 @@ crates/             everything shipped, directory name = package name
   tutti-session     # Bevy-free API layer: the cross-crate composition both
                     #   umbrellas use (design 015). Not an umbrella itself.
   arc-lend          # The publish cell. No dependencies.
-  tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}.
+  tutti-types       # Engine value vocabulary + io::{Source, Sink, Pull}.
                     #   No workspace dependency; forbids `unsafe`.
   tutti-rt          # Real-time-safe shared-memory primitives: the lock-free and
                     #   `unsafe` runtime structure, every loom model, `ArcLend`.
@@ -339,11 +339,12 @@ The engine has **two** buffer interfaces, and which to use is decided by *what
 the buffer is for*, not by whether the width is known at compile time. Nothing in
 the engine fixes a channel count in a type any more.
 
-- **`AudioIn` / `AudioOut`** (`tutti-types::io`) — engine **edges**: mic in, file
-  out (`FileOut`), a `TapReader`, `FileIn`. Both take a **flat interleaved `&[S]`** and report
+- **`Source` / `Sink`** (`tutti-types::io`, which replaced `AudioIn` / `AudioOut`
+  at doc 025 stage 3) — engine **edges**: mic in (`MicIn`), file out (`FileOut`),
+  a `TapReader`, `FileIn`. Both take a **flat interleaved `&[f32]`** and report
   their width as a runtime `ChannelLayout` from `layout()`. **Every count on this
-  boundary is denominated in FRAMES** — `poll_into` and `pump` return a
-  `Samples` (the frame count), `write` receives
+  boundary is denominated in FRAMES** — `Source::pull` answers
+  `Pull::Frames(Samples)` (the frame count), `write` receives
   `frames.interleaved_len(layout)` samples. That rule is the whole risk surface: a consumer
   compares a returned count against a loop range or a file position, both in
   frames, so leaking samples makes a 6-channel looped clip wrap at a sixth of its
@@ -376,28 +377,22 @@ meaning depends on which tier you are in, which is the failure that got
 traits cannot reach; it just does not need this one.
 
 **`WaveIn` stays inherent, and the width is no longer the reason.** Its reason
-is now `ON_EMPTY`: `fill_interleaved` always fills the whole buffer and returns
-`out.len() / ch` unconditionally, so it never returns a short count and neither
-verdict is true of it — `EndOfStream` is a promise about the *first* zero (it
-pads silence forever past the end, so a consumer would never stop) and
-`Starved` promises a producer that will catch up (the `Wave` is resident; a
-retry returns the same silence). A third "unbounded — pads rather than ending"
-variant would fit it, and is the wrong trade: a case every existing consumer
-must handle, in `tutti-types`, to describe a source whose count is already
-constant. A source that never returns a short count is not answering the
-question `AudioIn` exists to ask. Full argument on the type in
-`butler/io/wave_io.rs`.
+is that it has no verdict to give: `fill_interleaved` always fills the whole
+buffer and returns `out.len() / ch` unconditionally, so it never ends and never
+waits on a producer. A source that never returns a short count is not answering
+the question `Source::pull` exists to ask. The type's docs, in
+`butler/io/wave_io.rs`, say it in a paragraph.
 
 **A sampler *voice* is a graph node and not an edge — the split above decides it,
 not the width.** `MemorySource` implements `tutti_graph::Node` (no
-inputs, `channels` outputs) and will not grow an `AudioIn` impl. Three
-reasons, none about channel count: `poll_into` has no clock to seat on, and
+inputs, `channels` outputs) and will not grow a `Source` impl. Three
+reasons, none about channel count: `pull` has no clock to seat on, and
 the placed path needs one because a transport advances once per *block* — it
 seats where the playhead is and steps from there until the clock moves
 (`MemorySource::seated_position`; re-read the playhead per frame instead and a
-placed clip emits DC across the block); `ON_EMPTY` has
-no honest value, since a placed voice outside its window fills zeros and then
-sounds again when the playhead re-enters; and `AudioIn` deliberately carries no
+placed clip emits DC across the block); `pull` has
+no honest verdict, since a placed voice outside its window fills zeros and then
+sounds again when the playhead re-enters; and `Source` deliberately carries no
 rate/length/seek vocabulary, so `window_position`, `read_rate` / `window_rate`,
 loop wrap and `rebind_offline` would all stay outside the trait anyway. It also
 renders into the graph's **planar** `Io`, so an interleaved impl would be
@@ -407,17 +402,22 @@ that is the thing wearing the trait.
 Going runtime cost one compile-time guarantee: "a stereo source cannot feed a
 6-channel sink" was a type error, because the two `CH`s had to unify. Per the
 units rule that **an omission must ship with its replacement in the same
-change**, it was replaced by two runtime checks, both landed together: `pump`
-carries a `debug_assert_eq!` on the two layouts, and `tutti_session::Recorder::start`
+change**, it was replaced by two runtime checks, both landed together: the
+pump step of `tutti_session::PumpLoop` carries a `debug_assert_eq!` on the two
+layouts, and `tutti_session::Recorder::start`
 — the one place both endpoints are in scope before a frame moves — returns an
 error. Neither is optional bookkeeping; deleting either re-opens the hole.
 
-`AudioIn` also carries `const ON_EMPTY: OnEmpty`, which is **orthogonal to
-width** and survived the change untouched. It exists because the traits unify
-live and finite sources, and a 0-frame poll means "not yet" for one and "never
-again" for the other. That const is the *price* of the unification, not a free
-win — a new impl must state which it is, and getting it wrong ends a recording
-milliseconds in with no error anywhere.
+`Source::pull` answers a `Pull` (`Frames`, `Starved`, `Ended`, `Failed`), which
+is **orthogonal to width**. It exists because the trait unifies live and finite
+sources, and an empty read means "not yet" for one and "never again" for the
+other. (It replaced `const ON_EMPTY: OnEmpty` and `is_failed`: the verdict comes
+back from the call, so there is no per-type constant and no second poll.) The
+verdict is the *price* of the unification, not a free win — a new impl must say
+which it is, and getting it wrong ends a recording milliseconds in with no error
+anywhere; `Pull` is `#[must_use]` so a caller cannot ignore it, and a live
+source reads its fault flag before its ring (`tutti_rt::FaultLatch`) so a
+`Failed` never hides frames.
 
 **Adding a trait, when the type system is the point.** The units rule ("distinct
 range *or* distinct algebra; two names for the same behaviour is not a type") has
@@ -569,7 +569,7 @@ knowing because the same shapes recur:
   control read blocking inside the syscall while the deadline was only checked
   *between* syscalls, so a budget of any size was unenforceable. The fix is
   `PeekNamedPipe`: ask how many bytes are buffered, and only read when the
-  answer is "some". See `util::transport::control`.
+  answer is "some". See `tutti-plugin-ipc`'s `transport::control`.
 - **`set_nonblocking` is not the way out, and was tried.** It took Windows from
   37 failures to 47. `PIPE_NOWAIT` makes `ReadFile` report *success with zero
   bytes*, which this transport reads as EOF, so a quiet peer was reported as a

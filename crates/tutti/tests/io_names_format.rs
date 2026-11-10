@@ -9,7 +9,7 @@
 #![cfg(feature = "io")]
 
 use tutti::codec::{FileOut, Format, Pcm, Spec};
-use tutti::types::{AudioOut, ChannelLayout, SampleRate};
+use tutti::types::{ChannelLayout, SampleRate, Sink};
 
 #[test]
 fn io_reaches_a_wav_sink_without_a_format_feature() {

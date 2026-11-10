@@ -1,17 +1,19 @@
-//! A pump over a decoded file: `FileIn` is an `AudioIn` whose end and whose
-//! fault both read as a zero-frame poll, and the pump must tell them apart.
+//! A pump over a decoded file: `FileIn` is a `Source` whose end (`Ended`) and
+//! whose fault (`Failed`) the pump must tell apart.
 
 use tutti_codec::FileIn;
 use tutti_session::{PumpLoop, PumpPass};
-use tutti_types::{AudioIn, AudioOut, ChannelLayout, Samples};
+use tutti_types::{ChannelLayout, Samples, Sink, SinkFailed, Source};
 
 struct Discard(ChannelLayout);
 
-impl AudioOut for Discard {
+impl Sink for Discard {
     fn layout(&self) -> ChannelLayout {
         self.0
     }
-    fn write(&mut self, _: &[f32]) {}
+    fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+        Ok(())
+    }
     fn finalize(self) -> std::io::Result<()> {
         Ok(())
     }
@@ -40,8 +42,8 @@ fn run_to_the_end(path: &std::path::Path) -> PumpPass {
 
 /// A pump over a cut file finishes as `Failed`, over a whole one as `Ended`.
 ///
-/// Mutation (run): removing the `is_failed` override from `impl AudioIn for
-/// FileIn` makes the cut file finish as `Ended` and fails the first
+/// Mutation (run): answering `Ended` instead of `Failed` for a fault in `impl
+/// Source for FileIn` makes the cut file finish as `Ended` and fails the first
 /// assertion.
 #[test]
 fn a_pump_over_a_cut_file_finishes_failed_and_over_a_whole_one_ended() {

@@ -1,13 +1,13 @@
 # tutti-types
 
 Typed quantities and shapes shared by every engine crate: unit newtypes,
-channel layouts, and the `AudioIn`/`AudioOut` I/O traits.
+channel layouts, and the `Source`/`Sink` I/O traits.
 
 ## What this is
 
 The common definitions every other Tutti crate shares rather than duplicating.
 Use it directly when you need only the vocabulary (a crate that implements
-`AudioIn`, or one that only needs `Beat`); otherwise reach it through the
+`Source`, or one that only needs `Beat`); otherwise reach it through the
 `tutti` umbrella, which re-exports it as `tutti::types`. What is in it:
 
 - **`value`** — what a parameter *is* and how it is carried: the `Unit` marker
@@ -29,8 +29,9 @@ Use it directly when you need only the vocabulary (a crate that implements
   index (`Fold::by_index`, widening only; a narrowing is `FoldError::Unplaced`,
   and `Fold::select` truncates on purpose) where it has none. The width-only `fold_frame` is gone;
   `fold_frame_to_mono` / `fold_frame_to_stereo` remain for a bare frame.
-- **`io`** — `AudioIn` / `AudioOut` and `pump`: the two traits every audio source
-  and sink in the engine speaks (mic, file, disk, plugin boundary).
+- **`io`** — `Source`, `Sink` and `Pull`: the edge vocabulary, a stream on a clock
+  other than the graph's (mic, file, tap, file encoder). A `Pull` says whether an
+  empty read is late, finished or broken.
 - **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,
   `delays`) and how long a graph rings after its input stops (`TailGraph`,
   `graph_tail`), as pure graph math over any graph representation.
@@ -44,7 +45,7 @@ Use it directly when you need only the vocabulary (a crate that implements
   musical math, so it layers *over* a transport rather than living inside one.
 
 **The root is the API.** The common names are re-exported there, so
-`tutti_types::Bpm` and `tutti_types::AudioIn` resolve directly — import from the
+`tutti_types::Bpm` and `tutti_types::Source` resolve directly — import from the
 root, or from `prelude` for the common subset. Six of the eleven modules are
 public (`value`, `graph`, `io`, `latency`, `meter`, `tail`), because each holds
 items the root does not re-export (`graph::Source`); the other five (`channels`,
@@ -59,8 +60,8 @@ behind their features) and `#![forbid(unsafe_code)]`. The lock-free and `unsafe`
 runtime primitives, the graph runtime, the engine, the device and the file
 codecs are other crates'. Two consequences make the split load-bearing:
 
-- The `AudioIn`/`AudioOut` traits are homed here so *any* subsystem can implement
-  them without an absurd dependency edge. A sampler implementing `AudioIn` must
+- The `Source`/`Sink` traits are homed here so *any* subsystem can implement
+  them without an absurd dependency edge. A crate implementing `Source` must
   not have to depend on the device layer to name the trait.
 - Unit newtypes are **mandatory** across the engine, so their home has to be
   reachable from everywhere. A crate that only needs `Beat` gets `Beat` and

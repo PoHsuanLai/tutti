@@ -13,6 +13,7 @@ use super::handle::Transport;
 use super::motion::{MotionAudio, is_declicking};
 use super::settings::TransportSettings;
 use super::timed::{ScheduleAudio, Scheduled, TransportCommand};
+use super::walk::TempoAhead;
 use std::sync::atomic::Ordering;
 use tutti_rt::Reader;
 use tutti_tempo::TempoMap;
@@ -82,6 +83,11 @@ pub struct TransportAudio {
     tempo_map: Reader<TempoMap>,
     /// The publisher's count at the last block that took the map.
     seen: u64,
+    /// Whether the map in force changes tempo: the clock then follows it
+    /// (doc 020 stage 3), lending it for each step that needs it and
+    /// dropping the loan at the end of the step. A constant map leaves this
+    /// off and costs nothing.
+    stepped: bool,
 }
 
 impl std::fmt::Debug for TransportAudio {
@@ -109,11 +115,26 @@ impl TransportAudio {
         // at the first block, never missed.
         let seen = settings.map_generation.load(Ordering::Acquire);
         let tempo = settings.tempo();
+        let mut tempo_map = settings.tempo_reader();
+        let mut clock = TransportClock::new(transport.links(), rate);
+        // A map with steps published before this audio side was taken (an
+        // engine built after the project's tempo was set, or rebuilt by a
+        // device restart) is followed from the first block, as a later publish
+        // would be.
+        let stepped = {
+            let map = tempo_map.lend();
+            let stepped = map.constant_tempo().is_none();
+            if stepped {
+                clock.follow(&map);
+            }
+            stepped
+        };
         Ok(Self {
-            clock: TransportClock::new(transport.links(), rate),
+            clock,
             control: Control::read(&settings, loop_region, tempo),
-            tempo_map: settings.tempo_reader(),
+            tempo_map,
             seen,
+            stepped,
             schedule: ScheduleAudio::new(transport.motion.timed().clone()),
             motion,
             settings,
@@ -141,22 +162,79 @@ impl TransportAudio {
     pub fn begin_block(&mut self) -> tutti_graph::Transport {
         let tempo = self.tempo_for_block();
         self.control = Control::read(&self.settings, self.motion.loop_region(), tempo);
-        self.clock.begin(&self.control, true)
+        self.begin(true)
     }
 
     /// The tempo this block renders at: the published map's when a publish
     /// landed since the last block, else the one in force (which a timed
     /// `Tempo` command may have moved). The map is lent only then, once, and
     /// the loan ends here.
+    ///
+    /// A map that changes tempo is taken here too: the clock re-seats on it at
+    /// the current beat (doc 020, section 3), and from then on follows it, the
+    /// tempo of the block being the walk's and not this scalar.
     fn tempo_for_block(&mut self) -> Bpm {
         let published = self.settings.map_generation.load(Ordering::Acquire);
         if published != self.seen {
             self.seen = published;
-            if let Some(tempo) = self.tempo_map.lend().constant_tempo() {
-                return tempo;
+            let map = self.tempo_map.lend();
+            match map.constant_tempo() {
+                Some(tempo) => {
+                    self.stepped = false;
+                    return tempo;
+                }
+                None => {
+                    self.stepped = true;
+                    self.clock.follow(&map);
+                }
             }
         }
         self.control.tempo
+    }
+
+    /// Runs `f` on the clock with the map when it changes tempo, lent for the
+    /// call and no longer.
+    fn with_map<R>(&mut self, f: impl FnOnce(&mut TransportClock, Option<&TempoMap>) -> R) -> R {
+        if self.stepped {
+            let map = self.tempo_map.lend();
+            f(&mut self.clock, Some(&map))
+        } else {
+            f(&mut self.clock, None)
+        }
+    }
+
+    fn begin(&mut self, take_seek: bool) -> tutti_graph::Transport {
+        let control = self.control;
+        self.with_map(|clock, map| clock.begin(&control, take_seek, map))
+    }
+
+    /// The tempo changes inside the next `frames` of the block that began
+    /// under `from`, and where the block must end if one does not fit
+    /// (doc 020, section 2.3). `free` is how many changes the block can still
+    /// take: `MAX_TRANSPORT_CHANGES` less those already cut. Moves nothing.
+    ///
+    /// Nothing for a constant map (the common case: no lend, no walk) and for
+    /// a stopped transport. The changes are offsets from the clock's current
+    /// frame, so a caller that has cut the block calls this again from its
+    /// cut.
+    pub fn tempo_ahead(
+        &mut self,
+        frames: usize,
+        from: &tutti_graph::Transport,
+        free: usize,
+    ) -> TempoAhead {
+        if !self.stepped {
+            return TempoAhead::NONE;
+        }
+        self.with_map(|clock, map| clock.ahead(frames, from, map, free))
+    }
+
+    /// The transport at the clock's current frame, after
+    /// [`advance`](Self::advance) rolled to a tempo change from
+    /// [`tempo_ahead`](Self::tempo_ahead): the tempo and segment the walk
+    /// took there. The inputs read at the block's start stay.
+    pub fn restate(&mut self) -> tutti_graph::Transport {
+        self.begin(false)
     }
 
     /// Applies pending command `i` (late or not: counted when late), then
@@ -169,13 +247,13 @@ impl TransportAudio {
         self.control.apply(&cmd, &self.settings);
         // Only a motion command can have requested a seek.
         let seeks = matches!(cmd, TransportCommand::Motion(_));
-        (applied, self.clock.begin(&self.control, seeks))
+        (applied, self.begin(seeks))
     }
 
     /// Advances the playhead `frames` under `from`, the transport the last
     /// [`begin_block`](Self::begin_block) or [`fire`](Self::fire) reported.
     pub fn advance(&mut self, frames: usize, from: &tutti_graph::Transport) {
-        self.clock.advance(frames, from);
+        self.with_map(|clock, map| clock.advance(frames, from, map));
     }
 
     /// Publishes the playhead after the block it belongs to is rendered.
@@ -189,7 +267,7 @@ impl TransportAudio {
     pub fn follow_rate(&mut self, rate: SampleRate) {
         let was = self.clock.sample_rate();
         if rate != was {
-            self.clock.set_sample_rate(rate);
+            self.with_map(|clock, map| clock.set_sample_rate(rate, map));
             self.schedule.rescale(rate.get() / was.get());
         }
     }
@@ -343,5 +421,210 @@ mod tests {
         assert_eq!(t.settings.tempo(), Bpm::of(90.0), "readers see it");
         t.settings.set_tempo(Bpm::of(100.0));
         assert_eq!(a.begin_block().tempo, Bpm::of(100.0), "a publish wins");
+    }
+
+    /// A rolling transport over `points` (steps), at `rate`.
+    fn rolling(rate: f64, points: &[(f64, f64)]) -> (Transport, TransportAudio) {
+        use tutti_tempo::{Shape, TempoPoint};
+        let t = Transport::new(rate);
+        let map = TempoMap::new(points.iter().map(|&(beat, bpm)| TempoPoint {
+            beat: Beat(beat),
+            tempo: Bpm::of(bpm),
+            shape: Shape::Step,
+        }))
+        .expect("a map");
+        t.settings
+            .set_tempo_map(std::sync::Arc::new(map))
+            .expect("steps");
+        let mut a = t.audio(rate).expect("first");
+        t.motion
+            .schedule(At::NextBlock, MotionEvent::Play)
+            .expect("room");
+        a.gather();
+        let _ = a.begin_block();
+        let _ = a.fire(0, false);
+        (t, a)
+    }
+
+    /// Roll `frames` as one block, and report the transport at its start.
+    fn roll(a: &mut TransportAudio, frames: usize) -> tutti_graph::Transport {
+        let t = a.begin_block();
+        a.advance(frames, &t);
+        t
+    }
+
+    /// The look ahead finds the step on its frame and with its transport: 100
+    /// frames before beat 4 of 120 to 60 BPM at 48 kHz, a 512-frame block has
+    /// one change at offset 100, on beat 4 exactly at 60 BPM. With no room the
+    /// block ends there; a constant map has none.
+    ///
+    /// Mutation (run): `TempoWalk::ahead` pushing at `at + 1` -> offset 101 ->
+    /// fails; `limit` set only when `len > cap` -> the no-room block is not cut
+    /// -> fails.
+    #[test]
+    fn the_look_ahead_finds_a_step_and_cuts_a_block_that_cannot_hold_it() {
+        let (_t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0)]);
+        let _ = roll(&mut a, 96_000 - 100);
+        let t = a.begin_block();
+        let ahead = a.tempo_ahead(512, &t, 8);
+        assert_eq!(ahead.limit, None);
+        let [change] = ahead.changes.as_slice() else {
+            panic!("one change, got {:?}", ahead.changes);
+        };
+        assert_eq!(change.at.index(), 100);
+        assert_eq!(change.to.tempo, Bpm::of(60.0));
+        assert_eq!(change.to.beat(), Beat(4.0));
+        assert_eq!(change.to.tempo, Bpm::of(60.0));
+        let full = a.tempo_ahead(512, &t, 0);
+        assert!(full.changes.is_empty());
+        assert_eq!(
+            full.limit,
+            Some(100),
+            "the block ends where it would be 1 too many"
+        );
+        // Moving nothing: the same look again.
+        assert_eq!(a.tempo_ahead(512, &t, 8).changes, ahead.changes);
+
+        let t = Transport::new(48_000.0);
+        let mut c = t.audio(48_000.0).expect("first");
+        let blk = c.begin_block();
+        assert!(c.tempo_ahead(512, &blk, 8).changes.is_empty());
+    }
+
+    /// A map published while rolling is taken at the next block start without
+    /// moving the playhead: the beat of that block is the beat the last one
+    /// ended on (bit for bit), at the tempo the map has there, and the step
+    /// that follows lands on its frame.
+    ///
+    /// Mutation (run): `TransportClock::follow` not calling `place` -> the
+    /// clock keeps 120 and the tempo assertion fails; seating at the map's
+    /// beat for the frame instead of the current beat -> the beat jumps ->
+    /// fails.
+    #[test]
+    fn a_swapped_in_step_map_re_seats_at_the_current_beat() {
+        let t = Transport::new(48_000.0);
+        let mut a = t.audio(48_000.0).expect("first");
+        t.motion
+            .schedule(At::NextBlock, MotionEvent::Play)
+            .expect("room");
+        a.gather();
+        let _ = a.begin_block();
+        let _ = a.fire(0, false);
+        let _ = roll(&mut a, 24_000); // beat 1 at 120
+        let ended = {
+            let blk = a.begin_block();
+            blk.beat()
+        };
+        assert_eq!(ended, Beat(1.0));
+        t.settings
+            .set_tempo_map(steps(&[(0.0, 90.0), (2.0, 60.0)]))
+            .expect("steps");
+        let blk = a.begin_block();
+        assert_eq!(blk.beat(), Beat(1.0), "no jump");
+        assert_eq!(blk.tempo, Bpm::of(90.0), "the map's tempo here");
+        // Beat 2 is 32 000 frames on at 90 BPM.
+        let _ = roll(&mut a, 31_999);
+        assert_eq!(a.begin_block().tempo, Bpm::of(90.0));
+        let _ = roll(&mut a, 1);
+        let blk = a.begin_block();
+        assert_eq!(blk.tempo, Bpm::of(60.0));
+        assert_eq!(blk.beat(), Beat(2.0));
+    }
+
+    fn steps(points: &[(f64, f64)]) -> std::sync::Arc<TempoMap> {
+        use tutti_tempo::{Shape, TempoPoint};
+        std::sync::Arc::new(
+            TempoMap::new(points.iter().map(|&(beat, bpm)| TempoPoint {
+                beat: Beat(beat),
+                tempo: Bpm::of(bpm),
+                shape: Shape::Step,
+            }))
+            .expect("a map"),
+        )
+    }
+
+    /// A rate change re-seats at the current beat on the map's timeline at the
+    /// new rate: beat 6 of a 60-to-240 step at beat 8 is 2 beats of 60 BPM, or
+    /// 192 000 frames, from the step at 96 kHz (and the clock had counted 144 000
+    /// at 48 kHz to get here).
+    ///
+    /// Mutation (run): `TransportClock::set_sample_rate` not calling `place`
+    /// -> the map frame stays on its 48 kHz count and the step lands 48 000
+    /// frames early -> fails.
+    #[test]
+    fn a_rate_change_re_seats_on_the_maps_timeline() {
+        let (_t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0), (8.0, 240.0)]);
+        // 4 beats at 120, then 2 at 60: beat 6.
+        let _ = roll(&mut a, 96_000 + 96_000);
+        assert_eq!(a.begin_block().beat(), Beat(6.0));
+        a.follow_rate(SampleRate(96_000.0));
+        let blk = a.begin_block();
+        assert_eq!((blk.beat(), blk.tempo), (Beat(6.0), Bpm::of(60.0)));
+        let _ = roll(&mut a, 191_999);
+        assert_eq!(a.begin_block().tempo, Bpm::of(60.0));
+        let _ = roll(&mut a, 1);
+        let blk = a.begin_block();
+        assert_eq!((blk.beat(), blk.tempo), (Beat(8.0), Bpm::of(240.0)));
+    }
+
+    /// A map has no hysteresis: a step from 120 to 120.0005 BPM (inside the
+    /// clock's 0.001 band for a scalar tempo) is taken on its frame.
+    ///
+    /// Mutation (run): `TempoWalk::sync` keeping the clock's tempo when
+    /// `tempo_in_effect` says the two are within the band -> the tempo stays 120
+    /// -> fails.
+    #[test]
+    fn a_map_is_followed_without_the_scalar_hysteresis() {
+        let (_t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (1.0, 120.0005)]);
+        let _ = roll(&mut a, 24_000);
+        assert_eq!(a.begin_block().tempo, Bpm::of(120.0005));
+    }
+
+    /// While a map with steps is in force it is the tempo: a timed `Tempo`
+    /// command (retired in stage 6) changes the scalar mirror and not the
+    /// clock, which the next publish would have overridden anyway.
+    ///
+    /// Mutation (run): `TransportClock::begin` taking `control.tempo` under a
+    /// map -> the clock runs at 90 -> fails.
+    #[test]
+    fn a_timed_tempo_does_not_override_a_step_map() {
+        let (t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0)]);
+        t.motion
+            .schedule(At::NextBlock, TransportCommand::Tempo(Bpm::of(90.0)))
+            .expect("room");
+        a.gather();
+        let _ = a.begin_block();
+        let (_, after) = a.fire(0, false);
+        assert_eq!(after.tempo, Bpm::of(120.0));
+        assert_eq!(a.begin_block().tempo, Bpm::of(120.0));
+    }
+
+    /// A map with steps published before the audio side is taken (an engine
+    /// built after the project set its tempo, or rebuilt by a device restart)
+    /// is followed from its first block: the step lands on its frame.
+    ///
+    /// Mutation (run): `TransportAudio::take` not reading the map it finds
+    /// (`stepped` left false) -> the clock runs at the scalar 120 and beat 5
+    /// is on frame 120 000 -> fails.
+    #[test]
+    fn a_map_published_before_the_audio_side_is_taken_is_followed() {
+        let (t, a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0)]);
+        drop(a);
+        let mut a = t.audio(48_000.0).expect("handed back on drop");
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let blk = a.begin_block();
+            seen.push((blk.tempo, blk.beat()));
+            a.advance(96_000, &blk);
+        }
+        // The seat survives the restart on the beat the clock stood on (0:
+        // the drop kept the machine rolling at the start).
+        assert_eq!(seen[0].0, Bpm::of(120.0));
+        assert_eq!(
+            seen[1],
+            (Bpm::of(60.0), Beat(4.0)),
+            "the step, on its frame"
+        );
+        assert_eq!(seen[2].1, Beat(6.0), "96 000 frames at 60 BPM are 2 beats");
     }
 }

@@ -12,7 +12,16 @@
 use std::path::PathBuf;
 
 use tutti_codec::{FileIn, Wave};
-use tutti_types::{AudioIn, Samples};
+use tutti_types::{Pull, Samples, Source};
+
+/// The frames one pull produced, `0` for any verdict (these loops read until
+/// the file stops, and each asserts a clean file reaches its end).
+fn read(dec: &mut FileIn, buf: &mut [f32]) -> usize {
+    match dec.pull(buf) {
+        Pull::Frames(n) => n.get(),
+        _ => 0,
+    }
+}
 
 fn asset(name: &str) -> PathBuf {
     tutti_fixtures::asset(&format!("audio/{name}"))
@@ -57,7 +66,7 @@ fn stream_digest(name: &str) -> (u64, usize) {
     let mut h = Fnv::new();
     let mut frames = 0usize;
     loop {
-        let n = dec.poll_into(&mut buf).0;
+        let n = read(&mut dec, &mut buf);
         if n == 0 {
             break;
         }
@@ -257,7 +266,7 @@ fn the_stream_reads_every_frame_the_load_does() {
         let mut buf = vec![0.0f32; 333 * ch];
         let mut at = 0usize;
         loop {
-            let n = dec.poll_into(&mut buf).0;
+            let n = read(&mut dec, &mut buf);
             if n == 0 {
                 break;
             }
@@ -356,7 +365,7 @@ fn seek_lands_on_the_whole_file_load_frames() {
             let want = 257.min(len - start);
             let mut out = vec![0.0f32; want * ch];
             assert_eq!(
-                dec.poll_into(&mut out).0,
+                read(dec, &mut out),
                 want,
                 "{name}: read count after {how} seek to {start}"
             );

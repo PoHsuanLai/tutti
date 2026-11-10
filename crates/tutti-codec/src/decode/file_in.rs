@@ -8,7 +8,7 @@
 //! width, so a caller sizes its buffer from the trait and never has to ask the
 //! concrete type.
 //!
-//! It is the read edge, the counterpart of `tutti-io`'s `WavOut`.
+//! It is the read edge, the counterpart of [`FileOut`](crate::FileOut).
 //!
 //! **It does not downmix.** [`topology`](FileIn::topology) says which speaker
 //! each channel feeds, and a caller wanting another width builds a

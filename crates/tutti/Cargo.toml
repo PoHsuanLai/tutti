@@ -29,7 +29,6 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
 
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
-tutti-io = { path = "../tutti-io", optional = true }
 tutti-codec = { path = "../tutti-codec", optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
@@ -119,10 +118,11 @@ ogg = ["codec", "tutti-codec/decode-ogg", "tutti-sampler?/ogg"]
 # writes through. Implied by every format, so it is rarely named directly.
 codec = ["dep:tutti-codec"]
 
-# `tutti::io` — `tutti-io`, the live I/O edge. Implies `codec`: `WavOut::create`
-# takes a `tutti::codec::Pcm`. Implied by `audio-io`, so it is
-# rarely named directly.
-io = ["dep:tutti-io", "codec"]
+# `tutti::io` — `Recorder` and its pump loop (`tutti-session`'s `record`). Implies
+# `session` and `codec` with the WAV writer: the sink is `tutti::codec::FileOut`,
+# which writes a `tutti::codec::Format`, and a `Format` has a value only with an
+# `encode-*` feature. Implied by `audio-io`, so it is rarely named directly.
+io = ["session", "tutti-session/record", "codec", "tutti-codec/encode-wav"]
 
 # --- MIDI, two axes (identical to bevy-tutti) -------------------------------
 midi = [

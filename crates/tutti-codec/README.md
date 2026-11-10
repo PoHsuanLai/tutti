@@ -17,6 +17,12 @@ or a streaming `FileIn`.
   `Encoder::create_file` writes beside the path and moves the file into place
   on `finish`; dropping the encoder first removes it, and so does `finish` after a
   failed `write`.
+- `FileOut` is the file sink, `FileIn`'s mirror: an `AudioOut` over an
+  `Encoder`, created from a path and a `Spec`, for any `Format` the build can
+  write. It keeps whole frames only, latches the first write error (later
+  writes are skipped, `is_failed` reports it) and `finalize` returns that
+  error, else the result of `finish`. It writes in place rather than staged,
+  because a recording cut short is worth keeping.
 - Decoding is plain functions and types of our own, no trait: `Wave::read`
   decodes a file into a `Wave` (a resident, planar sample buffer),
   `Wave::topology` and `FileIn::topology` say which speaker each channel feeds,
@@ -36,5 +42,5 @@ The pipeline in front of the encoder: pulling blocks from a render or a live
 source, resampling and dithering. An encoder takes blocks already at the rate
 and width the `Spec` states, and nothing here stops a caller from handing it
 others. `tutti-export` is the offline pipeline and
-`tutti-io`'s `WavOut` the live one; both write through this crate, so a bounced
+`FileOut` the live one; both write through this crate, so a bounced
 and a recorded file quantize and lay out a given sample identically.

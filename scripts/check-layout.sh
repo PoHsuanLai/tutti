@@ -94,11 +94,11 @@
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-codec`: "tutti-codec ->
 #   tutti-engine (normal) points up" and "tutti-codec may depend on ['tutti-types']
 #   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS";
-# - `symphonia` as a `[dependencies]` entry of `tutti-io`: "symphonia is a normal
-#   dependency of tutti-io; ... tutti-codec alone"; `"dep:vorbis_rs"` in the
+# - `symphonia` as a `[dependencies]` entry of `tutti-engine`: "symphonia is a normal
+#   dependency of tutti-engine; ... tutti-codec alone"; `"dep:vorbis_rs"` in the
 #   `decode-ogg` feature: "decode-ogg enables an encoder library"; `"dep:symphonia"`
 #   in `encode-wav`: "encode-wav enables symphonia"; `use symphonia::core::errors;`
-#   at the end of `tutti-io/src/lib.rs`: "names symphonia outside
+#   at the end of `tutti-engine/src/lib.rs`: "names symphonia outside
 #   tutti-codec's decode module"; `pub fn probe(..) -> symphonia::core::errors::Error`
 #   in `tutti-codec/src/decode/read.rs`: "pub item names symphonia"; and the
 #   evasions of the first version of that scan (each planted in `error.rs` or
@@ -171,7 +171,7 @@ LAYERS = [
     ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-midi-types", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
     ["tutti-transport", "tutti-plugin-types", "tutti-measure"],
-    ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
+    ["tutti-engine", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-ffi",
      "tutti-plugin-db"],
     ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-spatial", "tutti-sampler",

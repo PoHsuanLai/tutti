@@ -1,16 +1,11 @@
 //! How an [`OutputBlock`] is *run*.
 //!
-//! `tutti_io`'s recorder splits the same way: `PumpLoop` is one pass with no
-//! thread and no clock, `PumpDriver` decides where that pass runs, and both of
-//! its drivers call the same `pump_once`.
-//!
-//! | `tutti-io` | here |
-//! |---|---|
-//! | `PumpLoop` | [`OutputBlock`] |
-//! | `PumpDriver` | [`StreamDriver`] |
-//! | `ThreadDriver` | [`CpalDriver`] |
-//! | `ManualDriver` / `ManualPump` | [`ManualStreamDriver`] / [`ManualStream`] |
-//! | `RunningPump` | [`RunningStream`] |
+//! `tutti-session`'s recorder keeps one pass apart from where it runs the same
+//! way: its `PumpLoop` is one pass with no thread and no clock, which a test
+//! steps by hand and `Recorder` runs on a thread. Here [`OutputBlock`] is the
+//! pass, [`StreamDriver`] decides where it runs, [`CpalDriver`] runs it on
+//! CPAL's thread and [`ManualStreamDriver`] / [`ManualStream`] let a test call
+//! it ([`RunningStream`] is the handle).
 //!
 //! [`CpalDriver`]'s closure body is `move |data, _| block.render(data)`, and
 //! [`ManualStream::callback_once`] calls the same method, so a manual stream

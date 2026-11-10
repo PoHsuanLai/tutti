@@ -208,6 +208,17 @@ pub trait Processor: Send {
     /// the realtime thread can hand the Processor back. Realtime. Processing
     /// starts again lazily in the first [`process`](Self::process).
     fn stop(&mut self);
+
+    /// Asks the plugin to forget its signal history, as a seek or a transport
+    /// reset needs: a delay line, a reverb tail, a filter's memory. Realtime,
+    /// between blocks.
+    ///
+    /// Per format: CLAP `plugin.reset`; VST3 `setProcessing(false)`, started
+    /// again in the next block (the SDK calls it a way to reset buffers, a
+    /// request a plugin may ignore); VST2 has no opcode that clears state, so
+    /// only the host's own SysEx reassembly is dropped. Every format drops a
+    /// SysEx open across the reset (design 016 §6.2).
+    fn reset(&mut self);
 }
 
 /// The main-thread side of a plugin that is rendering.

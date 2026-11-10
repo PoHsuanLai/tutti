@@ -719,6 +719,10 @@ mod tests {
         }
     }
     impl PluginAudio for NanPlugin {
+        fn reset(&mut self) -> tutti_plugin_types::PluginResult<()> {
+            Ok(())
+        }
+
         fn process(
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
@@ -805,6 +809,10 @@ mod tests {
         }
     }
     impl PluginAudio for EchoProbe {
+        fn reset(&mut self) -> tutti_plugin_types::PluginResult<()> {
+            Ok(())
+        }
+
         fn process(
             &mut self,
             buffer: AudioBufferMut<'_, '_>,

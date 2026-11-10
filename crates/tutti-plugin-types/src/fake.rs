@@ -38,6 +38,8 @@ pub enum Call {
     Process(usize),
     /// `Processor::stop`.
     Stop,
+    /// `Processor::reset`.
+    Reset,
     /// An edit the Processor applied at the head of a block.
     Edit(ParamId, Normalized),
     /// `Controller::latency`.
@@ -95,6 +97,7 @@ impl Call {
             Self::RunTimer(id) => [15, u64::from(id.0), 0],
             Self::ServiceFd(id) => [16, u64::from(id.0 as u32), 0],
             Self::RebuildMidiMapping => [17, 0, 0],
+            Self::Reset => [18, 0, 0],
         }
     }
 
@@ -120,6 +123,7 @@ impl Call {
             15 => Self::RunTimer(TimerId(a as u32)),
             16 => Self::ServiceFd(FdId(a as u32 as i32)),
             17 => Self::RebuildMidiMapping,
+            18 => Self::Reset,
             _ => return None,
         })
     }
@@ -637,6 +641,10 @@ impl Processor for FakeProcessor {
 
     fn stop(&mut self) {
         self.shared.log.push(Call::Stop);
+    }
+
+    fn reset(&mut self) {
+        self.shared.log.push(Call::Reset);
     }
 }
 

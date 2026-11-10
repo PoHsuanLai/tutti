@@ -11,15 +11,15 @@ impl Vst3Loaded {
     // below touches indices; everything else takes a `ParamId`.
 
     /// How many parameters the edit controller reports; `0` without one.
-    pub fn parameter_count(&self) -> u32 {
-        self.plugin.parameter_count()
+    pub fn parameter_count(&self, main: &MainThread) -> u32 {
+        self.plugin.parameter_count(main)
     }
 
     /// The id of every parameter, in the plugin's own order. Empty without an
     /// edit controller.
-    pub fn parameter_ids(&self) -> Vec<ParamId> {
-        (0..self.parameter_count())
-            .filter_map(|i| self.plugin.parameter_info(i))
+    pub fn parameter_ids(&self, main: &MainThread) -> Vec<ParamId> {
+        (0..self.parameter_count(main))
+            .filter_map(|i| self.plugin.parameter_info(main, i))
             .map(|info| ParamId::new(info.id))
             .collect()
     }
@@ -28,15 +28,19 @@ impl Vst3Loaded {
     /// parameter or no controller. Walks the list, so prefer
     /// [`parameter_list`](Self::parameter_list) for more than one. Each call is
     /// an O(n) walk of FFI calls into the plugin.
-    pub fn parameter_info(&self, id: ParamId) -> Option<Vst3ParameterInfo> {
-        (0..self.parameter_count())
-            .filter_map(|i| self.plugin.parameter_info(i))
+    pub fn parameter_info(&self, main: &MainThread, id: ParamId) -> Option<Vst3ParameterInfo> {
+        (0..self.parameter_count(main))
+            .filter_map(|i| self.plugin.parameter_info(main, i))
             .find(|info| info.id == id.get())
     }
 
     /// The descriptor at list position `index`, for the walks that enumerate.
-    pub(in crate::host) fn parameter_info_at(&self, index: u32) -> Option<Vst3ParameterInfo> {
-        self.plugin.parameter_info(index)
+    pub(in crate::host) fn parameter_info_at(
+        &self,
+        main: &MainThread,
+        index: u32,
+    ) -> Option<Vst3ParameterInfo> {
+        self.plugin.parameter_info(main, index)
     }
 
     /// Every parameter the plugin advertises, as the SHARED
@@ -57,10 +61,10 @@ impl Vst3Loaded {
         let units = self.units(main);
         let groups = unit_names(&units);
 
-        (0..self.parameter_count())
+        (0..self.parameter_count(main))
             .filter_map(|i| {
-                let info = self.parameter_info_at(i)?;
-                let plain = self.parameter_plain_range(ParamId::new(info.id));
+                let info = self.parameter_info_at(main, i)?;
+                let plain = self.parameter_plain_range(main, ParamId::new(info.id));
                 Some(build_param_info(info, plain, &groups))
             })
             .collect()
@@ -87,8 +91,8 @@ impl Vst3Loaded {
     ///
     /// Must run on the main thread with the controller connected, per the SDK's
     /// `[UI-thread & Connected]` annotation on the method.
-    pub fn parameter_plain_range(&self, id: ParamId) -> Option<PlainRange> {
-        let at = |n: f64| self.plugin.normalized_to_plain(id.get(), n);
+    pub fn parameter_plain_range(&self, main: &MainThread, id: ParamId) -> Option<PlainRange> {
+        let at = |n: f64| self.plugin.normalized_to_plain(main, id.get(), n);
 
         let (lo, mid, hi) = (at(0.0)?, at(0.5)?, at(1.0)?);
         if !lo.is_finite() || !mid.is_finite() || !hi.is_finite() {
@@ -113,8 +117,8 @@ impl Vst3Loaded {
     /// descriptors. The host can always **send**
     /// [`NoteExpressionValue`](crate::NoteExpressionValue) events regardless of
     /// what this reports.
-    pub fn note_expression_count(&self, bus_index: i32, channel: i16) -> u32 {
-        self.plugin.note_expression_count(bus_index, channel)
+    pub fn note_expression_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+        self.plugin.note_expression_count(main, bus_index, channel)
     }
 
     /// The `IProcessContextRequirements::getProcessContextRequirements`
@@ -149,11 +153,13 @@ impl Vst3Loaded {
     /// `INoteExpressionController`.
     pub fn note_expression_info(
         &self,
+        main: &MainThread,
         bus_index: i32,
         channel: i16,
         index: u32,
     ) -> Option<Vst3NoteExpressionInfo> {
-        self.plugin.note_expression_info(bus_index, channel, index)
+        self.plugin
+            .note_expression_info(main, bus_index, channel, index)
     }
 
     /// Number of key-switch (articulation) entries the plugin exposes on the
@@ -162,8 +168,8 @@ impl Vst3Loaded {
     ///
     /// Pair with [`keyswitch_info`](Self::keyswitch_info) to enumerate the
     /// articulation map a sample-library instrument advertises.
-    pub fn keyswitch_count(&self, bus_index: i32, channel: i16) -> u32 {
-        self.plugin.keyswitch_count(bus_index, channel)
+    pub fn keyswitch_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+        self.plugin.keyswitch_count(main, bus_index, channel)
     }
 
     /// Descriptor for the key switch at `index` on the given event `bus_index` /
@@ -172,11 +178,12 @@ impl Vst3Loaded {
     /// `IKeyswitchController`.
     pub fn keyswitch_info(
         &self,
+        main: &MainThread,
         bus_index: i32,
         channel: i16,
         index: u32,
     ) -> Option<Vst3KeyswitchInfo> {
-        self.plugin.keyswitch_info(bus_index, channel, index)
+        self.plugin.keyswitch_info(main, bus_index, channel, index)
     }
 
     /// Asks the plugin (via `IRemapParamID`) for the parameter ID in *this*
@@ -194,12 +201,12 @@ impl Vst3Loaded {
     /// main/UI thread.
     pub fn remap_param_id(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         plugin_to_replace_uid: &[i8; 16],
         old_param_id: ParamId,
     ) -> Option<ParamId> {
         self.plugin
-            .compatible_param_id(plugin_to_replace_uid, old_param_id.get())
+            .compatible_param_id(main, plugin_to_replace_uid, old_param_id.get())
             .map(ParamId::new)
     }
 
@@ -212,12 +219,12 @@ impl Vst3Loaded {
     /// uses for it, without hard-coding parameter indices. Main/UI thread.
     pub fn param_id_for_function_name(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         unit_id: i32,
         function_name: &str,
     ) -> Option<ParamId> {
         self.plugin
-            .param_id_for_function_name(unit_id, function_name)
+            .param_id_for_function_name(main, unit_id, function_name)
             .map(ParamId::new)
     }
 
@@ -232,11 +239,11 @@ impl Vst3Loaded {
     /// physical control is wired to. Main/UI thread.
     pub fn physical_ui_mapping(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         bus_index: i32,
         channel: i16,
     ) -> Vec<(u32, u32)> {
-        self.plugin.physical_ui_mapping(bus_index, channel)
+        self.plugin.physical_ui_mapping(main, bus_index, channel)
     }
 
     /// Export the plugin's parameter remote-control layout as XML, for the
@@ -248,13 +255,14 @@ impl Vst3Loaded {
     /// Main/UI thread.
     pub fn xml_representation(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         vendor: &str,
         name: &str,
         version: &str,
         host: &str,
     ) -> Option<String> {
-        self.plugin.xml_representation(vendor, name, version, host)
+        self.plugin
+            .xml_representation(main, vendor, name, version, host)
     }
 
     /// Tells the plugin the host's current automation read/write mode via
@@ -264,9 +272,9 @@ impl Vst3Loaded {
     /// (e.g. snapping a knob to the automation lane while reading). No-op if the
     /// plugin doesn't implement `IAutomationState`. Returns `true` if the call
     /// was delivered. Must run on the main/UI thread.
-    pub fn apply_automation_state(&mut self, _main: &MainThread, mode: AutomationMode) -> bool {
+    pub fn apply_automation_state(&mut self, main: &MainThread, mode: AutomationMode) -> bool {
         self.plugin
-            .set_automation_state(tutti_vst3_ffi::automation_state::from_mode(mode))
+            .set_automation_state(main, tutti_vst3_ffi::automation_state::from_mode(mode))
     }
 }
 

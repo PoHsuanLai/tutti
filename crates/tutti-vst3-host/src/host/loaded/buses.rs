@@ -26,9 +26,9 @@ impl Vst3Loaded {
     /// Queries the plugin's offline/prefetch processing support via
     /// `IPrefetchableSupport`. `None` if the plugin doesn't implement the
     /// interface. Main/UI thread.
-    pub fn prefetchable_support(&self, _main: &MainThread) -> Option<PrefetchSupport> {
+    pub fn prefetchable_support(&self, main: &MainThread) -> Option<PrefetchSupport> {
         self.plugin
-            .prefetchable_support()
+            .prefetchable_support(main)
             .map(PrefetchSupport::from_raw)
     }
 
@@ -40,13 +40,13 @@ impl Vst3Loaded {
     /// interface. Main/UI thread.
     pub fn set_audio_presentation_latency(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         dir: i32,
         bus_index: i32,
         latency_samples: u32,
     ) -> bool {
         self.plugin
-            .set_audio_presentation_latency(dir, bus_index, latency_samples)
+            .set_audio_presentation_latency(main, dir, bus_index, latency_samples)
     }
 
     /// Re-query bus counts, the MIDI buses and the 64-bit answer from the
@@ -58,8 +58,11 @@ impl Vst3Loaded {
     /// deactivate/reactivate cycle. Deliberately not public:
     /// on a live instance this must never be reached on its own, or the
     /// re-enumeration runs mid-activation.
-    pub(crate) fn reconcile_bus_counts(&mut self) {
-        if let Some(layout) = self.plugin.audio_bus_channel_count(BusDirection::Input) {
+    pub(crate) fn reconcile_bus_counts(&mut self, main: &MainThread) {
+        if let Some(layout) = self
+            .plugin
+            .audio_bus_channel_count(main, BusDirection::Input)
+        {
             // `PluginInfo` carries raw usize channel counts; take the count at
             // this boundary.
             let ch = layout.count() as usize;
@@ -67,7 +70,10 @@ impl Vst3Loaded {
                 self.info = self.info.clone().audio_io(ch, self.info.num_outputs);
             }
         }
-        if let Some(layout) = self.plugin.audio_bus_channel_count(BusDirection::Output) {
+        if let Some(layout) = self
+            .plugin
+            .audio_bus_channel_count(main, BusDirection::Output)
+        {
             let ch = layout.count() as usize;
             if ch != self.info.num_outputs {
                 self.info = self.info.clone().audio_io(self.info.num_inputs, ch);
@@ -76,8 +82,8 @@ impl Vst3Loaded {
         // Re-enumerate the full per-bus layout — `initialize` may have changed
         // bus counts, and aux/sidechain buses are only visible post-init on
         // some plugins.
-        let input_bus_channels = self.plugin.audio_bus_channels(BusDirection::Input);
-        let output_bus_channels = self.plugin.audio_bus_channels(BusDirection::Output);
+        let input_bus_channels = self.plugin.audio_bus_channels(main, BusDirection::Input);
+        let output_bus_channels = self.plugin.audio_bus_channels(main, BusDirection::Output);
         self.info = self
             .info
             .clone()
@@ -88,10 +94,13 @@ impl Vst3Loaded {
         // pre-init query in `build_plugin_info` always sees zero. Without this,
         // every instrument reports `has_midi_input == false` and a host that
         // gates MIDI delivery on it never sends the plugin a single note.
-        let receives_midi = self.plugin.bus_count(MediaType::Event, BusDirection::Input) > 0;
+        let receives_midi = self
+            .plugin
+            .bus_count(main, MediaType::Event, BusDirection::Input)
+            > 0;
         let emits_midi = self
             .plugin
-            .bus_count(MediaType::Event, BusDirection::Output)
+            .bus_count(main, MediaType::Event, BusDirection::Output)
             > 0;
         self.info = self
             .info
@@ -100,7 +109,7 @@ impl Vst3Loaded {
             .midi_output(emits_midi);
         // `canProcessSampleSize` is `[UI-thread & (Initialized | Connected)]`,
         // and a plugin may settle its answer in `initialize`.
-        let supports_f64 = self.plugin.can_process_f64();
+        let supports_f64 = self.plugin.can_process_f64(main);
         self.info = self.info.clone().f64_support(supports_f64);
     }
 
@@ -110,8 +119,8 @@ impl Vst3Loaded {
     /// Two named methods rather than one taking a direction, so a caller does
     /// not need the crate's private `kInput`/`kOutput` constants and cannot
     /// pass an `i32` that is neither.
-    pub fn input_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
-        self.bus_topologies(BusDirection::Input)
+    pub fn input_bus_topologies(&self, main: &MainThread) -> Vec<Option<ChannelTopology>> {
+        self.bus_topologies(main, BusDirection::Input)
     }
 
     /// The channel topology of each **output** bus.
@@ -122,13 +131,17 @@ impl Vst3Loaded {
     /// vocabulary cannot, or when the query failed: both mean "cannot route
     /// this bus by speaker". A bus whose arrangement is fully named yields
     /// `Some`, and its width always equals the count reported beside it.
-    pub fn output_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
-        self.bus_topologies(BusDirection::Output)
+    pub fn output_bus_topologies(&self, main: &MainThread) -> Vec<Option<ChannelTopology>> {
+        self.bus_topologies(main, BusDirection::Output)
     }
 
-    pub(super) fn bus_topologies(&self, direction: BusDirection) -> Vec<Option<ChannelTopology>> {
-        let widths = self.plugin.audio_bus_channels(direction);
-        self.read_back_arrangements(direction, widths.len())
+    pub(super) fn bus_topologies(
+        &self,
+        main: &MainThread,
+        direction: BusDirection,
+    ) -> Vec<Option<ChannelTopology>> {
+        let widths = self.plugin.audio_bus_channels(main, direction);
+        self.read_back_arrangements(main, direction, widths.len())
             .into_iter()
             .zip(widths)
             .map(|(topology, width)| usable_topology(topology, width))
@@ -143,14 +156,17 @@ impl Vst3Loaded {
     /// mask carries *which speaker each channel is*, which a popcount discards.
     pub(in crate::host) fn read_back_arrangements(
         &self,
+        main: &MainThread,
         direction: BusDirection,
         num_buses: usize,
     ) -> Vec<ChannelTopology> {
         (0..num_buses)
-            .map(|i| match self.plugin.bus_arrangement(direction, i as i32) {
-                Ok(arr) => crate::host::speakers::from_arrangement(arr),
-                Err(_) => ChannelTopology::new([]),
-            })
+            .map(
+                |i| match self.plugin.bus_arrangement(main, direction, i as i32) {
+                    Ok(arr) => crate::host::speakers::from_arrangement(arr),
+                    Err(_) => ChannelTopology::new([]),
+                },
+            )
             .collect()
     }
 }

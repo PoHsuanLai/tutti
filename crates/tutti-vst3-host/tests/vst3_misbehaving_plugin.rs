@@ -238,7 +238,7 @@ fn refused_activation_is_an_error_not_a_silent_success() {
     let _m = Misbehaviour::set(misbehave::SET_ACTIVE_FAILS);
     let path = probe_path();
 
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new())
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
         .expect("loading must still succeed — only activation is refused");
     let result = loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK);
 
@@ -260,15 +260,15 @@ fn a_refused_activation_leaves_the_plugin_loadable_again() {
     {
         let _m = Misbehaviour::set(misbehave::SET_ACTIVE_FAILS);
         let path = probe_path();
-        let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         assert!(loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK).is_err());
     } // misbehaviour restored here
 
     // A well-behaved load must work immediately afterwards.
     let _m = Misbehaviour::behaving();
     let path = probe_path();
-    let loaded =
-        Vst3Loaded::load(&path, LoadOptions::new()).expect("re-load after a refused activation");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
+        .expect("re-load after a refused activation");
     let inst = loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK);
     assert!(
         inst.is_ok(),
@@ -291,7 +291,7 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
     let _m = Misbehaviour::set(misbehave::LATENCY_LIES);
     let path = probe_path();
 
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
     let mut inst = loaded
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("a plugin that merely lies about latency still activates");
@@ -336,7 +336,7 @@ fn an_overreported_bus_count_does_not_run_the_host_off_the_end() {
     let _m = Misbehaviour::set(misbehave::EXTRA_BUSES);
     let path = probe_path();
 
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
     let info = loaded.plugin_info().clone();
 
     // Confirm the lie reached the host — otherwise this test is vacuous.
@@ -398,7 +398,7 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
     // like every load in this file.
     let baseline_main_in = {
         let _m = Misbehaviour::behaving();
-        let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         let info = loaded.plugin_info().clone();
         info.input_bus_channels
             .first()
@@ -412,8 +412,8 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
     );
 
     let _m = Misbehaviour::set(misbehave::ARRANGEMENT_REFUSED);
-    let loaded =
-        Vst3Loaded::load(&path, LoadOptions::new()).expect("a refusal must not fail the load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
+        .expect("a refusal must not fail the load");
     let mut inst = loaded
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("a refusal is not an error; the plugin must still activate");
@@ -467,7 +467,7 @@ fn a_failing_process_call_is_contained() {
     // silent to begin with.
     let behaving = {
         let _m = Misbehaviour::behaving();
-        let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         let mut inst = loaded
             .activate_at::<f32>(SAMPLE_RATE, BLOCK)
             .expect("activate");
@@ -480,7 +480,7 @@ fn a_failing_process_call_is_contained() {
     );
 
     let _m = Misbehaviour::set(misbehave::PROCESS_FAILS);
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
     let mut inst = loaded
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("activation is unaffected by a failing process");
@@ -525,7 +525,7 @@ fn a_plugin_that_writes_nothing_does_not_leak_previous_audio() {
     // non-silent is what keeps the comparison below meaningful.
     let tagged = {
         let _m = Misbehaviour::behaving();
-        let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         let mut inst = loaded
             .activate_at::<f32>(SAMPLE_RATE, BLOCK)
             .expect("activate");
@@ -539,7 +539,7 @@ fn a_plugin_that_writes_nothing_does_not_leak_previous_audio() {
     // Now the same host with a plugin that returns success without touching the
     // output at all.
     let _m = Misbehaviour::set(misbehave::PROCESS_WRITES_NOTHING);
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
     let mut inst = loaded
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("a plugin that writes nothing still activates");
@@ -578,7 +578,7 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
     // no state — and the test would pass either way.
     let behaving_len = {
         let _m = Misbehaviour::behaving();
-        let mut loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let mut loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         loaded
             .get_state()
             .expect("the behaving probe must be able to save state")
@@ -591,7 +591,7 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
     );
 
     let _m = Misbehaviour::set(misbehave::STATE_FAILS);
-    let mut loaded = Vst3Loaded::load(&path, LoadOptions::new())
+    let mut loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
         .expect("a failing getState must not prevent loading");
 
     // The discriminating assertion: `getState` returned `kResultFalse`, so the
@@ -652,7 +652,7 @@ fn a_refused_setup_is_tolerated_by_design() {
     // honest, since a refused setup leaves no directly observable trace.
     {
         let _m = Misbehaviour::set(misbehave::SET_ACTIVE_FAILS);
-        let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         assert!(
             loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK).is_err(),
             "the misbehaviour switch is not reaching the plugin, so this test's \
@@ -661,7 +661,7 @@ fn a_refused_setup_is_tolerated_by_design() {
     }
 
     let _m = Misbehaviour::set(misbehave::SETUP_FAILS);
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
     let activated = loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK);
 
     assert!(
@@ -701,13 +701,13 @@ fn the_misbehaviour_switch_reaches_the_plugin() {
 
     let honest = {
         let _m = Misbehaviour::behaving();
-        let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         loaded.latency_samples(&main_thread())
     };
 
     let lying = {
         let _m = Misbehaviour::set(misbehave::LATENCY_LIES);
-        let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
         loaded.latency_samples(&main_thread())
     };
 
@@ -737,7 +737,7 @@ fn a_plugin_that_answers_64_bit_only_once_initialized_loads_as_64_bit() {
     let path = probe_path();
     let _m = Misbehaviour::set(misbehave::SAMPLE64_AFTER_INIT);
 
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
     assert!(
         loaded.plugin_info().supports_f64,
         "the 64-bit answer was read before `initialize`, where the probe says no"
@@ -757,7 +757,7 @@ fn a_plugin_that_answers_64_bit_only_once_initialized_loads_as_64_bit() {
 #[test]
 fn a_probe_does_not_ask_an_uninitialized_component_for_its_buses() {
     let path = probe_path();
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
     assert!(
         loaded.plugin_info().num_outputs > 0,
         "the load reads the buses"
@@ -805,7 +805,7 @@ fn a_stateless_plugin_does_not_fail_the_state_roundtrip() {
     let _m = Misbehaviour::set(misbehave::STATE_NOT_IMPLEMENTED);
     let path = probe_path();
 
-    let mut loaded = Vst3Loaded::load(&path, LoadOptions::new())
+    let mut loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
         .expect("a plugin that does not implement state must still load");
 
     let saved = loaded.get_state();
@@ -843,7 +843,7 @@ fn a_refused_initialize_is_an_error_not_a_silent_success() {
     let _m = Misbehaviour::set(misbehave::INITIALIZE_FAILS);
     let path = probe_path();
 
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new());
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new());
     assert!(
         loaded.is_err(),
         "IComponent::initialize returned kResultFalse — a refusal — but the \
@@ -868,7 +868,7 @@ fn a_refused_connection_does_not_fail_the_load() {
     let _m = Misbehaviour::set(misbehave::CONTROLLER_CONNECT_FAILS);
     let path = probe_path();
 
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new());
+    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new());
     assert!(
         loaded.is_ok(),
         "the controller refused its half of the connection, which is legal — \

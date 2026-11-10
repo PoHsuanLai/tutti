@@ -274,8 +274,8 @@ fn both_focus_transitions_are_delivered() {
     let (view, log) = view_answering(kResultOk);
     let ptr = view.as_com_ref::<IPlugView>().unwrap().to_com_ptr();
 
-    set_view_focus(&ptr, true);
-    set_view_focus(&ptr, false);
+    set_view_focus(&main_thread(), &ptr, true);
+    set_view_focus(&main_thread(), &ptr, false);
 
     assert_eq!(
         recorded(&log),

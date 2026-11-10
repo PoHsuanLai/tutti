@@ -44,18 +44,16 @@ fn engine(
     let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     ed.insert(NodeKey(1), "dc", tutti_graph::Unforkable(Dc(level)));
-    ed.spec_mut().topology.outputs = (0..outputs)
-        .map(|c| {
-            if channel.is_none_or(|only| only == c) {
-                Source::Node(OutPort {
-                    node: NodeKey(1),
-                    port: 0,
-                })
-            } else {
-                Source::Zero
-            }
-        })
-        .collect();
+    ed.spec_mut().topology.set_outputs((0..outputs).map(|c| {
+        if channel.is_none_or(|only| only == c) {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port: 0,
+            })
+        } else {
+            Source::Zero
+        }
+    }));
     let meter = ed
         .open_meter(MeterId(1), MeterSpec::Outputs)
         .expect("the sources exist");
@@ -193,10 +191,12 @@ fn the_master_reads_before_the_declick() {
     let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     ed.insert(NodeKey(1), "dc", tutti_graph::Unforkable(Dc(0.5)));
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(1),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })]);
     let mut meter = ed
         .open_meter(MeterId(1), MeterSpec::Outputs)
         .expect("the sources exist");
@@ -266,18 +266,16 @@ fn a_block_longer_than_the_capacity_is_measured_whole() {
         "step",
         tutti_graph::Unforkable(Step { loud: 100, at: 0 }),
     );
-    ed.spec_mut().topology.outputs = (0..6)
-        .map(|c| {
-            if c == 2 {
-                Source::Node(OutPort {
-                    node: NodeKey(1),
-                    port: 0,
-                })
-            } else {
-                Source::Zero
-            }
-        })
-        .collect();
+    ed.spec_mut().topology.set_outputs((0..6).map(|c| {
+        if c == 2 {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port: 0,
+            })
+        } else {
+            Source::Zero
+        }
+    }));
     let mut meter = ed
         .open_meter(MeterId(1), MeterSpec::Outputs)
         .expect("the sources exist");

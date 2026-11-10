@@ -55,10 +55,10 @@ const WORKERS: [usize; 4] = [1, 2, 4, 8];
 fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey) {
     ed.spec_mut().topology.edges.insert(
         InPort { node, port },
-        Edge::Direct(Source::Node(OutPort {
+        vec![Edge::Direct(Source::Node(OutPort {
             node: from,
             port: 0,
-        })),
+        }))],
     );
 }
 
@@ -97,7 +97,9 @@ fn wide(lanes: usize, depth: usize, workers: usize) -> Executor {
         }
         wire(&mut ed, sum, lane as u16, last);
     }
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: sum, port: 0 })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: sum, port: 0 })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -166,13 +168,15 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
     for lane in 0..lanes {
         let k = NodeKey(lane as u64 + 1);
         gain(&mut ed, k, lane, light);
-        ed.spec_mut()
-            .topology
-            .edges
-            .insert(InPort { node: k, port: 0 }, Edge::Direct(Source::Global(0)));
+        ed.spec_mut().topology.edges.insert(
+            InPort { node: k, port: 0 },
+            vec![Edge::Direct(Source::Global(0))],
+        );
         wire(&mut ed, sum, lane as u16, k);
     }
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: sum, port: 0 })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: sum, port: 0 })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -232,7 +236,9 @@ fn mixed(lanes: usize, depth: usize, fan: usize, light: bool, workers: usize) ->
         }
         wire(&mut ed, sum, lane as u16, lane_sum);
     }
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: sum, port: 0 })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: sum, port: 0 })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

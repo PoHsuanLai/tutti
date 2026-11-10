@@ -90,16 +90,18 @@ fn graph(plugin: Plugin) -> (Editor, Executor) {
     );
     let t = &mut ed.spec_mut().topology;
     for k in [PLUGIN, DRY] {
-        t.edges
-            .insert(InPort { node: k, port: 0 }, Edge::Direct(Source::Global(0)));
+        t.edges.insert(
+            InPort { node: k, port: 0 },
+            vec![Edge::Direct(Source::Global(0))],
+        );
     }
-    t.outputs = vec![
+    t.set_outputs(vec![
         Source::Node(OutPort {
             node: PLUGIN,
             port: 0,
         }),
         Source::Node(OutPort { node: DRY, port: 0 }),
-    ];
+    ]);
     (ed, exec)
 }
 

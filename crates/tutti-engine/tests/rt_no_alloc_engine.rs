@@ -97,14 +97,12 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         tutti_types::Samples(512),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
@@ -194,14 +192,12 @@ fn a_published_tempo_map_is_taken_without_allocating() {
         tutti_types::Samples(512),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let mut output = vec![0.0f32; 1024 * 2];
@@ -273,14 +269,12 @@ fn a_step_map_is_followed_without_allocating() {
         tutti_types::Samples(512),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport.settings.set_tempo_map(dense(90.0));
@@ -339,14 +333,12 @@ fn a_step_map_is_followed_without_allocating() {
         tutti_types::Samples(4_096),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport
@@ -412,14 +404,12 @@ fn the_master_meter_is_allocation_free() {
             tutti_types::Samples(512),
         ));
         ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
-        ed.spec_mut().topology.outputs = (0..2)
-            .map(|port| {
-                Source::Node(OutPort {
-                    node: NodeKey(1),
-                    port,
-                })
+        ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
             })
-            .collect();
+        }));
         let mut meter = ed
             .open_meter(MeterId(1), MeterSpec::Outputs)
             .expect("the sources exist");
@@ -467,14 +457,12 @@ fn the_heard_tap_is_allocation_free() {
         tutti_types::Samples(512),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..2).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let _ = transport.motion.try_send(MotionEvent::Play);
@@ -576,10 +564,11 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     ed.insert(clock, "clock", Unforkable(BeatWalk));
     let _ = ed.insert(sink, "click", click);
     let topology = &mut ed.spec_mut().topology;
-    topology.outputs = [(sink, 0), (sink, 1), (clock, 0), (clock, 1)]
-        .into_iter()
-        .map(|(node, port)| Source::Node(OutPort { node, port }))
-        .collect();
+    topology.set_outputs(
+        [(sink, 0), (sink, 1), (clock, 0), (clock, 1)]
+            .into_iter()
+            .map(|(node, port)| Source::Node(OutPort { node, port })),
+    );
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
@@ -690,20 +679,22 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
                 node: NodeKey(k + 11),
                 port: 0,
             },
-            Edge::Direct(Source::Node(OutPort {
+            vec![Edge::Direct(Source::Node(OutPort {
                 node: NodeKey(k + 1),
                 port: 0,
-            })),
+            }))],
         );
     }
-    ed.spec_mut().topology.outputs = [11, 12]
-        .map(|k| {
-            Source::Node(OutPort {
-                node: NodeKey(k),
-                port: 0,
+    ed.spec_mut().topology.set_outputs(
+        [11, 12]
+            .map(|k| {
+                Source::Node(OutPort {
+                    node: NodeKey(k),
+                    port: 0,
+                })
             })
-        })
-        .to_vec();
+            .to_vec(),
+    );
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

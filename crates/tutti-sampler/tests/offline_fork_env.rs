@@ -58,14 +58,12 @@ fn prepare() -> Prepare {
 fn graph<N: IntoNode>(node: N, width: u16) -> (Editor, Executor, N::Controls) {
     let (mut ed, mut exec) = Editor::new(prepare());
     let controls = ed.insert(NodeKey(1), "under test", node);
-    ed.spec_mut().topology.outputs = (0..width)
-        .map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
+    ed.spec_mut().topology.set_outputs((0..width).map(|port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -253,15 +251,17 @@ fn a_voice_behind_another_node_is_forked_too() {
             node: NodeKey(2),
             port: 0,
         },
-        tutti_graph::Edge::Direct(Source::Node(OutPort {
+        vec![tutti_graph::Edge::Direct(Source::Node(OutPort {
             node: NodeKey(1),
             port: 0,
-        })),
+        }))],
     );
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(2),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(2),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

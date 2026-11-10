@@ -100,9 +100,9 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
             port: 0,
         }),
     );
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: SYNTH, port }))
-        .collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: SYNTH, port })));
     ed.commit().expect("commits");
     if let Some(d) = drive {
         let at = ParamIn {

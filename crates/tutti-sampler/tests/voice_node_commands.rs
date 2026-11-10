@@ -81,10 +81,12 @@ fn peak(node: &mut dyn tutti_graph::Node, beat: f64) -> f32 {
 fn graph_with(node: VoiceNode) -> (Editor, Executor, tutti_sampler::VoiceNodeHandle) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(RATE, Samples(256)));
     let handle = ed.insert(NodeKey(1), "voice", node);
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(1),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

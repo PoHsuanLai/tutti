@@ -162,7 +162,9 @@ fn graph(to: &[(UnitAddr, f32)]) -> (Editor, tutti_graph::Executor, ParamSet) {
         "steps",
         tutti_graph::ForkByClone(Steps { to: to.to_vec() }),
     );
-    ed.spec_mut().topology.outputs = vec![out(BANDS, 0), out(BANDS, 1)];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![out(BANDS, 0), out(BANDS, 1)]);
     (ed, exec, controls)
 }
 
@@ -439,7 +441,9 @@ fn a_node_declares_up_to_the_cap_and_no_more() {
             to: vec![(last, -7.0)],
         }),
     );
-    ed.spec_mut().topology.outputs = vec![out(BANDS, 0), out(BANDS, 1)];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![out(BANDS, 0), out(BANDS, 1)]);
     ed.spec_mut().connect_param(param(last), src_out());
     ed.commit().expect("commits");
     exec.apply_pending();

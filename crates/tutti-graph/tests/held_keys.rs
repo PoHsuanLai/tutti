@@ -215,12 +215,12 @@ impl Rig {
                             node: NodeKey(s),
                             port: 0,
                         },
-                        tutti_graph::Edge::Direct(tutti_graph::Source::Node(
+                        vec![tutti_graph::Edge::Direct(tutti_graph::Source::Node(
                             tutti_graph::OutPort {
                                 node: NodeKey(LAG),
                                 port: 0,
                             },
-                        )),
+                        ))],
                     );
                 }
             }
@@ -300,12 +300,12 @@ impl Rig {
                                 node: NodeKey(s),
                                 port: 0,
                             },
-                            tutti_graph::Edge::Direct(tutti_graph::Source::Node(
+                            vec![tutti_graph::Edge::Direct(tutti_graph::Source::Node(
                                 tutti_graph::OutPort {
                                     node: NodeKey(LAG),
                                     port: 0,
                                 },
-                            )),
+                            ))],
                         );
                     }
                 }
@@ -1549,10 +1549,12 @@ fn forked(log: &Log, blocks: usize, mid_note: bool) -> (Editor, Executor) {
     ed.insert(NodeKey(2), "hear", ForkByClone(Hear(log.clone(), 2)));
     ed.spec_mut()
         .connect_events(at(2), EventEdge::Direct(out(1)));
-    ed.spec_mut().topology.outputs = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
-        node: NodeKey(2),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![tutti_graph::Source::Node(tutti_graph::OutPort {
+            node: NodeKey(2),
+            port: 0,
+        })]);
     ed.commit().unwrap();
     exec.apply_pending();
     ed.collect();

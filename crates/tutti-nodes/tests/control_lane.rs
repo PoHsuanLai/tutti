@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use tutti_curve::{AutomationEnvelope, AutomationPoint};
+use tutti_curve::{Breakpoint, Trajectory};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
@@ -321,11 +321,11 @@ fn program(automation: Option<Arc<dyn Curve>>, layers: Vec<Layer>) -> ControlPro
     ControlProgram::new(automation, layers, vec![]).expect("a valid program")
 }
 
-/// A linear envelope through `points` (beat, value).
-fn envelope(points: &[(f64, f32)]) -> AutomationEnvelope {
-    let mut e = AutomationEnvelope::new();
+/// A linear trajectory through `points` (beat, value).
+fn trajectory(points: &[(f64, f32)]) -> Trajectory {
+    let mut e = Trajectory::new();
     for &(b, v) in points {
-        e.add_point(AutomationPoint::new(Beat(b), v));
+        e.add_breakpoint(Breakpoint::new(Beat(b), v));
     }
     e
 }
@@ -370,7 +370,7 @@ fn triangle(cycles: f64) -> f64 {
 fn automation_replaces_the_knob_and_the_clamp_is_per_frame() {
     // Knob 1000, automation 500.
     let (mut ed, mut exec) = probes(128, &[2], (0.0, 2000.0));
-    let flat: Arc<dyn Curve> = Arc::new(envelope(&[(0.0, 500.0)]));
+    let flat: Arc<dyn Curve> = Arc::new(trajectory(&[(0.0, 500.0)]));
     let lane = native(
         &ed,
         2,
@@ -410,7 +410,7 @@ fn automation_replaces_the_knob_and_the_clamp_is_per_frame() {
 
     // A clamped ramp, native and plugin.
     const BOUND: f32 = 5.0625;
-    let ramp = || -> Arc<dyn Curve> { Arc::new(envelope(&[(0.0, 0.0), (1.0, 10.0)])) };
+    let ramp = || -> Arc<dyn Curve> { Arc::new(trajectory(&[(0.0, 0.0), (1.0, 10.0)])) };
     let (mut ed, mut exec) = probes(128, &[2], (0.0, BOUND));
     let lane = native(&ed, 2, program(Some(ramp()), vec![]), Some(0.0));
     wire(&mut ed, 1, lane, 2);
@@ -456,19 +456,15 @@ fn an_export_is_the_live_render_bit_for_bit() {
         let shaped: Arc<dyn Curve> = {
             // A range cutting into the 1500 breakpoint bends its two pieces, which
             // go as grid pieces beside the exact ones.
-            let mut e = AutomationEnvelope::new().with_range(0.0, 1200.0);
-            e.add_point(AutomationPoint::with_curve(
-                Beat(0.0),
-                300.0,
-                Law::PowerIn(2.0),
-            ));
-            e.add_point(AutomationPoint::with_curve(
+            let mut e = Trajectory::new().with_range(0.0, 1200.0);
+            e.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 300.0, Law::PowerIn(2.0)));
+            e.add_breakpoint(Breakpoint::with_curve(
                 Beat(0.37),
                 1500.0,
                 Law::PowerInOut(2.0),
             ));
-            e.add_point(AutomationPoint::with_curve(Beat(1.1), 900.0, Law::Hold));
-            e.add_point(AutomationPoint::new(Beat(1.9), 600.0));
+            e.add_breakpoint(Breakpoint::with_curve(Beat(1.1), 900.0, Law::Hold));
+            e.add_breakpoint(Breakpoint::new(Beat(1.9), 600.0));
             Arc::new(e)
         };
         let drawn = Wave::Drawn(Arc::from(vec![
@@ -808,18 +804,10 @@ fn a_range_edit_rescales_on_the_next_block() {
 /// exponential piece goes as one `Exponential` segment → fails.
 #[test]
 fn a_plugin_lane_sends_linear_grid_pieces() {
-    let mut e = AutomationEnvelope::new();
-    e.add_point(AutomationPoint::with_curve(
-        Beat(0.0),
-        0.1,
-        Law::PowerIn(2.0),
-    ));
-    e.add_point(AutomationPoint::with_curve(
-        Beat(0.3),
-        0.9,
-        Law::PowerInOut(2.0),
-    ));
-    e.add_point(AutomationPoint::new(Beat(0.6), 0.4));
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 0.1, Law::PowerIn(2.0)));
+    e.add_breakpoint(Breakpoint::with_curve(Beat(0.3), 0.9, Law::PowerInOut(2.0)));
+    e.add_breakpoint(Breakpoint::new(Beat(0.6), 0.4));
     let curve: Arc<dyn Curve> = Arc::new(e);
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(128)));
     let lane = ControlLaneNode::for_foreign(
@@ -1339,7 +1327,7 @@ fn a_lane_fed_fork_reads_its_value_at_frame_0() {
         )
         .expect("forks");
     assert!(controls.set_knob(700.0));
-    let flat: Arc<dyn Curve> = Arc::new(envelope(&[(0.0, 50.0)]));
+    let flat: Arc<dyn Curve> = Arc::new(trajectory(&[(0.0, 50.0)]));
     controls.publish(program(Some(flat), vec![]));
 
     let (mut fhost, mut forked) = (Host::new(), Vec::new());

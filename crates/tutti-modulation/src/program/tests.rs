@@ -2,7 +2,7 @@
 //! figures. Each test carries the mutations it was seen to fail under.
 
 use super::*;
-use tutti_curve::{AutomationEnvelope, AutomationPoint};
+use tutti_curve::{Breakpoint, Trajectory};
 
 const SR: f64 = 48_000.0;
 
@@ -61,11 +61,11 @@ fn program(layers: Vec<Layer>) -> ControlProgram {
     ControlProgram::new(None, layers, vec![]).expect("a valid program")
 }
 
-/// A 500 at beat 0 → 0 at beat 4 envelope.
+/// A 500 at beat 0 → 0 at beat 4 trajectory.
 fn ramp() -> Arc<dyn Curve> {
-    let mut e = AutomationEnvelope::new();
-    e.add_point(AutomationPoint::new(Beat(0.0), 500.0));
-    e.add_point(AutomationPoint::new(Beat(4.0), 0.0));
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::new(Beat(0.0), 500.0));
+    e.add_breakpoint(Breakpoint::new(Beat(4.0), 0.0));
     Arc::new(e)
 }
 
@@ -88,7 +88,7 @@ fn automation_replaces_the_knob() {
         Some(250.0)
     );
     assert_eq!(p.value_at(None, &at_beat(2.0), 100.0, &[]), Some(250.0));
-    let empty: Arc<dyn Curve> = Arc::new(AutomationEnvelope::new());
+    let empty: Arc<dyn Curve> = Arc::new(Trajectory::new());
     let p = ControlProgram::from_curve(empty);
     assert_eq!(
         p.value_at(Some(1000.0), &at_beat(2.0), 100.0, &[]),
@@ -372,9 +372,9 @@ fn the_left_limit_is_the_level_before_a_jump() {
     let before = r.value_before(Some(0.0), &at_beat(3.0), 1.0, &[]);
     assert_eq!(before, r.value_at(Some(0.0), &at_beat(2.5), 1.0, &[]));
     assert_ne!(before, r.value_at(Some(0.0), &at_beat(3.0), 1.0, &[]));
-    let mut e = AutomationEnvelope::new();
-    e.add_point(AutomationPoint::with_curve(Beat(0.0), 100.0, Law::Hold));
-    e.add_point(AutomationPoint::new(Beat(2.0), 300.0));
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 100.0, Law::Hold));
+    e.add_breakpoint(Breakpoint::new(Beat(2.0), 300.0));
     let a = ControlProgram::from_curve(Arc::new(e));
     assert_eq!(a.value_at(None, &at_beat(2.0), 1.0, &[]), Some(300.0));
     assert_eq!(a.value_before(None, &at_beat(2.0), 1.0, &[]), Some(100.0));
@@ -417,8 +417,8 @@ impl Curve for Thawed {
         Some(1.0)
     }
     fn frozen(&self) -> Option<Arc<dyn Curve>> {
-        let mut e = AutomationEnvelope::new();
-        e.add_point(AutomationPoint::new(Beat(0.0), 2.0));
+        let mut e = Trajectory::new();
+        e.add_breakpoint(Breakpoint::new(Beat(0.0), 2.0));
         Some(Arc::new(e))
     }
 }

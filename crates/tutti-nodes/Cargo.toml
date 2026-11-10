@@ -28,7 +28,7 @@ convolution = []
 testing = []
 
 [dependencies]
-# Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
+# Value vocabulary (the `Curve` trait), for `impl Curve for Trajectory`.
 # default-features = false so bevy does not re-leak.
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
@@ -48,7 +48,7 @@ tutti-dsp = { path = "../tutti-dsp", default-features = false }
 # tutti crate but tutti-types, tutti-rt and tutti-ump, so the edge adds no cycle.
 tutti-graph = { path = "../tutti-graph" }
 
-# Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
+# Trajectory primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
 # `tutti_nodes::automation`.
 tutti-curve = { path = "../tutti-curve" }
 

@@ -238,34 +238,16 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use tutti_graph::{EventOut, ParamIn, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
     use tutti_modulation::ControlProgram;
-    use tutti_nodes::automation::{
-        AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, Law,
-    };
+    use tutti_nodes::automation::{Breakpoint, ControlLaneNode, Curve, Law, Trajectory};
     use tutti_types::{Beat, Hz, ParamKey, Samples, UnitParam};
-    let mut shaped = AutomationEnvelope::new();
-    shaped.add_point(AutomationPoint::with_curve(
-        Beat(0.0),
-        0.0,
-        Law::PowerIn(2.0),
-    ));
-    shaped.add_point(AutomationPoint::with_curve(
-        Beat(0.25),
-        1.0,
-        Law::PowerOut(3.0),
-    ));
-    shaped.add_point(AutomationPoint::with_curve(
-        Beat(0.4),
-        0.2,
-        Law::PowerInOut(2.0),
-    ));
-    shaped.add_point(AutomationPoint::new(Beat(0.55), 0.9));
-    let mut clamped = AutomationEnvelope::new().with_range(0.0, 0.5);
-    clamped.add_point(AutomationPoint::with_curve(
-        Beat(0.1),
-        0.0,
-        Law::PowerIn(2.0),
-    ));
-    clamped.add_point(AutomationPoint::new(Beat(0.45), 1.0));
+    let mut shaped = Trajectory::new();
+    shaped.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 0.0, Law::PowerIn(2.0)));
+    shaped.add_breakpoint(Breakpoint::with_curve(Beat(0.25), 1.0, Law::PowerOut(3.0)));
+    shaped.add_breakpoint(Breakpoint::with_curve(Beat(0.4), 0.2, Law::PowerInOut(2.0)));
+    shaped.add_breakpoint(Breakpoint::new(Beat(0.55), 0.9));
+    let mut clamped = Trajectory::new().with_range(0.0, 0.5);
+    clamped.add_breakpoint(Breakpoint::with_curve(Beat(0.1), 0.0, Law::PowerIn(2.0)));
+    clamped.add_breakpoint(Breakpoint::new(Beat(0.45), 1.0));
     let key = ParamKey::<Hz>::CUTOFF;
     let lane = |curve: Arc<dyn Curve>| {
         ControlLaneNode::for_param(key, ControlProgram::from_curve(curve), None, None)
@@ -490,7 +472,7 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
     use tutti_modulation::{
         Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, PeriodPoint, Polarity, Wave,
     };
-    use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint};
+    use tutti_nodes::automation::{Breakpoint, Trajectory};
     use tutti_types::{Beat, BeatDuration, Depth, Hz, Phase, PhaseIncrement};
     let depth = 0.05 + 0.01 * ((k as u32 + generation) % 7) as f32;
     let amount = Amount {
@@ -545,13 +527,9 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
         ),
         3 => (None, vec![layer(seconds, shape(LfoShape::RandomSmooth))]),
         _ => {
-            let mut e = AutomationEnvelope::new();
-            e.add_point(AutomationPoint::with_curve(
-                Beat(0.0),
-                200.0,
-                Law::PowerIn(2.0),
-            ));
-            e.add_point(AutomationPoint::new(Beat(1.3), 800.0));
+            let mut e = Trajectory::new();
+            e.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 200.0, Law::PowerIn(2.0)));
+            e.add_breakpoint(Breakpoint::new(Beat(1.3), 800.0));
             let curve: Arc<dyn tutti_modulation::Curve> = Arc::new(e);
             (Some(curve), vec![layer(seconds, shape(LfoShape::Sawtooth))])
         }

@@ -34,7 +34,7 @@ use bevy_tutti::modulation::{
 };
 use tutti_graph::ForkByClone;
 use tutti_nodes::ReconcileError;
-use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, RecordMode};
+use tutti_nodes::automation::{Trajectory, Breakpoint, RecordMode};
 use tutti_transport::Transport;
 use tutti_types::{Amplitude, Beat, BeatDuration, Bpm, Depth, Hz, SampleRate, Seconds, UnitParam};
 
@@ -575,7 +575,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
 /// **A take suspends the automation, then restores it.** A cutoff (knob
 /// 300) automated to 800: the automation plays. A touch take opens on the
 /// automation's entity: the knob plays (the gesture drives the param).
-/// The take records 650 and is released: its envelope becomes the
+/// The take records 650 and is released: its trajectory becomes the
 /// automation, and 650 plays.
 ///
 /// Mutations (run), each fails: `Declared::collect` ignoring the take
@@ -589,8 +589,8 @@ fn a_take_suspends_the_automation_then_restores_it() {
     let probe = spawn(&mut app, ProbeUnit::new(300.0));
     master(&mut app, &[probe]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut lane = AutomationEnvelope::new(0.0).with_range(0.0, 1_000.0);
-    lane.add_point(AutomationPoint::new(0.0, 800.0));
+    let mut lane = Trajectory::new(0.0).with_range(0.0, 1_000.0);
+    lane.add_breakpoint(Breakpoint::new(0.0, 800.0));
     let world = app.world_mut();
     world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
     let automation = world.spawn(Automation::new(cutoff, Arc::new(lane))).id();
@@ -625,7 +625,7 @@ fn a_take_suspends_the_automation_then_restores_it() {
     assert_eq!(
         last(&render(&mut side, 512, 128)),
         650.0,
-        "the take's envelope plays"
+        "the take's trajectory plays"
     );
 }
 
@@ -769,7 +769,7 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
     app.world_mut().despawn(second);
     settle(&mut app);
 
-    let curve = || Arc::new(AutomationEnvelope::new(0.0).with_range(0.0, 1_000.0));
+    let curve = || Arc::new(Trajectory::new(0.0).with_range(0.0, 1_000.0));
     let world = app.world_mut();
     world.spawn(Automation::new(cutoff, curve()));
     world.spawn(Automation::new(cutoff, curve()));

@@ -4,7 +4,7 @@
 //!
 //! What is pinned, each with the mutation it was seen to fail under:
 //!
-//! - an envelope with non-linear pieces renders its own value at every
+//! - an trajectory with non-linear pieces renders its own value at every
 //!   frame, not linear pieces between breakpoints, with breakpoints falling
 //!   between frames and ragged blocks;
 //! - a loop wrap, a seek and a tempo change inside a block, and a stop,
@@ -12,13 +12,13 @@
 //! - a piece no segment shape carries goes as linear pieces exact at every
 //!   grid point of the play clock (doc 014 §5.4), whatever the blocks.
 //!
-//! The figures are the envelope's own `value_at` at each frame's beat,
+//! The figures are the trajectory's own `value_at` at each frame's beat,
 //! within a tolerance (the curve's `powf`, `sqrt` and the port's `f32`
 //! progress differ in the last bits).
 
 use std::sync::Arc;
 
-use tutti_curve::{AutomationEnvelope, AutomationPoint, Law};
+use tutti_curve::{Breakpoint, Law, Trajectory};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamIn, Prepare, Shape, Status, Transport,
@@ -129,7 +129,7 @@ fn ragged(total: usize) -> Vec<usize> {
 /// `looping` when set), and checks every frame against `curve` at that
 /// frame's beat. Returns the rendered values.
 fn check_rolling(
-    curve: &AutomationEnvelope,
+    curve: &Trajectory,
     lane: ControlLaneNode,
     blocks: &[usize],
     looping: Option<LoopRange>,
@@ -166,29 +166,17 @@ fn frames_per_beat() -> f64 {
 
 /// Exponential (`t²`), cubic-out, S-curve and linear pieces, the
 /// breakpoints between frames.
-fn shaped() -> AutomationEnvelope {
-    let mut e = AutomationEnvelope::new();
-    e.add_point(AutomationPoint::with_curve(
-        Beat(0.0),
-        0.0,
-        Law::PowerIn(2.0),
-    ));
-    e.add_point(AutomationPoint::with_curve(
-        Beat(0.25),
-        1.0,
-        Law::PowerOut(3.0),
-    ));
-    e.add_point(AutomationPoint::with_curve(
-        Beat(0.4),
-        0.2,
-        Law::PowerInOut(2.0),
-    ));
-    e.add_point(AutomationPoint::with_curve(Beat(0.55), 0.9, Law::Linear));
-    e.add_point(AutomationPoint::new(Beat(0.6), 0.4));
+fn shaped() -> Trajectory {
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 0.0, Law::PowerIn(2.0)));
+    e.add_breakpoint(Breakpoint::with_curve(Beat(0.25), 1.0, Law::PowerOut(3.0)));
+    e.add_breakpoint(Breakpoint::with_curve(Beat(0.4), 0.2, Law::PowerInOut(2.0)));
+    e.add_breakpoint(Breakpoint::with_curve(Beat(0.55), 0.9, Law::Linear));
+    e.add_breakpoint(Breakpoint::new(Beat(0.6), 0.4));
     e
 }
 
-/// An envelope of exponential and other non-linear pieces renders the
+/// A trajectory of exponential and other non-linear pieces renders the
 /// curve at every frame, through breakpoints between frames, under ragged
 /// blocks: where linear pieces and the curve differ (halfway along the
 /// exponential piece, a quarter for a half), the port reads the curve.
@@ -316,13 +304,9 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
 /// differ and frames miss the line.
 #[test]
 fn an_unrepresentable_piece_is_linear_on_the_grid() {
-    let mut curve = AutomationEnvelope::new().with_range(0.0, 0.5);
-    curve.add_point(AutomationPoint::with_curve(
-        Beat(0.0),
-        0.0,
-        Law::PowerIn(2.0),
-    ));
-    curve.add_point(AutomationPoint::new(Beat(0.2), 1.0));
+    let mut curve = Trajectory::new().with_range(0.0, 0.5);
+    curve.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 0.0, Law::PowerIn(2.0)));
+    curve.add_breakpoint(Breakpoint::new(Beat(0.2), 1.0));
     let total = (0.15 * frames_per_beat()) as usize;
     let lane = || automation(curve.clone());
     let a = check_grid(&curve, lane(), &ragged(total), 1e-4);

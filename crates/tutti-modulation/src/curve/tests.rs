@@ -1,27 +1,23 @@
 use super::*;
-use tutti_curve::AutomationPoint;
+use tutti_curve::Breakpoint;
 
-fn envelope() -> AutomationEnvelope {
-    let mut e = AutomationEnvelope::new();
-    e.add_point(AutomationPoint::with_curve(
-        Beat(1.0),
-        0.2,
-        Law::PowerIn(2.0),
-    ));
-    e.add_point(AutomationPoint::with_curve(Beat(2.0), 0.8, Law::Linear));
-    e.add_point(AutomationPoint::new(Beat(3.0), 0.4));
+fn trajectory() -> Trajectory {
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::with_curve(Beat(1.0), 0.2, Law::PowerIn(2.0)));
+    e.add_breakpoint(Breakpoint::with_curve(Beat(2.0), 0.8, Law::Linear));
+    e.add_breakpoint(Breakpoint::new(Beat(3.0), 0.4));
     e
 }
 
-/// An envelope's pieces are its breakpoints: a hold before the first
+/// A trajectory's pieces are its breakpoints: a hold before the first
 /// and from the last, a move between, each agreeing with `value_at`
 /// over its span; a breakpoint starts the piece after it.
 ///
 /// Mutation (run): `partition_point(|p| p.time < b)` (a breakpoint ends
 /// the piece before it) → beat 2.0 reads the exponential piece → fails.
 #[test]
-fn an_envelopes_pieces_are_its_breakpoints() {
-    let e = envelope();
+fn trajectory_pieces_are_its_breakpoints() {
+    let e = trajectory();
     assert_eq!(
         e.segment_at(Beat(0.5)),
         Some(CurveSegment::Hold {
@@ -54,7 +50,7 @@ fn an_envelopes_pieces_are_its_breakpoints() {
     );
 }
 
-/// A piece the envelope's range would bend is no segment: a clamp cutting
+/// A piece the trajectory's range would bend is no segment: a clamp cutting
 /// into its endpoints. A clamp both endpoints stay inside leaves it one.
 ///
 /// Mutation (run): drop the endpoint check (`inside`) → the clamped
@@ -62,13 +58,13 @@ fn an_envelopes_pieces_are_its_breakpoints() {
 #[test]
 fn a_bent_piece_is_no_segment() {
     assert!(
-        envelope()
+        trajectory()
             .with_range(0.0, 0.5)
             .segment_at(Beat(1.5))
             .is_none()
     );
     assert!(
-        envelope()
+        trajectory()
             .with_range(0.0, 1.0)
             .segment_at(Beat(1.5))
             .is_some()

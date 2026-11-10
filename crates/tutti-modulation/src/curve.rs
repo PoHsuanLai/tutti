@@ -1,13 +1,13 @@
 //! [`Curve`] — a value as a pure function of a musical position.
 //!
 //! The rate-agnostic `beat -> value` interface shared by automation and
-//! modulation: an automation envelope is a `Curve`, and so is a
+//! modulation: an automation trajectory is a `Curve`, and so is a
 //! [`ControlProgram`](crate::ControlProgram)'s automation. It lives here rather than in
 //! `tutti-nodes` because modulation depends on it and `tutti-nodes` depends on
-//! this crate. The envelope's impl is here too, so `tutti-curve` stays free of
+//! this crate. The trajectory's impl is here too, so `tutti-curve` stays free of
 //! the trait.
 
-use tutti_curve::{AutomationEnvelope, Law};
+use tutti_curve::{Law, Trajectory};
 use tutti_types::Beat;
 
 /// The piece of a [`Curve`] a beat falls in, between two breakpoints: what a
@@ -43,7 +43,7 @@ pub enum CurveSegment {
 
 /// A value as a pure function of a musical position (`beat -> value`).
 ///
-/// An automation envelope ([`AutomationEnvelope`]) is a
+/// An automation envelope ([`Trajectory`]) is a
 /// curve, as is any host's own. The stored form — breakpoints, a constant, an LFO shape, an expression — is
 /// the implementor's business. Callers supply an already-resolved, already
 /// loop-wrapped [`Beat`]; the curve holds no clock and consults no loop range.
@@ -66,7 +66,7 @@ pub trait Curve: Send + Sync {
     /// `None`, the default, says the curve is immutable once shared — an
     /// envelope, an LFO shape, anything whose `value_at` reads only what it was
     /// built with — so sharing the `Arc` already is the copy. A curve that reads
-    /// state something writes after construction (a live-edited envelope)
+    /// state something writes after construction (a live-edited trajectory)
     /// returns `Some` of a frozen copy, and one that wraps
     /// another curve forwards the question to it.
     fn frozen(&self) -> Option<std::sync::Arc<dyn Curve>> {
@@ -89,18 +89,18 @@ pub trait Curve: Send + Sync {
     }
 }
 
-impl Curve for AutomationEnvelope {
+impl Curve for Trajectory {
     fn value_at(&self, beat: Beat) -> Option<f32> {
-        AutomationEnvelope::value_at(self, beat)
+        Trajectory::value_at(self, beat)
     }
 
-    /// The envelope's breakpoints, each point's `curve` the law of the piece it
+    /// The trajectory's breakpoints, each breakpoint's `curve` the law of the piece it
     /// starts. `None` where it has no value (empty), and for a piece its range
     /// would bend: a range that cuts into a piece's endpoints clamps its
     /// middle, which a law does not carry. (A clamp the endpoints stay inside
     /// never bites: every law stays between its endpoints.)
     fn segment_at(&self, beat: Beat) -> Option<CurveSegment> {
-        let points = self.points();
+        let points = self.breakpoints();
         if points.is_empty() {
             return None;
         }

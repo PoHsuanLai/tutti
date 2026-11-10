@@ -30,7 +30,7 @@ bevy = [
 ]
 
 [dependencies]
-# `Law`, the project's response-curve vocabulary, and the automation envelope
+# `Law`, the project's response-curve vocabulary, and the automation trajectory
 # that is a `Curve`.
 tutti-curve = { path = "../tutti-curve" }
 

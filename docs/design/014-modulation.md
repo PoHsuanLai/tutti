@@ -1131,7 +1131,7 @@ republishes with `automation: None`, so the knob (the gesture) drives the
 param; on release it republishes with the finished envelope. (It is
 an `AutomationTake` component on the `Automation`'s entity, holding a
 `Recorder`; `close_takes`, before the reconcile, swaps a finished take's
-envelope into the `Automation` and removes the take.)
+trajectory into the `Automation` and removes the take.)
 
 ## 9. Plugin delivery: requirements
 
@@ -1935,7 +1935,7 @@ order-dependent sum).
   authored write to a modulated param moves the knob; a held note
   envelope newly routed reads its level at once; a plugin GUI edit
   becomes the knob (the in-process VST2 probe); a take suspends the
-  automation, then its envelope plays; a follower downstream of its
+  automation, then its trajectory plays; a follower downstream of its
   target is refused by route and surfaced once; an entity rebound to a
   node with another param list is modulated from the node's first frame;
   a crossfaded plugin keeps its lane. Each records the mutations run

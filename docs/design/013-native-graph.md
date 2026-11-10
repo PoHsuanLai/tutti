@@ -7650,7 +7650,7 @@ the source stands ("Shaped ramps" below).
   the curve has no value it sends nothing and the port holds. At most
   `LANE_EVENT_CAPACITY` (128) sends a block; past that they are dropped and
   counted (fixed, because a node's event capacity is read from its shape at
-  insert, before `prepare`): an envelope denser than about 127 breakpoints
+  insert, before `prepare`): a trajectory denser than about 127 breakpoints
   in a block stays on the last segment that got through until the next
   block re-sends. `AutomationLaneNode::new` keeps its audio output, for anything
   that reads a signal.
@@ -7790,10 +7790,10 @@ ramps, executor against reference bit for bit. `tests/parallel.rs` and
 `tests/rt_no_alloc.rs`: the ramp source there now alternates ramps with
 segments of each shape class, so the parallel renders and the no-alloc
 gate (serial and on a pool) cover them. tutti-modulation: the envelope's pieces
-(`an_envelopes_pieces_are_its_breakpoints`, `a_bent_piece_is_no_segment`).
+(`trajectory_pieces_are_its_breakpoints`, `a_bent_piece_is_no_segment`).
 tutti-nodes `tests/automation_segments.rs`: an exponential, cubic-out,
-S-curve and linear envelope at a tempo whose beats fall between frames,
-against the envelope's own value at every frame under ragged blocks
+S-curve and linear trajectory at a tempo whose beats fall between frames,
+against the trajectory's own value at every frame under ragged blocks
 (and at mid-piece, a quarter for a half: the curve, not a line); loop wraps
 inside blocks, and a seek, tempo change and stop mid-block; the fallback
 for a range-clamped piece and for a curve with no pieces, exact at block edges.

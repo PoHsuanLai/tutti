@@ -4,7 +4,7 @@
 use super::*;
 use crate::LfoShape;
 use crate::shape::shape;
-use tutti_curve::{AutomationEnvelope, AutomationPoint};
+use tutti_curve::{Breakpoint, Trajectory};
 use tutti_types::{Amplitude, Frame, Hz, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -116,11 +116,11 @@ fn time(beat: f64, play: f64, epoch: u32) -> ProgramTime {
     }
 }
 
-/// A frozen envelope: what a host hands as automation.
-fn envelope() -> Arc<dyn Curve> {
-    let mut e = AutomationEnvelope::new();
-    e.add_point(AutomationPoint::new(Beat(0.0), 100.0));
-    e.add_point(AutomationPoint::new(Beat(4.0), 900.0));
+/// A frozen trajectory: what a host hands as automation.
+fn trajectory() -> Arc<dyn Curve> {
+    let mut e = Trajectory::new();
+    e.add_breakpoint(Breakpoint::new(Beat(0.0), 100.0));
+    e.add_breakpoint(Breakpoint::new(Beat(4.0), 900.0));
     Arc::new(e)
 }
 
@@ -165,7 +165,7 @@ impl Rig {
             (
                 target(3),
                 TargetDecl {
-                    automation: Some(envelope()),
+                    automation: Some(trajectory()),
                     ..ranged(20.0, 20_000.0)
                 },
             ),
@@ -887,7 +887,7 @@ fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
         (
             plugin(5, 3),
             TargetDecl {
-                automation: Some(envelope()),
+                automation: Some(trajectory()),
                 ..ranged(0.0, 1.0)
             },
         ),

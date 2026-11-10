@@ -256,7 +256,7 @@ fn unclamped(automation: Option<Arc<dyn Curve>>) -> TargetDecl {
 
 /// A recording take on an automated target (doc 014 §8.2, "Recording").
 /// While it is open the target declares no automation, so its knob (the
-/// gesture) drives it; when it is done, its envelope becomes the target's
+/// gesture) drives it; when it is done, its trajectory becomes the target's
 /// automation.
 ///
 /// It is done once [`close`](Self::close)d, or, in a mode that stops on
@@ -272,7 +272,7 @@ pub struct Take {
 
 impl Take {
     /// A take recording into `recorder` (a fresh one, or
-    /// `Recorder::overdub` over the lane's envelope).
+    /// `Recorder::overdub` over the lane's trajectory).
     #[must_use]
     pub fn new(recorder: Recorder) -> Self {
         Self {
@@ -297,7 +297,7 @@ impl Take {
         &mut self.recorder
     }
 
-    /// Ends the take: on the next modulation phase its envelope becomes the
+    /// Ends the take: on the next modulation phase its trajectory becomes the
     /// automation.
     pub fn close(&mut self) {
         self.closed = true;
@@ -315,7 +315,7 @@ impl Take {
                 && self.recorder.mode().stops_on_release())
     }
 
-    /// The finished envelope, as the automation curve it becomes.
+    /// The finished trajectory, as the automation curve it becomes.
     #[must_use]
     pub fn finish(self) -> Arc<dyn Curve> {
         Arc::new(self.recorder.finish())
@@ -547,7 +547,7 @@ impl OwnMods {
         self.minted
     }
 
-    /// Closes the takes that are done: each one's envelope becomes its
+    /// Closes the takes that are done: each one's trajectory becomes its
     /// target's automation.
     fn close_takes(&mut self) {
         for automation in self.automation.values_mut() {
@@ -832,7 +832,7 @@ impl Mods<'_> {
         self.own.ranges.remove(&target.key()).is_some()
     }
 
-    /// `target` follows `curve` (frozen: an envelope) where it has a value,
+    /// `target` follows `curve` (frozen: a trajectory) where it has a value,
     /// in place of its knob. Replaces the automation it had.
     pub fn automate(&mut self, target: ParamRef, curve: Arc<dyn Curve>) {
         self.own
@@ -846,7 +846,7 @@ impl Mods<'_> {
     }
 
     /// Opens a recording take on `target`'s automation: until it is done
-    /// the knob plays, then its envelope replaces the automation. `false`
+    /// the knob plays, then its trajectory replaces the automation. `false`
     /// (and the take dropped) when `target` has no automation.
     pub fn record(&mut self, target: ParamRef, take: Take) -> bool {
         match self.own.automation.get_mut(&target.key()) {

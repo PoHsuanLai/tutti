@@ -622,7 +622,7 @@ enum Limit {
 /// `curve`'s value at beat `b`, or just before it for [`Limit::Before`].
 ///
 /// A left limit inside a piece the curve can describe is evaluated from
-/// the piece, its position rounded *down* to `f32`: an envelope rounds the
+/// the piece, its position rounded *down* to `f32`: a trajectory rounds the
 /// position up to 1.0 a nanobeat before a breakpoint, which on a stepped
 /// piece reads the level after the step.
 fn automation_at(curve: &dyn Curve, b: f64, limit: Limit) -> Option<f32> {

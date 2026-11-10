@@ -1,6 +1,6 @@
-//! Transport-driven envelope automation.
+//! Transport-driven automation.
 //!
-//! Envelope primitives come from the `tutti_curve` crate, re-exported here
+//! Trajectory primitives come from the `tutti_curve` crate, re-exported here
 //! so consumers need only one import path.
 //!
 //! Two pieces, one domain — the two directions of a [`Curve`]:
@@ -10,7 +10,7 @@
 //!   (automation and modulation) as curve-segment events for a param port
 //!   (a piece's [`Law`] rides in the segment);
 //! - the capture-side [`Recorder`], fed `(beat, value)` samples during a write /
-//!   touch / latch take and handing back an envelope.
+//!   touch / latch take and handing back an trajectory.
 //!
 //! The map from a host's target vocabulary to its recorders stays host-side; the
 //! engine holds no registry and no target trait. See [`Recorder`] for why.
@@ -33,4 +33,4 @@ pub use lane::{AutomationLaneNode, LiveAutomationLane};
 pub use recording::{RecordMode, Recorder, RecordingConfig};
 pub use tutti_modulation::Curve;
 
-pub use tutti_curve::{AutomationEnvelope, AutomationPoint, Law};
+pub use tutti_curve::{Breakpoint, Law, Trajectory};

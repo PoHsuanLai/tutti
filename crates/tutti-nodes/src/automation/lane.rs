@@ -29,7 +29,7 @@ use super::Curve;
 /// into it like any other source's.
 ///
 /// The curve is held behind `Arc<dyn Curve>` so the node stays cheap to clone
-/// and agnostic to how the curve is stored — an [`AutomationEnvelope`], a
+/// and agnostic to how the curve is stored — an [`Trajectory`], a
 /// constant, an LFO shape.
 ///
 /// **Audio, not a param source.** It renders the curve as audio, one value
@@ -46,10 +46,10 @@ use super::Curve;
 /// respawn ([`set_curve`](Self::set_curve) takes `&mut self`). A fork reads
 /// the curve's [`frozen`](Curve::frozen) copy when it has one (a curve that
 /// reads state written after it was built), and shares the `Arc` otherwise
-/// (an envelope, read-only once shared). It is a generator
+/// (an trajectory, read-only once shared). It is a generator
 /// ([`Tail::Unbounded`]), so the executor never skips it.
 ///
-/// [`AutomationEnvelope`]: tutti_curve::AutomationEnvelope
+/// [`Trajectory`]: tutti_curve::Trajectory
 ///
 /// # Example
 ///
@@ -59,14 +59,14 @@ use super::Curve;
 /// ```
 /// use tutti_types::{Beat, Bpm, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo, Transport};
-/// use tutti_nodes::automation::{AutomationEnvelope, AutomationLaneNode, AutomationPoint};
+/// use tutti_nodes::automation::{Trajectory, AutomationLaneNode, Breakpoint};
 ///
-/// let mut envelope: AutomationEnvelope = AutomationEnvelope::new();
-/// envelope.add_point(AutomationPoint::new(Beat(0.0), 0.0));
-/// envelope.add_point(AutomationPoint::new(Beat(4.0), 1.0));
+/// let mut trajectory: Trajectory = Trajectory::new();
+/// trajectory.add_breakpoint(Breakpoint::new(Beat(0.0), 0.0));
+/// trajectory.add_breakpoint(Breakpoint::new(Beat(4.0), 1.0));
 ///
 /// // No inputs, one output (the curve's value).
-/// let lane = AutomationLaneNode::new(envelope);
+/// let lane = AutomationLaneNode::new(trajectory);
 /// let mut solo = Solo::new(lane, Prepare::new(SampleRate(48_000.0), Samples(64)));
 /// solo.renderer_mut()
 ///     .set_transport(Transport::new(false, Bpm::of(120.0), Beat(2.0), None));
@@ -87,7 +87,7 @@ impl std::fmt::Debug for AutomationLaneNode {
 }
 
 /// Another name for [`AutomationLaneNode`], kept for consumers that spell
-/// it this way. The lane is not generic over the envelope's label.
+/// it this way. The lane is not generic over the trajectory's label.
 pub type LiveAutomationLane = AutomationLaneNode;
 
 impl AutomationLaneNode {
@@ -125,7 +125,7 @@ impl AutomationLaneNode {
     /// value.
     ///
     /// Returns `0.0` where the curve has no value — before its first point, or
-    /// on an empty envelope. Use [`update_to`](Self::update_to) to evaluate and
+    /// on an empty trajectory. Use [`update_to`](Self::update_to) to evaluate and
     /// record in one step.
     pub fn value_at(&self, beat: Beat) -> f32 {
         self.curve.value_at(beat).unwrap_or(0.0)
@@ -222,15 +222,15 @@ impl Clone for AutomationLaneNode {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
-    use tutti_curve::{AutomationEnvelope, AutomationPoint};
+    use tutti_curve::{Breakpoint, Trajectory};
     use tutti_graph::{Solo, Transport};
     use tutti_types::{AtomicF32, Bpm, SampleRate, Samples};
 
-    fn ramp_envelope() -> AutomationEnvelope {
-        let mut env: AutomationEnvelope = AutomationEnvelope::new();
-        env.add_point(AutomationPoint::new(Beat(0.0), 0.0));
-        env.add_point(AutomationPoint::new(Beat(4.0), 1.0));
-        env.add_point(AutomationPoint::new(Beat(8.0), 0.5));
+    fn ramp_trajectory() -> Trajectory {
+        let mut env: Trajectory = Trajectory::new();
+        env.add_breakpoint(Breakpoint::new(Beat(0.0), 0.0));
+        env.add_breakpoint(Breakpoint::new(Beat(4.0), 1.0));
+        env.add_breakpoint(Breakpoint::new(Beat(8.0), 0.5));
         env
     }
 
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn declares_no_inputs_and_one_output() {
-        let shape = AutomationLaneNode::new(ramp_envelope()).shape();
+        let shape = AutomationLaneNode::new(ramp_trajectory()).shape();
         assert_eq!(shape.audio_in.count(), 0);
         assert_eq!(shape.audio_out.count(), 1);
         assert_eq!(shape.tail, Tail::Unbounded, "a generator is never skipped");
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_update_tracks_beat_position() {
-        let mut lane = AutomationLaneNode::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_trajectory());
 
         assert!((lane.update_to(Beat(0.0)) - 0.0).abs() < 0.01);
         assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
@@ -268,7 +268,7 @@ mod tests {
     /// behaves identically whether or not a loop produced it.
     #[test]
     fn wrapped_beat_needs_no_loop_handling_in_the_lane() {
-        let mut lane = AutomationLaneNode::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_trajectory());
         // A 4..8 loop wraps beat 10 to beat 6 in the transport.
         let wrapped = lane.update_to(Beat(6.0));
         assert!(
@@ -282,7 +282,7 @@ mod tests {
     fn a_block_reads_the_curve_at_the_transport_beat() {
         let at = |beat| {
             render(
-                AutomationLaneNode::new(ramp_envelope()),
+                AutomationLaneNode::new(ramp_trajectory()),
                 stopped_at(beat),
                 1,
             )[0]
@@ -294,12 +294,12 @@ mod tests {
 
     #[test]
     fn test_set_curve_changes_output() {
-        let mut lane = AutomationLaneNode::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_trajectory());
         assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
 
-        let mut flat: AutomationEnvelope = AutomationEnvelope::new();
-        flat.add_point(AutomationPoint::new(Beat(0.0), 0.9));
-        flat.add_point(AutomationPoint::new(Beat(8.0), 0.9));
+        let mut flat: Trajectory = Trajectory::new();
+        flat.add_breakpoint(Breakpoint::new(Beat(0.0), 0.9));
+        flat.add_breakpoint(Breakpoint::new(Beat(8.0), 0.9));
         lane.set_curve(flat);
 
         assert!((lane.update_to(Beat(2.0)) - 0.9).abs() < 0.01);
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_reset_clears_last_value() {
-        let mut lane = AutomationLaneNode::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_trajectory());
         lane.update_to(Beat(4.0));
         assert!((lane.last_value() - 1.0).abs() < 0.01);
 
@@ -316,11 +316,11 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_envelope_returns_zero() {
-        let empty: AutomationEnvelope = AutomationEnvelope::new();
+    fn test_empty_trajectory_returns_zero() {
+        let empty: Trajectory = Trajectory::new();
         let mut lane = AutomationLaneNode::new(empty);
         assert_eq!(lane.update_to(Beat(5.0)), 0.0);
-        let empty: AutomationEnvelope = AutomationEnvelope::new();
+        let empty: Trajectory = Trajectory::new();
         let out = render(AutomationLaneNode::new(empty), stopped_at(5.0), 1);
         assert_eq!(out[0], 0.0);
     }
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn test_process_fills_block_from_beat_input() {
         let out = render(
-            AutomationLaneNode::new(ramp_envelope()),
+            AutomationLaneNode::new(ramp_trajectory()),
             stopped_at(4.0),
             32,
         );
@@ -347,9 +347,9 @@ mod tests {
     /// fails.
     #[test]
     fn test_process_updates_last_value() {
-        let mut flat: AutomationEnvelope = AutomationEnvelope::new();
-        flat.add_point(AutomationPoint::new(Beat(0.0), 0.5));
-        flat.add_point(AutomationPoint::new(Beat(8.0), 0.5));
+        let mut flat: Trajectory = Trajectory::new();
+        flat.add_breakpoint(Breakpoint::new(Beat(0.0), 0.5));
+        flat.add_breakpoint(Breakpoint::new(Beat(8.0), 0.5));
         let mut d = tutti_graph::contract::Direct::new(
             AutomationLaneNode::new(flat),
             SampleRate(48_000.0),
@@ -374,7 +374,7 @@ mod tests {
     fn test_process_per_sample_varies() {
         // 120 BPM at 48 kHz, rolling from beat 0.
         let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
-        let out = render(AutomationLaneNode::new(ramp_envelope()), rolling, 32);
+        let out = render(AutomationLaneNode::new(ramp_trajectory()), rolling, 32);
 
         assert!((out[0] - 0.0).abs() < 0.001);
         let last = out[31];

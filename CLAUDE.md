@@ -416,7 +416,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  resampler
   tutti-curve    the easing laws and the automation point list: `Law` (`Linear`, `Hold`,
                  `PowerIn(p)`, `PowerOut(p)`, `PowerInOut(p)`, `Exp(k)`; `eval`, `interpolate`),
-                 and the minimal `AutomationEnvelope` / `AutomationPoint` (breakpoints in
+                 and the minimal `Trajectory` / `Breakpoint` (breakpoints in
                  `Beat`, each with its `Law`, read at a beat). Layer 1, depends on
                  `tutti-types` alone; replaced the external `audio-automation`
   tutti-modulation modulation compiler
@@ -1105,7 +1105,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
-  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `AutomationEnvelope` and `AutomationPoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
   a `ControlLaneNode` per param). A comment or doc that disagrees with the
   code is the bug.

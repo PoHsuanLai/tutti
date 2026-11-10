@@ -2,27 +2,27 @@ use tutti_types::Beat;
 
 use crate::Law;
 
-/// A breakpoint of an [`AutomationEnvelope`]: a value at a beat, and the
-/// [`Law`] of the piece that starts there and runs to the next point.
+/// A breakpoint of a [`Trajectory`]: a value at a beat, and the
+/// [`Law`] of the piece that starts there and runs to the next breakpoint.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AutomationPoint {
-    /// Where the point is.
+pub struct Breakpoint {
+    /// Where the breakpoint is.
     pub time: Beat,
-    /// The value there. Unit-erased: the envelope's lane knows its target's
+    /// The value there. Unit-erased: the trajectory's lane knows its target's
     /// unit.
     pub value: f32,
-    /// How the value moves from here to the next point.
+    /// How the value moves from here to the next breakpoint.
     pub curve: Law,
 }
 
-impl AutomationPoint {
-    /// A point whose piece is [`Law::Linear`].
+impl Breakpoint {
+    /// A breakpoint whose piece is [`Law::Linear`].
     #[must_use]
     pub const fn new(time: Beat, value: f32) -> Self {
         Self::with_curve(time, value, Law::Linear)
     }
 
-    /// A point whose piece follows `curve`.
+    /// A breakpoint whose piece follows `curve`.
     #[must_use]
     pub const fn with_curve(time: Beat, value: f32, curve: Law) -> Self {
         Self { time, value, curve }
@@ -32,24 +32,24 @@ impl AutomationPoint {
 /// Breakpoints in time order, read at a beat: the least a lane or a recorder
 /// needs of automation.
 ///
-/// Before the first point and from the last on, the value is that point's.
-/// Between two points it is the first's value moving to the second's along the
-/// first's [`Law`]. An envelope may carry a range its values are clamped to.
-/// It has no value (`None`) while it has no point.
+/// Before the first breakpoint and from the last on, the value is that breakpoint's.
+/// Between two breakpoints it is the first's value moving to the second's along the
+/// first's [`Law`]. A trajectory may carry a range its values are clamped to.
+/// It has no value (`None`) while it has no breakpoint.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AutomationEnvelope {
-    points: Vec<AutomationPoint>,
+pub struct Trajectory {
+    breakpoints: Vec<Breakpoint>,
     range: Option<(f32, f32)>,
 }
 
-impl AutomationEnvelope {
-    /// An empty envelope with no range.
+impl Trajectory {
+    /// An empty trajectory with no range.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The same envelope with every value it reads clamped to `[min, max]`.
+    /// The same trajectory with every value it reads clamped to `[min, max]`.
     #[must_use]
     pub fn with_range(mut self, min: f32, max: f32) -> Self {
         self.range = Some((min, max));
@@ -62,43 +62,43 @@ impl AutomationEnvelope {
         self.range
     }
 
-    /// The points, in time order.
+    /// The breakpoints, in time order.
     #[must_use]
-    pub fn points(&self) -> &[AutomationPoint] {
-        &self.points
+    pub fn breakpoints(&self) -> &[Breakpoint] {
+        &self.breakpoints
     }
 
-    /// How many points there are.
+    /// How many breakpoints there are.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.points.len()
+        self.breakpoints.len()
     }
 
-    /// Whether there is no point.
+    /// Whether there is no breakpoint.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.points.is_empty()
+        self.breakpoints.is_empty()
     }
 
-    /// Inserts `point` in time order; it replaces a point at the same time.
-    pub fn add_point(&mut self, point: AutomationPoint) -> &mut Self {
-        let at = point.time.get();
+    /// Inserts `breakpoint` in time order; it replaces a breakpoint at the same time.
+    pub fn add_breakpoint(&mut self, breakpoint: Breakpoint) -> &mut Self {
+        let at = breakpoint.time.get();
         match self
-            .points
+            .breakpoints
             .binary_search_by(|p| p.time.get().total_cmp(&at))
         {
-            Ok(i) => self.points[i] = point,
-            Err(i) => self.points.insert(i, point),
+            Ok(i) => self.breakpoints[i] = breakpoint,
+            Err(i) => self.breakpoints.insert(i, breakpoint),
         }
         self
     }
 
-    /// The value at `beat`, or `None` for an empty envelope. Allocation-free:
+    /// The value at `beat`, or `None` for an empty trajectory. Allocation-free:
     /// a lane reads it on the audio thread.
     #[must_use]
     #[inline]
     pub fn value_at(&self, beat: Beat) -> Option<f32> {
-        let (first, last) = (self.points.first()?, self.points.last()?);
+        let (first, last) = (self.breakpoints.first()?, self.breakpoints.last()?);
         let time = beat.get();
         if time <= first.time.get() {
             return Some(self.clamped(first.value));
@@ -107,31 +107,35 @@ impl AutomationEnvelope {
             return Some(self.clamped(last.value));
         }
         // `first.time < time < last.time`: the piece is the one before the
-        // first point after `time`; a point exactly at `time` starts its own.
-        let next = self.points.partition_point(|p| p.time.get() <= time);
-        let (p, q) = (self.points[next - 1], self.points[next]);
+        // first breakpoint after `time`; a breakpoint exactly at `time` starts its own.
+        let next = self.breakpoints.partition_point(|p| p.time.get() <= time);
+        let (p, q) = (self.breakpoints[next - 1], self.breakpoints[next]);
         let t = ((time - p.time.get()) / (q.time.get() - p.time.get())) as f32;
         Some(self.clamped(p.curve.interpolate(p.value, q.value, t)))
     }
 
-    /// Drops every point whose value its neighbours' piece already gives to
+    /// Drops every breakpoint whose value its neighbours' piece already gives to
     /// within `tolerance`, in value space; the first and last stay.
     pub fn simplify(&mut self, tolerance: f32) -> &mut Self {
-        if self.points.len() <= 2 {
+        if self.breakpoints.len() <= 2 {
             return self;
         }
-        let last = self.points.len() - 1;
-        let mut kept = vec![self.points[0]];
+        let last = self.breakpoints.len() - 1;
+        let mut kept = vec![self.breakpoints[0]];
         for i in 1..last {
-            let (prev, curr, next) = (self.points[i - 1], self.points[i], self.points[i + 1]);
+            let (prev, curr, next) = (
+                self.breakpoints[i - 1],
+                self.breakpoints[i],
+                self.breakpoints[i + 1],
+            );
             let span = next.time.get() - prev.time.get();
             let t = ((curr.time.get() - prev.time.get()) / span) as f32;
             if (curr.value - prev.curve.interpolate(prev.value, next.value, t)).abs() > tolerance {
                 kept.push(curr);
             }
         }
-        kept.push(self.points[last]);
-        self.points = kept;
+        kept.push(self.breakpoints[last]);
+        self.breakpoints = kept;
         self
     }
 

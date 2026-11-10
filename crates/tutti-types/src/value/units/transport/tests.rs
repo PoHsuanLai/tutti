@@ -195,7 +195,7 @@ fn src_ratio_derives_from_typed_rates() {
         SrcRatio::UNITY
     );
     let r = SrcRatio::for_rates(SampleRate::SR_48K, SampleRate::SR_44K1);
-    assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-6);
+    assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-12);
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn src_ratio_is_exactly_unity_for_matched_rates() {
 #[test]
 fn src_ratio_converts_mismatched_rates() {
     let r = SrcRatio::for_rates(48_000.0, 44_100.0);
-    assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-6);
+    assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-12);
     assert!(
         r > SrcRatio::UNITY,
         "a faster file reads more source samples"
@@ -247,14 +247,14 @@ fn playback_rate_follows_the_non_finite_rule() {
 #[test]
 fn read_rate_composes_varispeed_with_conversion() {
     // Half speed on a 48k file in a 44.1k session: both effects apply once.
-    // Tolerance is f32-scale, not f64: both rates are f32-backed, so the
-    // quotient is rounded once on the way in. Widening to f64 in `read_rate`
-    // keeps the *accumulation* exact (a read position advanced a million
-    // times must not drift), but it cannot recover precision already lost.
+    // Both rates are f64-backed and the quotient is rounded once, so the
+    // composition matches the exact figure to f64 precision (an f32 ratio was
+    // off by ~1e-8 here). Mutation: `for_rates` casting the quotient through
+    // `f32` leaves ~3e-8 of error and fails the 1e-12 bound.
     let rate = PlaybackRate::new(0.5);
     let src = SrcRatio::for_rates(48_000.0, 44_100.0);
     let expected = 0.5 * (48_000.0 / 44_100.0);
-    assert!((rate.read_rate(src).get() - expected).abs() < 1e-6);
+    assert!((rate.read_rate(src).get() - expected).abs() < 1e-12);
 
     // Unity on both sides consumes exactly one source sample per output —
     // this one IS exact, and must stay so: it is the matched-rate path every
@@ -325,4 +325,47 @@ fn stretch_factor_clamps_and_follows_the_non_finite_rule() {
         StretchFactor::new_clamped(f32::NEG_INFINITY),
         StretchFactor::MIN
     );
+}
+
+/// A converted stream's read position must not drift against the timeline:
+/// after one hour of session frames the accumulated file position is
+/// `n * file_rate / session_rate` to a small fraction of a frame. The oracle is
+/// the closed form, not another render.
+///
+/// Mutation: `for_rates` casting its quotient through `f32` puts 48000 -> 44100
+/// ~6 file frames off and 44100 -> 96000 several more, failing both bounds.
+#[test]
+fn a_converted_read_position_does_not_drift_over_an_hour() {
+    for (file, session) in [
+        (48_000.0, 44_100.0),
+        (44_100.0, 48_000.0),
+        (44_100.0, 96_000.0),
+        (96_000.0, 44_100.0),
+    ] {
+        let rate = PlaybackRate::UNITY.read_rate(SrcRatio::for_rates(file, session));
+        let n = (session * 3600.0) as i64;
+        // Block-wise accumulation, as a stream does.
+        let block = 512;
+        let mut pos = SamplePosition(0.0);
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(block);
+            pos = SamplePosition(pos.get() + rate.advance(Samples(k as _)).get());
+            left -= k;
+        }
+        let exact = n as f64 * file / session;
+        // The ratio alone: one multiply, so only the ratio's own error shows.
+        let once = rate.advance(Samples(n as _)).get();
+        assert!(
+            (once - exact).abs() < 1e-6,
+            "{file} -> {session}: {once} vs {exact}"
+        );
+        // 512-frame blocks add f64 rounding of the running sum (~1e-3 frame
+        // here), still far under the several frames an f32 ratio loses.
+        assert!(
+            (pos.get() - exact).abs() < 0.05,
+            "{file} -> {session}: {} vs {exact}",
+            pos.get()
+        );
+    }
 }

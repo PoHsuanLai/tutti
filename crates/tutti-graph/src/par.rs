@@ -475,7 +475,13 @@ impl Shared<'_, '_> {
                 let mut a = ArenaView {
                     view: self.arena.view(held_audio),
                 };
-                sum_op(&mut a, flags, &self.plan.audio_list[srcs.range()], dst, frames);
+                sum_op(
+                    &mut a,
+                    flags,
+                    &self.plan.audio_list[srcs.range()],
+                    dst,
+                    frames,
+                );
             }
             Op::EventDelay { delay, src, dst } => {
                 let mut ring = self.rings.claim(delay as usize);

@@ -52,6 +52,7 @@ const MAX_BLOCK: usize = 128;
 
 /// xorshift64* — the graph is a pure function of the seed, so a failing
 /// proptest case replays exactly.
+#[derive(Clone)]
 struct Rng(u64);
 
 impl Rng {
@@ -92,6 +93,10 @@ struct Desc {
     /// are likeliest to be running or waiting, so the next round aims
     /// replaces and `set_latency` there often enough to queue and cut them.
     recent: Vec<NodeKey>,
+    /// Its own stream for the audio fan-in choices, so adding fan-in left
+    /// the seeds' other choices (and the coverage the generators are held
+    /// to) where they were.
+    fan: Rng,
 }
 
 fn random_kind(rng: &mut Rng) -> Kind {
@@ -195,13 +200,46 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
         } else {
             None
         };
-        match edge {
-            Some(e) => {
-                desc.spec.topology.edges.insert(at, vec![e]);
+        // Audio fan-in (doc 013, "Audio fan-in sums"): a port now and then
+        // takes several distinct sources (direct, global or feedback), which
+        // the compiled op sums in `Edge` order, silent addends skipped, and
+        // the reference folds from `+0.0`. A hub is wider than `MAX_PORTS`
+        // when enough earlier outputs exist (a chain of sum ops).
+        let mut fan = std::mem::replace(&mut desc.fan, Rng(1));
+        let mut set: Vec<Edge> = edge.into_iter().collect();
+        if fan.chance(35) {
+            let hub = fan.chance(15);
+            let tries = if hub {
+                direct.len() as u64 + 3
+            } else {
+                1 + fan.below(3)
+            };
+            for _ in 0..tries {
+                let extra = match fan.below(10) {
+                    0 | 1 => {
+                        let width = u64::from(desc.spec.topology.inputs.count());
+                        Some(Edge::Direct(Source::Global(fan.below(width) as u16)))
+                    }
+                    2 => {
+                        let delay = Samples(MAX_BLOCK + 17 * fan.below(3) as usize);
+                        fan.pick(&any)
+                            .map(|from| Edge::Feedback(FeedbackFrom::new(from, delay)))
+                    }
+                    _ => fan.pick(&direct).map(|p| Edge::Direct(Source::Node(p))),
+                };
+                if let Some(e) = extra
+                    && !set.contains(&e)
+                {
+                    set.push(e);
+                }
             }
-            None => {
-                desc.spec.topology.edges.remove(&at);
-            }
+        }
+        desc.fan = fan;
+        set.sort();
+        if set.is_empty() {
+            desc.spec.topology.edges.remove(&at);
+        } else {
+            desc.spec.topology.edges.insert(at, set);
         }
     }
     let direct_ev = event_outs(desc, &earlier);
@@ -254,6 +292,26 @@ fn wire_outputs(desc: &mut Desc, rng: &mut Rng) {
             1 => Source::Global(rng.below(width) as u16),
             _ => rng.pick(&outs).map_or(Source::Zero, Source::Node),
         }));
+    // A channel now and then sums several sources, aligned to the output time
+    // each on its own.
+    let mut fan = std::mem::replace(&mut desc.fan, Rng(1));
+    for ch in 0..desc.spec.topology.outputs.len() {
+        if desc.spec.topology.outputs[ch].is_empty() || !fan.chance(35) {
+            continue;
+        }
+        for _ in 0..1 + fan.below(3) {
+            let extra = match fan.below(8) {
+                0 => Source::Global(fan.below(width) as u16),
+                _ => fan.pick(&outs).map_or(Source::Zero, Source::Node),
+            };
+            let set = &mut desc.spec.topology.outputs[ch];
+            if extra != Source::Zero && !set.contains(&extra) {
+                set.push(extra);
+            }
+        }
+        desc.spec.topology.outputs[ch].sort();
+    }
+    desc.fan = fan;
 }
 
 fn fresh_key(desc: &mut Desc, rng: &mut Rng) -> NodeKey {
@@ -272,6 +330,7 @@ fn random_graph(seed: u64) -> Desc {
         order: Vec::new(),
         used: BTreeSet::new(),
         recent: Vec::new(),
+        fan: Rng::new(seed ^ 0xFA41_1A5E),
         spec: GraphSpec::new(Topology {
             inputs: ChannelLayout::from_count(1 + u16::try_from(rng.below(3)).expect("below 3")),
             ..Topology::default()
@@ -333,9 +392,7 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
             at.node != victim && !es.is_empty()
         });
         for s in &mut t.outputs {
-            if matches!(s[..], [Source::Node(p)] if p.node == victim) {
-                s.clear();
-            }
+            s.retain(|src| !matches!(src, Source::Node(p) if p.node == victim));
         }
         d.spec.events.retain(|at, _| at.node != victim);
         for v in d.spec.events.values_mut() {
@@ -538,8 +595,14 @@ proptest! {
                 .topology
                 .outputs
                 .iter()
-                .map(|s| s.first().copied().unwrap_or(Source::Zero))
+                .map(|s| match s[..] {
+                    [one] => one,
+                    // A summed channel is no tap's source (a tap names ports,
+                    // not sums): its lane reads silence and is not compared.
+                    _ => Source::Zero,
+                })
                 .collect();
+            let summed: Vec<bool> = desc.spec.topology.outputs.iter().map(|s| s.len() > 1).collect();
             let mut spec = desc.spec.clone();
             spec.topology.taps.insert(
                 TapId(1),
@@ -563,7 +626,7 @@ proptest! {
                 prop_assert_eq!(bits(&exec), bits(&reference), "a tap changed the render at frame {}", frame);
                 let mut got = vec![0.0f32; n * width];
                 prop_assert_eq!(tap.pop_into(&mut got).get(), n);
-                for (c, channel) in exec.iter().enumerate() {
+                for (c, channel) in exec.iter().enumerate().filter(|(c, _)| !summed[*c]) {
                     let lane: Vec<f32> = got.iter().skip(c).step_by(width).copied().collect();
                     prop_assert_eq!(bits(&[lane]), bits(std::slice::from_ref(channel)), "tap lane {} at frame {}", c, frame);
                 }

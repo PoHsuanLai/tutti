@@ -278,8 +278,8 @@ Rules:
   project's `MeterMap` or nothing, and `ProjectMeter::set_meter` publishes
   into every follower. Cells no audio thread reads stay plain: device
   enumeration in `tutti-midi-hardware`, and the per-channel compensation
-  table (`PrerollTable`, a lock), which the session writes and only the
-  sampler's streamer and the host read. The hardware MIDI per-block port set,
+  table (`PrerollTable`, a lock), which the session writes and only a host
+  reads. The hardware MIDI per-block port set,
   which the audio thread does read, is an `ArcLend` behind a publisher
   lock.
 

@@ -1,21 +1,20 @@
-//! [`PrerollTable`]: a shared copy of `Plan::compensation()` for a source
-//! outside the graph (a disk stream seeks by it). Nothing in this crate uses
-//! it; it lives here because the session that writes it and the sampler that
-//! reads it both depend on this crate.
+//! [`PrerollTable`]: a shared copy of `Plan::compensation()` for a host that
+//! displays it. Nothing in this crate uses it; it lives here because the
+//! session that writes it and a host that reads it both depend on this crate.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tutti_types::value::Samples;
 
-/// The per-channel pre-roll of the plan sent last, indexed by output channel:
-/// how much earlier a source outside the graph must read so its audio
-/// arrives aligned. The session republishes it with every plan; the
-/// sampler's streamer reads it once per refill cycle, and a host may read it
-/// to display.
+/// The per-channel compensation of the plan sent last, indexed by output
+/// channel: how much the compiler delays that output to align it with the
+/// latest. The session republishes it with every plan, and a host may read it
+/// to display. A source inside the graph needs none of it: the compiler
+/// aligns it.
 ///
 /// A plain lock, not an [`ArcLend`](tutti_rt::ArcLend): **no audio thread
-/// reads it.** The writer is the session's commit and the readers are the
-/// streamer and the host, so a reader registered per thread and a retirement
+/// reads it.** The writer is the session's commit and the reader is a
+/// host, so a reader registered per thread and a retirement
 /// list would buy nothing. Each call holds the lock for one copy of the
 /// table, or of one entry, and [`with`](Self::with) for its closure;
 /// [`set`](Self::set) overwrites the table in place and frees nothing once

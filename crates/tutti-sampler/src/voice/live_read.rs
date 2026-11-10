@@ -2,7 +2,7 @@
 //!
 //! A live disk voice reads the streamer's ring (`streamer::prefetch::Ring`) by
 //! position: its seat gives the straight position each output frame plays
-//! (the memory tier's, less the channel's PDC preroll), the ring's published
+//! (the memory tier's), the ring's published
 //! map says which four slots that position's taps are (`Arrangement::taps`, the
 //! memory tier's tap layout), and the one kernel interpolates them. So what it
 //! plays is what the memory tier plays at the same clock frame, bit for bit,
@@ -10,8 +10,7 @@
 //!
 //! # Discontinuities: 0 frames, no drift, no step
 //!
-//! A position that jumps (a seek, a transport loop, a varispeed change, a PDC
-//! change) is read at its new place — a jump being a position off the last
+//! A position that jumps (a seek, a transport loop, a varispeed change) is read at its new place — a jump being a position off the last
 //! one's continuation, or a new segment (the clock's
 //! `segment_generation`): a seek that
 //! lands exactly on the continuation is a jump too, as it is to the seat

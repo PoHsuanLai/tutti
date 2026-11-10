@@ -20,7 +20,6 @@ use super::loops::{LeadIn, Mapping, RingLoop, RingMap, apply_mapping, buffer_siz
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::RegionBuffer;
-use super::preroll::PdcFeed;
 use super::region_map::RegionMap;
 
 /// Arc'd handles shared between `StreamerThread` (controller) and the streamer
@@ -84,21 +83,17 @@ pub(super) struct Local {
     pub next_region_id: u64,
     /// Flat interleaved refill scratch. Streamer-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
-    /// The delay-compensation table this cycle reads, handed to it with the
-    /// cycle (`StreamerThread::cycle`, or `with_pdc` for a hand-stepped one).
-    pub pdc: PdcFeed,
 }
 
 impl Local {
     /// Thread-local state with no regions, a scratch buffer pre-sized for one
-    /// `base_chunk_size` refill, and `pdc` to read compensation through.
-    pub(super) fn new(base_chunk_size: usize, pdc: PdcFeed) -> Self {
+    /// `base_chunk_size` refill.
+    pub(super) fn new(base_chunk_size: usize) -> Self {
         Self {
             regions: RegionMap::new(),
             buffer_margin: 1.0,
             next_region_id: 0,
             interleave_buffer: Vec::with_capacity(base_chunk_size),
-            pdc,
         }
     }
 
@@ -270,7 +265,7 @@ fn handle_stream_file(
     // The ring carries the file at its OWN width and order, and its topology:
     // the voice that reads the ring places it through the same `Place` the
     // in-memory tier uses, so folding or permuting here would only be a second
-    // copy of that placement (and the loop's crossfades, the preroll and an
+    // copy of that placement (and the loop's crossfades and an
     // offline fork's own read of the file all work at the file's width).
     // `mut` is used by the `set_decoder` call below, which every codec feature
     // gates — so a build with none of them on sees an unused `mut` rather than
@@ -293,17 +288,10 @@ fn handle_stream_file(
         producer.set_resident(wave);
     }
 
-    let pdc_preroll = local.pdc.preroll(channel_index);
-
-    // The window starts where the reader will play: the offset, pre-rolled.
-    // A placed voice reads at its clock.
-    let start = (offset_samples as u64).saturating_sub(pdc_preroll);
-    RegionBuffer::place(
-        &mut producer,
-        start,
-        pdc_preroll,
-        config.seek_crossfade_frames,
-    );
+    // The window starts where the reader will play: the offset. A placed
+    // voice reads at its clock; the compiler aligns the voice in the graph.
+    let start = offset_samples as u64;
+    RegionBuffer::place(&mut producer, start, config.seek_crossfade_frames);
 
     shared.plans.entry(channel_index).or_default();
     // A channel left reversed streams its new file reversed.
@@ -344,7 +332,6 @@ fn handle_stream_file(
             file_path,
             Arc::downgrade(&shared.cache),
         );
-        plan.pdc_preroll = pdc_preroll;
         // Same derivation the in-memory tier uses
         // (`MemorySource::set_session_sample_rate`), through the one shared
         // constructor. Hand-rolling the division here instead would leave the
@@ -443,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_mint_region_id_is_monotonic() {
-        let mut local = Local::new(4096, PdcFeed::default());
+        let mut local = Local::new(4096);
 
         let id1 = local.mint_region_id();
         let id2 = local.mint_region_id();

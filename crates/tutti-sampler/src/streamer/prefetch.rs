@@ -23,7 +23,7 @@
 //! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
 //! one live reader per ring is the type's rule, not a flag's. This module
 //! adds what a disk stream needs on top: the region, the file, the map the
-//! reader reads the slots by, and the preroll.
+//! reader reads the slots by.
 //!
 //! A position-indexed ring rather than an SPSC FIFO the reader pops: a FIFO
 //! has to be flushed to move, which drops what was refilled since, leaves the
@@ -127,9 +127,6 @@ pub(crate) struct Ring {
     /// control thread only (`take_reader`); the audio thread holds the reader
     /// itself.
     reader: Mutex<Option<PosReader>>,
-    /// Streamer → reader: the channel's PDC preroll, in file frames: the reader
-    /// plays straight position `gate - preroll`.
-    preroll: AtomicU64,
     /// Streamer → reader: output frames a reader's crossfade lasts.
     fade_frames: AtomicU64,
     /// Streamer → reader: how to read the slots, lent through the reader the
@@ -181,12 +178,6 @@ impl Ring {
         self.map.reader()
     }
 
-    /// The channel's PDC preroll, file frames.
-    #[inline]
-    pub(crate) fn preroll(&self) -> u64 {
-        self.preroll.load(Ordering::Relaxed)
-    }
-
     /// Output frames a reader's crossfade lasts.
     #[inline]
     pub(crate) fn fade_frames(&self) -> usize {
@@ -216,11 +207,6 @@ impl Ring {
     #[cfg(test)]
     pub(crate) fn retired_maps(&self) -> usize {
         self.map.retired_len()
-    }
-
-    /// Streamer: the channel's PDC preroll.
-    pub(crate) fn set_preroll(&self, preroll: u64) {
-        self.preroll.store(preroll, Ordering::Relaxed);
     }
 
     /// Take the ring's one live reader. Control thread.
@@ -455,7 +441,6 @@ impl RegionBuffer {
             topology,
             core: writer.watch(),
             reader: Mutex::new(Some(reader)),
-            preroll: AtomicU64::new(0),
             fade_frames: AtomicU64::new(0),
             map: Arc::new(ArcLend::new(RingMap::plain(Arrangement::plain(len), 0))),
         });
@@ -473,13 +458,12 @@ impl RegionBuffer {
     }
 
     /// Point a fresh ring at `start`: the reader there and the window from
-    /// just behind it (the taps a position reads one frame back), the preroll
-    /// and the seek fade set.
-    pub(crate) fn place(writer: &mut RegionOut, start: u64, preroll: u64, fade_frames: usize) {
+    /// just behind it (the taps a position reads one frame back) and the seek
+    /// fade set.
+    pub(crate) fn place(writer: &mut RegionOut, start: u64, fade_frames: usize) {
         writer.reset(start.saturating_sub(HISTORY_FRAMES));
         writer.set_play(start);
         let ring = &writer.ring;
-        ring.preroll.store(preroll, Ordering::Relaxed);
         ring.fade_frames
             .store(fade_frames as u64, Ordering::Relaxed);
     }

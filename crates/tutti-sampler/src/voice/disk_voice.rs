@@ -579,7 +579,7 @@ impl DiskVoice {
 
     /// Render live frames `range` without the silent-block skip (the
     /// callers that always render), frame `i - range.start` handed to `emit`:
-    /// the placed positions, less the channel's preroll, read from the ring,
+    /// the placed positions, read from the ring,
     /// one ring read per run (its generation the read's segment, so a jump
     /// is crossfaded). `positions` is scratch, at least `range.len()` long.
     fn live_render<F: FnMut(usize, &[f32])>(
@@ -593,21 +593,17 @@ impl DiskVoice {
         self.live_read(clock, range, positions, out);
     }
 
-    /// The straight positions of live frames `range` in `positions[..len]`,
-    /// less the channel's preroll (the ring's); whether any frame has one.
+    /// The straight positions of live frames `range` in `positions[..len]`;
+    /// whether any frame has one. The compiler aligns the voice in the graph:
+    /// the stream reads no earlier or later than its clock.
     fn live_place(
         &self,
         clock: &BlockClock<'_>,
         range: Range<usize>,
         positions: &mut [Option<SamplePosition>],
     ) -> bool {
-        let preroll = self.inner.read.ring().preroll() as f64;
         let positions = &mut positions[..range.len()];
-        let sounds = place(clock, range, self.gate(), self.step_rate(), positions);
-        for p in positions.iter_mut() {
-            *p = p.map(|s| SamplePosition((s.get() - preroll).max(0.0)));
-        }
-        sounds
+        place(clock, range, self.gate(), self.step_rate(), positions)
     }
 
     /// Read the ring at the positions [`live_place`](Self::live_place) left,

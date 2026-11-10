@@ -2,8 +2,7 @@
 //!
 //! A live stream's ring (`prefetch::Ring`) is indexed by straight
 //! position: file frames counted as if the file played straight on, the
-//! position a placed voice's gate and seat give (`interp::Seat`), less the
-//! channel's PDC preroll. What the slot for straight position `s` holds is the
+//! position a placed voice's gate and seat give (`interp::Seat`). What the slot for straight position `s` holds is the
 //! stream's [`Mapping`]: the file frame a loop places `s` on, its fade blended
 //! toward the lead-in (`LoopSpan`'s sequence, the one the memory tier and a
 //! forked disk voice read), or the frame a reversed read mirrors it to. The

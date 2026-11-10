@@ -15,7 +15,6 @@ mod loops;
 mod metrics;
 mod plan;
 mod prefetch;
-mod preroll;
 mod region_map;
 mod rt_state;
 mod step;
@@ -56,8 +55,6 @@ pub(crate) use prefetch::RegionBuffer;
 
 use crate::error::Result;
 use crate::ports::{Commands, Status};
-use std::sync::Arc;
-use tutti_graph::PrerollTable;
 use tutti_types::SampleRate;
 
 /// The disk-streaming engine: owns the streamer thread that reads files into
@@ -142,10 +139,6 @@ impl DiskStreamer {
         let mut streamer =
             StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
-        if let Some(ref pdc) = config.pdc {
-            streamer = streamer.with_pdc(Arc::clone(pdc));
-        }
-
         let streamer_tx = streamer.command_sender();
         streamer.start();
 
@@ -182,12 +175,7 @@ impl DiskStreamer {
     /// ```
     #[cfg(any(test, feature = "test-support"))]
     pub fn manual(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let mut streamer =
-            StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
-
-        if let Some(ref pdc) = config.pdc {
-            streamer = streamer.with_pdc(Arc::clone(pdc));
-        }
+        let streamer = StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
         let streamer_tx = streamer.command_sender();
 
@@ -277,36 +265,17 @@ impl DiskStreamer {
 // `streamer` has its own `Drop` impl; auto-drop handles cleanup.
 
 /// Configuration for [`DiskStreamer::new`]. `Default` + struct-update.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DiskStreamerConfig {
     /// Streamer buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
-    /// Subscription to a per-channel delay-compensation table, indexed by
-    /// channel index and denominated in [`Samples`](tutti_types::Samples).
-    ///
-    /// While set, the streamer pre-rolls each stream by its channel's entry so
-    /// downstream effects stay sample-aligned. Published by whoever runs
-    /// `tutti_graph::compensate` over the audio graph — the table is
-    /// [`Compensation::channels`](tutti_graph::Compensation::channels).
-    pub pdc: Option<Arc<PrerollTable>>,
-}
-
-// Hand-rolled: print the buffer config + whether a subscription is set, not
-// the snapshot itself.
-impl std::fmt::Debug for DiskStreamerConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskStreamerConfig")
-            .field("buffer_config", &self.buffer_config)
-            .field("has_pdc", &self.pdc.is_some())
-            .finish()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::Samples;
+    use std::sync::Arc;
 
     /// A loop change on a streamed file reads only the frames it needs:
     /// its fade's lead-in and a short loop's body, through the stream's own
@@ -507,33 +476,5 @@ mod tests {
             StreamerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
         let _ = streamer.step_once();
         streamer.start();
-    }
-
-    /// The streamer reads the caller's table, not a copy of it: a figure
-    /// the caller sets after the streamer is built reaches the streamer's
-    /// cycle (`manual`), and the threaded streamer (`new`) hands its
-    /// threads the caller's own table.
-    ///
-    /// Mutations (run): `DiskStreamer::manual` handing the streamer a copy of
-    /// the table → the cycle still reads 100, fails; `DiskStreamer::new`
-    /// handing a copy → not the same table, fails.
-    #[test]
-    fn pdc_subscription_is_shared_not_copied() {
-        let pdc = Arc::new(PrerollTable::new(vec![Samples(100), Samples(0)]));
-        let config = DiskStreamerConfig {
-            pdc: Some(Arc::clone(&pdc)),
-            ..Default::default()
-        };
-
-        let mut stepped = DiskStreamer::manual(44100.0, config.clone()).unwrap();
-        let _ = stepped.step_once();
-        assert_eq!(stepped.streamer.manual_preroll(0), Some(100));
-        pdc.set(&[Samples(512), Samples(0)]);
-        let _ = stepped.step_once();
-        assert_eq!(stepped.streamer.manual_preroll(0), Some(512));
-
-        let threaded = DiskStreamer::new(44100.0, config).unwrap();
-        let held = threaded.streamer.pdc_table().expect("subscribed");
-        assert!(Arc::ptr_eq(held, &pdc), "the caller's table, not a copy");
     }
 }

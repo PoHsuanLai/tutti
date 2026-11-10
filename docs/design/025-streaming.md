@@ -940,6 +940,33 @@ Each stage is one PR that stays green. Line figures are estimates.
    that enum carries an `allow` with its reason (boxing the memory tier
    would put a pointer in front of every read).
 
+   *As built, cut 2.* The preroll is gone from the streamer: `PdcFeed`
+   (and `streamer/preroll.rs` with it), `apply_pdc_updates`,
+   `ChannelPlan.pdc_preroll`, `Ring.preroll` and its accessors,
+   `DiskStreamerConfig::pdc` and `StreamerThread::with_pdc`, the cycle's
+   `Local.pdc`, `manual_preroll`, the `- preroll` in `DiskVoice::live_place`
+   and in the window start of `handle_stream_file` (`RegionBuffer::place`
+   lost its `preroll` argument), and the session builder's
+   `pdc: Some(..)` wiring. (`DiskSource::render`, which the table lists, went
+   in cut 1.) Each link of §2.9's chain was re-read in the code before the
+   cut: the compiler's output ring (`compile/mod.rs`, `compensation[channel]`),
+   the session's republish (`publish_sent`), the builder's hand-off, the
+   window start and the placed read. `PrerollTable` and `Session::compensation`
+   stay, for a host that displays the figure, with their docs rewritten; Q11's
+   open part stands. The test is `tutti-session`'s `tier_alignment`: a stereo
+   voice of one file at beat 1, as a disk stream and in memory, on two outputs
+   beside a limiter's latent path on a third, must sound file frame `k` on
+   output frame `24 000 + L + k` (`L` the declared compensation); the disk tier
+   fails with the preroll put back (it reads `L` early on top of the compiler's
+   ring) and passes without. Two existing tests encoded the feature, not the
+   spec: the `live_loop` test's preroll row (a 12 000-frame table entry read
+   as a half-beat early read) was dropped, its entry-past-the-loop row kept
+   as `an_entry_past_the_loop_lands_where_the_memory_tier_plays`; and the
+   `pdc_subscription_is_shared_not_copied` and
+   `a_table_subscribed_after_a_hand_step_reaches_the_cycle` tests, which only
+   pinned the subscription, went with it. **Behaviour change:** a streamed disk
+   voice no longer plays late by its output channel's compensation.
+
    Cuts 1 and 2 are independent of the rest and of each other and may land in
    either order, or after 3. Cut 3 is the smallest useful cut and is the first
    that changes the public surface (every voice-build call site in the sampler
@@ -1163,6 +1190,6 @@ push `Resample` and `Dither` together and accept the Ogg change.
     compiler's output delay for a voice that feeds an output and reads an
     unrelated entry otherwise; the memory tier and the export fork already apply
     none. Not run: the finding is from reading `tutti-graph`'s solve and
-    compile, the session's republish and the streamer's use, and cut 2's test is
-    what runs it. Open only: whether `PrerollTable` survives the un-parking of
+    compile, the session's republish and the streamer's use, and cut 2's test, `tier_alignment`,
+    is what ran it (it fails with the preroll restored). Open only: whether `PrerollTable` survives the un-parking of
     `bevy-tutti`, its one other consumer.

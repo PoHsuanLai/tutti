@@ -1447,7 +1447,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
     let (mut writer, reader) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1u16);
-    RegionBuffer::place(&mut writer, AT, 0, 256);
+    RegionBuffer::place(&mut writer, AT, 256);
     let from = writer.window().0;
     let flat: Vec<f32> = (from..from + 2_000).map(|k| k as f32).collect();
     writer.push_interleaved(&flat);

@@ -246,6 +246,11 @@ required-features = ["export", "midi", "synth", "soundfont"]
 name = "export_fork_sampler"
 required-features = ["export", "sampler"]
 
+# A voice of either tier arrives where the compiler puts it (doc 025 stage 5).
+[[test]]
+name = "tier_alignment"
+required-features = ["sampler"]
+
 # A hosted plugin exported through a fork of its own server: fails without
 # `plugin-server`, by design.
 [[test]]

@@ -1,9 +1,8 @@
 //! Audio fan-in, the views (doc 013, "Audio fan-in sums", staging item 2):
 //! the latency and tail views and the reference interpreter read a **set** of
-//! sources per input port and per output channel. The compiler still refuses
-//! a set of two (`CompileError::FanInNotCompiled`, PR 3), so every topology
-//! here is built by hand and driven through the pure passes and the
-//! reference, never the executor.
+//! sources per input port and per output channel. Every topology here is
+//! built by hand and driven through the pure passes and the reference, never
+//! the executor (`tests/fan_in.rs` drives the compiled op).
 //!
 //! Figures are analytic: an arrival is the latest departure over every source
 //! of every port, a source's delay is that arrival minus its own departure,

@@ -1041,7 +1041,7 @@ impl EventInletWriter {
 pub enum Refused { Full, Beat }
 pub struct EventInletNode { /* ring consumer, waiting list, SeqWriter */ }
 impl EventInletNode {
-    pub fn new(capacity: usize) -> (Self, EventInletWriter);
+    pub fn pair(capacity: usize) -> (Self, EventInletWriter);
 }
 
 // tutti-session

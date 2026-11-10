@@ -359,13 +359,15 @@ impl PartialFrame {
         self.prefix_filled > 0 || self.have_len
     }
 
-    /// Forget the partial frame. Only correct when the stream itself is being
-    /// discarded — there is no way to resynchronise a half-read frame.
+    /// Back to a frame boundary, once a frame is off the wire (whether or not
+    /// it decoded). The body keeps its capacity for the next frame, trimmed
+    /// after a large one. (There is no way to resynchronise a half-read
+    /// frame, so this is never a recovery from one.)
     fn clear(&mut self) {
         self.prefix_filled = 0;
         self.body_filled = 0;
         self.have_len = false;
-        self.body = Vec::new();
+        crate::protocol::frame::keep(&mut self.body);
     }
 }
 
@@ -409,7 +411,11 @@ fn recv_by(
             tracing::warn!("plugin server sent a {e}; treating it as a crash");
             BridgeError::ProcessCrashed
         })?;
-        partial.body = vec![0u8; len];
+        // The buffer is the connection's: its capacity is kept between frames
+        // (and trimmed after a large one, `clear`), so a block's reply reads
+        // without allocating.
+        partial.body.clear();
+        partial.body.resize(len, 0);
         partial.body_filled = 0;
         partial.have_len = true;
     }
@@ -741,6 +747,48 @@ mod tests {
             peer: Some(peer),
             path,
         }
+    }
+
+    /// **A block's round trip allocates nothing once the buffers are warm**
+    /// (doc 027 P2b): the host sends `ProcessAudio`, the server end reads it
+    /// and answers `AudioProcessed`, and the host reads the answer, over a
+    /// real socket pair, inside `assert_no_alloc`. A block with no parameter
+    /// changes and no MIDI, the common one; a change list that is not empty
+    /// is a `Vec` the decode builds.
+    ///
+    /// Mutations (run), each aborts the gate: `write_frame` serializing with
+    /// `bincode::serialize` (a fresh `Vec`); `read_frame` reading into a fresh
+    /// `vec![0u8; len]`; the host's `PartialFrame` body made fresh per frame
+    /// (`vec![0u8; len]`); `ProcessAudio` boxed again.
+    #[test]
+    fn a_block_round_trip_allocates_nothing_once_warm() {
+        use crate::protocol::ProcessAudioData;
+        use crate::protocol::frame::read_frame;
+
+        let mut p = pair("round-trip");
+        let mut server = p.take_peer();
+        let mut partial = PartialFrame::default();
+        let block = HostMessage::ProcessAudio(ProcessAudioData {
+            seq: 1,
+            num_samples: 64,
+            ..Default::default()
+        });
+        let reply = BridgeMessage::AudioProcessed {
+            latency_us: 0,
+            seq: 1,
+            midi_out: Default::default(),
+        };
+        let mut round = || {
+            send(&mut p.host, &block).expect("send");
+            let got: HostMessage = read_frame(&mut server).expect("server read");
+            assert!(matches!(got, HostMessage::ProcessAudio(ref d) if d.seq == 1));
+            write_frame(&mut server, &reply).expect("server write");
+            let back = recv_resumable(&mut p.host, Duration::from_secs(5), &mut partial)
+                .expect("host read");
+            assert!(matches!(back, BridgeMessage::AudioProcessed { seq: 1, .. }));
+        };
+        round(); // warms this thread's buffers and the cursor's
+        assert_no_alloc::assert_no_alloc(&mut round);
     }
 
     /// **A send to a peer that reads nothing gives up at the send deadline**

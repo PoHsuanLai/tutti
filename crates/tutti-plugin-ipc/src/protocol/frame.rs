@@ -11,7 +11,14 @@
 //! The host reads incrementally against a deadline, so it takes the prefix and
 //! body halves ([`decode_prefix`], [`decode_body`]); the subprocess blocks, and
 //! takes [`read_frame`]. Both send through [`write_frame`].
+//!
+//! **A frame costs no allocation once its buffers are warm** (doc 027 P2b).
+//! Each thread writes through one buffer and the subprocess reads through one
+//! (the host's read buffer is its `PartialFrame`'s), each kept between frames
+//! and trimmed back to [`KEEP_BYTES`] after a larger one ([`keep`]). A message
+//! with no heap fields (a block's reply) then decodes without allocating too.
 
+use std::cell::RefCell;
 use std::io::{Read, Write};
 
 use serde::Serialize;
@@ -71,19 +78,51 @@ pub fn decode_body<T: DeserializeOwned>(body: &[u8]) -> Result<T> {
     Ok(bincode::deserialize(body)?)
 }
 
-/// Serializes `msg` and writes it as one frame, then flushes.
+/// How much capacity a frame buffer keeps between frames. A block's frames
+/// are a few KiB; a state chunk is far larger and rare, so a buffer it grew is
+/// trimmed back rather than held for the connection's life.
+pub(crate) const KEEP_BYTES: usize = 256 * 1024;
+
+/// Trim `buf` back to [`KEEP_BYTES`] of capacity after a larger frame.
+pub(crate) fn keep(buf: &mut Vec<u8>) {
+    if buf.capacity() > KEEP_BYTES {
+        buf.clear();
+        buf.shrink_to(KEEP_BYTES);
+    }
+}
+
+thread_local! {
+    /// This thread's outgoing frame: prefix and body, serialized in place.
+    static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// This thread's incoming body, for [`read_frame`].
+    static IN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Serializes `msg` and writes it as one frame, in one write, then flushes.
+///
+/// The frame is serialized into this thread's reused buffer behind a prefix
+/// placeholder, so nothing is allocated once the buffer is warm, and one
+/// `write_all` sends prefix and body together.
 ///
 /// # Errors
 ///
 /// [`FrameTooLarge`] (as [`BridgeError::ConnectionFailed`]) when the body is
 /// over the cap, with nothing written; a serialization or I/O error otherwise.
 pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> Result<()> {
-    let body = bincode::serialize(msg)?;
-    let prefix = encode_prefix(body.len())?;
-    w.write_all(&prefix)?;
-    w.write_all(&body)?;
-    w.flush()?;
-    Ok(())
+    OUT.with_borrow_mut(|frame| {
+        frame.clear();
+        frame.extend_from_slice(&[0; 4]);
+        let written = bincode::serialize_into(&mut *frame, msg)
+            .map_err(BridgeError::from)
+            .and_then(|()| Ok(encode_prefix(frame.len() - 4)?))
+            .and_then(|prefix| {
+                frame[..4].copy_from_slice(&prefix);
+                w.write_all(frame)?;
+                Ok(w.flush()?)
+            });
+        keep(frame);
+        written
+    })
 }
 
 /// Blocks until one whole frame has been read, and decodes it.
@@ -97,9 +136,16 @@ pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<T> {
     let mut prefix = [0u8; 4];
     r.read_exact(&mut prefix)?;
     let len = decode_prefix(prefix)?;
-    let mut body = vec![0u8; len];
-    r.read_exact(&mut body)?;
-    decode_body(&body)
+    IN.with_borrow_mut(|body| {
+        body.clear();
+        body.resize(len, 0);
+        let msg = r
+            .read_exact(body)
+            .map_err(BridgeError::from)
+            .and_then(|()| decode_body(body));
+        keep(body);
+        msg
+    })
 }
 
 /// The two bounds `MAX_FRAME_BYTES` has to sit between, checked at compile time.

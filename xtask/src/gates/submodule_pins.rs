@@ -110,7 +110,7 @@ pub(super) fn check(git: &dyn Git, pins: &[(&str, &str)]) -> Report {
                 r.fail(format!("FAIL {path}"));
                 r.fail(format!("     expected {want}"));
                 r.fail(format!("     found    {have}"));
-                r.fail("     If the SDK was bumped on purpose, update this script and the");
+                r.fail("     If the SDK was bumped on purpose, update `PINS` in xtask/src/gates/submodule_pins.rs and the");
                 r.fail("     three prose mentions (.gitmodules, CLAUDE.md, build.rs) too.");
             }
             _ => r.say(format!("ok   {path}")),
@@ -240,7 +240,7 @@ mod tests {
                 "FAIL vendor/x".to_owned(),
                 format!("     expected {A}"),
                 format!("     found    {B}"),
-                "     If the SDK was bumped on purpose, update this script and the".to_owned(),
+                "     If the SDK was bumped on purpose, update `PINS` in xtask/src/gates/submodule_pins.rs and the".to_owned(),
                 "     three prose mentions (.gitmodules, CLAUDE.md, build.rs) too.".to_owned(),
                 "FAIL: the vendored VST3 SDK is not at the documented v3.8.0_build_66 pin."
                     .to_owned(),

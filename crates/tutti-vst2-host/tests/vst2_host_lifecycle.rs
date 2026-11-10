@@ -277,7 +277,7 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
 /// The requests the plugin has raised since the last call.
 fn requests(instance: &Active) -> Vec<Request> {
     let mut asked = Vec::new();
-    instance.take_requests(&main_thread(), &mut asked);
+    instance.loaded().take_requests(&main_thread(), &mut asked);
     asked
 }
 
@@ -294,7 +294,7 @@ fn requests(instance: &Active) -> Vec<Request> {
 fn an_io_change_is_answered_and_re_read() {
     let _guard = lock_probe();
     let instance = load(512);
-    assert_eq!(instance.pins().0.count(), 2);
+    assert_eq!(instance.loaded().pins().0.count(), 2);
     assert_eq!(requests(&instance), [], "nothing yet");
 
     let answered = probe_call(b"tutti_vst2_probe_fire_io_changed\0", |sym| {
@@ -317,8 +317,12 @@ fn an_io_change_is_answered_and_re_read() {
         instance.wiring(&main_thread()).latency_samples,
         Samples(2048)
     );
-    assert_eq!(instance.pins().0.count(), 4, "the pin count was re-read");
-    assert_eq!(instance.latency_samples(), Samples(2048));
+    assert_eq!(
+        instance.loaded().pins().0.count(),
+        4,
+        "the pin count was re-read"
+    );
+    assert_eq!(instance.loaded().latency_samples(), Samples(2048));
 
     assert_eq!(requests(&instance), [], "consumed");
 }
@@ -410,9 +414,13 @@ fn counts_finalised_in_eff_open_are_read() {
             ("TUTTI_VST2_PROBE_OPEN_PARAMS", "7"),
         ],
     );
-    assert_eq!(instance.pins().0.count(), 5);
-    assert_eq!(instance.parameter_count(), 7);
-    assert_eq!(instance.pins().1.count(), 2, "an untouched count stays");
+    assert_eq!(instance.loaded().pins().0.count(), 5);
+    assert_eq!(instance.loaded().parameter_count(), 7);
+    assert_eq!(
+        instance.loaded().pins().1.count(),
+        2,
+        "an untouched count stays"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -469,21 +477,22 @@ fn editor_idle_reaches_an_open_editor() {
     });
     let idles = || trace().iter().filter(|e| e.0 == EDIT_IDLE).count();
 
-    instance.editor_idle(&main_thread());
+    instance.loaded_mut().editor_idle(&main_thread());
     assert_eq!(idles(), 0, "no editor is open yet");
 
     // SAFETY: the probe's editor never touches the parent.
     let parent = unsafe { WindowHandle::from_raw(std::ptr::null_mut()) };
     instance
+        .loaded_mut()
         .open_editor(&main_thread(), parent)
         .expect("the probe opens");
-    instance.editor_idle(&main_thread());
-    instance.editor_idle(&main_thread());
-    instance.editor_idle(&main_thread());
+    instance.loaded_mut().editor_idle(&main_thread());
+    instance.loaded_mut().editor_idle(&main_thread());
+    instance.loaded_mut().editor_idle(&main_thread());
     assert_eq!(idles(), 3, "one effEditIdle per call while open");
 
-    instance.close_editor(&main_thread());
-    instance.editor_idle(&main_thread());
+    instance.loaded_mut().close_editor(&main_thread());
+    instance.loaded_mut().editor_idle(&main_thread());
     assert_eq!(idles(), 3, "none once closed");
 }
 
@@ -498,8 +507,8 @@ fn render_f32(
     transport: Option<&TransportInfo>,
     input: f32,
 ) -> Vec<Vec<f32>> {
-    let channels = instance.pins().1.count() as usize;
-    let ins = vec![vec![input; frames]; instance.pins().0.count() as usize];
+    let channels = instance.loaded().pins().1.count() as usize;
+    let ins = vec![vec![input; frames]; instance.loaded().pins().0.count() as usize];
     let mut outs = vec![vec![0.0f32; frames]; channels];
     let in_refs: Vec<&[f32]> = ins.iter().map(Vec::as_slice).collect();
     let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(Vec::as_mut_slice).collect();

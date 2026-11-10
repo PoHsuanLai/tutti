@@ -234,7 +234,7 @@ fn process_f64_does_not_allocate() {
     let _guard = lock_probe();
     let (mut inst, path) = load_probe_f64();
     assert!(
-        inst.metadata().supports_f64,
+        inst.loaded().metadata().supports_f64,
         "the probe must declare f64 here, or this gates the narrowing \
          fallback rather than the native f64 path"
     );
@@ -346,7 +346,7 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
     let base = read_capture(&path);
     assert_eq!(base.resume_count, 1, "activate must resume exactly once");
     assert_eq!(base.suspend_count, 0, "activate should not leave a suspend");
-    assert!(inst.is_active());
+    assert!(inst.loaded().is_active());
 
     let loaded = inst.deactivate();
     assert!(!loaded.is_active());
@@ -377,7 +377,7 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
         cap.sample_rate, 96_000.0,
         "the activation's rate took effect"
     );
-    assert!(inst.is_active());
+    assert!(inst.loaded().is_active());
 }
 
 /// A rate or block that is none cannot be built into a `Prepare`, and a valid
@@ -410,7 +410,7 @@ fn a_prepare_that_is_no_rate_cannot_be_built() {
     let inst = Active::activate(loaded, active::prepare_for(SAMPLE_RATE, BLOCK, false))
         .expect("the same plugin activates at a valid rate");
     assert_eq!(read_capture(&path).resume_count, 1);
-    assert!(inst.is_active());
+    assert!(inst.loaded().is_active());
 }
 
 /// Reconfiguring a *resumed* plugin must leave it resumed, with exactly one
@@ -436,7 +436,7 @@ fn reconfigure_while_resumed_issues_one_balanced_pair() {
         "resume/suspend must alternate, with load's initial resume unmatched"
     );
     assert_eq!(cap.sample_rate, 44_100.0);
-    assert!(inst.is_active());
+    assert!(inst.loaded().is_active());
 }
 
 /// A reconfigure must leave the plugin in a state where it still renders —
@@ -452,7 +452,7 @@ fn plugin_still_renders_after_repeated_reconfigure() {
 
     inst.set_sample_rate(96_000.0);
     inst.set_sample_rate(SAMPLE_RATE);
-    assert!(inst.is_active());
+    assert!(inst.loaded().is_active());
 
     let transport = playing_transport();
     drive_silent(&mut inst, 4, &transport);

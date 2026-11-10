@@ -913,7 +913,7 @@ open:
 
 | Module (`crates/tutti-modulation/src`) | Fate |
 |---|---|
-| `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `tutti_curve::Law::interpolate` (it was `audio-automation`'s `CurveType::interpolate`) |
+| `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `tutti_curve::Law::eval` (it was `audio-automation`'s `CurveType::interpolate`) |
 | `curve.rs` | kept, moved into the floor |
 | `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Wave` (`program.rs`); the rest deleted |
 | `lfo.rs`, `modulator.rs` | **moved to `tutti-nodes`** (`tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use them); deleted from `tutti-modulation` with `routing`. `tutti-modulation` keeps no runtime. |

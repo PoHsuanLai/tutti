@@ -979,7 +979,7 @@ fn the_curves_with_no_bound_err_as_measured() {
                 LfoShape::Triangle => triangle(c),
                 _ => (std::f64::consts::TAU * c).sin(),
             };
-            let mag = f64::from(curve.interpolate(0.0, 1.0, x.abs() as f32));
+            let mag = f64::from(curve.eval(x.abs() as f32));
             let want = 1000.0 + 500.0 * mag * x.signum();
             err = err.max((f64::from(v) - want).abs() / 500.0);
         }

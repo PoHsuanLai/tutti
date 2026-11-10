@@ -3,7 +3,7 @@
 //! [`Polarity`] and [`LfoShape`] are the small enums a route needs;
 //! [`shape`] is the pure function a [`ControlProgram`](crate::ControlProgram)
 //! shapes every offset with. Its response curve is `tutti-curve`'s
-//! [`Law::interpolate`], the one evaluation of a [`Law`] the graph, the lanes
+//! [`Law::eval`], the one shape of a [`Law`] the graph, the lanes
 //! and the editor share.
 
 use tutti_curve::Law;
@@ -165,7 +165,7 @@ impl core::fmt::Display for LfoShape {
 /// magnitude; `Unipolar` remaps `[-1, 1] → [0, 1]` (the source only pushes one
 /// direction from base) then curves. `depth` scales the result.
 ///
-/// The curve is `curve.interpolate(0.0, 1.0, u)` on the normalized `u`, so
+/// The curve is `curve.eval(u)` on the normalized `u`, so
 /// every [`Law`] shapes exactly as the editor draws it. Every law runs from 0
 /// at no input to 1 at full input, and none leaves `[0, 1]` on the way, so the
 /// offset never exceeds `depth`. `Hold` is 0 until the input is exactly full.
@@ -180,13 +180,13 @@ pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: Law) -> f32 {
     match polarity {
         // Bipolar: preserve sign, curve the magnitude, restore sign.
         Polarity::Bipolar => {
-            let mag = curve.interpolate(0.0, 1.0, x.abs());
+            let mag = curve.eval(x.abs());
             depth * mag * x.signum()
         }
         // Unipolar: remap [-1, 1] → [0, 1], then curve.
         Polarity::Unipolar => {
             let u = (x.clamp(-1.0, 1.0) + 1.0) * 0.5;
-            depth * curve.interpolate(0.0, 1.0, u)
+            depth * curve.eval(u)
         }
     }
 }

@@ -10,8 +10,7 @@ supports. `OutOfProcess<Vst2>` then does not compile.
 
 Builds on [016](016-plugin-hosts.md) (`Loaded`, `Processor`, `Controller`,
 `Lifecycle`). Where 016 §2.4 makes the server dispatch over an `AnyPlugin` of four
-formats, this design makes it dispatch over the formats that can be served. 019
-and 020 are drafts on other branches.
+formats, this design makes it dispatch over the formats that can be served.
 
 ## Summary
 

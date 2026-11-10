@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
@@ -20,7 +21,7 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, TransportInfo};
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, LoadError, ParamExt, StateExt};
+use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 /// Serialises every test that constructs an `Active`, which load real
 /// third-party plugins (macOS only; they skip elsewhere). `Module::open` and
@@ -844,10 +845,4 @@ fn plain_range_probe_recovers_real_ranges() {
          being consulted.",
         corpus.len()
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

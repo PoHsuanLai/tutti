@@ -35,9 +35,8 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::params_state::{GAIN_DB_MAX, GAIN_DB_MIN, GAIN_PARAM_ID};
@@ -85,7 +84,8 @@ struct ProbeControls {
 impl ProbeControls {
     fn open() -> Self {
         unsafe {
-            let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+            let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+                .expect("re-open reference plugin");
             let set_render_mode = *lib
                 .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_render_mode\0")
                 .expect("set_render_mode symbol present");
@@ -129,7 +129,7 @@ impl GainSession<'_> {
     }
 
     fn activate(&self) -> Active<f32> {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load");
         loaded
@@ -401,7 +401,7 @@ fn a_gain_set_in_one_block_persists_into_the_next() {
 fn the_host_reports_the_probes_declared_gain_range() {
     let session = GainSession::begin();
     let loaded = {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     };

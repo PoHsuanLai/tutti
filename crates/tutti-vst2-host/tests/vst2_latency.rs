@@ -19,16 +19,15 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::Control;
 use tutti_vst2_host::Samples;
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 512;
@@ -49,7 +48,7 @@ static PROBE_LOCK: Mutex<()> = Mutex::new(());
 /// test binary links against, so its exports are resolved by re-opening the
 /// same file rather than declared `extern "C"` here.
 fn set_late_latency(samples: i32) {
-    let path = Path::new(probe_path::probe_path());
+    let path = Path::new(tutti_fixtures::vst2_probe());
     // SAFETY: the path is the cdylib this crate's dev-dependency built.
     let lib = unsafe { libloading::Library::new(path) }
         .unwrap_or_else(|e| panic!("re-open reference plugin at {path:?}: {e}"));
@@ -96,7 +95,7 @@ impl Probe {
     }
 
     fn load(&self) -> Active {
-        Active::load(probe_path::probe_path(), SAMPLE_RATE, BLOCK).expect("the probe must load")
+        Active::load(tutti_fixtures::vst2_probe(), SAMPLE_RATE, BLOCK).expect("the probe must load")
     }
 }
 
@@ -205,10 +204,4 @@ fn a_sample_rate_change_can_be_followed_by_a_fresh_read() {
         Samples(recomputed as usize),
         "after a rate change the host must re-ask; the load-time figure is stale"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -75,7 +75,7 @@ const EXPECTED_LIVE: f32 = INPUT_DC + TAG_P0C0;
 ///
 /// The machine-wide lock directory ([`machine_lock`](super::machine_lock)),
 /// shared with `process_pipeline_tests` and the integration suites.
-use super::machine_lock as probe_lock;
+use tutti_fixtures::machine_lock;
 
 /// Clears the probe's environment switches on drop, including on an unwind.
 struct ProbeEnv(Vec<&'static str>);
@@ -120,20 +120,6 @@ fn plugin_server_path() -> &'static str {
         .as_str()
 }
 
-/// The reference CLAP plugin, published under a `.clap` extension.
-///
-/// The extension is load-bearing: the server dispatches format by file
-/// extension, and cargo's `libtutti_clap_test_plugin.so` reads as **VST2** in
-/// that table, so the CLAP loader is never reached. The path is shared between
-/// test processes (`tutti_fixtures::publish_with_extension`).
-fn clap_probe_path() -> &'static std::path::Path {
-    static LINKED: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    LINKED.get_or_init(|| {
-        let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-        tutti_fixtures::publish_with_extension(&real, "clap")
-    })
-}
-
 /// Release a parked `process()` **in the subprocess**.
 ///
 /// The switch is an `extern "C"` symbol in the plugin's image, and the image
@@ -165,7 +151,7 @@ fn load_probe(env: &mut ProbeEnv, render_mode: u32) -> (PluginClient, PluginHand
     );
     let client = PluginClient::new(
         BridgeConfig::default(),
-        clap_probe_path().to_path_buf(),
+        tutti_fixtures::clap_probe().to_path_buf(),
         SampleRate::new(SAMPLE_RATE),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");
@@ -209,7 +195,7 @@ fn drive_block(unit: &mut Renderer, midi_out: &mut tutti_plugin_types::MidiEvent
 /// stall, and nothing would say the recovery belongs to the abandonment.
 #[test]
 fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     let _ = std::fs::remove_file(release_path());
     let mut env = ProbeEnv::new();
     env.set("TUTTI_CLAP_PROBE_BLOCK_FROM", PARK_FROM.to_string());
@@ -336,7 +322,7 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
 /// make an ordinary block miss it. See the bound's derivation below.
 #[test]
 fn a_plugin_that_never_parks_settles_nothing() {
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     let _ = std::fs::remove_file(release_path());
     let mut env = ProbeEnv::new();
     // No `BLOCK_FROM`: the plugin answers every block on time.
@@ -409,7 +395,7 @@ fn a_plugin_that_never_parks_settles_nothing() {
 /// bridge's own "crashed" text).
 #[test]
 fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminated() {
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     env.set("TUTTI_CLAP_PROBE_BLOCK_FROM", PARK_FROM.to_string());
     let (client, handle) = load_probe(&mut env, 1);
@@ -493,7 +479,7 @@ fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminat
 /// control.
 #[test]
 fn the_park_switch_is_off_unless_armed() {
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     assert!(
         std::env::var("TUTTI_CLAP_PROBE_BLOCK_FROM").is_err(),
         "the park switch leaked from another test; the control test is no \
@@ -513,7 +499,7 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     use tutti_graph::Node as _;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
     let mut node = client.bind();
@@ -559,7 +545,7 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     use tutti_graph::Node as _;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
     let mut node = client.bind();
@@ -607,7 +593,7 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
 fn the_controls_count_the_bridges_dropped_midi_too() {
     use std::sync::atomic::Ordering;
 
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
     let node = client.bind();

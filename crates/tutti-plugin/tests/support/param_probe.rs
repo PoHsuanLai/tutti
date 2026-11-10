@@ -20,7 +20,6 @@ use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 
 use crate::clap_probe::plugin_server_path;
-use crate::probe_path::probe_path;
 
 /// A host's value for plugin parameter `id`: a foreign control lane whose
 /// knob is at `value`, in the plugin's normalisation (doc 014 §5). It sends
@@ -41,7 +40,7 @@ pub fn load_vst2_probe(params: usize, sample_rate: f64) -> (PluginClient, Plugin
     }
     let client = PluginClient::new(
         BridgeConfig::default(),
-        probe_path().clone(),
+        tutti_fixtures::vst2_probe().to_path_buf(),
         SampleRate::new(sample_rate),
     );
     // SAFETY: as above. The server has read it; leaving it set would reshape

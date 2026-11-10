@@ -7,6 +7,7 @@
 //! clap,vst2,vst3` first.
 
 use std::path::PathBuf;
+use tutti_fixtures::main_thread;
 
 use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::{ParamId, PluginClient, PluginHandle};
@@ -65,10 +66,4 @@ fn vst3_mode_and_transcript_cross_the_process_boundary() {
 #[test]
 fn vst3_cpp_mode_and_transcript_cross_the_process_boundary() {
     through_server::<Vst3Cpp>(bundle_of(&vst3_cpp_module()));
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

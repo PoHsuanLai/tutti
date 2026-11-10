@@ -33,10 +33,8 @@ use std::sync::{Mutex, MutexGuard};
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 128;
@@ -109,7 +107,7 @@ fn reset_close_count(path: &PathBuf) {
 #[test]
 fn dropping_an_instance_dispatches_eff_close_while_the_module_stays_mapped() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
 
     reset_close_count(&path);
     assert_eq!(
@@ -154,7 +152,7 @@ fn dropping_an_instance_dispatches_eff_close_while_the_module_stays_mapped() {
 #[test]
 fn the_module_survives_an_instance_lifetime_and_a_reload() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
 
     reset_close_count(&path);
 
@@ -212,7 +210,7 @@ fn the_module_survives_an_instance_lifetime_and_a_reload() {
 #[test]
 fn a_switch_written_through_a_leaked_handle_survives_the_hosts_load() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
 
     reset_close_count(&path);
 

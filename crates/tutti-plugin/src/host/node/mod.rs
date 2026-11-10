@@ -82,8 +82,6 @@ mod segment_points;
 pub(crate) mod transport_source;
 
 #[cfg(test)]
-mod machine_lock;
-#[cfg(test)]
 mod process_pipeline_tests;
 // The block-budget suite driven by a REAL plugin subprocess, as opposed to
 // `process_pipeline_tests`' mock servers. A unit test rather than an

@@ -16,6 +16,7 @@
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
@@ -26,9 +27,6 @@ use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
-
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -42,7 +40,7 @@ fn process_steady_state_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin::in_process_vst2_client(
         &main_thread(),
-        probe_path::probe_path(),
+        tutti_fixtures::vst2_probe(),
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
@@ -82,7 +80,7 @@ fn process_with_a_meter_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin::in_process_vst2_client(
         &main_thread(),
-        probe_path::probe_path(),
+        tutti_fixtures::vst2_probe(),
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
@@ -107,7 +105,7 @@ fn process_with_midi_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin::in_process_vst2_client(
         &main_thread(),
-        probe_path::probe_path(),
+        tutti_fixtures::vst2_probe(),
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
@@ -181,7 +179,7 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     unsafe { std::env::set_var("TUTTI_VST2_PROBE_PARAMS", PARAMS.to_string()) };
     let loaded = tutti_plugin::in_process_vst2_client(
         &main_thread(),
-        probe_path::probe_path(),
+        tutti_fixtures::vst2_probe(),
         SampleRate::new(48_000.0),
     );
     // SAFETY: as above.
@@ -229,10 +227,4 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     assert_eq!(stats.points_dropped, 0, "{stats:?}");
     assert_eq!(stats.points_merged, 0, "{stats:?}");
     drop(handle);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -28,9 +28,6 @@ use tutti_graph::{OutPort, Source};
 use tutti_plugin::in_process_vst2_client;
 use tutti_types::{SampleRate, Samples};
 
-#[path = "support/probe_path.rs"]
-mod probe_path;
-
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
@@ -59,7 +56,7 @@ fn block(exec: &mut tutti_graph::Executor, left: &mut [f32], right: &mut [f32]) 
 #[test]
 fn a_removed_vst2_node_is_dropped_on_the_control_side() {
     let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     let (unit, handle) = in_process_vst2_client(&main, &path, SampleRate::new(RATE))
         .expect("the probe loads in process");
 

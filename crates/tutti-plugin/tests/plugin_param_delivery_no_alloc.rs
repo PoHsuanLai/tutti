@@ -21,13 +21,12 @@ static A: AllocDisabler = AllocDisabler;
 mod clap_probe;
 #[path = "support/param_probe.rs"]
 mod param_probe;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use std::time::Duration;
 
-use clap_probe::{Rig, exclusive};
+use clap_probe::Rig;
 use param_probe::{knobs, load_vst2_probe};
+use tutti_fixtures::machine_lock;
 use tutti_graph::{Prepare, Transport, TransportChanges};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
@@ -58,7 +57,7 @@ const PARAMS: usize = 200;
 /// the node is handed one of them, the same.
 #[test]
 fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
     let (knobs, lanes) = knobs(PARAMS, |_| 0.5);
     let prepare =

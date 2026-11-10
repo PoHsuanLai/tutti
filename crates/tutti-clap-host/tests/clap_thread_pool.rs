@@ -22,9 +22,8 @@ use tutti_graph::Pool;
 use tutti_graph::WorkerPool;
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -41,7 +40,7 @@ fn probe_lib() -> &'static libloading::Library {
     use std::sync::OnceLock;
     static LIB: OnceLock<libloading::Library> = OnceLock::new();
     LIB.get_or_init(|| unsafe {
-        libloading::Library::new(probe_path()).expect("re-open reference plugin")
+        libloading::Library::new(tutti_fixtures::clap_probe()).expect("re-open reference plugin")
     })
 }
 
@@ -83,7 +82,7 @@ fn load(tasks: u32, task_us: u32, nested: bool) -> Active<f32> {
             .expect("reset symbol present");
         f();
     }
-    let path = Path::new(probe_path());
+    let path = Path::new(tutti_fixtures::clap_probe());
     let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
         .expect("reference plugin loads");
     assert!(

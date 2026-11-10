@@ -14,9 +14,8 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_clap_host::{AudioBuffer32, ClapError, ClapLoaded, ClapProcessContext, LoadOptions};
@@ -49,7 +48,8 @@ impl Probe {
     fn acquire() -> Self {
         let lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         unsafe {
-            let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+            let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+                .expect("re-open reference plugin");
             let set_ports_64bit = *lib
                 .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_ports_64bit\0")
                 .expect("set_ports_64bit symbol present");
@@ -98,7 +98,7 @@ impl Probe {
     }
 
     fn load(&self) -> ClapLoaded {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
@@ -242,7 +242,7 @@ fn a_rate_change_rereads_the_port_layout() {
     assert_eq!(active.loaded().info().audio_inputs, 2);
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active.reconfigure(44_100.0, 512).expect("re-activates");
+    active.reconfigure_at(44_100.0, 512).expect("re-activates");
 
     assert_eq!(
         active.loaded().audio_port_count(&main_thread(), true),
@@ -402,7 +402,7 @@ fn a_successful_rate_change_exposes_the_new_layout() {
     );
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active.reconfigure(44_100.0, 512).expect("re-activates");
+    active.reconfigure_at(44_100.0, 512).expect("re-activates");
 
     let after = (
         active.loaded().info().audio_inputs,

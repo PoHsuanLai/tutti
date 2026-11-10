@@ -29,9 +29,8 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_graph::UmpAt;
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, probe_tag};
@@ -74,7 +73,8 @@ struct ProbeControls {
 impl ProbeControls {
     fn open() -> Self {
         unsafe {
-            let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+            let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+                .expect("re-open reference plugin");
             let set_port_layout = *lib
                 .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_port_layout\0")
                 .expect("set_port_layout symbol present");
@@ -142,7 +142,7 @@ impl ProbeSession<'_> {
 
     /// Load + activate an instance against the currently-selected layout.
     fn activate(&self) -> Active<f32> {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load");
         loaded
@@ -153,7 +153,7 @@ impl ProbeSession<'_> {
 
     /// Load without activating — for the pure metadata queries.
     fn load(&self) -> ClapLoaded {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
@@ -1025,7 +1025,7 @@ fn a_sysex_open_across_a_reset_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 1);
 
     drive_midi_block(&mut inst, first);
-    inst.reconfigure(SAMPLE_RATE * 2.0, MAX_FRAMES)
+    inst.reconfigure_at(SAMPLE_RATE * 2.0, MAX_FRAMES)
         .expect("the probe accepts the new rate");
     drive_midi_block(&mut inst, rest);
     assert_eq!(

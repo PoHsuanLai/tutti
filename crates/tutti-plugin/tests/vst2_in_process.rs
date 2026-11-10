@@ -13,15 +13,12 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
-use tutti_types::SampleRate;
+use tutti_fixtures::main_thread;
 
 use tutti_plugin::error::StateError;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::server::EditorPresence;
 use tutti_plugin_types::{Normalized, ParamId};
-
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -65,15 +62,18 @@ fn clear_probe_env() {
 /// Load the probe through the in-process VST2 path, keeping only the handle —
 /// which is what a real host is left holding once the node is in a graph.
 fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
-    let path: PathBuf = probe_path::probe_path().clone();
+    let path: PathBuf = tutti_fixtures::vst2_probe().to_path_buf();
     clear_probe_env();
     for (k, v) in env {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_unit, handle) =
-        tutti_plugin::in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
-            .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
+    let (_unit, handle) = tutti_plugin::in_process_vst2_client(
+        &main_thread(),
+        &path,
+        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+    )
+    .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.
     clear_probe_env();
     handle
@@ -251,7 +251,7 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     // `.vst` bundles. So copy the image to a `.vst` name: that is the shape a
     // host actually meets, and it is what makes this test exercise the routing
     // rather than the naming.
-    let src = probe_path::probe_path().clone();
+    let src = tutti_fixtures::vst2_probe().to_path_buf();
     let staged = std::env::temp_dir().join("tutti-probe-open-routing.vst");
     std::fs::copy(&src, &staged)
         .unwrap_or_else(|e| panic!("staging {src:?} -> {staged:?} failed: {e}"));
@@ -277,7 +277,7 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
         &staged,
-        SampleRate::new(SAMPLE_RATE),
+        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .expect("Plugin::open should load a .vst in-process");
     clear_probe_env();
@@ -344,7 +344,7 @@ fn the_node_carries_midi_on_its_event_ports() {
     // `Plugin::open` routes on the extension and the probe is built as a plain
     // `.dylib`, so stage it under a `.vst` name — same reason as
     // `open_routes_a_vst2_to_the_in_process_backend`.
-    let src = probe_path::probe_path().clone();
+    let src = tutti_fixtures::vst2_probe().to_path_buf();
     let staged = std::env::temp_dir().join("tutti-probe-midi-ports.vst");
     std::fs::copy(&src, &staged)
         .unwrap_or_else(|e| panic!("staging {src:?} -> {staged:?} failed: {e}"));
@@ -374,7 +374,7 @@ fn the_node_carries_midi_on_its_event_ports() {
         let plugin = tutti_plugin::catalog::Plugin::open(
             Some(&main_thread()),
             &staged,
-            SampleRate::new(SAMPLE_RATE),
+            tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
         )
         .unwrap_or_else(|e| panic!("in-process VST2 load failed for {staged:?}: {e:?}"));
         clear_probe_env();
@@ -418,7 +418,7 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         ("48000", PluginTail::Finite(Samples(48_000))),
     ] {
         let _lock = lock_probe();
-        let path: PathBuf = probe_path::probe_path().clone();
+        let path: PathBuf = tutti_fixtures::vst2_probe().to_path_buf();
         clear_probe_env();
         // SAFETY: the probe lock is held, so no other test thread is touching
         // the environment.
@@ -426,7 +426,7 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         let (unit, _handle) = tutti_plugin::in_process_vst2_client(
             &main_thread(),
             &path,
-            SampleRate::new(SAMPLE_RATE),
+            tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
         )
         .unwrap_or_else(|e| panic!("in-process VST2 load failed: {e:?}"));
         clear_probe_env();
@@ -460,8 +460,8 @@ fn midi_past_the_blocks_capacity_is_counted() {
     clear_probe_env();
     let (unit, _handle) = tutti_plugin::in_process_vst2_client(
         &main_thread(),
-        probe_path::probe_path(),
-        SampleRate::new(SAMPLE_RATE),
+        tutti_fixtures::vst2_probe(),
+        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .expect("load the probe");
     let controls = unit.controls();
@@ -491,10 +491,4 @@ fn midi_past_the_blocks_capacity_is_counted() {
         controls.dropped_midi_in(),
         (300 - MIDI_STACK_CAPACITY) as u64
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

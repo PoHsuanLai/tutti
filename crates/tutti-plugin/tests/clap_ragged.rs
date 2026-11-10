@@ -21,7 +21,8 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, Rig, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use tutti_graph::{ForkMode, Transport};
 use tutti_types::Samples;
@@ -116,7 +117,7 @@ fn live_shaped(quantum: usize, n: usize) -> Vec<usize> {
 /// same step) → the output is a chunk early → fails.
 #[test]
 fn ragged_blocks_are_delayed_by_exactly_the_declared_latency() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     const DECLARED: usize = PROBE_LATENCY + 512;
 
@@ -144,7 +145,7 @@ fn ragged_blocks_are_delayed_by_exactly_the_declared_latency() {
 /// the node declares the slab's 4096 + 137 while delaying 169 → fails.
 #[test]
 fn a_max_block_below_the_chunk_is_the_pipeline() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     const DECLARED: usize = PROBE_LATENCY + 32;
 

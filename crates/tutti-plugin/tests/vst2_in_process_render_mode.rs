@@ -30,14 +30,12 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{InProcessVst2Client, RenderMode, in_process_vst2_client};
 use tutti_types::SampleRate;
 use tutti_vst2_test_plugin::ProcessCapture;
-
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -117,7 +115,7 @@ struct Loaded {
 }
 
 fn load() -> Loaded {
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     let (unit, handle) =
         in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
@@ -280,10 +278,4 @@ fn a_rate_change_keeps_the_render_mode() {
         cap.process_level, LEVEL_OFFLINE,
         "the rate change re-activated the plugin in realtime mode"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

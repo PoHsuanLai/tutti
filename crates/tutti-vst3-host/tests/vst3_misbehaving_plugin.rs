@@ -40,12 +40,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 use tutti_vst3_host::{AudioBuffer, InputEvents, LoadOptions, TransportInfo, Vst3Loaded};
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, LoadError, ParamExt, StateExt};
+use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 /// The in-repo probe bundle, built by `build.rs`.
 const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
@@ -886,10 +887,4 @@ fn a_refused_connection_does_not_fail_the_load() {
         !out.is_empty(),
         "the plugin produced no output buses after a refused connect"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

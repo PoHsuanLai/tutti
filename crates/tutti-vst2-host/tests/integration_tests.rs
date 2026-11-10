@@ -805,7 +805,10 @@ fn a_program_switch_is_bracketed_in_order() {
     reset_switches(&path);
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
-    assert!(instance.set_program(1), "program 1 is in range");
+    assert!(
+        instance.set_program(&main_thread(), 1),
+        "program 1 is in range"
+    );
 
     assert_eq!(
         preset_trace(&path),
@@ -829,9 +832,12 @@ fn an_out_of_range_program_dispatches_nothing() {
     reset_switches(&path);
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
-    assert!(!instance.set_program(999), "999 is past numPrograms");
     assert!(
-        !instance.set_program(-1),
+        !instance.set_program(&main_thread(), 999),
+        "999 is past numPrograms"
+    );
+    assert!(
+        !instance.set_program(&main_thread(), -1),
         "a negative index is not a program"
     );
 
@@ -850,7 +856,7 @@ fn the_declared_programs_are_listed_with_their_names() {
     let _guard = lock_probe();
     let instance = load_probe_with(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    let programs = instance.programs();
+    let programs = instance.programs(&main_thread());
     assert_eq!(programs.len(), 3, "the probe declared 3 programs");
     assert_eq!(
         programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
@@ -875,7 +881,7 @@ fn an_unnamed_program_keeps_its_index() {
         ("TUTTI_VST2_PROBE_SERVICED_PROGRAMS", "2"),
     ]);
 
-    let programs = instance.programs();
+    let programs = instance.programs(&main_thread());
     assert_eq!(programs.len(), 4, "all declared slots are reported");
     assert_eq!(
         programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),

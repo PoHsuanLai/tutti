@@ -738,7 +738,7 @@ fn automation_push_outcome(delivered: Delivered) -> std::result::Result<(), Edit
 }
 
 impl crate::host::handles::capabilities::HostPresets for SubprocessBackend {
-    fn presets(&self) -> Vec<Preset> {
+    fn presets(&self, _main: &MainThread) -> Vec<Preset> {
         // A crashed subprocess yields `None`; flattened to an empty list
         // because the trait's contract is "what the plugin advertises", and a
         // caller distinguishing "cannot ask" from "listed nothing" reads
@@ -746,11 +746,11 @@ impl crate::host::handles::capabilities::HostPresets for SubprocessBackend {
         self.bridge.presets().unwrap_or_default()
     }
 
-    fn load_preset(&self, id: &PresetId) -> bool {
+    fn load_preset(&self, _main: &MainThread, id: &PresetId) -> bool {
         !self.bridge.is_crashed() && self.bridge.load_preset(id.clone())
     }
 
-    fn current_preset(&self) -> Option<PresetId> {
+    fn current_preset(&self, _main: &MainThread) -> Option<PresetId> {
         self.bridge.current_preset()
     }
 }

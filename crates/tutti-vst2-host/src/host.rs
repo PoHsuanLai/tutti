@@ -292,7 +292,10 @@ impl Host for HostState {
     /// Called from inside the plugin's `processReplacing` — the audio thread.
     /// See [`automate`](Self::automate) for the drop policy.
     fn process_events(&self, events: &vst::api::Events) {
-        let num = events.num_events as usize;
+        use vst::api::{EventType, MidiEvent, SysExEvent};
+
+        // A negative count is no events; it must not become `usize::MAX`.
+        let num = usize::try_from(events.num_events).unwrap_or(0);
         let base = events.events.as_ptr();
         for i in 0..num {
             // SAFETY: the VST2 contract has the plugin supply `num_events`
@@ -300,35 +303,51 @@ impl Host for HostState {
             // the callback; not checked here (the declared `[_; 2]` type is
             // only the header's view of that array).
             let event_ptr = unsafe { *base.add(i) };
-            // SAFETY: `event_ptr` is one of those plugin-supplied pointers,
-            // pointing to an event header valid for this callback.
-            let event = unsafe { &*event_ptr };
+            if event_ptr.is_null() {
+                continue;
+            }
+            // The header is read as raw integers, never as the `EventType` enum: the
+            // plugin's memory can hold a value that is no variant, and reading one
+            // as the enum is undefined behaviour. `read_unaligned`: the header's
+            // alignment (4) does not prove the plugin's event type's.
+            //
+            // SAFETY: `event_ptr` is non-null and one of the plugin-supplied pointers,
+            // each to an event whose header (type and byte size, two `i32`) is
+            // readable for this callback.
+            let (event_type, declared) = unsafe {
+                let header = event_ptr.cast::<i32>();
+                (
+                    std::ptr::read_unaligned(header),
+                    std::ptr::read_unaligned(header.add(1)),
+                )
+            };
             // Read a whole struct only if the plugin says it is that big.
-            let declared = usize::try_from(event.byte_size).unwrap_or(0);
-            if matches!(event.event_type, vst::api::EventType::Midi)
-                && declared >= std::mem::size_of::<vst::api::MidiEvent>()
+            let declared = usize::try_from(declared).unwrap_or(0);
+            if event_type == EventType::Midi as i32 && declared >= std::mem::size_of::<MidiEvent>()
             {
-                // SAFETY: the event type is Midi and `byte_size` declares at
-                // least `size_of::<MidiEvent>()` bytes, so the pointee is a
-                // `MidiEvent` valid for this callback; header alignment is
-                // assumed to match the plugin's allocation (not checked).
-                let midi_event = unsafe { &*(event_ptr as *const vst::api::MidiEvent) };
-                if let Some(converted) = to_midi(midi_event)
+                // `read_unaligned`, as for the SysEx arm: neither the pointer's
+                // alignment nor the event type's is established. The struct holds no
+                // owned data, so the copy needs no drop.
+                //
+                // SAFETY: the event type is Midi and `byte_size` declares at least
+                // `size_of::<MidiEvent>()` readable bytes at `event_ptr`; the type
+                // field was just checked to be the `Midi` discriminant, and every
+                // other field is an integer.
+                let midi_event = unsafe { std::ptr::read_unaligned(event_ptr.cast::<MidiEvent>()) };
+                if let Some(converted) = to_midi(&midi_event)
                     && self.midi_out_tx.push(converted).is_err()
                 {
                     self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
                 }
-            } else if matches!(event.event_type, vst::api::EventType::SysEx)
-                && declared >= std::mem::size_of::<vst::api::SysExEvent>()
+            } else if event_type == EventType::SysEx as i32
+                && declared >= std::mem::size_of::<SysExEvent>()
             {
-                // `read_unaligned`: the header's alignment (4) does not prove the
-                // plugin's `SysExEvent` (8). The struct holds no owned data, so
-                // the copy needs no drop.
+                // The struct holds no owned data, so the copy needs no drop.
                 // SAFETY: the event type is SysEx and `byte_size` declares at
                 // least `size_of::<SysExEvent>()` readable bytes at
-                // `event_ptr`; the unaligned read needs no alignment.
-                let sysex =
-                    unsafe { std::ptr::read_unaligned(event_ptr.cast::<vst::api::SysExEvent>()) };
+                // `event_ptr`; the unaligned read needs no alignment, and the type
+                // field was just checked to be the `SysEx` discriminant.
+                let sysex = unsafe { std::ptr::read_unaligned(event_ptr.cast::<SysExEvent>()) };
                 self.push_sysex_out(&sysex);
             }
         }
@@ -807,6 +826,67 @@ mod tests {
         sysex.byte_size = std::mem::size_of::<vst::api::SysExEvent>() as i32;
         deliver(&host, &mut sysex);
         assert!(!host.midi_out_tx.is_empty());
+    }
+
+    /// **A malformed event list from the plugin is ignored, not followed.** A
+    /// negative `num_events` is no events (it was `as usize`, about 2^64
+    /// iterations over the array), a null entry is skipped, and an event whose
+    /// type word is no `EventType` variant is skipped without ever being read as
+    /// the enum (reading one is undefined behaviour, which no test can show).
+    ///
+    /// Mutation (run): `usize::try_from(..).unwrap_or(0)` -> `as usize`: the
+    /// negative list reads the null second slot and dereferences it, and the test
+    /// dies on SIGSEGV. Mutation (run): drop the `is_null` check: the null entry
+    /// is dereferenced, same death. Mutation (run): drop the type-word comparison
+    /// away (treat every word as `Midi`): the valid note under the bogus word is
+    /// queued and `is_empty` fails.
+    #[test]
+    fn a_malformed_event_list_is_ignored() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+
+        let negative = vst::api::Events {
+            num_events: -1,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        host.process_events(&negative);
+        let negative_max = vst::api::Events {
+            num_events: i32::MIN,
+            ..negative
+        };
+        host.process_events(&negative_max);
+
+        // Both entries null: skipped, not dereferenced.
+        let nulls = vst::api::Events {
+            num_events: 2,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        host.process_events(&nulls);
+
+        // A valid note-on, but with a type word (77) that is no variant: it must not
+        // be read as a `Midi` event, nor as the enum at all.
+        let note = tutti_midi_types::MidiEvent::note_on(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
+            60,
+            0x8000,
+        );
+        let valid = crate::midi::from_midi(&note).expect("MIDI-1 form");
+        // SAFETY: `MidiEvent` is 32 bytes of integers and one enum, read here as
+        // plain words; the enum is a valid `Midi` at this point (the bogus word is
+        // written into the words afterwards).
+        let mut bogus: [i32; 8] = unsafe { std::mem::transmute(valid) };
+        bogus[0] = 77;
+        let events = vst::api::Events {
+            num_events: 1,
+            _reserved: 0,
+            events: [bogus.as_mut_ptr().cast(), std::ptr::null_mut()],
+        };
+        host.process_events(&events);
+
+        assert!(host.midi_out_tx.is_empty());
+        assert_eq!(host.dropped_midi_out(), 0);
     }
 
     /// A SysEx that does not fit the queue is dropped whole and counted once,

@@ -136,9 +136,15 @@ impl<'a> Event<'a> {
                     // `SysExEvent`, so the larger type is readable at this pointer.
                     let event: &api::SysExEvent =
                         unsafe { &*(event as *const api::Event as *const api::SysExEvent) };
-                    // SAFETY: the caller guarantees `system_data` addresses `data_size`
-                    // valid bytes; `data_size` is not checked for being negative.
-                    unsafe { slice::from_raw_parts(event.system_data, event.data_size as usize) }
+                    // A negative size or a null payload is an empty one: the slice must be
+                    // non-null and its length a valid `usize`.
+                    match usize::try_from(event.data_size) {
+                        Ok(len) if len > 0 && !event.system_data.is_null() =>
+                        // SAFETY: the caller guarantees `system_data` addresses `data_size`
+                        // valid bytes; both are checked above to be usable.
+                        unsafe { slice::from_raw_parts(event.system_data, len) },
+                        _ => &[],
+                    }
                 },
 
                 delta_frames: event.delta_frames,

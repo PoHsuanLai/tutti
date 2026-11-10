@@ -97,17 +97,30 @@ pub extern "C" fn get_parameter(effect: *mut AEffect, index: i32) -> f32 {
 /// Copy a string into a destination buffer.
 ///
 /// String will be cut at `max` characters.
+/// Returns `0` (not handled) for a null `dst`.
+///
+/// `max` counts the NUL, as the SDK's `kVstMax*Len` constants do. What is written is the
+/// string up to its first NUL, cut to at most `max - 1` bytes at a char boundary, then a
+/// NUL: always terminated, and nothing is written past that NUL, so a destination that
+/// is shorter than `max` but holds the string is not overrun by a clearing pass.
 fn copy_string(dst: *mut c_void, src: &str, max: usize) -> isize {
-    // SAFETY: NOT ESTABLISHED: `dst` is the host's buffer for the opcode and is assumed
-    // to hold at least `max` writable bytes (callers pass the SDK's fixed size); this
-    // safe fn does not and cannot check it. `src` is a live `&str`, read for `min(max, len)`.
+    if dst.is_null() || max == 0 {
+        return 0;
+    }
+    let src = src.split('\0').next().unwrap_or("");
+    let mut len = src.len().min(max - 1);
+    while !src.is_char_boundary(len) {
+        len -= 1;
+    }
+    // SAFETY: `dst` is non-null and the opcode's buffer, which the VST2 ABI has hold at
+    // least `max` writable bytes (the callers pass the SDK's fixed size for the opcode;
+    // a host that offers less is outside the ABI, and this fn does not and cannot check
+    // it). Exactly `len + 1 <= max` bytes are written. `src` is a live `&str`, read for
+    // `len`, and a plugin's buffer does not overlap it.
     unsafe {
-        use libc::{memcpy, memset};
-        use std::cmp::min;
-
-        let dst = dst as *mut c_void;
-        memset(dst, 0, max);
-        memcpy(dst, src.as_ptr() as *const c_void, min(max, src.len()));
+        let dst = dst as *mut u8;
+        std::ptr::copy_nonoverlapping(src.as_ptr(), dst, len);
+        dst.add(len).write(0);
     }
 
     1 // Success
@@ -505,8 +518,14 @@ pub fn host_dispatch(
             return copy_string(ptr, &host.get_info().2, MAX_PRODUCT_STR_LEN);
         }
         Ok(OpCode::ProcessEvents) => {
+            // A null or misaligned `VstEvents` is a malformed call: not handled.
+            if ptr.is_null() || !(ptr as *const api::Events).is_aligned() {
+                return 0;
+            }
             // SAFETY: VST2 ABI: for `audioMasterProcessEvents`, `ptr` is the plugin's
-            // `VstEvents`, valid for the call. Not checked for null.
+            // `VstEvents`, valid for the call; non-null and aligned (checked above). What
+            // it holds beyond the header (the count's worth of event pointers) is the
+            // plugin's word, which `Host::process_events` receives unchecked.
             host.process_events(unsafe { &*(ptr as *const api::Events) });
         }
 
@@ -574,11 +593,113 @@ pub fn host_dispatch(
     0
 }
 
-// Read a string from the `ptr` buffer
+/// Read a string from the `ptr` buffer. A null `ptr` reads as the empty string.
 fn read_string(ptr: *mut c_void) -> String {
     use std::ffi::CStr;
 
-    // SAFETY: NOT ESTABLISHED: `ptr` is assumed to be a non-null, NUL-terminated C
-    // string from the host/plugin; this safe fn checks neither (some callers check null).
+    if ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: `ptr` is non-null (checked above), and the VST2 ABI has every opcode that
+    // passes a string send a NUL-terminated C string that the sender keeps valid for the
+    // call. The length is found by scanning for the NUL, so a sender that breaks that
+    // is the only way to read past the buffer; it cannot be checked from here.
     String::from_utf8_lossy(unsafe { CStr::from_ptr(ptr as *mut c_char).to_bytes() }).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// **`copy_string` writes the string, a NUL, and nothing past it.** It used to
+    /// clear `max` bytes first (a destination that holds the string but not `max`
+    /// bytes was overrun) and to leave a string of `max` bytes or more with no NUL.
+    ///
+    /// Mutation (run): clear `max` bytes before the copy again (`memset`): the
+    /// sentinel past the NUL is cleared and the first assertion fails. Mutation
+    /// (run): copy `min(max, len)` bytes instead of `max - 1`: the long string has
+    /// no NUL and the third assertion fails.
+    #[test]
+    fn copy_string_stops_at_its_nul_and_always_has_one() {
+        let mut dst = [0xAAu8; 16];
+        assert_eq!(copy_string(dst.as_mut_ptr().cast(), "hi", 16), 1);
+        assert_eq!(&dst[..3], b"hi\0");
+        assert!(dst[3..].iter().all(|b| *b == 0xAA), "wrote past the NUL");
+
+        // A string at least `max` long is cut to `max - 1` and terminated.
+        let mut dst = [0xAAu8; 16];
+        assert_eq!(copy_string(dst.as_mut_ptr().cast(), "abcdefghij", 8), 1);
+        assert_eq!(&dst[..8], b"abcdefg\0");
+        assert_eq!(dst[8], 0xAA, "wrote past max");
+
+        // Not cut inside a char.
+        let mut dst = [0xAAu8; 8];
+        copy_string(dst.as_mut_ptr().cast(), "aé", 3);
+        assert_eq!(&dst[..2], b"a\0");
+
+        // An interior NUL ends it.
+        let mut dst = [0xAAu8; 8];
+        copy_string(dst.as_mut_ptr().cast(), "a\0b", 8);
+        assert_eq!(&dst[..2], b"a\0");
+        assert_eq!(dst[2], 0xAA);
+    }
+
+    /// A null destination is not handled (`0`), not written to.
+    ///
+    /// Mutation (run): remove the null check: `copy_string` writes to address 0
+    /// and the test aborts on a signal.
+    #[test]
+    fn copy_string_to_null_is_not_handled() {
+        assert_eq!(copy_string(std::ptr::null_mut(), "x", 8), 0);
+        assert_eq!(
+            copy_string(std::ptr::NonNull::<u8>::dangling().as_ptr().cast(), "x", 0),
+            0
+        );
+    }
+
+    struct Counting(AtomicUsize);
+
+    impl Host for Counting {
+        fn process_events(&self, _events: &api::Events) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// **A plugin's malformed host calls are answered `0`, not dereferenced.** A
+    /// null `VstEvents`, a misaligned one, and a null string buffer.
+    ///
+    /// Mutation (run): drop the null check on `audioMasterProcessEvents`: the null
+    /// call dereferences address 0 and the test aborts on a signal. Mutation (run):
+    /// drop the alignment check: the misaligned call reaches the host and the
+    /// count assertion fails.
+    #[test]
+    fn malformed_host_calls_are_not_followed() {
+        let host = Counting(AtomicUsize::new(0));
+        let process_events = crate::host::OpCode::ProcessEvents as i32;
+        let null: *mut c_void = std::ptr::null_mut();
+        let no_effect: *mut AEffect = std::ptr::null_mut();
+
+        assert_eq!(
+            host_dispatch(&host, no_effect, process_events, 0, 0, null, 0.0),
+            0
+        );
+        let misaligned = (std::mem::align_of::<api::Events>() as isize + 1) as *mut c_void;
+        assert_eq!(
+            host_dispatch(&host, no_effect, process_events, 0, 0, misaligned, 0.0),
+            0
+        );
+        assert_eq!(
+            host.0.load(Ordering::SeqCst),
+            0,
+            "a bad pointer was followed"
+        );
+
+        for opcode in [
+            crate::host::OpCode::GetVendorString as i32,
+            crate::host::OpCode::GetProductString as i32,
+        ] {
+            assert_eq!(host_dispatch(&host, no_effect, opcode, 0, 0, null, 0.0), 0);
+        }
+    }
 }

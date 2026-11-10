@@ -163,8 +163,8 @@ impl Control for Vst2Loaded {
     /// a position in `[0, numPrograms)` — so unlike AU's sparse selectors these
     /// are genuinely dense. Unnamed slots are kept: dropping one would renumber
     /// every program after it.
-    fn presets(&mut self, _main: &MainThread) -> Vec<Preset> {
-        self.programs()
+    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+        self.programs(main)
             .into_iter()
             .map(|(index, name)| Preset::new(PresetId::Number(index), name))
             .collect()
@@ -172,14 +172,14 @@ impl Control for Vst2Loaded {
 
     /// Switch program, bracketed by `effBeginSetProgram`/`effEndSetProgram`.
     /// `false` for an id this format cannot address.
-    fn load_preset(&mut self, _main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
         match id.number() {
-            Some(index) => self.set_program(index),
+            Some(index) => self.set_program(main, index),
             None => false,
         }
     }
 
-    fn current_preset(&mut self, _main: &MainThread) -> Option<PresetId> {
-        Some(PresetId::Number(self.current_program()))
+    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+        Some(PresetId::Number(self.current_program(main)))
     }
 }

@@ -56,6 +56,7 @@ pub trait Editor {
 
 /// Rectangle used to specify dimensions of editor window.
 #[doc(hidden)]
+#[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Rect {
     /// Y value in pixels of top side.
@@ -152,4 +153,23 @@ pub enum Key {
     Control,
     Alt,
     Equals,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Rect;
+
+    /// `Rect` is read as the plugin's `ERect` (four `i16`: top, left, bottom,
+    /// right), so its layout is `repr(C)`. No test can fail on the missing
+    /// attribute: `repr(Rust)` happens to keep field order for four equal
+    /// fields. This pins the layout the attribute guarantees.
+    #[test]
+    fn rect_has_the_erect_layout() {
+        assert_eq!(std::mem::size_of::<Rect>(), 8);
+        assert_eq!(std::mem::align_of::<Rect>(), 2);
+        assert_eq!(std::mem::offset_of!(Rect, top), 0);
+        assert_eq!(std::mem::offset_of!(Rect, left), 2);
+        assert_eq!(std::mem::offset_of!(Rect, bottom), 4);
+        assert_eq!(std::mem::offset_of!(Rect, right), 6);
+    }
 }

@@ -10,8 +10,8 @@ mod support;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use support::rig::{RATE, Rig, timgm6mb, u7};
-use tutti_ump::{Bank, Voice2};
+use support::rig::{RATE, Rig, timgm6mb};
+use tutti_ump::{Bank, U7, Voice2};
 
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Error, Settings, SoundFontUnit};
@@ -299,8 +299,8 @@ fn cc_64_holds_released_notes_until_the_pedal_lifts() {
 /// 1.0 pair zero-extended (M2-115 section 4.1).
 fn registered(index: u8, msb: u8, lsb: u8) -> Voice2 {
     Voice2::Registered {
-        bank: u7(0),
-        index: u7(index),
+        bank: U7::of(0),
+        index: U7::of(index),
         value: ((u32::from(msb) << 7) | u32::from(lsb)) << 18,
     }
 }
@@ -342,13 +342,13 @@ fn other_controllers_leave_the_pitch_bend_range() {
     let default = crossings(|_| {}, BEND_MAX) as f64;
     for voice in [
         Voice2::Assignable {
-            bank: u7(0),
-            index: u7(0),
+            bank: U7::of(0),
+            index: U7::of(0),
             value: 12 << 25,
         },
         Voice2::Registered {
-            bank: u7(1),
-            index: u7(0),
+            bank: U7::of(1),
+            index: U7::of(0),
             value: 12 << 25,
         },
     ] {
@@ -424,10 +424,10 @@ fn a_program_changes_bank_selects_the_bank() {
         synthesizer.voice2(
             0,
             Voice2::ProgramChange {
-                program: u7(0),
+                program: U7::of(0),
                 bank: bank.map(|msb| Bank {
-                    msb: u7(msb),
-                    lsb: u7(0),
+                    msb: U7::of(msb),
+                    lsb: U7::of(0),
                 }),
             },
         );

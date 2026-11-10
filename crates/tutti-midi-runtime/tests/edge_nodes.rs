@@ -314,7 +314,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     let mut range_ports = Vec::new();
     for (port, _, ev) in seen.iter() {
         if ranges.observe(ev) {
-            assert_eq!(((ev.0[0] >> 16) & 0x0F) as u8, *port as u8);
+            assert_eq!(ev.channel().map(u8::from), Some(*port as u8));
             range_ports.push(*port);
         }
     }

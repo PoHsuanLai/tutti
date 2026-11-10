@@ -20,14 +20,6 @@ use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
 
-fn key(n: u8) -> NoteNumber {
-    NoteNumber::new(n).unwrap()
-}
-
-fn u7(n: u8) -> U7 {
-    U7::new(n).unwrap()
-}
-
 /// Path to the committed test SoundFont.
 fn test_soundfont_path() -> PathBuf {
     tutti_fixtures::asset("soundfonts/TimGM6mb.sf2")
@@ -424,7 +416,7 @@ fn test_note_on_produces_audio() {
         Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play middle C
-    unit.note_on(MidiChannel::of(0), key(60), u7(100));
+    unit.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(100));
 
     let samples = render_samples(&mut unit, 2000);
     let level = rms(&samples);
@@ -441,14 +433,14 @@ fn test_velocity_affects_volume() {
     let mut unit_soft = Hand::new(
         SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit"),
     );
-    unit_soft.note_on(MidiChannel::of(0), key(60), u7(30));
+    unit_soft.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(30));
     let samples_soft = render_samples(&mut unit_soft, 2000);
     let rms_soft = rms(&samples_soft);
 
     // Loud note
     let mut unit_loud =
         Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
-    unit_loud.note_on(MidiChannel::of(0), key(60), u7(127));
+    unit_loud.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(127));
     let samples_loud = render_samples(&mut unit_loud, 2000);
     let rms_loud = rms(&samples_loud);
 
@@ -469,12 +461,12 @@ fn test_note_off_stops_sound() {
         Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play note
-    unit.note_on(MidiChannel::of(0), key(60), u7(100));
+    unit.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(100));
     let samples_playing = render_samples(&mut unit, 500);
     let rms_playing = rms(&samples_playing);
 
     // Release note
-    unit.note_off(MidiChannel::of(0), key(60));
+    unit.note_off(MidiChannel::of(0), NoteNumber::of(60));
 
     // Wait for release to complete (longer for piano sounds)
     let _ = render_samples(&mut unit, 20000);
@@ -501,16 +493,16 @@ fn test_polyphony_multiple_notes() {
     let mut unit_single = Hand::new(
         SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit"),
     );
-    unit_single.note_on(MidiChannel::of(0), key(60), u7(80));
+    unit_single.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(80));
     let samples_single = render_samples(&mut unit_single, 2000);
     let rms_single = rms(&samples_single);
 
     // Chord (3 notes)
     let mut unit_chord =
         Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
-    unit_chord.note_on(MidiChannel::of(0), key(60), u7(80)); // C
-    unit_chord.note_on(MidiChannel::of(0), key(64), u7(80)); // E
-    unit_chord.note_on(MidiChannel::of(0), key(67), u7(80)); // G
+    unit_chord.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(80)); // C
+    unit_chord.note_on(MidiChannel::of(0), NoteNumber::of(64), U7::of(80)); // E
+    unit_chord.note_on(MidiChannel::of(0), NoteNumber::of(67), U7::of(80)); // G
     let samples_chord = render_samples(&mut unit_chord, 2000);
     let rms_chord = rms(&samples_chord);
 
@@ -531,9 +523,9 @@ fn test_reset_silences_all_notes() {
         Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play several notes
-    unit.note_on(MidiChannel::of(0), key(60), u7(100));
-    unit.note_on(MidiChannel::of(0), key(64), u7(100));
-    unit.note_on(MidiChannel::of(0), key(67), u7(100));
+    unit.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(100));
+    unit.note_on(MidiChannel::of(0), NoteNumber::of(64), U7::of(100));
+    unit.note_on(MidiChannel::of(0), NoteNumber::of(67), U7::of(100));
 
     // Confirm audio is playing
     let samples_playing = render_samples(&mut unit, 500);
@@ -566,7 +558,7 @@ fn test_clone_creates_independent_instance() {
         Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play note on original
-    unit.note_on(MidiChannel::of(0), key(60), u7(100));
+    unit.note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(100));
     let _ = render_samples(&mut unit, 100);
 
     // Clone
@@ -576,7 +568,7 @@ fn test_clone_creates_independent_instance() {
     // already sounding — a clone is not a fresh voice. Independence is
     // therefore checked by playing a *different* note on the clone and
     // asserting the two renders diverge.
-    clone.note_on(MidiChannel::of(0), key(72), u7(100));
+    clone.note_on(MidiChannel::of(0), NoteNumber::of(72), U7::of(100));
 
     let samples_original = render_samples(&mut unit, 1000);
     let samples_clone = render_samples(&mut clone, 1000);
@@ -620,7 +612,7 @@ fn digest(samples: &[(f32, f32)]) -> u64 {
 /// rounding assert).
 #[test]
 fn a_preset_units_first_note_on_renders_that_preset() {
-    const PRESET: U7 = U7::new(40).unwrap();
+    const PRESET: U7 = U7::of(40);
     const CHANNEL: MidiChannel = MidiChannel::of(3);
     let rate = tutti_types::SampleRate(44_100.0);
     let unit = SoundFontUnit::with_preset(load_test_soundfont(), rate, CHANNEL, PRESET)
@@ -640,7 +632,7 @@ fn a_preset_units_first_note_on_renders_that_preset() {
     );
 
     let mut hand = Hand::new(unit);
-    hand.note_on(CHANNEL, key(60), u7(100));
+    hand.note_on(CHANNEL, NoteNumber::of(60), U7::of(100));
     let out = render_process_blocks(&mut hand, support::BLOCK, 2048 / support::BLOCK, &[]);
     assert!(rms(&out) > 1e-3, "the note sounds: rms {}", rms(&out));
 

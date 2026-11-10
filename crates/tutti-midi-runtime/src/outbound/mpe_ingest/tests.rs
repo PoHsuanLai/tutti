@@ -35,7 +35,7 @@ fn at(offset: usize, ump: Ump) -> UmpAt {
 
 /// The channel nibble of a channel voice packet.
 fn channel_of(ump: &Ump) -> u8 {
-    ((ump.0[0] >> 16) & 0x0F) as u8
+    u8::from(ump.channel().expect("a channel voice packet"))
 }
 
 fn note_on(channel: u8, note: u8, vel_u7: u8) -> UmpAt {

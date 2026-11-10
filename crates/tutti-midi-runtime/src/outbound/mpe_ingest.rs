@@ -99,7 +99,7 @@ fn send_rpns(
                     channel: MidiChannel::masked(channel),
                 },
                 Voice2::Registered {
-                    bank: U7::new(RPN_BANK_MPE).expect("the MPE bank is 7-bit"),
+                    bank: U7::of(RPN_BANK_MPE),
                     index: U7::new(index).expect("an RPN index is 7-bit"),
                     value: data,
                 },

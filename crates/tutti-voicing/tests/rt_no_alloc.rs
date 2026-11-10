@@ -45,7 +45,6 @@ fn step_is_allocation_free_in_every_mode() {
         core.set_zones(Zones::new(3, 0).unwrap());
         let mut voices: Vec<VoiceView> = Vec::with_capacity(4096);
         let ch = |n| MidiChannel::of(n);
-        let key = |n| NoteNumber::new(n).unwrap();
         let cc = |n: u8, v: u32| Voice2::ControlChange {
             controller: CCNumber::of(n),
             value: v << 25,
@@ -56,17 +55,17 @@ fn step_is_allocation_free_in_every_mode() {
                 let c = ch((round % 3) as u8);
                 let msgs = [
                     Voice2::NoteOn {
-                        note: key(k),
+                        note: NoteNumber::of(k),
                         velocity: 0x8000,
                         attribute: Attribute::None,
                     },
                     Voice2::NoteOn {
-                        note: key(k + 3),
+                        note: NoteNumber::of(k + 3),
                         velocity: 0x4000,
                         attribute: Attribute::None,
                     },
                     Voice2::NoteOff {
-                        note: key(k + 3),
+                        note: NoteNumber::of(k + 3),
                         velocity: 0x8000,
                         attribute: Attribute::None,
                     },
@@ -74,7 +73,7 @@ fn step_is_allocation_free_in_every_mode() {
                     cc(66, round % 3 / 2 * 127),
                     Voice2::PitchBend(round.wrapping_mul(0x0101_0101)),
                     Voice2::NoteOff {
-                        note: key(k),
+                        note: NoteNumber::of(k),
                         velocity: 0x8000,
                         attribute: Attribute::None,
                     },

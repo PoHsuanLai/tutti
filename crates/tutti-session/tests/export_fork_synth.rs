@@ -32,7 +32,7 @@ const BEAT_48K: usize = 32_000;
 const NOTE: usize = 4_096;
 /// A preset of the test soundfont that is not the default piano, so a
 /// fork that lost the live unit's preset is heard.
-const PRESET: U7 = U7::new(24).unwrap();
+const PRESET: U7 = U7::of(24);
 
 fn config(seconds: f64) -> ExportConfig {
     ExportConfig {

@@ -1584,7 +1584,7 @@ impl RefHeld {
                     addr(g, c),
                     Voice1::ControlChange {
                         controller: cc,
-                        value: U7::new(0).unwrap(),
+                        value: U7::of(0),
                     },
                 )
             };
@@ -1609,7 +1609,7 @@ impl RefHeld {
                     addr(g, c),
                     Voice1::NoteOff {
                         note,
-                        velocity: U7::new(0).unwrap(),
+                        velocity: U7::of(0),
                     },
                 )
             };

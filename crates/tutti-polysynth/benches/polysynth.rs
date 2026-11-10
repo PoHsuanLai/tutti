@@ -239,13 +239,13 @@ fn bench_events(c: &mut Criterion) {
         group: MidiGroup::FIRST,
         channel: MidiChannel::FIRST,
     };
-    let note = NoteNumber::new(36).expect("a note");
+    let note = NoteNumber::of(36);
     let wire = [
         Message::Midi1(
             address,
             Voice1::ControlChange {
                 controller: CCNumber::of(1),
-                value: U7::new(64).expect("7 bits"),
+                value: U7::of(64),
             },
         ),
         Message::Midi2(
@@ -255,13 +255,13 @@ fn bench_events(c: &mut Criterion) {
                 value: 0x8000_0000,
             },
         ),
-        Message::Midi1(address, Voice1::PitchBend(U14::new(9000).expect("14 bits"))),
+        Message::Midi1(address, Voice1::PitchBend(U14::of(9000))),
         Message::Midi2(address, Voice2::PitchBend(0x9000_0000)),
         Message::Midi1(
             address,
             Voice1::PolyPressure {
                 note,
-                pressure: U7::new(50).expect("7 bits"),
+                pressure: U7::of(50),
             },
         ),
         Message::Midi2(

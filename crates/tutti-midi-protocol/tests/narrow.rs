@@ -17,10 +17,6 @@
 use tutti_midi_protocol::{narrow_bend, narrow_value, narrow_velocity, widen};
 use tutti_ump::{CCNumber, NoteNumber, U7, U14, Voice1, Voice2};
 
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap()
-}
-
 /// Table 8, downscale 16 to 7 bits. `0x15FF` is not in the table: it is the
 /// value Table 10's rounding method sends to 11, which the plain shift of
 /// section 3.4 sends to 10.
@@ -78,29 +74,29 @@ fn the_top_bits_are_kept() {
 fn widen_then_narrow_returns_every_seven_bit_value() {
     for v in 0..=127u8 {
         let off = widen(Voice1::NoteOff {
-            note: NoteNumber::new(60).unwrap(),
-            velocity: u7(v),
+            note: NoteNumber::of(60),
+            velocity: U7::of(v),
         });
         let Voice2::NoteOff { velocity, .. } = off else {
             panic!("{off:?}")
         };
-        assert_eq!(narrow_velocity(velocity), u7(v), "velocity {v}");
+        assert_eq!(narrow_velocity(velocity), U7::of(v), "velocity {v}");
 
         let cc = widen(Voice1::ControlChange {
             controller: CCNumber::of(7),
-            value: u7(v),
+            value: U7::of(v),
         });
         let Voice2::ControlChange { value, .. } = cc else {
             panic!("{cc:?}")
         };
-        assert_eq!(narrow_value(value), u7(v), "value {v}");
+        assert_eq!(narrow_value(value), U7::of(v), "value {v}");
     }
 }
 
 #[test]
 fn widen_then_narrow_returns_every_fourteen_bit_bend() {
     for v in 0..=16383u16 {
-        let bend = U14::new(v).unwrap();
+        let bend = U14::of(v);
         let Voice2::PitchBend(wide) = widen(Voice1::PitchBend(bend)) else {
             panic!("{v}")
         };

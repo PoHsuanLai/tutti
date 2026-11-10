@@ -75,11 +75,7 @@ fn the_border_nodes_process_without_allocating() {
     let (tx, rx) = MidiMailbox::pair();
     assert_no_alloc::assert_no_alloc(|| {
         for b in 1..200u32 {
-            keys.note_on(
-                MidiChannel::FIRST,
-                NoteNumber::new(60).unwrap(),
-                U7::new(100).unwrap(),
-            );
+            keys.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
             let at = Beat(f64::from(b) * 512.0 / 24_000.0);
             exec.process(
                 512,

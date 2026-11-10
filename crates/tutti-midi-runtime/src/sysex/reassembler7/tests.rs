@@ -154,7 +154,7 @@ fn system_common_terminates_but_real_time_does_not() {
     assert!(
         r.push(&Ump::from(Message::System(
             MidiGroup::FIRST,
-            System::SongSelect(U7::new(3).unwrap()),
+            System::SongSelect(U7::of(3)),
         )))
         .is_none()
     );

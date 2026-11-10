@@ -10,7 +10,7 @@ fn an_owed_off_is_the_note_off_the_wire_types_build() {
     let key = NoteKey {
         group: MidiGroup::of(3),
         channel: MidiChannel::of(9),
-        note: NoteNumber::new(61).unwrap(),
+        note: NoteNumber::of(61),
     };
     let off = key.off(Offset::ZERO);
     let want = note_off(key.group, key.channel, 61, 0);

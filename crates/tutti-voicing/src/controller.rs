@@ -59,13 +59,6 @@ impl Controller {
 mod tests {
     use super::*;
 
-    fn cc(n: u8) -> CCNumber {
-        CCNumber::of(n)
-    }
-    fn v(n: u8) -> U7 {
-        U7::new(n).unwrap()
-    }
-
     /// The mode messages (124 to 127) also do All Notes Off (MIDI 1.0 Detailed
     /// Specification, Channel Mode Messages; Est, the text is not in the repo).
     ///
@@ -74,7 +67,7 @@ mod tests {
     fn the_mode_messages_release_like_all_notes_off() {
         for n in 123..=127 {
             assert_eq!(
-                Controller::effect(cc(n), v(0)),
+                Controller::effect(CCNumber::of(n), U7::of(0)),
                 Some(Effect::Stop(Stop::Release)),
                 "CC {n}"
             );
@@ -85,15 +78,15 @@ mod tests {
     #[test]
     fn the_pedal_is_down_at_64() {
         assert_eq!(
-            Controller::effect(cc(64), v(63)),
+            Controller::effect(CCNumber::of(64), U7::of(63)),
             Some(Effect::Sustain(false))
         );
         assert_eq!(
-            Controller::effect(cc(64), v(64)),
+            Controller::effect(CCNumber::of(64), U7::of(64)),
             Some(Effect::Sustain(true))
         );
         assert_eq!(
-            Controller::effect(cc(66), v(127)),
+            Controller::effect(CCNumber::of(66), U7::of(127)),
             Some(Effect::Sostenuto(true))
         );
     }
@@ -102,15 +95,15 @@ mod tests {
     #[test]
     fn the_panics_differ_in_what_they_cut() {
         assert_eq!(
-            Controller::effect(cc(120), v(0)),
+            Controller::effect(CCNumber::of(120), U7::of(0)),
             Some(Effect::Stop(Stop::Cut))
         );
         assert_eq!(
-            Controller::effect(cc(123), v(0)),
+            Controller::effect(CCNumber::of(123), U7::of(0)),
             Some(Effect::Stop(Stop::Release))
         );
         assert_eq!(
-            Controller::effect(cc(121), v(0)),
+            Controller::effect(CCNumber::of(121), U7::of(0)),
             Some(Effect::ResetControllers)
         );
     }
@@ -118,7 +111,11 @@ mod tests {
     #[test]
     fn the_rest_is_the_instruments_own() {
         for n in [0u8, 1, 7, 10, 11, 74, 91, 93, 122] {
-            assert_eq!(Controller::effect(cc(n), v(100)), None, "CC {n}");
+            assert_eq!(
+                Controller::effect(CCNumber::of(n), U7::of(100)),
+                None,
+                "CC {n}"
+            );
         }
     }
 }

@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn a_fork_plays_at_the_render_rate_on_the_live_preset() {
         let font = soundfont();
-        let live = unit(&font, LIVE, U7::new(24).unwrap());
+        let live = unit(&font, LIVE, U7::of(24));
         let source = live.fork_template();
 
         for rate in [LIVE, SampleRate(96_000.0)] {
@@ -165,11 +165,7 @@ mod tests {
                 "the fork shares the decoded SoundFont"
             );
             let out = render(fork, rate, 4_096);
-            let reference = render(
-                Box::new(unit(&font, rate, U7::new(24).unwrap())),
-                rate,
-                4_096,
-            );
+            let reference = render(Box::new(unit(&font, rate, U7::of(24))), rate, 4_096);
             assert!(reference.iter().any(|&s| s != 0.0), "the note sounds");
             assert_eq!(out, reference, "{rate:?}: the note at the render's rate");
         }
@@ -187,12 +183,8 @@ mod tests {
     #[test]
     fn a_fork_releases_every_held_key() {
         let font = soundfont();
-        let mut live = unit(&font, LIVE, U7::new(16).unwrap());
-        live.note_on(
-            MidiChannel::FIRST,
-            NoteNumber::new(60).unwrap(),
-            U7::new(100).unwrap(),
-        );
+        let mut live = unit(&font, LIVE, U7::of(16));
+        live.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
         let fork = live
             .fork_template()
             .fork(ForkMode::Live)

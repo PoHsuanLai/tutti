@@ -292,8 +292,8 @@ mod tests {
     // status nibble for NoteOff's in `note_on` and the first assert fails.
     #[test]
     fn note_on_and_off_have_the_spec_layout() {
-        let g = MidiGroup::masked(2);
-        let c = MidiChannel::masked(5);
+        let g = MidiGroup::of(2);
+        let c = MidiChannel::of(5);
         // M2-104 §7.4.2: type 4, group, status 9 / 8, channel; note, attr type;
         // velocity in the high half of word 1.
         assert_eq!(

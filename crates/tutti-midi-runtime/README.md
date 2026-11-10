@@ -86,7 +86,7 @@ use tutti_midi_types::MidiMessage;
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 let (tx, rx) = MidiMailbox::pair();
-assert!(tx.note_on(MidiChannel::FIRST, NoteNumber::new(60).unwrap(), U7::new(100).unwrap()));
+assert!(tx.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)));
 
 let mut block = [(0, Ump([0; 4])); 8];
 assert_eq!(rx.poll_into(&mut block), 1);

@@ -35,14 +35,10 @@ use tutti_ump::{
     Voice1, Voice2, decode,
 };
 
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap()
-}
-
 fn at(group: u8, channel: u8) -> Address {
     Address {
-        group: MidiGroup::new(group).unwrap(),
-        channel: MidiChannel::new(channel).unwrap(),
+        group: MidiGroup::of(group),
+        channel: MidiChannel::of(channel),
     }
 }
 
@@ -52,8 +48,8 @@ fn cc_on(address: Address, controller: u8, value: u8) -> Ump {
     Message::Midi1(
         address,
         Voice1::ControlChange {
-            controller: CCNumber::new(controller).unwrap(),
-            value: u7(value),
+            controller: CCNumber::of(controller),
+            value: U7::of(value),
         },
     )
     .into()
@@ -82,8 +78,8 @@ fn registered(bank: u8, index: u8, value: u32) -> Message {
     Message::Midi2(
         at(A.0, A.1),
         Voice2::Registered {
-            bank: u7(bank),
-            index: u7(index),
+            bank: U7::of(bank),
+            index: U7::of(index),
             value,
         },
     )
@@ -93,8 +89,8 @@ fn assignable(bank: u8, index: u8, value: u32) -> Message {
     Message::Midi2(
         at(A.0, A.1),
         Voice2::Assignable {
-            bank: u7(bank),
-            index: u7(index),
+            bank: U7::of(bank),
+            index: U7::of(index),
             value,
         },
     )
@@ -343,8 +339,8 @@ fn the_group_and_channel_are_kept() {
         vec![Message::Midi2(
             a,
             Voice2::Registered {
-                bank: u7(0),
-                index: u7(0),
+                bank: U7::of(0),
+                index: U7::of(0),
                 value: zx(2, 0),
             }
         )]
@@ -375,16 +371,16 @@ fn groups_keep_their_own_runs() {
             Message::Midi2(
                 g0,
                 Voice2::Registered {
-                    bank: u7(0),
-                    index: u7(0),
+                    bank: U7::of(0),
+                    index: U7::of(0),
                     value: zx(4, 0),
                 }
             ),
             Message::Midi2(
                 g1,
                 Voice2::Assignable {
-                    bank: u7(1),
-                    index: u7(2),
+                    bank: U7::of(1),
+                    index: U7::of(2),
                     value: 0,
                 }
             ),
@@ -395,15 +391,16 @@ fn groups_keep_their_own_runs() {
 #[test]
 fn bank_select_rides_on_the_next_program_change_only() {
     let mut t = Translator::new();
-    let pc = |p: u8| -> Ump { Message::Midi1(at(A.0, A.1), Voice1::ProgramChange(u7(p))).into() };
+    let pc =
+        |p: u8| -> Ump { Message::Midi1(at(A.0, A.1), Voice1::ProgramChange(U7::of(p))).into() };
     let program = |p: u8, bank: Option<(u8, u8)>| {
         Message::Midi2(
             at(A.0, A.1),
             Voice2::ProgramChange {
-                program: u7(p),
+                program: U7::of(p),
                 bank: bank.map(|(msb, lsb)| Bank {
-                    msb: u7(msb),
-                    lsb: u7(lsb),
+                    msb: U7::of(msb),
+                    lsb: U7::of(lsb),
                 }),
             },
         )
@@ -429,12 +426,12 @@ fn bank_select_rides_on_the_next_program_change_only() {
 #[test]
 fn stateless_messages_are_widened() {
     let mut t = Translator::new();
-    let note = NoteNumber::new(60).unwrap();
+    let note = NoteNumber::of(60);
     let on0: Ump = Message::Midi1(
         at(A.0, A.1),
         Voice1::NoteOn {
             note,
-            velocity: u7(0),
+            velocity: U7::of(0),
         },
     )
     .into();
@@ -456,7 +453,7 @@ fn stateless_messages_are_widened() {
         vec![vec![Message::Midi2(
             at(A.0, A.1),
             Voice2::ControlChange {
-                controller: CCNumber::new(96).unwrap(),
+                controller: CCNumber::of(96),
                 value: 0xFFFF_FFFF,
             }
         )]]
@@ -466,7 +463,7 @@ fn stateless_messages_are_widened() {
 #[test]
 fn midi_2_packets_pass_through_unchanged() {
     let mut t = Translator::new();
-    let note = NoteNumber::new(60).unwrap();
+    let note = NoteNumber::of(60);
     // M2-104 7.4.2: a MIDI 2.0 Note On at velocity 0 is a Note On.
     let on0: Ump = Message::Midi2(
         at(2, 4),
@@ -511,7 +508,7 @@ fn reset_all_controllers_nulls_the_selection() {
             vec![Message::Midi2(
                 at(A.0, A.1),
                 Voice2::ControlChange {
-                    controller: CCNumber::new(121).unwrap(),
+                    controller: CCNumber::of(121),
                     value: 0,
                 }
             )],

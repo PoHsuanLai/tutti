@@ -19,14 +19,6 @@ use tutti_ump::{
     RegisteredPerNoteController, Sysex7Packet, SysexStatus, System, U7, U14, Voice1, Voice2,
 };
 
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap()
-}
-
-fn note(n: u8) -> NoteNumber {
-    NoteNumber::new(n).unwrap()
-}
-
 fn address(channel: u8) -> Address {
     Address {
         group: MidiGroup::FIRST,
@@ -45,7 +37,7 @@ fn bytes(message: Message) -> Vec<Vec<u8>> {
 fn a_note_on_never_narrows_to_velocity_zero() {
     for velocity in 0..=u16::MAX {
         let Some(Voice1::NoteOn { velocity: got, .. }) = narrow(Voice2::NoteOn {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity,
             attribute: Attribute::None,
         }) else {
@@ -65,15 +57,15 @@ fn a_note_on_never_narrows_to_velocity_zero() {
 fn a_note_off_keeps_a_zero_velocity() {
     for (velocity, want) in [(0, 0), (0x01FF, 0), (0x0200, 1), (0xFFFF, 127)] {
         let off = narrow(Voice2::NoteOff {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity,
             attribute: Attribute::None,
         });
         assert_eq!(
             off,
             Some(Voice1::NoteOff {
-                note: note(60),
-                velocity: u7(want)
+                note: NoteNumber::of(60),
+                velocity: U7::of(want)
             }),
             "{velocity:#x}"
         );
@@ -99,7 +91,7 @@ fn a_note_with_any_attribute_type_sends_bytes() {
         let on = Message::Midi2(
             address(2),
             Voice2::NoteOn {
-                note: note(60),
+                note: NoteNumber::of(60),
                 velocity: 0x8000,
                 attribute,
             },
@@ -108,7 +100,7 @@ fn a_note_with_any_attribute_type_sends_bytes() {
         let off = Message::Midi2(
             address(2),
             Voice2::NoteOff {
-                note: note(60),
+                note: NoteNumber::of(60),
                 velocity: 0x8000,
                 attribute,
             },
@@ -124,10 +116,10 @@ fn a_bank_is_three_messages() {
     let banked = Message::Midi2(
         address(5),
         Voice2::ProgramChange {
-            program: u7(9),
+            program: U7::of(9),
             bank: Some(Bank {
-                msb: u7(3),
-                lsb: u7(4),
+                msb: U7::of(3),
+                lsb: U7::of(4),
             }),
         },
     );
@@ -138,7 +130,7 @@ fn a_bank_is_three_messages() {
     let plain = Message::Midi2(
         address(5),
         Voice2::ProgramChange {
-            program: u7(9),
+            program: U7::of(9),
             bank: None,
         },
     );
@@ -152,7 +144,7 @@ fn the_other_messages_are_their_bytes() {
     let channel = MidiChannel::of(1);
     let cc = Voice1::ControlChange {
         controller: CCNumber::of(7),
-        value: u7(100),
+        value: U7::of(100),
     };
     assert_eq!(
         bytes(Message::Midi1(address(1), cc)),
@@ -161,7 +153,7 @@ fn the_other_messages_are_their_bytes() {
     assert_eq!(
         bytes(Message::System(
             MidiGroup::FIRST,
-            System::SongPosition(U14::new(0x101).unwrap())
+            System::SongPosition(U14::of(0x101))
         )),
         [[0xF2, 0x01, 0x02]]
     );
@@ -190,7 +182,7 @@ fn the_other_messages_are_their_bytes() {
         bytes(Message::Midi2(
             address(1),
             Voice2::PolyPressure {
-                note: note(60),
+                note: NoteNumber::of(60),
                 value: 0
             }
         )),
@@ -202,21 +194,21 @@ fn the_other_messages_are_their_bytes() {
 fn messages_without_a_midi1_form_send_nothing() {
     let none = [
         Voice2::PerNotePitchBend {
-            note: note(60),
+            note: NoteNumber::of(60),
             value: 0x8000_0000,
         },
         Voice2::RegisteredPerNote {
-            note: note(60),
+            note: NoteNumber::of(60),
             controller: RegisteredPerNoteController::Volume,
             value: 1,
         },
         Voice2::Registered {
-            bank: u7(0),
-            index: u7(0),
+            bank: U7::of(0),
+            index: U7::of(0),
             value: 0,
         },
         Voice2::PerNoteManagement {
-            note: note(60),
+            note: NoteNumber::of(60),
             detach: true,
             reset: false,
         },
@@ -239,17 +231,17 @@ fn messages_without_a_midi1_form_send_nothing() {
 fn narrow_returns_what_widen_was_given() {
     for d1 in 0..128u8 {
         for d2 in 0..128u8 {
-            let (note, v) = (note(d1), u7(d2));
+            let (note, v) = (NoteNumber::of(d1), U7::of(d2));
             let voices = [
                 Voice1::NoteOff { note, velocity: v },
                 Voice1::PolyPressure { note, pressure: v },
                 Voice1::ControlChange {
-                    controller: CCNumber::new(d1).unwrap(),
+                    controller: CCNumber::of(d1),
                     value: v,
                 },
-                Voice1::ProgramChange(u7(d1)),
-                Voice1::ChannelPressure(u7(d1)),
-                Voice1::PitchBend(U14::new(u16::from(d1) << 7 | u16::from(d2)).unwrap()),
+                Voice1::ProgramChange(U7::of(d1)),
+                Voice1::ChannelPressure(U7::of(d1)),
+                Voice1::PitchBend(U14::of(u16::from(d1) << 7 | u16::from(d2))),
             ];
             for voice in voices {
                 assert_eq!(narrow(widen(voice)), Some(voice), "{voice:?}");
@@ -258,7 +250,7 @@ fn narrow_returns_what_widen_was_given() {
             let want = if d2 == 0 {
                 Voice1::NoteOff {
                     note,
-                    velocity: u7(64),
+                    velocity: U7::of(64),
                 }
             } else {
                 on

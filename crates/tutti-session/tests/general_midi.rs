@@ -212,8 +212,8 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
                 channel,
             },
             Voice1::ControlChange {
-                controller: CCNumber::new(controller).unwrap(),
-                value: U7::new(127).unwrap(),
+                controller: CCNumber::of(controller),
+                value: U7::of(127),
             },
         );
         handle
@@ -309,8 +309,8 @@ fn muting_the_setup_silences_the_wet_path_too() {
                 channel: MidiChannel::FIRST,
             },
             Voice1::ControlChange {
-                controller: CCNumber::new(controller).unwrap(),
-                value: U7::new(127).unwrap(),
+                controller: CCNumber::of(controller),
+                value: U7::of(127),
             },
         );
         handle.send(at, Ump::from(message)).expect("room");

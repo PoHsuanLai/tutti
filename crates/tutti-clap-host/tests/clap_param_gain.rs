@@ -36,6 +36,7 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
@@ -129,7 +130,7 @@ impl GainSession<'_> {
 
     fn activate(&self) -> Active<f32> {
         let path = Path::new(probe_path());
-        let loaded = ClapLoaded::load(path, LoadOptions::new().library(path))
+        let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load");
         loaded
             .activate_at::<f32>(SAMPLE_RATE, MAX_FRAMES)
@@ -401,17 +402,19 @@ fn the_host_reports_the_probes_declared_gain_range() {
     let session = GainSession::begin();
     let loaded = {
         let path = Path::new(probe_path());
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     };
 
-    let (min, max) = loaded.parameter_range(GAIN_PARAM_ID).unwrap_or_else(|| {
-        panic!(
-            "the host did not enumerate the probe's Gain parameter (id \
+    let (min, max) = loaded
+        .parameter_range(&main_thread(), GAIN_PARAM_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "the host did not enumerate the probe's Gain parameter (id \
                  {GAIN_PARAM_ID}); the suite's denormalization has nothing to \
                  agree with"
-        )
-    });
+            )
+        });
 
     assert_eq!(
         (min, max),

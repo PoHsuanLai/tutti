@@ -423,7 +423,9 @@ mod tests {
     /// fails.
     #[test]
     fn a_ports_rescan_asks_for_a_restart_only_for_a_change_of_shape() {
-        let state = HostState::new();
+        let state = HostState::new(
+            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
+        );
 
         state.audio_ports_rescan(CLAP_AUDIO_PORTS_RESCAN_NAMES);
         assert_eq!(tutti_plugin_types::taken(&state.requests).count(), 0);
@@ -439,7 +441,9 @@ mod tests {
     /// finds set → the `Text` request is lost and the assertion fails.
     #[test]
     fn rescans_between_takes_accumulate_rather_than_overwrite() {
-        let state = HostState::new();
+        let state = HostState::new(
+            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
+        );
 
         state.params_rescan(clap_sys::ext::params::CLAP_PARAM_RESCAN_VALUES);
         state.params_rescan(
@@ -462,7 +466,9 @@ mod tests {
     /// request is missing and the assertion fails.
     #[test]
     fn the_plain_callbacks_raise_their_requests() {
-        let state = HostState::new();
+        let state = HostState::new(
+            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
+        );
         state.request_restart();
         state.request_callback();
         state.latency_changed();

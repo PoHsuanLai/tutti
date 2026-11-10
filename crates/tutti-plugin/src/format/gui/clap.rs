@@ -76,23 +76,26 @@ pub(crate) struct ClapGuiInstance {
 }
 
 impl ClapGuiInstance {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(main: &MainThread, path: &Path) -> Result<Self> {
         // Resolve bundle directory to the actual binary.
         let resolved = crate::host::subprocess::resolve_bundle(path)?;
         // Editor-only load: gui/params/state work without activation, and this
         // instance must never be activated or process audio (audio runs in the
         // subprocess instance). Nothing here activates it.
-        let inner =
-            tutti_clap_host::ClapLoaded::load(&resolved, tutti_clap_host::LoadOptions::default())
-                .map_err(|e| BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("CLAP GUI-only load failed: {e}"),
-            })?;
+        let inner = tutti_clap_host::ClapLoaded::load(
+            main,
+            &resolved,
+            tutti_clap_host::LoadOptions::default(),
+        )
+        .map_err(|e| BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Opening,
+            reason: format!("CLAP GUI-only load failed: {e}"),
+        })?;
         // One pass over the catalog instead of a scan per write. Params are
         // readable on an unactivated instance, which is what this GUI-only
         // load is.
-        let param_ranges = read_param_ranges(&inner);
+        let param_ranges = read_param_ranges(main, &inner);
 
         Ok(Self {
             inner,
@@ -102,9 +105,12 @@ impl ClapGuiInstance {
 }
 
 /// The plugin's declared plain-unit bounds per parameter id, sorted by id.
-fn read_param_ranges(inner: &tutti_clap_host::ClapLoaded) -> Vec<(u32, (f64, f64))> {
+fn read_param_ranges(
+    main: &MainThread,
+    inner: &tutti_clap_host::ClapLoaded,
+) -> Vec<(u32, (f64, f64))> {
     let mut ranges: Vec<(u32, (f64, f64))> = inner
-        .parameter_list()
+        .parameter_list(main)
         .into_iter()
         .filter_map(|p| {
             let id = p.id.get();
@@ -167,7 +173,7 @@ impl PluginEditor for ClapGuiInstance {
             }
         }
         if reread {
-            self.param_ranges = read_param_ranges(&self.inner);
+            self.param_ranges = read_param_ranges(main, &self.inner);
         }
         // If the plugin requested a param flush, perform it.
         if self.inner.take_params_flush_requested() {
@@ -225,20 +231,23 @@ impl PluginEditor for ClapGuiInstance {
             .collect()
     }
 
-    fn editor_capabilities(&mut self, _main: &MainThread) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
         // Pass-through from the host crate — the shared `EditorCapabilities`
         // is already the union of vst3/clap fields, and `appkit_autoresize_friendly`
         // defaults to `false` which matches CLAP's pinned-NSView behavior.
-        self.inner.editor_capabilities()
+        self.inner.editor_capabilities(main)
     }
 
-    fn set_editor_size(&mut self, _main: &MainThread, requested: EditorSize) -> Result<EditorSize> {
+    fn set_editor_size(&mut self, main: &MainThread, requested: EditorSize) -> Result<EditorSize> {
         let snapped = self
             .inner
-            .resize_editor(tutti_clap_host::EditorSize {
-                width: requested.width,
-                height: requested.height,
-            })
+            .resize_editor(
+                main,
+                tutti_clap_host::EditorSize {
+                    width: requested.width,
+                    height: requested.height,
+                },
+            )
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP resize_editor failed: {e}")))?;
         Ok(EditorSize {
             width: snapped.width,
@@ -295,7 +304,7 @@ mod tests {
 
         let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
         let path = tutti_fixtures::publish_with_extension(&real, "clap");
-        let mut gui = ClapGuiInstance::load(&path).expect("loads");
+        let mut gui = ClapGuiInstance::load(&main_thread(), &path).expect("loads");
 
         // The probe's switches are `extern "C"` symbols in the image this
         // instance loaded: re-open the same path, not the linked rlib.

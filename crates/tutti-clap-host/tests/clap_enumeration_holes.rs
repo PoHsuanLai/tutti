@@ -39,6 +39,7 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{
@@ -147,7 +148,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -351,7 +352,7 @@ fn hole_in_params_never_misattributes_a_range() {
     probe.param_hole(1);
 
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.parameter_list(&main_thread());
 
     for info in &listed {
         let declared = probe_params()
@@ -383,7 +384,7 @@ fn hole_in_params_truncates_rather_than_closing_the_gap() {
     probe.param_hole(0);
 
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.parameter_list(&main_thread());
 
     assert!(
         listed.is_empty(),
@@ -406,7 +407,11 @@ fn hole_in_params_does_not_promote_later_params() {
     probe.param_hole(1);
 
     let loaded = probe.load();
-    let ids: Vec<ParamId> = loaded.parameter_list().iter().map(|p| p.id).collect();
+    let ids: Vec<ParamId> = loaded
+        .parameter_list(&main_thread())
+        .iter()
+        .map(|p| p.id)
+        .collect();
     let expected_prefix = probe_params()[0].id.into();
 
     assert!(
@@ -509,14 +514,14 @@ fn hole_in_audio_ports_keeps_channel_totals_consistent() {
     let loaded = probe.load();
 
     assert_eq!(
-        loaded.num_input_channels(),
+        loaded.num_input_channels(&main_thread()),
         0,
         "hole at input port index 0 truncates the presented list to empty, so \
          the channel total must be 0 — a nonzero total counts channels from \
          ports the host will never hand the plugin"
     );
     assert_eq!(
-        loaded.num_output_channels(),
+        loaded.num_output_channels(&main_thread()),
         0,
         "hole at output port index 0 truncates the presented list to empty, so \
          the channel total must be 0"
@@ -538,7 +543,11 @@ fn no_hole_enumerates_everything() {
 
     let loaded = probe.load();
 
-    let ids: Vec<ParamId> = loaded.parameter_list().iter().map(|p| p.id).collect();
+    let ids: Vec<ParamId> = loaded
+        .parameter_list(&main_thread())
+        .iter()
+        .map(|p| p.id)
+        .collect();
     let expected: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
     assert_eq!(
         ids, expected,
@@ -547,12 +556,12 @@ fn no_hole_enumerates_everything() {
 
     // `[2, 1]` on both sides.
     assert_eq!(
-        loaded.num_input_channels(),
+        loaded.num_input_channels(&main_thread()),
         3,
         "with no hole the [2, 1] input layout totals 3 channels"
     );
     assert_eq!(
-        loaded.num_output_channels(),
+        loaded.num_output_channels(&main_thread()),
         3,
         "with no hole the [2, 1] output layout totals 3 channels"
     );

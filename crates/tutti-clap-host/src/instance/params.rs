@@ -87,15 +87,15 @@ fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
 impl ClapLoaded {
     /// Number of parameters the plugin exposes. Returns 0 if the plugin
     /// does not implement `CLAP_EXT_PARAMS`.
-    pub fn parameter_count(&self) -> usize {
-        self.plugin.param_count() as usize
+    pub fn parameter_count(&self, main: &MainThread) -> usize {
+        self.plugin.param_count(main) as usize
     }
 
     /// Current value of a parameter in its own declared range, or `None` if the
     /// plugin does not support the extension or rejects the ID. The normalized
     /// reading is [`Control::parameter`](tutti_plugin_types::Control::parameter).
-    pub fn plain_value(&self, id: u32) -> Option<f64> {
-        self.plugin.param_value(id)
+    pub fn plain_value(&self, main: &MainThread, id: u32) -> Option<f64> {
+        self.plugin.param_value(main, id)
     }
 
     /// Full CLAP-native metadata for the parameter at the given `index`
@@ -104,8 +104,8 @@ impl ClapLoaded {
     /// inside; the crate boundary hands out the shared
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) via
     /// [`parameter_list`](Self::parameter_list).
-    pub(crate) fn parameter_info(&self, index: u32) -> Option<ClapParamInfo> {
-        let info = self.plugin.param_info(index)?;
+    pub(crate) fn parameter_info(&self, main: &MainThread, index: u32) -> Option<ClapParamInfo> {
+        let info = self.plugin.param_info(main, index)?;
         Some(ClapParamInfo {
             id: info.id,
             name: chars_to_string(&info.name),
@@ -132,11 +132,11 @@ impl ClapLoaded {
     /// for every id but one, so automation looks right everywhere the user
     /// checks. A short list is a visible symptom; a selectively-wrong map is
     /// not.
-    pub(crate) fn native_parameters(&self) -> Vec<ClapParamInfo> {
-        let count = self.parameter_count() as u32;
+    pub(crate) fn native_parameters(&self, main: &MainThread) -> Vec<ClapParamInfo> {
+        let count = self.parameter_count(main) as u32;
         let mut params = Vec::with_capacity(count as usize);
         for i in 0..count {
-            let Some(info) = self.parameter_info(i) else {
+            let Some(info) = self.parameter_info(main, i) else {
                 // Stop, don't skip: a skipped param is absent from
                 // `param_ranges` and its automation arrives un-denormalized.
                 break;
@@ -159,10 +159,10 @@ impl ClapLoaded {
     /// default here would silently rescale a parameter the plugin never
     /// described — the same class of quiet wrongness the internal
     /// `parameters` enumeration truncates to avoid.
-    pub fn parameter_range(&self, id: u32) -> Option<(f64, f64)> {
-        let count = self.parameter_count() as u32;
+    pub fn parameter_range(&self, main: &MainThread, id: u32) -> Option<(f64, f64)> {
+        let count = self.parameter_count(main) as u32;
         for i in 0..count {
-            let info = self.parameter_info(i)?;
+            let info = self.parameter_info(main, i)?;
             if info.id == id {
                 return Some((info.min_value, info.max_value));
             }
@@ -175,8 +175,8 @@ impl ClapLoaded {
     /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;
     /// `step_count` comes from the `STEPPED` flag plus the declared span, since
     /// CLAP reports steppedness as a flag and the count only via `min`/`max`.
-    pub fn parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
-        self.native_parameters()
+    pub fn parameter_list(&self, main: &MainThread) -> Vec<tutti_plugin_types::ParameterInfo> {
+        self.native_parameters(main)
             .into_iter()
             .map(project_param_info)
             .collect()
@@ -190,8 +190,8 @@ impl ClapLoaded {
     /// normalization concept. `Control::parameter_text` denormalizes against
     /// [`parameter_range`](Self::parameter_range) before calling this, the same
     /// conversion its `set_parameter` applies.
-    pub fn value_to_text(&self, param_id: u32, value: f64) -> Option<String> {
-        self.plugin.param_value_to_text(param_id, value)
+    pub fn value_to_text(&self, main: &MainThread, param_id: u32, value: f64) -> Option<String> {
+        self.plugin.param_value_to_text(main, param_id, value)
     }
 
     /// Parses a display `text` back to a parameter value via the plugin's
@@ -201,8 +201,8 @@ impl ClapLoaded {
     ///
     /// The answer is **plain**, in the parameter's declared range — see
     /// [`value_to_text`](Self::value_to_text). `Control` re-normalizes it.
-    pub fn text_to_value(&self, param_id: u32, text: &str) -> Option<f64> {
-        self.plugin.param_text_to_value(param_id, text)
+    pub fn text_to_value(&self, main: &MainThread, param_id: u32, text: &str) -> Option<f64> {
+        self.plugin.param_text_to_value(main, param_id, text)
     }
 
     /// Whether the parameter with `param_id` carries the
@@ -213,8 +213,8 @@ impl ClapLoaded {
     ///
     /// Goes through the same enumeration as `parameter_list`, so the two cannot
     /// drift about which parameters exist.
-    pub fn param_requires_process(&self, param_id: u32) -> bool {
-        self.native_parameters()
+    pub fn param_requires_process(&self, main: &MainThread, param_id: u32) -> bool {
+        self.native_parameters(main)
             .into_iter()
             .find(|info| info.id == param_id)
             .is_some_and(|info| info.flags.contains(ClapParamFlags::REQUIRES_PROCESS))
@@ -257,14 +257,17 @@ impl ClapLoaded {
     /// (`flush` is an audio-thread entry then).
     pub fn flush_params(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         input_events: Vec<ClapEvent>,
     ) -> Vec<ClapEvent> {
         let mut input_list = InputEventList::from_events(input_events);
         input_list.sort_by_time();
         let mut output_list = OutputEventList::new();
 
-        if !self.plugin.params_flush(&input_list, &mut output_list) {
+        if !self
+            .plugin
+            .params_flush(main, &input_list, &mut output_list)
+        {
             return Vec::new();
         }
 
@@ -289,8 +292,9 @@ impl ClapLoaded {
     /// Informs the plugin about a host-surface → parameter mapping. No-op if
     /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn set_param_mapping(&self, mapping: &ParamMapping) {
+    pub fn set_param_mapping(&self, main: &MainThread, mapping: &ParamMapping) {
         self.plugin.set_param_mapping(
+            main,
             mapping.param_id,
             mapping.has_mapping,
             mapping.color.map(color_to_clap),
@@ -305,6 +309,7 @@ impl ClapLoaded {
     #[cfg(feature = "clap-extras")]
     pub fn set_param_automation(
         &self,
+        main: &MainThread,
         param_id: u32,
         state: ParamAutomationState,
         color: Option<Color>,
@@ -316,8 +321,12 @@ impl ClapLoaded {
             ParamAutomationState::Recording => CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
             ParamAutomationState::Overriding => CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
         };
-        self.plugin
-            .set_param_automation(param_id, automation_state, color.map(color_to_clap));
+        self.plugin.set_param_automation(
+            main,
+            param_id,
+            automation_state,
+            color.map(color_to_clap),
+        );
     }
 }
 

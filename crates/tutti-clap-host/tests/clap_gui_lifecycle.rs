@@ -75,7 +75,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -209,7 +209,7 @@ fn has_editor_true_for_embeddable_plugin() {
     let loaded = probe.load();
 
     assert!(
-        loaded.has_editor(),
+        loaded.has_editor(&main_thread()),
         "a plugin whose gui api is supported for embedding and whose `create` \
          exists has an editor"
     );
@@ -223,7 +223,7 @@ fn has_editor_false_when_extension_absent() {
     let loaded = probe.load();
 
     assert!(
-        !loaded.has_editor(),
+        !loaded.has_editor(&main_thread()),
         "no `clap.gui` extension means no editor"
     );
 }
@@ -240,7 +240,7 @@ fn has_editor_false_for_floating_only_plugin() {
     let mut loaded = probe.load();
 
     assert!(
-        !loaded.has_editor(),
+        !loaded.has_editor(&main_thread()),
         "a floating-only plugin has no *embeddable* editor: its gui vtable is \
          non-null, which is exactly why the old `!gui.is_null()` check reported \
          an editor the host could never open"
@@ -257,7 +257,7 @@ fn has_editor_false_for_floating_only_plugin() {
     // Without this the test above is satisfied by a host that reports every
     // floating-only plugin as having no UI at all.
     assert!(
-        loaded.has_floating_editor(),
+        loaded.has_floating_editor(&main_thread()),
         "the same plugin *does* have a floating editor — a host that only ever \
          asks the embedded question reports it as editor-less"
     );
@@ -272,7 +272,7 @@ fn has_editor_false_when_create_is_absent() {
     let loaded = probe.load();
 
     assert!(
-        !loaded.has_editor(),
+        !loaded.has_editor(&main_thread()),
         "a gui vtable whose `create` is None cannot allocate an editor, however \
          non-null the pointer is"
     );
@@ -291,7 +291,7 @@ fn has_editor_does_not_create_a_gui() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let loaded = probe.load();
 
-    assert!(loaded.has_editor());
+    assert!(loaded.has_editor(&main_thread()));
 
     let cap = probe.capture();
     assert!(
@@ -330,7 +330,7 @@ fn has_editor_asks_about_the_current_platform_api() {
     let loaded = probe.load();
 
     assert!(
-        loaded.has_editor(),
+        loaded.has_editor(&main_thread()),
         "the probe returns false for any api string but its own platform's, so \
          a host asking about the wrong platform lands here"
     );
@@ -706,7 +706,7 @@ fn editor_capabilities_reports_plugin_hints() {
         .expect("opens");
     gui_reset();
 
-    let caps = loaded.editor_capabilities();
+    let caps = loaded.editor_capabilities(&main_thread());
 
     assert!(caps.resize.resizable, "the probe's can_resize is true");
     assert!(caps.resize.can_resize_horizontally);
@@ -735,7 +735,7 @@ fn editor_capabilities_touches_nothing_before_create() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let loaded = probe.load();
 
-    let caps = loaded.editor_capabilities();
+    let caps = loaded.editor_capabilities(&main_thread());
 
     assert!(
         !caps.resize.resizable,
@@ -773,7 +773,9 @@ fn resize_editor_forwards_the_adjusted_size() {
         width: GUI_SIZE_QUANTUM * 33 + 7,
         height: GUI_SIZE_QUANTUM * 21 + 3,
     };
-    let applied = loaded.resize_editor(requested).expect("resize succeeds");
+    let applied = loaded
+        .resize_editor(&main_thread(), requested)
+        .expect("resize succeeds");
 
     assert_eq!(
         applied,
@@ -823,10 +825,13 @@ fn resize_editor_fails_when_plugin_cannot_adjust() {
     gui_reset();
 
     let err = loaded
-        .resize_editor(EditorSize {
-            width: 1234,
-            height: 567,
-        })
+        .resize_editor(
+            &main_thread(),
+            EditorSize {
+                width: 1234,
+                height: 567,
+            },
+        )
         .expect_err("a fixed-size editor cannot honour an arbitrary size");
 
     let msg = format!("{err}");
@@ -862,7 +867,7 @@ fn editor_capabilities_reports_fixed_size_as_not_resizable() {
         .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
 
-    let caps = loaded.editor_capabilities();
+    let caps = loaded.editor_capabilities(&main_thread());
 
     assert!(!caps.resize.resizable, "the probe's can_resize is false");
     assert!(!caps.resize.can_resize_horizontally);
@@ -1147,7 +1152,7 @@ fn a_plugin_without_create_has_no_floating_editor() {
     let loaded = probe.load();
 
     assert!(
-        !loaded.has_floating_editor(),
+        !loaded.has_floating_editor(&main_thread()),
         "a plugin with no `create` fn cannot present any window, floating \
          included — the gui pointer being non-null says nothing about that"
     );
@@ -1164,7 +1169,7 @@ fn a_plugin_states_its_preferred_mode() {
         let probe = Probe::acquire(GuiMode::FloatingOnly);
         let loaded = probe.load();
         assert_eq!(
-            loaded.prefers_floating(),
+            loaded.prefers_floating(&main_thread()),
             Some(true),
             "a floating-only probe prefers floating"
         );
@@ -1173,7 +1178,7 @@ fn a_plugin_states_its_preferred_mode() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let loaded = probe.load();
     assert_eq!(
-        loaded.prefers_floating(),
+        loaded.prefers_floating(&main_thread()),
         Some(false),
         "an embeddable probe prefers embedded — `Some(false)` and `None` must \
          not collapse, or a host cannot tell a stated preference from silence"

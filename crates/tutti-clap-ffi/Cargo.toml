@@ -26,6 +26,9 @@ libloading = "0.8"
 # `WindowHandle`, the one value whose unsafe constructor carries the claim that
 # a parent window is valid; the editor entries take it by reference.
 tutti-plugin-types = { path = "../tutti-plugin-types" }
+# `GraphPool`: a graph worker pool as the `TaskPool` that serves `clap.thread-pool`.
+tutti-graph = { path = "../tutti-graph" }
+tutti-rt = { path = "../tutti-rt" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

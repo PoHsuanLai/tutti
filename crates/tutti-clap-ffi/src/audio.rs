@@ -8,9 +8,7 @@ use std::sync::atomic::Ordering;
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::clap_event_transport;
-use clap_sys::process::{
-    CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR, clap_process, clap_process_status,
-};
+use clap_sys::process::{CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR, clap_process};
 
 use tutti_plugin_types::SampleFormat;
 
@@ -451,7 +449,7 @@ impl AudioSide {
     pub fn process(
         &mut self,
         call: ProcessCall<'_, '_>,
-    ) -> Result<clap_process_status, ProcessError> {
+    ) -> Result<crate::ProcessStatus, ProcessError> {
         let ProcessCall {
             scratch,
             mut audio,
@@ -544,7 +542,7 @@ impl AudioSide {
             audio.silence_outputs(frames as usize);
             return Err(ProcessError::PluginReturnedError);
         }
-        Ok(status)
+        Ok(crate::ProcessStatus::from_raw(status))
     }
 
     /// Starts processing if it has not been, under the claim `process` holds.

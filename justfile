@@ -129,6 +129,7 @@ check-features:
     cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings

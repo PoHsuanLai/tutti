@@ -5,7 +5,7 @@
 //! for the span of one extension call ([`Plugin::state_save`](crate::Plugin)
 //! and friends build it on their own stack).
 
-use crate::guard::guard;
+use crate::guard::{ctx_mut, guard};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use std::ffi::c_void;
 use std::ptr;
@@ -76,7 +76,7 @@ extern "C" fn ostream_write(stream: *const clap_ostream, buffer: *const c_void, 
         // SAFETY: `ctx` is the `&mut OutputStream` the stream was built from
         // (`with_raw`/`raw`), which outlives the call it is handed to; the plugin
         // calls `write` only inside that call.
-        let out = unsafe { &mut *(*stream).ctx.cast::<OutputStream>() };
+        let out = unsafe { ctx_mut::<OutputStream>((*stream).ctx) };
         // A size no slice can have is refused before it is made one, and a
         // state that would pass the cap is refused whole: a plugin that writes
         // without end gets `-1`, not the host's memory.
@@ -159,7 +159,7 @@ extern "C" fn istream_read(stream: *const clap_istream, buffer: *mut c_void, siz
         }
         // SAFETY: `ctx` is the `&mut InputStream` the stream was built from
         // (`with_raw`/`raw`), which outlives the call it is handed to.
-        let input = unsafe { &mut *(*stream).ctx.cast::<InputStream<'_>>() };
+        let input = unsafe { ctx_mut::<InputStream<'_>>((*stream).ctx) };
         let remaining = input.data.len() - input.position;
         let to_read = (size as usize).min(remaining);
         if to_read == 0 {

@@ -26,7 +26,7 @@ use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
     BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DistortionNode,
-    DownmixNode, GateNode, LimiterNode, ReverbNode, ShapeKind,
+    DownmixNode, FdnControls, GateNode, LimiterNode, ReverbNode, ShapeKind,
 };
 use tutti_types::{ChannelLayout, SampleRate};
 
@@ -290,6 +290,13 @@ fn dynamics(c: &mut Criterion) {
 /// The reverb: one input, two outputs, so the throughput counts two channels.
 fn reverb(c: &mut Criterion) {
     run(c, "reverb", "freeverb", ReverbNode::general_midi, None);
+    run(
+        c,
+        "reverb",
+        "fdn",
+        || ReverbNode::new(tutti_nodes::FdnDesign::default(), FdnControls::DEFAULT),
+        None,
+    );
 }
 
 #[cfg(feature = "convolution")]

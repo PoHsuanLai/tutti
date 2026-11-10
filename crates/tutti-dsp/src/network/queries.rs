@@ -49,6 +49,7 @@ impl Fdn {
     fn matrix_fits(&self, n: usize) -> bool {
         match &self.matrix {
             Matrix::Diagonal | Matrix::Householder => true,
+            Matrix::Reflection(v) => v.len() == n,
             Matrix::Hadamard => n.is_power_of_two(),
             Matrix::Circulant(row) => row.len() == n,
             Matrix::Dense(a) => a.len() == n * n,
@@ -66,6 +67,12 @@ impl Fdn {
         let delta = |i: usize, j: usize| if i == j { 1.0 } else { 0.0 };
         Some(match &self.matrix {
             Matrix::Diagonal | Matrix::Householder | Matrix::Hadamard => 0.0,
+            Matrix::Reflection(v) => {
+                // `A Aᵀ - I = 4 (|v|² - 1) v vᵀ`.
+                let s: f64 = v.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+                let peak = v.iter().map(|&x| f64::from(x).abs()).fold(0.0, f64::max);
+                4.0 * (s - 1.0).abs() * peak * peak
+            }
             Matrix::Circulant(c) => (0..n)
                 .map(|k| {
                     let r: f64 = (0..n)
@@ -104,10 +111,22 @@ impl Fdn {
     /// Otherwise the Frobenius norm, sufficient and not necessary.
     fn norm_bound(&self) -> f64 {
         let n = self.lines.len() as f64;
+        // Exact for a reflection: the eigenvalue along `v` is `1 - 2 |v|²` and
+        // the rest are 1, so a reflection of a unit vector to within an `f32`
+        // entry's rounding is `1 + 2 (|v|² - 1)`, not the generic bound's `n` times
+        // the entries' error.
+        if let Matrix::Reflection(v) = &self.matrix {
+            if !self.matrix_fits(self.lines.len()) {
+                return libm::sqrt(n);
+            }
+            let s: f64 = v.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+            return (1.0 - 2.0 * s).abs().max(1.0);
+        }
         match self.orthogonality_error() {
             Some(e) if e <= ORTHOGONAL_TOLERANCE => libm::sqrt(1.0 + n * e),
             _ => match &self.matrix {
                 Matrix::Diagonal | Matrix::Householder | Matrix::Hadamard => libm::sqrt(n),
+                Matrix::Reflection(_) => libm::sqrt(n),
                 Matrix::Circulant(c) => {
                     libm::sqrt(n * c.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>())
                 }
@@ -1325,5 +1344,64 @@ mod tests {
         ] {
             assert!(!f(l).is_stable() && !f(l).is_lossless(), "{l:?}");
         }
+    }
+
+    /// A reflection `I - 2 v v^T` of a unit `v` is orthogonal (so a lossless loop
+    /// can use it), of a shorter `v` a contraction (`|1 - 2|v|^2| <= 1`, never a
+    /// gain), and of a longer one a gain `2|v|^2 - 1` the stability test refuses
+    /// at a loop gain of 1; a `v` of the wrong length fits no line count. The
+    /// norm is exact, not the generic bound.
+    ///
+    /// Mutations (run): taking the norm bound from the generic orthogonal branch
+    /// (`sqrt(1 + n e)`) fails the exact figure; dropping the length test in
+    /// `matrix_fits` fails the last row; reading `|v|^2` as `|v|` fails the long
+    /// reflection.
+    #[test]
+    fn a_reflection_is_orthogonal_when_its_vector_is_a_unit() {
+        let lines = [100.0, 130.0, 170.0, 190.0].map(|m| line(m, Absorption::Gain(Amplitude(1.0))));
+        let reflect = |v: &[f32]| {
+            network(&[Stage::Fdn(fdn(
+                &lines,
+                Matrix::Reflection(Inline::from_slice(v).unwrap()),
+            ))])
+        };
+        let unit = reflect(&[0.5, 0.5, 0.5, 0.5]);
+        assert!(unit.is_lossless() && unit.is_stable());
+        // A unit vector off the flat one is just as orthogonal.
+        let slanted = reflect(&[0.6, 0.8, 0.0, 0.0]);
+        assert!(slanted.is_lossless());
+        // Half the length: the eigenvalue along v is 1 - 2 * 0.25 = 0.5, so the
+        // matrix is a contraction, not orthogonal: stable at gain 1 is refused
+        // for lack of loss only, not for growth.
+        let short = reflect(&[0.25, 0.25, 0.25, 0.25]);
+        assert!(!short.is_lossless());
+        // Longer than a unit: the eigenvalue 1 - 2 * 1.25 = -1.5 is a gain of 1.5.
+        let long = reflect(&[1.0, 0.5, 0.0, 0.0]);
+        assert!(!long.is_lossless() && !long.is_stable());
+        let Stage::Fdn(f) = &long.stages[0] else {
+            unreachable!()
+        };
+        assert_eq!(f.norm_bound(), 1.5);
+        // A unit vector that does not round exactly is a gain of 1 to within the
+        // rounding of its entries, not the generic bound's `n` times that.
+        let Stage::Fdn(f) = &slanted.stages[0] else {
+            unreachable!()
+        };
+        assert!(f.norm_bound() < 1.0 + 1.0e-7, "{}", f.norm_bound());
+        let Stage::Fdn(f) = &short.stages[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            f.norm_bound(),
+            1.0,
+            "a contraction counts as 1 where it is bounded"
+        );
+        // The wrong length fits no line count.
+        let lossy = [100.0, 130.0, 170.0, 190.0].map(|m| line(m, Absorption::Gain(Amplitude(0.9))));
+        let wrong = network(&[Stage::Fdn(fdn(
+            &lossy,
+            Matrix::Reflection(Inline::from_slice(&[0.5, 0.5, 0.5]).unwrap()),
+        ))]);
+        assert!(!wrong.is_stable());
     }
 }

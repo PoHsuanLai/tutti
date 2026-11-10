@@ -324,8 +324,11 @@ pub(super) enum Late {
 /// A timeout on a frame boundary is not an error: the stream is synchronised
 /// and the session healthy, so the caller answers its own caller and the
 /// bridge goes on. A budget that expires **part-way through a frame** gets
-/// [`DRAIN_FINISH`] to complete it, once; a frame still unfinished after that
-/// is a peer that cannot frame (a few hundred bytes over a local socket do not
+/// [`DRAIN_FINISH`] to complete *that frame*, and the read ends there (with
+/// the frame, when it is the answer): extending the whole read instead let a
+/// chatty peer start a new frame at the extended deadline, and a live peer was
+/// declared unable to frame. A frame still unfinished after `DRAIN_FINISH` is
+/// a peer that cannot frame (a few hundred bytes over a local socket do not
 /// take that long from a live one), and that timeout propagates with the
 /// transport's errors (EOF, a frame over the cap), which `pump` crashes on.
 fn next_reply(
@@ -335,8 +338,7 @@ fn next_reply(
     channels: &Channels,
     budget: Duration,
 ) -> Result<Option<BridgeMessage>> {
-    let mut deadline = Instant::now() + budget;
-    let mut finishing = false;
+    let deadline = Instant::now() + budget;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match recv_reply(stream, inbox, left, &mut owed.partial) {
@@ -345,9 +347,10 @@ fn next_reply(
                     return Ok(Some(msg));
                 }
             }
-            Err(BridgeError::Timeout { partial: true, .. }) if !finishing => {
-                finishing = true;
-                deadline = Instant::now() + DRAIN_FINISH;
+            Err(BridgeError::Timeout { partial: true, .. }) => {
+                let frame = ipc::recv_resumable(stream, DRAIN_FINISH, &mut owed.partial)?;
+                let answer = absorb(inbox, frame).and_then(|msg| owed.take(msg, channels));
+                return Ok(answer);
             }
             Err(BridgeError::Timeout { partial: false, .. }) => return Ok(None),
             Err(e) => return Err(e),
@@ -837,39 +840,33 @@ fn recv_reply(
     let deadline = Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        match ipc::recv_resumable(stream, left, partial)? {
-            BridgeMessage::LatencyChanged { samples } => {
-                inbox.latency(samples);
-            }
-            BridgeMessage::TailChanged { tail } => {
-                inbox.tail(tail);
-            }
-            BridgeMessage::ParameterChanged { index, value } => {
-                inbox.param(index, value);
-            }
-            BridgeMessage::PluginParamValuesChanged => {
-                inbox.resync(ResyncKind::ParamValues);
-            }
-            BridgeMessage::PluginParamTitlesChanged => {
-                inbox.resync(ResyncKind::ParamTitles);
-            }
-            BridgeMessage::PluginIoChanged => {
-                inbox.resync(ResyncKind::Io);
-            }
-            BridgeMessage::PluginReloaded => {
-                inbox.resync(ResyncKind::Reloaded);
-            }
-            // The answer to a rate change the bridge stopped waiting for: it
-            // belongs to no request now, so it is held for the thread to
-            // apply, and never read as another request's reply.
-            BridgeMessage::SampleRateSet { rate, error } => {
-                if !inbox.late_rate_reply(rate, error.clone()) {
-                    return Ok(BridgeMessage::SampleRateSet { rate, error });
-                }
-            }
-            msg => return Ok(msg),
+        if let Some(reply) = absorb(inbox, ipc::recv_resumable(stream, left, partial)?) {
+            return Ok(reply);
         }
     }
+}
+
+/// Put an unsolicited event into `inbox`; anything else is a reply, returned.
+fn absorb(inbox: &mut Unsolicited, msg: BridgeMessage) -> Option<BridgeMessage> {
+    match msg {
+        BridgeMessage::LatencyChanged { samples } => inbox.latency(samples),
+        BridgeMessage::TailChanged { tail } => inbox.tail(tail),
+        BridgeMessage::ParameterChanged { index, value } => inbox.param(index, value),
+        BridgeMessage::PluginParamValuesChanged => inbox.resync(ResyncKind::ParamValues),
+        BridgeMessage::PluginParamTitlesChanged => inbox.resync(ResyncKind::ParamTitles),
+        BridgeMessage::PluginIoChanged => inbox.resync(ResyncKind::Io),
+        BridgeMessage::PluginReloaded => inbox.resync(ResyncKind::Reloaded),
+        // The answer to a rate change the bridge stopped waiting for: it
+        // belongs to no request now, so it is held for the thread to apply,
+        // and never read as another request's reply.
+        BridgeMessage::SampleRateSet { rate, error } => {
+            if !inbox.late_rate_reply(rate, error.clone()) {
+                return Some(BridgeMessage::SampleRateSet { rate, error });
+            }
+        }
+        msg => return Some(msg),
+    }
+    None
 }
 
 #[cfg(test)]

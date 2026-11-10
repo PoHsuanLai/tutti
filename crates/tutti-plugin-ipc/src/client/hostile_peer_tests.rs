@@ -187,6 +187,10 @@ enum Action {
     /// while the bridge thread stays parked in the read and never reaches the
     /// error that would mark the bridge crashed.
     Dribble { len: u32, gap: Duration },
+    /// Send events forever, each frame's length prefix `split` before its
+    /// body: a live peer that is part-way through a frame most of the time,
+    /// though every frame completes within `split`.
+    SplitEvents { split: Duration },
 }
 
 struct MockServer {
@@ -301,6 +305,24 @@ impl MockServer {
                                 if s.write_all(&[0u8]).is_err() {
                                     return;
                                 }
+                            }
+                        }
+                        Action::SplitEvents { split } => {
+                            let mut s = &stream;
+                            for n in 0.. {
+                                let body = bincode::serialize(&BridgeMessage::LatencyChanged {
+                                    samples: crate::protocol::Samples(n),
+                                })
+                                .unwrap();
+                                let prefix = (body.len() as u32).to_be_bytes();
+                                if s.write_all(&prefix).is_err() {
+                                    return;
+                                }
+                                std::thread::sleep(split);
+                                if s.write_all(&body).is_err() {
+                                    return;
+                                }
+                                std::thread::sleep(Duration::from_millis(10));
                             }
                         }
                         // Dropping `stream` closes the socket, so the host's next
@@ -1634,6 +1656,34 @@ fn a_chatty_plugin_does_not_extend_the_budget() {
         "the bridge was still waiting on the chatty request"
     );
     assert!(!mock.bridge.is_crashed());
+}
+
+/// **A live peer caught part-way through a frame at the budget is not declared
+/// unable to frame.** The read finishes *that* frame within `DRAIN_FINISH`
+/// and stops. Extending the whole read by `DRAIN_FINISH` instead let the next
+/// frame start before the extended deadline and be caught part-way in turn,
+/// and the bridge crashed on a peer whose every frame completes in 400 ms.
+///
+/// Mutation (run): the partial arm extending the read's deadline by
+/// `DRAIN_FINISH` (as it was) → the bridge crashes → fails. The peer is
+/// mid-frame about 97% of the time, so the mutation fails on almost every run,
+/// not every one; the fixed code passes on every run.
+#[test]
+fn a_live_peer_mid_frame_at_the_budget_is_not_a_crash() {
+    let mock = MockServer::start("split-events", |msg| match msg {
+        HostMessage::GetParameter { .. } => Action::SplitEvents {
+            split: Duration::from_millis(400),
+        },
+        _ => Action::Silent,
+    });
+
+    assert_eq!(mock.bridge.parameter(ParamId::new(1)), None);
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !mock.bridge.is_crashed(),
+        "a live peer was declared unable to frame: {:?}",
+        mock.bridge.crash_cause()
+    );
 }
 
 /// **The rest of a stalled state is taken off the stream, not read as the next

@@ -363,8 +363,8 @@ fn automation_is_a_host_write_and_its_echo_is_not_reported() {
     changes.add_change(ParamId::new(0), 0, 0.5);
     render_f32(&mut processor, &ProcessContext::new().params(&changes));
     set_flag("tutti_vst2_probe_set_echo_set_parameter", false);
-    assert_eq!(controller.drain_param_changes(), Vec::new());
-    assert_eq!(controller.dropped_param_changes(), 0);
+    assert_eq!(controller.loaded().drain_param_changes(), Vec::new());
+    assert_eq!(controller.loaded().dropped_param_changes(), 0);
     drop(rejoin(processor, controller));
 }
 
@@ -585,15 +585,15 @@ fn stopping_twice_and_rejoining_sends_one_stop_and_one_suspend() {
 fn the_render_mode_changes_live_without_a_restart() {
     let probe = Probe::acquire();
     let wanted = prepare().with_mode(RenderMode::Offline);
-    let (mut processor, controller) = probe
+    let (mut processor, mut controller) = probe
         .load()
         .activate(&main_thread(), wanted)
         .expect("activates");
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 4, "offline");
-    assert!(controller.is_offline_render());
+    assert!(controller.loaded().is_offline_render());
 
-    controller.set_offline_render(false);
+    controller.loaded_mut().set_offline_render(false);
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 2, "realtime");
     let cap = capture();
@@ -681,7 +681,9 @@ impl Driven {
     fn pass(&mut self) {
         let mut asked = Vec::new();
         if let Lifecycle::Active { controller, .. } = &self.lifecycle {
-            controller.take_requests(&main_thread(), &mut asked);
+            controller
+                .loaded()
+                .take_requests(&main_thread(), &mut asked);
         }
         for request in asked {
             self.drive(Event::Request(request));

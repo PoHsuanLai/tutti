@@ -212,17 +212,28 @@ impl Active {
     }
 }
 
-impl Deref for Active {
-    type Target = Vst2Controller;
-
-    fn deref(&self) -> &Vst2Controller {
+impl Active {
+    /// The Controller, for the `Controller` trait the loaded plugin lacks.
+    pub fn controller(&self) -> &Vst2Controller {
         &self.pair.as_ref().expect("the pair is whole").1
     }
 }
 
+impl Deref for Active {
+    type Target = Vst2Loaded;
+
+    fn deref(&self) -> &Vst2Loaded {
+        self.pair.as_ref().expect("the pair is whole").1.loaded()
+    }
+}
+
 impl DerefMut for Active {
-    fn deref_mut(&mut self) -> &mut Vst2Controller {
-        &mut self.pair.as_mut().expect("the pair is whole").1
+    fn deref_mut(&mut self) -> &mut Vst2Loaded {
+        self.pair
+            .as_mut()
+            .expect("the pair is whole")
+            .1
+            .loaded_mut()
     }
 }
 

@@ -100,8 +100,7 @@ use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
 use tutti_types::PlayReading;
 use tutti_ump::{
-    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
-    Voice2, decode,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1, Voice2, decode,
 };
 
 /// One param port's state, as the reference keeps it.
@@ -1538,7 +1537,7 @@ fn ref_key(e: &Event) -> Option<RefKey> {
                 }
                 Voice1::NoteOn { note, .. } => Some(RefKey::On((false, g, c, note))),
                 Voice1::NoteOff { note, .. } => Some(RefKey::Off((false, g, c, note))),
-                Voice1::ControlChange { controller, value } if controller.get() == 64 => {
+                Voice1::ControlChange { controller, value } if controller == CCNumber::SUSTAIN => {
                     Some(RefKey::Pedal(false, g, c, value.get() >= 64))
                 }
                 _ => None,
@@ -1549,7 +1548,7 @@ fn ref_key(e: &Event) -> Option<RefKey> {
             match v {
                 Voice2::NoteOn { note, .. } => Some(RefKey::On((true, g, c, note))),
                 Voice2::NoteOff { note, .. } => Some(RefKey::Off((true, g, c, note))),
-                Voice2::ControlChange { controller, value } if controller.get() == 64 => {
+                Voice2::ControlChange { controller, value } if controller == CCNumber::SUSTAIN => {
                     Some(RefKey::Pedal(true, g, c, value >= 0x8000_0000))
                 }
                 _ => None,
@@ -1589,7 +1588,7 @@ impl RefHeld {
             channel: MidiChannel::of(c),
         };
         for &(m2, g, c) in &self.pedals {
-            let cc = CCNumber::of(64);
+            let cc = CCNumber::SUSTAIN;
             let msg = if m2 {
                 Message::Midi2(
                     addr(g, c),
@@ -1614,14 +1613,7 @@ impl RefHeld {
         }
         for &(m2, g, c, note) in &self.notes {
             let msg = if m2 {
-                Message::Midi2(
-                    addr(g, c),
-                    Voice2::NoteOff {
-                        note,
-                        velocity: 0,
-                        attribute: Attribute::None,
-                    },
-                )
+                Message::Midi2(addr(g, c), Voice2::note_off(note, 0))
             } else {
                 Message::Midi1(
                     addr(g, c),

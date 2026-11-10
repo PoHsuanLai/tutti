@@ -8,6 +8,7 @@
 //! beside the gated pool they share.
 
 use std::sync::Arc;
+use tutti_ump::Ump;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -153,7 +154,7 @@ impl Node for Seq {
                 (Some(cx.env.frame.get() + i as u64) == self.stopped_on).then(|| note_on(64))
             };
             if let Some(w) = words {
-                io.event_out(0).push(Event::midi(at, w)).expect("room");
+                io.event_out(0).push(Event::midi(at, Ump(w))).expect("room");
             }
         }
         Status::Modified
@@ -181,7 +182,7 @@ impl Node for Midi {
                 .checked_sub(base)
                 .and_then(|o| Offset::new(o as usize, n))
             {
-                io.event_out(0).push(Event::midi(o, w)).expect("room");
+                io.event_out(0).push(Event::midi(o, Ump(w))).expect("room");
             }
         }
         Status::Modified

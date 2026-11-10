@@ -1,28 +1,32 @@
-//! The plugin both halves of the in-process node share: the two halves of one
-//! activation behind the one lock the node and its handle take.
+//! The in-process VST2 plugin's control side: its [`Lifecycle`], with the
+//! Processor lent to the node's realtime end through a threaded [`Hand`]
+//! (doc 016 §2.6; doc 021 step 4a-3).
 //!
-//! The audio thread reaches the Processor through the lock's `try_lock`; the
-//! control side reaches the Controller (and, through it, the loaded plugin)
-//! through the lock itself. A rate change is a rejoin and an activation, which
-//! needs both halves, so it happens only on the control side, under the lock.
+//! The audio thread never reaches this: it renders through the Processor the
+//! node's [`Rt`] holds, and takes no lock. The control side (the handle, the
+//! node's `shape` and `prepare`, a fork) reaches it under one mutex that only
+//! control threads take. A rate change is a recall, a rejoin and an
+//! activation ([`HostOp::Reconfigure`]): the node's `prepare` runs it to the
+//! end with its own realtime end, which is not in an executor then; a rate
+//! parked for the main thread is run by the pump, and the Processor comes
+//! back at the audio thread's next poll.
 
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
-    Loaded, MaxBlock, Prepare, RenderMode, Request, SampleRate, Samples, standing,
+    Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Processor, RenderMode, SampleRate,
+    Samples, State, standing,
 };
-use tutti_vst2_host::{
-    ChannelLayout, MidiEventVec, ParameterChange, PluginInfo, Vst2Controller, Vst2Loaded,
-    Vst2ProcessContext, Vst2Processor,
-};
+use tutti_rt::Rt;
+use tutti_vst2_host::{ChannelLayout, ParameterChange, Vst2Loaded, Vst2Processor};
 
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::PluginTail;
 
 /// What the plugin changed about itself since the last
-/// [`Instance::poll_changes`]. VST2 has no notification for any of it except
+/// [`Instance::pump`]. VST2 has no notification for any of it except
 /// `audioMasterIOChanged`, so every field is a re-read the host did.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Changes {
@@ -35,31 +39,18 @@ pub(super) struct Changes {
     pub(super) io: bool,
 }
 
-/// The figures the host last read of the plugin, to tell a move from a re-read.
-struct Declared {
-    latency: Samples,
-    tail: PluginTail,
-}
-
-/// A VST2 plugin, activated.
+/// A VST2 plugin and where it is in its life.
 pub(super) struct Instance {
-    /// `None` only while a reconfiguration holds the halves, or after the
-    /// plugin was lost (see `lost`).
-    halves: Option<(Vst2Processor, Vst2Controller)>,
-    /// The plugin, suspended, when no activation would take it again. Every
-    /// block then renders silence; the control side is told by
-    /// [`is_lost`](Self::is_lost).
-    lost: Option<Vst2Loaded>,
-    /// Nothing, for a block a lost plugin did not render.
-    no_events: MidiEventVec,
-    /// What the plugin runs at. Its `mode` follows the live render mode
-    /// ([`set_offline_render`](Self::set_offline_render)), so a rate change
-    /// re-activates in the mode the plugin was told.
+    lifecycle: Lifecycle<Vst2Loaded>,
+    state: State,
+    /// The Processor's way to the node's realtime end.
+    hand: Hand<Vst2Processor>,
+    /// What the plugin runs at, or was last asked to. Its `mode` follows the
+    /// live render mode ([`set_offline_render`](Self::set_offline_render)), so
+    /// a rate change activates in the mode the plugin was told.
     prepare: Prepare,
-    declared: Declared,
-    /// A rate change happened since the last [`poll_changes`](Self::poll_changes):
-    /// the plugin may have recomputed its latency or tail, and VST2 will not say.
-    reread: bool,
+    /// What the pump has not yet reported.
+    changes: Changes,
     /// What the control side has not yet been told about the plugin's rate:
     /// `Some(Some(..))` a refusal, `Some(None)` the rate taken again after one.
     /// Read by [`take_rate_report`](Self::take_rate_report).
@@ -73,7 +64,8 @@ pub(super) type Restore<'a> = &'a mut dyn FnMut(&mut Vst2Loaded) -> Result<(), S
 
 impl Instance {
     /// Loads and activates the plugin at `sample_rate` and blocks of up to
-    /// `block_size`, 32-bit, in realtime mode. Main thread.
+    /// `block_size`, 32-bit, in realtime mode, and lends its Processor to the
+    /// realtime end this returns. Main thread.
     ///
     /// # Errors
     ///
@@ -89,7 +81,7 @@ impl Instance {
         sample_rate: f64,
         block_size: usize,
         restore: Option<Restore<'_>>,
-    ) -> Result<(Self, Option<Result<(), String>>), (LoadStage, String)> {
+    ) -> Result<(Self, Rt<Vst2Processor>, Option<Result<(), String>>), (LoadStage, String)> {
         let mut loaded = Vst2Loaded::load(main, path)
             .map_err(|e| (LoadStage::Opening, format!("vst2-host load failed: {e}")))?;
         let restored = restore.map(|restore| restore(&mut loaded));
@@ -103,120 +95,117 @@ impl Instance {
                     ),
                 )
             })?;
-        match loaded.activate(main, prepare) {
-            Ok(halves) => {
-                let declared = Declared {
-                    latency: halves.1.loaded().latency_samples(),
-                    tail: halves.1.loaded().tail(main),
-                };
-                Ok((
-                    Self {
-                        halves: Some(halves),
-                        lost: None,
-                        no_events: MidiEventVec::new(),
-                        prepare,
-                        declared,
-                        reread: false,
-                        rate_report: None,
-                        rate_refused: false,
-                    },
-                    restored,
-                ))
-            }
-            Err(refused) => Err((
+        let (hand, rt) = Hand::threaded();
+        let mut this = Self {
+            lifecycle: Lifecycle::new(loaded),
+            state: Lifecycle::<Vst2Loaded>::initial_state(),
+            hand,
+            prepare,
+            changes: Changes::default(),
+            rate_report: None,
+            rate_refused: false,
+        };
+        let refused = this.drive(main, Event::Op(HostOp::Activate(prepare)));
+        if let Some(reason) = refused {
+            return Err((
                 LoadStage::Activation,
-                format!("vst2-host activation failed: {}", refused.reason),
-            )),
+                format!("vst2-host activation failed: {reason}"),
+            ));
+        }
+        // What the activation read is the baseline, not a change.
+        this.changes = Changes::default();
+        Ok((this, rt, restored))
+    }
+
+    /// Steps `event` and keeps what it told; the reason of a refused
+    /// activation, if it was one.
+    fn drive(&mut self, main: &MainThread, event: Event) -> Option<String> {
+        let mut refused = None;
+        let changes = &mut self.changes;
+        let state = self.state.clone();
+        self.state =
+            self.lifecycle
+                .drive(state, event, &mut self.hand, main, |notice| match notice {
+                    Notice::LatencyChanged(latency) => changes.latency = Some(latency),
+                    Notice::TailChanged(tail) => changes.tail = Some(tail),
+                    Notice::IoChanged => changes.io = true,
+                    Notice::Refused { reason, .. }
+                    | Notice::Stuck { reason }
+                    | Notice::Lost { reason } => refused = Some(reason.to_string()),
+                    Notice::ParamValuesChanged
+                    | Notice::NoteExpressionChanged
+                    | Notice::ParamTitlesChanged
+                    | Notice::Reloaded => {}
+                });
+        refused
+    }
+
+    /// The plugin, wherever it is in its life; `None` once it is lost.
+    fn plugin(&self) -> Option<&Vst2Loaded> {
+        match &self.lifecycle {
+            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded()),
+            Lifecycle::Poisoned => None,
         }
     }
 
-    /// The Controller. Panics on a lost plugin: the control side asks
-    /// [`is_lost`](Self::is_lost) first (it cannot happen unless a rate
-    /// rollback fails twice, which `set_sample_rate`'s up-front check rules out).
-    pub(super) fn controller(&self) -> &Vst2Controller {
-        &self.halves.as_ref().expect("the plugin is not lost").1
+    fn plugin_mut(&mut self) -> Option<&mut Vst2Loaded> {
+        match &mut self.lifecycle {
+            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded_mut()),
+            Lifecycle::Poisoned => None,
+        }
     }
 
-    /// [`controller`](Self::controller), mutably.
-    pub(super) fn controller_mut(&mut self) -> &mut Vst2Controller {
-        &mut self.halves.as_mut().expect("the plugin is not lost").1
+    /// The plugin's `Control` surface (parameters, state, presets), wherever
+    /// it is in its life. `None` once it is lost.
+    pub(super) fn control(&mut self) -> Option<&mut dyn tutti_plugin_types::Control> {
+        self.lifecycle.control()
     }
 
-    /// Whether the plugin could not be activated again and renders silence.
+    /// Whether the plugin is gone (a call into it panicked): it renders
+    /// silence and the pump skips it.
     #[must_use]
     pub(super) fn is_lost(&self) -> bool {
-        self.halves.is_none()
+        self.lifecycle.is_poisoned()
     }
 
-    /// The latency and tail as the control side last read them
-    /// ([`poll_changes`](Self::poll_changes)). Dispatches nothing, so the graph
-    /// compile may call it.
+    /// The latency and tail as the control side last read them. Dispatches
+    /// nothing, so the graph compile may call it.
     pub(super) fn figures(&self) -> (Samples, PluginTail) {
-        (self.declared.latency, self.declared.tail)
+        (
+            self.state.latency().unwrap_or_default(),
+            self.state.tail().unwrap_or_default(),
+        )
     }
 
     /// Tells the plugin whether it renders offline, and keeps the mode a rate
     /// change activates it in.
     pub(super) fn set_offline_render(&mut self, offline: bool) {
-        self.prepare = self.prepare.with_mode(if offline {
+        let mode = if offline {
             RenderMode::Offline
         } else {
             RenderMode::Realtime
-        });
-        if let Some((_, controller)) = &self.halves {
-            controller.loaded().set_offline_render(offline);
-        } else if let Some(plugin) = &self.lost {
+        };
+        self.prepare = self.prepare.with_mode(mode);
+        self.state.set_mode(mode);
+        if let Some(plugin) = self.plugin() {
             plugin.set_offline_render(offline);
         }
     }
 
-    /// One block through the plugin: [`Vst2Processor::process_f32`].
-    pub(super) fn process_f32(
-        &mut self,
-        inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
-        num_samples: usize,
-        ctx: &Vst2ProcessContext,
-    ) -> &MidiEventVec {
-        match self.halves.as_mut() {
-            Some((processor, _)) => processor.process_f32(inputs, outputs, num_samples, ctx),
-            None => {
-                for out in outputs.iter_mut() {
-                    let n = num_samples.min(out.len());
-                    out[..n].fill(0.0);
-                }
-                &self.no_events
-            }
-        }
-    }
-
-    /// The block's parameter changes, written before it renders:
-    /// [`Vst2Processor::write_automation`]. Returns how many were refused.
-    pub(super) fn write_automation(
-        &mut self,
-        changes: &tutti_plugin_types::ParameterChanges,
-    ) -> u32 {
-        match self.halves.as_mut() {
-            Some((processor, _)) => processor.write_automation(changes),
-            None => 0,
-        }
-    }
-
-    /// SysEx messages dropped whole: [`Vst2Processor::dropped_sysex`].
-    #[cfg(test)]
-    pub(super) fn dropped_sysex(&mut self) -> u64 {
-        self.halves
-            .as_mut()
-            .map_or(0, |(processor, _)| processor.dropped_sysex())
-    }
-
-    /// Tells the plugin its rate: a rejoin and an activation at the new
-    /// [`Prepare`], which is how VST2 takes one (`effSetSampleRate` between
-    /// `effMainsChanged` brackets). Main thread, under the lock.
+    /// Tells the plugin its rate: a recall, a rejoin and an activation at the
+    /// new [`Prepare`], which is how VST2 takes one (`effSetSampleRate`
+    /// between `effMainsChanged` brackets). Main thread.
     ///
-    /// A refusal is rolled back: the plugin is activated again at the rate it
-    /// already accepted. The figures the plugin recomputes for the new rate are
-    /// read by the next [`poll_changes`](Self::poll_changes).
+    /// With `rt`, the node's own realtime end out of any executor (its
+    /// `prepare`), the whole exchange runs here and the new Processor is in
+    /// `rt` on return. Without, the recall waits for the audio thread's next
+    /// poll and a later [`pump`](Self::pump) finishes it.
+    ///
+    /// A plugin that refuses the rate renders nothing until a rate it takes
+    /// (doc 016's rule for every format); the figures it recomputes are read
+    /// after the activation.
     ///
     /// # Errors
     ///
@@ -224,8 +213,42 @@ impl Instance {
     /// (`standing`: where the plugin stands). The refusal is also kept for
     /// [`take_rate_report`](Self::take_rate_report), which is how the control side
     /// hears of one the audio thread's parked rate caused.
-    pub(super) fn set_sample_rate(&mut self, main: &MainThread, rate: f64) -> Result<(), String> {
-        let result = self.reconfigure(main, rate);
+    pub(super) fn set_sample_rate(
+        &mut self,
+        main: &MainThread,
+        rate: f64,
+        rt: Option<&mut Rt<Vst2Processor>>,
+    ) -> Result<(), String> {
+        let refused = |this: &Self, why: &str| {
+            format!(
+                "plugin refused sample rate {rate} ({}): {why}",
+                standing(this.state.renders(), this.prepare.rate())
+            )
+        };
+        let result = match self.prepare.with_rate(SampleRate(rate)) {
+            // Before the plugin is touched: nothing is recalled for a rate
+            // that is no rate.
+            None => Err(refused(self, "not a positive finite rate")),
+            Some(wanted) => {
+                let mut outcome = self.drive(main, Event::Op(HostOp::Reconfigure(wanted)));
+                if let Some(rt) = rt {
+                    // The recall raised above: the realtime end hands the
+                    // Processor back, the tick runs the parked plan, and the
+                    // new Processor is lent and taken.
+                    let _ = rt.poll(Processor::stop);
+                    let ticked = self.drive(main, Event::Tick);
+                    outcome = outcome.or(ticked);
+                    let _ = rt.poll(Processor::stop);
+                }
+                match outcome {
+                    Some(why) => Err(refused(self, &why)),
+                    None => {
+                        self.prepare = wanted;
+                        Ok(())
+                    }
+                }
+            }
+        };
         match &result {
             Err(reason) => {
                 self.rate_refused = true;
@@ -246,128 +269,95 @@ impl Instance {
         self.rate_report.take()
     }
 
-    fn reconfigure(&mut self, main: &MainThread, rate: f64) -> Result<(), String> {
-        let refused = |this: &Self, why: &str| {
-            format!(
-                "plugin refused sample rate {rate} ({}): {why}",
-                standing(!this.is_lost(), this.prepare.rate())
-            )
-        };
-        // Before the plugin is taken apart: a refusal after the rejoin would
-        // leave a plugin to put back.
-        let Some(wanted) = self.prepare.with_rate(SampleRate(rate)) else {
-            return Err(refused(self, "not a positive finite rate"));
-        };
-        let Some((processor, controller)) = self.halves.take() else {
-            return Err(refused(self, "the plugin is lost"));
-        };
-        let loaded = match Vst2Loaded::deactivate(main, processor, controller) {
-            Ok(loaded) => loaded,
-            Err(stuck) => {
-                self.halves = Some((stuck.processor, stuck.controller));
-                return Err(refused(self, &stuck.reason.to_string()));
-            }
-        };
-        let mut outcome = Ok(());
-        let halves = match loaded.activate(main, wanted) {
-            Ok(halves) => {
-                self.prepare = wanted;
-                Some(halves)
-            }
-            Err(refused_at) => {
-                outcome = Err(refused_at.reason.to_string());
-                match refused_at.plugin {
-                    Some(plugin) => match plugin.activate(main, self.prepare) {
-                        Ok(halves) => Some(halves),
-                        Err(again) => {
-                            self.lost = again.plugin;
-                            None
-                        }
-                    },
-                    None => None,
-                }
-            }
-        };
-        self.halves = halves;
-        self.reread = true;
-        outcome.map_err(|why| refused(self, &why))
-    }
-
-    /// Takes the plugin out of its activation, as a failed rollback would.
-    #[cfg(test)]
-    pub(super) fn lose(&mut self) {
-        let (processor, controller) = self.halves.take().expect("the plugin is not lost");
-        let Ok(loaded) = Vst2Loaded::deactivate(
-            &MainThread::claim().expect("one test, one process"),
-            processor,
-            controller,
-        ) else {
-            panic!("the halves are a pair");
-        };
-        self.lost = Some(loaded);
-    }
-
-    /// What the plugin changed about itself since the last call, and the moment
-    /// to act on it.
+    /// The main thread's tick: delivers what the plugin asked for, collects a
+    /// Processor the audio thread returned (running a parked rate change), and
+    /// reports what the plugin changed about itself since the last call.
     ///
     /// Re-reads on `audioMasterIOChanged` (the plugin's own signal: its pin
-    /// counts and latency may both have moved), and reports what the host's own
-    /// re-reads found after a rate change. Main thread: the re-read dispatches
-    /// `effGetTailSize`. An empty result is the common case and costs one atomic
-    /// swap.
-    pub(super) fn poll_changes(&mut self, main: &MainThread) -> Changes {
+    /// counts and latency may both have moved), and reports what an activation
+    /// read. Main thread: a re-read dispatches `effGetTailSize`.
+    pub(super) fn pump(&mut self, main: &MainThread) -> Changes {
         let mut asked = Vec::new();
-        self.controller().loaded().take_requests(main, &mut asked);
-        let io = asked.contains(&Request::IoChanged);
-        let mut changes = Changes {
-            io,
-            ..Changes::default()
-        };
-        if io || std::mem::take(&mut self.reread) {
-            let latency = self.controller().loaded().latency_samples();
-            if latency != self.declared.latency {
-                self.declared.latency = latency;
-                changes.latency = Some(latency);
-            }
-            let tail = self.controller().loaded().tail(main);
-            if tail != self.declared.tail {
-                self.declared.tail = tail;
-                changes.tail = Some(tail);
+        if let Some(plugin) = self.plugin() {
+            plugin.take_requests(main, &mut asked);
+        }
+        // The plugin's own signal, reported as it was raised: its pin counts or
+        // latency may have moved, and the handle's `Io` says so even when the
+        // re-read finds the same layout (the core reports a layout change
+        // only).
+        if asked.contains(&tutti_plugin_types::Request::IoChanged) {
+            self.changes.io = true;
+        }
+        for request in asked {
+            if let Some(why) = self.drive(main, Event::Request(request)) {
+                self.note_refusal(why);
             }
         }
-        changes
+        if let Some(why) = self.drive(main, Event::Tick) {
+            self.note_refusal(why);
+        }
+        std::mem::take(&mut self.changes)
+    }
+
+    /// A refusal the pump's plan met (a parked rate change), kept for the
+    /// control side.
+    fn note_refusal(&mut self, why: String) {
+        self.rate_refused = true;
+        self.rate_report = Some(Some((self.prepare.rate(), why)));
     }
 
     /// The pin counts the plugin declares now.
     pub(super) fn pins(&self) -> (ChannelLayout, ChannelLayout) {
-        self.controller().loaded().pins()
-    }
-
-    /// The plugin's identity and declared capabilities.
-    pub(super) fn metadata(&self) -> &PluginInfo {
-        self.controller().loaded().metadata()
+        self.plugin().map_or(
+            (ChannelLayout::EMPTY, ChannelLayout::EMPTY),
+            Vst2Loaded::pins,
+        )
     }
 
     /// The plugin's parameter edits since the last call.
     pub(super) fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        self.controller().loaded().drain_param_changes()
+        self.plugin()
+            .map(Vst2Loaded::drain_param_changes)
+            .unwrap_or_default()
+    }
+
+    /// Whether the plugin is split and rendering.
+    #[cfg(test)]
+    pub(super) fn renders(&self) -> bool {
+        self.state.renders()
+    }
+
+    /// The rate the plugin runs at, or was last asked to.
+    #[cfg(test)]
+    pub(super) fn rate(&self) -> SampleRate {
+        self.prepare.rate()
+    }
+
+    /// The format's own surface (the editor, programs, display text). Panics
+    /// on a lost plugin: the control side asks [`is_lost`](Self::is_lost)
+    /// first.
+    pub(super) fn loaded(&self) -> &Vst2Loaded {
+        self.plugin().expect("the plugin is not lost")
+    }
+
+    /// [`loaded`](Self::loaded), mutably.
+    pub(super) fn loaded_mut(&mut self) -> &mut Vst2Loaded {
+        self.plugin_mut().expect("the plugin is not lost")
     }
 }
 
-/// The loaded plugin, for the format's own surface. The Controller (which
-/// `Vst2Controller` no longer derefs from) is [`Instance::controller`] and
-/// [`Instance::controller_mut`], for what is the `Control` trait's.
+/// The loaded plugin, for the format's own surface.
 impl Deref for Instance {
     type Target = Vst2Loaded;
 
     fn deref(&self) -> &Vst2Loaded {
-        self.controller().loaded()
+        self.loaded()
     }
 }
 
 impl DerefMut for Instance {
     fn deref_mut(&mut self) -> &mut Vst2Loaded {
-        self.controller_mut().loaded_mut()
+        self.loaded_mut()
     }
 }
 
@@ -419,27 +409,26 @@ mod tests {
     ///
     /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every
     /// rate -> the zero rate is activated and kept as the configuration ->
-    /// `prepare` changes -> fails. Mutation (run): the `let Some(wanted) .. else` arm of
-    /// `reconfigure` returning `Ok(())` (the old silent return) -> the error assertion fails.
+    /// `prepare` changes -> fails. Mutation (run): the `None` arm of
+    /// `set_sample_rate`'s match returning `Ok(())` -> the error assertion fails.
     /// Mutation (run): `set_sample_rate` not storing `rate_report` -> the report assertion
     /// fails. Mutation (run): the `Ok(()) if self.rate_refused` arm removed -> the
     /// restored assertion fails.
     #[test]
     fn a_rate_that_is_no_rate_leaves_the_instance_alone_and_is_reported() {
-        let mut instance = Instance::load(
+        let (mut instance, _rt, _) = Instance::load(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
             48_000.0,
             64,
             None,
         )
-        .expect("loads")
-        .0;
+        .expect("loads");
         let before = instance.prepare;
         assert_eq!(instance.take_rate_report(), None, "nothing to report yet");
         for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let reason = instance
-                .set_sample_rate(&main_thread(), rate)
+                .set_sample_rate(&main_thread(), rate, None)
                 .expect_err("a rate that is no rate is refused");
             assert!(
                 reason.contains("running at 48000") && reason.contains("not a positive finite"),
@@ -454,11 +443,11 @@ mod tests {
             assert_eq!(why, reason);
             assert_eq!(instance.take_rate_report(), None, "once");
             assert_eq!(instance.prepare, before, "{rate}");
-            assert!(instance.halves.is_some(), "{rate}");
+            assert!(instance.renders(), "{rate}");
             assert!(!instance.is_lost(), "{rate}");
         }
         instance
-            .set_sample_rate(&main_thread(), 96_000.0)
+            .set_sample_rate(&main_thread(), 96_000.0, None)
             .expect("a real rate is taken");
         assert_eq!(instance.prepare.rate().0, 96_000.0);
         assert_eq!(
@@ -467,7 +456,7 @@ mod tests {
             "the recovery is reported"
         );
         instance
-            .set_sample_rate(&main_thread(), 48_000.0)
+            .set_sample_rate(&main_thread(), 48_000.0, None)
             .expect("and again");
         assert_eq!(
             instance.take_rate_report(),
@@ -476,39 +465,29 @@ mod tests {
         );
     }
 
-    /// **A plugin that is lost renders silence, and the audio thread does not
-    /// panic**: the block's outputs are zeroed, no event comes out, and the
-    /// automation is refused without a plugin to take it.
+    /// **A rate change made off the realtime thread completes at the pump,
+    /// once the audio thread hands the Processor back.** The change recalls
+    /// it; the realtime end, at its next poll, stops it and returns it; the
+    /// pump runs the parked plan and lends the new Processor, which the next
+    /// poll takes.
     ///
-    /// Mutation (run): `process_f32`'s `None` arm panicking
-    /// (`unreachable!`) -> the block panics -> fails. Mutation (run): the arm
-    /// returning without zeroing -> the outputs keep 1.0 -> fails.
+    /// Mutation (run): `pump` not driving `Event::Tick` -> the returned
+    /// Processor is never collected, the plan stays parked and the last poll
+    /// finds nothing -> fails.
     #[test]
-    fn a_lost_plugin_renders_silence_without_panicking() {
-        let mut instance = Instance::load(
-            &main_thread(),
-            tutti_fixtures::vst2_probe(),
-            48_000.0,
-            64,
-            None,
-        )
-        .expect("loads")
-        .0;
-        assert!(!instance.is_lost());
-        instance.lose();
-        assert!(instance.is_lost());
-
-        let inputs = [[0.0f32; 64], [0.0; 64]];
-        let inputs: Vec<&[f32]> = inputs.iter().map(|c| &c[..]).collect();
-        let mut out = [[1.0f32; 64], [1.0; 64]];
-        let mut outputs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
-        let ctx = Vst2ProcessContext::new(48_000.0);
-        let events = instance.process_f32(&inputs, &mut outputs, 64, &ctx);
-        assert!(events.is_empty());
-        assert!(out.iter().flatten().all(|&x| x == 0.0), "silence");
-        assert_eq!(
-            instance.write_automation(&tutti_plugin_types::ParameterChanges::default()),
-            0
-        );
+    fn a_parked_rate_change_completes_at_the_pump() {
+        let main = main_thread();
+        let (mut instance, mut rt, _) =
+            Instance::load(&main, tutti_fixtures::vst2_probe(), 48_000.0, 64, None).expect("loads");
+        assert!(rt.poll(Processor::stop).is_some(), "lent at the load");
+        instance
+            .set_sample_rate(&main, 96_000.0, None)
+            .expect("the change starts");
+        assert!(rt.poll(Processor::stop).is_none(), "handed back");
+        assert!(instance.state.is_parked(), "waits for the Processor");
+        let _ = instance.pump(&main);
+        assert!(instance.renders());
+        assert_eq!(instance.rate(), SampleRate(96_000.0));
+        assert!(rt.poll(Processor::stop).is_some(), "the new Processor");
     }
 }

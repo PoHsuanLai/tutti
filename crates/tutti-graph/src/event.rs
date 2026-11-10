@@ -619,10 +619,10 @@ const _: () = {
 
 impl Event {
     /// A MIDI event at `offset`.
-    pub const fn midi(offset: Offset, words: [u32; 4]) -> Self {
+    pub const fn midi(offset: Offset, ump: Ump) -> Self {
         Self {
             offset,
-            kind: EventKind::Midi(Ump(words)),
+            kind: EventKind::Midi(ump),
         }
     }
 
@@ -1160,7 +1160,7 @@ mod tests {
     use super::*;
 
     fn ev(offset: u32, tag: u32) -> Event {
-        Event::midi(Offset::raw(offset), [tag, 0, 0, 0])
+        Event::midi(Offset::raw(offset), Ump([tag, 0, 0, 0]))
     }
 
     /// Ties go to the earlier source; otherwise offset order.
@@ -1382,8 +1382,8 @@ mod tests {
     /// assertion fails.
     #[test]
     fn only_a_midi_note_off_event_is_a_note_off() {
-        assert!(Event::midi(Offset::ZERO, [0x2080_3c40, 0, 0, 0]).is_note_off());
-        assert!(!Event::midi(Offset::ZERO, [0x2090_3c40, 0, 0, 0]).is_note_off());
+        assert!(Event::midi(Offset::ZERO, Ump([0x2080_3c40, 0, 0, 0])).is_note_off());
+        assert!(!Event::midi(Offset::ZERO, Ump([0x2090_3c40, 0, 0, 0])).is_note_off());
         assert!(!Event::ramp(Offset::ZERO, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
     }
 
@@ -1439,7 +1439,7 @@ mod tests {
     }
 
     fn off(offset: u32) -> Event {
-        Event::midi(Offset::raw(offset), [0x2080_3c00, 0, 0, 0])
+        Event::midi(Offset::raw(offset), Ump([0x2080_3c00, 0, 0, 0]))
     }
 
     /// A merge that must cut keeps the note-offs and cuts the others, later

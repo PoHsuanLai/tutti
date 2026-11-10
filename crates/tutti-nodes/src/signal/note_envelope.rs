@@ -7,7 +7,7 @@ use tutti_graph::{
 use tutti_modulation::{Adsr, SignalKind, SourceId, SourceNode};
 use tutti_types::{ChannelLayout, SampleRate};
 use tutti_types::{Frame, SamplePosition, Samples};
-use tutti_ump::Ump;
+use tutti_ump::KeyEvent;
 
 use super::PlayWalk;
 
@@ -31,23 +31,21 @@ enum Stage {
 }
 
 /// A MIDI note-on (`true`) or note-off (`false`) and its key, from a MIDI
-/// 1.0 or MIDI 2.0 channel-voice message. A MIDI 1.0 note-on at velocity 0
-/// is a note-off; MIDI 2.0 has no such spelling.
+/// 1.0 or MIDI 2.0 channel-voice message ([`tutti_ump::Ump::key_event`]: a MIDI 1.0
+/// note-on at velocity 0 is a note-off; MIDI 2.0 has no such spelling). The
+/// key is group, channel and note, the protocol dropped: the same note in
+/// either protocol is one note.
 fn note(e: &Event) -> Option<(bool, usize)> {
-    let EventKind::Midi(Ump(w)) = e.kind else {
+    let EventKind::Midi(ump) = e.kind else {
         return None;
     };
-    let w = w[0];
-    let (mt, status) = (w >> 28, (w >> 20) & 0xf);
-    let on = match (mt, status) {
-        (0x2, 0x9) => w & 0x7f != 0,
-        (0x2 | 0x4, 0x8) => false,
-        (0x4, 0x9) => true,
-        _ => return None,
+    let (on, key) = match ump.key_event()? {
+        KeyEvent::On(key) => (true, key),
+        KeyEvent::Off(key) => (false, key),
+        KeyEvent::Sustain { .. } => return None,
     };
-    // Group, channel, note: the top 15 bits of the key.
-    let key = (((w >> 24) & 0xf) << 11) | (((w >> 16) & 0xf) << 7) | ((w >> 8) & 0x7f);
-    Some((on, key as usize))
+    // The top bit of a packed key is the protocol.
+    Some((on, usize::from(key.index() & 0x7fff)))
 }
 
 /// A **note envelope**: an ADSR driven by its MIDI input, sent raw in

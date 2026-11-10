@@ -823,6 +823,11 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
   through `f32` first.
 - **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
   names for the same behaviour is not a type.
+- **Naming:** a pure algorithm or model (`tutti-dsp`, `tutti-curve`, `tutti-measure`) uses
+  the theory name, a spec keeps its own, a *frame* is one value per channel at an instant
+  (an analysis block is a *window*, a step a *hop*), a *sample* is one value (a recording
+  is a *wave*), and a user-facing node API keeps the control word (attack, mix, tail) and
+  names the theory term once in its doc. Glossary: doc 024 section 2.6.
 
 ## Range-checked values
 

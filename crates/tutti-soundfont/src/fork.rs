@@ -116,7 +116,7 @@ mod tests {
         node.prepare(&Prepare::new(rate, Samples(64)));
         let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
         let at = Offset::new(0, Samples(64)).expect("inside");
-        let first = [Event::midi(at, note.0)];
+        let first = [Event::midi(at, note)];
         let mut out = Vec::with_capacity(frames);
         let mut frame = 0u64;
         while out.len() < frames {

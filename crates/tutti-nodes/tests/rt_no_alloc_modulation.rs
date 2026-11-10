@@ -18,6 +18,7 @@ use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
 use tutti_types::{
     BeatDuration, ChannelLayout, Depth, Feedback, Hz, Mix, PhaseIncrement, SampleRate, Seconds,
 };
+use tutti_ump::Ump;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -835,7 +836,7 @@ impl tutti_graph::Node for Notes {
             let at = tutti_graph::Offset::new(i, n).expect("in the block");
             let _ = io
                 .event_out(0)
-                .push(tutti_graph::Event::midi(at, [words, 0, 0, 0]));
+                .push(tutti_graph::Event::midi(at, Ump([words, 0, 0, 0])));
         }
         tutti_graph::Status::Modified
     }

@@ -3624,6 +3624,7 @@ dependencies = [
  "tutti-sampler",
  "tutti-transport",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]

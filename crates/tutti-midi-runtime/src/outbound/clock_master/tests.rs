@@ -326,7 +326,7 @@ fn an_off_tick_locate_clocks_the_next_boundary() {
     let sr = 48_000.0;
     // Half a tick past beat 4: 500 frames to the next boundary at 120
     // BPM / 48 kHz (a tick is 1000 frames).
-    let off = 4.0 + 0.5 / PPQN;
+    let off = 4.0 + 0.5 / f64::from(System::TIMING_CLOCKS_PER_QUARTER);
     let (cm, transport, cons) = master(Bpm::of(120.0), SampleRate::new(sr));
     transport.set_beat(0.0);
     transport.set_playing(true);

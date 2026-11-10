@@ -2,7 +2,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::{Address, MidiChannel, MidiGroup};
+use crate::{Address, CCNumber, MidiChannel, MidiGroup};
 
 /// One Universal MIDI Packet: four 32-bit words, of which the message type in
 /// the top nibble of the first word says how many are meaningful
@@ -115,8 +115,10 @@ impl Ump {
         match w >> 28 {
             0x2 | 0x4 => {
                 let status = (w >> 20) & 0xf;
-                let controller = (w >> 8) & 0x7f;
-                status == 0xb && (controller == 120 || controller == 123)
+                let controller = ((w >> 8) & 0x7f) as u8;
+                status == 0xb
+                    && (controller == CCNumber::ALL_SOUND_OFF.get()
+                        || controller == CCNumber::ALL_NOTES_OFF.get())
             }
             _ => false,
         }
@@ -148,7 +150,7 @@ impl Ump {
                     Some(KeyEvent::On(key))
                 }
             }
-            0xb if (w >> 8) & 0x7f == 64 => {
+            0xb if (w >> 8) & 0x7f == CCNumber::SUSTAIN.get() as u32 => {
                 let down = if m2 {
                     self.0[1] >= 0x8000_0000
                 } else {

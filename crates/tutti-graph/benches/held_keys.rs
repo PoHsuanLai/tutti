@@ -2,6 +2,7 @@
 //! `k` note events a block into a sink, `k = 0` being the no-notes block.
 
 use std::hint::black_box;
+use tutti_ump::Ump;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tutti_graph::NodeKey;
@@ -34,7 +35,7 @@ impl Node for Source {
         for i in 0..self.k {
             let _ = out.push(Event::midi(
                 Offset::ZERO,
-                [status | ((i % 100 + 10) << 8) | 100, 0, 0, 0],
+                Ump([status | ((i % 100 + 10) << 8) | 100, 0, 0, 0]),
             ));
         }
         Status::Modified

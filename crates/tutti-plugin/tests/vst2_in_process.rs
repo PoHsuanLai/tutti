@@ -94,7 +94,7 @@ fn load_in_process_returns_audio_unit_and_handle() {
 ///
 /// The round trip is the point: `set_parameter_value` is fire-and-forget, so
 /// only a read proves the write reached the plugin rather than being dropped at
-/// the `try_lock` inside the in-process backend.
+/// a contended `try_lock` inside the in-process backend.
 #[test]
 fn handle_parameter_roundtrip() {
     let _lock = lock_probe();
@@ -495,7 +495,7 @@ fn midi_past_the_blocks_capacity_is_counted() {
                     (i % 128) as u8,
                     0xFFFF,
                 );
-                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on.0)
+                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on)
             })
             .collect()
     };

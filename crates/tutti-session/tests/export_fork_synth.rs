@@ -178,7 +178,7 @@ fn request(source: ExportSource, rate: f64) -> ExportRequest {
 fn reference<N: Node>(unit: N, rate: f64) -> Vec<f32> {
     let mut unit = Direct::new(unit, SampleRate(rate), 64);
     let at = Offset::new(0, Samples(64)).expect("inside");
-    unit.events(0, &[Event::midi(at, clip_note_on().0)]);
+    unit.events(0, &[Event::midi(at, clip_note_on())]);
     let mut out = Vec::with_capacity(NOTE);
     while out.len() < NOTE {
         unit.block();

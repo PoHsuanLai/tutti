@@ -249,8 +249,8 @@ fn new_refuses_a_field_out_of_range() {
 /// A frame the wire framed into a position no clock reads (hour 28) is
 /// dropped; the decoder keeps the last good timecode.
 ///
-/// Mutation (run): publish the assembled value without `new`'s check: the
-/// last assertion fails.
+/// Mutation (run): clear `timecode` when `new` refuses the assembled frame,
+/// instead of keeping the last good one: the last assertion fails.
 #[test]
 fn a_corrupt_position_is_dropped_and_the_last_good_one_kept() {
     let mut decoder = MtcDecoder::new();

@@ -296,7 +296,7 @@ bench *ARGS:
 # Record a named baseline on THIS machine, then compare against it later.
 #
 # Baselines never travel. A number from one box says nothing about another,
-# and docs/benchmarks.md records which machine its figures came from for
+# and docs/archive/benchmarks.md records which machine its figures came from for
 # exactly that reason.
 bench-save NAME="main":
     just bench -- --save-baseline {{NAME}}

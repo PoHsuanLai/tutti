@@ -11,10 +11,12 @@ Counted as code lines containing the word `unsafe` (comments and
 `unsafe fn` and `unsafe impl` together: an upper bound, not a block count. The
 counts are as of the commit that last edited this table and nothing gates
 them; recount with the same rule before quoting one.
+The crate names were corrected on 2026-11-10; the figures were not recounted
+and predate the `-ffi` crates' extraction.
 
 | area | lines | what it is |
 |---|---|---|
-| `tutti-*-host`, `tutti-*-ffi`, `vst-tutti` | 1,985 | VST2/VST3/CLAP/AU C ABIs |
+| `tutti-*-host`, `tutti-*-ffi` (VST2's is `tutti-vst2-ffi`; `vst-tutti` is its old name) | 1,985 | VST2/VST3/CLAP/AU C ABIs |
 | `crates/tutti-plugin-server/` | 83 | the subprocess side: shm, signals |
 | `crates/tutti-plugin/` | 90 | shm slab, IPC transport |
 | `crates/tutti-midi-hardware/`, `tutti-alsa-ump-sys` | 28 | CoreMIDI / ALSA seq-UMP |
@@ -22,7 +24,7 @@ them; recount with the same rule before quoting one.
 | `crates/tutti-plugin-types/` | 10 | bundle/ABI value types |
 | `tutti-rt` | 60 | the non-FFI sites below |
 | `arc-lend` | 10 | the non-FFI sites below |
-| `tutti-engine`, `-transport`, `-metering`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 7 | one test's counting allocator; no sites |
+| `tutti-engine`, `-transport`, `-metering`, `-graph`, `-io`, `-cpal`, `-modulation`, `-export` | 7 | one test's counting allocator; no sites |
 | `tutti-nodes`, `-spatial`, `-sampler`, `-polysynth`, `-soundfont`, `-dsp` | 28 | tests' counting allocators and a libc-version probe |
 | `testing/` | 487 | the reference test plugins; never shipped |
 
@@ -154,7 +156,8 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   reclamation, which is where a mistake would be silent. (`tutti-rt`'s
   `--lib` run is the unit tests, including the two-thread ones; its loom
   models and doctests are not miri's.) (It covered the pointer arithmetic in
-  `tutti-node`'s planar buffers too, until doc 013 deleted them: a
+  the planar buffers of `tutti-node` (deleted; the node contract is now
+  `tutti_graph::Node`) too, until doc 013 deleted them: a
   graph node gets its buffers from `tutti-graph`, which is
   `#![forbid(unsafe_code)]`.)
 

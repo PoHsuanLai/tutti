@@ -63,12 +63,12 @@ fn digest_of(mut node: VbapPannerNode) -> u64 {
 fn the_stereo_panner_renders_what_it_always_did() {
     let digest = digest_of(VbapPannerNode::stereo().unwrap());
     eprintln!("DIGEST vbap stereo {digest:#018x}");
-    assert_golden("vbap stereo", digest, 0);
+    assert_golden("vbap stereo", digest, 0xc090_25c1_9ff4_8d88);
 }
 
 #[test]
 fn the_surround_panner_renders_what_it_always_did() {
     let digest = digest_of(VbapPannerNode::surround_5_1().unwrap());
     eprintln!("DIGEST vbap 5.1 {digest:#018x}");
-    assert_golden("vbap 5.1", digest, 0);
+    assert_golden("vbap 5.1", digest, 0xf949_5006_9f51_c9ae);
 }

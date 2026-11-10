@@ -954,7 +954,7 @@ fn the_position_dezipper_renders_what_it_always_did() {
         }
     }
     eprintln!("DIGEST hrtf {digest:#018x}");
-    tutti_nodes::testing::assert_golden("hrtf position de-zipper", digest, 0);
+    tutti_nodes::testing::assert_golden("hrtf position de-zipper", digest, 0x6ae5_3847_7723_708d);
 }
 
 /// FNV-1a over the bits of every sample, left then right of each block, of a

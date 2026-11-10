@@ -75,7 +75,7 @@ fn the_limiter_release_renders_what_it_always_did() {
     let mut node = prepared(node, SR, BLOCK);
     let digest = render(&mut node, 2, || set.set_release(Seconds(0.02)));
     eprintln!("DIGEST limiter {digest:#018x}");
-    assert_golden("limiter", digest, 0);
+    assert_golden("limiter", digest, 0xdfc4_0e16_5103_58ea);
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn the_compressor_follower_renders_what_it_always_did() {
         set.set_release(Seconds(0.05));
     });
     eprintln!("DIGEST compressor {digest:#018x}");
-    assert_golden("compressor", digest, 0);
+    assert_golden("compressor", digest, 0x76f1_fc00_4f2b_d92b);
 }
 
 #[test]
@@ -98,5 +98,5 @@ fn the_gate_follower_renders_what_it_always_did() {
     let mut node = prepared(node, SR, BLOCK);
     let digest = render(&mut node, 4, || set.set_release(Seconds(0.02)));
     eprintln!("DIGEST gate {digest:#018x}");
-    assert_golden("gate", digest, 0);
+    assert_golden("gate", digest, 0x08fe_1784_207b_c738);
 }

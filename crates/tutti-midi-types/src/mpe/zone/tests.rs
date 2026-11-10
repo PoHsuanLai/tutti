@@ -171,22 +171,20 @@ fn zones_default_to_rp053_ranges_per_role() {
 fn from_mcm_rejects_out_of_range_configurations() {
     // RP-053 puts the MCM on Ch1 or Ch16 only; RPN 0x00/0x06 elsewhere is
     // ordinary parameter traffic and must not be read as configuration.
-    let on_ch5 = midi::registered_controller(
+    let on_ch5 = midi::registered_rpn(
         MidiGroup::FIRST,
         MidiChannel::of(5),
-        crate::ump::RPN_BANK_MPE,
-        crate::ump::RPN_INDEX_MCM,
+        tutti_ump::Rpn::MPE_CONFIGURATION,
         3u32 << 25,
     );
     assert_eq!(MpeZoneConfig::from_mcm(&on_ch5), None);
 
     // A zone has at most 15 member channels — reject rather than clamp, so a
     // bogus count leaves the existing zone alone.
-    let too_many = midi::registered_controller(
+    let too_many = midi::registered_rpn(
         MidiGroup::FIRST,
         MidiChannel::FIRST,
-        crate::ump::RPN_BANK_MPE,
-        crate::ump::RPN_INDEX_MCM,
+        tutti_ump::Rpn::MPE_CONFIGURATION,
         100u32 << 25,
     );
     assert_eq!(MpeZoneConfig::from_mcm(&too_many), None);

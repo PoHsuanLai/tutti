@@ -96,16 +96,11 @@ mod channel_voice;
 mod controllers;
 mod flex_data;
 mod protocol;
-mod sysex;
 mod sysex8;
 mod system;
 mod utility;
 
 pub(crate) use channel_voice::program_change_bank_of;
-pub use controllers::{
-    RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY, RPN_INDEX_MCM,
-    RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-};
 pub use flex_data::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType, FlexTextKind,
     FlexTextReassembler, KeySharpsFlats, Tonic, bpm_to_ten_ns_per_quarter, flex_chord_name,
@@ -114,7 +109,6 @@ pub use flex_data::{
     push_flex_text, ten_ns_per_quarter_to_bpm,
 };
 pub use protocol::Protocol;
-pub use sysex::SYSEX7_MAX_PAYLOAD;
 pub use sysex8::{
     SYSEX8_BYTES_ABORT, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,
     SYSEX8_STATUS_START, is_sysex8_abort, sysex8_fragments, sysex8_header, sysex8_message,

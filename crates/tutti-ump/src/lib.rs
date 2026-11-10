@@ -52,6 +52,7 @@ mod midi1;
 mod midi_channel;
 mod midi_group;
 mod note_id;
+mod rpn;
 mod sysex;
 mod ump;
 
@@ -73,7 +74,9 @@ pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame};
 pub use note_id::NoteId;
+pub use rpn::Rpn;
 pub use sysex::{
-    NotSysex, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep, sysex7_packets,
+    NotSysex, SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep,
+    sysex7_packets,
 };
 pub use ump::{Key, KeyEvent, Ump};

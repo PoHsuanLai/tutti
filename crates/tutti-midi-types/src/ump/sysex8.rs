@@ -1,7 +1,7 @@
 //! SysEx 8-bit (UMP Message Type 0x5): 128-bit packets carrying 8-bit-clean
 //! System Exclusive / Mixed Data payloads (M2-104 §7.8).
 //!
-//! Unlike SysEx7 (MT 0x3), which [`super::sysex`] hand-packs, SysEx8 leans
+//! Unlike SysEx7 (MT 0x3), which `tutti_ump::sysex7_packets` packs, SysEx8 leans
 //! on midi2's [`midi2::sysex8::Sysex8`]: each packet holds up to 13 payload
 //! bytes plus a `stream_id` that ties a multi-packet message together, and midi2
 //! owns the Start/Continue/End fragmentation internally. So the emit side builds

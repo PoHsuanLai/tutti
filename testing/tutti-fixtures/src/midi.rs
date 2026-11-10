@@ -11,7 +11,7 @@
 use tutti_midi_protocol::widen;
 use tutti_ump::{
     Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
-    RegisteredPerNoteController, System, U7, U14, Ump, Utility, Voice1, Voice2,
+    RegisteredPerNoteController, Rpn, System, U7, U14, Ump, Utility, Voice1, Voice2,
 };
 
 fn voice(group: MidiGroup, channel: MidiChannel, v: Voice2) -> Ump {
@@ -160,6 +160,19 @@ pub fn registered_controller(
         Voice2::Registered {
             bank: U7::of(bank),
             index: U7::of(index),
+            value,
+        },
+    )
+}
+
+/// A MIDI 2.0 Registered Controller at a named address.
+pub fn registered_rpn(group: MidiGroup, channel: MidiChannel, rpn: Rpn, value: u32) -> Ump {
+    voice(
+        group,
+        channel,
+        Voice2::Registered {
+            bank: rpn.bank(),
+            index: rpn.index(),
             value,
         },
     )

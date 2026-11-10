@@ -7,7 +7,7 @@
 //! → the gate panics.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_fixtures::midi::{note_off, registered_controller};
+use tutti_fixtures::midi::{note_off, registered_rpn};
 use tutti_graph::NodeKey;
 use tutti_graph::UmpAt;
 use tutti_graph::{
@@ -100,12 +100,11 @@ impl MidiIn for BendRange {
     fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
         buffer[0] = (
             Offset::ZERO,
-            registered_controller(
+            registered_rpn(
                 MidiGroup::FIRST,
                 MidiChannel::of(2),
-                tutti_midi_types::ump::RPN_BANK_MPE,
-                tutti_midi_types::ump::RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-                tutti_midi_types::PitchBendSensitivity::of(12).to_rpn_bits(),
+                tutti_ump::Rpn::PITCH_BEND_SENSITIVITY,
+                tutti_midi_protocol::PitchBendSensitivity::of(12).to_rpn_bits(),
             ),
         );
         1

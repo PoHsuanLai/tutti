@@ -496,12 +496,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `SysexMessage` (checked once: `F0`, 7-bit bytes, `F7`), and the one SysEx7
   reassembler is `SysexAssembler<B>` over a buffer the caller sizes
   (`SysexAssembler::room_for`): it allocates nothing, holds one open message
-  across all groups and counts what it drops.
+  across all groups and counts what it drops; `SYSEX7_MAX_PAYLOAD` is tutti's
+  64 KiB cap on one message (the spec sets none), for sizing an assembler. An RPN
+  address is `Rpn` (`bank`, `index`, and the named `PITCH_BEND_SENSITIVITY`,
+  `MPE_CONFIGURATION`, `PER_NOTE_PITCH_BEND_SENSITIVITY`), never a bare `u8` pair.
 - `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates
   nothing. A consumer's call to `widen` is transitional: the stage 3 translator
-  calls it at the input edge and consumers drop theirs.
+  calls it at the input edge and consumers drop theirs. It also holds
+  `PitchBendSensitivity`, the 7.25 fixed-point range of RPN #00/07 (its `serde`
+  feature is optional and carries the bits, for `MpeZoneConfig`).
 - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types`
   only, keeps every module private (`tutti_voicing::Voicing`; CI runs the
   per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`

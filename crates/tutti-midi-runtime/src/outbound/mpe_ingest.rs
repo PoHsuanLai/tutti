@@ -53,22 +53,11 @@
 
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_types::PitchBendSensitivity;
+use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_midi_types::mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
-use tutti_midi_types::ump::{
-    RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-    RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-};
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2, decode};
-
-/// The MPE registered-parameter bank (RPN MSB).
-const MPE_BANK: U7 = U7::of(RPN_BANK_MPE);
-/// RPN #00/00, the channel pitch-bend sensitivity.
-const CHANNEL_BEND_RANGE: U7 = U7::of(RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY);
-/// RPN #00/07, the per-note pitch-bend sensitivity.
-const PER_NOTE_BEND_RANGE: U7 = U7::of(RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY);
+use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, Rpn, Ump, Voice2, decode};
 
 /// A channel voice message on group 1 and `channel`: the group the per-note
 /// forms this ingest makes have always gone out on.
@@ -83,13 +72,13 @@ fn first_group_voice(channel: MidiChannel, voice: Voice2) -> Ump {
     .into()
 }
 
-/// RPN #00/`index` carrying `data` on each channel of `channels`, on `group`
+/// The Registered Controller `rpn` carrying `data` on each channel of `channels`, on `group`
 /// at `offset`.
 fn send_rpns(
     group: MidiGroup,
     offset: Offset,
     channels: core::ops::RangeInclusive<u8>,
-    index: U7,
+    rpn: Rpn,
     data: u32,
     out: &mut impl FnMut(UmpAt),
 ) {
@@ -99,8 +88,8 @@ fn send_rpns(
             Message::Midi2(
                 Address { group, channel },
                 Voice2::Registered {
-                    bank: MPE_BANK,
-                    index,
+                    bank: rpn.bank(),
+                    index: rpn.index(),
                     value: data,
                 },
             )
@@ -126,7 +115,7 @@ fn send_zone_defaults(
         group,
         offset,
         master..=master,
-        CHANNEL_BEND_RANGE,
+        Rpn::PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(2).to_rpn_bits(),
         out,
     );
@@ -134,7 +123,7 @@ fn send_zone_defaults(
         group,
         offset,
         config.member_channel_range(),
-        PER_NOTE_BEND_RANGE,
+        Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::MPE_DEFAULT.to_rpn_bits(),
         out,
     );
@@ -304,7 +293,7 @@ impl MpeIngest {
         let Voice2::Registered { bank, index, value } = voice else {
             return false;
         };
-        if bank != MPE_BANK || index != CHANNEL_BEND_RANGE {
+        if Rpn::new(bank, index) != Rpn::PITCH_BEND_SENSITIVITY {
             return false;
         }
         let Some(zone) = self.get_zone_info(address.channel) else {
@@ -322,7 +311,7 @@ impl MpeIngest {
             address.group,
             event.0,
             config.member_channel_range(),
-            PER_NOTE_BEND_RANGE,
+            Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             value,
             out,
         );

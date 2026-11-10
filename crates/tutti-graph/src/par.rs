@@ -81,7 +81,7 @@ use crate::command::Deliveries;
 use crate::event::Event;
 use crate::exec::{
     Head, Inject, OpState, Ring, Unit, audio_ring, capture_op, delay_op, event_delay_op,
-    event_merge_op, event_ring, global_in, node_dispatch, output_op,
+    event_merge_op, event_ring, global_in, node_dispatch, output_op, sum_op,
 };
 use crate::history::TransportHistory;
 use crate::loss::Dropped;
@@ -470,6 +470,18 @@ impl Shared<'_, '_> {
                     view: self.arena.view(held_audio),
                 };
                 delay_op(audio_ring(&mut ring), &mut a, flags, src, dst, frames);
+            }
+            Op::Sum { srcs, dst } => {
+                let mut a = ArenaView {
+                    view: self.arena.view(held_audio),
+                };
+                sum_op(
+                    &mut a,
+                    flags,
+                    &self.plan.audio_list[srcs.range()],
+                    dst,
+                    frames,
+                );
             }
             Op::EventDelay { delay, src, dst } => {
                 let mut ring = self.rings.claim(delay as usize);

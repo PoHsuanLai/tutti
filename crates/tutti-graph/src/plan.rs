@@ -357,6 +357,20 @@ pub enum Op {
         /// Audio slot written.
         dst: u32,
     },
+    /// Sum several audio slots into one: the fan-in of a port or an output
+    /// channel (doc 013, "Audio fan-in sums"). The value is the left fold
+    /// `((+0.0 + a_0) + a_1) + ..` in `f32`, one rounding per add, over the
+    /// addends in source order; an addend flagged silent adds nothing and is
+    /// skipped. `dst` may be the first addend's own slot (the in-place form,
+    /// when the colouring allows it), and no other addend's.
+    Sum {
+        /// Audio slots read, in source order (into [`Plan::audio_list`]): at
+        /// least 2, at most [`MAX_PORTS`](crate::MAX_PORTS). A wider fan-in is
+        /// a chain whose next op reads the last result first.
+        srcs: Span,
+        /// Audio slot written.
+        dst: u32,
+    },
     /// Delay one event stream.
     EventDelay {
         /// Index into [`Plan::delays`].

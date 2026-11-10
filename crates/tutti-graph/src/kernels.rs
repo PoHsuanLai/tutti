@@ -5,12 +5,11 @@
 //! auto-vectorize where the shape allows; nothing here is on a hot enough path
 //! yet to earn explicit SIMD.
 //!
-//! # No summing kernel, yet
+//! # No summing kernel here
 //!
-//! There is no audio fan-in kernel here because the compiler refuses a
-//! set of two or more sources (`CompileError::FanInNotCompiled`). A
-//! compiler-owned summing op, if one is added, should accumulate in `f64`
-//! and store `f32`: a many-input bus is where `f32`
+//! The audio fan-in kernel is the executor's `sum_op` (`Op::Sum`), an `f32`
+//! left fold. If the "64-bit audio path" is built it should accumulate in
+//! `f64` and store `f32`: a many-input bus is where `f32`
 //! accumulation error compounds, and the widening is cheap next to the loads.
 //! The event merge is not arithmetic and has no such question.
 //!

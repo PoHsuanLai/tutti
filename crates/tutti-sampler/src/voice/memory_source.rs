@@ -14,6 +14,7 @@ use tutti_graph::{
     CrossfadeCurve, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
     param_parts,
 };
+use tutti_transport::TempoReader;
 use tutti_types::{
     Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
     SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
@@ -259,6 +260,10 @@ pub struct MemorySource {
     /// its own (a voice in a pool or a `VoiceNode` reads its owner's).
     clock: Clock,
 
+    /// The project's tempo map, when this source reads one: lent once per
+    /// block to its clock ([`with_tempo`](Self::with_tempo)).
+    tempo: Option<TempoReader>,
+
     /// Output width — the node's audio outputs, fixed at construction.
     ///
     /// Deliberately not derived from `wave.channels()`: a node whose arity
@@ -321,6 +326,7 @@ impl Clone for MemorySource {
             looped: AtomicBool::new(self.looped.load(Ordering::Relaxed)),
             // A copy reads its own blocks' transport.
             clock: Clock::new(),
+            tempo: self.tempo.clone(),
             channels: self.channels,
             channel_place: self.channel_place.clone(),
             // Unsized, so a clone stays allocation-free: a copy inserted as
@@ -378,6 +384,7 @@ impl MemorySource {
             placement: None,
             looped: AtomicBool::new(false),
             clock: Clock::new(),
+            tempo: None,
             channels,
             channel_place,
             positions: Vec::new(),
@@ -1510,6 +1517,21 @@ impl MemorySource {
     }
 }
 
+impl MemorySource {
+    /// This source reading the project's tempo map through `tempo`
+    /// ([`TransportSettings::tempo_reader`](tutti_transport::TransportSettings::tempo_reader)).
+    /// Over a map whose tempo changes, how long a placed voice has played is
+    /// the map's seconds between its start and the playhead, not the beats
+    /// over the tempo of the moment; see
+    /// [`VoicePool::with_tempo`](super::VoicePool::with_tempo). It matters
+    /// only when the source is a graph node of its own (a voice in a pool or a `VoiceNode` reads its owner's). A fork reads the same map.
+    #[must_use]
+    pub fn with_tempo(mut self, tempo: TempoReader) -> Self {
+        self.tempo = Some(tempo);
+        self
+    }
+}
+
 impl Node for MemorySource {
     /// No inputs, [`channels`](Self::channels) outputs; a generator, never
     /// skipped.
@@ -1552,7 +1574,11 @@ impl Node for MemorySource {
             .frames()
             .and_then(|v| v.last().copied())
             .map(|v| Amplitude(v.max(0.0)));
-        let clock = self.clock.observe(cx.env);
+        // Lent for the block and given back after it: the render borrows the
+        // whole source.
+        let mut reader = self.tempo.take();
+        let map = reader.as_mut().map(TempoReader::lend);
+        let clock = self.clock.observe_with(cx.env, map.as_deref());
         let frames = io.frames();
         let (_, mut outs) = io.split();
         let width = outs.len();
@@ -1586,6 +1612,8 @@ impl Node for MemorySource {
         } else {
             self.render_unprepared(&clock, frames, &mut refs[..n]);
         }
+        drop(map);
+        self.tempo = reader;
         Status::Modified
     }
 

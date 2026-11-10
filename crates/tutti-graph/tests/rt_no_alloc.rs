@@ -931,3 +931,106 @@ fn reporting_nodes_are_allocation_free() {
 fn parallel_reporting_nodes_are_allocation_free() {
     reporting_nodes_are_allocation_free_on(4);
 }
+
+/// Audio fan-in never allocates: `Op::Sum` over 8, 64 and 100 sources (one
+/// op, one full op, and a chain of two), at a node's port and at a global
+/// output channel, with every source live, every source silent, and sources
+/// that fall silent one by one (a pulse each), so the silent-addend skip, the
+/// all-silent fill and the in-place form all run inside the gate, on the
+/// parallel executor's helpers too.
+///
+/// Mutation (each run, each failed): collect the live addends into a `Vec` in
+/// `sum_op` -> aborts on the first block; build the request table on the heap
+/// (`Vec`) in `sum_op` -> aborts.
+fn fan_in_is_allocation_free_on(workers: usize) {
+    use common::Pulse;
+    for n in [8u64, 64, 100] {
+        for source in ["live", "silent", "pulses"] {
+            for at_port in [false, true] {
+                let (mut ed, mut exec) = Editor::new(prepare(256));
+                use_pool(&mut exec, workers);
+                for k in 1..=n {
+                    let name = "src";
+                    match source {
+                        "live" => ed.insert(
+                            NodeKey(k),
+                            name,
+                            Unforkable(TestNode::new(Kind::Const {
+                                value: 0.01 * k as f32,
+                                width: 1,
+                            })),
+                        ),
+                        "silent" => ed.insert(
+                            NodeKey(k),
+                            name,
+                            Unforkable(TestNode::new(Kind::Const {
+                                value: 0.0,
+                                width: 1,
+                            })),
+                        ),
+                        _ => ed.insert(
+                            NodeKey(k),
+                            name,
+                            Unforkable(Pulse::new(300 + 17 * k as usize)),
+                        ),
+                    };
+                }
+                let sink = NodeKey(n + 1);
+                if at_port {
+                    ed.insert(
+                        sink,
+                        "thru",
+                        Unforkable(TestNode::new(Kind::Thru { width: 1 })),
+                    );
+                    for k in 1..=n {
+                        ed.spec_mut().topology.connect(at(sink.0, 0), from(k, 0));
+                    }
+                    ed.spec_mut()
+                        .topology
+                        .set_outputs(vec![Source::Node(OutPort {
+                            node: sink,
+                            port: 0,
+                        })]);
+                } else {
+                    ed.spec_mut().topology.outputs = vec![
+                        (1..=n)
+                            .map(|k| {
+                                Source::Node(OutPort {
+                                    node: NodeKey(k),
+                                    port: 0,
+                                })
+                            })
+                            .collect(),
+                    ];
+                }
+                ed.commit().expect("commits");
+                exec.apply_pending();
+                ed.collect();
+                assert_eq!(exec.is_parallel(), workers > 1);
+                let mut out = vec![0.0f32; 128];
+                let mut heard = false;
+                assert_no_alloc::assert_no_alloc(|| {
+                    for _ in 0..40 {
+                        exec.process(128, &Transport::default(), &[], &mut [&mut out[..]]);
+                        heard |= out.iter().any(|&x| x != 0.0);
+                    }
+                });
+                assert_eq!(
+                    heard,
+                    source != "silent",
+                    "n = {n}, {source}, port {at_port}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn fan_in_is_allocation_free() {
+    fan_in_is_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_fan_in_is_allocation_free() {
+    fan_in_is_allocation_free_on(4);
+}

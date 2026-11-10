@@ -23,7 +23,7 @@ static A: AllocDisabler = AllocDisabler;
 /// gate aborts -> fails.
 #[test]
 fn inlet_process_is_allocation_free() {
-    let (node, mut prod) = InletNode::standalone(ChannelLayout::STEREO, Samples(4096));
+    let (node, mut prod) = InletNode::pair(ChannelLayout::STEREO, Samples(4096));
     let mut node = Direct::new(node, SampleRate(48_000.0), 64);
 
     for _ in 0..2048 {

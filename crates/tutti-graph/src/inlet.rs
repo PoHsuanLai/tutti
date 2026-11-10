@@ -10,7 +10,7 @@
 //!
 //! # The ring
 //!
-//! The ring is a [`TapReader`] built by [`TapReader::standalone`], with the
+//! The ring is a [`TapReader`] built by [`TapReader::pair`], with the
 //! [`TapWriter`] the producer keeps: one lane a channel, frames written and
 //! read whole, so a frame cannot tear across channels, and a frame the ring
 //! has no room for is refused whole and counted by the writer.
@@ -61,7 +61,7 @@ use crate::io::Io;
 use crate::node::{Cx, IntoNode, Node, NodeParts, Prepare, Shape, Status};
 use crate::tap::{TapReader, TapWriter};
 
-/// A node that copies a standalone ring into the graph: no inputs, one output
+/// A node that copies a ring of its own into the graph: no inputs, one output
 /// a channel of the ring.
 ///
 /// Each block it pops one frame per output frame from its ring; an empty ring
@@ -85,7 +85,7 @@ use crate::tap::{TapReader, TapWriter};
 /// use tutti_graph::InletNode;
 /// use tutti_types::{ChannelLayout, Samples};
 ///
-/// let (node, mut producer) = InletNode::standalone(ChannelLayout::STEREO, Samples(64));
+/// let (node, mut producer) = InletNode::pair(ChannelLayout::STEREO, Samples(64));
 /// producer.push_interleaved(&[0.5, -0.5]); // one stereo frame, from any thread
 /// assert_eq!(node.layout(), ChannelLayout::STEREO);
 /// ```
@@ -95,7 +95,7 @@ pub struct InletNode {
 }
 
 impl InletNode {
-    /// An inlet over `ring`, the reader half of a [`TapReader::standalone`]
+    /// An inlet over `ring`, the reader half of a [`TapReader::pair`]
     /// pair. The node is as wide as the ring.
     #[must_use]
     pub fn new(ring: TapReader) -> Self {
@@ -105,8 +105,8 @@ impl InletNode {
     /// An inlet of `width` channels over a new ring of `capacity` frames, and
     /// the writer the producer fills it with. Allocates; control side.
     #[must_use = "the writer is the only way to fill the ring"]
-    pub fn standalone(width: ChannelLayout, capacity: Samples) -> (Self, TapWriter) {
-        let (ring, writer) = TapReader::standalone(TapId(0), usize::from(width.count()), capacity);
+    pub fn pair(width: ChannelLayout, capacity: Samples) -> (Self, TapWriter) {
+        let (ring, writer) = TapReader::pair(TapId(0), usize::from(width.count()), capacity);
         (Self::new(ring), writer)
     }
 

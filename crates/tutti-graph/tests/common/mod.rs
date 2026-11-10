@@ -606,6 +606,15 @@ impl Pair {
         self.outputs = graph.topology().outputs.len();
         self.inputs = graph.topology().inputs.count() as usize;
         self.plan = Some(plan.clone());
+        // The editor sends each weighted lane's cell from its own spec, and
+        // `set_edge_gain` checks the edge against it: with edge gains in
+        // play, the editor's spec is the graph's (a harness that compiles
+        // itself has otherwise left it empty).
+        if !graph.gains().is_empty() || !self.editor.spec_mut().gains.is_empty() {
+            let live = self.editor.spec_mut();
+            live.topology = graph.topology().clone();
+            live.gains = graph.gains().clone();
+        }
         // Back on the control side, where the box and what it retired are
         // freed.
         self.editor
@@ -618,6 +627,15 @@ impl Pair {
         // it a fresh unit for every key it might need.
         let all = units_costed(kinds, &self.costs, graph.topology().nodes.keys().copied());
         self.reference.set_graph_with_fades(graph, all, fades);
+    }
+
+    /// Move edge `id`'s weight to `base` in both, as a host moving a fader:
+    /// the editor's `set_edge_gain` (a store, no commit) and the reference's.
+    pub fn set_edge_gain(&mut self, id: tutti_graph::EdgeId, base: tutti_types::Amplitude) {
+        self.editor
+            .set_edge_gain(id, base)
+            .expect("the edge has a gain entry");
+        self.reference.set_edge_gain(id, base);
     }
 
     /// Render one block through both; return (executor, reference) outputs.

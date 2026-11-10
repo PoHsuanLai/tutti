@@ -47,7 +47,7 @@
 use std::num::NonZeroU32;
 
 use crate::NodeKey;
-use crate::{InPort, OutPort, Source};
+use crate::{EdgeId, InPort, OutPort, Source};
 use tutti_types::{Latency, Samples, Tail, UnitAddr};
 
 use crate::arena::Role;
@@ -370,6 +370,29 @@ pub enum Op {
         srcs: Span,
         /// Audio slot written.
         dst: u32,
+    },
+    /// A [`Sum`](Self::Sum) with at least one **weighted lane** (doc 013,
+    /// "Edge gain"): the value is the left fold `((+0.0 + w_0 * a_0) + w_1 *
+    /// a_1) + ..` in `f32`, a multiply and an add per lane, never fused. A
+    /// lane whose weight is exactly `1.0` runs the plain add. Silent addends
+    /// are skipped whatever their weight, and a weight of `0.0` is not
+    /// skipped by value. Unlike `Sum`, one addend is a valid op: a one-edge
+    /// sink with a gain entry runs `+0.0 + w * a`, where a plain one aliases.
+    ///
+    /// `Sum` is exactly this op with every weight `1.0`; it stays its own
+    /// variant so the plain path carries no lane state.
+    WeightedSum {
+        /// Audio slots read, in source order (into [`Plan::audio_list`]): at
+        /// least 1, at most [`MAX_PORTS`](crate::MAX_PORTS).
+        srcs: Span,
+        /// Audio slot written; the first addend's own slot in the in-place
+        /// form, as for `Sum`.
+        dst: u32,
+        /// One entry per addend, in the same order (into
+        /// [`Plan::sum_lanes`]): the edge whose gain weights it, or `None`
+        /// for a plain addend (an edge with no entry, or the previous result
+        /// of a chain).
+        lanes: Span,
     },
     /// Delay one event stream.
     EventDelay {
@@ -923,6 +946,11 @@ pub struct Plan {
     pub(crate) event_values: Vec<Value>,
     pub(crate) value_readers: Vec<u32>,
     pub(crate) param_ports: Vec<ParamPortOp>,
+    /// The lanes of every [`Op::WeightedSum`], flattened (its `lanes` span
+    /// indexes this): the edge of each weighted addend, `None` for a plain
+    /// one. The executor keeps one lane state per entry, and carries a
+    /// weighted lane's across a commit by its [`EdgeId`](crate::EdgeId).
+    pub(crate) sum_lanes: Vec<Option<EdgeId>>,
     /// The node ops, lowered for the executor. Derived from the fields
     /// above; `verify` checks each record against its op.
     pub(crate) nodes: NodeTables,
@@ -983,6 +1011,12 @@ impl Plan {
     /// The flattened event slot lists [`Op`] spans index.
     pub fn event_list(&self) -> &[u32] {
         &self.event_list
+    }
+
+    /// The flattened lane lists of [`Op::WeightedSum`]: per addend, the edge
+    /// whose gain weights it, or `None` for a plain addend.
+    pub fn sum_lanes(&self) -> &[Option<EdgeId>] {
+        &self.sum_lanes
     }
 
     /// Successors of each op in the dependency DAG.

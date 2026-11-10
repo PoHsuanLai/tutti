@@ -1034,3 +1034,111 @@ fn fan_in_is_allocation_free() {
 fn parallel_fan_in_is_allocation_free() {
     fan_in_is_allocation_free_on(4);
 }
+
+/// A weighted fan-in never allocates, ramping: 64 lanes (one full op) and 100
+/// (a chain of two), at a node's port and at a global output channel, every
+/// lane weighted, every one moved before every block (so each block ramps
+/// every lane), with live and pulsing sources (the silent-addend skip runs
+/// with weights), on the parallel executor's helpers too. The moves are the
+/// control thread's; every block renders inside the gate.
+///
+/// Mutation (each run, each failed): build the per-lane ramp in a `Vec` in
+/// `gain::add` -> aborts on the first ramping block; collect the lanes' weights
+/// into a `Vec` in `sum_op` -> aborts; allocate in `SumLane::snapshot` -> aborts.
+fn weighted_fan_in_is_allocation_free_on(workers: usize) {
+    use common::Pulse;
+    use tutti_graph::{EdgeGain, EdgeId, Sink};
+    use tutti_types::Amplitude;
+    for n in [64u64, 100] {
+        for at_port in [false, true] {
+            let (mut ed, mut exec) = Editor::new(prepare(256));
+            use_pool(&mut exec, workers);
+            for k in 1..=n {
+                if k % 2 == 0 {
+                    ed.insert(
+                        NodeKey(k),
+                        "src",
+                        Unforkable(TestNode::new(Kind::Const {
+                            value: 0.01 * k as f32,
+                            width: 1,
+                        })),
+                    );
+                } else {
+                    ed.insert(
+                        NodeKey(k),
+                        "pulse",
+                        Unforkable(Pulse::new(300 + 17 * k as usize)),
+                    );
+                }
+            }
+            let sink = NodeKey(n + 1);
+            let edge_of = |k: u64| EdgeId {
+                sink: if at_port {
+                    Sink::Port(at(sink.0, 0))
+                } else {
+                    Sink::Output(0)
+                },
+                from: from(k, 0),
+            };
+            if at_port {
+                ed.insert(
+                    sink,
+                    "thru",
+                    Unforkable(TestNode::new(Kind::Thru { width: 1 })),
+                );
+                for k in 1..=n {
+                    ed.spec_mut().topology.connect(at(sink.0, 0), from(k, 0));
+                }
+                ed.spec_mut()
+                    .topology
+                    .set_outputs(vec![Source::Node(OutPort {
+                        node: sink,
+                        port: 0,
+                    })]);
+            } else {
+                ed.spec_mut().topology.outputs = vec![
+                    (1..=n)
+                        .map(|k| {
+                            Source::Node(OutPort {
+                                node: NodeKey(k),
+                                port: 0,
+                            })
+                        })
+                        .collect(),
+                ];
+            }
+            for k in 1..=n {
+                ed.spec_mut()
+                    .set_edge_gain(edge_of(k), EdgeGain::new(Amplitude::new(0.5)));
+            }
+            ed.commit().expect("commits");
+            exec.apply_pending();
+            ed.collect();
+            assert_eq!(exec.is_parallel(), workers > 1);
+            let mut out = vec![0.0f32; 128];
+            let mut heard = false;
+            for block in 0..40u64 {
+                for k in 1..=n {
+                    let w = ((block + k) % 7) as f32 * 0.25 - 0.5;
+                    ed.set_edge_gain(edge_of(k), Amplitude::new(w))
+                        .expect("an edge with an entry");
+                }
+                assert_no_alloc::assert_no_alloc(|| {
+                    exec.process(128, &Transport::default(), &[], &mut [&mut out[..]]);
+                });
+                heard |= out.iter().any(|&x| x != 0.0);
+            }
+            assert!(heard, "n = {n}, port {at_port}");
+        }
+    }
+}
+
+#[test]
+fn weighted_fan_in_is_allocation_free() {
+    weighted_fan_in_is_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_weighted_fan_in_is_allocation_free() {
+    weighted_fan_in_is_allocation_free_on(4);
+}

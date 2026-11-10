@@ -82,9 +82,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::MAX_NODE_LATENCY;
 use crate::NodeKey;
-use crate::{Edge, InPort, OutPort, Source};
+use crate::{Edge, EdgeId, InPort, OutPort, Sink, Source};
 use tutti_rt::with_no_denormals;
-use tutti_types::{At, Frame, Latency, Samples};
+use tutti_types::{Amplitude, At, Frame, Latency, Samples};
 
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::history::TransportHistory;
@@ -207,6 +207,13 @@ pub struct Reference {
     /// Ranges moved by [`set_param_range`](Self::set_param_range) since the
     /// last graph: they override the graph's.
     ranges: BTreeMap<ParamIn, ParamRange>,
+    /// The weight each edge gain's lane was given by the last block it ran
+    /// (the `w_prev` of doc 013, "Edge gain"), kept while the graph keeps the
+    /// edge's entry. The reference's own bookkeeping: none of the executor's.
+    lane_prev: BTreeMap<EdgeId, Amplitude>,
+    /// Edge gains moved by [`set_edge_gain`](Self::set_edge_gain) since the
+    /// last graph: they override the graph's.
+    gain_moves: BTreeMap<EdgeId, Amplitude>,
     /// The transport's jumps, kept as the executor keeps them: the same type.
     /// (Its answers are checked against the blocks themselves in
     /// `history.rs`'s tests, not against this.)
@@ -239,6 +246,7 @@ impl std::fmt::Debug for Reference {
             .field("reset_time", &self.reset_time)
             .field("frame", &self.frame)
             .field("ranges", &self.ranges)
+            .field("lane_prev", &self.lane_prev)
             .field("play", &self.play)
             .field("play_playing", &self.play_playing)
             .finish_non_exhaustive()
@@ -314,6 +322,8 @@ impl Reference {
             cancelled: 0,
             params: BTreeMap::new(),
             ranges: BTreeMap::new(),
+            lane_prev: BTreeMap::new(),
+            gain_moves: BTreeMap::new(),
             playhead: RefPlayhead::default(),
             suspended: None,
             landing: BTreeMap::new(),
@@ -490,6 +500,14 @@ impl Reference {
     /// editor's spec records the move, so the two agree).
     pub fn set_param_range(&mut self, at: ParamIn, range: ParamRange) {
         self.ranges.insert(at, range);
+    }
+
+    /// Moves edge `id`'s weight, from the next block on, without a new graph:
+    /// `Editor::set_edge_gain`'s contract. The next
+    /// [`set_graph`](Self::set_graph) replaces it with the graph's (the
+    /// editor's spec records the move, so the two agree).
+    pub fn set_edge_gain(&mut self, id: EdgeId, base: Amplitude) {
+        self.gain_moves.insert(id, base);
     }
 
     /// Switch to `graph`. `fresh` supplies a unit for every node that is new or
@@ -894,6 +912,11 @@ impl Reference {
         self.delays = delays;
         self.graph = Some(graph.clone());
         self.ranges.clear();
+        // A lane lives as long as its entry: a commit that keeps the edge's
+        // entry keeps its weight, one that drops it forgets it.
+        self.lane_prev
+            .retain(|id, _| graph.gains().contains_key(id));
+        self.gain_moves.clear();
     }
 
     /// Renders one block. Same contract as
@@ -976,6 +999,16 @@ impl Reference {
             return;
         };
         let t = graph.topology();
+        // Each weighted lane's weights for this block, as they stand at its
+        // start: from the weight the previous block was given to this one's
+        // (a lane's first block starts at its value).
+        let mut weights: BTreeMap<EdgeId, RefWeight> = BTreeMap::new();
+        for (&id, gain) in graph.gains() {
+            let to = self.gain_moves.get(&id).copied().unwrap_or(gain.base);
+            let from = self.lane_prev.get(&id).copied().unwrap_or(to);
+            self.lane_prev.insert(id, to);
+            weights.insert(id, RefWeight { from, to });
+        }
         with_no_denormals(|| {
             // Scheduled commands: which land this block, and where. Kept in
             // scheduling order per port; the gather below appends them after the
@@ -1053,7 +1086,16 @@ impl Reference {
                     if done.contains(&key) || !direct_preds(key).iter().all(|p| done.contains(p)) {
                         continue;
                     }
-                    self.run_node(key, &graph, frames, &env, inputs, &mut audio, &mut events);
+                    self.run_node(
+                        key,
+                        &graph,
+                        frames,
+                        &env,
+                        inputs,
+                        &mut audio,
+                        &mut events,
+                        &weights,
+                    );
                     done.insert(key);
                 }
                 assert!(
@@ -1089,7 +1131,7 @@ impl Reference {
             }
 
             for (ch, sources) in t.outputs.iter().enumerate() {
-                let mut addends: Vec<Vec<f32>> = Vec::new();
+                let mut addends: Vec<RefAddend> = Vec::new();
                 for source in sorted(sources) {
                     let mut buf = match source {
                         Source::Node(p) => audio[&p].clone(),
@@ -1103,7 +1145,15 @@ impl Reference {
                     if let Some(line) = self.audio_lines.get_mut(&key) {
                         delay_line(line, &mut buf);
                     }
-                    addends.push(buf);
+                    addends.push(RefAddend {
+                        buf,
+                        weight: weights
+                            .get(&EdgeId {
+                                sink: Sink::Output(ch as u16),
+                                from: Edge::Direct(source),
+                            })
+                            .copied(),
+                    });
                 }
                 outputs[ch][..frames].copy_from_slice(&sum_addends(addends, frames));
             }
@@ -1138,6 +1188,7 @@ impl Reference {
         inputs: &[&[f32]],
         audio: &mut BTreeMap<OutPort, Vec<f32>>,
         events: &mut BTreeMap<EventOut, Vec<Event>>,
+        weights: &BTreeMap<EdgeId, RefWeight>,
     ) {
         let t = graph.topology();
         let shape = self.units[&key].1.shape();
@@ -1146,7 +1197,7 @@ impl Reference {
         for port in 0..shape.audio_in.count() {
             let at = InPort { node: key, port };
             // The addends in source order, each through its own PDC delay.
-            let mut addends: Vec<Vec<f32>> = Vec::new();
+            let mut addends: Vec<RefAddend> = Vec::new();
             for edge in sorted(t.edges.get(&at).map_or(&[][..], Vec::as_slice)) {
                 let mut buf = match edge {
                     Edge::Direct(Source::Zero) => vec![0.0; frames],
@@ -1163,7 +1214,15 @@ impl Reference {
                 {
                     delay_line(line, &mut buf);
                 }
-                addends.push(buf);
+                addends.push(RefAddend {
+                    buf,
+                    weight: weights
+                        .get(&EdgeId {
+                            sink: Sink::Port(at),
+                            from: edge,
+                        })
+                        .copied(),
+                });
             }
             ins.push(sum_addends(addends, frames));
         }
@@ -2014,20 +2073,45 @@ fn sorted<T: Copy + Ord>(set: &[T]) -> Vec<T> {
     v
 }
 
-/// The value a sink holds: none is silence, one is itself (an alias, so a
-/// `-0.0` stays), several are the left fold `((+0.0 + a_0) + a_1) + ..` in
-/// `f32`, one rounding per add (doc 013, "Audio fan-in sums", points 1 and 2).
-/// Skips nothing, silent addends included: the executor skips them and must
-/// agree.
-fn sum_addends(mut addends: Vec<Vec<f32>>, frames: usize) -> Vec<f32> {
+/// One addend of a sink's sum as the reference holds it: its samples, and the
+/// weights of its lane when its edge has a gain entry.
+struct RefAddend {
+    buf: Vec<f32>,
+    weight: Option<RefWeight>,
+}
+
+/// A weighted lane's weights for one block: the weight the previous block was
+/// given, and this block's.
+#[derive(Clone, Copy)]
+struct RefWeight {
+    from: Amplitude,
+    to: Amplitude,
+}
+
+/// The value a sink holds: none is silence, one plain addend is itself (an
+/// alias, so a `-0.0` stays), anything else is the left fold
+/// `((+0.0 + w_0 * a_0) + w_1 * a_1) + ..` in `f32`, one rounding per add
+/// and per multiply, each lane weighted by `w[i] = from + (to - from) * ((i +
+/// 1) / frames)` (doc 013, "Audio fan-in sums", points 1 and 2, and "Edge
+/// gain"). Skips nothing, silent addends and a weight of `1.0` or `0.0`
+/// included: the executor skips the silent ones and takes no multiply at
+/// `1.0`, and must agree.
+fn sum_addends(mut addends: Vec<RefAddend>, frames: usize) -> Vec<f32> {
     match addends.len() {
         0 => vec![0.0; frames],
-        1 => addends.remove(0),
+        1 if addends[0].weight.is_none() => addends.remove(0).buf,
         _ => {
             let mut acc = vec![0.0f32; frames];
             for a in &addends {
-                for (x, y) in acc.iter_mut().zip(a) {
-                    *x += *y;
+                for (i, (x, y)) in acc.iter_mut().zip(&a.buf).enumerate() {
+                    *x = match a.weight {
+                        None => *x + *y,
+                        Some(RefWeight { from, to }) => {
+                            let (from, to) = (from.get(), to.get());
+                            let w = from + (to - from) * ((i + 1) as f32 / frames as f32);
+                            *x + w * *y
+                        }
+                    };
                 }
             }
             acc

@@ -15,7 +15,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::gain::EdgeGain;
 use crate::{ChannelFeed, LatencyGraph, PortFeed};
+use crate::{Edge, EdgeId, InPort, Sink, Source};
 use crate::{Invalid, Valid};
 use crate::{NodeKey, Topology};
 use tutti_types::Samples;
@@ -138,6 +140,16 @@ pub struct GraphSpec {
     /// source. A port with no entry, or an entry with no source, reads its
     /// base.
     pub params: BTreeMap<ParamIn, ParamMod>,
+    /// Edge gains (doc 013, "Edge gain"): an entry makes the edge a
+    /// **weighted lane** of its sink's sum. An edge with no entry is plain.
+    ///
+    /// The entry is structural: adding or removing one recompiles, because a
+    /// one-edge sink with an entry needs an `Op::Sum` of one addend where a
+    /// plain one aliases. Changing an entry's `base` or `range` does not
+    /// ([`Editor::set_edge_gain`](crate::Editor::set_edge_gain)). An entry
+    /// whose edge does not exist is refused by [`validate`](Self::validate);
+    /// [`disconnect`](Self::disconnect) removes the edge's entry with it.
+    pub gains: BTreeMap<EdgeId, EdgeGain>,
 }
 
 impl GraphSpec {
@@ -154,6 +166,70 @@ impl GraphSpec {
     /// The generation of `node`: 0 unless one was set.
     pub fn generation(&self, node: NodeKey) -> u32 {
         self.generations.get(&node).copied().unwrap_or(0)
+    }
+
+    /// Adds `edge` to the audio sources of input port `at`
+    /// ([`Topology::connect`]).
+    pub fn connect(&mut self, at: InPort, edge: Edge) {
+        self.topology.connect(at, edge);
+    }
+
+    /// Removes `edge` from the audio sources of input port `at`, and its gain
+    /// entry with it (a stale entry would fail every later
+    /// [`validate`](Self::validate)). Returns whether the edge was there.
+    pub fn disconnect(&mut self, at: InPort, edge: Edge) -> bool {
+        self.gains.remove(&EdgeId {
+            sink: Sink::Port(at),
+            from: edge,
+        });
+        self.topology.disconnect(at, edge)
+    }
+
+    /// Removes `source` from the sources of global output `channel`, and its
+    /// gain entry with it. Returns whether it was there.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` is past [`Topology::outputs`].
+    pub fn disconnect_output(&mut self, channel: usize, source: Source) -> bool {
+        self.gains.remove(&EdgeId {
+            sink: Sink::Output(channel as u16),
+            from: Edge::Direct(source),
+        });
+        self.topology.disconnect_output(channel, source)
+    }
+
+    /// Gives edge `id` the entry `gain`, replacing one it had: the edge
+    /// becomes (or stays) a weighted lane. Adding an entry is structural; see
+    /// [`gains`](Self::gains). The edge must exist
+    /// ([`validate`](Self::validate) checks it).
+    pub fn set_edge_gain(&mut self, id: EdgeId, gain: EdgeGain) -> Option<EdgeGain> {
+        self.gains.insert(id, gain)
+    }
+
+    /// Removes edge `id`'s entry: the edge is plain again. Returns it.
+    pub fn clear_edge_gain(&mut self, id: EdgeId) -> Option<EdgeGain> {
+        self.gains.remove(&id)
+    }
+
+    /// Whether edge `id` is in the topology: a direct or feedback edge of an
+    /// input port, or a source of a global output channel.
+    pub(crate) fn has_edge(&self, id: EdgeId) -> bool {
+        match id.sink {
+            Sink::Port(at) => self
+                .topology
+                .edges
+                .get(&at)
+                .is_some_and(|e| e.contains(&id.from)),
+            Sink::Output(ch) => match id.from {
+                Edge::Direct(s) => self
+                    .topology
+                    .outputs
+                    .get(usize::from(ch))
+                    .is_some_and(|v| v.contains(&s)),
+                Edge::Feedback(_) => false,
+            },
+        }
     }
 
     /// Adds one event source to `at`, in source order (see
@@ -324,6 +400,7 @@ impl GraphSpec {
             generations,
             required_resolution,
             params,
+            gains,
         } = self;
         fn wired(p: &BTreeMap<ParamIn, ParamMod>) -> impl Iterator<Item = (&ParamIn, EventOut)> {
             p.iter().filter_map(|(at, m)| Some((at, m.source?)))
@@ -333,6 +410,8 @@ impl GraphSpec {
             && *generations == other.generations
             && *required_resolution == other.required_resolution
             && wired(params).eq(wired(&other.params))
+            // An entry is structural, its base and range are not.
+            && gains.keys().eq(other.gains.keys())
     }
 
     /// Checks everything that does not need the nodes' [`Shape`](crate::Shape)s.
@@ -398,6 +477,14 @@ impl GraphSpec {
                 errs.push(GraphInvalid::BadParamRange { at, range: m.range });
             }
         }
+        for (&id, gain) in &self.gains {
+            if !self.has_edge(id) {
+                errs.push(GraphInvalid::GainWithoutEdge { id });
+            }
+            if !gain.is_sound() {
+                errs.push(GraphInvalid::BadEdgeGain { id, gain: *gain });
+            }
+        }
         for &(at, from) in self.required_resolution.keys() {
             let wired = self
                 .events
@@ -420,6 +507,7 @@ impl GraphSpec {
                     .filter(|(_, m)| m.source.is_some())
                     .map(|(&at, &m)| (at, m))
                     .collect(),
+                gains: self.gains.clone(),
             }),
             _ => Err(errs),
         }
@@ -479,6 +567,24 @@ pub enum GraphInvalid {
         /// Its range.
         range: ParamRange,
     },
+    /// A gain entry names an edge that is not in the graph: a stale entry,
+    /// which would otherwise weight nothing, or weight a later edge that
+    /// reuses the key. [`GraphSpec::disconnect`] removes the entry with the
+    /// edge.
+    GainWithoutEdge {
+        /// The edge the entry names.
+        id: EdgeId,
+    },
+    /// An edge gain whose base is not finite, or whose range has a NaN
+    /// bound: refused here rather than multiplied into a signal on the audio
+    /// thread (`f32::clamp` panics on a NaN bound, and an infinite weight
+    /// turns a silent addend into NaN).
+    BadEdgeGain {
+        /// The edge.
+        id: EdgeId,
+        /// The entry.
+        gain: EdgeGain,
+    },
 }
 
 /// A [`GraphSpec`] that passed [`validate`](GraphSpec::validate).
@@ -489,6 +595,7 @@ pub struct ValidGraph {
     generations: BTreeMap<NodeKey, u32>,
     required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
     params: BTreeMap<ParamIn, ParamMod>,
+    gains: BTreeMap<EdgeId, EdgeGain>,
 }
 
 impl ValidGraph {
@@ -515,6 +622,11 @@ impl ValidGraph {
     /// The checked driven params: only ports with a source.
     pub fn params(&self) -> &BTreeMap<ParamIn, ParamMod> {
         &self.params
+    }
+
+    /// The checked edge gains: each names an edge of the topology.
+    pub fn gains(&self) -> &BTreeMap<EdgeId, EdgeGain> {
+        &self.gains
     }
 }
 

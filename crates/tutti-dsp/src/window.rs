@@ -188,6 +188,24 @@ impl CosineWindow {
     /// trivially "the frames tile".
     pub const RECTANGULAR: Self = Self::new(&[1.0]);
 
+    /// The window centred on 0, in `f64`: `Σₖ aₖ cos(2πkx)` for `x` in
+    /// `[−0.5, 0.5]`, the periodic window shifted half a period (the sign
+    /// `(−1)ᵏ` becomes the shift), peak at `x = 0` and zero at `x = ±0.5` for
+    /// Hann and Blackman. For a symmetric kernel evaluated at an offset, where
+    /// [`at`](Window::at)'s `f32` phase over `[0, 1)` would round the offset.
+    /// The coefficients are the `f32` constants widened. `x` outside the range
+    /// repeats with period 1; a caller bounds it.
+    #[inline]
+    #[must_use]
+    pub fn centred(&self, x: f64) -> f64 {
+        let phase = core::f64::consts::TAU * x;
+        self.terms
+            .iter()
+            .enumerate()
+            .map(|(k, &a)| f64::from(a) * (k as f64 * phase).cos())
+            .sum()
+    }
+
     /// How many cosine terms — the number both derived facts turn on.
     #[inline]
     #[must_use]
@@ -397,6 +415,29 @@ mod tests {
 
     /// `RECTANGULAR` is exactly the identity, so a caller holding pre-windowed
     /// samples can say so rather than passing a window that almost does nothing.
+    /// `centred` is `at` shifted half a period, in `f64`: the same window,
+    /// peak at 0, zero at `±0.5` for the zero-ended ones.
+    ///
+    /// Mutation (run): dropping the `k as f64 *` from the phase (every term
+    /// at the fundamental) fails the agreement for Blackman.
+    #[test]
+    fn centred_is_the_periodic_window_shifted_half_a_period() {
+        for w in [
+            CosineWindow::HANN,
+            CosineWindow::HAMMING,
+            CosineWindow::BLACKMAN,
+        ] {
+            for i in 0..=40 {
+                let x = f64::from(i) / 40.0 - 0.5;
+                let periodic = f64::from(w.at((x + 0.5) as f32));
+                assert!((w.centred(x) - periodic).abs() < 1e-6, "{w:?} at {x}");
+            }
+        }
+        assert!(CosineWindow::BLACKMAN.centred(0.5).abs() < 1e-7);
+        assert!(CosineWindow::BLACKMAN.centred(-0.5).abs() < 1e-7);
+        assert!((CosineWindow::BLACKMAN.centred(0.0) - 1.0).abs() < 1e-7);
+    }
+
     #[test]
     fn rectangular_is_the_identity() {
         assert_eq!(CosineWindow::RECTANGULAR.coefficients(5), vec![1.0; 5]);

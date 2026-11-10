@@ -340,11 +340,7 @@ impl InProcessVst2Client {
 /// `tests/vst2_in_process_params.rs`.
 #[cfg(test)]
 mod owed_tests {
-    /// This process's main thread. Each test is its own process under nextest, so
-    /// the claim cannot be refused.
-    fn main_thread() -> tutti_plugin_types::MainThread {
-        tutti_plugin_types::MainThread::claim().expect("one test, one process")
-    }
+    use tutti_fixtures::main_thread;
 
     use std::path::PathBuf;
     use std::sync::OnceLock;

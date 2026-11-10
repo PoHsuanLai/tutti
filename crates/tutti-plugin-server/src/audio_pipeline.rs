@@ -657,13 +657,7 @@ fn with_audio_buffer_f64<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// This process's main thread. Each test is its own process under nextest, so
-    /// the claim cannot be refused.
-    #[cfg(feature = "vst3")]
-    fn main_thread() -> tutti_plugin_types::MainThread {
-        tutti_plugin_types::MainThread::claim().expect("one test, one process")
-    }
+    use tutti_fixtures::main_thread;
 
     use tutti_plugin::server::{
         Normalized, ParamId, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,

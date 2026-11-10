@@ -16,6 +16,7 @@
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
@@ -217,10 +218,4 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     assert_eq!(stats.points_dropped, 0, "{stats:?}");
     assert_eq!(stats.points_merged, 0, "{stats:?}");
     drop(handle);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -7,6 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_fixtures::midi;
@@ -799,10 +800,4 @@ fn the_types_are_send() {
     send::<Vst2Loaded>();
     send::<Vst2Processor>();
     send::<Vst2Controller>();
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::Control;
 use tutti_vst2_host::{Samples, TransportInfo, Vst2ProcessContext};
@@ -279,10 +280,4 @@ fn tag_passthrough_oracle_produces_exact_samples() {
         channel_tag(1),
         "the routing oracle depends on per-channel tags being distinct"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

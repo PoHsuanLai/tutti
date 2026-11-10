@@ -27,6 +27,7 @@
 //! failure, never a skip).
 
 use std::hint::black_box;
+use tutti_fixtures::main_thread;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::contract::Direct;
@@ -86,9 +87,3 @@ fn bench_many(c: &mut Criterion) {
 
 criterion_group!(benches, bench_one, bench_many);
 criterion_main!(benches);
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
-}

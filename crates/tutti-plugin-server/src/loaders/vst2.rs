@@ -536,12 +536,7 @@ impl PluginState for Vst2Instance {
 #[cfg(all(test, feature = "vst2"))]
 mod tests {
     use super::*;
-
-    /// This process's main thread. Each test is its own process under nextest, so
-    /// the claim cannot be refused.
-    fn main_thread() -> tutti_plugin_types::MainThread {
-        tutti_plugin_types::MainThread::claim().expect("one test, one process")
-    }
+    use tutti_fixtures::main_thread;
 
     use tutti_plugin::server::{Features, PluginTail};
 

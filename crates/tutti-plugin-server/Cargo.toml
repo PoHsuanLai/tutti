@@ -101,7 +101,7 @@ windows-sys = { version = "0.59", features = [
 # The slab's sample bound (`Pod`) on the generic round-trip helper.
 bytemuck = "1"
 # Finds the reference plugins and the plugin-server beside the test binary.
-tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the loader tests drive. A dev-dependency rather

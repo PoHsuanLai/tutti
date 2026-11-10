@@ -13,6 +13,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
@@ -1283,10 +1284,4 @@ fn many_midi_events_in_one_block() {
 fn load_nonexistent_path() {
     let result = Active::load(Path::new("/nonexistent/plugin.vst"), SAMPLE_RATE, BLOCK);
     assert!(result.is_err());
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

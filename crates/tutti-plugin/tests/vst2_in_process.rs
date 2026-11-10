@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin::error::StateError;
 use tutti_plugin::handles::PluginHandle;
@@ -476,10 +477,4 @@ fn midi_past_the_blocks_capacity_is_counted() {
         controls.dropped_midi_in(),
         (300 - MIDI_STACK_CAPACITY) as u64
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

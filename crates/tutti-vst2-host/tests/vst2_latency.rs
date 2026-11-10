@@ -19,6 +19,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::Control;
 use tutti_vst2_host::Samples;
@@ -205,10 +206,4 @@ fn a_sample_rate_change_can_be_followed_by_a_fresh_read() {
         Samples(recomputed as usize),
         "after a rate change the host must re-ask; the load-time figure is stale"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

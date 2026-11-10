@@ -60,6 +60,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_fixtures::main_thread;
 
 mod support;
 use support::corpus::{DELAY, MATRIX_REVERB, REVERB2, all_finite, peak, render, silence};
@@ -651,10 +652,4 @@ fn repeated_resets_are_harmless() {
             "non-finite output after reset round {round}"
         );
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

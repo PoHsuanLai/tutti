@@ -14,6 +14,7 @@
 //! hard-codes index 0, because both load the same plugin and both pass.
 
 use std::path::Path;
+use tutti_fixtures::main_thread;
 
 #[path = "support/probe_path.rs"]
 mod probe_path;
@@ -120,10 +121,4 @@ fn an_unknown_id_fails_rather_than_falling_back() {
         msg.contains("tutti.no-such-plugin"),
         "the error should name the id that was asked for: {msg}"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

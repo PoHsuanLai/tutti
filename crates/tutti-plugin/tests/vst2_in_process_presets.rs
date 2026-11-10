@@ -21,6 +21,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{FeatureReport, Features, PresetId, in_process_vst2_client};
@@ -190,10 +191,4 @@ fn a_plugin_with_programs_answers_both_preset_bits() {
     let report = FeatureReport::new(loaded.probed, loaded.features);
     assert_eq!(report.get(Features::PRESET_LIST), Some(true));
     assert_eq!(report.get(Features::PRESET_LOAD), Some(true));
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

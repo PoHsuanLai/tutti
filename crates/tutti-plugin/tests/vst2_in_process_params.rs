@@ -22,6 +22,7 @@
 #![cfg(feature = "vst2")]
 
 use std::sync::{Arc, Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_graph::contract::Direct;
 use tutti_graph::{
@@ -280,10 +281,4 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         "the export plays the held lane over the edit live playback keeps"
     );
     drop(handle);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

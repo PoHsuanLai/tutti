@@ -17,6 +17,7 @@
 //! - a block longer than the announced maximum is split before the plugin.
 
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
@@ -670,10 +671,4 @@ fn a_bar_line_in_a_later_piece_moves_the_bar_start() {
     let before = cap.time_sample_pos;
     render_f32(&mut instance, 200, &[], None, 0.0);
     assert_eq!(read_capture().time_sample_pos, before);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

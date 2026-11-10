@@ -39,6 +39,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::{Request, RescanScope};
 
@@ -184,10 +185,4 @@ fn a_quiet_plugin_asks_for_nothing() {
         [],
         "nothing asked for a refresh, so nothing should be reported"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

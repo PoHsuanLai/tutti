@@ -88,6 +88,7 @@ mod clap_probe;
 #[cfg(not(feature = "clap"))]
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tutti_fixtures::main_thread;
 
 /// Planar scratch, `channels` × [`BLOCK`] frames: what this harness fills and
 /// measures.
@@ -1720,10 +1721,4 @@ fn best_null_offset(dry: &[f32], wet: &[f32], search_max: usize) -> (usize, f64)
         }
     }
     best
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
@@ -473,10 +474,4 @@ fn plugin_still_renders_after_repeated_reconfigure() {
         cap.sample_rate, SAMPLE_RATE as f32,
         "the last configured rate must be the one in effect"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

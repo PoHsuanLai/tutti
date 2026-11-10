@@ -26,6 +26,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
@@ -618,10 +619,4 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     );
     assert!(seen.contains(&PluginInvalidation::Io), "{seen:?}");
     assert_eq!(loaded.unit.shape().latency.samples().get(), 300);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

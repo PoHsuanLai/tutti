@@ -35,9 +35,13 @@
 #![forbid(unsafe_code)]
 
 pub mod midi;
+#[cfg(feature = "plugin")]
+mod plugin;
 mod range_contract;
 pub mod sf2;
 
+#[cfg(feature = "plugin")]
+pub use plugin::main_thread;
 pub use range_contract::{RangeContract, check_range_contract};
 
 use std::path::{Path, PathBuf};
@@ -243,11 +247,19 @@ fn workspace_binary(bin: &str, package: &str) -> PathBuf {
 /// skipping: a symlink is resolved at each open, so one naming `real` is as
 /// fresh as `real`. A Windows copy can go stale, so it is still republished.
 ///
+/// **A `real` that already has `extension` is returned as it is**: the link
+/// path would be `real` itself.
+///
 /// # Panics
 ///
 /// If the link cannot be staged, or is absent after a lost rename.
 pub fn publish_with_extension(real: &Path, extension: &str) -> PathBuf {
     let link = real.with_extension(extension);
+    // `real` already has the extension: it is its own link, and publishing
+    // one would replace the file with a link to itself (D18).
+    if link == real {
+        return link;
+    }
     #[cfg(unix)]
     if std::fs::read_link(&link).is_ok_and(|to| to == real) {
         return link;
@@ -452,6 +464,24 @@ mod tests {
     ///
     /// Mutation: drop the `read_link` early return -> the second call renames
     /// a new link in -> the inode changes -> fails.
+    /// A file that already has the extension is its own published path, and
+    /// stays a file (D18: the Linux `.so` cdylib published as `.so` became a
+    /// link to itself).
+    ///
+    /// Mutation (run): drop the `link == real` return -> the file is replaced
+    /// by a self-link -> fails.
+    #[test]
+    fn a_file_with_the_extension_is_left_as_it_is() {
+        let dir = std::env::temp_dir().join(format!("tfr-self-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let real = dir.join("libplugin.so");
+        std::fs::write(&real, b"x").unwrap();
+        assert_eq!(publish_with_extension(&real, "so"), real);
+        assert!(std::fs::symlink_metadata(&real).unwrap().is_file());
+        assert_eq!(std::fs::read(&real).unwrap(), b"x");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_published_link_is_left_alone() {

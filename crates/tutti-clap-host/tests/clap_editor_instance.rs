@@ -4,13 +4,8 @@
 
 use tutti_clap_host::ClapLoaded;
 use tutti_clap_test_plugin::{CMD_REGISTER_TIMER, Site, ThreadCapture};
-use tutti_plugin_types::{Editor, Load, MainThread, OutOfProcess};
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> MainThread {
-    MainThread::claim().expect("one test, one process")
-}
+use tutti_fixtures::main_thread;
+use tutti_plugin_types::{Editor, Load, OutOfProcess};
 
 /// A timer the plugin registers ticks on the editor's idle, which is the only
 /// main-thread tick the editor instance has. The host answered

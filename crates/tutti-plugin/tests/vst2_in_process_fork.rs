@@ -22,6 +22,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -616,10 +617,4 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
 /// The live plugin's id, as the host reports it.
 fn client_id(handle: &PluginHandle) -> String {
     handle.descriptor().id.clone()
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

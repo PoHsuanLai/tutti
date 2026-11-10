@@ -7,7 +7,7 @@ three functions convert beats to seconds. A project with a tempo change plays
 one way and exports another. This design makes the map the transport's tempo,
 live and offline, through one pure function, so the two agree by construction.
 
-Status: the open questions are decided (§10). Stages 0 to 3 (guards, publishing a map, steps) are
+Status: the open questions are decided (§10). Stages 0 to 4 (guards, publishing a map, steps, ramps) are
 built; see the as-built notes at §9. Doc 019 (bounce) depends on §6.
 
 ## Summary
@@ -393,8 +393,51 @@ published. What landed:
   field would break every literal of the config). `TransportSettings::set_tempo_map`
   takes steps and refuses a ramp (`HasRamp`); `tempo()` reads the first point.
   A fork keeps the map it was built with (the timeline holds an `Arc`).
-- Not done here, as designed: ramps (stage 4), `Timeline::tempo()` as a tempo
+- Not done here, as designed: `Timeline::tempo()` as a tempo
   at a beat (stage 6; it reads the first point's), the readers of §5 (stage 5).
+
+**As built, stage 4 (ramps).**
+
+- **The walker needed no new rule.** `chord_cell` already gives a ramp cell its
+  chord (the map's beat at both ends of the cell, so the cell ends on the map's
+  beat) and a step cell its segment's tempo to the bit, and `TempoWalk::roll`
+  already restarts when the cell's tempo differs. A ramp is therefore one
+  restart per `CELL_GRID` (128) frames, on the map's beat; a step interior,
+  and every constant render, run the code of stage 3, unchanged. What changed:
+  `HasRamp` is gone, because nothing refuses a map now: `set_tempo_map` and
+  `OfflineTimeline::with_tempo_map` take any `TempoMap` and are infallible.
+- **The grid bound** (section 4, tested as an inequality): inside a cell the
+  playhead is within `|a| h^2 / 8` beats of the curve for a ramp linear in time
+  (`a` the ramp's beats per second squared, `h` = 128 / rate), which is the
+  error of a chord of a parabola. For 120 to 60 BPM over 4 beats at 48 kHz that
+  is 3.3e-7 beats, 0.016 frames (the section 4 figure for 60 to 240 over 8
+  beats is 0.04). The playhead is on the map's beat at every cell's first
+  frame, and a chord is exact there by definition, so error does not
+  accumulate: the re-seat at each cell start only removes rounding. A ramp
+  linear in beats is held to the same shape of bound against the integral
+  `t(b) = 4 ln(120 / (120 - 15 b))` of its test.
+- **Dense changes.** A 512-frame block of a ramp carries 3 to 5 changes and
+  runs whole; a block that reaches the graph at 1 024 frames or more needs
+  more than 8, and the stage 3 cut (`TempoAhead::limit`) splits it where the
+  ninth would begin. The cut cannot change the render (`chord_cell` does not
+  depend on where blocks begin): the beats are the same to the bit at block
+  sizes 1, 64, 100, 512, 1 000, 4 096 and ragged.
+- **Seek, wrap and rate change** are as for steps: a seek seats at the exact
+  beat and takes the chord of the cell its map frame is in; a loop wrap keeps
+  the overshoot past the loop end (under a frame of beats) and takes the cell
+  at the loop start, so a pass is the first pass's curve within a frame of beats;
+  a rate change re-seats at the current beat and asks `chord_cell` at the new
+  rate (cells are 128 frames of the new rate).
+- `TempoMap::tempo_at_frame` (the instantaneous tempo on a frame, `_with` for a
+  hint) is added now: the section 5 query the plugin hosts of stage 5 need
+  for `tempo` and `tempo_inc`. The walker does not use it (a cell's tempo is
+  the chord).
+- The engine's no-alloc gate (`a_step_map_is_followed_without_allocating`) has
+  a ramp case: 4 096-frame graph blocks (32 cell edges, so the 8-change cut
+  runs), loop wraps and seeks inside the ramp and map swaps between a time ramp
+  and a beat ramp.
+- Not done here: the readers of section 5 (stage 5), and `Timeline::tempo()`
+  as a tempo at a beat (stage 6).
 
 Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's

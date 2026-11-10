@@ -393,7 +393,7 @@ mod tests {
         let t = Transport::new(48_000.0);
         let mut a = t.audio(48_000.0).expect("first");
         assert_eq!(a.begin_block().tempo, Bpm::of(120.0));
-        t.settings.set_tempo_map(constant(97.25)).expect("constant");
+        t.settings.set_tempo_map(constant(97.25));
         assert_eq!(a.begin_block().tempo, Bpm::of(97.25));
         assert_eq!(a.begin_block().tempo, Bpm::of(97.25), "and stays");
         t.settings.set_tempo(Bpm::of(143.5));
@@ -425,17 +425,13 @@ mod tests {
 
     /// A rolling transport over `points` (steps), at `rate`.
     fn rolling(rate: f64, points: &[(f64, f64)]) -> (Transport, TransportAudio) {
-        use tutti_tempo::{Shape, TempoPoint};
+        rolling_on(rate, steps(points))
+    }
+
+    /// A rolling transport over `map`, at `rate`.
+    fn rolling_on(rate: f64, map: std::sync::Arc<TempoMap>) -> (Transport, TransportAudio) {
         let t = Transport::new(rate);
-        let map = TempoMap::new(points.iter().map(|&(beat, bpm)| TempoPoint {
-            beat: Beat(beat),
-            tempo: Bpm::of(bpm),
-            shape: Shape::Step,
-        }))
-        .expect("a map");
-        t.settings
-            .set_tempo_map(std::sync::Arc::new(map))
-            .expect("steps");
+        t.settings.set_tempo_map(map);
         let mut a = t.audio(rate).expect("first");
         t.motion
             .schedule(At::NextBlock, MotionEvent::Play)
@@ -516,9 +512,7 @@ mod tests {
             blk.beat()
         };
         assert_eq!(ended, Beat(1.0));
-        t.settings
-            .set_tempo_map(steps(&[(0.0, 90.0), (2.0, 60.0)]))
-            .expect("steps");
+        t.settings.set_tempo_map(steps(&[(0.0, 90.0), (2.0, 60.0)]));
         let blk = a.begin_block();
         assert_eq!(blk.beat(), Beat(1.0), "no jump");
         assert_eq!(blk.tempo, Bpm::of(90.0), "the map's tempo here");
@@ -565,6 +559,62 @@ mod tests {
         let _ = roll(&mut a, 1);
         let blk = a.begin_block();
         assert_eq!((blk.beat(), blk.tempo), (Beat(8.0), Bpm::of(240.0)));
+    }
+
+    /// A rate change inside a ramp re-seats at the current beat on the map's
+    /// timeline at the new rate, and takes the chord of the cell it lands in
+    /// there (doc 020, section 10: `chord_cell` takes the new rate). The ramp is
+    /// 120 to 60 BPM over 4 beats (`r0` 2, `r1` 1 beats/s, `T = 8 / 3` s,
+    /// `a = -3 / 8`, `B(s) = 2 s - 3 s^2 / 16`); after 60 000 frames at 48 kHz
+    /// the playhead keeps its beat, the map frame at 96 kHz is the first at or
+    /// after `s(beat) x 96 000` (`s = (sqrt(4 - 3 b / 4) - 2) / a`), the block's
+    /// tempo is the chord of `B` over that frame's 128-frame cell, and at the
+    /// cell's edge the playhead is on `B` exactly, at the next chord.
+    ///
+    /// Mutation (run): `TransportClock::set_sample_rate` not calling `place`
+    /// -> the map frame stays at its 48 kHz count, which at 96 kHz is a cell
+    /// twice as far along -> the chord is another one -> fails.
+    #[test]
+    fn a_rate_change_inside_a_ramp_takes_the_chord_at_the_new_rate() {
+        use tutti_tempo::{Shape, TempoPoint};
+        let map = std::sync::Arc::new(
+            TempoMap::new([
+                TempoPoint {
+                    beat: Beat(0.0),
+                    tempo: Bpm::of(120.0),
+                    shape: Shape::RampTime,
+                },
+                TempoPoint {
+                    beat: Beat(4.0),
+                    tempo: Bpm::of(60.0),
+                    shape: Shape::Step,
+                },
+            ])
+            .expect("a map"),
+        );
+        let b_of = |s: f64| 2.0 * s - 3.0 * s * s / 16.0;
+        let (_t, mut a) = rolling_on(48_000.0, map);
+        let _ = roll(&mut a, 60_000);
+        let beat = a.begin_block().beat();
+        assert!(beat.get() > 1.0 && beat.get() < 3.0, "mid-ramp: {beat:?}");
+
+        a.follow_rate(SampleRate(96_000.0));
+        let blk = a.begin_block();
+        assert_eq!(blk.beat(), beat, "no jump");
+        let s = ((4.0 - 0.75 * beat.get()).sqrt() - 2.0) / (-3.0 / 8.0);
+        let m = tutti_types::first_frame_at_or_after(s * 96_000.0) as u64;
+        let k = m / 128;
+        let at = |frame: u64| b_of(frame as f64 / 96_000.0);
+        let chord = |k: u64| (at((k + 1) * 128) - at(k * 128)) * 60.0 * 96_000.0 / 128.0;
+        assert!((blk.tempo.get() - chord(k)).abs() < 1e-6, "{:?}", blk.tempo);
+        // The 48 kHz cell of the same beat has another chord.
+        assert!((blk.tempo.get() - chord(k / 2 + k % 2)).abs() > 1e-3);
+
+        // To the cell's edge: on the map's beat, at the next chord.
+        let _ = roll(&mut a, ((k + 1) * 128 - m) as usize);
+        let blk = a.begin_block();
+        assert!((blk.beat().get() - at((k + 1) * 128)).abs() < 1e-10);
+        assert!((blk.tempo.get() - chord(k + 1)).abs() < 1e-6);
     }
 
     /// A map has no hysteresis: a step from 120 to 120.0005 BPM (inside the

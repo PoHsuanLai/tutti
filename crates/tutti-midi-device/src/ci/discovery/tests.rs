@@ -1,13 +1,12 @@
 use super::super::*;
 use super::*;
-use tutti_ump::MidiGroup;
 
 fn header() -> CiHeader {
     CiHeader {
         device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
         ci_version: CI_VERSION,
-        source: Muid(0x0123_4567),
-        destination: Muid::BROADCAST,
+        source: Muid::new(0x0123_4567).unwrap(),
+        destination: Destination::Broadcast,
     }
 }
 
@@ -25,7 +24,7 @@ fn sample_discovery() -> DiscoveryData {
 }
 
 #[test]
-fn discovery_round_trips_over_sysex7() {
+fn discovery_round_trips() {
     // A Discovery carries no Function Block field (Table 6), so it decodes
     // as NO_FUNCTION_BLOCK regardless of what the struct held.
     let msg = CiMessage::Discovery {
@@ -36,10 +35,10 @@ fn discovery_round_trips_over_sysex7() {
             ..sample_discovery()
         },
     };
-    let mut events = Vec::new();
-    ci_to_sysex7(MidiGroup::FIRST, &msg, &mut events);
-    let back = sysex7_to_ci(&events).expect("reassembles");
-    assert_eq!(back, msg);
+    let bytes = msg.encode();
+    assert_eq!(bytes[3], SUB_ID2_DISCOVERY);
+    assert_eq!(bytes.len(), CiHeader::LEN + DiscoveryData::DISCOVERY_LEN);
+    assert_eq!(CiMessage::decode(&bytes), Some(msg));
 }
 
 #[test]
@@ -83,7 +82,7 @@ fn discovery_and_reply_have_the_version_2_trailers() {
 
 #[test]
 fn a_version_1_body_still_decodes() {
-    // §5.4: a receiver must "process the fields, values, and bits defined in
+    // §5.3: a receiver must "process the fields, values, and bits defined in
     // the received version" when it is lower than its own. A v1 peer sends
     // the body with no Version-2 trailer at all.
     let d = sample_discovery();
@@ -193,3 +192,13 @@ fn categories_survive_round_trip() {
     assert!(back.categories.contains(CiCategories::PROPERTY_EXCHANGE));
     assert!(!back.categories.contains(CiCategories::PROCESS_INQUIRY));
 }
+
+// Mutations (run), each failing the named test:
+// - `encode_body` pushing the Function Block for a Discovery too:
+//   `discovery_and_reply_have_the_version_2_trailers`.
+// - `decode_body` defaulting an absent Function Block to 0:
+//   `a_version_1_body_still_decodes`.
+// - `Nak::encode_body` writing the text length as one byte:
+//   `nak_carries_its_version_2_details_and_text` (300 characters).
+// - `CiMessage::encode` stamping `SUB_ID2_DISCOVERY` on a reply:
+//   `discovery_reply_keeps_is_reply_flag`.

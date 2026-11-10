@@ -16,7 +16,7 @@
 //! UMP packet except Utility (type `0x0`) and Stream (type `0xF`), which have
 //! none. It identifies one of the 16 virtual cables multiplexed
 //! onto a single UMP Endpoint, and it is carried by messages that have no
-//! channel at all: System Real-Time, SysEx7/SysEx8, Flex Data, and UMP Stream.
+//! channel at all: System Real-Time, SysEx7/SysEx8 and Flex Data.
 //! A group is the transport lane — the moral equivalent of "which of the 16
 //! DIN cables this byte came out of".
 //!

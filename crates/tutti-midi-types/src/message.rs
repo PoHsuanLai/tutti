@@ -33,7 +33,7 @@ use tutti_ump::{
 pub enum PerNoteController {
     /// A Registered Per-Note Controller identified by its spec bank/index.
     Registered {
-        /// Spec-assigned controller number (M2-104 §7.4.5): 1 modulation,
+        /// Spec-assigned controller number (M2-104 §7.4.4 and App. A): 1 modulation,
         /// 2 breath, 3 pitch 7.25, 7 volume, 10 pan, 74 brightness.
         index: u8,
     },

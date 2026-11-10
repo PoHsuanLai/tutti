@@ -144,18 +144,17 @@ impl<T: Vst3Sample> Staged<T> {
         // PluginInfo snapshot. `activate_buses` re-resolves the same way from
         // the live component afterward, since some plugins only finalise their
         // arrangement once active.
-        let in_scratch = BusBuffers::new(
-            T::WIDTH,
-            &loaded.info.input_bus_channels,
-            num_input_channels,
-            block_size,
-        );
-        let out_scratch = BusBuffers::new(
-            T::WIDTH,
-            &loaded.info.output_bus_channels,
-            num_output_channels,
-            block_size,
-        );
+        let scratch = |counts: &[usize], layout| {
+            BusBuffers::new(T::WIDTH, counts, layout, block_size)
+                .map_err(|e| Vst3Error::NotSupported(e.to_string()))
+        };
+        let (in_scratch, out_scratch) =
+            match scratch(&loaded.info.input_bus_channels, num_input_channels).and_then(|i| {
+                scratch(&loaded.info.output_bus_channels, num_output_channels).map(|o| (i, o))
+            }) {
+                Ok(both) => both,
+                Err(error) => return Err((loaded, error)),
+            };
 
         // One queue per parameter on every param-change list, built here off
         // the audio thread: the host sends changes only, so one block can
@@ -357,8 +356,14 @@ impl<T: Vst3Sample> Staged<T> {
         // to a channel the plugin never declared.
         let num_in = bus_layout(in_counts.first().copied().unwrap_or(0));
         let num_out = bus_layout(out_counts.first().copied().unwrap_or(0));
-        let in_scratch = BusBuffers::new(T::WIDTH, in_counts, num_in, block_size);
-        let out_scratch = BusBuffers::new(T::WIDTH, out_counts, num_out, block_size);
+        let (Ok(in_scratch), Ok(out_scratch)) = (
+            BusBuffers::new(T::WIDTH, in_counts, num_in, block_size),
+            BusBuffers::new(T::WIDTH, out_counts, num_out, block_size),
+        ) else {
+            // A count the ffi layer already bounds to a layout: keep the scratch
+            // the last layout had.
+            return;
+        };
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;
@@ -434,8 +439,10 @@ impl<T: Vst3Sample> Staged<T> {
         let num_in = bus_layout(in_counts.first().copied().unwrap_or(0));
         let num_out = bus_layout(out_counts.first().copied().unwrap_or(0));
         let block_size = self.audio.config.block_size;
-        let in_scratch = BusBuffers::new(T::WIDTH, &in_counts, num_in, block_size);
-        let out_scratch = BusBuffers::new(T::WIDTH, &out_counts, num_out, block_size);
+        let in_scratch = BusBuffers::new(T::WIDTH, &in_counts, num_in, block_size)
+            .map_err(|e| Vst3Error::NotSupported(e.to_string()))?;
+        let out_scratch = BusBuffers::new(T::WIDTH, &out_counts, num_out, block_size)
+            .map_err(|e| Vst3Error::NotSupported(e.to_string()))?;
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;

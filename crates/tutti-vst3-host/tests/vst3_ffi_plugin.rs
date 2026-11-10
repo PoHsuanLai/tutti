@@ -124,13 +124,15 @@ fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
         &in_channels,
         tutti_types::ChannelLayout::try_from(in_width.max(1)).expect("a test plugin is narrow"),
         BLOCK,
-    );
+    )
+    .unwrap();
     let mut output = BusBuffers::new(
         SampleWidth::F32,
         &channels,
         tutti_types::ChannelLayout::try_from(out_width).expect("a test plugin is narrow"),
         BLOCK,
-    );
+    )
+    .unwrap();
     let in_events = EventList::input();
     let out_events = EventList::output();
     let params = ParameterChangesImpl::with_queues(

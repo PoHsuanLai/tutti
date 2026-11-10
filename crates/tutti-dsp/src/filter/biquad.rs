@@ -60,7 +60,7 @@ impl Biquad {
 /// peaks some frames in and not at `n = 0`, so a tail measured from the peak must
 /// not be reported short. [`Ring::Unbounded`] for a radius that is not below 1.
 pub(super) fn decay_ring(radius: f64, multiplicity: u32, floor: Db, rate: SampleRate) -> Ring {
-    if !(radius < 1.0) {
+    if radius.is_nan() || radius >= 1.0 {
         return Ring::Unbounded;
     }
     if radius <= 0.0 {
@@ -85,7 +85,7 @@ pub(super) fn decay_ring(radius: f64, multiplicity: u32, floor: Db, rate: Sample
 pub(super) fn section_l1(c: &Biquad) -> f64 {
     let [p, q] = c.poles();
     let r = p.norm().max(q.norm());
-    if !(r < 1.0) {
+    if r.is_nan() || r >= 1.0 {
         return f64::INFINITY;
     }
     let gap = (p - q).norm();

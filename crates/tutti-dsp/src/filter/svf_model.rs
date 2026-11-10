@@ -111,10 +111,10 @@ impl SvfModel {
 
     /// The same `H(z)` as direct-form coefficients: what a transposed direct form
     /// II or a lattice realizes. Under `s = (z - 1) / (g (z + 1))` the denominator
-    /// `s^2 + k s + 1` times `g^2 (z + 1)^2` is `(1 + g (g + k)) z^2 + (2 g^2 - 2) z
-    /// + (1 - g (k - g))`, and the numerator `m0 + m1 s / D + m2 / D` is `m0` times
-    /// that plus `m1 g (z^2 - 1)` and `m2 g^2 (z + 1)^2`; both are divided by the
-    /// leading term.
+    /// `s^2 + k s + 1` times `g^2 (z + 1)^2` is `d0 z^2 + d1 z + d2` with
+    /// `d0 = 1 + g (g + k)`, `d1 = 2 g^2 - 2` and `d2 = 1 - g (k - g)`; the numerator
+    /// `m0 + (m1 s + m2) / D` is `m0` times that, plus `m1 g (z^2 - 1)` and
+    /// `m2 g^2 (z + 1)^2`; both are divided by `d0`.
     #[must_use]
     pub fn biquad(&self) -> Biquad {
         let SvfCoeffs {
@@ -237,7 +237,7 @@ impl System for SvfModel {
     /// the true ring and sits within a small factor of it.
     fn tail(&self, floor: Db) -> Ring {
         let nln = self.decay_rate();
-        if !(nln > 0.0) {
+        if nln.is_nan() || nln <= 0.0 {
             return Ring::Unbounded;
         }
         let b = self.biquad();
@@ -264,7 +264,7 @@ impl System for SvfModel {
         }
         let eps = libm::pow(10.0, f64::from(floor.get()) / 20.0);
         let target = eps * best.1;
-        if !(target > 0.0) {
+        if target.is_nan() || target <= 0.0 {
             return Ring::Finite(Seconds::new(0.0));
         }
         let sum_b = b.b0.abs() + b.b1.abs() + b.b2.abs();
@@ -685,7 +685,6 @@ mod tests {
                     (a + 1.0) - (a - 1.0) * cs - sa,
                 ],
             ),
-            _ => unreachable!("a new response needs its RBJ row"),
         };
         Biquad {
             b0: b[0] / d[0],

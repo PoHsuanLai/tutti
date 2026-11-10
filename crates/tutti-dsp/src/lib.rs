@@ -10,7 +10,9 @@
 //! - Filters: [`SvfCoeffs`] and [`SvfCoefficients`] with [`svf_step`]
 //!   ([`SvfType`]); [`LadderCoeffs`] and [`LadderCoefficients`] with
 //!   [`ladder_step`] ([`LadderType`]); the Linkwitz-Riley [`Crossover`]; and
-//!   [`Real`], the `f32` or `f64` their state runs in.
+//!   [`Real`], the `f32` or `f64` their state runs in; their models ([`SvfModel`],
+//!   [`LadderModel`], [`CrossoverModel`], with [`SvfDesign`] and [`SvfRealization`]) and the
+//!   [`Biquad`] section they share.
 //! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
 //!   curves [`compute_compressor_gain_reduction`], [`compute_gate_gain`],
 //!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`], [`LimiterKernel`] and

@@ -84,7 +84,6 @@ impl LadderModel {
             LadderType::LP24 => l * l * l * l,
             LadderType::HP12 => one_minus * one_minus,
             LadderType::HP24 => (one_minus * one_minus) * (one_minus * one_minus),
-            _ => Complex64::new(f64::NAN, f64::NAN),
         }
     }
 
@@ -419,12 +418,11 @@ mod tests {
         assert!(model(LadderType::LP24, 1_000.0, 1.0).spectral_radius() >= 1.0);
         assert!(!model(LadderType::LP24, 1_000.0, 1.0).is_stable());
         assert!(model(LadderType::LP24, 1_000.0, 0.5).is_stable());
-        assert_eq!(
+        assert!(
             model(LadderType::LP24, 1_000.0, 0.5)
                 .tail(Db(-60.0))
                 .seconds()
-                .is_some(),
-            true
+                .is_some()
         );
         assert_eq!(
             model(LadderType::LP24, 1_000.0, 1.0).tail(Db(-60.0)),

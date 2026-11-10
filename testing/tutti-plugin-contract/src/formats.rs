@@ -13,8 +13,12 @@ impl Format for Clap {
     const GAPS: &'static [(&'static str, Gap)] = &[];
 
     fn load() -> Self::L {
-        tutti_clap_host::ClapLoaded::load(plugin::clap(), tutti_clap_host::LoadOptions::new())
-            .expect("the plugin loads")
+        tutti_clap_host::ClapLoaded::load(
+            &main_thread(),
+            plugin::clap(),
+            tutti_clap_host::LoadOptions::new(),
+        )
+        .expect("the plugin loads")
     }
 }
 

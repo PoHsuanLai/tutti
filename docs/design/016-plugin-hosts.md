@@ -8,6 +8,9 @@ operations. This design moves the decisions into a pure core in
 activation splits a plugin into a realtime Processor and a main-thread
 Controller, and leaves each host crate an interpreter of effects over its FFI.
 
+What a loaded plugin *declares* (units, voices, tail, layouts, presets) is
+typed in [023](023-plugin-capabilities.md).
+
 ## Summary
 
 - **A pure core.** `step(State, Event) -> (State, Effects)` decides activation,
@@ -933,7 +936,8 @@ and from CLAP and VST3:
   no rate or block size, and `Vst2Quirks` is step 9's. `RESTARTS` is
   `RestartRules::NONE`: the core reads a changed pin count, latency or tail again.
 - The Processor holds a `vst_tutti::RenderHandle` (a copy of the `AEffect` pointer and
-  the flags `process` checks; `PluginInstance::render_handle`), so the Controller's
+  the flags `process` checks, with an `Arc` of the instance's core so `effClose` waits
+  for it; `PluginInstance::render_handle`), so the Controller's
   `&mut Vst2Loaded` has no Rust-level alias of anything the Processor calls, and its
   own clone of the plugin's parameter object (`Sync`) for the block's automation. The
   `PluginInfo` it keeps is what the plugin declared at load; the pins, latency and tail
@@ -1692,6 +1696,40 @@ nothing in release and nothing while no thread was marked. It is now a type.
   `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
   claims); the VST3 `Plugin` tears down on the dropping thread. The per-format
   lanes' main-thread handles make that the main thread by construction.
+- CLAP, below the host crate: every `Plugin` entry that calls into the plugin
+  takes `&MainThread` (`tutti-clap-ffi`), and `ThreadRoles::new(&MainThread)` is
+  the one place the main thread is named: `HostState` keeps no second copy, and
+  `thread-check`, the `[main-thread]` host callbacks and `Plugin`'s drop read
+  it. A `Plugin` dropped on another thread destroys the editor and the instance
+  nowhere: it leaks them (and the library) rather than call `[main-thread]`
+  entries off the thread, so the `ClapLoaded` `debug_assert!` above is gone. The
+  host callbacks CLAP marks `[main-thread]` (timers, descriptors, rescans,
+  `mark_dirty`, `latency.changed`, undo, ...) are refused, not forwarded, when
+  a plugin calls them from any other thread or from inside an audio claim.
+  `deactivate` and `destroy` run under the roles lock without becoming the
+  audio thread (`ThreadRoles::claim_lifecycle`; only their `stop_processing`
+  is answered as audio-side), so a timer a plugin unregisters from them is
+  accepted. `Control::info` has no token, so it measures a CLAP plugin's editor
+  on the first ask from the main thread and answers `EditorPresence::Unknown`
+  elsewhere.
+- CLAP, the rest of the audit's soundness findings. `TaskPool` is an `unsafe
+  trait` and `GraphPool::new` takes only a `WorkerPool`, whose gate keeps its
+  contract; a wrapped `dyn Pool` is an `unsafe` constructor behind
+  `test-support`. `activate` refuses an active plugin and numbers CLAP forbids
+  and reads the ports before it calls the plugin; `process` checks the block
+  against `[min_frames, max_frames]` and the ports against that layout. A param
+  event with a cookie is never lent (the host mints none). State is capped at
+  1 GiB and an undo delta at 64 MiB. Output pushes are one at a time (a
+  concurrent push is refused, which closes the aliased `&mut` sink). Deferred:
+  **S9**, `Bundle::open` is a safe fn that runs native code (the premise of
+  loading a plugin, argued at its `unsafe`); **S11**, `thread-check`'s
+  `is_audio_thread` answers `false` on a pool helper inside a served task (what
+  CLAP requires there is unchecked against the spec); **S12**, the blocking
+  claim mutex that `process`, `reset` and `stop` take and the sysex allocation
+  in `OutputEventList::push` when its pool is empty (both documented, neither
+  memory-unsafe); and the owned domain types for the clap-sys structs in the
+  public API (they are pointer-free once the cookie is gone), which go with the
+  typed-flags change.
 - `Session` paths that free a retired unit (collect, commit, update, drop) take
   no token and check with the same `debug_assert!`; the entries that open an
   in-process plugin (`add_plugin`, `land_reload`) take the token.

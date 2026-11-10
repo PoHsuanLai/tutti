@@ -94,8 +94,6 @@ pub(crate) trait PluginEditor: Send {
 }
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
-// Only the VST3 arm loads on the main thread token; a build without it ignores it.
-#[cfg_attr(not(feature = "vst3"), allow(unused_variables))]
 pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dyn PluginEditor>> {
     use tutti_plugin_db::{PluginFormat, format_from_path};
 
@@ -109,7 +107,7 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dy
         #[cfg(feature = "vst3")]
         PluginFormat::Vst3 => Ok(Box::new(vst3::Vst3GuiInstance::load(main, path)?)),
         #[cfg(feature = "clap")]
-        PluginFormat::Clap => Ok(Box::new(clap::ClapGuiInstance::load(path)?)),
+        PluginFormat::Clap => Ok(Box::new(clap::ClapGuiInstance::load(main, path)?)),
         #[cfg(all(feature = "au", target_os = "macos"))]
         PluginFormat::AudioUnit => Ok(Box::new(au::AuGuiInstance::load(path)?)),
         PluginFormat::Vst2 => Err(BridgeError::LoadFailed {

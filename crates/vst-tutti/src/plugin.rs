@@ -777,7 +777,7 @@ pub trait Plugin: Send {
 /// Since access is shared, all methods take `self` by immutable reference.
 /// All mutation must thus be performed using thread-safe interior mutability.
 #[allow(unused_variables)]
-pub trait PluginParameters: Sync {
+pub trait PluginParameters: Send + Sync {
     /// Set the current preset to the index specified by `preset`.
     ///
     /// This method can be called on the processing thread for automation.
@@ -958,13 +958,13 @@ impl Default for HostCallback {
     }
 }
 
-// SAFETY: NOT ESTABLISHED. The value is a `Copy` function pointer plus the plugin's own
-// `*mut AEffect`; neither is mutated through `&HostCallback`. Whether calling the host's
-// `audioMaster` callback concurrently from several threads is sound is up to the host, and
-// VST2 only requires that for a subset of opcodes; nothing here enforces it.
+// SAFETY: the value is a `Copy` function pointer plus the plugin's own `*mut AEffect`;
+// neither is mutated through `&HostCallback`, so moving it is sound. The VST2 ABI has the
+// host's `audioMaster` callable from the plugin's audio and UI threads (the audio thread
+// asks for the time inside `process`); which opcode suits which thread is the plugin
+// author's, and a host that does not take a call on a thread breaks its own contract.
 unsafe impl Send for HostCallback {}
-// SAFETY: as for `Send`; shared access only reads the two fields, but concurrent calls into
-// the host callback are not established as sound for every opcode.
+// SAFETY: as for `Send`; shared access only reads the two fields.
 unsafe impl Sync for HostCallback {}
 
 impl HostCallback {
@@ -994,10 +994,9 @@ impl HostCallback {
     fn is_effect_valid(&self) -> bool {
         // Check whether `effect` points to a valid AEffect struct
         //
-        // SAFETY: NOT ESTABLISHED. `effect` is dereferenced unchecked: it is null for a
-        // `HostCallback` made by `Default` (this method would then be UB), and otherwise it is
-        // the plugin's own `AEffect`, live while the plugin is.
-        unsafe { (*self.effect).magic == VST_MAGIC }
+        // SAFETY: `effect` is non-null here (a `HostCallback` made by `Default` has none),
+        // and then it is the plugin's own `AEffect`, live while the plugin is.
+        !self.effect.is_null() && unsafe { (*self.effect).magic == VST_MAGIC }
     }
 
     /// Create a new Host structure wrapping a host callback.

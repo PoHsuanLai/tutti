@@ -76,7 +76,7 @@ fn load_plugin() -> Active<f32> {
     let path = Path::new(probe_path());
     // The artifact is a bare dylib — pass it as both bundle and library so
     // the host dlopens it directly (no .clap bundle structure needed).
-    let loaded = ClapLoaded::load(path, LoadOptions::new().library(path))
+    let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
         .expect("reference plugin should load");
     loaded
         .activate_at::<f32>(48_000.0, 512)

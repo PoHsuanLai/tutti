@@ -66,10 +66,11 @@ pub enum Site {
     OnTimer = 5,
     Reset = 6,
     ParamsFlush = 7,
+    Deactivate = 8,
 }
 
 /// Number of [`Site`] variants — the length of [`ThreadCapture::sites`].
-pub const SITE_COUNT: usize = 8;
+pub const SITE_COUNT: usize = 9;
 
 /// What the host's `clap.thread-check` answered at one call site.
 ///
@@ -186,6 +187,7 @@ static THREADING: ThreadGlobals = ThreadGlobals {
         AtomicAnswer::new(),
         AtomicAnswer::new(),
         AtomicAnswer::new(),
+        AtomicAnswer::new(),
     ],
     timer_id: AtomicU32::new(0),
     timer_registered: AtomicBool::new(false),
@@ -219,6 +221,11 @@ pub const CMD_LOG_ALL_SEVERITIES: u32 = 3;
 pub const CMD_REQUEST_RESTART: u32 = 4;
 /// Call `host.request_process()` from `process`. `[thread-safe]` per the spec.
 pub const CMD_REQUEST_PROCESS: u32 = 5;
+
+/// Unregister the timer previously registered, from `deactivate`
+/// (`[main-thread]`): the host must accept it, and the timer must not fire
+/// after the call.
+pub const CMD_UNREGISTER_TIMER_IN_DEACTIVATE: u32 = 6;
 
 /// Latch a command for the plugin to run at its next legal call site, and
 /// return the previous one. `CMD_NONE` clears.
@@ -331,6 +338,7 @@ pub unsafe fn run_pending_command(site: Site, host: *const clap_host) {
             site == Site::OnMainThread
         }
         CMD_REQUEST_RESTART | CMD_REQUEST_PROCESS => site == Site::Process,
+        CMD_UNREGISTER_TIMER_IN_DEACTIVATE => site == Site::Deactivate,
         _ => false,
     };
     if !legal {
@@ -348,7 +356,9 @@ pub unsafe fn run_pending_command(site: Site, host: *const clap_host) {
 
     match cmd {
         CMD_REGISTER_TIMER => unsafe { register_timer(host) },
-        CMD_UNREGISTER_TIMER => unsafe { unregister_timer(host) },
+        CMD_UNREGISTER_TIMER | CMD_UNREGISTER_TIMER_IN_DEACTIVATE => unsafe {
+            unregister_timer(host)
+        },
         CMD_LOG_ALL_SEVERITIES => unsafe { log_all_severities(host) },
         CMD_REQUEST_RESTART => {
             if let Some(f) = unsafe { (*host).request_restart } {

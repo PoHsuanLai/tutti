@@ -605,3 +605,9 @@ mod tests {
         );
     }
 }
+
+// Test-only global allocator for the RT-safety test of the render refusal; it aborts on
+// any allocation inside an `assert_no_alloc` scope.
+#[cfg(test)]
+#[global_allocator]
+static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;

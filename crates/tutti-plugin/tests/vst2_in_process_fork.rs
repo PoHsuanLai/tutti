@@ -252,12 +252,12 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     let (client, handle) = load();
     let presets = handle.presets().expect("the VST2 path carries presets");
     let program_1 = presets
-        .presets()
+        .presets(&main_thread())
         .into_iter()
         .map(|p| p.id)
         .find(|id| *id == PresetId::Number(1))
         .expect("the probe declares two programs");
-    assert!(presets.load_preset(&program_1));
+    assert!(presets.load_preset(&main_thread(), &program_1));
     handle
         .params()
         .set_parameter_value(ParamId::new(0), Normalized::of(0.75));
@@ -600,7 +600,7 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     let mut env = ProbeEnv::new(true);
     let (client, handle) = load();
     let presets = handle.presets().expect("the VST2 path carries presets");
-    assert!(presets.load_preset(&PresetId::Number(1)));
+    assert!(presets.load_preset(&main_thread(), &PresetId::Number(1)));
     env.set("TUTTI_VST2_PROBE_PROGRAMS", "1");
     let err = client
         .fork_instance(&main_thread(), ForkMode::Live)

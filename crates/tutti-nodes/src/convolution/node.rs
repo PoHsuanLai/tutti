@@ -25,49 +25,10 @@ use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Samples, fold_frame
 use tutti_types::{Latency, Tail, UnitParam};
 
 use super::params::WetDry;
+use crate::dry_align::DryAlign;
 use crate::ramp::{LastGood, block_driven};
-use tutti_dsp::CircularBuffer;
 use tutti_dsp::Convolver;
 use tutti_dsp::Ramp;
-
-/// The dry path's alignment delay: holds the input for exactly the convolver's
-/// latency, so the blend adds the dry sample that arrived *with* the wet one.
-///
-/// Without it the node blended the undelayed input against a wet signal one FFT
-/// block late, while `route` reported the block for the whole output — so after
-/// PDC the dry half of any `mix < 1` led the mix by `latency` samples, and the
-/// blend itself comb-filtered. The latency is the convolver's block size, fixed
-/// at construction and independent of the sample rate, so the ring is sized once
-/// there and `prepare` has nothing to resize.
-#[derive(Clone, Debug)]
-pub(super) struct DryAlign {
-    ring: CircularBuffer<f32>,
-}
-
-impl DryAlign {
-    /// Allocates — construction only. `latency` is at least 2 (the convolver
-    /// rounds its block up to a power of two no smaller than that), so the
-    /// one-slot clamp in [`CircularBuffer::new`] never shortens the delay.
-    pub(super) fn new(latency: usize) -> Self {
-        debug_assert!(latency >= 1, "a zero-latency convolver needs no dry align");
-        Self {
-            ring: CircularBuffer::new(latency),
-        }
-    }
-
-    /// Push `input`, return the sample pushed `latency` calls ago.
-    ///
-    /// The ring holds exactly `latency` samples, so the oldest one — read
-    /// before the push overwrites its slot — is `latency` pushes old.
-    #[inline]
-    pub(super) fn step(&mut self, input: f32) -> f32 {
-        self.ring.replace_oldest(input)
-    }
-
-    pub(super) fn clear(&mut self) {
-        self.ring.clear();
-    }
-}
 
 /// The tail of an FIR whose impulse response is `ir_length` samples long.
 ///

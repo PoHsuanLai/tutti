@@ -5,6 +5,7 @@ use num_traits::Float;
 
 use libloading::Library;
 use std::cell::{Cell, UnsafeCell};
+use std::collections::BTreeSet;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::ffi::CString;
@@ -13,6 +14,8 @@ use std::os::raw::c_void;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::{fmt, ptr, slice};
 
 use crate::{
@@ -310,6 +313,10 @@ pub enum PluginLoadError {
 
     /// The API version which the plugin used is not supported by this library.
     InvalidApiVersion,
+
+    /// The entry point returned an `AEffect` that is not one: its `magic` is not
+    /// `VstP`, or it has no dispatcher. Nothing was called on it.
+    InvalidEffect,
 }
 
 impl fmt::Display for PluginLoadError {
@@ -320,6 +327,7 @@ impl fmt::Display for PluginLoadError {
             NotAPlugin => "The given path does not contain a VST2.4 compatible library",
             InstanceFailed => "Failed to create a plugin instance",
             InvalidApiVersion => "The plugin API version is not compatible with this library",
+            InvalidEffect => "The plugin entry point returned an invalid AEffect",
         };
         write!(f, "{}", description)
     }
@@ -352,6 +360,12 @@ pub struct MidiChannelCounts {
 }
 
 /// An instance of an externally loaded VST plugin.
+///
+/// The instance is a handle on a shared core (`PluginParametersInstance`): the
+/// handles this hands out ([`get_parameter_object`](Plugin::get_parameter_object),
+/// [`get_editor`](Plugin::get_editor), [`render_handle`](PluginInstance::render_handle))
+/// hold the same core, and `effClose` runs when the last of them drops, so none can
+/// reach the plugin after it is closed.
 #[allow(dead_code)] // To keep `lib` around.
 #[derive(Debug)]
 pub struct PluginInstance {
@@ -384,9 +398,6 @@ pub struct PluginInstance {
     /// and consulted by [`Plugin::get_editor`], which previously asked nothing
     /// and handed back an `EditorInstance` for every plugin loaded.
     has_editor: bool,
-    /// The `Box<Arc<T>>` that `AEffect::reserved1` points at. It is declared last so it drops
-    /// after [`Drop`] has sent `effClose`, the last call that can reach the host.
-    host_ref: Option<HostRef>,
 }
 
 /// An owned `Box<Arc<T>>` with `T` erased, freed on drop.
@@ -434,8 +445,24 @@ impl Drop for HostRef {
     }
 }
 
+/// The core of one live plugin instance: its `AEffect`, and the host box that
+/// `AEffect::reserved1` points at.
+///
+/// Every handle that can reach the plugin ([`PluginInstance`], the parameter object,
+/// the editor, the [`RenderHandle`]) holds an `Arc` of this, so the `AEffect` is live
+/// whenever one of them is. `effClose` runs in [`Drop`], once the last handle is gone,
+/// and the plugin frees its `AEffect` in response: nothing reads it afterwards.
 struct PluginParametersInstance {
     effect: UnsafeCell<*mut AEffect>,
+    /// The `Box<Arc<T>>` that `AEffect::reserved1` points at. A field, so it drops after
+    /// [`Drop`] has sent `effClose`, the last call that can reach the host.
+    _host_ref: Option<HostRef>,
+    /// Blocks a render entry refused because the plugin's pin counts grew past the
+    /// buffer (S7). Counted on the audio thread, read and reported by the control side
+    /// (`PluginInstance::pin_refusals`); `Relaxed`, nothing is published through it.
+    pin_refusals: AtomicU64,
+    /// Whether the control side has logged `pin_refusals` going nonzero.
+    pin_refusals_logged: AtomicBool,
 }
 
 impl fmt::Debug for PluginParametersInstance {
@@ -445,33 +472,51 @@ impl fmt::Debug for PluginParametersInstance {
     }
 }
 
-// SAFETY: the only field is a pointer cell that is written once at construction and only
-// read afterwards, so the type itself holds no unsynchronised mutable state. What the
-// pointer reaches is the plugin's own `AEffect`, which stays live until `PluginInstance`
-// drops (`effClose`). NOT ESTABLISHED beyond that: VST2 does not make the plugin thread-safe
-// in general, and moving this value (and the `Arc` of it) to another thread lets safe code
-// call any dispatcher opcode there; the spec only asks for that to work for
-// `getParameter`/`setParameter` and the audio calls, and the host must keep the rest on one
-// thread.
+impl PluginParametersInstance {
+    /// A core over `effect`, which must be a live `AEffect` that the plugin has not
+    /// closed: it is closed (`effClose`) when this drops.
+    fn new(effect: *mut AEffect, host_ref: Option<HostRef>) -> Arc<Self> {
+        Arc::new(PluginParametersInstance {
+            effect: UnsafeCell::new(effect),
+            _host_ref: host_ref,
+            pin_refusals: AtomicU64::new(0),
+            pin_refusals_logged: AtomicBool::new(false),
+        })
+    }
+}
+
+// SAFETY: what the type itself holds is a pointer cell that is written once at
+// construction and only read afterwards, and the host box, which is `Send + Sync`
+// (`HostRef`). The `AEffect` it points at is the plugin's, live until the last `Arc`
+// drops (`effClose`). Moving the core to another thread lets safe code call any
+// dispatcher opcode there. That is sound memory-wise (the plugin's own thread rules are
+// a behaviour matter, not a memory one for a plugin that follows its ABI), and the
+// opcodes that need the main thread are kept there by the hosts that use this crate:
+// the VST2 spec asks concurrent calls to work only for `getParameter`/`setParameter` and
+// the audio entries. The typed handles of the `tutti-vst2-ffi` lane make that a type.
 unsafe impl Send for PluginParametersInstance {}
-// SAFETY: NOT ESTABLISHED for every method. Shared access to the field is only reads of an
-// immutable pointer, which is fine. But `&PluginParametersInstance` also exposes the
-// `PluginParameters` methods that dispatch `changePreset`, preset names, `effGetChunk`/
-// `effSetChunk` and the like; VST2 allows concurrent calls from different threads only for
-// `getParameter`/`setParameter` (and their audio-thread peers), so those other methods are
-// sound under `Sync` only if the caller serialises them. Nothing here enforces that.
+// SAFETY: as for `Send`; shared access to the cell is reads of an immutable pointer.
+// `&PluginParametersInstance` also exposes `PluginParameters` methods that dispatch
+// `changePreset`, preset names and `effGetChunk`/`effSetChunk`, which VST2 does not
+// promise to be callable beside each other; serialising them is the caller's (the
+// `Shell` clause 3 of `tutti-vst2-host`), and a plugin that races them corrupts its own
+// state, not the host's memory.
 unsafe impl Sync for PluginParametersInstance {}
 
-impl Drop for PluginInstance {
+impl Drop for PluginParametersInstance {
     fn drop(&mut self) {
         // `effClose`. The plugin frees its own `AEffect` in response, so this
         // must happen exactly once — and it *must* happen: a licensed plugin
         // releases its session seat here, and skipping it leaks one live
         // instance (and one licence) per A/B of a slot.
+        //
+        // The last handle drops this, so it runs on the thread that drops the last
+        // handle: `Vst2Loaded`'s owner, on the control side.
         self.dispatch(plugin::OpCode::Shutdown, 0, 0, ptr::null_mut(), 0.0);
+        // After `effClose`: the plugin may call the host while closing.
+        unadopt(self.get_effect());
 
-        // `self.lib` is `ManuallyDrop`, so the `Arc<Library>` is never released
-        // and the loader never `dlclose`s the module. See the field's docs.
+        // The module is never `dlclose`d: `PluginInstance::lib` is `ManuallyDrop`.
     }
 }
 
@@ -703,6 +748,10 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     /// no instance, and [`PluginLoadError::InvalidApiVersion`] if the instance
     /// speaks a VST API version this library does not support.
     pub fn instance(&mut self) -> Result<PluginInstance, PluginLoadError> {
+        // A load is in progress from before `main` until this returns, so a callback made
+        // by any thread of the plugin in that window is told apart from a steady-state one
+        // (`callback_wrapper`).
+        let _loading = Loading::begin();
         // Call the plugin main function. This also passes the plugin main function as the closure
         // could not return an error if the symbol wasn't found
         let effect = self.call_main();
@@ -711,14 +760,28 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
             return Err(PluginLoadError::InstanceFailed);
         }
 
-        // The instance owns the box, so it is freed after `effClose`; its heap address is stable.
+        // SAFETY: `effect` is non-null and was just returned by the plugin's `main`, so
+        // VST2 has it point at the plugin's `AEffect`; `magic` and `dispatcher` are plain
+        // fields read before anything is called through it.
+        let (magic, dispatcher) = unsafe { ((*effect).magic, (*effect).dispatcher) };
+        if magic != VST_MAGIC || dispatcher.is_none() {
+            // Not an `AEffect` the host can drive, so it is not called at all, not even
+            // with `effClose`: the pointer is left alone.
+            warn!("plugin entry point returned an invalid AEffect (magic {magic:#x})");
+            return Err(PluginLoadError::InvalidEffect);
+        }
+
+        // The core owns the box, so it is freed after `effClose`; its heap address is stable.
         let host_ref = HostRef::new(Arc::clone(&self.host));
+        // Adopted before `reserved1` is written, and un-adopted by the core's drop after
+        // `effClose`: while the address is in the registry, `reserved1` is ours.
+        adopt(effect);
         // SAFETY: `effect` is non-null and was just returned by the plugin's `main`; nothing
-        // else reads `reserved1` until the plugin calls back with this effect pointer.
+        // else reads `reserved1` until the plugin calls back with this effect pointer, and a
+        // callback that does is let through by `adopt` above.
         unsafe { (*effect).reserved1 = host_ref.ptr as isize };
 
-        let mut instance = PluginInstance::new(effect, Arc::clone(&self.lib));
-        instance.host_ref = Some(host_ref);
+        let instance = PluginInstance::new(effect, Arc::clone(&self.lib), Some(host_ref));
 
         let api_ver = instance.dispatch(plugin::OpCode::GetApiVersion, 0, 0, ptr::null_mut(), 0.0);
         if api_ver >= 2400 {
@@ -892,14 +955,10 @@ impl PluginInstance {
     /// `AEffect` now: a plugin settles them in `effOpen` and may change them
     /// later, and a block must carry what it has at this moment.
     ///
-    /// The handle owns nothing: it holds the plugin's raw `AEffect` pointer.
-    ///
-    /// # Safety
-    ///
-    /// The instance must outlive every use of the handle and of anything made
-    /// from it: it must not be dropped (`effClose`) while the handle can still
-    /// render.
-    pub unsafe fn render_handle(&self) -> RenderHandle {
+    /// The handle holds the instance's core, so `effClose` waits for it: dropping the
+    /// instance (and every other handle) while the handle lives does not close the
+    /// plugin. The handle that drops last closes it, on its own thread.
+    pub fn render_handle(&self) -> RenderHandle {
         let (inputs, outputs) = self.read_pin_counts();
         RenderHandle {
             entry: RenderEntry {
@@ -908,6 +967,7 @@ impl PluginInstance {
                 ..self.entry()
             },
             name: Arc::from(self.info.name.as_str()),
+            core: Arc::clone(&self.params),
         }
     }
 
@@ -920,18 +980,46 @@ impl PluginInstance {
         (effect.numInputs, effect.numOutputs)
     }
 
+    /// How many blocks have been rendered as silence because the plugin raised its pin
+    /// counts past the buffer it was activated with.
+    ///
+    /// **S7 stays open:** the plugin renders silence until it is re-activated, which
+    /// the host will do on `audioMasterIOChanged` (step 7 of the VST2 fix plan; today
+    /// `RESTARTS` is `NONE`). The counter is for the control side to report once; the
+    /// audio thread never logs.
+    pub fn pin_refusals(&self) -> u64 {
+        self.params.pin_refusals.load(Ordering::Relaxed)
+    }
+
+    /// [`pin_refusals`](Self::pin_refusals), and the first time it is nonzero, one
+    /// warning. For the control side's tick; never call it from the audio thread.
+    pub fn report_pin_refusals(&self) -> u64 {
+        let refused = self.pin_refusals();
+        if refused > 0
+            && !self
+                .params
+                .pin_refusals_logged
+                .swap(true, Ordering::Relaxed)
+        {
+            warn!(
+                "plugin '{}' now declares more pins than it was activated with; it renders \
+                 silence until it is re-activated ({refused} blocks so far)",
+                self.info.name
+            );
+        }
+        refused
+    }
+
     /// Read `AEffect::numParams` as it stands *now*.
     pub fn read_num_params(&self) -> i32 {
         // SAFETY: as for `read_pin_counts`.
         unsafe { (*self.params.get_effect()).numParams }
     }
 
-    fn new(effect: *mut AEffect, lib: Arc<Library>) -> PluginInstance {
+    fn new(effect: *mut AEffect, lib: Arc<Library>, host_ref: Option<HostRef>) -> PluginInstance {
         use plugin::OpCode as op;
 
-        let params = Arc::new(PluginParametersInstance {
-            effect: UnsafeCell::new(effect),
-        });
+        let params = PluginParametersInstance::new(effect, host_ref);
         let mut plug = PluginInstance {
             params,
             lib: ManuallyDrop::new(lib),
@@ -940,12 +1028,11 @@ impl PluginInstance {
             can_replacing: false,
             can_double_replacing: false,
             has_editor: false,
-            host_ref: None,
         };
 
         // SAFETY: `effect` is the non-null `AEffect*` just returned by the plugin's `main`
         // (`PluginLoader::instance` rejects null before calling `new`), and the plugin keeps
-        // it live until `effClose`, which only runs when this instance drops.
+        // it live until `effClose`, which only runs when the core (`plug.params`) drops.
         unsafe {
             let effect: &AEffect = &*effect;
             let flags = PluginFlags::from_bits_truncate(effect.flags);
@@ -1285,6 +1372,19 @@ fn zero_outputs<T: Float>(buffer: &mut AudioBuffer<'_, T>) {
     }
 }
 
+/// `string` up to its first NUL, then cut to at most `max_len` bytes at a char boundary.
+fn truncated_c_str(string: &str, max_len: usize) -> &str {
+    let string = string.split('\0').next().unwrap_or("");
+    let mut end = string.len().min(max_len);
+    while !string.is_char_boundary(end) {
+        end -= 1;
+    }
+    &string[..end]
+}
+
+/// The least room a string the plugin writes gets, whatever the spec's length is.
+const MIN_STRING_BUFFER: usize = 256;
+
 trait Dispatch {
     fn get_effect(&self) -> *mut AEffect;
 
@@ -1297,10 +1397,13 @@ trait Dispatch {
         ptr: *mut c_void,
         opt: f32,
     ) -> isize {
-        // SAFETY: `get_effect` is the plugin's non-null `AEffect`, live until `effClose` on drop,
-        // so reading the `dispatcher` field is in bounds and initialised.
+        // SAFETY: `get_effect` is the plugin's non-null `AEffect`, live until `effClose` on drop
+        // of the core, so reading the `dispatcher` field is in bounds and initialised.
         let Some(dispatcher) = (unsafe { (*self.get_effect()).dispatcher }) else {
-            panic!("Plugin was not loaded correctly.");
+            // `PluginLoader::instance` refuses a null dispatcher, so only a plugin that
+            // clears the slot later gets here; the opcode is unanswered.
+            error!("plugin cleared its dispatcher; opcode {opcode:?} unanswered");
+            return 0;
         };
         // SAFETY: `dispatcher` came out of the `AEffect` this instance owns, so
         // the effect pointer it is handed is the one it belongs to and is live
@@ -1314,23 +1417,23 @@ trait Dispatch {
         self.dispatch(opcode, 0, 0, ptr::null_mut(), 0.0)
     }
 
-    /// Like `dispatch`, except takes a `&str` to send via `ptr`.
+    /// Like `dispatch`, except takes a `&str` to send via `ptr`, cut at its first NUL
+    /// (a C string cannot hold one) and at `max_len` bytes, a char boundary at or below
+    /// it. `max_len` is the room the opcode's buffer has without its NUL: the plugin
+    /// `strcpy`s into a fixed buffer for some opcodes (`kVstMaxProgNameLen` for a
+    /// program name), and a longer string would run past it.
     fn write_string(
         &self,
         opcode: plugin::OpCode,
         index: i32,
         value: isize,
         string: &str,
+        max_len: usize,
         opt: f32,
     ) -> isize {
-        let string = CString::new(string).expect("Invalid string data");
-        self.dispatch(
-            opcode,
-            index,
-            value,
-            string.as_bytes().as_ptr() as *mut c_void,
-            opt,
-        )
+        let string = CString::new(truncated_c_str(string, max_len))
+            .expect("`truncated_c_str` holds no interior NUL");
+        self.dispatch(opcode, index, value, string.as_ptr() as *mut c_void, opt)
     }
 
     fn read_string(&self, opcode: plugin::OpCode, max: usize) -> String {
@@ -1345,7 +1448,9 @@ trait Dispatch {
         opt: f32,
         max: usize,
     ) -> String {
-        let mut buf = vec![0; max];
+        // The spec's `max` is the size a plugin should write within; real plugins write
+        // more, and hosts commonly offer 256, so the buffer is never smaller than that.
+        let mut buf = vec![0; max.max(MIN_STRING_BUFFER)];
         self.dispatch(opcode, index, value, buf.as_mut_ptr() as *mut c_void, opt);
         String::from_utf8_lossy(&buf)
             .chars()
@@ -1369,6 +1474,22 @@ impl Dispatch for PluginParametersInstance {
 }
 
 impl PluginParametersInstance {
+    /// Send an `effSetChunk` blob (`index == 1` for a preset, `0` for the bank).
+    ///
+    /// The plugin gets a copy: the opcode's pointer is `void*`, and a plugin that
+    /// writes through it (some do while parsing) would write into the caller's memory
+    /// if it were handed `data` itself.
+    fn set_chunk(&self, index: i32, data: &[u8]) -> bool {
+        let mut copy = data.to_vec();
+        self.dispatch(
+            plugin::OpCode::SetData,
+            index,
+            copy.len() as isize,
+            copy.as_mut_ptr() as *mut c_void,
+            0.0,
+        ) > 0
+    }
+
     /// Read an `effGetChunk` blob (`index == 1` for the current preset,
     /// `index == 0` for the whole bank).
     ///
@@ -1440,7 +1561,7 @@ unsafe fn copy_chunk(ptr: *mut u8, len: isize) -> Result<Vec<u8>, ChunkError> {
 
 /// What a block needs of a plugin: its `AEffect` and the flags and pin counts
 /// the render entries check. `Copy`, and carrying no ownership: whoever holds
-/// one keeps the plugin alive.
+/// one keeps the plugin's core alive (`RenderHandle`, `PluginInstance`).
 #[derive(Clone, Copy)]
 struct RenderEntry {
     effect: *mut AEffect,
@@ -1459,17 +1580,40 @@ impl RenderEntry {
         ptr: *mut c_void,
         opt: f32,
     ) -> isize {
+        let _rendering = Rendering::enter(self.effect);
         // SAFETY: `effect` is the plugin's `AEffect`, live for as long as the
-        // holder keeps the plugin (see the type's docs).
+        // holder keeps the core (see the type's docs).
         let Some(dispatcher) = (unsafe { (*self.effect).dispatcher }) else {
-            panic!("Plugin was not loaded correctly.");
+            error!("plugin cleared its dispatcher; opcode {opcode:?} unanswered");
+            return 0;
         };
         // SAFETY: as for `Dispatch::dispatch`: the effect is the dispatcher's
         // own, and `ptr` and `value` are the caller's to get right.
         unsafe { dispatcher(self.effect, opcode.into(), index, value, ptr, opt) }
     }
 
+    /// Whether the plugin's pin counts, read from its `AEffect` now, still fit the
+    /// buffer.
+    ///
+    /// A plugin may raise `numInputs` or `numOutputs` after activation
+    /// (`audioMasterIOChanged`) without the host having re-activated it; its render
+    /// entries then index the channel tables past the end of the buffer the host sized
+    /// for the old counts. `inputs` and `outputs` here are those old counts, and a
+    /// plugin that asks for more than the buffer holds is not called.
+    fn pins_fit(&self, inputs: usize, outputs: usize) -> bool {
+        // SAFETY: `effect` is live while the core is (see the type's docs); the counts are
+        // plain `i32` fields, not calls into the plugin.
+        let (live_inputs, live_outputs) =
+            unsafe { ((*self.effect).numInputs, (*self.effect).numOutputs) };
+        let fits = |live: i32, held: usize| usize::try_from(live).unwrap_or(0) <= held;
+        fits(live_inputs, inputs) && fits(live_outputs, outputs)
+    }
+
     /// Render one block.
+    ///
+    /// A plugin whose pin counts have grown past the buffer is not called and the
+    /// outputs are silent (see [`pins_fit`](Self::pins_fit)); that is the `false`
+    /// answer, and every other path answers `true`.
     ///
     /// Prefers `processReplacing`, but only when the plugin both advertises
     /// `effFlagsCanReplacing` *and* actually installed the pointer. VST2.4
@@ -1487,12 +1631,19 @@ impl RenderEntry {
     /// idiom silently did nothing: a bare `extern "C" fn` is non-nullable, so the
     /// compiler folded the comparison to `false` under `-O` and the guard shipped
     /// only in debug builds.
-    fn process(&self, name: &str, buffer: &mut AudioBuffer<f32>) {
+    fn process(&self, name: &str, buffer: &mut AudioBuffer<f32>) -> bool {
+        let _rendering = Rendering::enter(self.effect);
         if buffer.input_count() < self.inputs {
             panic!("Too few inputs in AudioBuffer");
         }
         if buffer.output_count() < self.outputs {
             panic!("Too few outputs in AudioBuffer");
+        }
+        if !self.pins_fit(buffer.input_count(), buffer.output_count()) {
+            // No log here: this runs every block on the audio thread. The caller counts
+            // it (`PluginParametersInstance::pin_refusals`) and the control side reports.
+            zero_outputs(buffer);
+            return false;
         }
         let effect = self.effect;
         let samples = buffer.samples() as i32;
@@ -1508,7 +1659,7 @@ impl RenderEntry {
                     buffer.raw_outputs().as_mut_ptr(),
                     samples,
                 );
-                return;
+                return true;
             }
 
             let Some(accumulating) = (*effect)._process else {
@@ -1517,7 +1668,7 @@ impl RenderEntry {
                      rendering silence"
                 );
                 zero_outputs(buffer);
-                return;
+                return true;
             };
 
             warn!(
@@ -1533,6 +1684,7 @@ impl RenderEntry {
                 samples,
             );
         }
+        true
     }
 
     /// Render one block in `f64`.
@@ -1543,12 +1695,19 @@ impl RenderEntry {
     /// re-render through the `f32` path. Silence is returned rather than
     /// jumping to a null pointer; callers should consult
     /// `get_info().f64_precision` before choosing this path.
-    fn process_f64(&self, name: &str, buffer: &mut AudioBuffer<f64>) {
+    fn process_f64(&self, name: &str, buffer: &mut AudioBuffer<f64>) -> bool {
+        let _rendering = Rendering::enter(self.effect);
         if buffer.input_count() < self.inputs {
             panic!("Too few inputs in AudioBuffer");
         }
         if buffer.output_count() < self.outputs {
             panic!("Too few outputs in AudioBuffer");
+        }
+        if !self.pins_fit(buffer.input_count(), buffer.output_count()) {
+            // No log here: this runs every block on the audio thread. The caller counts
+            // it (`PluginParametersInstance::pin_refusals`) and the control side reports.
+            zero_outputs(buffer);
+            return false;
         }
         let effect = self.effect;
         // SAFETY: as for `process`: live `effect`, the `Option` slot is called only when `Some`,
@@ -1560,7 +1719,7 @@ impl RenderEntry {
             let Some(replacing) = replacing else {
                 error!("plugin '{name}' does not support f64 processing; rendering silence");
                 zero_outputs(buffer);
-                return;
+                return true;
             };
             replacing(
                 effect,
@@ -1569,6 +1728,7 @@ impl RenderEntry {
                 buffer.samples() as i32,
             );
         }
+        true
     }
 
     fn process_events(&self, events: &api::Events) {
@@ -1587,12 +1747,17 @@ impl RenderEntry {
 /// plugin's dispatcher keeps the instance on the control side and this on the
 /// audio side, so neither holds a Rust reference the other's calls alias.
 ///
-/// It is the `AEffect` pointer and the flags the render entries check, and it
-/// owns nothing: the plugin must outlive it (closing the instance with `effClose`
-/// while a handle renders is the caller's to prevent).
+/// It is the `AEffect` pointer and the flags the render entries check, with an
+/// `Arc` of the instance's core: the plugin is not closed (`effClose`) while the
+/// handle lives, and if the handle is the last holder it closes the plugin when it
+/// drops, on the thread that drops it. A host keeps another holder (the
+/// [`PluginInstance`]) until the handle is gone, so the close stays on the control
+/// side.
 pub struct RenderHandle {
     entry: RenderEntry,
     name: Arc<str>,
+    /// Keeps `entry.effect` live: `effClose` runs when the last `Arc` of the core drops.
+    core: Arc<PluginParametersInstance>,
 }
 
 impl fmt::Debug for RenderHandle {
@@ -1603,11 +1768,11 @@ impl fmt::Debug for RenderHandle {
     }
 }
 
-// SAFETY: the handle is a pointer to the plugin's `AEffect` and plain flags. VST
-// 2.4 lets `process`, `processReplacing`, `effProcessEvents`, `effStartProcess`
-// and `effStopProcess` run on the audio thread, so moving the handle to one is
-// what the format expects; the holder calls it from one thread at a time (every
-// method takes `&mut self`).
+// SAFETY: the handle is a pointer to the plugin's `AEffect`, plain flags and an `Arc` of
+// the core, which is `Send + Sync`. VST 2.4 lets `process`, `processReplacing`,
+// `effProcessEvents`, `effStartProcess` and `effStopProcess` run on the audio thread, so
+// moving the handle to one is what the format expects; the holder calls it from one
+// thread at a time (every method takes `&mut self`).
 unsafe impl Send for RenderHandle {}
 
 impl RenderHandle {
@@ -1616,9 +1781,12 @@ impl RenderHandle {
     /// # Panics
     ///
     /// If the buffer has fewer channels than the plugin had pins when the handle
-    /// was made.
+    /// was made. A plugin that raised its pin counts since is not called: the
+    /// outputs are silent.
     pub fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
-        self.entry.process(&self.name, buffer);
+        if !self.entry.process(&self.name, buffer) {
+            self.core.pin_refusals.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Render one block in `f64`; see [`Plugin::process_f64`].
@@ -1627,7 +1795,9 @@ impl RenderHandle {
     ///
     /// As [`process`](Self::process).
     pub fn process_f64(&mut self, buffer: &mut AudioBuffer<f64>) {
-        self.entry.process_f64(&self.name, buffer);
+        if !self.entry.process_f64(&self.name, buffer) {
+            self.core.pin_refusals.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Delivers MIDI events, `effProcessEvents`.
@@ -1734,7 +1904,7 @@ impl Plugin for PluginInstance {
         // length, an uninitialised stack slot) become `Supported::Custom`.
         // Panicking here would abort during *load*, since the host queries
         // canDo while probing every plugin.
-        Supported::from(self.write_string(plugin::OpCode::CanDo, 0, 0, &s, 0.0))
+        Supported::from(self.write_string(plugin::OpCode::CanDo, 0, 0, &s, usize::MAX, 0.0))
     }
 
     fn get_tail_size(&self) -> isize {
@@ -1744,13 +1914,17 @@ impl Plugin for PluginInstance {
     /// Render one block: `processReplacing`, or the deprecated accumulating
     /// `process` for a plugin that lacks it, or silence when it has neither.
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
-        self.entry().process(&self.info.name, buffer);
+        if !self.entry().process(&self.info.name, buffer) {
+            self.params.pin_refusals.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Render one block in `f64`: `processReplacingF64`, or silence when the
     /// plugin lacks it.
     fn process_f64(&mut self, buffer: &mut AudioBuffer<f64>) {
-        self.entry().process_f64(&self.info.name, buffer);
+        if !self.entry().process_f64(&self.info.name, buffer) {
+            self.params.pin_refusals.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn process_events(&mut self, events: &api::Events) {
@@ -1820,7 +1994,15 @@ impl PluginParameters for PluginParametersInstance {
     }
 
     fn set_preset_name(&self, name: String) {
-        self.write_string(plugin::OpCode::SetCurrentPresetName, 0, 0, &name, 0.0);
+        // `kVstMaxProgNameLen` counts the NUL.
+        self.write_string(
+            plugin::OpCode::SetCurrentPresetName,
+            0,
+            0,
+            &name,
+            MAX_PRESET_NAME_LEN - 1,
+            0.0,
+        );
     }
 
     fn get_preset_name(&self, preset: i32) -> String {
@@ -1901,7 +2083,14 @@ impl PluginParameters for PluginParametersInstance {
     }
 
     fn string_to_parameter(&self, index: i32, text: String) -> bool {
-        self.write_string(plugin::OpCode::StringToParameter, index, 0, &text, 0.0) > 0
+        self.write_string(
+            plugin::OpCode::StringToParameter,
+            index,
+            0,
+            &text,
+            usize::MAX,
+            0.0,
+        ) > 0
     }
 
     // TODO: Editor
@@ -1945,25 +2134,13 @@ impl PluginParameters for PluginParametersInstance {
     /// shipping plugins return other positive values for "yes", and reading
     /// those as refusal would lose presets that did load.
     fn load_preset_data(&self, data: &[u8]) -> bool {
-        self.dispatch(
-            plugin::OpCode::SetData,
-            1,
-            data.len() as isize,
-            data.as_ptr() as *mut c_void,
-            0.0,
-        ) > 0
+        self.set_chunk(1, data)
     }
 
     /// Bank counterpart of [`load_preset_data`](Self::load_preset_data); same
     /// accept/reject contract.
     fn load_bank_data(&self, data: &[u8]) -> bool {
-        self.dispatch(
-            plugin::OpCode::SetData,
-            0,
-            data.len() as isize,
-            data.as_ptr() as *mut c_void,
-            0.0,
-        ) > 0
+        self.set_chunk(0, data)
     }
 }
 
@@ -2007,17 +2184,33 @@ impl<T: Float> HostBuffer<T> {
 
     /// Bind sample arrays to the `HostBuffer` to create an `AudioBuffer` to pass to a plugin.
     ///
+    /// The buffer borrows the arrays for as long as it lives (`'a`), so the arrays cannot
+    /// be dropped or reused while a plugin can still read or write them through it:
+    ///
+    /// ```compile_fail
+    /// # use vst_tutti::host::HostBuffer;
+    /// // Mutation (run): give `bind` the old signature (`&'a mut self`, `&[I]`, `&mut [O]`,
+    /// // `I: 'a`, `O: 'a`) and this compiles, so the doctest fails.
+    /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(1, 1);
+    /// let mut buffer = {
+    ///     let inputs = vec![vec![0.0f32; 4]];
+    ///     let mut outputs = vec![vec![0.0f32; 4]];
+    ///     host_buffer.bind(&inputs, &mut outputs)
+    /// };
+    /// let _ = buffer.split();
+    /// ```
+    ///
     /// # Panics
     /// This function will panic if more inputs or outputs are supplied than the `HostBuffer`
     /// was created for, or if the sample arrays do not all have the same length.
     pub fn bind<'a, I, O>(
         &'a mut self,
-        input_arrays: &[I],
-        output_arrays: &mut [O],
+        input_arrays: &'a [I],
+        output_arrays: &'a mut [O],
     ) -> AudioBuffer<'a, T>
     where
-        I: AsRef<[T]> + 'a,
-        O: AsMut<[T]> + 'a,
+        I: AsRef<[T]>,
+        O: AsMut<[T]>,
     {
         // Check that number of desired inputs and outputs fit in allocation
         if input_arrays.len() > self.inputs.len() {
@@ -2055,12 +2248,13 @@ impl<T: Float> HostBuffer<T> {
 
         // Construct AudioBuffer
         //
-        // SAFETY: NOT ESTABLISHED for the lifetime. The first `input_arrays.len()` /
-        // `output_arrays.len()` slots of `self.inputs`/`self.outputs` were just set (the counts
-        // fit, checked above), each from a slice of `length` samples, and the output slices are
-        // distinct `&mut` so they do not alias. But `'a` only bounds the types `I`/`O`, not the
-        // borrows of `input_arrays`/`output_arrays`, so the returned buffer can outlive the
-        // data its pointers address; `from_raw` requires that it not.
+        // SAFETY: the first `input_arrays.len()` / `output_arrays.len()` slots of
+        // `self.inputs`/`self.outputs` were just set (the counts fit, checked above), each
+        // from a slice of `length` samples, and the output slices are distinct `&mut` so
+        // they do not alias. The pointers address data reached through `input_arrays` /
+        // `output_arrays`, which are borrowed for `'a` (the buffer's lifetime), as
+        // `from_raw` requires; `self` is borrowed for `'a` too, so the pointer tables
+        // outlive the buffer.
         unsafe {
             AudioBuffer::from_raw(
                 input_arrays.len(),
@@ -2081,6 +2275,76 @@ impl<T: Float> HostBuffer<T> {
     pub fn output_count(&self) -> usize {
         self.outputs.len()
     }
+}
+
+/// How many `PluginLoader::instance` calls are between the start of `main` and the
+/// adoption (or refusal) of the effect it returned, on any thread.
+static LOADS_IN_PROGRESS: AtomicUsize = AtomicUsize::new(0);
+
+/// The `AEffect` addresses whose `reserved1` is a host box this crate wrote: from adoption
+/// in `PluginLoader::instance` until the core's drop, after `effClose`.
+static ADOPTED: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
+thread_local! {
+    /// The `AEffect` this thread is inside a render entry of (`RenderEntry::process`,
+    /// `process_f64`, `dispatch`), null otherwise. A host callback the plugin makes from
+    /// inside such a call names that effect, which the host adopted before it could
+    /// render, so `callback_wrapper` needs no registry lookup (and no lock) for it.
+    static RENDERING: Cell<*mut AEffect> = const { Cell::new(ptr::null_mut()) };
+}
+
+/// Sets [`RENDERING`] for its lifetime and restores the previous value (a render entry
+/// can nest: `process_events` is dispatched from inside a block's work).
+struct Rendering(*mut AEffect);
+
+impl Rendering {
+    fn enter(effect: *mut AEffect) -> Rendering {
+        Rendering(RENDERING.replace(effect))
+    }
+}
+
+impl Drop for Rendering {
+    fn drop(&mut self) {
+        RENDERING.set(self.0);
+    }
+}
+
+/// Marks a load in progress for its lifetime.
+struct Loading;
+
+impl Loading {
+    fn begin() -> Loading {
+        // `SeqCst`: the increment happens before `main` runs, so every thread `main`
+        // spawns observes it.
+        LOADS_IN_PROGRESS.fetch_add(1, Ordering::SeqCst);
+        Loading
+    }
+}
+
+impl Drop for Loading {
+    fn drop(&mut self) {
+        LOADS_IN_PROGRESS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Registry lookups, to show in a test that the render path takes none.
+#[cfg(test)]
+static REGISTRY_LOCKS: AtomicUsize = AtomicUsize::new(0);
+
+fn adopted() -> std::sync::MutexGuard<'static, BTreeSet<usize>> {
+    #[cfg(test)]
+    REGISTRY_LOCKS.fetch_add(1, Ordering::SeqCst);
+    ADOPTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn adopt(effect: *mut AEffect) {
+    adopted().insert(effect as usize);
+}
+
+fn unadopt(effect: *mut AEffect) {
+    adopted().remove(&(effect as usize));
 }
 
 thread_local! {
@@ -2120,32 +2384,54 @@ extern "C" fn callback_wrapper<T: Host>(
     // state again — the host is behind a shared reference and the raw pointers
     // are not re-read.
     //
-    // SAFETY: the plugin calls this with the `effect` it got from `main`. A non-null `effect`
-    // is readable (VST2 ABI). `reserved1`, when non-zero, was set by `PluginLoader::instance`
-    // to a `Box<Arc<T>>` that the instance keeps alive until after `effClose`, and this
-    // callback is monomorphised for the same `T`; this assumes the plugin leaves `reserved1`
-    // zero until then, which is unchecked. Otherwise `LOAD_HOST` is either null (returns early)
-    // or points at the loader's `Arc<T>`, which outlives `main` (see `call_main`).
+    // SAFETY: which host a call reaches is decided without trusting `effect` until it is
+    // known to be ours.
+    //
+    // 1. `LOAD_HOST` first. While this thread is inside `main` it points at the loader's
+    //    `Arc<T>`, which outlives `main` (see `call_main`), and is the host for every call
+    //    made on this thread: the `effect` a plugin passes then is not yet the host's
+    //    (`reserved1` is "reserved for host", and a plugin that does not zero its `AEffect`
+    //    leaves garbage there), so it is not read.
+    // 2. No load in progress anywhere (`LOADS_IN_PROGRESS == 0`): every live effect has been
+    //    adopted, so a non-null `effect` is readable (VST2 ABI) and its `reserved1`, when
+    //    non-zero, is the `Box<Arc<T>>` set by `PluginLoader::instance`, kept alive by the
+    //    core until after `effClose`; this callback is monomorphised for the same `T`. This
+    //    is the steady-state path and takes no lock.
+    // 3. A load is in progress and this thread has no `LOAD_HOST`:
+    //    a. the call comes from inside a render entry of `effect` itself (`RENDERING`, set
+    //       by `RenderEntry` for the duration of the plugin call, per thread): the effect
+    //       was adopted before it could be rendered, so it is ours by construction. No
+    //       registry, no lock: an audio thread playing one plugin is not made to contend
+    //       while another loads.
+    //    b. otherwise (a thread the plugin spawned, during `main` or not; a UI thread):
+    //       `reserved1` is dereferenced only if `effect` is in the registry of adopted
+    //       effects, else the call gets the load-time default answer, `0`. The registry
+    //       is a mutex, taken only by those threads and only in this window. The count covers `main` through adoption
+    //    (`instance` holds `Loading` across both), so an effect cannot be both unadopted
+    //    and called after the count has dropped, except by a plugin that calls the host
+    //    after its load ended with an `AEffect` the host refused or never adopted; that is
+    //    a plugin outside the ABI and stays unchecked.
+    //
+    // A plugin that overwrites `reserved1` or calls the host after `effClose` breaks (2)
+    // too, which is unchecked.
     let result = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
-        // If the effect pointer is not null and the host pointer is not null, the plugin has
-        // already been initialized
-        if !effect.is_null() && (*effect).reserved1 != 0 {
-            let reserved = (*effect).reserved1 as *const Arc<T>;
-            let host: &T = &*reserved;
-
-            interfaces::host_dispatch(host, effect, opcode, index, value, ptr, opt)
-        // In this case, the plugin is still undergoing initialization and so `LOAD_HOST` is
-        // dereferenced
+        let load_ptr = LOAD_HOST.get() as *const Arc<T>;
+        let host: &T = if !load_ptr.is_null() {
+            // Used only during the plugin initialization.
+            &*load_ptr
+        } else if effect.is_null()
+            || (LOADS_IN_PROGRESS.load(Ordering::SeqCst) != 0
+                && effect != RENDERING.get()
+                && !adopted().contains(&(effect as usize)))
+        {
+            return 0;
+        } else if (*effect).reserved1 != 0 {
+            // The plugin has already been initialized.
+            &*((*effect).reserved1 as *const Arc<T>)
         } else {
-            // Used only during the plugin initialization
-            let load_ptr = LOAD_HOST.get() as *const Arc<T>;
-            if load_ptr.is_null() {
-                return 0;
-            }
-            let host: &T = &*load_ptr;
-
-            interfaces::host_dispatch(host, effect, opcode, index, value, ptr, opt)
-        }
+            return 0;
+        };
+        interfaces::host_dispatch(host, effect, opcode, index, value, ptr, opt)
     }));
 
     match result {
@@ -2336,9 +2622,7 @@ mod tests {
         // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
         effect.dispatcher = Some(dispatch as DispatcherProc);
-        let params = Arc::new(PluginParametersInstance {
-            effect: UnsafeCell::new(&mut effect as *mut AEffect),
-        });
+        let params = PluginParametersInstance::new(&mut effect as *mut AEffect, None);
 
         let reset = || {
             OPENS.store(0, Ordering::SeqCst);
@@ -2449,9 +2733,7 @@ mod tests {
         // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
         effect.dispatcher = Some(dispatch as DispatcherProc);
-        let params = Arc::new(PluginParametersInstance {
-            effect: UnsafeCell::new(&mut effect as *mut AEffect),
-        });
+        let params = PluginParametersInstance::new(&mut effect as *mut AEffect, None);
         let mut ed = EditorInstance {
             params,
             is_open: false,
@@ -2542,9 +2824,7 @@ mod tests {
         // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
         effect.dispatcher = Some(dispatch as DispatcherProc);
-        let params = PluginParametersInstance {
-            effect: UnsafeCell::new(&mut effect as *mut AEffect),
-        };
+        let params = PluginParametersInstance::new(&mut effect as *mut AEffect, None);
         let set = |v: isize| ANSWER.store(v, Ordering::SeqCst);
 
         // 0 — the plugin refused. This is the answer the discarded return hid.
@@ -2741,9 +3021,7 @@ mod tests {
         // Every slot null: the plugin filled in nothing.
         // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
-        let params = PluginParametersInstance {
-            effect: UnsafeCell::new(&mut effect as *mut AEffect),
-        };
+        let params = PluginParametersInstance::new(&mut effect as *mut AEffect, None);
 
         assert_eq!(
             params.get_parameter(0),
@@ -2775,13 +3053,11 @@ mod tests {
         let input_right = vec![1.0; LENGTH];
         let mut output_left = vec![0.0; LENGTH];
         let mut output_right = vec![0.0; LENGTH];
+        // `bind` borrows the slices of arrays for the buffer's lifetime, so they outlive it.
+        let inputs = [&input_left, &input_right];
+        let mut outputs = [&mut output_left, &mut output_right];
         {
-            let mut audio_buffer = {
-                // Slices given to `bind` need not persist, but the sample arrays do.
-                let inputs = [&input_left, &input_right];
-                let mut outputs = [&mut output_left, &mut output_right];
-                host_buffer.bind(&inputs, &mut outputs)
-            };
+            let mut audio_buffer = host_buffer.bind(&inputs, &mut outputs);
             for (input, output) in audio_buffer.zip() {
                 for (i, o) in input.iter().zip(output) {
                     *o = *i * 2.0;
@@ -2814,7 +3090,7 @@ mod tests {
     /// A `VSTPluginMain` that calls back during initialization, as plugins do, after both
     /// loading threads are inside it.
     #[cfg(unix)]
-    fn probing_main(callback: crate::api::HostCallbackProc) -> *mut AEffect {
+    extern "C" fn probing_main(callback: crate::api::HostCallbackProc) -> *mut AEffect {
         IN_MAIN.wait();
         // SAFETY: `callback` is `callback_wrapper`, which accepts a null effect while loading;
         // opcode 2 is `audioMasterCurrentId`.
@@ -2884,10 +3160,10 @@ mod tests {
             static OUTER: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
             static AFTER_INNER: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
         }
-        fn inner_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
+        extern "C" fn inner_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
             ptr::null_mut()
         }
-        fn outer_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
+        extern "C" fn outer_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
             OUTER.set(LOAD_HOST.get());
             let host = Arc::new(IdHost(2));
             let lib: Library = libloading::os::unix::Library::this().into();
@@ -2942,5 +3218,579 @@ mod tests {
         assert_eq!(Arc::strong_count(&host), 2);
         drop(held);
         assert_eq!(Arc::strong_count(&host), 1);
+    }
+
+    /// A zeroed `AEffect` the test owns and leaks, as a plugin's would be: a valid
+    /// magic and the given dispatcher.
+    fn fake_effect(dispatcher: crate::api::DispatcherProc) -> *mut AEffect {
+        // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
+        let mut effect: Box<AEffect> = Box::new(unsafe { std::mem::zeroed() });
+        effect.magic = VST_MAGIC;
+        effect.dispatcher = Some(dispatcher);
+        Box::into_raw(effect)
+    }
+
+    /// **No handle outlives `effClose`, and none is closed under another.**
+    /// `effClose` used to run when the `PluginInstance` dropped, so the parameter
+    /// object, the editor and the render handle it had handed out read an
+    /// `AEffect` the plugin had freed (the audit's SIGSEGV). It runs when the last
+    /// of them drops. The fake plugin poisons its `getParameter` slot on close, as
+    /// freeing the `AEffect` does, so a read after the close is visible.
+    ///
+    /// Mutation (run): move the `Shutdown` dispatch back into a `Drop for
+    /// PluginInstance` (and out of the core's drop): the first `CLOSES` assertion
+    /// fails, and `get_parameter` reads `None`.
+    #[cfg(unix)]
+    #[test]
+    fn effclose_waits_for_the_last_handle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CLOSES: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn dispatch(
+            effect: *mut AEffect,
+            opcode: i32,
+            _index: i32,
+            _value: isize,
+            _ptr: *mut c_void,
+            _opt: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::Shutdown as i32 {
+                CLOSES.fetch_add(1, Ordering::SeqCst);
+                // The plugin frees its `AEffect` here; poison what a late read sees.
+                // SAFETY: the test's leaked `AEffect`, valid for the program.
+                unsafe { (*effect).getParameter = None };
+            }
+            0
+        }
+        extern "C" fn get_parameter(_: *mut AEffect, _: i32) -> f32 {
+            0.5
+        }
+
+        let effect = fake_effect(dispatch);
+        // SAFETY: the test's leaked `AEffect`; nothing else touches it yet.
+        unsafe {
+            (*effect).getParameter = Some(get_parameter);
+            (*effect).numParams = 1;
+            (*effect).flags = (PluginFlags::HAS_EDITOR | PluginFlags::CAN_REPLACING).bits();
+        }
+        let lib: Library = libloading::os::unix::Library::this().into();
+        let mut instance = PluginInstance::new(effect, Arc::new(lib), None);
+        let params = instance.get_parameter_object();
+        let editor = instance.get_editor().expect("the plugin has an editor");
+        let render = instance.render_handle();
+
+        drop(instance);
+        assert_eq!(
+            CLOSES.load(Ordering::SeqCst),
+            0,
+            "closed under live handles"
+        );
+        assert_eq!(
+            params.get_parameter(0),
+            Some(0.5),
+            "the parameter object read an AEffect the plugin had closed"
+        );
+        drop(params);
+        drop(editor);
+        assert_eq!(
+            CLOSES.load(Ordering::SeqCst),
+            0,
+            "the render handle still holds the plugin"
+        );
+        drop(render);
+        assert_eq!(
+            CLOSES.load(Ordering::SeqCst),
+            1,
+            "effClose runs exactly once"
+        );
+    }
+
+    /// **A plugin that raises its pin counts after activation is not rendered into
+    /// a buffer sized for the old ones.** Its `processReplacing` indexes the
+    /// channel tables by its live `numOutputs`; one more than the host sized is a
+    /// read past the table. The handle renders silence instead, and renders again
+    /// when the counts fit.
+    ///
+    /// Mutation (run): put `std::hint::black_box(Box::new(1u8));` in the refusing branch: the
+    /// allocation aborts under `assert_no_alloc`. Mutation (run): drop the
+    /// `fetch_add` in `RenderHandle::process`: the count assertion fails.
+    /// Mutation (run): remove the `pins_fit` checks in `RenderEntry::process` and
+    /// `process_f64`: the plugin is called with the larger count (`RENDERS` moves)
+    /// and the silence assertions fail.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugin_that_raises_its_pins_is_not_rendered() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RENDERS: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            _: i32,
+            _: i32,
+            _: isize,
+            _: *mut c_void,
+            _: f32,
+        ) -> isize {
+            0
+        }
+        extern "C" fn render_f32(
+            _: *mut AEffect,
+            _: *const *const f32,
+            outputs: *mut *mut f32,
+            frames: i32,
+        ) {
+            RENDERS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: the test's buffer has two output channels of `frames` samples.
+            unsafe { std::slice::from_raw_parts_mut(*outputs, frames as usize) }.fill(1.0);
+        }
+        extern "C" fn render_f64(
+            _: *mut AEffect,
+            _: *const *const f64,
+            outputs: *mut *mut f64,
+            frames: i32,
+        ) {
+            RENDERS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: as for `render_f32`.
+            unsafe { std::slice::from_raw_parts_mut(*outputs, frames as usize) }.fill(1.0);
+        }
+
+        let effect = fake_effect(dispatch);
+        // SAFETY: the test's leaked `AEffect`; the instance reads it, nothing writes
+        // concurrently.
+        unsafe {
+            (*effect).numInputs = 2;
+            (*effect).numOutputs = 2;
+            (*effect).processReplacing = Some(render_f32);
+            (*effect).processReplacingF64 = Some(render_f64);
+            (*effect).flags =
+                (PluginFlags::CAN_REPLACING | PluginFlags::CAN_DOUBLE_REPLACING).bits();
+        }
+        let lib: Library = libloading::os::unix::Library::this().into();
+        let instance = PluginInstance::new(effect, Arc::new(lib), None);
+        let mut render = instance.render_handle();
+
+        let inputs = vec![vec![0.0f32; 8]; 2];
+        let mut outputs = vec![vec![9.0f32; 8]; 2];
+        let inputs64 = vec![vec![0.0f64; 8]; 2];
+        let mut outputs64 = vec![vec![9.0f64; 8]; 2];
+        let mut host32: HostBuffer<f32> = HostBuffer::new(2, 2);
+        let mut host64: HostBuffer<f64> = HostBuffer::new(2, 2);
+
+        // The counts it was activated with: rendered.
+        render.process(&mut host32.bind(&inputs, &mut outputs));
+        render.process_f64(&mut host64.bind(&inputs64, &mut outputs64));
+        assert_eq!(RENDERS.load(Ordering::SeqCst), 2);
+        assert_eq!(outputs[0][0], 1.0);
+
+        // It raises its output pins, as `audioMasterIOChanged` announces.
+        // SAFETY: the test's leaked `AEffect`; no other thread.
+        unsafe { (*effect).numOutputs = 3 };
+        outputs.iter_mut().for_each(|c| c.fill(9.0));
+        outputs64.iter_mut().for_each(|c| c.fill(9.0));
+        // The refusal is allocation-free and logs nothing: it runs every block on the
+        // audio thread, and is counted for the control side instead.
+        assert_no_alloc::assert_no_alloc(|| {
+            render.process(&mut host32.bind(&inputs, &mut outputs));
+            render.process_f64(&mut host64.bind(&inputs64, &mut outputs64));
+        });
+        assert_eq!(RENDERS.load(Ordering::SeqCst), 2, "called past its buffer");
+        assert_eq!(
+            instance.pin_refusals(),
+            2,
+            "both refused blocks are counted"
+        );
+        assert_eq!(instance.report_pin_refusals(), 2);
+        assert!(outputs.iter().flatten().all(|s| *s == 0.0), "f32 is silent");
+        assert!(
+            outputs64.iter().flatten().all(|s| *s == 0.0),
+            "f64 is silent"
+        );
+
+        // Fewer pins than the buffer holds is fine.
+        // SAFETY: as above.
+        unsafe { (*effect).numOutputs = 1 };
+        render.process(&mut host32.bind(&inputs, &mut outputs));
+        assert_eq!(RENDERS.load(Ordering::SeqCst), 3);
+        assert_eq!(instance.pin_refusals(), 2, "a fitting block is not counted");
+    }
+
+    /// A loader over `main`, for the entry-point tests.
+    #[cfg(unix)]
+    fn loader_over(main: PluginMain, id: i32) -> PluginLoader<IdHost> {
+        let lib: Library = libloading::os::unix::Library::this().into();
+        PluginLoader {
+            main,
+            lib: Arc::new(lib),
+            host: Arc::new(IdHost(id)),
+        }
+    }
+
+    /// **An `AEffect` that is not one is refused untouched.** A wrong `magic` or a
+    /// null `dispatcher` is `InvalidEffect`: nothing is called on it (not even
+    /// `effClose`) and `reserved1` is left alone. A valid one loads, and closes
+    /// once.
+    ///
+    /// Mutation (run): drop the `magic`/`dispatcher` check in `instance`: the bad
+    /// magic effect is dispatched to (`CALLS` moves) and loads or fails with
+    /// another error, and the null dispatcher path reaches the unanswered-opcode
+    /// branch; both assertions fail.
+    #[cfg(unix)]
+    #[test]
+    fn an_invalid_aeffect_is_refused_untouched() {
+        use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static CLOSES: AtomicUsize = AtomicUsize::new(0);
+        static EFFECT: AtomicPtr<AEffect> = AtomicPtr::new(ptr::null_mut());
+
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            opcode: i32,
+            _: i32,
+            _: isize,
+            _: *mut c_void,
+            _: f32,
+        ) -> isize {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            if opcode == plugin::OpCode::Shutdown as i32 {
+                CLOSES.fetch_add(1, Ordering::SeqCst);
+            }
+            if opcode == plugin::OpCode::GetApiVersion as i32 {
+                return 2400;
+            }
+            0
+        }
+        extern "C" fn main_returning_effect(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            EFFECT.load(Ordering::SeqCst)
+        }
+
+        // A wrong magic.
+        let effect = fake_effect(dispatch);
+        // SAFETY: the test's leaked `AEffect`.
+        unsafe { (*effect).magic = 0x1234 };
+        EFFECT.store(effect, Ordering::SeqCst);
+        let result = loader_over(main_returning_effect, 1).instance();
+        assert!(matches!(result, Err(PluginLoadError::InvalidEffect)));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0, "a bad AEffect was called");
+        // SAFETY: as above.
+        assert_eq!(unsafe { (*effect).reserved1 }, 0, "reserved1 was written");
+
+        // No dispatcher.
+        let effect = fake_effect(dispatch);
+        // SAFETY: as above.
+        unsafe { (*effect).dispatcher = None };
+        EFFECT.store(effect, Ordering::SeqCst);
+        let result = loader_over(main_returning_effect, 1).instance();
+        assert!(matches!(result, Err(PluginLoadError::InvalidEffect)));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+
+        // A valid one.
+        let effect = fake_effect(dispatch);
+        EFFECT.store(effect, Ordering::SeqCst);
+        let instance = loader_over(main_returning_effect, 1)
+            .instance()
+            .expect("a valid AEffect loads");
+        assert_eq!(CLOSES.load(Ordering::SeqCst), 0);
+        drop(instance);
+        assert_eq!(CLOSES.load(Ordering::SeqCst), 1);
+    }
+
+    /// **A callback during `main` reaches the loader's host whatever the plugin
+    /// left in `AEffect::reserved1`.** The field is "reserved for host", and a
+    /// plugin that does not zero its `AEffect` before calling back from `main`
+    /// leaves garbage in it, which was dereferenced as the host box.
+    ///
+    /// Mutation (run): check `reserved1` before `LOAD_HOST` again: the garbage
+    /// pointer is dereferenced and the test aborts on a signal.
+    #[cfg(unix)]
+    #[test]
+    fn a_callback_in_main_ignores_a_garbage_reserved1() {
+        extern "C" fn garbage_main(callback: crate::api::HostCallbackProc) -> *mut AEffect {
+            // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
+            let mut effect: AEffect = unsafe { std::mem::zeroed() };
+            effect.reserved1 = 0xdead_beef;
+            // SAFETY: `callback` is `callback_wrapper`; opcode 2 is `audioMasterCurrentId`.
+            let answer = unsafe { callback(&mut effect, 2, 0, 0, ptr::null_mut(), 0.0) };
+            ANSWERED.set(answer);
+            ptr::null_mut()
+        }
+        let mut loader = loader_over(garbage_main, 7);
+        assert!(loader.call_main().is_null());
+        assert_eq!(
+            ANSWERED.get(),
+            7,
+            "the call did not reach the loader's host"
+        );
+    }
+
+    /// **A thread the plugin spawns during `main` cannot make the host dereference a
+    /// garbage `reserved1`.** `LOAD_HOST` is thread-local, so such a thread has none;
+    /// with a load in progress it gets the load-time default (`0`) unless the effect it
+    /// passes is one the host adopted, in which case it reaches that effect's own host
+    /// (an adopted plugin's audio thread keeps working through someone else's load).
+    ///
+    /// Mutation (run): drop the registry check in `callback_wrapper` (trust `reserved1`
+    /// whenever it is non-zero): the garbage pointer is dereferenced and the test aborts.
+    /// Mutation (run): drop the `adopt` call in `instance`: the adopted effect's call is
+    /// answered `0` instead of its host's, and the second assertion fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_spawned_thread_during_main_cannot_reach_a_garbage_reserved1() {
+        use std::sync::atomic::{AtomicIsize, AtomicPtr, AtomicUsize, Ordering};
+        static GARBAGE_ANSWER: AtomicIsize = AtomicIsize::new(-1);
+        static ADOPTED_ANSWER: AtomicIsize = AtomicIsize::new(-1);
+        static OTHER: AtomicPtr<AEffect> = AtomicPtr::new(ptr::null_mut());
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            opcode: i32,
+            _: i32,
+            _: isize,
+            _: *mut c_void,
+            _: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::GetApiVersion as i32 {
+                return 2400;
+            }
+            0
+        }
+        extern "C" fn first_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            fake_effect(dispatch)
+        }
+        // A plugin whose own thread calls the host while `main` runs: once with an
+        // `AEffect` of garbage, once with the first plugin's adopted effect.
+        extern "C" fn second_main(callback: crate::api::HostCallbackProc) -> *mut AEffect {
+            let other = OTHER.load(Ordering::SeqCst) as usize;
+            std::thread::spawn(move || {
+                // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
+                let mut garbage: AEffect = unsafe { std::mem::zeroed() };
+                garbage.reserved1 = 0xdead_beef;
+                // SAFETY: `callback` is `callback_wrapper`; opcode 2 is `audioMasterCurrentId`.
+                let a = unsafe { callback(&mut garbage, 2, 0, 0, ptr::null_mut(), 0.0) };
+                GARBAGE_ANSWER.store(a, Ordering::SeqCst);
+                // SAFETY: as above, with an effect the first load adopted.
+                let b = unsafe { callback(other as *mut AEffect, 2, 0, 0, ptr::null_mut(), 0.0) };
+                ADOPTED_ANSWER.store(b, Ordering::SeqCst);
+            })
+            .join()
+            .unwrap();
+            ptr::null_mut()
+        }
+
+        let first = loader_over(first_main, 5)
+            .instance()
+            .expect("the first plugin loads");
+        OTHER.store(first.params.get_effect(), Ordering::SeqCst);
+        let second = loader_over(second_main, 9).instance();
+        assert!(matches!(second, Err(PluginLoadError::InstanceFailed)));
+        assert_eq!(
+            GARBAGE_ANSWER.load(Ordering::SeqCst),
+            0,
+            "a garbage effect got a host's answer"
+        );
+        assert_eq!(
+            ADOPTED_ANSWER.load(Ordering::SeqCst),
+            5,
+            "an adopted effect did not reach its own host"
+        );
+        drop(first);
+    }
+
+    /// **A callback from inside a render takes no lock and allocates nothing, even
+    /// while another plugin loads.** The render entry marks the effect it is calling
+    /// (`RENDERING`), so `callback_wrapper` does not consult the registry mutex for it.
+    ///
+    /// Mutation (run): drop the `effect != RENDERING.get()` term in `callback_wrapper`:
+    /// the callback takes the registry lock and `REGISTRY_LOCKS` moves, so the second
+    /// assertion fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_callback_from_a_render_takes_no_lock_during_a_load() {
+        use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+        static ANSWER: AtomicIsize = AtomicIsize::new(-1);
+        static RENDERS: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            opcode: i32,
+            _: i32,
+            _: isize,
+            _: *mut c_void,
+            _: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::GetApiVersion as i32 {
+                return 2400;
+            }
+            0
+        }
+        extern "C" fn render(effect: *mut AEffect, _: *const *const f32, _: *mut *mut f32, _: i32) {
+            RENDERS.fetch_add(1, Ordering::SeqCst);
+            // The plugin asks the host something from inside `processReplacing`:
+            // opcode 2 is `audioMasterCurrentId`.
+            ANSWER.store(
+                callback_wrapper::<IdHost>(effect, 2, 0, 0, ptr::null_mut(), 0.0),
+                Ordering::SeqCst,
+            );
+        }
+        extern "C" fn main_fn(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            let effect = fake_effect(dispatch);
+            // SAFETY: the test's leaked `AEffect`.
+            unsafe {
+                (*effect).processReplacing = Some(render);
+                (*effect).flags = PluginFlags::CAN_REPLACING.bits();
+            }
+            effect
+        }
+
+        let instance = loader_over(main_fn, 5).instance().expect("loads");
+        let mut handle = instance.render_handle();
+        let mut host32: HostBuffer<f32> = HostBuffer::new(0, 0);
+        let none: Vec<Vec<f32>> = Vec::new();
+        let mut none_out: Vec<Vec<f32>> = Vec::new();
+
+        // Another plugin is loading.
+        let _loading = Loading::begin();
+        let before = REGISTRY_LOCKS.load(Ordering::SeqCst);
+        assert_no_alloc::assert_no_alloc(|| {
+            handle.process(&mut host32.bind(&none, &mut none_out));
+        });
+        assert_eq!(RENDERS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            ANSWER.load(Ordering::SeqCst),
+            5,
+            "the callback was not answered"
+        );
+        assert_eq!(
+            REGISTRY_LOCKS.load(Ordering::SeqCst),
+            before,
+            "the render path took the registry lock"
+        );
+    }
+
+    /// **A string sent to the plugin is a C string that fits the opcode's buffer.**
+    /// A program name longer than `kVstMaxProgNameLen` (24 with the NUL) is cut to
+    /// 23 bytes at a char boundary, and an interior NUL cuts it (and no longer
+    /// panics through `expect`). The fake records the C string it is handed.
+    ///
+    /// Mutation (run): pass `usize::MAX` as the program name's `max_len`: the
+    /// 100-byte name reaches the plugin whole and the first assertion fails.
+    /// Mutation (run): `CString::new(string).expect(..)` on the raw string again:
+    /// the `"a\0b"` call panics.
+    #[test]
+    fn strings_to_the_plugin_are_short_and_c_strings() {
+        use std::sync::Mutex;
+        static SEEN: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            opcode: i32,
+            _: i32,
+            _: isize,
+            ptr: *mut c_void,
+            _: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::SetCurrentPresetName as i32 && !ptr.is_null() {
+                // SAFETY: the host passes a NUL-terminated string (the property
+                // under test); the read stops at the NUL.
+                let bytes = unsafe { std::ffi::CStr::from_ptr(ptr as *const _) }.to_bytes();
+                *SEEN.lock().unwrap() = bytes.to_vec();
+            }
+            0
+        }
+        let effect = fake_effect(dispatch);
+        let params = PluginParametersInstance::new(effect, None);
+
+        // `kVstMaxProgNameLen` is 24 with the NUL: 23 bytes reach the plugin.
+        params.set_preset_name("n".repeat(100));
+        assert_eq!(SEEN.lock().unwrap().len(), MAX_PRESET_NAME_LEN - 1);
+
+        // A multi-byte char is not cut in half.
+        params.set_preset_name("é".repeat(100));
+        let seen = SEEN.lock().unwrap().clone();
+        assert!(std::str::from_utf8(&seen).is_ok(), "cut inside a char");
+        assert!(seen.len() < MAX_PRESET_NAME_LEN);
+
+        // An interior NUL cuts the string; it does not panic.
+        params.set_preset_name("a\0b".to_string());
+        assert_eq!(*SEEN.lock().unwrap(), b"a");
+    }
+
+    /// `truncated_c_str`, directly: the NUL cut, the cap, and a char boundary.
+    ///
+    /// Mutation (run): drop the `is_char_boundary` loop: the `"é"` case slices
+    /// inside the char and panics.
+    #[test]
+    fn truncated_c_str_cuts_at_a_nul_a_cap_and_a_char_boundary() {
+        assert_eq!(truncated_c_str("abc", 10), "abc");
+        assert_eq!(truncated_c_str("abc", 2), "ab");
+        assert_eq!(truncated_c_str("a\0bc", 10), "a");
+        assert_eq!(truncated_c_str("\0abc", 10), "");
+        assert_eq!(truncated_c_str("aé", 2), "a");
+        assert_eq!(truncated_c_str("aé", 3), "aé");
+        assert_eq!(truncated_c_str("", 0), "");
+    }
+
+    /// **A plugin that writes through `effSetChunk`'s pointer writes into a copy.**
+    /// The opcode's pointer is `void*`; the caller's slice must not be handed over.
+    ///
+    /// Mutation (run): pass `data.as_ptr() as *mut c_void` in `set_chunk` again:
+    /// the plugin's write lands in the caller's bytes and the assertion fails.
+    #[test]
+    fn a_chunk_a_plugin_writes_into_is_a_copy() {
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            opcode: i32,
+            _: i32,
+            value: isize,
+            ptr: *mut c_void,
+            _: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::SetData as i32 {
+                // SAFETY: the host gives `value` writable bytes (the property under
+                // test: a copy it owns).
+                unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, value as usize) }
+                    .fill(0xEE);
+                return 1;
+            }
+            0
+        }
+        let params = PluginParametersInstance::new(fake_effect(dispatch), None);
+        let data = vec![1u8, 2, 3, 4];
+        assert!(params.load_preset_data(&data));
+        assert!(params.load_bank_data(&data));
+        assert_eq!(
+            data,
+            vec![1, 2, 3, 4],
+            "the plugin wrote into the caller's bytes"
+        );
+    }
+
+    /// A name a plugin writes past the spec's length (real plugins do) lands in a
+    /// buffer that holds it, and comes back whole.
+    ///
+    /// Mutation (run): size the buffer by `max` alone in `read_string_param`: the
+    /// plugin overruns the heap block (undefined behaviour; under the allocator in
+    /// use the read of the first 32 bytes returns a 32-byte name) and the length
+    /// assertion fails.
+    #[test]
+    fn a_name_longer_than_the_spec_fits_the_buffer() {
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            opcode: i32,
+            _: i32,
+            _: isize,
+            ptr: *mut c_void,
+            _: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::GetParameterName as i32 {
+                // SAFETY: the host offers at least 256 bytes (the property under test).
+                let buf = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, 200) };
+                buf.fill(b'x');
+            }
+            0
+        }
+        let params = PluginParametersInstance::new(fake_effect(dispatch), None);
+        assert_eq!(params.get_parameter_name(0).len(), 200);
     }
 }

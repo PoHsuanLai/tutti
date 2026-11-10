@@ -3,8 +3,8 @@ use tutti_curve::Breakpoint;
 
 fn trajectory() -> Trajectory {
     let mut e = Trajectory::new();
-    e.add_breakpoint(Breakpoint::with_curve(Beat(1.0), 0.2, Law::PowerIn(2.0)));
-    e.add_breakpoint(Breakpoint::with_curve(Beat(2.0), 0.8, Law::Linear));
+    e.add_breakpoint(Breakpoint::with_law(Beat(1.0), 0.2, Law::PowerIn(2.0)));
+    e.add_breakpoint(Breakpoint::with_law(Beat(2.0), 0.8, Law::Linear));
     e.add_breakpoint(Breakpoint::new(Beat(3.0), 0.4));
     e
 }

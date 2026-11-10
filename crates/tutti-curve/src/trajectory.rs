@@ -12,20 +12,20 @@ pub struct Breakpoint {
     /// unit.
     pub value: f32,
     /// How the value moves from here to the next breakpoint.
-    pub curve: Law,
+    pub law: Law,
 }
 
 impl Breakpoint {
     /// A breakpoint whose piece is [`Law::Linear`].
     #[must_use]
     pub const fn new(time: Beat, value: f32) -> Self {
-        Self::with_curve(time, value, Law::Linear)
+        Self::with_law(time, value, Law::Linear)
     }
 
-    /// A breakpoint whose piece follows `curve`.
+    /// A breakpoint whose piece follows `law`.
     #[must_use]
-    pub const fn with_curve(time: Beat, value: f32, curve: Law) -> Self {
-        Self { time, value, curve }
+    pub const fn with_law(time: Beat, value: f32, law: Law) -> Self {
+        Self { time, value, law }
     }
 }
 
@@ -111,7 +111,7 @@ impl Trajectory {
         let next = self.breakpoints.partition_point(|p| p.time.get() <= time);
         let (p, q) = (self.breakpoints[next - 1], self.breakpoints[next]);
         let t = ((time - p.time.get()) / (q.time.get() - p.time.get())) as f32;
-        Some(self.clamped(p.curve.interpolate(p.value, q.value, t)))
+        Some(self.clamped(p.law.interpolate(p.value, q.value, t)))
     }
 
     /// Drops every breakpoint whose value its neighbours' piece already gives to
@@ -130,7 +130,7 @@ impl Trajectory {
             );
             let span = next.time.get() - prev.time.get();
             let t = ((curr.time.get() - prev.time.get()) / span) as f32;
-            if (curr.value - prev.curve.interpolate(prev.value, next.value, t)).abs() > tolerance {
+            if (curr.value - prev.law.interpolate(prev.value, next.value, t)).abs() > tolerance {
                 kept.push(curr);
             }
         }

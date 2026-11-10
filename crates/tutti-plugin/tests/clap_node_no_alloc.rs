@@ -128,7 +128,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let mut env = Trajectory::new();
     for k in 0..200 {
         let v = if k % 2 == 0 { 0.2 } else { 0.9 };
-        env.add_breakpoint(Breakpoint::with_curve(
+        env.add_breakpoint(Breakpoint::with_law(
             Beat::new(f64::from(k) * 2.0),
             v,
             Law::PowerIn(2.0),

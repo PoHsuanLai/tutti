@@ -373,7 +373,7 @@ fn the_left_limit_is_the_level_before_a_jump() {
     assert_eq!(before, r.value_at(Some(0.0), &at_beat(2.5), 1.0, &[]));
     assert_ne!(before, r.value_at(Some(0.0), &at_beat(3.0), 1.0, &[]));
     let mut e = Trajectory::new();
-    e.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 100.0, Law::Hold));
+    e.add_breakpoint(Breakpoint::with_law(Beat(0.0), 100.0, Law::Hold));
     e.add_breakpoint(Breakpoint::new(Beat(2.0), 300.0));
     let a = ControlProgram::from_curve(Arc::new(e));
     assert_eq!(a.value_at(None, &at_beat(2.0), 1.0, &[]), Some(300.0));

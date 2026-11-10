@@ -17,7 +17,7 @@
 //! assert_eq!(Law::PowerIn(2.0).interpolate(0.0, 8.0, 0.5), 2.0);
 //!
 //! let mut lane = Trajectory::new();
-//! lane.add_breakpoint(Breakpoint::with_curve(Beat(0.0), 0.0, Law::PowerIn(2.0)));
+//! lane.add_breakpoint(Breakpoint::with_law(Beat(0.0), 0.0, Law::PowerIn(2.0)));
 //! lane.add_breakpoint(Breakpoint::new(Beat(4.0), 1.0));
 //! assert_eq!(lane.value_at(Beat(2.0)), Some(0.25));
 //! ```

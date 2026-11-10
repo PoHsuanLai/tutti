@@ -279,7 +279,7 @@ impl Recorder {
     }
 
     fn write_point(&mut self, beat: Beat, value: f32) {
-        self.trajectory.add_breakpoint(Breakpoint::with_curve(
+        self.trajectory.add_breakpoint(Breakpoint::with_law(
             beat,
             value,
             self.config.default_curve,

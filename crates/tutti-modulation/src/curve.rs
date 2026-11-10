@@ -128,7 +128,7 @@ impl Curve for Trajectory {
             end: q.time,
             from: p.value,
             to: q.value,
-            shape: p.curve,
+            shape: p.law,
         })
     }
 }

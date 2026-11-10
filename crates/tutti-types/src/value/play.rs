@@ -14,8 +14,8 @@ const PLAY_MASK: u64 = (1 << (64 - EPOCH_BITS)) - 1;
 /// The play clock at one frame: which play start it counts from (`epoch`)
 /// and frames since then (`play`).
 ///
-/// `play` is a [`Frame`], a count, not `Seconds`: `Seconds` is `f32`, and an
-/// hour of play needs `f64` phase. Epochs are compared for equality only (a
+/// `play` is a [`Frame`], a count, not `Seconds`: a play position is exact in
+/// frames at any rate, where a time needs the rate to name one. Epochs are compared for equality only (a
 /// rate anchor dated in one epoch is ignored in another); they
 /// wrap after [`EPOCHS`](Self::EPOCHS) play starts in one process.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

@@ -391,7 +391,7 @@ impl Default for ReverbNode<FreeverbDesign> {
 /// A tail in whole frames at `rate`, `UNBOUNDED` when it never ends.
 fn frames(tail: Ring, rate: SampleRate) -> u64 {
     match tail {
-        Ring::Finite(s) if s.get().is_finite() => (f64::from(s.get()) * rate.get()).ceil() as u64,
+        Ring::Finite(s) if s.get().is_finite() => (s.get() * rate.get()).ceil() as u64,
         _ => UNBOUNDED,
     }
 }

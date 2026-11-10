@@ -207,7 +207,7 @@ impl TimeModMix {
             feedback: Param::new(feedback),
             mix: Param::new(mix),
             good: [
-                LastGood::new(depth.get(), 0.0),
+                LastGood::new(depth.to_f32(), 0.0),
                 LastGood::new(feedback.get(), 0.0),
                 LastGood::new(mix.get(), 0.0),
             ],
@@ -230,7 +230,7 @@ impl TimeModMix {
         // from.
         let [depth, fb, mix] = driven;
         (
-            self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())),
+            self.good[0].read(depth.unwrap_or_else(|| self.depth.load().to_f32())),
             self.good[1].read(fb.map_or_else(
                 || self.feedback.load().get(),
                 |v| Feedback::new_clamped(v).get(),

@@ -537,9 +537,11 @@ impl Env {
     /// Frames per beat at `tempo` and this block's rate, when both are
     /// usable, whether or not the transport rolls.
     fn frames_per_beat_at(&self, tempo: Bpm) -> Option<f64> {
-        // Raw `f64` beats and frames, on purpose: `BeatDuration::to_seconds`
-        // lands in `Seconds`, which is `f32` and cannot resolve a frame an
-        // hour into a session (CLAUDE.md, "where the types stop").
+        // Frames per beat, not seconds, on purpose: `frames_per_beat` is the one
+        // grouping every reader placing a beat in a block divides by, and
+        // routing through `BeatDuration::to_seconds` (now an exact `f64`
+        // `Seconds`) would re-associate the arithmetic and round a frame
+        // differently (see `BeatDuration::to_seconds`).
         tutti_types::frames_per_beat(tempo, self.sample_rate)
     }
 

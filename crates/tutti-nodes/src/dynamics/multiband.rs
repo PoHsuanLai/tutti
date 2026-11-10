@@ -483,8 +483,8 @@ impl Node for MultibandCompressorNode {
             0 => band.core.threshold.threshold.load().get(),
             1 => band.core.threshold.knee.load().get(),
             2 => band.core.ratio.load().get(),
-            3 => band.core.timing.attack.load().get(),
-            4 => band.core.timing.release.load().get(),
+            3 => band.core.timing.attack.load().to_f32(),
+            4 => band.core.timing.release.load().to_f32(),
             _ => band.core.makeup_db.load().get(),
         })
     }

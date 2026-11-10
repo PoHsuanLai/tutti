@@ -47,6 +47,7 @@
 #![cfg(feature = "wav")]
 
 use std::sync::Arc;
+use tutti_types::Seconds;
 
 use tutti_export::{
     ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
@@ -87,7 +88,7 @@ fn config(bit_depth: Pcm, channels: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: SECS,
+            duration_seconds: Seconds(SECS),
             ..Default::default()
         },
         encode: EncodeConfig {
@@ -359,7 +360,7 @@ fn a_resampled_export_writes_its_render() {
 #[test]
 fn a_peak_normalized_export_writes_its_normalized_render() {
     let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
-    cfg.render.duration_seconds = 1.0;
+    cfg.render.duration_seconds = Seconds(1.0);
     let normalize = Normalize::peak(Db(-1.0));
     let bytes = same_file(
         || sine(440.0),

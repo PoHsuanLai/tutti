@@ -15,7 +15,7 @@ mod figures;
 
 use common::pt;
 use tutti_tempo::{Shape, TempoMap};
-use tutti_types::Beat;
+use tutti_types::{Beat, Seconds};
 
 /// One ramp and its rows: (beat in, seconds out, seconds in, beat out).
 struct Case {
@@ -64,13 +64,13 @@ fn ramps_match_decimal_figures() {
         ])
         .unwrap();
         for &(beat_in, sec_out, sec_in, beat_out) in case.rows {
-            let got = map.seconds_at(Beat(beat_in));
+            let got = map.seconds_at(Beat(beat_in)).get();
             assert!(
                 close(got, sec_out),
                 "{} {shape:?} seconds_at({beat_in}) = {got:e}, want {sec_out:e}",
                 case.name
             );
-            let got = map.beat_at_seconds(sec_in).get();
+            let got = map.beat_at_seconds(Seconds(sec_in)).get();
             assert!(
                 close(got, beat_out),
                 "{} {shape:?} beat_at_seconds({sec_in}) = {got:e}, want {beat_out:e}",

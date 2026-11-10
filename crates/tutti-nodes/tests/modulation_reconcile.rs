@@ -248,7 +248,7 @@ impl ModHost for Host {
         let (node, knob) = self.targets.get(&t.node)?;
         Some(Target::Native {
             node: *node,
-            knob: Some(Arc::clone(knob)),
+            knob: Some(Arc::clone(knob).into()),
         })
     }
     fn feed(&self, s: SourceKey) -> Option<Feed> {
@@ -1557,7 +1557,7 @@ fn for_param_and_for_unit_send_the_same_segments() {
     };
     let logs: Vec<Arc<Mutex<Vec<(u64, ParamSegment)>>>> =
         (0..2).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
-    let knob = || Some(Arc::new(AtomicF32::new(500.0)));
+    let knob = || Some(Arc::new(AtomicF32::new(500.0)).into());
     // No range cell: the lanes send the knob plus the offset unscaled,
     // which is all a segment's bits need.
     let lanes: [ControlLaneNode; 2] = [

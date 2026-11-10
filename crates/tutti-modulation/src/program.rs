@@ -245,7 +245,7 @@ pub struct ProgramTime {
     pub beat: Beat,
     /// The play clock, in frames since the last play start: fractional
     /// when the time is a corner between frames. A frame count rather than
-    /// `Seconds`, which is `f32`: an hour of play needs `f64` phase.
+    /// `Seconds`: a play position is exact in frames at any rate.
     pub play: SamplePosition,
     /// The play clock's epoch (a count of play starts).
     pub play_epoch: u32,

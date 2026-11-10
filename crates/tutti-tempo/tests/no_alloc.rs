@@ -9,7 +9,7 @@ mod common;
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use common::{R, pt};
 use tutti_tempo::{CellGrid, Cursor, Shape, TempoMap, chord_cell, chord_cell_with};
-use tutti_types::{Beat, Frame};
+use tutti_types::{Beat, Frame, Seconds};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -32,15 +32,19 @@ fn queries_do_not_allocate() {
         for i in 0..4000u64 {
             let beat = Beat((i % 130) as f64 * 0.97);
             let frame = Frame(i * 977);
-            acc += map.seconds_at(beat) + map.seconds_at_with(beat, &mut hint);
-            acc += map.beat_at_seconds(i as f64 * 0.01).get();
-            acc += map.beat_at_seconds_with(i as f64 * 0.01, &mut hint).get();
-            acc += map.tempo_at(beat).get() + map.tempo_at_seconds(i as f64 * 0.01).get();
+            acc += map.seconds_at(beat).get() + map.seconds_at_with(beat, &mut hint).get();
+            acc += map.beat_at_seconds(Seconds(i as f64 * 0.01)).get();
+            acc += map
+                .beat_at_seconds_with(Seconds(i as f64 * 0.01), &mut hint)
+                .get();
+            acc += map.tempo_at(beat).get() + map.tempo_at_seconds(Seconds(i as f64 * 0.01)).get();
             acc += map.beat_at_frame(frame, R).get();
             acc += map.frame_at_or_after(beat, R).get() as f64;
             acc += map.frame_at_or_after_with(beat, R, &mut hint).get() as f64;
             acc += map.tempo_at_with(beat, &mut hint).get();
-            acc += map.tempo_at_seconds_with(i as f64 * 0.01, &mut hint).get();
+            acc += map
+                .tempo_at_seconds_with(Seconds(i as f64 * 0.01), &mut hint)
+                .get();
             acc += map.beat_at_frame_with(frame, R, &mut hint).get();
             acc += map.next_change(frame, R).map_or(0.0, |f| f.get() as f64);
             acc += map

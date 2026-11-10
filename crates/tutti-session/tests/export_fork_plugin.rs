@@ -43,7 +43,7 @@ fn config(seconds: f64) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate(RATE),
-            duration_seconds: seconds,
+            duration_seconds: tutti_types::Seconds(seconds),
             ..Default::default()
         },
         encode: EncodeConfig {

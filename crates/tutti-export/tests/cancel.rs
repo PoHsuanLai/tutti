@@ -13,6 +13,7 @@ use tutti_export::{
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
+use tutti_types::Seconds;
 use tutti_types::{Db, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -45,7 +46,7 @@ fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: (BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get(),
+            duration_seconds: Seconds((BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get()),
             ..Default::default()
         },
         encode: EncodeConfig {

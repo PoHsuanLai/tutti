@@ -394,9 +394,10 @@ pub(crate) fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
     // CLAP's beats position, and its seconds: project time
     // (`ProjectTime`), or zero without one.
     let beats = s.beat.get();
-    let seconds = s
-        .project_frames
-        .map_or(0.0, |frames| frames / s.sample_rate.get());
+    let seconds = tutti_types::Seconds(
+        s.project_frames
+            .map_or(0.0, |frames| frames / s.sample_rate.get()),
+    );
     info = info.with_position_beats(beats, seconds);
 
     // The beat is already quarter notes, which is exactly what VST2's
@@ -886,7 +887,7 @@ mod tests {
                 let got = from_cx(&cx(&e), at(i, 64), steady.at(i), &mut project, None, &meter);
                 let want = 2_400_000 + steady.at(i);
                 assert_eq!(got.position.samples, Some(want), "frame {}", steady.at(i));
-                assert_eq!(got.position.seconds, want as f64 / 48_000.0);
+                assert_eq!(got.position.seconds.get(), want as f64 / 48_000.0);
             }
             steady.advance(64);
         }

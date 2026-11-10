@@ -57,7 +57,7 @@ pub use layout_support::LayoutSupport;
 // Musical vocabulary carried on `TransportInfo`. Re-exported for the same reason
 // as `ChannelLayout`: format hosts speak these at their ABI boundary and should
 // not need a `tutti-types` dependency of their own to name them.
-pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, TimeSignature};
+pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, Seconds, TimeSignature};
 
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;

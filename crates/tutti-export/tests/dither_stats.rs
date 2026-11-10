@@ -34,6 +34,7 @@ use tutti_export::{
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
+use tutti_types::Seconds;
 
 const SR: f64 = 44_100.0;
 /// One LSB at 16-bit in the [-1, 1] float domain.
@@ -59,7 +60,7 @@ fn config(dither: Dither, bit_depth: Pcm) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
-            duration_seconds: 0.5,
+            duration_seconds: Seconds(0.5),
             ..Default::default()
         },
         encode: EncodeConfig {

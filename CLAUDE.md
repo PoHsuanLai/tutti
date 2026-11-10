@@ -513,8 +513,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `#![forbid(unsafe_code)]` and has no `bevy` feature; `serde` is optional and
   only on `CellGrid`. A `TempoMap` is an immutable value built on the control
   side: its constructors refuse a tempo that is not finite and positive
-  themselves, whatever `Bpm` accepts, and no query allocates. Seconds are `f64`
-  (`Seconds` is `f32`). A map reaches a constant-tempo reader as `Cell`s on one
+  themselves, whatever `Bpm` accepts, and no query allocates. Time is `Seconds`,
+  an `f64`. A map reaches a constant-tempo reader as `Cell`s on one
   fixed `CellGrid`, also cut at every point's frame (`TempoMap::next_change`);
   `chord_cell` is a pure function of the absolute frame, a cell inside a step
   has that step's tempo to the bit, and the crate derives no grid from a block.
@@ -685,8 +685,10 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
 - **Measurements are not controls.** `Confidence`, `Correlation` and `Pan`
   are readings. Do not swap them for `Mix` or `Depth`.
 - **Where the types stop:** C ABI, IPC and WIT boundaries, and precision the
-  unit cannot carry (`Seconds` is f32, so SMPTE and hour-long durations stay
-  f64). Say why in a comment.
+  unit cannot carry. Say why in a comment. `Seconds` is `f64` (short or long);
+  a DSP kernel that runs in `f32` narrows once at its edge (`Seconds::to_f32`,
+  or `narrowed` before a frame conversion), and a modulation lane's value is an
+  `f32` (`ParamCell`).
 - **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
   names for the same behaviour is not a type.
 

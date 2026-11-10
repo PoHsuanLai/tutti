@@ -86,6 +86,7 @@ impl DelayLine {
         // narrowing the sample rate to f32 first loses precision.
         let samples = max_delay_secs
             .into()
+            .narrowed()
             .to_samples_ceil(sample_rate.into().get());
         Self::new(samples.get())
     }
@@ -174,7 +175,7 @@ impl DelayLine {
 /// `f32` precision, which is coarser than the fractional read can resolve.
 #[inline]
 pub fn fractional_samples(secs: Seconds, sample_rate: SampleRate) -> f32 {
-    (secs.get() as f64 * sample_rate.get()) as f32
+    (secs.get() * sample_rate.get()) as f32
 }
 
 /// One sample of one uncoupled channel: read the feedback tap, write the line,

@@ -110,6 +110,6 @@ fn the_ring_out_bound_covers_the_response() {
 fn the_ring_out_bound_counts_the_trip_of_the_first_echo() {
     let reverb = Freeverb::new(RATE);
     let frames = reverb.ring_out(Db(-60.0)).get() * 44_100.0;
-    let want = (41 * 1640 + 1563) as f32;
+    let want = (41 * 1640 + 1563) as f64;
     assert!((frames - want).abs() < 2.0, "{frames} against {want}");
 }

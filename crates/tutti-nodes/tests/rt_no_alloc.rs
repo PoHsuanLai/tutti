@@ -139,7 +139,13 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
 
     let irs: Vec<Vec<f32>> = (0..6)
-        .map(|c| generate_test_ir(1024, 0.2 + 0.05 * c as f32, 48_000.0))
+        .map(|c| {
+            generate_test_ir(
+                1024,
+                tutti_types::Seconds::from_f32(0.2 + 0.05 * c as f32),
+                48_000.0,
+            )
+        })
         .collect();
     let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
     gate(ConvolverNode::folded(&refs, 256));

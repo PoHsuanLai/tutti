@@ -64,7 +64,7 @@ use support::probe_au::{Misbehaviour, NOT_CALLED, last_host_pull};
 
 use tutti_au_host::{AuError, TransportInfo, TransportState};
 use tutti_types::{BarNumber, TimeSignature};
-use tutti_types::{Bpm, Samples};
+use tutti_types::{Bpm, Samples, Seconds};
 
 /// Serializes component discovery / instantiate / dispose, exactly as
 /// `au_conformance.rs`'s lock of the same name does. AudioToolbox tolerates
@@ -105,9 +105,10 @@ fn effects_report_their_measured_tail_time() {
             unit.label,
             tail.0
         );
-        // Relative tolerance: these are f64 seconds narrowed to f32, so the
-        // small values (0.0046) cannot be compared with the same absolute
-        // epsilon as the large ones (10.0).
+        // Relative tolerance: the table's figures are `f32` readings of the
+        // AU's `Float64` tail, so the small values (0.0046) cannot be compared
+        // with the same absolute epsilon as the large ones (10.0).
+        let expected = f64::from(*expected);
         let tolerance = (expected * 1e-4).max(1e-6);
         assert!(
             (tail.0 - expected).abs() <= tolerance,
@@ -176,9 +177,13 @@ fn a_unit_with_both_latency_and_tail_reports_them_separately() {
          tail-vs-latency contrast meaningful; re-measure if it moved"
     );
     let tail_samples = tail.to_samples_ceil(RATE);
+    // `ceil(0.2 * 48000) = 9600`: the AU's `Float64` 0.2 times 48000 is
+    // 9600.0 in f64. This read 9601 while `Seconds` was `f32`: the nearest
+    // `f32` to 0.2 is 0.200000003, and 0.200000003 * 48000 = 9600.00014,
+    // which ceils to 9601 (one frame of tail that was never asked for).
     assert_eq!(
         tail_samples,
-        Samples(9601),
+        Samples(9600),
         "0.2s at 48kHz, rounded up: the *allocation* rounding, because a bounce \
          that rounds a tail down truncates it"
     );
@@ -390,7 +395,7 @@ fn every_transport_field_reaches_the_callbacks() {
         .with_tempo(137.5)
         .with_playing(true)
         .with_recording(true)
-        .with_position_beats(12.25, 5.0)
+        .with_position_beats(12.25, Seconds(5.0))
         .with_position_samples(240_000)
         .with_loop(true, 4.0, 20.0)
         .with_bar(8.0, BarNumber::new(3))
@@ -718,7 +723,7 @@ fn an_au_pulls_the_published_transport_through_audiotoolbox() {
     let info = TransportInfo::new()
         .with_tempo(137.5)
         .with_playing(true)
-        .with_position_beats(12.25, 5.0)
+        .with_position_beats(12.25, Seconds(5.0))
         .with_position_samples(240_000)
         .with_loop(true, 4.0, 20.0)
         .with_bar(8.0, BarNumber::new(3))
@@ -745,7 +750,7 @@ fn an_au_pulls_the_published_transport_through_audiotoolbox() {
     assert_eq!(pull.changed, 1, "the locate reaches the AU");
 
     // The next block publishes no locate, and the AU is told so.
-    assert!(au.set_transport(&info.with_position_beats(12.5, 5.0), false));
+    assert!(au.set_transport(&info.with_position_beats(12.5, Seconds(5.0)), false));
     render(&mut au, &input, &mut output, BLOCK).expect("render");
     let pull = last_host_pull(&au);
     assert_eq!(pull.changed, 0, "the locate flag must not latch");
@@ -868,7 +873,7 @@ fn a_real_au_pulls_and_consumes_the_transport() {
     let transport = TransportInfo::new()
         .with_tempo(137.5)
         .with_playing(true)
-        .with_position_beats(12.25, 5.0);
+        .with_position_beats(12.25, Seconds(5.0));
     au.set_transport(&transport, true);
     assert!(
         au.transport().unwrap().state_changed_pending(),

@@ -191,7 +191,8 @@ impl LoadRecorder {
         // Non-negative and not NaN, so the bits below are a non-negative
         // float's and `fetch_max` on them is a float max; finite, so an
         // infinite load (a budget that underflowed) cannot make the mean NaN.
-        let ratio = elapsed / budget;
+        // A load is a ratio, read as an `f32` (the cells are `f32`).
+        let ratio = (elapsed / budget) as f32;
         let load = if ratio.is_nan() {
             0.0
         } else {
@@ -223,7 +224,7 @@ mod tests {
     const BLOCK: Seconds = Seconds(64.0 / 48_000.0);
 
     fn at(load: f32) -> Seconds {
-        Seconds(BLOCK.0 * load)
+        Seconds(BLOCK.0 * f64::from(load))
     }
 
     /// A block over budget counts, one at it does not, and `last` is the
@@ -271,7 +272,7 @@ mod tests {
     /// factor `a = 0.001` → the 64-frame mean lags far behind → fails.
     #[test]
     fn the_mean_converges_to_a_constant_load_at_its_time_constant() {
-        for frames in [64.0f32, 1024.0] {
+        for frames in [64.0f64, 1024.0] {
             let block = Seconds(frames / 48_000.0);
             let (mut rec, m) = LoadMeter::pair();
             rec.record(Seconds(block.0 * 0.2), block);

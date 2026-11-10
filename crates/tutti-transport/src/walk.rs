@@ -69,7 +69,7 @@ impl TempoWalk {
         let rate = clock.sample_rate();
         let beat = clock.beat();
         self.frame = if beat.get() < 0.0 {
-            first_frame_at_or_after(map.seconds_at_with(beat, &mut self.hint) * rate.get())
+            first_frame_at_or_after(map.seconds_at_with(beat, &mut self.hint).get() * rate.get())
         } else {
             map.frame_at_or_after_with(beat, rate, &mut self.hint).get() as i64
         };

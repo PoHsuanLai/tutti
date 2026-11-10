@@ -809,7 +809,7 @@ mod state_back_tests {
     use super::*;
     use std::cell::RefCell;
     use tutti_fixtures::main_thread;
-    use tutti_plugin_types::{PluginError, PluginResult};
+    use tutti_plugin_types::{EditorWindow, PluginError, PluginResult};
 
     struct FakeEditor {
         /// The editor's state, or `None` when it cannot be read.
@@ -817,16 +817,6 @@ mod state_back_tests {
     }
 
     impl Editor for FakeEditor {
-        fn open_editor(
-            &mut self,
-            _: &MainThread,
-            _: WindowHandle,
-            _: ContentScale,
-        ) -> PluginResult<EditorSize> {
-            unreachable!("the state-back never opens")
-        }
-        fn close_editor(&mut self, _: &MainThread) {}
-        fn editor_idle(&mut self, _: &MainThread) {}
         fn set_parameter(&mut self, _: &MainThread, _: ParamId, _: Normalized) {}
         fn set_state(&mut self, _: &MainThread, _: &[u8]) -> PluginResult<()> {
             Ok(())
@@ -839,6 +829,25 @@ mod state_back_tests {
                 .clone()
                 .ok_or_else(|| PluginError::State("unreadable".into()))
         }
+    }
+
+    impl EditorWindow for FakeEditor {
+        fn has_editor(&self, _: &MainThread) -> bool {
+            false
+        }
+
+        fn open_editor(
+            &mut self,
+            _: &MainThread,
+            _: WindowHandle,
+            _: ContentScale,
+        ) -> PluginResult<EditorSize> {
+            unreachable!("the state-back never opens")
+        }
+
+        fn close_editor(&mut self, _: &MainThread) {}
+
+        fn editor_idle(&mut self, _: &MainThread) {}
     }
 
     /// What the audio instance was given, if anything, and the baseline after.

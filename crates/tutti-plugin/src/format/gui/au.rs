@@ -9,7 +9,7 @@
 use tutti_plugin_ipc::{BridgeError, Result};
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::MainThread;
-use tutti_plugin_types::{Editor, EditorError, PluginError, PluginResult};
+use tutti_plugin_types::{Editor, EditorError, EditorWindow, PluginError, PluginResult};
 use tutti_plugin_types::{Normalized, ParamId, ParamRange};
 
 /// Look up declared bounds for `id` in a table sorted by id.
@@ -91,47 +91,6 @@ impl AuGuiInstance {
 }
 
 impl Editor for AuGuiInstance {
-    /// `_scale` is unused: an AU view is an `NSView`, which lays out in
-    /// logical pixels and reads its backing scale itself.
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        _scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
-        // No size to offer here either: this entry point receives a
-        // parent handle and a scale, no size. See the sibling in
-        // `tutti-plugin-server`.
-        let size = self
-            .inner
-            .open_editor(
-                main,
-                parent_handle,
-                tutti_plugin_types::EditorSize {
-                    width: 800,
-                    height: 600,
-                },
-            )
-            .map_err(|e| {
-                PluginError::Editor(EditorError::PluginError(format!(
-                    "AU open_editor failed: {e}"
-                )))
-            })?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        self.inner.close_editor(main);
-    }
-
-    fn editor_idle(&mut self, _main: &MainThread) {
-        // AUv2 Cocoa views are driven by the AppKit run loop; no explicit idle needed.
-    }
-
     fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         // `AudioUnitSetParameter` takes **plain** units, so the host's
         // normalized value is denormalized against the declared range — the
@@ -175,6 +134,55 @@ impl Editor for AuGuiInstance {
         // AUv2 doesn't have a built-in parameter change notification from GUI.
         // Parameter changes from Cocoa views go through AudioUnitSetParameter directly.
         Vec::new()
+    }
+}
+
+impl EditorWindow for AuGuiInstance {
+    fn has_editor(&self, _main: &MainThread) -> bool {
+        // Asks the live (uninitialized) unit for its Cocoa view property; the
+        // AU host takes no token for it.
+        self.inner.has_editor()
+    }
+
+    /// `_scale` is unused: an AU view is an `NSView`, which lays out in
+    /// logical pixels and reads its backing scale itself.
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        _scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
+        // No size to offer here either: this entry point receives a
+        // parent handle and a scale, no size. See the sibling in
+        // `tutti-plugin-server`.
+        let size = self
+            .inner
+            .open_editor(
+                main,
+                parent_handle,
+                tutti_plugin_types::EditorSize {
+                    width: 800,
+                    height: 600,
+                },
+            )
+            .map_err(|e| {
+                PluginError::Editor(EditorError::PluginError(format!(
+                    "AU open_editor failed: {e}"
+                )))
+            })?;
+        Ok(EditorSize {
+            width: size.width,
+            height: size.height,
+        })
+    }
+
+    fn close_editor(&mut self, main: &MainThread) {
+        self.inner.close_editor(main);
+    }
+
+    fn editor_idle(&mut self, _main: &MainThread) {
+        // AUv2 Cocoa views are driven by the AppKit run loop; no explicit idle needed.
     }
 }
 

@@ -34,6 +34,14 @@
 //! then fails `attached`; `EDITOR_LATE` registers (and leaks) from `onSize`. The view also aborts the
 //! process if `removed` runs on a thread other than the one `attached` did.
 //!
+//! # Notice
+//!
+//! The third byte of the mode word (`mode | editor << 8 | notice << 16`) is the
+//! notice behaviour: `NOTICE_NONE`, or `NOTICE_ON_LOAD`, which makes the CLAP
+//! and VST2 shells tell the host something on every state load, so a host's
+//! read of what a plugin asked for has a witness in either state. A blob with a
+//! notice byte is the Rust shells' only: the C++ plugin refuses it.
+//!
 //! # State
 //!
 //! State is a little-endian blob. The head is what a load restores; the rest is
@@ -107,6 +115,14 @@ pub const EDITOR_FAILING: u32 = 3;
 pub const EDITOR_LATE: u32 = 4;
 /// Number of editor behaviours.
 pub const EDITORS: u32 = 5;
+/// The plugin raises nothing of its own accord.
+pub const NOTICE_NONE: u32 = 0;
+/// Every state load raises one notice to the host, from the control thread:
+/// CLAP `request_callback`, VST2 `audioMasterAutomate(0, 0.5)`. The VST3 shells
+/// raise none.
+pub const NOTICE_ON_LOAD: u32 = 1;
+/// Number of notice behaviours.
+pub const NOTICES: u32 = 2;
 /// Latency of the Delay mode, in frames.
 pub const LATENCY: u32 = 137;
 /// Reported tail, in frames.
@@ -256,6 +272,7 @@ pub struct Core {
     aux: AtomicU64,
     mode: AtomicU32,
     editor: AtomicU32,
+    notice: AtomicU32,
     calls: AtomicU64,
     frames: AtomicU64,
     prepares: AtomicU32,
@@ -303,6 +320,7 @@ impl Core {
             aux: AtomicU64::new(0.25f64.to_bits()),
             mode: z(),
             editor: z(),
+            notice: z(),
             calls: AtomicU64::new(0),
             frames: AtomicU64::new(0),
             prepares: z(),
@@ -321,6 +339,11 @@ impl Core {
     /// The editor behaviour a state load selected (`EDITOR_*`).
     pub fn editor(&self) -> u32 {
         self.editor.load(Relaxed)
+    }
+
+    /// The notice behaviour a state load selected (`NOTICE_*`).
+    pub fn notice(&self) -> u32 {
+        self.notice.load(Relaxed)
     }
 
     /// A parameter's normalized value, `None` for an id the plugin lacks.
@@ -561,7 +584,9 @@ impl Core {
     pub fn save(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(512);
         b.extend_from_slice(&MAGIC.to_le_bytes());
-        let word = self.mode.load(Relaxed) | self.editor.load(Relaxed) << 8;
+        let word = self.mode.load(Relaxed)
+            | self.editor.load(Relaxed) << 8
+            | self.notice.load(Relaxed) << 16;
         b.extend_from_slice(&word.to_le_bytes());
         b.extend_from_slice(&self.level.load(Relaxed).to_le_bytes());
         b.extend_from_slice(&self.aux.load(Relaxed).to_le_bytes());
@@ -621,13 +646,19 @@ impl Core {
         if word(0) != MAGIC {
             return Err(BadState);
         }
-        let (mode, editor) = (word(4) & 0xFF, word(4) >> 8);
+        let (mode, editor, notice) = (word(4) & 0xFF, (word(4) >> 8) & 0xFF, word(4) >> 16);
         let (level, aux) = (float(8), float(16));
-        if mode >= MODES || editor >= EDITORS || !level.is_finite() || !aux.is_finite() {
+        if mode >= MODES
+            || editor >= EDITORS
+            || notice >= NOTICES
+            || !level.is_finite()
+            || !aux.is_finite()
+        {
             return Err(BadState);
         }
         self.mode.store(mode, Relaxed);
         self.editor.store(editor, Relaxed);
+        self.notice.store(notice, Relaxed);
         self.set_param(LEVEL, level);
         self.set_param(AUX, aux);
         Ok(())
@@ -669,6 +700,25 @@ mod tests {
         let saved = core.save();
         assert_eq!(&saved[4..8], &(3 | EDITOR_LEAKY << 8).to_le_bytes());
         blob[4..8].copy_from_slice(&(EDITORS << 8).to_le_bytes());
+        assert!(core.load(&blob).is_err());
+    }
+
+    // Mutation (run): `save` not writing the notice byte, or `load` not
+    // reading it, fails the round trip; `load` not bounding it accepts the bad
+    // blob.
+    #[test]
+    fn the_notice_byte_round_trips_beside_the_editor() {
+        let core = Core::new();
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&(2 | EDITOR_TIDY << 8 | NOTICE_ON_LOAD << 16).to_le_bytes());
+        core.load(&blob).unwrap();
+        assert_eq!(core.notice(), NOTICE_ON_LOAD);
+        assert_eq!(core.editor(), EDITOR_TIDY);
+        assert_eq!(
+            &core.save()[4..8],
+            &(2 | EDITOR_TIDY << 8 | NOTICE_ON_LOAD << 16).to_le_bytes()
+        );
+        blob[4..8].copy_from_slice(&(NOTICES << 16).to_le_bytes());
         assert!(core.load(&blob).is_err());
     }
 

@@ -17,6 +17,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+use tutti_plugin_types::EditorWindow;
 use tutti_vst3_host::{ContentScale, LoadOptions, Vst3Loaded, WindowHandle};
 
 const PLUGIN_PATH: &str =

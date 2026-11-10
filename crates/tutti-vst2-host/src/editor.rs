@@ -10,23 +10,15 @@ use crate::types::{EditorSize, WindowHandle};
 use tutti_plugin_types::MainThread;
 
 impl Vst2Loaded {
-    /// Returns `true` if the plugin has a native editor.
-    ///
-    /// Probed once at load, so this does not call into the plugin. `false`
-    /// means [`open_editor`](Self::open_editor) has nothing to open. The same
-    /// answer as [`PluginInfo::has_editor`](crate::PluginInfo::has_editor).
-    #[must_use]
-    pub fn has_editor(&self) -> bool {
-        self.instance.has_editor()
-    }
-
     /// Opens the plugin's editor embedded in `parent` and returns its size in
     /// pixels.
     ///
     /// `parent` is the native view or window to embed into (`NSView*` on
     /// macOS, `HWND` on Windows, an X11 window id on Linux). While the editor is
-    /// open, call [`editor_idle`](Self::editor_idle) regularly, and
-    /// [`close_editor`](Self::close_editor) before destroying `parent`.
+    /// open, call [`EditorWindow::editor_idle`](tutti_plugin_types::EditorWindow::editor_idle)
+    /// regularly, and [`EditorWindow::close_editor`](tutti_plugin_types::EditorWindow::close_editor)
+    /// before destroying `parent`. The body of
+    /// [`EditorWindow::open_editor`](tutti_plugin_types::EditorWindow::open_editor).
     ///
     /// # Errors
     ///
@@ -38,7 +30,11 @@ impl Vst2Loaded {
     /// Main thread only; platform GUI toolkits require it, and on macOS a call
     /// from another thread crashes inside the plugin's UI code, which the
     /// `&MainThread` proves the caller is not on.
-    pub fn open_editor(&mut self, main: &MainThread, parent: WindowHandle) -> Result<EditorSize> {
+    pub(crate) fn open_editor_in(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+    ) -> Result<EditorSize> {
         if !self.instance.has_editor() {
             return Err(Vst2Error::EditorError("Plugin has no editor".into()));
         }
@@ -73,18 +69,5 @@ impl Vst2Loaded {
             width: w as u32,
             height: h as u32,
         })
-    }
-
-    /// Closes the editor view. Does nothing when no editor is open.
-    pub fn close_editor(&mut self, main: &MainThread) {
-        self.instance.close_editor(main);
-    }
-
-    /// Drives the editor's idle hook.
-    ///
-    /// Call periodically (around 30 Hz) from the main thread while the editor
-    /// is open; JUCE-based editors rely on it to repaint and process input.
-    pub fn editor_idle(&mut self, main: &MainThread) {
-        self.instance.idle_editor(main);
     }
 }

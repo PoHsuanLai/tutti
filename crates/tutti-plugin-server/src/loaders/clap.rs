@@ -17,8 +17,8 @@ use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
-    SampleRate, Samples, Seat, Stage, State,
+    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
+    SampleFormat, SampleRate, Samples, Seat, Stage, State,
 };
 
 use crate::loaders::common::Meta;
@@ -537,10 +537,9 @@ impl PluginAudio for ClapInstance {
     /// rendering code, then don't implement this extension"*), so a plugin
     /// that does not export it has genuinely declined.
     fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
-        let offline = mode.is_offline();
         let accepted = self
             .loaded_mut()
-            .is_some_and(|loaded| loaded.set_render_mode(main, offline));
+            .is_some_and(|loaded| Control::set_render_mode(loaded, main, mode));
         // The mode is a field of the `Prepare` every later activation (a
         // restart, a rate change) applies, so the core holds the new one or the
         // next restart would put the old mode back. Nothing restarts now: the
@@ -2939,11 +2938,11 @@ mod tests {
         // Set offline mode — returns true if plugin supports render extension
         let _ = instance
             .loaded_mut_unwrapped()
-            .set_render_mode(&main_thread(), true);
+            .set_render_mode(&main_thread(), RenderMode::Offline);
         // Set back to realtime
         let _ = instance
             .loaded_mut_unwrapped()
-            .set_render_mode(&main_thread(), false);
+            .set_render_mode(&main_thread(), RenderMode::Realtime);
         // No crash is the assertion
     }
 

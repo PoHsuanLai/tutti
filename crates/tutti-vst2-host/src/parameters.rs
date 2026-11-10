@@ -17,7 +17,6 @@ use tutti_plugin_types::{
     ParameterInfo as SharedParameterInfo,
 };
 
-use crate::host::ParameterChange;
 use crate::loaded::Vst2Loaded;
 
 impl Vst2Loaded {
@@ -77,7 +76,7 @@ impl Vst2Loaded {
     ///
     /// A plugin that echoes the write through `audioMasterAutomate` from
     /// inside the call is not reported in
-    /// [`drain_param_changes`](Self::drain_param_changes): the host set the
+    /// [`Control::take_reported_edits`](tutti_plugin_types::Control::take_reported_edits): the host set the
     /// value, so it is not the plugin's edit.
     pub fn write_parameter(&self, id: ParamId, value: Normalized) -> bool {
         match self.param_index(id) {
@@ -286,32 +285,12 @@ impl Vst2Loaded {
         Some(self.build_parameter_info(index))
     }
 
-    /// Takes the parameter changes the plugin reported itself (for example,
-    /// knobs moved on its editor), oldest first.
-    ///
-    /// Each entry is `(index, normalized_value)`. Call from a control thread,
-    /// not the audio thread: it allocates the returned `Vec`. The queue it
-    /// drains is filled from the audio thread, which is why that side is
-    /// bounded and this side is not.
-    ///
-    /// The queue drops rather than growing when a caller stops draining, so a
-    /// short result is not proof that the plugin was quiet; pair it with
-    /// [`dropped_param_changes`](Self::dropped_param_changes) when that
-    /// distinction matters.
-    pub fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        let mut out = Vec::with_capacity(self.param_rx.len());
-        while let Some(change) = self.param_rx.pop() {
-            out.push(change);
-        }
-        out
-    }
-
     /// Returns how many `audioMasterAutomate` reports were **dropped** since
     /// load because the queue was full. Monotonic.
     ///
     /// Non-zero means automation was lost, which is otherwise invisible: a
     /// dropped knob move and a knob that never moved produce the same empty
-    /// [`drain_param_changes`](Self::drain_param_changes). In practice it
+    /// [`Control::take_reported_edits`](tutti_plugin_types::Control::take_reported_edits). In practice it
     /// indicates a host that has stopped draining, not a busy plugin — the
     /// capacity is sized for a whole-preset burst.
     pub fn dropped_param_changes(&self) -> u64 {

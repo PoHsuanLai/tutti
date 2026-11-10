@@ -9,7 +9,8 @@ use std::path::Path;
 
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
-    InProcess, Load, MainThread, Normalized, ParamId, PluginError, PluginResult, WindowHandle,
+    EditorWindow, InProcess, Load, MainThread, Normalized, ParamId, PluginError, PluginResult,
+    WindowHandle,
 };
 
 use super::loaded::Vst3Loaded;
@@ -86,30 +87,6 @@ impl Vst3Editor {
 }
 
 impl Editor for Vst3Editor {
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let size = self
-            .inner
-            .open_editor(main, parent, scale)
-            .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        self.inner.close_editor(main);
-    }
-
-    fn editor_idle(&mut self, _main: &MainThread) {
-        // VST3 editors don't have explicit idle.
-    }
-
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         // VST3's `setParamNormalized` takes the host domain unchanged.
         Control::set_parameter(&mut self.inner, main, id, value);
@@ -180,5 +157,35 @@ impl Editor for Vst3Editor {
                 width: sz.width,
                 height: sz.height,
             })
+    }
+}
+
+impl EditorWindow for Vst3Editor {
+    fn has_editor(&self, main: &MainThread) -> bool {
+        EditorWindow::has_editor(&self.inner, main)
+    }
+
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        let size = self
+            .inner
+            .embed_editor(main, parent, scale)
+            .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))?;
+        Ok(EditorSize {
+            width: size.width,
+            height: size.height,
+        })
+    }
+
+    fn close_editor(&mut self, main: &MainThread) {
+        EditorWindow::close_editor(&mut self.inner, main);
+    }
+
+    fn editor_idle(&mut self, _main: &MainThread) {
+        // VST3 editors don't have explicit idle.
     }
 }

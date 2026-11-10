@@ -40,15 +40,10 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dy
                      GUI loader."
                 .into(),
         }),
-        // Catch-all only exists when at least one of vst3/clap/(au+macOS) is
-        // disabled — otherwise all four PluginFormat variants are matched
-        // explicitly above and rustc warns this arm is unreachable.
-        #[cfg(not(all(
-            feature = "vst3",
-            feature = "clap",
-            feature = "au",
-            target_os = "macos"
-        )))]
+        // `PluginFormat` is `#[non_exhaustive]` and another crate's, so the
+        // arm stays even when every format above is compiled in (a `cfg` that
+        // removed it then failed to build tutti-plugin with every format on
+        // macOS).
         _ => Err(BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Opening,

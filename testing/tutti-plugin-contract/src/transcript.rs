@@ -44,6 +44,21 @@ pub fn set_level<F: Format, C: Control + ?Sized>(c: &mut C, level: f64) {
         .expect("the plugin takes its configuration");
 }
 
+/// Selects the plugin's editor and notice behaviours (the second and third
+/// bytes of the mode word, which the plugin documents in its `core`), keeping
+/// its mode, through the state like [`set_mode`]. A load that selects a notice
+/// raises one.
+pub fn select<F: Format, C: Control + ?Sized>(c: &mut C, editor: u32, notice: u32) {
+    let state = c.save_state(&main_thread()).expect("the plugin saves");
+    let mut blob = F::extract_blob(&state);
+    let at = MAGIC.len();
+    let mode = blob[at];
+    blob[at..at + 4].copy_from_slice(&(u32::from(mode) | editor << 8 | notice << 16).to_le_bytes());
+    let patched = F::embed_blob(&state, &blob);
+    c.load_state(&main_thread(), &patched)
+        .expect("the plugin takes its configuration");
+}
+
 /// `blob` with its `level` set.
 #[must_use]
 pub fn patch_level(mut blob: Vec<u8>, level: f64) -> Vec<u8> {

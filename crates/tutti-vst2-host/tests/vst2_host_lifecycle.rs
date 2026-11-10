@@ -22,7 +22,7 @@ use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_plugin_types::{Control, Controller, Request};
+use tutti_plugin_types::{ContentScale, Control, Controller, EditorWindow, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,
@@ -277,9 +277,9 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
 // ---------------------------------------------------------------------------
 
 /// The requests the plugin has raised since the last call.
-fn requests(instance: &Active) -> Vec<Request> {
+fn requests(instance: &mut Active) -> Vec<Request> {
     let mut asked = Vec::new();
-    instance.loaded().take_requests(&main_thread(), &mut asked);
+    instance.take_requests(&main_thread(), &mut asked);
     asked
 }
 
@@ -295,9 +295,9 @@ fn requests(instance: &Active) -> Vec<Request> {
 #[test]
 fn an_io_change_is_answered_and_re_read() {
     let _guard = lock_probe();
-    let instance = load(512);
+    let mut instance = load(512);
     assert_eq!(instance.loaded().pins().0.count(), 2);
-    assert_eq!(requests(&instance), [], "nothing yet");
+    assert_eq!(requests(&mut instance), [], "nothing yet");
 
     let answered = probe_call(b"tutti_vst2_probe_fire_io_changed\0", |sym| {
         // SAFETY: the probe exports this symbol with exactly this signature.
@@ -307,7 +307,7 @@ fn an_io_change_is_answered_and_re_read() {
     assert_eq!(answered, 1, "the host handles audioMasterIOChanged");
 
     assert_eq!(
-        requests(&instance),
+        requests(&mut instance),
         [
             Request::IoChanged,
             Request::LatencyChanged,
@@ -326,7 +326,7 @@ fn an_io_change_is_answered_and_re_read() {
     );
     assert_eq!(instance.loaded().latency_samples(), Samples(2048));
 
-    assert_eq!(requests(&instance), [], "consumed");
+    assert_eq!(requests(&mut instance), [], "consumed");
 }
 
 /// A rate change that moves a plugin's latency is read: the Controller's figure
@@ -358,7 +358,7 @@ fn a_rate_change_that_moves_latency_is_read() {
         Samples(1537)
     );
     assert_eq!(
-        requests(&instance),
+        requests(&mut instance),
         [],
         "the plugin did not report an I/O change"
     );
@@ -486,7 +486,7 @@ fn editor_idle_reaches_an_open_editor() {
     let parent = unsafe { WindowHandle::from_raw(std::ptr::null_mut()) };
     instance
         .loaded_mut()
-        .open_editor(&main_thread(), parent)
+        .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
         .expect("the probe opens");
     instance.loaded_mut().editor_idle(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());

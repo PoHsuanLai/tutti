@@ -9,9 +9,10 @@ use tutti_plugin_types::MainThread;
 use tutti_rt::{DrainMark, DrainWatch};
 
 use tutti_plugin_types::{
-    AutomationMode, Control, Controller, Edit, EditSink, Loaded, LoadedPlugin, Normalized, ParamId,
-    ParameterInfo, PluginDescriptor, PluginError, PluginResult, PluginTail, Prepare, Preset,
-    PresetId, Processor, Refused, Request, RescanScope, RestartRules, SampleFormat, Samples, Stuck,
+    AutomationMode, ContentScale, Control, Controller, Edit, EditSink, EditorSize, EditorWindow,
+    Loaded, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, Prepare, Preset, PresetId, Processor, Refused, RenderMode, Request,
+    RescanScope, RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
 };
 
 use crate::types::{ProcessMode, Vst3Sample};
@@ -305,6 +306,18 @@ impl Control for Vst3Controller {
         Control::rescan_parameters(self.loaded_mut(), main, scope);
     }
 
+    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+        Control::take_requests(self.loaded_mut(), main, out);
+    }
+
+    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+        Control::set_render_mode(self.loaded_mut(), main, mode)
+    }
+
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        Control::take_reported_edits(self.loaded_mut(), main, out);
+    }
+
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {
         Control::rebuild_midi_mapping(self.loaded_mut(), main);
     }
@@ -331,6 +344,29 @@ impl Control for Vst3Controller {
                 self.hand(id, value, sent_at);
             }
         }
+    }
+}
+
+impl EditorWindow for Vst3Controller {
+    fn has_editor(&self, main: &MainThread) -> bool {
+        EditorWindow::has_editor(self.loaded(), main)
+    }
+
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        EditorWindow::open_editor(self.loaded_mut(), main, parent, scale)
+    }
+
+    fn close_editor(&mut self, main: &MainThread) {
+        EditorWindow::close_editor(self.loaded_mut(), main);
+    }
+
+    fn editor_idle(&mut self, main: &MainThread) {
+        EditorWindow::editor_idle(self.loaded_mut(), main);
     }
 }
 

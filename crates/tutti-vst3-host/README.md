@@ -175,8 +175,9 @@ println!("{edits} param edits; latency changed: {}", restart.latency_changed);
 
 ```rust,no_run
 # use std::path::Path;
+# use tutti_plugin_types::{Control, EditorWindow};
 # use tutti_vst3_host::{ContentScale, LoadOptions, Vst3Loaded, WindowHandle};
-# fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst3_host::Result<()> {
+# fn ex(native_view_ptr: *mut std::ffi::c_void) -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = Vst3Loaded::load(&main, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 if plugin.has_editor(&main) {
@@ -279,7 +280,7 @@ MIT OR Apache-2.0
 [`Library`]: crate::Library
 [`Vst3Loaded`]: crate::Vst3Loaded
 [`Vst3Loaded::poll_plugin_notifications`]: crate::Vst3Loaded::poll_plugin_notifications
-[`Vst3Loaded::take_requests`]: crate::Vst3Loaded::take_requests
+[`Vst3Loaded::take_requests`]: tutti_plugin_types::Control::take_requests
 [`Vst3Processor`]: crate::Vst3Processor
 [`Vst3Processor::process`]: crate::Vst3Processor::process
 [`Vst3Processor::set_prefetch`]: crate::Vst3Processor::set_prefetch

@@ -31,9 +31,11 @@ pub struct LoadReading {
     pub over_budget: u64,
     /// Blocks measured since the start or the last reset.
     pub blocks: u64,
-    /// Blocks rendered silent because the graph was held on the control
-    /// side when the callback came (an audible dropout, not timed), since
-    /// the start or the last reset.
+    /// Blocks rendered silent (an audible dropout, not timed), since the
+    /// start or the last reset: the graph was held on the control side when
+    /// the callback came, the buffer's width has no fold, or the graph's
+    /// root cannot be placed on it. The session reports the rise as
+    /// `SessionEvent::BlocksSilenced`.
     pub silenced: u64,
     /// Events the graph dropped since the start or the last reset: an event
     /// output port past its capacity

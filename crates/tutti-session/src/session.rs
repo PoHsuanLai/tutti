@@ -194,6 +194,25 @@ pub enum SessionEvent {
     /// names: a merge's, and those a block that lost at more than 64 places
     /// or a full report ring left out. The count since the last update.
     EventsDroppedElsewhere(u64),
+    /// The engine rendered silence for blocks it could not render: an
+    /// **audible dropout** (the listener hears a gap, and a heard tap or
+    /// recording takes the silence too). The count is the blocks silenced
+    /// since the last update that reported, one event per update that saw
+    /// any; it is derived on the control side from
+    /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced), so
+    /// the audio thread does nothing more than count.
+    ///
+    /// A block is silenced when the graph was held by the control side as
+    /// the callback came (an edit applying while the device asked for
+    /// audio), when the output buffer's width is one the engine has no fold
+    /// for ([`Engine::support_output`](tutti_engine::Engine::support_output)),
+    /// when the graph has no output channels, or when the graph's root width
+    /// cannot be placed on the device's. Blocks that merely ran past their
+    /// budget are not silenced and have no event: that is the polled
+    /// [`LoadReading::over_budget`](tutti_metering::LoadReading::over_budget).
+    /// A [`LoadMeter::reset`](tutti_metering::LoadMeter::reset) between
+    /// updates restarts the count without an event.
+    BlocksSilenced(u64),
     /// The audio backend reported a fault (a device unplugged mid-session):
     /// the most recent one since the last poll.
     #[cfg(feature = "device")]
@@ -473,6 +492,7 @@ impl std::fmt::Debug for SessionEvent {
             Self::OutputsListSlow(waited) => {
                 f.debug_tuple("OutputsListSlow").field(waited).finish()
             }
+            Self::BlocksSilenced(count) => f.debug_tuple("BlocksSilenced").field(count).finish(),
             Self::EventsDroppedElsewhere(count) => f
                 .debug_tuple("EventsDroppedElsewhere")
                 .field(count)
@@ -635,6 +655,10 @@ pub struct Session {
     /// A re-prepare resumed in this update's collect: its plan's figures
     /// are published at the commit.
     pub(crate) resumed: bool,
+    /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced) as
+    /// the last update read it: the next update reports the rise
+    /// ([`SessionEvent::BlocksSilenced`]).
+    pub(crate) silenced_seen: u64,
     #[cfg(feature = "midi")]
     pub(crate) midi: Option<MidiNodes>,
     /// Clips, live inputs, routes and the hardware out's output.
@@ -836,6 +860,7 @@ impl Session {
                     tutti_plugin_types::run_deferred(&main);
                 }
                 self.report_event_losses(out);
+                self.report_silenced(out);
                 // A re-prepare resumed in that collect: it sent the resumed
                 // plan, whose shapes are new (a lookahead is a time, so a
                 // rate change moves latencies).
@@ -901,6 +926,20 @@ impl Session {
                 }
                 self.reclaim();
             }
+        }
+    }
+
+    /// The blocks the engine silenced since the last update, as one
+    /// [`SessionEvent::BlocksSilenced`]. The meter's count is cumulative
+    /// (and zeroed by a reset), so the rise is read against the last
+    /// reading; a reset restarts from the new count.
+    fn report_silenced(&mut self, out: &mut Vec<SessionEvent>) {
+        let Some(load) = &self.load else { return };
+        let now = load.peek().silenced;
+        let rise = now.saturating_sub(self.silenced_seen);
+        self.silenced_seen = now;
+        if rise > 0 {
+            out.push(SessionEvent::BlocksSilenced(rise));
         }
     }
 

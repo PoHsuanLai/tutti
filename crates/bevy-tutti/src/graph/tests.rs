@@ -384,7 +384,10 @@ fn handle_ptr(app: &App, entity: bevy_ecs::entity::Entity) -> *const () {
         .get::<crate::graph::NodeControls<ParamSet>>(entity)
         .expect("a knob's controls are bound");
     let cell = controls.0.cell(UnitParam::Drive).expect("a knob has Drive");
-    std::sync::Arc::as_ptr(&cell).cast()
+    match cell {
+        tutti_types::ParamCell::F32(c) => std::sync::Arc::as_ptr(&c).cast(),
+        tutti_types::ParamCell::F64(c) => std::sync::Arc::as_ptr(&c).cast(),
+    }
 }
 
 /// Write `entity`'s `Drive` through the controls bound to it: the cell

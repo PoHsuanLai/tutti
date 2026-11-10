@@ -7,6 +7,7 @@ use tutti_export::{
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
+use tutti_types::Seconds;
 use tutti_types::{ChannelLayout, Db, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -23,7 +24,7 @@ fn config(duration_seconds: f64) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds,
+            duration_seconds: Seconds(duration_seconds),
             ..Default::default()
         },
         ..Default::default()

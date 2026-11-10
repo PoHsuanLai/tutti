@@ -15,7 +15,7 @@ fn seconds_to_samples_names_its_rounding() {
 
     // Allocation must never under-size: ceil is >= nearest, always.
     for ms in 1..200 {
-        let s = Seconds(ms as f32 * 0.001);
+        let s = Seconds(ms as f64 * 0.001);
         assert!(s.to_samples_ceil(48_000.0) >= s.to_samples(48_000.0));
         assert!(s.to_samples(48_000.0) >= s.to_samples_floor(48_000.0));
     }
@@ -25,8 +25,8 @@ fn seconds_to_samples_names_its_rounding() {
 fn seconds_to_samples_collapses_nonsense_to_zero() {
     // `NaN as usize` is already 0 and a negative cast already saturates —
     // this pins the behaviour so it is stated rather than inherited.
-    assert_eq!(Seconds(f32::NAN).to_samples(48_000.0), Samples::ZERO);
-    assert_eq!(Seconds(f32::INFINITY).to_samples(48_000.0), Samples::ZERO);
+    assert_eq!(Seconds(f64::NAN).to_samples(48_000.0), Samples::ZERO);
+    assert_eq!(Seconds(f64::INFINITY).to_samples(48_000.0), Samples::ZERO);
     assert_eq!(Seconds(-1.0).to_samples(48_000.0), Samples::ZERO);
     assert_eq!(Seconds(1.0).to_samples(0.0), Samples::ZERO);
 }
@@ -123,14 +123,14 @@ fn one_pole_step_response_reaches_one_minus_inverse_e_after_tau() {
 #[test]
 fn one_pole_zero_time_is_instant_and_bad_input_is_defined() {
     let sr = SampleRate::SR_48K;
-    for tau in [0.0, -0.0, -1.0, f32::NAN, f32::NEG_INFINITY] {
+    for tau in [0.0, -0.0, -1.0, f64::NAN, f64::NEG_INFINITY] {
         assert_eq!(Seconds(tau).one_pole_coeff(sr), 1.0, "τ {tau}");
         assert_eq!(Seconds(tau).one_pole_coeff_over(Seconds(0.01)), 1.0);
         assert_eq!(Seconds(tau).one_pole_coeff_over(Seconds(0.0)), 1.0);
     }
-    assert_eq!(Seconds(f32::INFINITY).one_pole_coeff(sr), 0.0);
+    assert_eq!(Seconds(f64::INFINITY).one_pole_coeff(sr), 0.0);
     assert_eq!(Seconds(1.0).one_pole_coeff(SampleRate(f64::NAN)), 1.0);
-    for step in [0.0, -0.01, f32::NAN] {
+    for step in [0.0, -0.01, f64::NAN] {
         assert_eq!(Seconds(0.1).one_pole_coeff_over(Seconds(step)), 0.0);
     }
     // 1000 s at 48 kHz: about 2.08e-8, not cancelled to 0.
@@ -179,22 +179,28 @@ fn nyquist_scaled_refuses_to_exceed_nyquist() {
     assert_eq!(SampleRate::SR_48K.nyquist_scaled(-0.2), Hz(0.0));
 }
 
-/// An `f32` second count stops naming a frame past 256 s at 48 kHz, where
-/// its spacing (2^-15 s) first exceeds one frame — well before the 2^24
-/// frames (350 s) a mantissa count would suggest.
+/// A `Seconds` names every frame: a frame count round-trips exactly through
+/// seconds and back, well past the 256 s where an `f32` second (spacing 2^-15 s
+/// at that point) stopped being able to, and out to a day at 192 kHz.
 ///
-/// Mutation (run): round-trip through `f64` seconds in `Samples::to_seconds`
-/// → the second assertion fails.
+/// Mutation (run): round-trip through `f32` seconds in `Samples::to_seconds`
+/// (`as f32 as f64`) -> the frames past 256 s at 48 kHz no longer come back ->
+/// fails.
 #[test]
-fn a_seconds_round_trip_is_exact_to_256_s_at_48_khz() {
-    let rate = SampleRate::SR_48K;
-    let round_trips = |n: usize| Samples(n).to_seconds(rate).to_samples(rate) == Samples(n);
-    for n in (0..=12_288_000usize).step_by(7) {
-        assert!(round_trips(n), "{n} frames");
+fn a_seconds_round_trip_is_exact_for_every_frame_a_project_holds() {
+    for rate in [
+        SampleRate::SR_48K,
+        SampleRate(96_000.0),
+        SampleRate(192_000.0),
+    ] {
+        let round_trips = |n: usize| Samples(n).to_seconds(rate).to_samples(rate) == Samples(n);
+        let day = (86_400.0 * rate.get()) as usize;
+        for n in (0..=day).step_by(9_973) {
+            assert!(round_trips(n), "{n} frames at {rate:?}");
+        }
+        // The frames around 256 s at 48 kHz, where an `f32` first failed.
+        for n in 12_288_000..12_288_400 {
+            assert!(round_trips(n), "{n} frames at {rate:?}");
+        }
     }
-    assert!(round_trips(12_288_000), "256 s exactly");
-    assert!(
-        (12_288_001..12_288_400).any(|n| !round_trips(n)),
-        "past 256 s a frame is no longer addressable"
-    );
 }

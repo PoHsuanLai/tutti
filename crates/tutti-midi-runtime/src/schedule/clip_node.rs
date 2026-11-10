@@ -51,8 +51,10 @@ use tutti_graph::{
     Cx, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io,
     MIN_EVENT_PORT_CAPACITY, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
+use tutti_midi_protocol::Translator;
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::ChannelLayout;
+use tutti_ump::Ump;
 
 use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
 
@@ -153,6 +155,34 @@ fn class_of(timed: &TimedMidiEvent) -> Class {
     Class::of(timed.event)
 }
 
+/// `events` through one [`Translator`], in beat order (design 017 §4: a clip
+/// is translated as it is loaded, so the graph carries MIDI 2.0 from it as
+/// from a wire), each translated event at its source's beat and in its
+/// source's place in the list, which the note pairing below reads. An event
+/// the translator absorbs (an RPN select, Data Entry, Bank Select) is gone; a
+/// select or Data Entry that ends a run is replaced by the run's controller.
+/// A beat that is not finite is dropped here, as [`sorted`] would. Control
+/// thread.
+fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidiEvent> {
+    let events: Vec<TimedMidiEvent> = events.into_iter().collect();
+    let mut order: Vec<usize> = (0..events.len())
+        .filter(|&i| events[i].beat.get().is_finite())
+        .collect();
+    // Stable: events on one beat are translated in list order.
+    order.sort_by(|&a, &b| events[a].beat.get().total_cmp(&events[b].beat.get()));
+    let mut out: Vec<Option<Ump>> = vec![None; events.len()];
+    let mut translator = Translator::new();
+    for i in order {
+        // The translator sends at most one packet per packet fed.
+        translator.feed(events[i].event, |u| out[i] = Some(u));
+    }
+    events
+        .iter()
+        .zip(out)
+        .filter_map(|(e, u)| u.map(|u| TimedMidiEvent::new(e.beat, u)))
+        .collect()
+}
+
 /// `events` with each note-off paired to its note-on (see the module docs),
 /// sorted by beat, stably (events on one beat keep their order: a note-off
 /// before a note-on of the same note stays first). A beat that is not finite
@@ -238,7 +268,7 @@ impl MidiClipControls {
     /// to the clip's (in beat order, each note-off paired to the same
     /// note-on) change nothing: no note is cut.
     pub fn set_events(&self, events: impl IntoIterator<Item = TimedMidiEvent>) {
-        let events = sorted(events);
+        let events = sorted(translated(events));
         let _serial = self
             .shared
             .publish
@@ -322,7 +352,7 @@ struct Play {
 impl MidiClipNode {
     /// A node playing `events` (in any order: they are sorted by beat).
     pub fn new(events: impl IntoIterator<Item = TimedMidiEvent>) -> Self {
-        Self::over(Shared::new(sorted(events)))
+        Self::over(Shared::new(sorted(translated(events))))
     }
 
     /// A node over `shared`, reading it through a reader registered here.

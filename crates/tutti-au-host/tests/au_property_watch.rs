@@ -207,11 +207,8 @@ fn a_tail_change_reaches_a_watching_host_under_its_own_id() {
     let seconds =
         w.au.get_tail_time()
             .expect("the probe answers kAudioUnitProperty_TailTime");
-    // `Seconds` is `f32` while the AU property is `Float64`, so the comparison
-    // is in `f32` with a tolerance rather than exact: the narrowing is the
-    // host's documented stopping point for the unit types, not an error here.
     assert!(
-        (seconds.get() - new_tail as f32).abs() < 1e-6,
+        (seconds.get() - new_tail).abs() < 1e-6,
         "expected the new tail {new_tail}, got {seconds:?}"
     );
 }

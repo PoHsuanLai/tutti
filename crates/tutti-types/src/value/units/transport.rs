@@ -530,7 +530,7 @@ impl BeatDuration {
         if !(60.0 / tempo.0).is_finite() {
             return Seconds(0.0);
         }
-        Seconds((self.0 * 60.0 / tempo.0) as f32)
+        Seconds(self.0 * 60.0 / tempo.0)
     }
 
     /// Magnitude, discarding direction.

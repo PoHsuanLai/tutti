@@ -176,7 +176,7 @@ fn native(ed: &Editor, probe: u64, program: ControlProgram, knob: Option<f32>) -
     ControlLaneNode::for_param(
         ParamKey::<Hz>::CUTOFF,
         program,
-        knob.map(|k| Arc::new(AtomicF32::new(k))),
+        knob.map(|k| Arc::new(AtomicF32::new(k)).into()),
         Some(ed.param_range_cell(cutoff(probe)).expect("committed")),
     )
 }

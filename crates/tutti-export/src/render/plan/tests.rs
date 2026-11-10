@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::config::RenderConfig;
-use tutti_types::{BeatDuration, Bpm};
+use tutti_types::{BeatDuration, Bpm, Seconds};
 
 #[test]
 fn beats_and_seconds_agree_at_the_same_length() {
@@ -10,19 +10,19 @@ fn beats_and_seconds_agree_at_the_same_length() {
     let beats = beats_to_seconds(BeatDuration(8.0), Bpm::of(120.0), rate);
     assert_eq!(
         duration_to_frames(beats, rate),
-        duration_to_frames(4.0, rate)
+        duration_to_frames(Seconds(4.0), rate)
     );
     assert_eq!(duration_to_frames(beats, rate), Samples(192_000));
 }
 
-/// The `f64` is load-bearing, not an oversight: an `f32` round trip at a
+/// The `f64` width of `Seconds` is load-bearing: an `f32` round trip at a
 /// realistic derived length lands on a different frame count.
 #[test]
 fn long_durations_keep_sample_accuracy() {
     let rate = SampleRate(48_000.0);
     // 2000 beats at 93 bpm — an ordinary long-set length, not a round one.
     let secs = (2000.0f64 / 93.0) * 60.0;
-    let exact = duration_to_frames(secs, rate);
+    let exact = duration_to_frames(Seconds(secs), rate);
     let via_f32 = Samples((f64::from(secs as f32) * rate.get()).round() as usize);
     assert_ne!(exact, via_f32, "this conversion must not narrow");
     assert_eq!(exact, Samples(61_935_484));
@@ -31,19 +31,19 @@ fn long_durations_keep_sample_accuracy() {
 #[test]
 fn a_non_finite_or_negative_duration_is_no_frames() {
     let rate = SampleRate(48_000.0);
-    assert_eq!(duration_to_frames(-1.0, rate), Samples(0));
-    assert_eq!(duration_to_frames(f64::NAN, rate), Samples(0));
+    assert_eq!(duration_to_frames(Seconds(-1.0), rate), Samples(0));
+    assert_eq!(duration_to_frames(Seconds(f64::NAN), rate), Samples(0));
     // INFINITY is the one that needs the guard. Rust's float->int cast
     // saturates, so -1.0 and NaN both reach 0 on their own and assert
     // nothing about this function; `INFINITY * rate` casts to usize::MAX,
     // which would be an unbounded render.
-    assert_eq!(duration_to_frames(f64::INFINITY, rate), Samples(0));
+    assert_eq!(duration_to_frames(Seconds(f64::INFINITY), rate), Samples(0));
 }
 
 fn config(latency: Samples) -> RenderConfig {
     RenderConfig {
         sample_rate: SampleRate(48_000.0),
-        duration_seconds: 1.0,
+        duration_seconds: Seconds(1.0),
         latency,
         on_event_loss: Default::default(),
         tail: Samples(0),
@@ -107,7 +107,7 @@ fn a_tail_extends_both_what_is_rendered_and_what_is_kept() {
 fn a_duration_that_is_not_a_length_is_refused() {
     for seconds in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.0001] {
         let config = RenderConfig {
-            duration_seconds: seconds,
+            duration_seconds: Seconds(seconds),
             ..config(Samples(0))
         };
         assert_eq!(
@@ -127,7 +127,7 @@ fn a_duration_that_is_not_a_length_is_refused() {
 #[test]
 fn a_render_of_no_frames_is_refused() {
     let none = RenderConfig {
-        duration_seconds: 0.0,
+        duration_seconds: Seconds(0.0),
         ..config(Samples(512))
     };
     assert_eq!(RenderPlan::new(&none), Err(ConfigError::EmptyRender));
@@ -137,7 +137,7 @@ fn a_render_of_no_frames_is_refused() {
     );
     // Half a frame at 48 kHz rounds to nothing (0.4 frames).
     let sub_frame = RenderConfig {
-        duration_seconds: 0.4 / 48_000.0,
+        duration_seconds: Seconds(0.4 / 48_000.0),
         ..none
     };
     assert_eq!(RenderPlan::new(&sub_frame), Err(ConfigError::EmptyRender));

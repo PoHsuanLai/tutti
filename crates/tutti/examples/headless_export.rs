@@ -72,7 +72,7 @@ fn config(seconds: f64, channels: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: seconds,
+            duration_seconds: tutti_types::Seconds(seconds),
             ..Default::default()
         },
         encode: EncodeConfig {

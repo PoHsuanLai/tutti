@@ -276,10 +276,10 @@ fn convert_transport(transport: &SharedTransport, sample_rate: f64) -> Transport
     // plugin node's project time, `transport_source::ProjectTime`); fall back
     // to the project-time sample position for a producer that reports only
     // that.
-    let seconds = if transport.position.seconds != 0.0 {
+    let seconds = if transport.position.seconds.get() != 0.0 {
         transport.position.seconds
     } else {
-        transport.position.samples.unwrap_or(0) as f64 / sr
+        tutti_types::Seconds(transport.position.samples.unwrap_or(0) as f64 / sr)
     };
     TransportInfo::default()
         .with_playing(transport.state.playing)

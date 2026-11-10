@@ -97,7 +97,7 @@ fn tail_of(c: FreeverbControls) -> usize {
     let tutti_dsp::Ring::Finite(s) = ring else {
         panic!("finite")
     };
-    (f64::from(s.get()) * SR.get()).ceil() as usize
+    (s.get() * SR.get()).ceil() as usize
 }
 
 /// The General MIDI send renders what the reverb always did, bit for bit: a
@@ -489,7 +489,7 @@ fn a_lane_driving_the_room_changes_how_long_it_rings() {
         let lane = ControlLaneNode::for_unit(
             UnitParam::RoomSize,
             program,
-            Some(Arc::new(AtomicF32::new(room))),
+            Some(Arc::new(AtomicF32::new(room)).into()),
             None,
         );
         let key = tutti_types::NodeKey(9_000);

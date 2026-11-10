@@ -6,10 +6,8 @@
 //! or [`Shape::RampBeats`], tempo linear in beats). Every query is a binary
 //! search (or a [`Cursor`] hit) and a few flops: no allocation, no lock.
 //!
-//! Seconds are plain `f64` here. `Seconds` is `f32`, which resolves a single
-//! frame only to a few hundred seconds at 48 kHz; the map's figures stay exact
-//! over hours. That is one of the places the unit types stop (`CLAUDE.md`,
-//! "Unit types"), so a seconds value in this crate is `f64` seconds from beat 0.
+//! Time is [`Seconds`](tutti_types::Seconds), an `f64`, so the map's figures
+//! stay exact over hours: a seconds value in this crate is seconds from beat 0.
 //!
 //! The first point sits at beat 0. Before it the map holds the first tempo, so
 //! a count-in has a time. Time signature is not here: it is

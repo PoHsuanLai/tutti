@@ -1,8 +1,8 @@
 //! **MIDI 1.0 → MIDI 2.0 Default Translation** (M2-104 Appendix D.3), stateless
 //! and per-message — the one seam that hides the MIDI 1.0 ↔ 2.0 differences so
 //! every consumer matches a single vocabulary: MIDI 2.0 Channel Voice via `midi2`.
-//! (The multi-message parts of Default Translation — RPN/NRPN runs — live in the
-//! sibling [`rpn`](super::rpn), which delegates here for everything else.)
+//! (The multi-message parts of Default Translation, RPN/NRPN runs and Bank
+//! Select, are `tutti_midi_protocol::Translator`'s.)
 //!
 //! [`normalize`] takes any [`Ump`] and returns a **MIDI 2.0 Channel Voice**
 //! packet (still a [`Ump`], i.e. an owned `[u32; 4]`), applying:

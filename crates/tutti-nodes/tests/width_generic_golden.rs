@@ -255,7 +255,7 @@ fn cases() -> Vec<Case> {
         let fb = automation.expect("feedback automation");
         Some(Box::new(move |k: usize| {
             fb(k);
-            times.store(0.005 + 0.001 * (k % 6) as f32, Ordering::Release);
+            times.store((0.005 + 0.001 * (k % 6) as f32) as f64, Ordering::Release);
         }) as Automation)
     };
     v.push(Case {

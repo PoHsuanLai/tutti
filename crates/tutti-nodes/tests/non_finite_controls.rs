@@ -12,7 +12,6 @@
 //! accident). After it, and after a finite value is written back, the output
 //! must be finite.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tutti_graph::contract::drive;
@@ -21,7 +20,7 @@ use tutti_nodes::{
     CompressorNode, DelayLineNode, GateNode, LadderFilterNode, LadderType, ModDelayNode,
     PhaserNode, SvfFilterNode, SvfType,
 };
-use tutti_types::{AtomicF32, ChannelLayout, SampleRate, Samples};
+use tutti_types::{ChannelLayout, ParamCell, SampleRate, Samples};
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
 
@@ -39,7 +38,7 @@ fn noise_block(channels: usize, seed: u32) -> Vec<Vec<f32>> {
 }
 
 /// A control cell, and a finite value it can be moved to.
-type Cell = (&'static str, Arc<AtomicF32>, f32);
+type Cell = (&'static str, ParamCell, f32);
 
 /// [`render_finite`] for a graph node: `blocks` 64-frame blocks through
 /// `tutti_graph::contract::drive` at `rate`.
@@ -115,9 +114,9 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         || SvfFilterNode::<f64>::with_channels(ChannelLayout::STEREO, SvfType::Bell, 900.0, 1.0),
         |n| {
             vec![
-                ("cutoff", n.frequency(), 2_000.0),
-                ("q", n.q(), 3.0),
-                ("gain", n.gain_db(), 6.0),
+                ("cutoff", n.frequency().into(), 2_000.0),
+                ("q", n.q().into(), 3.0),
+                ("gain", n.gain_db().into(), 6.0),
             ]
         },
     );
@@ -133,9 +132,9 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         },
         |n| {
             vec![
-                ("cutoff", n.frequency(), 3_000.0),
-                ("resonance", n.resonance(), 0.8),
-                ("drive", n.drive(), 3.0),
+                ("cutoff", n.frequency().into(), 3_000.0),
+                ("resonance", n.resonance().into(), 0.8),
+                ("drive", n.drive().into(), 3.0),
             ]
         },
     );
@@ -149,10 +148,10 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         },
         |n| {
             vec![
-                ("delay time", n.delay_time(), 0.02),
-                ("feedback", n.feedback(), 0.7),
-                ("cross feedback", n.cross_feedback(), 0.1),
-                ("mix", n.mix(), 0.3),
+                ("delay time", n.delay_time().into(), 0.02),
+                ("feedback", n.feedback().into(), 0.7),
+                ("cross feedback", n.cross_feedback().into(), 0.1),
+                ("mix", n.mix().into(), 0.3),
             ]
         },
     );
@@ -161,10 +160,10 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         || ModDelayNode::chorus(ChannelLayout::STEREO),
         |n| {
             vec![
-                ("rate", n.rate(), 3.0),
-                ("depth", n.depth(), 0.008),
-                ("feedback", n.feedback(), 0.6),
-                ("mix", n.mix(), 0.2),
+                ("rate", n.rate().into(), 3.0),
+                ("depth", n.depth().into(), 0.008),
+                ("feedback", n.feedback().into(), 0.6),
+                ("mix", n.mix().into(), 0.2),
             ]
         },
     );
@@ -173,10 +172,10 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         || PhaserNode::with_channels(ChannelLayout::STEREO, 6),
         |n| {
             vec![
-                ("rate", n.rate(), 2.0),
-                ("depth", n.depth(), 0.9),
-                ("feedback", n.feedback(), 0.8),
-                ("mix", n.mix(), 0.2),
+                ("rate", n.rate().into(), 2.0),
+                ("depth", n.depth().into(), 0.9),
+                ("feedback", n.feedback().into(), 0.8),
+                ("mix", n.mix().into(), 0.2),
             ]
         },
     );
@@ -185,12 +184,12 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.05).with_soft_knee(6.0),
         |n| {
             vec![
-                ("threshold", n.threshold(), -30.0),
-                ("ratio", n.ratio(), 8.0),
-                ("attack", n.attack_time(), 0.01),
-                ("release", n.release_time(), 0.2),
-                ("makeup", n.makeup_gain(), 3.0),
-                ("knee", n.knee_width(), 2.0),
+                ("threshold", n.threshold().into(), -30.0),
+                ("ratio", n.ratio().into(), 8.0),
+                ("attack", n.attack_time().into(), 0.01),
+                ("release", n.release_time().into(), 0.2),
+                ("makeup", n.makeup_gain().into(), 3.0),
+                ("knee", n.knee_width().into(), 2.0),
             ]
         },
     );
@@ -199,11 +198,11 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         || GateNode::stereo(-30.0, 0.001, 0.01, 0.05),
         |n| {
             vec![
-                ("threshold", n.threshold(), -20.0),
-                ("attack", n.attack_time(), 0.005),
-                ("hold", n.hold_time(), 0.02),
-                ("release", n.release_time(), 0.1),
-                ("range", n.range(), -20.0),
+                ("threshold", n.threshold().into(), -20.0),
+                ("attack", n.attack_time().into(), 0.005),
+                ("hold", n.hold_time().into(), 0.02),
+                ("release", n.release_time().into(), 0.1),
+                ("range", n.range().into(), -20.0),
             ]
         },
     );
@@ -222,6 +221,6 @@ fn the_convolver_holds_off_non_finite_controls() {
     survives_node(
         "convolver",
         || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64),
-        |n| vec![("mix", n.mix(), 0.8), ("gain", n.gain(), 2.0)],
+        |n| vec![("mix", n.mix().into(), 0.8), ("gain", n.gain().into(), 2.0)],
     );
 }

@@ -87,7 +87,7 @@ fn konst(depth: f32) -> Layer {
 fn drive(ed: &mut Editor, at: ParamIn, knob: Arc<AtomicF32>, layers: Vec<Layer>) {
     let range = (!layers.is_empty()).then(|| ed.param_range_cell(at).expect("committed"));
     let program = ControlProgram::new(None, layers, vec![]).expect("a valid program");
-    let lane = ControlLaneNode::for_unit(at.param, program, Some(knob), range);
+    let lane = ControlLaneNode::for_unit(at.param, program, Some(knob.into()), range);
     ed.insert(LANE, "lane", lane);
     ed.spec_mut().connect_param(
         at,
@@ -281,7 +281,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = delay(w);
                 if let Some(v) = v {
-                    n.set_delay_time(v);
+                    n.set_delay_time(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -486,7 +486,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_attack(v);
+                    n.set_attack(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -499,7 +499,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_release(v);
+                    n.set_release(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -525,7 +525,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = gate(w);
                 if let Some(v) = v {
-                    n.set_attack(v);
+                    n.set_attack(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -538,7 +538,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = gate(w);
                 if let Some(v) = v {
-                    n.set_release(v);
+                    n.set_release(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -557,7 +557,7 @@ fn block_rate_cases() -> Vec<Case> {
                     -2.5,
                 );
                 if let Some(v) = v {
-                    n.set_release(v);
+                    n.set_release(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -583,7 +583,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = chorus(w);
                 if let Some(v) = v {
-                    n.set_depth(v);
+                    n.set_depth(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -624,7 +624,7 @@ fn block_rate_cases() -> Vec<Case> {
                     ChannelLayout::try_from(w).expect("a test width is small"),
                 );
                 if let Some(v) = v {
-                    n.set_depth(v);
+                    n.set_depth(tutti_types::Seconds::from_f32(v));
                 }
                 parts_of(n)
             },
@@ -880,7 +880,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let lane = ControlLaneNode::for_unit(
         UnitParam::Drive,
         ControlProgram::default(),
-        Some(Arc::new(AtomicF32::new(5.0))),
+        Some(Arc::new(AtomicF32::new(5.0)).into()),
         None,
     );
     let controls = r.editor_mut().insert(LANE, "lane", lane);

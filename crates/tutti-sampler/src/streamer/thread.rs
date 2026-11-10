@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::thread::JoinHandle;
 
 use tutti_rt::{PriorityRequest, request_priority};
 use tutti_types::SampleRate;
@@ -22,12 +22,14 @@ use super::StreamerSender;
 use super::cache::LruCache;
 use super::command::StreamerCommand;
 use super::config::BufferConfig;
+use super::decode::Seams;
 use super::handlers::{Handles, SessionRate};
 use super::loop_body::{Pacing, streamer_loop};
 use super::metrics::Metrics;
 #[cfg(any(test, feature = "test-support"))]
 use super::step::StepOutcome;
 use super::step::StreamerCycle;
+use crate::Error;
 use crossbeam_channel::Receiver;
 
 /// A streamer that is built and drives nothing yet: its queue, its shared
@@ -58,6 +60,7 @@ impl Built {
         channel_capacity: usize,
         sample_rate: SampleRate,
         config: BufferConfig,
+        seams: Seams,
     ) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(channel_capacity.max(1));
 
@@ -68,6 +71,7 @@ impl Built {
             )),
             metrics: Arc::new(Metrics::new()),
             session_rate: SessionRate::new(sample_rate),
+            seams,
         };
 
         Self {
@@ -104,47 +108,43 @@ impl Built {
     /// Spawn the streamer thread, which owns the cycle state and the queue's
     /// receiver from here on.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If the thread cannot be spawned. Every stream and every refill depends on
-    /// it, so a failure here (the OS out of threads) would otherwise degrade
-    /// into an engine that accepts commands and stays mute.
-    pub(super) fn start(self) -> Running {
+    /// [`Error::Spawn`] when the thread cannot be spawned. Every stream and
+    /// every refill depends on it, so a failure here (the OS out of threads)
+    /// would otherwise degrade into an engine that accepts commands and stays
+    /// mute; it is the caller's to see instead.
+    pub(super) fn start(self) -> Result<Running, Error> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let thread_shutdown = Arc::clone(&shutdown);
+        let spawn = self.shared.seams.spawn;
         let shared = self.shared;
-        let cycle = StreamerCycle::new(self.config);
+        let cycle = StreamerCycle::new(self.config, self.tx.clone());
         let (queue, pacing) = (self.rx, self.pacing);
 
-        let handle = thread::Builder::new()
-            .name("tutti-streamer".into())
-            .spawn(move || {
-                // The thread owns the queue's one receiver, so however the
-                // loop ends (a panic included) its drop tells every sender
-                // the streamer is gone instead of letting them queue into
-                // nothing.
-                // Disk streaming should stay ahead of background work, not
-                // compete with the audio threads (Ardour's streamer sets no CPU
-                // priority, LinuxSampler's disk thread runs at nice -10): a
-                // raised, never real-time priority, nice -10 on Linux and
-                // ABOVE_NORMAL on Windows. This replaced the highest the OS
-                // grants (nice -20, HIGHEST) on purpose. A refusal is
-                // harmless, so the outcome is only logged.
-                tracing::debug!("streamer: {}", request_priority(PriorityRequest::Raised));
-                streamer_loop(&queue, shared, cycle, thread_shutdown, pacing);
-            })
-            // Fatal init: spawning the disk-I/O streamer thread is a prerequisite
-            // for all streaming/recording. A spawn failure means the OS is out of
-            // threads — unrecoverable at this layer, and every downstream stream
-            // command would silently stall on a channel with no consumer. Panic
-            // loudly at startup rather than degrade into a mute engine.
-            .expect("Failed to spawn streamer thread");
+        let body = move || {
+            // The thread owns the queue's one receiver, so however the
+            // loop ends (a panic included) its drop tells every sender
+            // the streamer is gone instead of letting them queue into
+            // nothing; and its table's drop tells every live stream
+            // (`Faulted(StreamerGone)`).
+            // Disk streaming should stay ahead of background work, not
+            // compete with the audio threads (Ardour's streamer sets no CPU
+            // priority, LinuxSampler's disk thread runs at nice -10): a
+            // raised, never real-time priority, nice -10 on Linux and
+            // ABOVE_NORMAL on Windows. This replaced the highest the OS
+            // grants (nice -20, HIGHEST) on purpose. A refusal is
+            // harmless, so the outcome is only logged.
+            tracing::debug!("streamer: {}", request_priority(PriorityRequest::Raised));
+            streamer_loop(&queue, shared, cycle, thread_shutdown, pacing);
+        };
+        let handle = spawn("tutti-streamer", Box::new(body)).map_err(Error::Spawn)?;
 
-        Running {
+        Ok(Running {
             tx: self.tx,
             thread_handle: Some(handle),
             shutdown,
-        }
+        })
     }
 
     /// The caller drives: its cycle is stepped by `ByHand::step_once`.
@@ -152,7 +152,7 @@ impl Built {
     pub(super) fn by_hand(self) -> ByHand {
         ByHand {
             rx: Some(self.rx),
-            cycle: StreamerCycle::new(self.config),
+            cycle: StreamerCycle::new(self.config, self.tx),
             shared: self.shared,
         }
     }
@@ -248,6 +248,7 @@ impl ByHand {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -274,7 +275,12 @@ mod tests {
     };
 
     fn built(capacity: usize) -> Built {
-        Built::new(capacity, SampleRate::new(48_000.0), BufferConfig::default())
+        Built::new(
+            capacity,
+            SampleRate::new(48_000.0),
+            BufferConfig::default(),
+            Seams::default(),
+        )
     }
 
     /// Polls `done` until it holds or `bound` passes; whether it held.
@@ -306,7 +312,7 @@ mod tests {
     fn a_send_wakes_a_waiting_streamer() {
         let built = built(8).with_pacing(LONG_WAIT);
         let tx = built.command_sender();
-        let mut streamer = built.start();
+        let mut streamer = built.start().expect("the thread starts");
 
         for stream in [StreamId(90), StreamId(91)] {
             tx.try_send(StreamerCommand::Close { stream })
@@ -342,7 +348,7 @@ mod tests {
 
         let built = built(8);
         let port = StreamerPort::new(built.command_sender());
-        let mut streamer = built.start();
+        let mut streamer = built.start().expect("the thread starts");
         assert_eq!(
             port.send(StreamerCommand::Close {
                 stream: StreamId(0)
@@ -408,7 +414,7 @@ mod tests {
     fn a_streamer_that_exits_is_gone_to_its_senders() {
         let built = built(8);
         let tx = built.command_sender();
-        let _streamer = built.start();
+        let _streamer = built.start().expect("the thread starts");
         tx.try_send(StreamerCommand::Shutdown).unwrap();
         // Probed without waiting, so a queue that never disconnects fails
         // at the bound rather than filling and blocking the probe.

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use tutti_dsp::{
-    Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Realization,
+    Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Realization, System,
 };
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{

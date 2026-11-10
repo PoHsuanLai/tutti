@@ -407,6 +407,7 @@ impl Planner<'_> {
                 self.lines(&[
                     r#"RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps"#,
                     r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract"#,
+                    r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-dsp --no-deps --features contract"#,
                 ]);
                 self.out.push(Step::DocFeatures);
                 self.lines(&[
@@ -527,6 +528,8 @@ const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-dsp --lib -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-dsp --lib --features contract -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings"#,

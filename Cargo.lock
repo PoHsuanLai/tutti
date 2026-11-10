@@ -3666,7 +3666,10 @@ dependencies = [
  "libm",
  "rand 0.8.8",
  "rustfft",
+ "serde",
  "thiserror 2.0.21",
+ "tutti-dsp",
+ "tutti-fixtures",
  "tutti-types",
 ]
 

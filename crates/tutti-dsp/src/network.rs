@@ -20,22 +20,20 @@
 //! *fractional* frames ([`Samples`] is whole); *signed* coefficients, which
 //! [`Amplitude`] (floored at zero) cannot hold (tap and all-pass gains, the
 //! matrix, the input and output gains of an FDN); and `Feedback`, which caps at
-//! 0.99, cannot hold a loop gain of 1. The queries ([`Network::rt60`], [`tail`](Network::tail),
-//! [`is_stable`](Network::is_stable), the densities) read **centre** lengths:
+//! 0.99, cannot hold a loop gain of 1. The queries ([`Network::rt60`], [`tail`](crate::System::tail),
+//! [`is_stable`](crate::Lti::is_stable), the densities) read **centre** lengths:
 //! modulation moves a line by a few frames around its centre and the queries do
 //! not model that.
 
-mod design;
+mod bounds;
 mod gain;
 mod inline;
 mod queries;
-mod realization;
+mod response;
 
-pub use design::{Bounds, Ceiling, Channels, Design};
+pub use bounds::Bounds;
 pub use gain::{loop_gain, rt60_from_gain};
 pub use inline::{Full, Inline};
-pub use queries::Ring;
-pub use realization::{Effort, Realization, Setup};
 
 use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
 
@@ -115,7 +113,7 @@ impl Network {
     }
 
     /// Makes this an empty network at `rate`, in place: what
-    /// [`Design::design_into`] starts from. Unlike [`new`](Self::new) it builds
+    /// [`Design::design_into`](crate::Design::design_into) starts from. Unlike [`new`](Self::new) it builds
     /// no value of the network's size.
     pub fn clear(&mut self, rate: SampleRate) {
         self.rate = rate;
@@ -194,7 +192,7 @@ pub enum AllPassForm {
 /// two [`AllPassForm`]s.
 ///
 /// The impulse response of either form after its first echoes falls by `g`
-/// every `D` frames, so [`Network::tail`] treats them alike.
+/// every `D` frames, so [`tail`](crate::System::tail) treats them alike.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AllPass {
     /// The delay in fractional frames.
@@ -444,6 +442,8 @@ pub struct FirSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Ring;
+    use crate::{Lti as _, System as _};
 
     /// The pre-delay is whole frames, rounded: 1 ms at 48 kHz is 48, more than half a
     /// frame rounds up, and a negative or NaN span is none.

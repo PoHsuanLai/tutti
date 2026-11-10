@@ -20,13 +20,14 @@
 //! frames and a frozen one loses nothing to interpolation; a modulated line
 //! reads between frames, and freezing turns the modulation off.
 
-use tutti_types::{ChannelLayout, Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
+use tutti_types::{Amplitude, ChannelLayout, Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
 
 use crate::fdn::FdnKernel;
 use crate::network::{
-    Absorption, Bounds, Ceiling, Channels, Design, Fdn, Gains, Inline, Line, MAX_LINES, Matrix,
-    Modulation, Network, OutputMap, Ring, Stage, pre_delay_frames,
+    Absorption, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network,
+    OutputMap, Stage, pre_delay_frames,
 };
+use crate::{Ceiling, Channels, Design, MaxDecay, Ring};
 
 /// The line lengths at 44.1 kHz for a room size of 0.5 (the scale is
 /// `0.5 + size`), values near primes, so the delays share few factors.
@@ -120,7 +121,7 @@ impl FdnDesign {
     pub const LINES: usize = 8;
 
     /// A design of `lines` lines (2 to 16, even: half feed each ear), RT60s up
-    /// to `max_decay` (at most [`Ceiling::MAX_DECAY_CAP`]), which holds its tail
+    /// to `max_decay` (at most [`MaxDecay::CAP`]), which holds its tail
     /// on a freeze if `freezable`. `None` when the figures are out of range.
     ///
     /// **A design that can freeze has an unbounded tail ceiling**, so a node
@@ -132,7 +133,7 @@ impl FdnDesign {
             && lines.is_multiple_of(2)
             && max_decay.get().is_finite()
             && max_decay.get() >= MIN_DECAY.get()
-            && max_decay.get() <= Ceiling::MAX_DECAY_CAP.get();
+            && max_decay.get() <= MaxDecay::CAP.get();
         ok.then_some(Self {
             lines,
             max_decay,
@@ -168,7 +169,7 @@ impl FdnDesign {
     /// is `3 / (RT60 fs)` decades a frame, so the bound reads a decay slower by
     /// `x = 2e / ln 10 * RT60 fs / 3` of itself, and the tail by `1 / (1 - x)`:
     /// 0.5% at 8 s and 44.1 kHz, 11% at 192 kHz.
-    fn rounding_margin(&self, ceiling: &Ceiling) -> f32 {
+    fn rounding_margin(&self, ceiling: &Ceiling<MaxDecay>) -> f32 {
         let e = 2.0 * f64::from(f32::EPSILON);
         let x =
             2.0 * e / std::f64::consts::LN_10 * self.max_decay.get() * ceiling.rate().get() / 3.0;
@@ -181,9 +182,32 @@ impl Default for FdnDesign {
     fn default() -> Self {
         Self {
             lines: Self::LINES,
-            max_decay: Ceiling::MAX_DECAY,
+            max_decay: MaxDecay::DEFAULT.get(),
             freezable: false,
         }
+    }
+}
+
+/// The absorption with its band gains scaled as [`FdnKernel`] scales them (peak at
+/// most 0.9999), so the network carries the gains the kernel runs.
+fn rescaled(a: Absorption, rate: SampleRate) -> Absorption {
+    let Absorption::Bands {
+        low,
+        mid,
+        high,
+        crossover,
+    } = a
+    else {
+        return a;
+    };
+    let pole = crossover
+        .map(|f| libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32);
+    let [low, mid, high] = crate::fdn::rescale_bands([low.get(), mid.get(), high.get()], pole);
+    Absorption::Bands {
+        low: Amplitude(low),
+        mid: Amplitude(mid),
+        high: Amplitude(high),
+        crossover,
     }
 }
 
@@ -199,6 +223,9 @@ fn finite_secs(v: Seconds, default: Seconds) -> Seconds {
 
 impl Design for FdnDesign {
     type Controls = FdnControls;
+    type Model = Network;
+    type Bounds = Bounds;
+    type Range = MaxDecay;
     type Realization = FdnKernel;
 
     fn channels(&self) -> Channels {
@@ -206,6 +233,10 @@ impl Design for FdnDesign {
             input: ChannelLayout::MONO,
             output: ChannelLayout::STEREO,
         }
+    }
+
+    fn blank(&self, rate: SampleRate) -> Network {
+        Network::new(rate)
     }
 
     fn realization(&self) -> FdnKernel {
@@ -262,7 +293,7 @@ impl Design for FdnDesign {
                     depth: depth_frames,
                     rate: Hz(mod_rate),
                 },
-                absorption: Absorption::from_rt60(rt60, CROSSOVER, length, rate),
+                absorption: rescaled(Absorption::from_rt60(rt60, CROSSOVER, length, rate), rate),
                 diffuser: None,
             });
         }
@@ -329,7 +360,7 @@ impl Design for FdnDesign {
     /// The largest design: size 1, the longest decay in every band, the longest
     /// pre-delay, the deepest modulation. The tail is unbounded if the design
     /// can freeze, and the network's own at the longest decay if not.
-    fn bounds(&self, ceiling: &Ceiling) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
         let worst = FdnControls {
             decay: [self.max_decay; 3],
             size: Mix(1.0),
@@ -341,7 +372,7 @@ impl Design for FdnDesign {
         };
         let mut network = Box::new(Network::new(ceiling.rate()));
         self.design_into(&worst, ceiling.rate(), &mut network);
-        let mut b = Bounds::of(&network, ceiling.floor());
+        let mut b = self.measure(&network, ceiling.floor());
         b.tail = match b.tail {
             _ if self.freezable => Ring::Unbounded,
             Ring::Finite(t) => {
@@ -351,6 +382,10 @@ impl Design for FdnDesign {
         };
         b
     }
+
+    fn measure(&self, model: &Network, floor: Db) -> Bounds {
+        Bounds::of(model, floor)
+    }
 }
 
 #[cfg(test)]
@@ -359,12 +394,12 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use super::*;
-    use crate::contract::design::{DesignCase, design_contract};
-    use crate::contract::realization::{RealizationCase, realization_contract};
+    use crate::contract::{DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
     use crate::network::{Band, Fdn, Matrix, Network, Stage};
+    use crate::{Lti as _, System as _};
 
     fn freezable() -> FdnDesign {
-        FdnDesign::new(8, Ceiling::MAX_DECAY, true).unwrap()
+        FdnDesign::new(8, MaxDecay::DEFAULT.get(), true).unwrap()
     }
 
     fn base() -> FdnControls {
@@ -437,7 +472,95 @@ mod tests {
                 .collect()
         }
 
-        fn requested_rt60(&self, c: &FdnControls, _: SampleRate, band: Band) -> Option<Seconds> {
+        fn musical_delay(&self, n: &Network) -> usize {
+            n.min_delay() as usize
+        }
+
+        /// The anchors of the FDN have no closed form to compare to (the lines
+        /// are mixed): its response is held to the realization's, in the
+        /// `response` case.
+        fn vacant(&self) -> &'static [(Hook, &'static str)] {
+            &[(Hook::Anchors, "a mixing FDN has no closed-form response")]
+        }
+    }
+
+    impl LtiCase for FdnDesign {
+        fn marginal(&self, c: &FdnControls) -> bool {
+            self.freezable && c.freeze
+        }
+
+        fn fill(&self, rate: SampleRate, trips: f32) -> usize {
+            (trips * self.bounds(&self.ceiling(rate)).line) as usize
+        }
+
+        /// Not the diffusion-0 probe: the kernel writes a diagonal matrix as
+        /// the reflection along line 0 (`I - 2 e0 e0^T`, a unit vector like every
+        /// other so a ramp keeps it orthogonal), which flips the sign of line 0's
+        /// loop. That changes no decay (so the decay cases run it) and moves line 0's
+        /// comb teeth half a spacing, which the model (an identity) does not say.
+        fn response_probes(&self) -> Option<Vec<FdnControls>> {
+            Some(
+                self.static_probes()
+                    .into_iter()
+                    .filter(|c| c.diffusion.get() > 0.0)
+                    .collect(),
+            )
+        }
+    }
+
+    impl ReverbCase for FdnDesign {
+        fn tolerance(&self) -> f32 {
+            0.15
+        }
+
+        /// Deep: a train of echoes (parallel combs) decays in steps, and a fit
+        /// over a wide range averages them.
+        fn fit_depth(&self) -> (f64, f64) {
+            (20.0, 100.0)
+        }
+
+        fn tone(&self, band: Band, rate: SampleRate) -> f32 {
+            match band {
+                Band::Low => 0.0,
+                Band::Mid => (libm::sqrt(300.0 * 4_000.0) / rate.get()) as f32,
+                Band::High => 0.5,
+            }
+        }
+
+        fn freeze_pairs(&self) -> Vec<(FdnControls, FdnControls)> {
+            vec![(base(), with(|c| c.freeze = true))]
+        }
+
+        fn width_pairs(&self) -> Vec<(FdnControls, FdnControls)> {
+            vec![(base(), with(|c| c.width = StereoWidth::MONO))]
+        }
+
+        fn wet_pairs(&self) -> Vec<(FdnControls, FdnControls, f32)> {
+            vec![
+                (base(), with(|c| c.wet = Db(-6.0206)), 0.5),
+                (base(), with(|c| c.wet = Db(f32::NEG_INFINITY)), 0.0),
+            ]
+        }
+
+        /// `None` where the controls ask for band gains whose response exceeds 1
+        /// (a mid band ringing far longer than a neighbour): the design scales them
+        /// to peak at 0.9999, as the kernel does, so the decay asked for is not the
+        /// decay the network has, and there is no figure to hold it to.
+        fn requested_rt60(&self, c: &FdnControls, rate: SampleRate, band: Band) -> Option<Seconds> {
+            let n = self.design(c, rate);
+            if let Some(Stage::Fdn(f)) = n.stages.first()
+                && let Some(l) = f.lines.first()
+                && !(self.freezable && c.freeze)
+            {
+                let rt = |i: usize| c.decay[i].clamp(MIN_DECAY, self.max_decay);
+                let g = [1usize, 0, 2].map(|i| crate::loop_gain(l.length, rt(i), rate).get());
+                let pole = CROSSOVER.map(|f| {
+                    libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
+                });
+                if crate::fdn::peak_response(g, pole) > 1.0 {
+                    return None;
+                }
+            }
             Some(if self.freezable && c.freeze {
                 Seconds(f64::INFINITY)
             } else {
@@ -510,25 +633,15 @@ mod tests {
 
     mod freezable_design {
         use super::*;
-        design_contract!(freezable());
+        crate::design_contract!(freezable(), Lti, reverb);
     }
 
     mod plain_design {
         use super::*;
-        design_contract!(FdnDesign::default());
+        crate::design_contract!(FdnDesign::default(), Lti, reverb);
     }
 
     impl RealizationCase for FdnDesign {
-        fn tolerance(&self) -> f32 {
-            0.15
-        }
-
-        /// Deep: a train of echoes (parallel combs) decays in steps, and a fit
-        /// over a wide range averages them.
-        fn fit_depth(&self) -> (f64, f64) {
-            (20.0, 100.0)
-        }
-
         fn probes(&self) -> Vec<FdnControls> {
             vec![
                 base(),
@@ -593,63 +706,12 @@ mod tests {
                 (base(), with(|c| c.freeze = true)),
             ]
         }
-
-        fn tone(&self, band: Band, rate: SampleRate) -> f32 {
-            match band {
-                Band::Low => 0.0,
-                Band::Mid => (libm::sqrt(300.0 * 4_000.0) / rate.get()) as f32,
-                Band::High => 0.5,
-            }
-        }
-
-        fn freeze_pairs(&self) -> Vec<(FdnControls, FdnControls)> {
-            vec![(base(), with(|c| c.freeze = true))]
-        }
-
-        fn width_pairs(&self) -> Vec<(FdnControls, FdnControls)> {
-            vec![(base(), with(|c| c.width = StereoWidth::MONO))]
-        }
-
-        fn wet_pairs(&self) -> Vec<(FdnControls, FdnControls, f32)> {
-            vec![
-                (base(), with(|c| c.wet = Db(-6.0206)), 0.5),
-                (base(), with(|c| c.wet = Db(f32::NEG_INFINITY)), 0.0),
-            ]
-        }
-
-        /// The state's amplitude is at most `|B| m / (1 - g)` (the input's norm
-        /// times the longest line over one minus the largest band gain: each trip
-        /// loses a factor `g` and the reflection is orthogonal), and the output
-        /// maps it by `|C|`, the width and the wet gain.
-        fn peak_bound(&self, _: &FdnControls, n: &Network) -> f32 {
-            let Some(crate::network::Stage::Fdn(f)) = n.stages.first() else {
-                unreachable!("a network of one FDN")
-            };
-            let g = f
-                .lines
-                .iter()
-                .flat_map(|l| Band::ALL.map(|b| l.absorption.gain(b).get()))
-                .fold(0.0f32, f32::max);
-            let norm = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let m = f
-                .lines
-                .iter()
-                .map(|l| l.length + l.modulation.depth)
-                .fold(0.0, f32::max);
-            let c = f
-                .output
-                .rows
-                .iter()
-                .map(|r| norm(r).powi(2))
-                .sum::<f32>()
-                .sqrt();
-            norm(&f.input) * m / (1.0 - g) * c * (1.0 + n.width.get()) * n.wet.to_amplitude().get()
-        }
     }
 
-    realization_contract!(freezable());
+    crate::realization_contract!(freezable(), Lti, reverb);
 
-    use crate::contract::realization::{Defect, Defective, cases};
+    use crate::contract::cases::realization as cases;
+    use crate::contract::flaws::{Defect, Defective};
 
     fn defective(defect: Defect) -> Defective<FdnDesign> {
         Defective {
@@ -741,6 +803,48 @@ mod tests {
         fails(cases::wet_gain(&defective(Defect::WetIgnored)), "wet gain");
     }
 
+    /// The cases added by step 1b fail on an FDN with the defect their mutation
+    /// names: the ramp cases (`landed`, `stream_clock`), which a realization that
+    /// does not ramp cannot fail, and the response cases on the mixing network.
+    #[test]
+    fn the_new_cases_fail_on_their_defects() {
+        use crate::fdn::Flaw;
+        // landed: the first retarget goes to another model and ramps to the target.
+        fails(cases::landed(&defective(Defect::RampFirst)), "did not land");
+        // landed: a reset that empties the lines and keeps the ramps mid-way.
+        let keeps = Defective {
+            inner: freezable(),
+            defect: Defect::None,
+            tweak: |k| k.flawed(Flaw::ResetKeepsRamps),
+        };
+        fails(cases::landed(&keeps), "reset() mid-ramp");
+        // stream clock: a ramp that restarts at every call of `process`.
+        let restarts = Defective {
+            inner: freezable(),
+            defect: Defect::None,
+            tweak: |k| k.flawed(Flaw::RestartClock),
+        };
+        fails(cases::stream_clock(&restarts), "blocks of");
+        // response and decay on the mixing network.
+        fails(
+            cases::response(&defective(Defect::LoopGain(1.05))),
+            "impulse response's spectrum",
+        );
+        fails(
+            cases::response(&defective(Defect::UnslewedGain(1.1))),
+            "impulse response's spectrum",
+        );
+        fails(
+            cases::decay(&defective(Defect::LoopGain(1.05))),
+            "spectral radius",
+        );
+        fails(cases::linear(&defective(Defect::Tanh)), "additivity");
+        fails(
+            cases::linear(&defective(Defect::PeriodicGain)),
+            "shift invariance",
+        );
+    }
+
     /// No hook of the FDN is vacuous: every case that Freeverb leaves empty has
     /// something to run here, so a case that stops running fails this test.
     ///
@@ -748,14 +852,14 @@ mod tests {
     #[test]
     fn no_hook_of_the_fdn_is_vacuous() {
         let d = freezable();
-        assert!(!RealizationCase::freeze_pairs(&d).is_empty());
-        assert!(!RealizationCase::width_pairs(&d).is_empty());
-        assert!(!RealizationCase::wet_pairs(&d).is_empty());
-        assert!(!DesignCase::pre_delay_pairs(&d).is_empty());
-        assert!(!DesignCase::size_pairs(&d).is_empty());
-        assert!(!DesignCase::diffusion_pairs(&d).is_empty());
-        assert!(DesignCase::frozen(&d, &with(|c| c.freeze = true)));
-        assert!(DesignCase::pre_delay(&d, &with(|c| c.pre_delay = Seconds(0.1))).get() > 0.0);
+        assert!(!ReverbCase::freeze_pairs(&d).is_empty());
+        assert!(!ReverbCase::width_pairs(&d).is_empty());
+        assert!(!ReverbCase::wet_pairs(&d).is_empty());
+        assert!(!ReverbCase::pre_delay_pairs(&d).is_empty());
+        assert!(!ReverbCase::size_pairs(&d).is_empty());
+        assert!(!ReverbCase::diffusion_pairs(&d).is_empty());
+        assert!(ReverbCase::frozen(&d, &with(|c| c.freeze = true)));
+        assert!(ReverbCase::pre_delay(&d, &with(|c| c.pre_delay = Seconds(0.1))).get() > 0.0);
     }
 
     fn design_of(d: &FdnDesign, c: &FdnControls) -> Network {
@@ -883,7 +987,7 @@ mod tests {
     /// `FdnKernel::begin_chunk` loses 0.25 dB and fails.
     #[test]
     fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
-        use crate::network::{Realization, Setup};
+        use crate::{Effect, Realization, Setup};
         let rate = SampleRate(48_000.0);
         let d = freezable();
         let mut k = d.realization();

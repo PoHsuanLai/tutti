@@ -25,13 +25,23 @@
 //! - Reverb: [`Freeverb`], mono in and stereo out, a damped comb bank and
 //!   all-pass chain whose comb feedback and damping are set through its
 //!   [`Realization`] impl.
+//! - The model (design 024): the traits every family of processor answers to.
+//!   A [`Design`] maps a family's controls to its [`Model`](Design::Model); a
+//!   [`System`] is what every model answers (its [`latency`](System::latency) and
+//!   [`tail`](System::tail)) and [`Lti`] is the class of a linear time-invariant one
+//!   (its [`frequency_response`](Lti::frequency_response), [`spectral_radius`](Lti::spectral_radius),
+//!   [`l1_norm`](Lti::l1_norm) and [`hinf_norm`](Lti::hinf_norm), with [`Complex64`]);
+//!   a [`Realization`] runs a model (one of several), its block shape an [`Effect`],
+//!   prepared from a [`Setup`] and the design's [`Sizes`] and moved to each model by
+//!   `retarget`. [`Ceiling`] (with a family's [`Range`], [`MaxDecay`] for a reverb),
+//!   [`Effort`] and [`Cadence`] are the engineering that sizes and schedules it.
 //! - Reverb model (design 022): a [`Network`] of [`Stage`]s, a feedback delay
-//!   network as a plain fixed-capacity value, with analytic queries
-//!   ([`Network::rt60`], [`tail`](Network::tail), [`is_stable`](Network::is_stable),
-//!   the densities) and a [`Bounds`] worst case; a [`Design`] maps its controls
-//!   to one ([`FreeverbDesign`] for [`Freeverb`]) and names the [`Realization`] that runs
-//!   it, prepared from a [`Setup`] and moved to each network by `retarget`; [`loop_gain`] and
-//!   [`rt60_from_gain`] are the RT60 formula both ways.
+//!   network as a plain fixed-capacity value, a [`System`] and an [`Lti`], with
+//!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
+//!   [`is_stable`](Lti::is_stable), the densities) and a [`Bounds`] worst case;
+//!   [`FreeverbDesign`] and [`FdnDesign`] map controls to one, for [`Freeverb`] and
+//!   [`FdnKernel`]; [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula both
+//!   ways.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Frame-by-bin data: [`StftGeometry`] (window, hop, shape and rate, validated
 //!   together), and [`Grid`] with its typed indices; [`enum@Error`] and [`Result`].
@@ -43,12 +53,24 @@
 //!   compensates its delay and tail, sized by a [`ChunkSize`].
 //! - Dither: [`DitherNoise`], the seeded rectangular or triangular ([`DitherShape`])
 //!   noise that decorrelates quantization, continuous across blocks.
+//!
+//! ## Feature flags
+//!
+//! - `contract` (off by default): the `contract` module, the cases a [`Design`] and
+//!   its [`Realization`] are held to, with `design_contract!` and
+//!   `realization_contract!`. Test support: enable it from a dev-dependency.
+//!
+//! ## Import paths
+//!
+//! Every public item is re-exported at the crate root; import from there
+//! (`tutti_dsp::RealFft`). The only public module is `contract`, which has paths of
+//! its own.
 
 mod allpass;
 mod balance;
 mod buffer;
-#[cfg(test)]
-mod contract;
+#[cfg(feature = "contract")]
+pub mod contract;
 mod control;
 mod convolver;
 mod delay;
@@ -66,6 +88,7 @@ mod window;
 
 mod fdn;
 mod fdn_design;
+mod model;
 mod network;
 mod resample;
 mod reverb;
@@ -98,15 +121,19 @@ pub use filter::{
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
+pub use model::{
+    Cadence, Ceiling, Channels, Design, Effect, Effort, Lti, MaxDecay, MaxDecayError, Range,
+    Realization, Ring, Setup, Sizes, System,
+};
 pub use network::{
-    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Channels, Design, Effort, Fdn,
-    FirSummary, Full, Gains, Inline, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES,
-    MAX_TAPS, Matrix, Modulation, Network, OutputMap, Realization, Ring, Setup, Stage, Tap, Taps,
-    loop_gain, pre_delay_frames, rt60_from_gain,
+    Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Full, Gains, Inline, Line,
+    MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation, Network,
+    OutputMap, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
+pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;

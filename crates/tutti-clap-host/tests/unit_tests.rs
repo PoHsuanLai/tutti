@@ -244,7 +244,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
             type_: CLAP_EVENT_NOTE_OFF,
             flags: 0,
         },
-        note_id: note_id_for(CHANNEL, NOTE),
+        note_id: note_id_for(MidiChannel::of(CHANNEL), NoteNumber::of(NOTE)),
         port_index: 0,
         // The wildcard under test.
         channel: -1,

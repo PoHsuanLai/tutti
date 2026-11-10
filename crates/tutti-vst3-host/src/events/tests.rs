@@ -390,7 +390,7 @@ fn a_custom_dimension_stages_and_reads_back() {
 fn expression_dimension_stages_and_reads_back() {
     let expr = NoteExpressionValue {
         sample_offset: 3,
-        note_id: note_id_for(2, 64),
+        note_id: note_id_for(MidiChannel::of(2), NoteNumber::of(64)),
         expression_type: NoteExpressionType::Expression,
         value: 0.25,
     };
@@ -500,7 +500,7 @@ fn note_on_and_off_share_a_derived_note_id() {
         midi::note_off(MidiGroup::FIRST, MidiChannel::of(5), 67, 0),
     ))
     .unwrap();
-    let expected = note_id_for(5, 67);
+    let expected = note_id_for(MidiChannel::of(5), NoteNumber::of(67));
     match (on.payload, off.payload) {
         (Payload::NoteOn(a), Payload::NoteOff(b)) => {
             assert_eq!(a.noteId, expected);
@@ -509,8 +509,14 @@ fn note_on_and_off_share_a_derived_note_id() {
         _ => panic!("expected NoteOn + NoteOff"),
     }
     // Different (channel, note) → different id.
-    assert_ne!(note_id_for(5, 67), note_id_for(5, 68));
-    assert_ne!(note_id_for(5, 67), note_id_for(6, 67));
+    assert_ne!(
+        note_id_for(MidiChannel::of(5), NoteNumber::of(67)),
+        note_id_for(MidiChannel::of(5), NoteNumber::of(68))
+    );
+    assert_ne!(
+        note_id_for(MidiChannel::of(5), NoteNumber::of(67)),
+        note_id_for(MidiChannel::of(6), NoteNumber::of(67))
+    );
 }
 
 #[test]
@@ -529,7 +535,10 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
     let vst3 = encode(&event).expect("per-note bend should map");
     let expr = vst3.to_note_expression().expect("is a note expression");
     assert_eq!(expr.expression_type, NoteExpressionType::Tuning);
-    assert_eq!(expr.note_id, note_id_for(5, 67));
+    assert_eq!(
+        expr.note_id,
+        note_id_for(MidiChannel::of(5), NoteNumber::of(67))
+    );
     assert_eq!(expr.sample_offset, 12);
     assert!((expr.value - 0.5).abs() < 0.01, "center bend → 0.5");
     // It is NOT a MIDI channel-voice event.
@@ -632,7 +641,10 @@ fn per_note_controller_maps_known_indices_only() {
             // not against `expression_type_id` — comparing the table
             // to itself is what let the off-by-one at index 4 ship.
             assert_eq!(e.typeId, 5, "CC74 → kBrightnessTypeID");
-            assert_eq!(e.noteId, note_id_for(0, 60));
+            assert_eq!(
+                e.noteId,
+                note_id_for(MidiChannel::of(0), NoteNumber::of(60))
+            );
         }
         other => panic!("expected Brightness note expression, got {other:?}"),
     }
@@ -748,7 +760,7 @@ fn legacy_cc(control: u8, channel: i8, value: i8, value2: i8) -> LegacyCcOut {
 fn note_expression_int_round_trips_with_its_sign() {
     let value = NoteExpressionIntValue {
         sample_offset: 9,
-        note_id: note_id_for(1, 50),
+        note_id: note_id_for(MidiChannel::of(1), NoteNumber::of(50)),
         type_id: 3,
         value: -1234,
     };
@@ -759,7 +771,10 @@ fn note_expression_int_round_trips_with_its_sign() {
     assert_eq!(raw.value, (-1234i64).cast_unsigned(), "the same 64 bits");
     let back = event.to_expression_int().expect("int expr");
     assert_eq!(back.value, -1234);
-    assert_eq!(back.note_id, note_id_for(1, 50));
+    assert_eq!(
+        back.note_id,
+        note_id_for(MidiChannel::of(1), NoteNumber::of(50))
+    );
     assert_eq!((back.type_id, back.sample_offset), (3, 9));
     assert!(event.to_midi().is_none(), "not a MIDI message");
 }
@@ -787,7 +802,7 @@ fn harmony_values_round_trip_through_a_list() {
     };
     let text = Utf16Text {
         sample_offset: 4,
-        note_id: note_id_for(2, 64),
+        note_id: note_id_for(MidiChannel::of(2), NoteNumber::of(64)),
         type_id: 7,
         text: utf16("staccato"),
     };
@@ -828,7 +843,10 @@ fn harmony_values_round_trip_through_a_list() {
         let back = by_kind(|p| matches!(p, Payload::ExpressionText(_)))
             .to_expression_text(staged.text)
             .expect("text");
-        assert_eq!((back.note_id, back.type_id), (note_id_for(2, 64), 7));
+        assert_eq!(
+            (back.note_id, back.type_id),
+            (note_id_for(MidiChannel::of(2), NoteNumber::of(64)), 7)
+        );
         assert_eq!(back.text, text.text);
         assert!(
             by_kind(|p| matches!(p, Payload::Chord(_)))
@@ -1255,29 +1273,29 @@ mod message {
         // bits 7-0 of word 0.
         assert_eq!(
             expression_type(&[0x4003_3C07, 0x8000_0000]),
-            (0, note_id_for(3, 60))
+            (0, note_id_for(MidiChannel::of(3), NoteNumber::of(60)))
         );
         assert_eq!(
             expression_type(&[0x4003_3C0A, 0x8000_0000]),
-            (1, note_id_for(3, 60))
+            (1, note_id_for(MidiChannel::of(3), NoteNumber::of(60)))
         );
         assert_eq!(
             expression_type(&[0x4003_3C4A, 0x8000_0000]),
-            (5, note_id_for(3, 60))
+            (5, note_id_for(MidiChannel::of(3), NoteNumber::of(60)))
         );
         assert!(encode(&raw(&[0x4003_3C01, 0x8000_0000])).is_none());
         // Assignable Per-Note Controller (status 1).
         assert_eq!(
             expression_type(&[0x4013_3C07, 0x8000_0000]),
-            (0, note_id_for(3, 60))
+            (0, note_id_for(MidiChannel::of(3), NoteNumber::of(60)))
         );
         assert_eq!(
             expression_type(&[0x4013_3C0A, 0x8000_0000]),
-            (1, note_id_for(3, 60))
+            (1, note_id_for(MidiChannel::of(3), NoteNumber::of(60)))
         );
         assert_eq!(
             expression_type(&[0x4013_3C4A, 0x8000_0000]),
-            (5, note_id_for(3, 60))
+            (5, note_id_for(MidiChannel::of(3), NoteNumber::of(60)))
         );
         // Poly Pressure (status A): MIDI 2.0 carries 32 bits; MIDI 1.0 0x21
         // widens to 0x4200_0000.

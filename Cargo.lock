@@ -4636,9 +4636,14 @@ dependencies = [
 name = "tutti-plugin-probe"
 version = "0.0.1"
 dependencies = [
+ "libloading 0.8.9",
+ "tempfile",
  "tutti-clap-host",
+ "tutti-fixtures",
  "tutti-plugin-types",
+ "tutti-types",
  "tutti-vst2-host",
+ "tutti-vst2-test-plugin",
  "tutti-vst3-host",
 ]
 

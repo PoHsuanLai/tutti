@@ -107,18 +107,29 @@ pub fn result_tmp_path(result: &Path) -> PathBuf {
 /// Writes `outcome` to `result`: to `<result>.tmp` first, flushed to disk, then
 /// renamed over `result`, so a reader sees all of it or none.
 ///
+/// The staging file is made with `create_new`, so a file or a symlink already at
+/// that name is an error and is never written through; the host gives the probe
+/// a directory of its own for that reason.
+///
 /// # Errors
 ///
-/// Any I/O error from the write or the rename; the staging file is removed.
+/// Any I/O error from the write or the rename (the staging file is removed
+/// unless it was not ours to begin with, `AlreadyExists`).
 pub fn write_result(result: &Path, outcome: &ProbeOutcome) -> io::Result<()> {
     let tmp = result_tmp_path(result);
     let staged = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
         file.write_all(&encode_result(outcome))?;
         file.sync_all()
     })();
     let moved = staged.and_then(|()| std::fs::rename(&tmp, result));
-    if moved.is_err() {
+    if moved
+        .as_ref()
+        .is_err_and(|e| e.kind() != io::ErrorKind::AlreadyExists)
+    {
         let _ = std::fs::remove_file(&tmp);
     }
     moved
@@ -148,6 +159,24 @@ mod tests {
             name: "Test".into(),
             ..PluginDescriptor::default()
         })
+    }
+
+    /// A file already at the staging name is refused, never written through
+    /// (the symlink a neighbour planted in a shared directory), and is left alone.
+    ///
+    /// Mutation (run): `create_new(true)` replaced by `create(true)` writes
+    /// through the planted file and fails both assertions.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_staging_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("result");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"mine").unwrap();
+        std::os::unix::fs::symlink(&victim, result_tmp_path(&path)).unwrap();
+        let err = write_result(&path, &described()).expect_err("must refuse");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"mine");
     }
 
     /// Both outcomes survive the file.

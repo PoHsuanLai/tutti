@@ -14,21 +14,23 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tutti_plugin::BridgeError;
-use tutti_plugin::catalog::{PluginDescriptor, probe_record};
+use tutti_plugin::catalog::{
+    DEFAULT_PROBE_TIMEOUT, PluginDescriptor, ProbeLocator, probe_record_with,
+};
 use tutti_plugin_contract::{bundle_of, clap_path, library, vst3_cpp_module, vst3_module};
 use tutti_plugin_db::{PluginDb, ProbeFailure};
 
-/// Points the facade at the probe built in this profile. Each test is a process
-/// under nextest, so the write cannot race a read.
-fn use_built_probe() {
-    // SAFETY: set before any thread of this test reads it.
-    unsafe { std::env::set_var("TUTTI_PLUGIN_PROBE", tutti_fixtures::plugin_probe()) };
-}
-
 /// The one descriptor `probe_record` found at `path`.
 fn probe(path: &Path) -> Result<PluginDescriptor, BridgeError> {
-    use_built_probe();
-    let delta = probe_record(path)?;
+    probe_with_timeout(path, DEFAULT_PROBE_TIMEOUT)
+}
+
+/// [`probe`] under a deadline of the test's choosing. The probe is the one built
+/// in this profile, named through [`ProbeLocator::at`], so nothing writes the
+/// process-global environment.
+fn probe_with_timeout(path: &Path, timeout: Duration) -> Result<PluginDescriptor, BridgeError> {
+    let locator = ProbeLocator::at(tutti_fixtures::plugin_probe());
+    let delta = probe_record_with(path, &locator, timeout)?;
     let mut db = PluginDb::new();
     db.apply(delta);
     let found: Vec<_> = db.plugins().map(|p| p.descriptor.clone()).collect();
@@ -99,7 +101,7 @@ fn a_plugin_that_crashes_in_init_is_a_crash() {
 }
 
 /// **A plugin that never returns from its init is a timeout**, and the probe is
-/// killed rather than waited for.
+/// killed rather than waited for. The deadline is the caller's: two seconds here.
 ///
 /// Mutation (run): the plugin's `InitMode::Hang` arm returning `true` makes the
 /// probe succeed and fails this; the host not killing the child at the deadline
@@ -109,10 +111,11 @@ fn a_plugin_that_crashes_in_init_is_a_crash() {
 fn a_plugin_that_hangs_in_init_times_out() {
     let dir = tempfile::tempdir().unwrap();
     let started = Instant::now();
-    let err = probe(&clap_named(&dir, "init-hang")).expect_err("must not probe");
+    let err = probe_with_timeout(&clap_named(&dir, "init-hang"), Duration::from_secs(2))
+        .expect_err("must not probe");
     assert!(matches!(err, BridgeError::Timeout { .. }), "{err:?}");
     assert!(
-        started.elapsed() < Duration::from_secs(30),
+        started.elapsed() < Duration::from_secs(10),
         "{:?}",
         started.elapsed()
     );

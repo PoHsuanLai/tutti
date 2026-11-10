@@ -289,8 +289,13 @@ and to the set of served formats (which excludes VST2).
   device. Nothing a plugin prints can reach a result, or fill a pipe.
 - **The probe side** is `host/subprocess/probe.rs` (about 120 lines of code, tests aside):
   `ProbeLocator` (`TUTTI_PLUGIN_PROBE`, beside the executable, `PATH`; `at` for
-  a test), spawn, poll `try_wait` to the five second deadline, kill and reap on
-  timeout, then read the file. The file is read after any exit, so a probe that
+  a test), spawn, poll `try_wait` to the caller's deadline (`DEFAULT_PROBE_TIMEOUT`, fifteen
+  seconds, spawn and the plugin's load included; the old socket probe allowed
+  about twelve), kill and reap on timeout, then read the file. The child sits in a
+  `Reaped` guard that kills and waits on drop, so a panic cannot orphan it, and
+  the result lives in a private `tempfile` directory (`create_new` for the
+  staging file), not a name in the shared temp directory. `catalog::probe_record_with`
+  takes the `ProbeLocator` and the deadline; `probe_record` is the defaults. The file is read after any exit, so a probe that
   finished at the deadline counts. No file and an exit is
   `BridgeError::ProcessCrashed`; no file at the deadline is `Timeout`; a file that
   is not whole is `IpcError` (not blacklistable: it is a fault of ours, not
@@ -300,9 +305,9 @@ and to the set of served formats (which excludes VST2).
   are untouched.
 - **Deleted from the server:** `HostMessage::ProbePlugin` and its session arm
   and `handle_probe`, `Plugin::probe`, the four `*Instance::probe` functions and
-  `a_probe_does_not_activate` (the VST2 loader's pin that a probe does not
-  resume; the property is now the probe's own code, which has no activation to
-  call). There was no `TUTTI_PROBE_MODE` in the server itself: it was set by the
+  `a_probe_does_not_activate`, which moved to the probe crate
+  (`tests/vst2_not_activated.rs`, through the crate's `describe`; the crate is
+  also a library so a test can call it in-process). There was no `TUTTI_PROBE_MODE` in the server itself: it was set by the
   host and never read, the server serving a probe as an ordinary request. Removing
   a variant from the request enum renumbers the tags after it, so
   `PROTOCOL_VERSION` is 21 and the tag test pins `LoadPlugin` as 0.

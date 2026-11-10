@@ -11,48 +11,70 @@
 use super::locate::ProbeLocator;
 use crate::error::{BridgeError, Result};
 use crate::protocol::PluginDescriptor;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use tutti_plugin_types::{ProbeOutcome, read_result, result_tmp_path};
+use tutti_plugin_types::{ProbeOutcome, read_result};
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a probe may take, spawn and the plugin's load included, unless the
+/// caller says otherwise. A cold plugin can take seconds to `dlopen`; the old
+/// socket probe allowed about twelve.
+pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(5);
 
 /// Reads a plugin's descriptor in a `plugin-probe` subprocess, so a plugin that
-/// crashes or hangs in its init does not take the caller down.
+/// crashes or hangs in its init does not take the caller down. `locator` names
+/// the binary (a test passes [`ProbeLocator::at`], so none writes the
+/// process-global environment) and `timeout` is the deadline.
 ///
 /// # Errors
 ///
 /// [`BridgeError::ProbeNotFound`] if the binary cannot be located;
 /// [`BridgeError::LoadFailed`] if the probe ran to its end and the plugin could
 /// not be read; [`BridgeError::ProcessCrashed`] if it died without a result;
-/// [`BridgeError::Timeout`] if it did not finish in five seconds (it is killed).
-pub fn probe_metadata(plugin_path: &Path) -> Result<PluginDescriptor> {
-    probe_metadata_with(&ProbeLocator::Search, plugin_path, PROBE_TIMEOUT)
-}
-
-/// [`probe_metadata`], with the binary and the deadline named rather than
-/// searched for and fixed: the seam a test substitutes through, so none writes
-/// the process-global environment.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn probe_metadata_with(
+/// [`BridgeError::Timeout`] if it did not finish within `timeout` (it is killed).
+pub fn probe_metadata_with(
     locator: &ProbeLocator,
     plugin_path: &Path,
     timeout: Duration,
 ) -> Result<PluginDescriptor> {
     let probe = locator.resolve()?;
-    let result = next_result_path();
-    let _ = std::fs::remove_file(&result);
-    let _ = std::fs::remove_file(result_tmp_path(&result));
+    // A directory of the probe's own (mode 0700), removed when it drops, on a
+    // panic as well: the result path is not a name in a shared directory.
+    let dir = tempfile::Builder::new()
+        .prefix("tutti-probe-")
+        .tempdir()
+        .map_err(BridgeError::Io)?;
+    let result = dir.path().join("result");
 
-    let outcome = run(&probe, plugin_path, &result, timeout);
-
-    let _ = std::fs::remove_file(&result);
-    let _ = std::fs::remove_file(result_tmp_path(&result));
-    match outcome? {
+    let child = Command::new(&probe)
+        .arg(plugin_path)
+        .arg(&result)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(BridgeError::Io)?;
+    let mut child = Reaped(child);
+    let status = wait(&mut child.0, timeout);
+    // The file is read even after a timeout or a bad exit: it is the only proof
+    // of finishing, and a probe that finished at the deadline did.
+    let file = read_result(&result).map_err(|e| BridgeError::IpcError(e.to_string()));
+    let outcome = match (file, status) {
+        (Ok(Some(outcome)), _) => outcome,
+        (Err(e), _) => return Err(e),
+        (Ok(None), Waited::Exited) => return Err(BridgeError::ProcessCrashed),
+        (Ok(None), Waited::TimedOut) => {
+            return Err(BridgeError::Timeout {
+                operation: "probe".into(),
+                duration_ms: timeout.as_millis() as u64,
+                partial: false,
+            });
+        }
+        (Ok(None), Waited::Lost(e)) => return Err(BridgeError::Io(e)),
+    };
+    match outcome {
         ProbeOutcome::Described(descriptor) => Ok(descriptor),
         ProbeOutcome::Failed(message) => Err(BridgeError::load_from_server(plugin_path, message)),
         // `ProbeOutcome` is `#[non_exhaustive]`: an outcome from a newer probe.
@@ -62,29 +84,15 @@ pub(super) fn probe_metadata_with(
     }
 }
 
-fn run(probe: &Path, plugin: &Path, result: &Path, timeout: Duration) -> Result<ProbeOutcome> {
-    let mut child = Command::new(probe)
-        .arg(plugin)
-        .arg(result)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(BridgeError::Io)?;
-    let status = wait(&mut child, timeout);
-    // The file is read even after a timeout or a bad exit: it is the only proof
-    // of finishing, and a probe that finished at the deadline did.
-    let file = read_result(result).map_err(|e| BridgeError::IpcError(e.to_string()));
-    match (file, status) {
-        (Ok(Some(outcome)), _) => Ok(outcome),
-        (Err(e), _) => Err(e),
-        (Ok(None), Waited::Exited) => Err(BridgeError::ProcessCrashed),
-        (Ok(None), Waited::TimedOut) => Err(BridgeError::Timeout {
-            operation: "probe".into(),
-            duration_ms: timeout.as_millis() as u64,
-            partial: false,
-        }),
-        (Ok(None), Waited::Lost(e)) => Err(BridgeError::Io(e)),
+/// A probe child that is killed and reaped when it drops, so no path out of
+/// [`probe_metadata_with`], a panic included, leaves a hung probe behind.
+struct Reaped(Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        // Both fail harmlessly on a child that has already been reaped.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -115,19 +123,11 @@ fn wait(child: &mut Child, timeout: Duration) -> Waited {
     }
 }
 
-fn next_result_path() -> PathBuf {
-    static PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "tutti-probe-{}-{}.result",
-        std::process::id(),
-        PROBE_COUNTER.fetch_add(1, Ordering::Relaxed),
-    ))
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     /// A `plugin-probe` stand-in: a shell script given the plugin path as `$1`
@@ -146,8 +146,9 @@ mod tests {
     /// A probe that does not finish by the deadline is killed and reaped, and the
     /// caller is told it timed out.
     ///
-    /// Mutation (run): `wait` without the `child.kill()` blocks until the
-    /// stand-in's 30 s sleep ends, and the elapsed-time assertion fails.
+    /// Mutation (run): `wait` without its `child.kill()` and `Reaped::drop`
+    /// without its `kill()` block until the stand-in's 30 s sleep ends, and the
+    /// elapsed-time assertion fails.
     #[test]
     fn a_probe_that_hangs_is_killed_at_the_deadline() {
         let dir = TempDir::new().unwrap();
@@ -234,5 +235,76 @@ mod tests {
             probe(&missing, Duration::from_secs(1)),
             Err(BridgeError::ProbeNotFound)
         ));
+    }
+
+    /// The deadline is the caller's: the same probe, one that outlasts 300 ms and
+    /// not 5 s, times out under the one and is a plain crash under the other.
+    ///
+    /// Mutation (run): `probe_metadata_with` using a fixed 100 ms instead of
+    /// `timeout` makes the second a `Timeout` and fails it.
+    #[test]
+    fn the_deadline_is_the_callers() {
+        let dir = TempDir::new().unwrap();
+        let locator = stand_in(&dir, "sleep 1");
+        let short = probe(&locator, Duration::from_millis(300));
+        assert!(
+            matches!(short, Err(BridgeError::Timeout { .. })),
+            "{short:?}"
+        );
+        let long = probe(&locator, Duration::from_secs(10));
+        assert!(matches!(long, Err(BridgeError::ProcessCrashed)), "{long:?}");
+    }
+
+    /// The default allows a cold plugin well past the old five seconds.
+    #[test]
+    fn the_default_deadline_is_fifteen_seconds() {
+        assert_eq!(DEFAULT_PROBE_TIMEOUT, Duration::from_secs(15));
+    }
+
+    /// **A panic between spawn and the end of the wait cannot orphan the probe**:
+    /// the guard kills and reaps on the way out.
+    ///
+    /// Mutation (run): `Reaped::drop` doing nothing leaves the child running and
+    /// fails the assertion.
+    #[test]
+    fn a_probe_is_killed_when_its_guard_unwinds() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = Reaped(child);
+            panic!("between spawn and wait");
+        }));
+        assert!(unwound.is_err());
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "probe {pid} survived its guard");
+    }
+
+    /// The result file is in a directory of the probe's own, not a predictable
+    /// name in the shared temp directory, and the directory is gone after.
+    ///
+    /// Mutation (run): the result path put back at
+    /// `temp_dir().join("tutti-probe-<pid>.result")` fails the parent check.
+    #[test]
+    fn the_result_lives_in_a_private_directory_that_is_removed() {
+        let dir = TempDir::new().unwrap();
+        let seen = dir.path().join("seen");
+        let locator = stand_in(&dir, &format!("echo \"$2\" > {}", seen.display()));
+        let _ = probe(&locator, Duration::from_secs(10));
+        let result = PathBuf::from(std::fs::read_to_string(&seen).unwrap().trim());
+        let parent = result.parent().unwrap();
+        assert_ne!(parent, std::env::temp_dir(), "a shared directory");
+        assert!(
+            parent
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("tutti-probe-")
+        );
+        assert!(!parent.exists(), "the probe's directory outlived it");
     }
 }

@@ -26,8 +26,9 @@
 //! # What *is* here
 //!
 //! Probing one plugin, which is the one catalog operation that cannot be a
-//! direct call: it spawns a subprocess and waits on a handshake, up to about
-//! seven seconds if the plugin hangs. [`ProbePlugin`] runs it on the task pool.
+//! direct call: it spawns a `plugin-probe` subprocess and waits for its result
+//! file, up to fifteen seconds if the plugin hangs. [`ProbePlugin`] runs it on
+//! the task pool.
 
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};
 use bevy_ecs::prelude::*;

@@ -20,7 +20,8 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use tutti_plugin_types::{PluginDescriptor, ProbeOutcome, write_result};
+use tutti_plugin_probe::describe;
+use tutti_plugin_types::{MainThread, ProbeOutcome, write_result};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -28,7 +29,12 @@ fn main() -> ExitCode {
         eprintln!("usage: plugin-probe <plugin-path> <result-file>");
         return ExitCode::from(2);
     };
-    let outcome = match describe(Path::new(&path)) {
+    // This process runs one probe on one thread, which is its main thread.
+    let Ok(main) = MainThread::claim() else {
+        eprintln!("plugin-probe: the main thread is already claimed");
+        return ExitCode::from(3);
+    };
+    let outcome = match describe(&main, Path::new(&path)) {
         Ok(descriptor) => ProbeOutcome::Described(descriptor),
         Err(message) => ProbeOutcome::Failed(message),
     };
@@ -42,77 +48,4 @@ fn main() -> ExitCode {
             ExitCode::from(3)
         }
     }
-}
-
-/// The descriptor of the plugin at `path`, by its extension, or the reason it
-/// could not be read.
-fn describe(path: &Path) -> Result<PluginDescriptor, String> {
-    if !path.exists() {
-        return Err(format!("Plugin not found: {}", path.display()));
-    }
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    match extension.as_str() {
-        #[cfg(feature = "vst3")]
-        "vst3" => vst3(path),
-        #[cfg(feature = "clap")]
-        "clap" => clap(path),
-        #[cfg(feature = "vst2")]
-        "vst" | "dll" | "so" => vst2(path),
-        _ => Err(format!("Unsupported format: .{extension}")),
-    }
-}
-
-/// The module a bundle directory holds for this target, or `path` itself when it
-/// is a file (or names nothing, which the loader reports in its own words).
-#[cfg(any(feature = "clap", feature = "vst3"))]
-fn module_of(path: &Path) -> Result<std::path::PathBuf, String> {
-    use tutti_plugin_types::bundle::{ModuleKind, native_arch_subdirs, native_module_in_bundle};
-    if path.is_file() || !path.is_dir() {
-        return Ok(path.to_path_buf());
-    }
-    // `native_*`, not `any_*`: a module built for another CPU is a load failure
-    // with extra steps, and "no module for this architecture" says more.
-    native_module_in_bundle(path, ModuleKind::Vst3).ok_or_else(|| {
-        format!(
-            "no plugin module in {} for this architecture (looked in Contents/{{{}}})",
-            path.display(),
-            native_arch_subdirs().join(", ")
-        )
-    })
-}
-
-#[cfg(feature = "clap")]
-fn clap(path: &Path) -> Result<PluginDescriptor, String> {
-    use tutti_clap_host::{ClapLoaded, descriptor_of};
-    use tutti_plugin_types::EditorPresence;
-    let module = module_of(path)?;
-    let library = (module != path).then_some(module.as_path());
-    let info = ClapLoaded::probe(path, library).map_err(|e| e.to_string())?;
-    // A probe does not instantiate, and an editor is a property of an instance.
-    Ok(descriptor_of(&info, EditorPresence::Unknown))
-}
-
-#[cfg(feature = "vst3")]
-fn vst3(path: &Path) -> Result<PluginDescriptor, String> {
-    use tutti_plugin_types::EditorPresence;
-    use tutti_vst3_host::{Vst3Loaded, descriptor_of};
-    let module = module_of(path)?;
-    let info = Vst3Loaded::probe(&module).map_err(|e| e.to_string())?;
-    Ok(descriptor_of(&info, EditorPresence::Unknown))
-}
-
-/// VST2 has no probe short of a load: the plugin's init runs, it is not
-/// activated, and the instance is dropped.
-#[cfg(feature = "vst2")]
-fn vst2(path: &Path) -> Result<PluginDescriptor, String> {
-    use tutti_plugin_types::{Control, MainThread};
-    use tutti_vst2_host::Vst2Loaded;
-    // This process runs one probe on one thread, which is its main thread.
-    let main = MainThread::claim().map_err(|e| e.to_string())?;
-    let loaded = Vst2Loaded::load(&main, path).map_err(|e| e.to_string())?;
-    Ok(Control::info(&loaded).clone())
 }

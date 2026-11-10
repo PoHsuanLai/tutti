@@ -1,8 +1,10 @@
 //! The subprocess probe, as the probe `tutti-plugin-db` scans with.
 
+use super::subprocess::{DEFAULT_PROBE_TIMEOUT, ProbeLocator, probe_metadata_with};
 use crate::error::{BridgeError, LoadStage};
 use crate::protocol::PluginDescriptor;
 use std::path::Path;
+use std::time::Duration;
 use tracing::debug;
 use tutti_plugin_db::{
     Delta, FileFacts, FileRow, PluginFormat, ProbeFailure, probe_plugin_fallback,
@@ -50,7 +52,11 @@ pub(crate) fn probe_plugin(
     path: &Path,
     format: PluginFormat,
 ) -> Result<PluginDescriptor, ProbeFailure> {
-    interpret_probe(super::subprocess::probe_metadata(path), path, format)
+    interpret_probe(
+        probe_metadata_with(&ProbeLocator::Search, path, DEFAULT_PROBE_TIMEOUT),
+        path,
+        format,
+    )
 }
 
 /// Decide what a raw probe result means. Split from [`probe_plugin`] so the
@@ -80,8 +86,8 @@ fn interpret_probe(
 ///
 /// Spawns a short-lived `plugin-probe` subprocess to read the plugin's
 /// metadata, so a plugin that crashes while being probed does not take the
-/// caller down. Blocks for up to a few seconds; call it off the audio and
-/// UI threads. The delta puts the same row a scan stores; apply it with
+/// caller down. Blocks for up to the deadline (fifteen seconds by default); call
+/// it off the audio and UI threads. The delta puts the same row a scan stores; apply it with
 /// [`PluginDb::apply`](tutti_plugin_db::PluginDb::apply).
 ///
 /// # Errors
@@ -93,6 +99,21 @@ fn interpret_probe(
 /// the plugin brought the probe down, and an I/O variant when it cannot be
 /// spawned.
 pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
+    probe_record_with(path, &ProbeLocator::Search, DEFAULT_PROBE_TIMEOUT)
+}
+
+/// [`probe_record`] with the `plugin-probe` binary named by `locator` and the
+/// deadline `timeout` (the default is [`DEFAULT_PROBE_TIMEOUT`], fifteen
+/// seconds, which a plugin that loads slowly from cold may need).
+///
+/// # Errors
+///
+/// As [`probe_record`].
+pub fn probe_record_with(
+    path: impl AsRef<Path>,
+    locator: &ProbeLocator,
+    timeout: Duration,
+) -> Result<Delta, BridgeError> {
     let path = path.as_ref();
     let facts = FileFacts::read(path);
     let format = facts.format.ok_or_else(|| BridgeError::LoadFailed {
@@ -101,7 +122,7 @@ pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
         reason: "unrecognized plugin extension".to_string(),
     })?;
 
-    let descriptor = super::subprocess::probe_metadata(path)?;
+    let descriptor = probe_metadata_with(locator, path, timeout)?;
 
     // Keyed like a scan keys it, by canonical path, so an alias and the real
     // path are one row.

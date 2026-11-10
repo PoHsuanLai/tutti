@@ -383,7 +383,9 @@ if "tutti-plugin-db" in pkgs:
 # `-ipc` and `-host` crates it will never gain. Nothing depends on it (a binary).
 if "tutti-plugin-probe" in pkgs:
     only("tutti-plugin-probe", ["tutti-plugin-types", "tutti-clap-host", "tutti-vst3-host",
-                                "tutti-vst2-host", "tutti-au-host"], ("normal", "build", "dev"))
+                                "tutti-vst2-host", "tutti-au-host"])
+    if "tutti-plugin" in deps_of("tutti-plugin-probe"):
+        fail("tutti-plugin-probe depends on tutti-plugin, even as a dev-dependency")
     for name in pkgs:
         if "tutti-plugin-probe" in deps_of(name):
             fail(f"{name} depends on tutti-plugin-probe; nothing does, it is a binary")

@@ -3,10 +3,10 @@
 //! Production search order: `TUTTI_PLUGIN_SERVER` env → next to current exe →
 //! parent dir (for `examples/` subdir) → `PATH`.
 //!
-//! That search is wrapped in a [`ServerLocator`] value rather than performed by
+//! That search is wrapped in a `ServerLocator` value rather than performed by
 //! a bare function, because "which binary do we spawn?" is a decision two call
 //! sites make ([`launch`](fn@super::launch) and
-//! [`probe_metadata`](super::probe_metadata)) and a test needs to answer
+//! [`probe_metadata_with`](super::probe_metadata_with)) and a test needs to answer
 //! differently. Reading the environment inside the search made the answer
 //! **process-global**: the only way to point a test at a stand-in server was
 //! `std::env::set_var`, which every other thread in the binary sees. Under a
@@ -81,7 +81,7 @@ impl ServerLocator {
     }
 }
 
-/// Which `plugin-probe` binary to spawn: the same choice [`ServerLocator`] makes
+/// Which `plugin-probe` binary to spawn: the same choice `ServerLocator` makes
 /// for the server, with its own binary and environment variable
 /// (`TUTTI_PLUGIN_PROBE`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub enum ProbeLocator {
     #[default]
     Search,
     /// Spawn exactly this binary, searching nowhere; a missing file is an
-    /// error, as for [`ServerLocator::Explicit`].
+    /// error, as for `ServerLocator::Explicit`.
     Explicit(PathBuf),
 }
 

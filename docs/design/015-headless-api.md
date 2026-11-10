@@ -1031,7 +1031,7 @@ default = ["session"]
 session = ["dep:tutti-session"]
 device = ["dep:tutti-cpal", "tutti-session?/device"]
 midi = ["dep:tutti-midi-types", "dep:tutti-midi-file", "dep:tutti-midi-runtime",
-        "tutti-core/midi", "tutti-session?/midi"]
+        "tutti-session?/midi"]
 # ...each feature forwards the same way
 ```
 
@@ -1872,6 +1872,9 @@ addition). Specifics:
 - **Project files and session save/load.** "Session" here means a running
   engine, not a document (§11).
 - **Any change to the graph, the node contract or the RT rules.**
+- **Devices that come and go.** What `Phase::Poll` does when a card is
+  unplugged, replugged or replaced as the default is
+  [018](018-audio-devices.md)'s; this design only gives it the phase.
 
 ## 11. Decisions
 

@@ -1043,6 +1043,9 @@ that the running plan holds the edit.
 
 ## Migration
 
+> This section is the migration record. What is built is in the design
+> sections above and in `CLAUDE.md`; where this text and those disagree, they win.
+
 Each step shipped green and was reversible until the nodes were ported
 natively. The steps below record each as it stood when it was made: where
 one says `Net`, `NodeId`, `Legacy` or fundsp "still" does something, that
@@ -1184,7 +1187,7 @@ through the graph any more).
 
 `UnitStore`, delta delivery, serial executor, PDC-as-pass, crossfade,
 silence. `Engine` takes the new runtime instead of `NetBackend`
-(`engine.rs:52`). Benchmark against `docs/benchmarks.md`'s graph-render table
+(`engine.rs:52`). Benchmark against `docs/archive/benchmarks.md`'s graph-render table
 before flipping anything.
 
 **`Engine` renders an `Executor`.** (Superseded: the `Net`
@@ -4950,6 +4953,10 @@ request and a plugin that parallelises its own voices ran them serially.
 
 ## Per-node rewrite plan
 
+> This section is part of the migration record. What is built is in the design
+> sections and in `CLAUDE.md`; the verdicts below were the plan, and the two
+> rows marked below did not go that way.
+
 This section, like Migration, records each step as it stood when it was
 made: what it says `Net`, `Legacy`, `AudioUnit` or fundsp "still" does was
 true then, and all of it is deleted ([Delete fundsp](#delete-fundsp)).
@@ -5029,10 +5036,10 @@ slices are ignored on every path, and fewer is a caller bug (a
 
 | Node | Replaced by |
 |---|---|
-| `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input |
+| `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input. **Kept as a node** (see "SoundFont effects as graph nodes" below and CLAUDE.md, "Summing is a node's job") |
 | `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
-| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by `tutti_types::Fold`, built from two `ChannelTopology` values |
-| `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
+| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by `tutti_types::Fold`, built from two `ChannelTopology` values. **Open: edge coercion not built; the node stays until decided** |
+| `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade). **Kept as a node** (see "SoundFont effects as graph nodes" below and CLAUDE.md, "Summing is a node's job") |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |
 | Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass. The tap is built (`Op::Tap`, see "Taps" in the runtime); `AudioTap` is gone, and so is the engine's master meter: a meter is an op too (`Op::Meter`, see "Meters" in the runtime), per channel, on the outputs or any port |

@@ -26,13 +26,12 @@ This design does two things.
    format, section 4 ranks what is missing, section 5 sketches the types.
 
 Builds on [016](016-plugin-hosts.md) (`Loaded`, `Processor`, `Controller`) and on
-doc 021 (plugin format and hosting are two axes; a draft on branch
-`docs/plugin-hosting-axes`, its file is `021-plugin-hosting-axes.md`), whose
-probe binary (021 §2.5) carries the honesty probes of §6. It uses the runtime
-tail of [013](013-native-graph.md) as PR #359 (branch
-`feat/reverb-dynamic-tail`) proposes it: `Io::report_tail` and
-`contract::assert_honest_tail`. Numbering: 019 to 021 are drafts on other
-branches, 022 is on `main`.
+[021](021-plugin-hosting-axes.md) (plugin format and hosting are two axes),
+whose probe binary (021 §2.5) carries the honesty probes of §6. It uses the
+runtime tail of [013](013-native-graph.md), which is built (PR #359):
+`Io::report_tail` and `contract::assert_honest_tail`. Numbering: 021, 022 and
+this doc are on `main`; 019, 020 and 024 are drafts on other branches until they
+merge.
 
 ## Summary
 
@@ -641,7 +640,7 @@ impl Processing {
    setter on `Editor` is part of step 2 if one does not exist; the executor's
    record is untouched until the next commit, as the ceiling's own docs require.
 
-`contract::assert_honest_tail` is the node-side check in PR #359 and needs the
+`contract::assert_honest_tail` is the node-side check (built with `report_tail`) and needs the
 node in the test process. A hosted plugin needs the probe (section 6), which runs
 the same experiment out of process.
 
@@ -936,7 +935,7 @@ timeline in `tutti-transport` (regions). A hosted ARA plugin would then be a
 Ordered; each is one reviewable PR that leaves `just ci` green. They run after
 doc 021's structure steps 1 to 8, except where a step names a narrower
 dependency: step 3 needs only 021's step 4c (the probe binary), step 2 needs
-PR #359.
+`Io::report_tail`, which is built (PR #359).
 
 | # | Step | Needs | Test and mutation |
 |---|---|---|---|

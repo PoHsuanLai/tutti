@@ -630,7 +630,7 @@ Each step is one reviewable PR and leaves `just ci` green (with `cargo build -p
 tutti-plugin-server` first). It runs after the AU FFI lane lands, wherever a
 step touches AU files: PRs #350 and #353 extract `tutti-au-ffi` (layer 4), make
 `tutti-au-host` `forbid(unsafe_code)` and move it from layer 4 to 5, and edit
-`tutti-plugin`'s features and `gui/au.rs`. It also runs after 016 step 4 gives AU
+`tutti-plugin`'s features and `gui/au.rs`. It also runs after 016 step 3 gives AU
 a `Loaded`.
 
 | # | Step | Needs AU? | Deletes / adds |
@@ -643,7 +643,7 @@ a `Loaded`.
 | 4c (built) | **The probe binary.** Build `tutti-plugin-probe` (CLAP, VST3, VST2; AU's probe row joins when AU's `Loaded` lands), the file wire, `ProbeLocator` and `tutti-fixtures::plugin_probe`; switch `probe_plugin` (`db_probe.rs`) to it; then delete probe mode (`TUTTI_PROBE_MODE`, `ProbePlugin`, `Plugin::probe`) from the server. `check-layout.sh` row, CLAUDE.md "build first" note. Independent of 4a and 4b | No (AU row later) | -300 in server, +~300 new |
 | 5 | Generic server: `Served<F: OutOfProcess>` and `served!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` (the whole VST2 loader), `plugin.rs`, `format_host.rs`'s capability traits. Supersedes 016 step 4's `AnyPlugin` | AU row waits; the macro takes it later | -5.5k |
 | 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs` | No | `Backend` gone |
-| 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 4) | -2.1k |
+| 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 3) | -2.1k |
 | 8 | Cleanup: the unused `OpenEditor` message and handler, stale Cargo comments and features, 016 and CLAUDE.md and engineering-notes updates | After 7 | docs |
 
 Steps 1, 2, 4a, 4b, 4c, 5 and 6 (without the AU rows) can start before AU is ready;

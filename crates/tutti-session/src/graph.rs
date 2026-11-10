@@ -47,7 +47,9 @@ use tutti_graph::{
     ParamSet, Prepare, TapReader, TapWriter, Transport,
 };
 use tutti_graph::{Edge, InPort, NodeKey, OutPort, Source};
-use tutti_graph::{EventTapId, MeterId, MeterSpec, TapAlign, TapId};
+use tutti_graph::{
+    EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec, TapAlign, TapId,
+};
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
@@ -757,6 +759,46 @@ impl Graph {
             });
         }
         Ok(self.insert(InletNode::new(ring)).0)
+    }
+
+    /// Opens an event inlet: MIDI a thread of your own pushes into the graph,
+    /// each event on its frame. A ring of `capacity` events is read by an
+    /// [`EventInletNode`] (unwired; its one event output feeds what you
+    /// connect it to, like any node), and the writer is the producer's end:
+    /// [`push`](EventInletWriter::push) for an [`At`](tutti_types::At) from one
+    /// thread. The inverse of [`open_event_tap`](Self::open_event_tap). `capacity`
+    /// is the ring, the waiting list and the port's declared event capacity
+    /// (the old queues' default was 256).
+    ///
+    /// Nothing blocks and what does not fit is counted, each in its own count
+    /// on the writer ([`lost`](EventInletWriter::lost),
+    /// [`evicted`](EventInletWriter::evicted),
+    /// [`refused`](EventInletWriter::refused), and
+    /// [`late`](EventInletWriter::late) for what was found past). A producer
+    /// has no rate to match: an event names a frame, or a
+    /// [`Moment`](tutti_types::Moment) that carries its rate, so there is
+    /// nothing to refuse and nothing resampled.
+    ///
+    /// The fork is **silent**: an export of a graph that holds the inlet
+    /// renders it with no events, as an offline render has none.
+    ///
+    /// Several producers are several inlets, merged by the graph's event
+    /// fan-in. A handle that must be `Clone` shares the writer behind a lock of
+    /// its own, taken on control threads only.
+    ///
+    /// # Panics
+    ///
+    /// If `capacity` is 0 or does not fit a `u32`.
+    pub fn open_event_inlet(&mut self, capacity: usize) -> (NodeKey, EventInletWriter) {
+        let (node, writer) = EventInletNode::standalone(capacity);
+        (self.add_event_inlet(node), writer)
+    }
+
+    /// [`open_event_inlet`](Self::open_event_inlet) over a node the producer's
+    /// layer already built ([`EventInletNode::standalone`]), for a producer
+    /// that must hold its writer before the graph sees the node.
+    pub fn add_event_inlet(&mut self, node: EventInletNode) -> NodeKey {
+        self.insert(node).0
     }
 
     /// [`insert`](Self::insert) a [`SessionNode`], its params addressed by

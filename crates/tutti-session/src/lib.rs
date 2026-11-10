@@ -94,7 +94,7 @@ pub use graph::{
     GraphSource, LIVE_MAX_BLOCK, ReplaceRefused,
 };
 #[cfg(feature = "midi")]
-pub use instrument::{InstrumentHandle, Moment, NotInstrument, SendError};
+pub use instrument::{InstrumentHandle, NotInstrument, SendError};
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiOutDrops, MidiOutRouter,

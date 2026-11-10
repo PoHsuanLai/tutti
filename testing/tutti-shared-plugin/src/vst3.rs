@@ -504,7 +504,7 @@ impl IEditControllerTrait for Plugin {
 #[cfg(target_os = "linux")]
 type HostContext = std::sync::Arc<view::SharedContext>;
 #[cfg(not(target_os = "linux"))]
-type HostContext = ();
+type HostContext = std::sync::Arc<()>;
 
 /// The class that refuses `setProcessing(1)`.
 const STUBBORN_CID: TUID = uid(0x5453_4850, 0x5348_4152, 0x4544_5445, 0x5354_0003);

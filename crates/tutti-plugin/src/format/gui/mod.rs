@@ -94,6 +94,8 @@ pub(crate) trait PluginEditor: Send {
 }
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
+// Only the VST3 arm loads on the main thread token; a build without it ignores it.
+#[cfg_attr(not(feature = "vst3"), allow(unused_variables))]
 pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dyn PluginEditor>> {
     use tutti_plugin_db::{PluginFormat, format_from_path};
 

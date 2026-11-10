@@ -134,9 +134,9 @@ impl PluginEditor for Vst3GuiInstance {
         })
     }
 
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
         self.inner
-            .poll_editor_resize_request()
+            .poll_editor_resize_request(main)
             .map(|sz| EditorSize {
                 width: sz.width,
                 height: sz.height,

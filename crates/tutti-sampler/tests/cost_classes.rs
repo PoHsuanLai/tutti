@@ -11,10 +11,9 @@ use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };
-use tutti_graph::{Edge, InPort, OutPort, Source};
-use tutti_nodes::ChannelSumNode;
+use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoicePool, VoiceSource, Wave};
-use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, StretchFactor};
+use tutti_types::{Beat, Bpm, SampleRate, Samples, StretchFactor};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;
@@ -66,7 +65,7 @@ impl<N: Node> Node for Undeclared<N> {
 /// [`READS`] placed memory reads, each starting a little later, and
 /// [`STRETCHED`] stretched voices, on a pool of `workers` when more than
 /// one. `declared`: the reads as shipped, or wrapped to declare nothing.
-/// `bus`: every node summed (a `Light` bus) onto two global outputs, or
+/// `bus`: every node summed by the graph (a fan-in onto each of two global outputs), or
 /// each on two global outputs of its own (a track wired straight out).
 fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
@@ -78,15 +77,9 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executo
                 .expect("a worker pool"),
         )));
     }
-    const SUM: NodeKey = NodeKey(1_000);
     let sources = READS + STRETCHED;
-    if bus {
-        ed.insert(
-            SUM,
-            "sum",
-            ChannelSumNode::new(sources as usize, ChannelLayout::STEREO),
-        );
-    }
+    // Two silent global outputs, which the fan-in below fills.
+    ed.spec_mut().topology.set_outputs([Source::Zero; 2]);
     let mut outputs = Vec::new();
     for k in 0..sources {
         let key = NodeKey(k + 1);
@@ -104,25 +97,17 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executo
         for c in 0..2u16 {
             let from = Source::Node(OutPort { node: key, port: c });
             if bus {
-                let port = InPort {
-                    node: SUM,
-                    port: k as u16 * 2 + c,
-                };
-                ed.spec_mut()
-                    .topology
-                    .edges
-                    .insert(port, vec![Edge::Direct(from)]);
+                // The graph's fan-in: output channel `c` holds every
+                // source's port `c`, and the graph sums them.
+                ed.spec_mut().topology.connect_output(c as usize, from);
             } else {
                 outputs.push(from);
             }
         }
     }
-    if bus {
-        outputs = (0..2)
-            .map(|port| Source::Node(OutPort { node: SUM, port }))
-            .collect();
+    if !bus {
+        ed.spec_mut().topology.set_outputs(outputs);
     }
-    ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

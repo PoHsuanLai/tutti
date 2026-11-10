@@ -1,11 +1,11 @@
 //! **What does one block of each per-sample kernel cost, at 64 and 1024
 //! frames?**
 //!
-//! The nodes here are the summing bus, the waveshaper, the brickwall clip,
+//! The nodes here are the waveshaper, the brickwall clip,
 //! the width adapter, the dynamics (the lookahead limiter, the gate and the
 //! compressor) and the ring-buffer family (the feedback delay, the lookahead
 //! limiter's ring and, with `--features convolution`, the convolver's dry
-//! alignment). Each case
+//! alignment), and one graph, the fan-in sum (the op, through the graph). Each case
 //! drives one node through `process` with whole blocks
 //! (`tutti_graph::contract::Direct`) over broadband noise, after a few
 //! warm-up blocks. A `fed` case feeds the node's first param port per frame,
@@ -25,8 +25,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
-    BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DesignNode,
-    DistortionNode, DownmixNode, FdnControls, FreeverbNode, GateNode, LimiterNode, ShapeKind,
+    BrickwallLimiterNode, CompressorNode, DelayLineNode, DesignNode, DistortionNode, DownmixNode,
+    FdnControls, FreeverbNode, GateNode, LimiterNode, ShapeKind,
 };
 use tutti_types::{ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds};
 
@@ -77,28 +77,59 @@ fn run<N: Node>(
     g.finish();
 }
 
+/// The graph's fan-in (`Op::Sum`, doc 013 "Audio fan-in sums"), measured
+/// through the graph: `sources` groups of `width` global input channels, each
+/// output channel summing its channel of every group. No node runs, so the
+/// figure is the op's (the old `ChannelSumNode` rows, which this replaces,
+/// were the node's).
 fn channel_sum(c: &mut Criterion) {
-    run(
-        c,
-        "channel_sum",
-        "8x2",
-        || ChannelSumNode::new(8, ChannelLayout::STEREO),
-        None,
-    );
-    run(
-        c,
-        "channel_sum",
-        "16x1",
-        || ChannelSumNode::new(16, ChannelLayout::MONO),
-        None,
-    );
-    run(
-        c,
-        "channel_sum",
-        "2x6",
-        || ChannelSumNode::new(2, ChannelLayout::from(6u16)),
-        None,
-    );
+    use tutti_graph::{Editor, Prepare, Source, Transport};
+    use tutti_types::{ChannelLayout, Samples};
+
+    let mut g = c.benchmark_group("channel_sum");
+    for (case, sources, width) in [("8x2", 8u16, 2u16), ("16x1", 16, 1), ("2x6", 2, 6)] {
+        for block in BLOCKS {
+            let (mut ed, mut exec) = Editor::new(Prepare::new(SR, Samples(block)));
+            ed.spec_mut().topology.inputs = ChannelLayout::from(sources * width);
+            ed.spec_mut()
+                .topology
+                .set_outputs(vec![Source::Zero; width as usize]);
+            for channel in 0..width {
+                for k in 0..sources {
+                    ed.spec_mut()
+                        .topology
+                        .connect_output(channel as usize, Source::Global(k * width + channel));
+                }
+            }
+            ed.commit().expect("commits");
+            exec.apply_pending();
+            ed.collect();
+
+            let mut state = 0x2545_f491_u32;
+            let input: Vec<Vec<f32>> = (0..sources * width)
+                .map(|_| {
+                    (0..block)
+                        .map(|_| {
+                            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                            (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+                        })
+                        .collect()
+                })
+                .collect();
+            let input: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
+            let mut out = vec![vec![0.0f32; block]; width as usize];
+            let t = Transport::default();
+            g.throughput(Throughput::Elements((block * width as usize) as u64));
+            g.bench_function(BenchmarkId::new(case, block), |b| {
+                b.iter(|| {
+                    let mut outs: Vec<&mut [f32]> = out.iter_mut().map(Vec::as_mut_slice).collect();
+                    exec.process(block, &t, black_box(&input), &mut outs);
+                    black_box(outs[0][block - 1]);
+                })
+            });
+        }
+    }
+    g.finish();
 }
 
 /// A drive that moves every frame, between 1 and 4.

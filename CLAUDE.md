@@ -353,9 +353,11 @@ crates/          everything shipped; directory name = package name; no nesting
                  `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
                  the parallel executor's claims and job gate, `with_no_denormals`,
                  and the `ArcLend`/`Loan`/`Reader` re-export. Holds the lock-free
-                 and `unsafe` runtime structure, with every loom model, and the one
+                 and `unsafe` runtime structure, with every loom model, the one
                  thread-priority call (`request_priority`, which reports what the OS
-                 granted); depends on `arc-lend` alone (and `thread-priority`),
+                 granted) and the one OS clock read (`monotonic_ns`, the clock a
+                 plugin's system time is on); depends on `arc-lend` alone (and
+                 `thread-priority`, and `libc` / `windows` for the clock),
                  `publish = false`
   tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
@@ -626,7 +628,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates), and
   the one thread-priority call, `request_priority` (a request for an ordinary-
   scheduler raise, never real time, whose `PriorityOutcome` is what a caller
-  logs; the plugin server and the sampler's streamer both use it). Keep
+  logs; the plugin server and the sampler's streamer both use it), and the
+  one OS clock read, `monotonic_ns` (the OS's monotonic clock in nanoseconds,
+  on the OS's epoch so a plugin server reads the same timebase; not
+  `Instant`, which is process-local). Keep
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are

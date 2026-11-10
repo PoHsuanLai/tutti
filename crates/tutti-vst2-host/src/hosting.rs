@@ -4,7 +4,9 @@
 use std::path::Path;
 
 use tutti_plugin_types::bundle::{ModuleKind, native_module_path};
-use tutti_plugin_types::{InProcess, Load, LoadStage, MainThread, PluginError, PluginResult};
+use tutti_plugin_types::{
+    InProcess, Load, LoadStage, MainThread, Origin, PluginError, PluginResult,
+};
 
 use crate::control::plugin_error;
 use crate::loaded::Vst2Loaded;
@@ -22,5 +24,9 @@ impl InProcess for Vst2Loaded {
         }
         let module = native_module_path(path, ModuleKind::Vst2)?;
         Vst2Loaded::load(main, &module).map_err(plugin_error)
+    }
+
+    fn origin(&self) -> &Origin {
+        &self.origin
     }
 }

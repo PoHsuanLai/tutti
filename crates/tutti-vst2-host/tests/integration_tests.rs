@@ -194,8 +194,8 @@ mod can_do {
 }
 
 fn render_block(instance: &mut Active, midi: &[MidiEvent]) -> Vec<Vec<f32>> {
-    let inputs = (instance.pins().0.count() as usize).max(1);
-    let outputs = (instance.pins().1.count() as usize).max(1);
+    let inputs = (instance.loaded().pins().0.count() as usize).max(1);
+    let outputs = (instance.loaded().pins().1.count() as usize).max(1);
 
     let input_data = vec![vec![0.0f32; BLOCK]; inputs];
     let mut output_data = vec![vec![0.0f32; BLOCK]; outputs];
@@ -223,7 +223,7 @@ fn editorless_plugin_reports_no_editor() {
     let _guard = lock_probe();
     let instance = load_probe_with(&[]);
     assert!(
-        !instance.metadata().has_editor,
+        !instance.loaded().metadata().has_editor,
         "the probe publishes no editor (effFlagsHasEditor clear), but the host \
          reported has_editor = true — this is the constant-true bug: the host \
          is not asking the plugin"
@@ -236,7 +236,7 @@ fn plugin_with_an_editor_reports_one() {
     let _guard = lock_probe();
     let instance = load_probe_with(&[("TUTTI_VST2_PROBE_EDITOR", "1")]);
     assert!(
-        instance.metadata().has_editor,
+        instance.loaded().metadata().has_editor,
         "the probe published an editor (effFlagsHasEditor set) but the host \
          reported has_editor = false"
     );
@@ -257,6 +257,7 @@ fn opening_an_editor_on_an_editorless_plugin_says_so() {
     let parent = unsafe { tutti_vst2_host::WindowHandle::from_raw(std::ptr::null_mut()) };
 
     let err = instance
+        .loaded_mut()
         .open_editor(&main_thread(), parent)
         .expect_err("a plugin with no editor must not report a successful open");
 
@@ -289,7 +290,7 @@ fn an_explicit_can_do_refusal_beats_the_synth_category() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let meta = instance.metadata();
+    let meta = instance.loaded().metadata();
     assert!(
         !meta.receives_midi,
         "the plugin answered effCanDo(receiveVstMidiEvent) = -1, an explicit \
@@ -319,7 +320,7 @@ fn a_silent_can_do_still_defers_to_the_synth_category() {
     clear_probe_env();
 
     assert!(
-        instance.metadata().receives_midi,
+        instance.loaded().metadata().receives_midi,
         "a plugin answering effCanDo = 0 (don't know) that declares \
          Category::Synth must still be treated as receiving MIDI — that \
          inference is what keeps MIDI-effect plugins from being misclassified"
@@ -339,7 +340,7 @@ fn an_affirmative_can_do_beats_the_effect_category() {
 
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        instance.metadata().receives_midi,
+        instance.loaded().metadata().receives_midi,
         "the plugin answered effCanDo = 1 but the host ignored it"
     );
 
@@ -371,7 +372,7 @@ fn an_undocumented_can_do_answer_is_not_an_affirmative() {
     clear_probe_env();
 
     assert!(
-        !instance.metadata().receives_midi,
+        !instance.loaded().metadata().receives_midi,
         "effCanDo returned an undocumented 42; a plain Effect must not be \
          promoted to a MIDI receiver by a value the spec does not define"
     );
@@ -403,7 +404,7 @@ fn a_maybe_answer_with_declared_output_pins_emits_midi() {
     clear_probe_env();
 
     assert!(
-        instance.metadata().emits_midi,
+        instance.loaded().metadata().emits_midi,
         "the plugin declared 2 MIDI output channels and answered effCanDo = 0 \
          (don't know); the host must read the declaration and treat it as \
          emitting MIDI, or its MIDI output is silently dropped"
@@ -434,7 +435,7 @@ fn a_maybe_answer_without_output_pins_does_not_emit_midi() {
     clear_probe_env();
 
     assert!(
-        !instance.metadata().emits_midi,
+        !instance.loaded().metadata().emits_midi,
         "the plugin declared no MIDI output channels; being a Synth says it \
          emits audio, not MIDI, and must not promote it to a MIDI source"
     );
@@ -461,7 +462,7 @@ fn declared_input_pins_make_a_non_synth_a_midi_receiver() {
     clear_probe_env();
 
     assert!(
-        instance.metadata().receives_midi,
+        instance.loaded().metadata().receives_midi,
         "the plugin declared 1 MIDI input channel and is not a Synth; the \
          declaration is the evidence, and dropping it leaves a MIDI-driven \
          effect classified as receiving nothing"
@@ -494,7 +495,7 @@ fn an_out_of_range_midi_count_is_not_an_answer() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let counts = instance.midi_channel_counts(&main_thread());
+    let counts = instance.loaded().midi_channel_counts(&main_thread());
     assert_eq!(
         counts.inputs, None,
         "0 is what an unimplemented opcode returns, so it must read as \
@@ -527,7 +528,7 @@ fn an_in_range_midi_count_is_reported_verbatim() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let counts = instance.midi_channel_counts(&main_thread());
+    let counts = instance.loaded().midi_channel_counts(&main_thread());
     assert_eq!(counts.inputs, Some(1), "the boundary value 1 must be kept");
     assert_eq!(
         counts.outputs,
@@ -558,7 +559,7 @@ fn an_explicit_refusal_beats_declared_midi_pins() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let meta = instance.metadata();
+    let meta = instance.loaded().metadata();
     assert!(
         !meta.receives_midi && !meta.emits_midi,
         "the plugin declared 4 MIDI channels each way but answered effCanDo = \
@@ -662,16 +663,32 @@ fn parameter_state_round_trips() {
     let _guard = lock_probe();
     let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
-    assert!(instance.write_parameter(pid(0), Normalized::of(0.25)));
-    assert!(instance.write_parameter(pid(1), Normalized::of(0.75)));
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.25))
+    );
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(1), Normalized::of(0.75))
+    );
 
     let state = instance
         .save_state(&main_thread())
         .expect("get_state should succeed");
     assert_eq!(&state[..4], b"PRM\0");
 
-    assert!(instance.write_parameter(pid(0), Normalized::of(0.9)));
-    assert!(instance.write_parameter(pid(1), Normalized::of(0.1)));
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.9))
+    );
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(1), Normalized::of(0.1))
+    );
 
     instance
         .load_state(&main_thread(), &state)
@@ -778,10 +795,10 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
 fn load_and_metadata() {
     let _guard = lock_probe();
     let instance = load_probe();
-    let meta = instance.metadata();
+    let meta = instance.loaded().metadata();
     assert!(!meta.name.is_empty());
     assert!(!meta.id.is_empty());
-    assert!(instance.pins().1.count() > 0);
+    assert!(instance.loaded().pins().1.count() > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -806,7 +823,7 @@ fn a_program_switch_is_bracketed_in_order() {
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        instance.set_program(&main_thread(), 1),
+        instance.loaded_mut().set_program(&main_thread(), 1),
         "program 1 is in range"
     );
 
@@ -833,11 +850,11 @@ fn an_out_of_range_program_dispatches_nothing() {
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        !instance.set_program(&main_thread(), 999),
+        !instance.loaded_mut().set_program(&main_thread(), 999),
         "999 is past numPrograms"
     );
     assert!(
-        !instance.set_program(&main_thread(), -1),
+        !instance.loaded_mut().set_program(&main_thread(), -1),
         "a negative index is not a program"
     );
 
@@ -856,7 +873,7 @@ fn the_declared_programs_are_listed_with_their_names() {
     let _guard = lock_probe();
     let instance = load_probe_with(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    let programs = instance.programs(&main_thread());
+    let programs = instance.loaded().programs(&main_thread());
     assert_eq!(programs.len(), 3, "the probe declared 3 programs");
     assert_eq!(
         programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
@@ -881,7 +898,7 @@ fn an_unnamed_program_keeps_its_index() {
         ("TUTTI_VST2_PROBE_SERVICED_PROGRAMS", "2"),
     ]);
 
-    let programs = instance.programs(&main_thread());
+    let programs = instance.loaded().programs(&main_thread());
     assert_eq!(programs.len(), 4, "all declared slots are reported");
     assert_eq!(
         programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
@@ -915,7 +932,7 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
-        instance.set_bypass(&main_thread(), true),
+        instance.loaded_mut().set_bypass(&main_thread(), true),
         "the probe accepts effSetBypass but the host reported a refusal"
     );
     assert_eq!(
@@ -926,7 +943,7 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
     );
 
     assert!(
-        instance.set_bypass(&main_thread(), false),
+        instance.loaded_mut().set_bypass(&main_thread(), false),
         "leaving bypass was refused"
     );
     assert_eq!(
@@ -955,7 +972,7 @@ fn a_refused_soft_bypass_is_reported() {
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
-        !instance.set_bypass(&main_thread(), true),
+        !instance.loaded_mut().set_bypass(&main_thread(), true),
         "the probe refuses effSetBypass; reporting success would leave the \
          host believing a bypass took effect when the plugin is still \
          processing"
@@ -986,7 +1003,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
     set_can_do(&path, can_do::YES, 0);
     let advertising = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        advertising.supports_soft_bypass(&main_thread()),
+        advertising.loaded().supports_soft_bypass(&main_thread()),
         "the probe answered effCanDo(bypass) = 1 and the host ignored it"
     );
     drop(advertising);
@@ -995,7 +1012,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
     set_can_do(&path, can_do::MAYBE, 0);
     let silent = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        !silent.supports_soft_bypass(&main_thread()),
+        !silent.loaded().supports_soft_bypass(&main_thread()),
         "effCanDo = 0 is 'don't know', not a yes; a host that treats it as one \
          relies on a bypass the plugin never promised"
     );
@@ -1017,7 +1034,7 @@ fn the_effect_name_is_preferred_over_the_product_string() {
     let instance = load_probe_with(&[("TUTTI_VST2_PROBE_EFFECT_NAME", "Probe Effect 45")]);
 
     assert_eq!(
-        instance.metadata().name,
+        instance.loaded().metadata().name,
         "Probe Effect 45",
         "the plugin answered effGetEffectName with its own name; the host \
          reported the product string instead, which every plugin in a suite \
@@ -1038,7 +1055,7 @@ fn declining_the_effect_name_falls_back_to_the_product_string() {
     let instance = load_probe();
 
     assert_eq!(
-        instance.metadata().name,
+        instance.loaded().metadata().name,
         tutti_vst2_test_plugin::PROBE_NAME,
         "the probe declines effGetEffectName; the host must fall back to \
          effGetProductString rather than reporting the empty buffer"
@@ -1062,7 +1079,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     let _guard = lock_probe();
     let instance = load_probe();
 
-    let before = instance.parameter_list();
+    let before = instance.loaded().parameter_list();
     let defaults: Vec<f64> = before.iter().map(|p| p.range.default_value()).collect();
     assert!(
         defaults.iter().any(|&d| d != 0.0),
@@ -1072,10 +1089,10 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 
     // Move every parameter well away from where it started.
     for p in &before {
-        assert!(instance.write_parameter(p.id, Normalized::of(0.9)));
+        assert!(instance.loaded().write_parameter(p.id, Normalized::of(0.9)));
     }
 
-    let after = instance.parameter_list();
+    let after = instance.loaded().parameter_list();
     for (i, p) in after.iter().enumerate() {
         assert_eq!(
             p.range.default_value(),
@@ -1104,7 +1121,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 fn parameter_count_and_names() {
     let _guard = lock_probe();
     let instance = load_probe();
-    let params = instance.parameter_list();
+    let params = instance.loaded().parameter_list();
     assert_eq!(params.len(), 4, "the probe declares four parameters");
     for param in &params {
         assert!(
@@ -1128,7 +1145,9 @@ fn parameter_set_get_roundtrip() {
     };
     let write = |i, v| {
         assert!(
-            instance.write_parameter(pid(i), Normalized::clamped(v)),
+            instance
+                .loaded()
+                .write_parameter(pid(i), Normalized::clamped(v)),
             "the probe must expose setParameter"
         );
     };
@@ -1146,12 +1165,13 @@ fn parameter_info_lookup() {
     let _guard = lock_probe();
     let instance = load_probe();
     let info = instance
+        .loaded()
         .parameter_info(pid(0))
         .expect("param 0 should exist");
     assert_eq!(info.id, pid(0));
     assert!(!info.name.is_empty());
     assert!(
-        instance.parameter_info(pid(99_999)).is_none(),
+        instance.loaded().parameter_info(pid(99_999)).is_none(),
         "an out-of-range index must not be serviced"
     );
 }
@@ -1213,8 +1233,8 @@ fn process_with_transport() {
         .with_time_signature(TimeSignature::default())
         .with_loop(true, 0.0, 4.0);
 
-    let input_data = vec![vec![0.0f32; BLOCK]; instance.pins().0.count() as usize];
-    let mut output_data = vec![vec![0.0f32; BLOCK]; instance.pins().1.count() as usize];
+    let input_data = vec![vec![0.0f32; BLOCK]; instance.loaded().pins().0.count() as usize];
+    let mut output_data = vec![vec![0.0f32; BLOCK]; instance.loaded().pins().1.count() as usize];
 
     let input_slices: Vec<&[f32]> = input_data.iter().map(|v| v.as_slice()).collect();
     let mut output_slices: Vec<&mut [f32]> =

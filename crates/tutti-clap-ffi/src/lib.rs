@@ -40,7 +40,9 @@ pub use menu::builder_for_test;
 pub use menu::{MenuItem, MenuTarget};
 #[cfg(feature = "clap-extras")]
 pub use plugin::PortConfigRequest;
-pub use plugin::{ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortKind};
+pub use plugin::{
+    ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortKind, off_thread_drops,
+};
 pub use pool::{GraphPool, PoolHandle, TaskPool};
 pub use roles::{AudioClaim, LifecycleClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};

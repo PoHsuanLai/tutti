@@ -1047,15 +1047,19 @@ fn dropping_a_plugin_destroys_its_open_editor() {
     switch_u32(b"tutti_test_plugin_set_gui_mode\0", 0);
 }
 
-/// A drop off the thread that claimed the main role calls nothing in the
-/// plugin: `gui.destroy` and `destroy` are main-thread entries, so the
-/// instance is leaked instead.
+/// A drop off the main thread calls nothing in the plugin there, and does not skip the
+/// destruction: `gui.destroy` and `destroy` are main-thread entries, so the whole `Plugin` is
+/// handed to the main thread (`defer_to_main`) and destroyed at its next `run_deferred`, once,
+/// and the drop is counted.
 ///
-/// Mutation: drop the thread comparison at the top of `Plugin`'s drop: the
-/// other thread destroys the editor and the balance reads 0.
+/// Mutation (run): drop the thread comparison at the top of `Plugin`'s drop: the other thread
+/// destroys the editor and the first balance reads 0. Mutation (run): drop the
+/// `defer_to_main` call: the tick runs nothing and the balance stays 1 (the instance leaks).
+/// Mutation (run): drop the counter increment: `off_thread_drops` stays 0.
 #[test]
-fn a_drop_off_the_main_thread_leaks_the_instance_instead_of_calling_it() {
+fn a_drop_off_the_main_thread_is_destroyed_on_the_main_threads_next_tick() {
     let _g = lock();
+    let main = main_thread();
     switch_u32(b"tutti_test_plugin_set_gui_mode\0", 1);
     gui_reset();
     let mut plugin = load(Arc::default());
@@ -1063,14 +1067,21 @@ fn a_drop_off_the_main_thread_leaks_the_instance_instead_of_calling_it() {
         // SAFETY: the reference plugin never dereferences its parent.
         unsafe { tutti_plugin_types::WindowHandle::from_raw(std::ptr::null_mut()) }
     };
-    plugin
-        .open_embedded(&main_thread(), &parent, 1.0)
-        .expect("opens");
+    plugin.open_embedded(&main, &parent, 1.0).expect("opens");
+    let before = tutti_clap_ffi::off_thread_drops();
     std::thread::spawn(move || drop(plugin)).join().unwrap();
     assert_eq!(
         gui_capture().create_balance,
         1,
         "nothing was called on the wrong thread"
     );
+    assert_eq!(tutti_clap_ffi::off_thread_drops(), before + 1, "counted");
+    assert!(tutti_plugin_types::run_deferred(&main) >= 1);
+    assert_eq!(
+        gui_capture().create_balance,
+        0,
+        "the main thread's tick destroyed the editor and the instance"
+    );
+    assert_eq!(tutti_plugin_types::run_deferred(&main), 0, "once");
     switch_u32(b"tutti_test_plugin_set_gui_mode\0", 0);
 }

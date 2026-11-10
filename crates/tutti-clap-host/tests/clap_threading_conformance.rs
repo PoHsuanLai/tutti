@@ -219,10 +219,10 @@ fn host_answers_thread_check_correctly_at_every_call_site() {
     // `process` sets `callback_requested`; honouring it is what runs
     // `on_main_thread`, which is the sixth site.
     assert!(
-        callback_requested(&mut inst),
+        callback_requested(inst.loaded_mut()),
         "the plugin called request_callback() from process; the host must record it"
     );
-    inst.on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     let cap = probe.capture();
 
@@ -260,8 +260,8 @@ fn reset_runs_under_the_audio_thread_claim() {
     inst.reset();
     // Runs strictly after `reset` returned: if the claim leaked, the host would
     // still consider this thread the audio thread here.
-    assert!(callback_requested(&mut inst));
-    inst.on_main_thread(&main_thread());
+    assert!(callback_requested(inst.loaded_mut()));
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert_eq!(
@@ -291,10 +291,10 @@ fn audio_thread_role_is_released_when_process_returns() {
     let mut inst = probe.activate();
 
     drive_block(&mut inst, 64);
-    assert!(callback_requested(&mut inst));
+    assert!(callback_requested(inst.loaded_mut()));
     // Runs after `process` returned; if the claim leaked, the host would still
     // consider this thread the audio thread here.
-    inst.on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert_roles(&cap, Site::Process, false, true, "process");
@@ -324,18 +324,18 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
     let mut inst = probe.activate();
 
     assert!(
-        !callback_requested(&mut inst),
+        !callback_requested(inst.loaded_mut()),
         "no callback should be pending before the plugin asks for one"
     );
 
     drive_block(&mut inst, 64);
 
     assert!(
-        callback_requested(&mut inst),
+        callback_requested(inst.loaded_mut()),
         "the plugin called request_callback() inside process; the host must record it"
     );
     assert!(
-        !callback_requested(&mut inst),
+        !callback_requested(inst.loaded_mut()),
         "polling must consume the request — a non-consuming poll makes a host \
          loop call on_main_thread every iteration forever"
     );
@@ -347,7 +347,7 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
          response to the poll"
     );
 
-    inst.on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(&main_thread());
     assert_eq!(
         probe.capture().sites[Site::OnMainThread as usize].visits,
         1,
@@ -381,7 +381,7 @@ fn request_restart_from_process_reaches_the_host() {
     let mut inst = probe.activate();
 
     assert!(
-        !restart_requested(&mut inst),
+        !restart_requested(inst.loaded_mut()),
         "no restart should be pending before the plugin asks"
     );
 
@@ -389,11 +389,11 @@ fn request_restart_from_process_reaches_the_host() {
     drive_block(&mut inst, 64);
 
     assert!(
-        restart_requested(&mut inst),
+        restart_requested(inst.loaded_mut()),
         "the plugin called request_restart() inside process; the host must record it"
     );
     assert!(
-        !restart_requested(&mut inst),
+        !restart_requested(inst.loaded_mut()),
         "taking must consume — otherwise a host restarts the plugin on every \
          frame after the first request"
     );
@@ -432,7 +432,7 @@ fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
         .map_err(|(_, e)| e)
         .expect("activates");
     assert!(!inst.is_processing(), "no block has run");
-    inst.set_plain_value(&main_thread(), id, 2.0);
+    inst.loaded_mut().set_plain_value(&main_thread(), id, 2.0);
     assert_roles(
         &probe.capture(),
         Site::ParamsFlush,
@@ -457,15 +457,15 @@ fn request_process_is_recorded_independently_of_restart() {
     drive_block(&mut inst, 64);
 
     assert!(
-        inst.take_process_requested(),
+        inst.loaded().take_process_requested(),
         "the plugin called request_process() inside process; the host must record it"
     );
     assert!(
-        !restart_requested(&mut inst),
+        !restart_requested(inst.loaded_mut()),
         "request_process() must not raise a restart — they are different requests"
     );
     assert!(
-        !inst.take_process_requested(),
+        !inst.loaded().take_process_requested(),
         "take_process_requested() must consume the flag"
     );
 }
@@ -484,7 +484,10 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
 
     probe.command(CMD_REQUEST_RESTART);
     drive_block(&mut inst, 64);
-    assert!(restart_requested(&mut inst), "restart was requested");
+    assert!(
+        restart_requested(inst.loaded_mut()),
+        "restart was requested"
+    );
 
     // The embedder's response: drop back to `ClapLoaded`, then re-activate.
     let loaded = inst.deactivate();
@@ -548,7 +551,7 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
     let mut inst = probe.activate();
     drive_block(&mut inst, 64);
 
-    let before = inst.sample_rate();
+    let before = inst.loaded().sample_rate();
     let target = if before == 48_000.0 {
         44_100.0
     } else {
@@ -563,7 +566,7 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
         .expect("the reference plugin must accept an ordinary DAW sample rate");
 
     assert_eq!(
-        inst.sample_rate(),
+        inst.loaded().sample_rate(),
         target,
         "the host must report the rate it activated at; a stale reading here \
          means `process` would size its scratch from one rate while the plugin \
@@ -628,7 +631,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 
     // Nothing registered yet: polling must fire nothing.
     assert_eq!(
-        inst.poll_timers(&main_thread()),
+        inst.loaded_mut().poll_timers(&main_thread()),
         0,
         "no timers are registered, so poll_timers must fire none"
     );
@@ -638,8 +641,8 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     // honouring it is what gets us to `on_main_thread`.
     probe.command(CMD_REGISTER_TIMER);
     drive_block(&mut inst, 64);
-    assert!(callback_requested(&mut inst));
-    inst.on_main_thread(&main_thread());
+    assert!(callback_requested(inst.loaded_mut()));
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -657,7 +660,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 
     // Fire it. One poll, one callback — no clock.
     assert_eq!(
-        inst.poll_timers(&main_thread()),
+        inst.loaded_mut().poll_timers(&main_thread()),
         1,
         "a registered timer must fire on the next poll"
     );
@@ -682,7 +685,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 
     // Fires again — the timer is periodic, not one-shot.
     assert_eq!(
-        inst.poll_timers(&main_thread()),
+        inst.loaded_mut().poll_timers(&main_thread()),
         1,
         "a registered timer is periodic; one fire must not consume it"
     );
@@ -695,8 +698,8 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     // Unregister, again from the main thread.
     probe.command(CMD_UNREGISTER_TIMER);
     drive_block(&mut inst, 64);
-    assert!(callback_requested(&mut inst));
-    inst.on_main_thread(&main_thread());
+    assert!(callback_requested(inst.loaded_mut()));
+    inst.loaded_mut().on_main_thread(&main_thread());
     assert!(
         probe.capture().timer_unregistered,
         "host unregister_timer() returned false for an id it issued"
@@ -707,7 +710,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     // dereference freed state on the next tick.
     let before = probe.capture().sites[Site::OnTimer as usize].visits;
     assert_eq!(
-        inst.poll_timers(&main_thread()),
+        inst.loaded_mut().poll_timers(&main_thread()),
         0,
         "an unregistered timer must not fire"
     );
@@ -738,11 +741,11 @@ fn host_routes_plugin_log_lines_at_every_severity() {
     // test measures routing, not the thread model (which the tests above cover).
     probe.command(CMD_LOG_ALL_SEVERITIES);
     drive_block(&mut inst, 64);
-    assert!(callback_requested(&mut inst));
+    assert!(callback_requested(inst.loaded_mut()));
     // Drain anything the load/activate path logged so the comparison below sees
     // only the probe's lines.
-    let _ = inst.drain_log();
-    inst.on_main_thread(&main_thread());
+    let _ = inst.loaded().drain_log();
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -754,7 +757,7 @@ fn host_routes_plugin_log_lines_at_every_severity() {
         "the probe emits one line per CLAP severity"
     );
 
-    let got = inst.drain_log();
+    let got = inst.loaded().drain_log();
     let want: Vec<(i32, &str)> = vec![
         (CLAP_LOG_DEBUG, "tutti-probe severity debug"),
         (CLAP_LOG_INFO, "tutti-probe severity info"),
@@ -781,12 +784,12 @@ fn host_routes_plugin_log_lines_at_every_severity() {
     );
 
     assert!(
-        inst.drain_log().is_empty(),
+        inst.loaded().drain_log().is_empty(),
         "drain_log() must consume — a caller that drains twice must not see the \
          same lines again"
     );
     assert_eq!(
-        inst.log_lines_dropped(),
+        inst.loaded().log_lines_dropped(),
         0,
         "seven lines is far below the retention bound; nothing should have been dropped"
     );
@@ -889,8 +892,8 @@ fn a_timer_unregistered_from_deactivate_is_accepted_and_does_not_fire_after() {
     let mut inst = probe.activate();
     probe.command(CMD_REGISTER_TIMER);
     drive_block(&mut inst, 64);
-    assert!(callback_requested(&mut inst));
-    inst.on_main_thread(&main_thread());
+    assert!(callback_requested(inst.loaded_mut()));
+    inst.loaded_mut().on_main_thread(&main_thread());
     assert!(probe.capture().timer_registered);
 
     probe.command(CMD_UNREGISTER_TIMER_IN_DEACTIVATE);

@@ -4268,6 +4268,7 @@ dependencies = [
  "clap-sys",
  "libc",
  "libloading 0.8.9",
+ "log",
  "tutti-clap-ffi",
  "tutti-clap-test-plugin",
  "tutti-fixtures",

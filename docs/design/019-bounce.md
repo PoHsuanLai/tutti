@@ -467,7 +467,7 @@ No question is open.
 
 ## 11. Implementation plan
 
-Each step is one PR, keeps `just ci` green, and passes its own tests; E1, E2
+Each step is one PR, keeps `cargo xtask ci` green, and passes its own tests; E1, E2
 and E3 land first or are rebased on. Steps 1 to 4 are `tutti-export` and can
 proceed in parallel with E3.
 

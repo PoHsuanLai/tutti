@@ -25,6 +25,7 @@
 //! bit-identical output to a node nothing can modulate, at the cost of one
 //! branch.
 
+use crate::ramp::LastGood;
 use std::sync::Arc;
 use tutti_dsp::{ShapeKind, Shaper};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
@@ -43,6 +44,9 @@ pub struct DistortionNode {
     drive: Param<Drive>,
     shaper: Shaper,
     last_drive: f32,
+    /// The last finite drive read from the cell or the port: an infinite one
+    /// would build an infinitely hard shaper (a NaN is already inert).
+    good: LastGood,
     /// Audio channel width (as many inputs as outputs). The shaper is
     /// stateless and channel-shared, so widening is purely the port count.
     layout: ChannelLayout,
@@ -78,6 +82,8 @@ impl DistortionNode {
             drive: Param::new(drive),
             shaper: Shaper::build(kind, d),
             last_drive: d,
+            // An infinite initial drive reads as 0 here, so the first block rebuilds.
+            good: LastGood::new(d, 0.0),
             layout: ChannelLayout::from_count(channels.into().count().max(1)),
         }
     }
@@ -99,7 +105,7 @@ impl DistortionNode {
     /// the shapers carry no z-state, so reconstruction is just a field swap.
     #[inline]
     fn maybe_update(&mut self) {
-        let d = self.drive.load().get();
+        let d = self.good.read(self.drive.load().get());
         if (d - self.last_drive).abs() > 1e-6 {
             self.shaper = Shaper::build(self.kind, d);
             self.last_drive = d;
@@ -127,6 +133,7 @@ impl Clone for DistortionNode {
             drive: self.drive.handle(),
             shaper: self.shaper,
             last_drive: self.last_drive,
+            good: self.good,
             layout: self.layout,
         }
     }
@@ -186,6 +193,7 @@ impl Node for DistortionNode {
                 };
                 let first = &mut first[..size];
                 for (h, &d) in first.iter_mut().zip(drive) {
+                    let d = self.good.read(d);
                     self.maybe_update_modulated(d.max(0.0));
                     *h = self.shaper.hardness();
                 }

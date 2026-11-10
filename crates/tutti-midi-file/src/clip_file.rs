@@ -68,6 +68,7 @@
 
 use std::vec::Vec;
 
+use crate::flex;
 use tutti_midi_protocol::channel_voice;
 use tutti_types::{Beat, BeatDuration, Bpm};
 use tutti_ump::{
@@ -192,8 +193,7 @@ fn leading_header_len(events: &[ClipEvent]) -> usize {
         .iter()
         .take_while(|ce| {
             ce.delta_ticks == 0
-                && (tutti_midi_types::ump::flex_tempo_bpm(&ce.event).is_some()
-                    || tutti_midi_types::ump::flex_time_signature(&ce.event).is_some())
+                && (flex::tempo(&ce.event).is_some() || flex::time_signature(&ce.event).is_some())
         })
         .count()
 }
@@ -231,19 +231,12 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
         push_words(&mut out, delta_clockstamp(0).words());
         push_words(
             &mut out,
-            tutti_midi_types::ump::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm).words(),
+            flex::set_tempo(MidiGroup::FIRST, h.tempo_bpm).words(),
         );
         push_words(&mut out, delta_clockstamp(0).words());
         push_words(
             &mut out,
-            // 8 thirty-second notes per quarter — the standard value.
-            tutti_midi_types::ump::flex_set_time_signature(
-                MidiGroup::FIRST,
-                numerator,
-                denominator,
-                8,
-            )
-            .words(),
+            flex::set_time_signature(MidiGroup::FIRST, numerator, denominator).words(),
         );
     }
 
@@ -376,9 +369,7 @@ impl ParsedClipFile {
     /// time, silently. Read it and decide explicitly whether to adopt it or
     /// keep the project tempo — do not let it default by omission.
     pub fn tempo_bpm(&self) -> Option<Bpm> {
-        self.events
-            .iter()
-            .find_map(|ce| tutti_midi_types::ump::flex_tempo_bpm(&ce.event))
+        self.events.iter().find_map(|ce| flex::tempo(&ce.event))
     }
 
     /// The clip's musical context as a [`ClipHeader`] — the value to hand back
@@ -402,7 +393,7 @@ impl ParsedClipFile {
     pub fn time_signature(&self) -> Option<(u8, u8)> {
         self.events
             .iter()
-            .find_map(|ce| tutti_midi_types::ump::flex_time_signature(&ce.event))
+            .find_map(|ce| flex::time_signature(&ce.event))
     }
 
     /// The clip's musical length in beats: the absolute beat of the last event

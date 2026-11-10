@@ -8,9 +8,8 @@ fn a_midi1_endpoint_does_not_carry_midi2_only_messages() {
 
 /// The default must be the *conservative* one.
 ///
-/// `Protocol`'s own `Default` is `Midi2` because the engine is MIDI-2-native
-/// — correct there, and the wrong polarity for a *device* whose protocol the
-/// OS never reported. Claiming MIDI 2.0 for an unknown endpoint would send
+/// The engine is MIDI-2-native, which is the wrong polarity for a *device*
+/// whose protocol the OS never reported. Claiming MIDI 2.0 for an unknown endpoint would send
 /// per-note messages into a `to_midi1_bytes` drop; claiming MIDI 1.0 only
 /// costs resolution. This pins which way that falls.
 #[test]

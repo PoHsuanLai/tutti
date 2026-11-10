@@ -121,10 +121,14 @@ pub use tutti_modulation as modulation;
 
 // --- midi -------------------------------------------------------------------
 
-/// MIDI value types (`tutti-midi-types`), MIDI 2.0 / UMP native. Feature
-/// `midi`.
+/// The decoded MIDI view (`tutti-midi-types`). Feature `midi`.
 #[cfg(feature = "midi")]
 pub use tutti_midi_types as midi;
+
+/// MIDI 1.0 to MIDI 2.0 translation and the MPE zone types
+/// (`tutti-midi-protocol`). Feature `midi`.
+#[cfg(feature = "midi")]
+pub use tutti_midi_protocol as midi_protocol;
 
 /// The MIDI runtime (`tutti-midi-runtime`): MIDI graph nodes, MPE, MIDI-CI.
 /// Feature `midi`.

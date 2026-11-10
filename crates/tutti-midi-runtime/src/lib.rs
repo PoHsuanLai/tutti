@@ -33,9 +33,3 @@ pub use schedule::{
 };
 pub use sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode};
 pub use traits::{MidiIn, MidiOut};
-
-// Value types that live one crate down, re-exported so a consumer of the runtime
-// needs one import rather than two.
-//
-// The MPE mode/zone types come along: `MidiInputNode::with_mpe` takes them.
-pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};

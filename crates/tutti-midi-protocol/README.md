@@ -12,4 +12,11 @@ MIDI 1.0 to MIDI 2.0 translation for the Tutti engine (design 017 §4 and §6).
   it, and a `Message` as the MIDI 1.0 bytes a host or a wire takes (a Program
   Change with a bank is three messages).
 
+- `MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`: the MPE (RP-053) zone layout
+  and the MPE Configuration Message. `MpeZoneConfig::new` refuses a member count
+  outside 1 to 15, `MpeZones::new` refuses a zone in the wrong role and two zones that
+  share a member channel, and a persisted value (feature `serde`) is read back through
+  the same checks. The state that drives zones from incoming MIDI is
+  `tutti-midi-runtime`'s `MpeIngest`.
+
 The crate depends on `tutti-ump` alone. Licensed under MIT or Apache-2.0.

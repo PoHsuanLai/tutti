@@ -35,8 +35,7 @@ use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use tutti_midi_device::{EndpointId, Identity, OsDevice};
 use tutti_midi_runtime::MidiOut;
-use tutti_midi_types::Protocol;
-use tutti_midi_types::ump::split_ump_stream;
+use tutti_ump::{Protocol, split_stream};
 
 pub mod virtual_destination;
 pub mod virtual_source;
@@ -237,7 +236,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
                 for packet in event_list.iter() {
                     // One CoreMIDI packet is a packed word stream of several
                     // concatenated UMP messages.
-                    for event in split_ump_stream(packet.data()) {
+                    for event in split_stream(packet.data()) {
                         if !producer.push(event, now) {
                             tracing::debug!("MIDI input ring full, dropping event");
                         }
@@ -323,7 +322,9 @@ impl CoreMidiOutput {
         }
         let cm_protocol = match self.protocol {
             Protocol::Midi2 => CmProtocol::Midi20,
-            Protocol::Midi1 => CmProtocol::Midi10,
+            // A reserved protocol value is one nobody can speak: unknown means
+            // MIDI 1.0, the conservative direction (see `UmpCapability::default`).
+            Protocol::Midi1 | Protocol::Reserved(_) => CmProtocol::Midi10,
         };
         let buffer = EventBuffer::new(cm_protocol).with_packet(0, words);
         self.port

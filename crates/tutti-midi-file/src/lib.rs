@@ -5,6 +5,7 @@
 pub mod clip;
 mod clip_file;
 mod file;
+mod flex;
 pub mod smf;
 
 pub use clip::MidiFileKind;

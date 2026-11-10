@@ -23,8 +23,8 @@ use tutti_graph::{
     Cx, Event, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
     NodeParts, Offset, Prepare, Shape, Status,
 };
+use tutti_midi_protocol::MpeMode;
 use tutti_midi_protocol::Translator;
-use tutti_midi_types::mpe::MpeMode;
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::ChannelLayout;
 use tutti_ump::{MidiChannel, MidiGroup, Ump};

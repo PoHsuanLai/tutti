@@ -137,7 +137,7 @@ fn program_change_bank(ump: &Ump) -> Option<(u8, u16, u8)> {
     else {
         return None;
     };
-    let bank = crate::ump::program_change_bank_of(ump.words())?;
+    let bank = crate::message::program_change_bank_of(ump)?;
     Some((u8::from(m.channel()), bank, u8::from(m.program())))
 }
 

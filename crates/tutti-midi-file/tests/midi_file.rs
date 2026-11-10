@@ -15,9 +15,15 @@ use tutti_midi_file::{
     ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage,
     SmfTimedEvent, smf, write_clip_file_from_beats, write_clip_file_with_header,
 };
-use tutti_midi_types::{MidiMessage, flex_set_tempo};
+use tutti_midi_types::MidiMessage;
 use tutti_types::{Beat, Bpm, Seconds};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Flex, Message, MidiChannel, MidiGroup, Ump};
+
+/// A Set Tempo (M2-104 section 7.5.3) of `bpm`, written as its field: 10 ns
+/// units per quarter note, 6e9 / bpm.
+fn flex_set_tempo(group: MidiGroup, bpm: Bpm) -> Ump {
+    Message::Flex(group, Flex::SetTempo((6.0e9 / bpm.get()) as u32)).into()
+}
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
 const TPQ: u16 = 480;

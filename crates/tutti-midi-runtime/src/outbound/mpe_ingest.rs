@@ -53,11 +53,8 @@
 
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::PitchBendSensitivity;
-use tutti_midi_types::mpe::{
-    MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
-};
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, Rpn, Ump, Voice2, decode};
+use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, PitchBendSensitivity};
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, Rpn, Ump, Voice2, decode};
 
 /// A channel voice message on group 1 and `channel`: the group the per-note
 /// forms this ingest makes have always gone out on.
@@ -77,12 +74,12 @@ fn first_group_voice(channel: MidiChannel, voice: Voice2) -> Ump {
 fn send_rpns(
     group: MidiGroup,
     offset: Offset,
-    channels: core::ops::RangeInclusive<u8>,
+    channels: impl Iterator<Item = MidiChannel>,
     rpn: Rpn,
     data: u32,
     out: &mut impl FnMut(UmpAt),
 ) {
-    for channel in channels.filter_map(MidiChannel::new) {
+    for channel in channels {
         out((
             offset,
             Message::Midi2(
@@ -110,11 +107,10 @@ fn send_zone_defaults(
     offset: Offset,
     out: &mut impl FnMut(UmpAt),
 ) {
-    let master = config.master_channel;
     send_rpns(
         group,
         offset,
-        master..=master,
+        core::iter::once(config.master_channel()),
         Rpn::PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(2).to_rpn_bits(),
         out,
@@ -122,7 +118,7 @@ fn send_zone_defaults(
     send_rpns(
         group,
         offset,
-        config.member_channel_range(),
+        config.member_channels(),
         Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::MPE_DEFAULT.to_rpn_bits(),
         out,
@@ -136,41 +132,26 @@ fn send_zone_defaults(
 #[derive(Debug)]
 pub struct MpeIngest {
     mode: MpeMode,
-    lower_zone_map: Option<MpeChannelVoiceMap>,
-    upper_zone_map: Option<MpeChannelVoiceMap>,
-    /// Present only in [`MpeMode::SingleChannelRotation`]. Rotation is a *sender*
-    /// scheme (M2-104 C.3): a receiver need not rotate. The allocator exists
-    /// only to mint a stable per-note identity for same-pitch notes on the one
-    /// channel, so downstream voices stay independent. The emitted messages are
-    /// already native per-note, so nothing downstream is rotation-aware.
-    rotation: Option<NoteRotationAllocator>,
+    /// The note each member channel holds. The two zones share no channel
+    /// ([`MpeZones`]), so one table serves both.
+    held: held::HeldNotes,
+}
+
+/// What a channel is to the configured zones.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// The zone's master: zone-wide messages.
+    Master,
+    /// A member: one note's expression.
+    Member,
 }
 
 impl MpeIngest {
     /// An ingest configured for `mode`, holding no notes.
-    ///
-    /// Builds the per-zone channel→note maps the mode calls for: one for a
-    /// single zone, two for [`MpeMode::DualZone`], none for
-    /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`] (which
-    /// carries a rotation allocator instead).
     pub fn new(mode: MpeMode) -> Self {
-        let (lower_zone_map, upper_zone_map) = match &mode {
-            MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => (None, None),
-            MpeMode::LowerZone(config) => (Some(MpeChannelVoiceMap::new(*config)), None),
-            MpeMode::UpperZone(config) => (None, Some(MpeChannelVoiceMap::new(*config))),
-            MpeMode::DualZone { lower, upper } => (
-                Some(MpeChannelVoiceMap::new(*lower)),
-                Some(MpeChannelVoiceMap::new(*upper)),
-            ),
-        };
-        let rotation =
-            matches!(mode, MpeMode::SingleChannelRotation { .. }).then(NoteRotationAllocator::new);
-
         Self {
             mode,
-            lower_zone_map,
-            upper_zone_map,
-            rotation,
+            held: held::HeldNotes::default(),
         }
     }
 
@@ -203,13 +184,10 @@ impl MpeIngest {
     /// their defaults, as an MCM from the wire would have it. Nothing for
     /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`].
     pub fn zone_defaults(&self, group: MidiGroup, offset: Offset, mut out: impl FnMut(UmpAt)) {
-        let zones = match &self.mode {
-            MpeMode::LowerZone(c) | MpeMode::UpperZone(c) => [Some(c), None],
-            MpeMode::DualZone { lower, upper } => [Some(lower), Some(upper)],
-            MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => [None, None],
-        };
-        for config in zones.into_iter().flatten() {
-            send_zone_defaults(config, group, offset, &mut out);
+        if let MpeMode::Zones(zones) = &self.mode {
+            for config in zones.zones() {
+                send_zone_defaults(config, group, offset, &mut out);
+            }
         }
     }
 
@@ -247,17 +225,21 @@ impl MpeIngest {
         // RPN 0x00/0x06 on any other channel is ordinary parameter traffic and
         // passes through rather than being swallowed as configuration.
         let decoded = decode(event.1).ok();
-        if let (Some((master, members)), Some(Message::Midi2(address, _))) =
+        if let (Some((zone, members)), Some(Message::Midi2(address, _))) =
             (MpeZoneConfig::from_mcm(&event.1), decoded)
         {
-            self.reconfigure_from_mcm(master, members);
-            let configured = match (&self.mode, master) {
-                (MpeMode::LowerZone(c) | MpeMode::DualZone { lower: c, .. }, 0)
-                | (MpeMode::UpperZone(c) | MpeMode::DualZone { upper: c, .. }, 15) => c,
-                // A zone disabled: no ranges to reset.
-                _ => return None,
-            };
-            send_zone_defaults(configured, address.group, event.0, out);
+            if !self.reconfigure_from_mcm(zone, members) {
+                return None;
+            }
+            // A zone disabled has no ranges to reset.
+            if let MpeMode::Zones(zones) = &self.mode
+                && let Some(configured) = match zone {
+                    MpeZone::Lower => zones.lower(),
+                    MpeZone::Upper => zones.upper(),
+                }
+            {
+                send_zone_defaults(configured, address.group, event.0, out);
+            }
             return None;
         }
 
@@ -271,7 +253,11 @@ impl MpeIngest {
         };
 
         if let MpeMode::SingleChannelRotation { channel } = self.mode {
-            return self.translate_rotation(channel, event, address, voice);
+            // Rotation is a sender's scheme and a receiver need not know it
+            // (M2-104 Appendix C.3): this mode owns one channel, so the
+            // messages of the others are ignored, and the one's pass as they
+            // are, native per-note messages included.
+            return (address.channel == channel).then_some(*event);
         }
         if self.member_bend_range(event, address, voice, out) {
             return None;
@@ -296,21 +282,19 @@ impl MpeIngest {
         if Rpn::new(bank, index) != Rpn::PITCH_BEND_SENSITIVITY {
             return false;
         }
-        let Some(zone) = self.get_zone_info(address.channel) else {
+        let MpeMode::Zones(zones) = &self.mode else {
             return false;
         };
-        if !zone.is_member {
+        let Some(config) = zones.zone_of(address.channel) else {
+            return false;
+        };
+        if !config.is_member_channel(address.channel) {
             return false;
         }
-        let config = match (&self.mode, zone.is_lower_zone) {
-            (MpeMode::LowerZone(c) | MpeMode::DualZone { lower: c, .. }, true)
-            | (MpeMode::UpperZone(c) | MpeMode::DualZone { upper: c, .. }, false) => c,
-            _ => return false,
-        };
         send_rpns(
             address.group,
             event.0,
-            config.member_channel_range(),
+            config.member_channels(),
             Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             value,
             out,
@@ -318,39 +302,39 @@ impl MpeIngest {
         true
     }
 
-    /// Apply an MPE Configuration Message: a master channel of 0 selects the lower
-    /// zone, 15 the upper zone (RP-053 / M2-104). `members == 0` disables that
-    /// zone. Existing zones on the *other* side are preserved (dual-zone setups
-    /// configure each zone with its own MCM).
-    fn reconfigure_from_mcm(&mut self, master: u8, members: u8) {
+    /// Apply an MPE Configuration Message: it configures the zone whose master
+    /// channel it arrived on (RP-053 / M2-104), `members == 0` disables that
+    /// zone. The zone on the *other* side is preserved (a dual-zone setup
+    /// configures each zone with its own MCM).
+    ///
+    /// A message that would leave the two zones sharing a member channel is
+    /// ignored, like any other MCM RP-053 does not allow: the zones keep what
+    /// they had, and this returns `false`.
+    fn reconfigure_from_mcm(&mut self, zone: MpeZone, members: u8) -> bool {
         // Snapshot the current per-side configs so one MCM only touches its side.
         let (mut lower, mut upper) = match &self.mode {
-            MpeMode::LowerZone(l) => (Some(*l), None),
-            MpeMode::UpperZone(u) => (None, Some(*u)),
-            MpeMode::DualZone { lower, upper } => (Some(*lower), Some(*upper)),
+            MpeMode::Zones(zones) => (zones.lower().copied(), zones.upper().copied()),
             MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => (None, None),
         };
-
-        // Master channel 0 = lower zone, 15 = upper zone (the spec's fixed master
-        // assignment). `members == 0` disables that side.
-        if master == 0 {
-            lower = (members > 0).then(|| MpeZoneConfig::lower(members));
-        } else if master == 15 {
-            upper = (members > 0).then(|| MpeZoneConfig::upper(members));
+        let configured = MpeZoneConfig::new(zone, members);
+        match zone {
+            MpeZone::Lower => lower = configured,
+            MpeZone::Upper => upper = configured,
         }
-
-        let mode = match (lower, upper) {
-            (Some(l), Some(u)) => MpeMode::DualZone { lower: l, upper: u },
-            (Some(l), None) => MpeMode::LowerZone(l),
-            (None, Some(u)) => MpeMode::UpperZone(u),
-            (None, None) => MpeMode::Disabled,
+        let mode = match MpeZones::new(lower, upper) {
+            Some(zones) => MpeMode::Zones(zones),
+            // Both zones off: MPE is off.
+            None if lower.is_none() && upper.is_none() => MpeMode::Disabled,
+            // The two zones would overlap.
+            None => return false,
         };
-        // Rebuild the voice maps for the new mode (also clears stale bindings).
+        // Rebuild the held notes for the new mode (also clears stale bindings).
         *self = Self::new(mode);
+        true
     }
 
-    /// Zone (lower/upper/dual) mode: member-channel channel-messages fold onto the
-    /// note that member channel holds; master-channel and native per-note pass.
+    /// Zone mode: member-channel channel-messages fold onto the note that
+    /// member channel holds; master-channel and native per-note pass.
     fn translate_zoned(&mut self, event: &UmpAt, address: Address, voice: Voice2) -> Option<UmpAt> {
         let ch = address.channel;
         match voice {
@@ -358,60 +342,43 @@ impl MpeIngest {
             // binds its channel like any other (the translator before this
             // turns a MIDI 1.0 one into a Note Off).
             Voice2::NoteOn { note, .. } => {
-                let zone = self.get_zone_info(ch)?;
-                if zone.is_member
-                    && let Some(map) = self.voice_map_mut(zone.is_lower_zone)
-                {
-                    map.bind_channel(ch, note);
+                if self.role(ch)? == Role::Member {
+                    self.held.bind(ch, note);
                 }
                 // The note itself always flows through unchanged.
                 Some(*event)
             }
-            Voice2::NoteOff { note, .. } => {
-                if let Some(zone) = self.get_zone_info(ch)
-                    && zone.is_member
-                    && let Some(map) = self.voice_map_mut(zone.is_lower_zone)
-                {
-                    map.unbind_channel(ch, note);
+            Voice2::NoteOff { .. } => {
+                if self.role(ch) == Some(Role::Member) {
+                    self.held.release(ch);
                 }
                 Some(*event)
             }
-            Voice2::PitchBend(value) => {
-                let zone = self.get_zone_info(ch)?;
-                if zone.is_master {
-                    // Master-channel bend is global — spec keeps it channel-wide.
-                    Some(*event)
-                } else if zone.is_member {
-                    let note = self.held_note(ch, zone.is_lower_zone)?;
+            Voice2::PitchBend(value) => match self.role(ch)? {
+                // Master-channel bend is global: the spec keeps it channel-wide.
+                Role::Master => Some(*event),
+                Role::Member => {
+                    let note = self.held.note_on(ch)?;
                     Some((
                         event.0,
                         first_group_voice(ch, Voice2::PerNotePitchBend { note, value }),
                     ))
-                } else {
-                    Some(*event)
                 }
-            }
-            Voice2::ChannelPressure(value) => {
-                let zone = self.get_zone_info(ch)?;
-                if zone.is_master {
-                    Some(*event)
-                } else if zone.is_member {
-                    let note = self.held_note(ch, zone.is_lower_zone)?;
+            },
+            Voice2::ChannelPressure(value) => match self.role(ch)? {
+                Role::Master => Some(*event),
+                Role::Member => {
+                    let note = self.held.note_on(ch)?;
                     Some((
                         event.0,
                         first_group_voice(ch, Voice2::PolyPressure { note, value }),
                     ))
-                } else {
-                    Some(*event)
                 }
-            }
-            Voice2::ControlChange { controller, value }
-                if controller == tutti_midi_types::cc::BRIGHTNESS =>
-            {
-                let zone = self.get_zone_info(ch)?;
-                if zone.is_member {
-                    let note = self.held_note(ch, zone.is_lower_zone)?;
-                    // CC74 → Assignable Per-Note Controller index 74 (the MPE slide).
+            },
+            Voice2::ControlChange { controller, value } if controller == CCNumber::BRIGHTNESS => {
+                if self.role(ch)? == Role::Member {
+                    let note = self.held.note_on(ch)?;
+                    // CC74 -> Assignable Per-Note Controller index 74 (the MPE slide).
                     Some((
                         event.0,
                         first_group_voice(
@@ -428,112 +395,69 @@ impl MpeIngest {
                 }
             }
             // Everything else (native per-note messages, other CCs, program
-            // change, …) passes through unchanged.
+            // change, ...) passes through unchanged.
             _ => Some(*event),
         }
     }
 
-    /// Note Number Rotation mode: mint/resolve a stable per-note id per note
-    /// number, so same-pitch notes on the one channel stay independent. Emits
-    /// native per-note messages addressed by the rotated note number.
-    fn translate_rotation(
-        &mut self,
-        channel: u8,
-        event: &UmpAt,
-        address: Address,
-        voice: Voice2,
-    ) -> Option<UmpAt> {
-        // Messages off the rotation channel are ignored (this mode owns one).
-        if address.channel.get() != channel {
+    /// What `channel` is to the configured zones, or `None` when no zone owns it.
+    fn role(&self, channel: MidiChannel) -> Option<Role> {
+        let MpeMode::Zones(zones) = &self.mode else {
             return None;
-        }
-        let rotation = self.rotation.as_mut()?;
-        match voice {
-            Voice2::NoteOn { note, .. } => {
-                rotation.note_on(note);
-                Some(*event)
-            }
-            Voice2::NoteOff { note, .. } => {
-                rotation.note_off(note);
-                Some(*event)
-            }
-            // Native per-note (and everything else) on the rotation channel passes
-            // through — it already carries the note number the receiver keys on.
-            _ => Some(*event),
-        }
-    }
-
-    fn held_note(&self, channel: MidiChannel, is_lower_zone: bool) -> Option<NoteNumber> {
-        self.voice_map(is_lower_zone)
-            .as_ref()
-            .and_then(|map| map.note_for_channel(channel))
-    }
-
-    fn get_zone_info(&self, channel: MidiChannel) -> Option<ZoneInfo> {
-        let channel = channel.get();
-        match &self.mode {
-            MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => None,
-            MpeMode::LowerZone(config) => config.handles_channel(channel).then(|| ZoneInfo {
-                is_master: config.is_master_channel(channel),
-                is_member: config.is_member_channel(channel),
-                is_lower_zone: true,
-            }),
-            MpeMode::UpperZone(config) => config.handles_channel(channel).then(|| ZoneInfo {
-                is_master: config.is_master_channel(channel),
-                is_member: config.is_member_channel(channel),
-                is_lower_zone: false,
-            }),
-            MpeMode::DualZone { lower, upper } => {
-                if lower.handles_channel(channel) {
-                    Some(ZoneInfo {
-                        is_master: lower.is_master_channel(channel),
-                        is_member: lower.is_member_channel(channel),
-                        is_lower_zone: true,
-                    })
-                } else if upper.handles_channel(channel) {
-                    Some(ZoneInfo {
-                        is_master: upper.is_master_channel(channel),
-                        is_member: upper.is_member_channel(channel),
-                        is_lower_zone: false,
-                    })
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    fn voice_map(&self, is_lower_zone: bool) -> &Option<MpeChannelVoiceMap> {
-        if is_lower_zone {
-            &self.lower_zone_map
+        };
+        let config = zones.zone_of(channel)?;
+        Some(if config.is_master_channel(channel) {
+            Role::Master
         } else {
-            &self.upper_zone_map
-        }
+            Role::Member
+        })
     }
 
-    fn voice_map_mut(&mut self, is_lower_zone: bool) -> Option<&mut MpeChannelVoiceMap> {
-        if is_lower_zone {
-            self.lower_zone_map.as_mut()
-        } else {
-            self.upper_zone_map.as_mut()
-        }
-    }
-
-    /// Forget every held note and every rotation assignment, leaving the zone
-    /// configuration intact.
+    /// Forget every held note, leaving the zone configuration intact.
     ///
     /// The counterpart to [`set_mode`](Self::set_mode) for a panic / all-notes-off:
-    /// the mapping tables are cleared, so a subsequent member-channel message
+    /// the mapping table is cleared, so a subsequent member-channel message
     /// with no matching note-on is dropped rather than addressed at a stale note.
     pub fn reset(&mut self) {
-        if let Some(map) = &mut self.lower_zone_map {
-            map.clear();
+        self.held.clear();
+    }
+}
+
+mod held {
+    //! The note each member channel holds.
+
+    use tutti_ump::{MidiChannel, NoteNumber};
+
+    /// Which note each of the sixteen channels is playing, so a per-channel
+    /// expression message (pressure arriving on a member channel) becomes a
+    /// per-note one for the note that channel holds.
+    ///
+    /// The controller allocates: it sprays each note onto a channel of its own
+    /// before sending (classic MPE), and the host is told the channel and only
+    /// records the pairing. Choosing a channel for a note is the sender's job
+    /// and nothing here does it.
+    #[derive(Debug, Default)]
+    pub(super) struct HeldNotes([Option<NoteNumber>; 16]);
+
+    impl HeldNotes {
+        /// Records that `channel` is playing `note`.
+        pub(super) fn bind(&mut self, channel: MidiChannel, note: NoteNumber) {
+            self.0[usize::from(channel.get())] = Some(note);
         }
-        if let Some(map) = &mut self.upper_zone_map {
-            map.clear();
+
+        /// Frees `channel`.
+        pub(super) fn release(&mut self, channel: MidiChannel) {
+            self.0[usize::from(channel.get())] = None;
         }
-        if let Some(rotation) = &mut self.rotation {
-            rotation.clear();
+
+        /// The note `channel` is playing, if any.
+        pub(super) fn note_on(&self, channel: MidiChannel) -> Option<NoteNumber> {
+            self.0[usize::from(channel.get())]
+        }
+
+        /// Frees every channel.
+        pub(super) fn clear(&mut self) {
+            self.0 = [None; 16];
         }
     }
 }

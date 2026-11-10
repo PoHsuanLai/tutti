@@ -25,9 +25,8 @@
 # - `tutti-types` depends on no workspace crate, and `tutti-rt` on `arc-lend`
 #   alone;
 # - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
-#   `tutti-midi-types` on `tutti-types`, `tutti-rt`, `tutti-ump` and
-#   `tutti-midi-protocol`, and
-#   `tutti-graph` on those three;
+#   `tutti-midi-types` on `tutti-ump` and `tutti-midi-protocol`, and
+#   `tutti-graph` on `tutti-types`, `tutti-rt` and `tutti-ump`;
 # - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
 # - `tutti-midi-device` depends on no workspace crate;
@@ -447,7 +446,7 @@ if "tutti-measure" in pkgs:
 if "tutti-graph" in pkgs:
     only("tutti-graph", ["tutti-types", "tutti-rt", "tutti-ump"])
 if "tutti-midi-types" in pkgs:
-    only("tutti-midi-types", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-midi-protocol"])
+    only("tutti-midi-types", ["tutti-ump", "tutti-midi-protocol"])
 for name in pkgs:
     users = {d for d, _ in internal_deps(pkgs[name])}
     if "tutti-session" in users and name not in ("tutti", "bevy-tutti"):

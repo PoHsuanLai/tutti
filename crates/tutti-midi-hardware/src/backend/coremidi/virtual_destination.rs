@@ -17,12 +17,11 @@
 //!
 //! CoreMIDI delivers a packet as a *packed word stream* — several concatenated
 //! UMP messages with no separators, each one's length implied by its type nibble.
-//! [`split_ump_stream`](tutti_midi_types::ump::split_ump_stream) walks that.
+//! [`split_stream`](tutti_ump::split_stream) walks that.
 
 use coremidi::{EventList, Protocol, VirtualDestination};
 use tracing::debug;
-use tutti_midi_types::ump::split_ump_stream;
-use tutti_ump::Ump;
+use tutti_ump::{Ump, split_stream};
 
 use super::shared_client;
 use crate::error::{Error, Result};
@@ -78,7 +77,7 @@ impl UmpVirtualDestination {
                 move |event_list: &EventList| {
                     for packet in event_list.iter() {
                         // One packet carries several concatenated UMP messages.
-                        for event in split_ump_stream(packet.data()) {
+                        for event in split_stream(packet.data()) {
                             on_event(event);
                         }
                     }

@@ -40,7 +40,8 @@ thiserror.workspace = true
 # The sound card. Off: offline only, and no ALSA headers needed.
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
 tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
+# `MpeMode`, the session builder's one MPE setting.
+tutti-midi-protocol = { path = "../tutti-midi-protocol", optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
@@ -65,7 +66,7 @@ record = []
 audio-io = ["record", "tutti-cpal?/capture"]
 modulation = ["dep:tutti-modulation"]
 midi = [
-    "dep:tutti-midi-types",
+    "dep:tutti-midi-protocol",
     "dep:tutti-midi-runtime",
     "dep:tutti-midi-file",
 ]
@@ -96,6 +97,8 @@ tutti-sf2 = { path = "../tutti-sf2" }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
+# `MidiMessage`, the decoded view the MIDI tests read events with.
+tutti-midi-types = { path = "../tutti-midi-types" }
 # `ArcLend` for the tests that publish into a graph.
 tutti-rt = { path = "../tutti-rt" }
 # The tempo map a sampler test publishes through the transport.

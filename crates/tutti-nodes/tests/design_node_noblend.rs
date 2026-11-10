@@ -6,14 +6,12 @@
 
 use tutti_dsp::{
     Bounds, Ceiling, Channels, Design, Effect, Effort, FirSummary, MaxDecay, Network, Realization,
-    Setup, Stage,
+    Setup, Sizes, Stage,
 };
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
 use tutti_nodes::{Blend, ControlParams, DesignNode, DryWet, NoBlend, NodeDesign};
-use tutti_types::{
-    ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam,
-};
+use tutti_types::{ChannelLayout, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -94,11 +92,7 @@ impl<B: Blend> Design for Echo<B> {
     }
 
     fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
-        self.measure(&self.design(&(), ceiling.rate()), ceiling.floor())
-    }
-
-    fn measure(&self, model: &Network, floor: Db) -> Bounds {
-        Bounds::of(model, floor)
+        Bounds::measure(&self.design(&(), ceiling.rate()), ceiling.floor())
     }
 
     fn realization(&self) -> EchoKernel {

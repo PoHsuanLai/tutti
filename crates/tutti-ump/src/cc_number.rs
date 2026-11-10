@@ -56,8 +56,7 @@ impl CCNumber {
     //
     // These live on the type rather than as loose module constants so that
     // `MOD_WHEEL` cannot be handed to something expecting a channel: that is
-    // the whole payoff of the newtype. `tutti_midi_types::cc` re-exports each
-    // one under its bare name, so `cc::MOD_WHEEL` still resolves.
+    // the whole payoff of the newtype.
     //
     // Numbers are from the MIDI 1.0 Control Change table (and carried forward
     // unchanged by M2-104 §7.4.6).

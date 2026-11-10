@@ -135,7 +135,7 @@ pub enum MidiMessage {
     ControlChange {
         /// Channel, 0-indexed.
         channel: MidiChannel,
-        /// Controller number, 0..=127. See [`crate::cc`] for the named roster.
+        /// Controller number, 0..=127. The named roster is `tutti_ump::CCNumber`'s constants.
         index: u8,
         /// **32-bit** unipolar value, full scale `u32::MAX`. This is where the
         /// 7-bit/32-bit gap bites hardest: a consumer expecting CC's familiar
@@ -433,7 +433,7 @@ impl MidiMessage {
             Cv2::ProgramChange(m) => MidiMessage::ProgramChange {
                 channel,
                 program: u8::from(m.program()),
-                bank: crate::ump::program_change_bank_of(ev.words()),
+                bank: program_change_bank_of(&ev),
             },
             Cv2::ChannelPressure(m) => MidiMessage::ChannelPressure {
                 channel,
@@ -841,3 +841,17 @@ fn system_common_message(sc: midi2::system_common::SystemCommon<&[u32]>) -> Opti
 
 #[cfg(test)]
 mod tests;
+
+/// The 14-bit bank (`MSB << 7 | LSB`) of a MIDI 2.0 Program Change when its
+/// Bank Valid bit is set (M2-104 Figure 64); `None` for any other packet.
+pub(crate) fn program_change_bank_of(ump: &Ump) -> Option<u16> {
+    match decode(*ump) {
+        Ok(Message::Midi2(
+            _,
+            Voice2::ProgramChange {
+                bank: Some(bank), ..
+            },
+        )) => Some(u16::from(bank.msb.get()) << 7 | u16::from(bank.lsb.get())),
+        _ => None,
+    }
+}

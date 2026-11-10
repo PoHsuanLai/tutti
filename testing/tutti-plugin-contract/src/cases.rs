@@ -438,7 +438,7 @@ fn surfaced<F: Format>(c: &mut dyn Control) -> Surfaced {
     if F::SURFACE.notices {
         select::<F, _>(
             c,
-            if F::SURFACE.has_editor {
+            if F::SURFACE.selects_editor {
                 spec::EDITOR_TIDY
             } else {
                 0
@@ -462,7 +462,8 @@ fn surfaced<F: Format>(c: &mut dyn Control) -> Surfaced {
 /// format that has no editor, no live render mode, or reports nothing outside a
 /// block answers so in both states.
 // Mutation (run): `Vst3Controller::has_editor` returning `false` -> the active
-//   read has no editor -> fails the vst3 case only; `Vst2Controller::has_editor`
+//   read has no editor -> fails the vst3 case only (on Linux, where the view
+//   embeds); `Vst2Controller::has_editor`
 //   returning `true` -> fails the vst2 case only; `ClapController::take_requests`
 //   pushing nothing -> the active read has no callback -> fails the clap case only;
 //   `Vst2Controller::take_reported_edits` pushing nothing -> the active read has
@@ -471,7 +472,7 @@ fn surfaced<F: Format>(c: &mut dyn Control) -> Surfaced {
 pub fn the_control_surface_answers_alike_loaded_and_active<F: Format>() {
     let spec = F::SURFACE;
     let mut loaded = F::load();
-    if spec.has_editor && !spec.notices {
+    if spec.selects_editor && !spec.notices {
         select::<F, _>(&mut loaded, spec::EDITOR_TIDY, 0);
     }
     let on_loaded = surfaced::<F>(&mut loaded);

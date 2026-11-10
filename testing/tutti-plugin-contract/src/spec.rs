@@ -97,11 +97,13 @@ pub const NOTICE_ON_LOAD: u32 = 1;
 /// a loaded plugin and an active one. One row per format ([`Surface`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Surface {
-    /// Whether the plugin's shell has an editor to select: only the Rust VST3
-    /// shell does, offering a view once the state's editor byte says
-    /// [`EDITOR_TIDY`]. Where `false`, the plugin has no editor whatever the
-    /// state says, and the case does not send the byte (the C++ plugin refuses
-    /// it).
+    /// Whether the plugin's shell reads the state's editor byte: only the Rust
+    /// VST3 shell does, offering a view once it says [`EDITOR_TIDY`]. Where
+    /// `false` the case does not send the byte (the C++ plugin refuses it).
+    pub selects_editor: bool,
+    /// What `has_editor` answers once the case has sent what the shell reads.
+    /// The Rust VST3 shell's view embeds only an X11 window, so a host on
+    /// Windows or macOS is right to see none.
     pub has_editor: bool,
     /// What `set_render_mode(Offline)` answers: `true` where the format takes
     /// the mode live (VST2: the host's own flag), `false` where it is read at
@@ -122,6 +124,7 @@ pub struct Surface {
 
 /// CLAP: no editor in the plugin, no `clap.render`, a callback request.
 pub const CLAP: Surface = Surface {
+    selects_editor: false,
     has_editor: false,
     render_mode_live: false,
     notices: true,
@@ -131,6 +134,7 @@ pub const CLAP: Surface = Surface {
 
 /// VST2: no editor in the plugin, a live render mode, an automate report.
 pub const VST2: Surface = Surface {
+    selects_editor: false,
     has_editor: false,
     render_mode_live: true,
     notices: true,
@@ -138,10 +142,11 @@ pub const VST2: Surface = Surface {
     edit: Some((Param::Level, 0.5)),
 };
 
-/// VST3 from the Rust plugin: an editor once selected, the mode read at
-/// activation, nothing raised.
+/// VST3 from the Rust plugin: an editor once selected (where its X11 view can
+/// embed), the mode read at activation, nothing raised.
 pub const VST3: Surface = Surface {
-    has_editor: true,
+    selects_editor: true,
+    has_editor: cfg!(all(unix, not(target_os = "macos"))),
     render_mode_live: false,
     notices: false,
     request: None,
@@ -150,6 +155,7 @@ pub const VST3: Surface = Surface {
 
 /// VST3 from the C++ plugin: no editor, nothing raised.
 pub const VST3_CPP: Surface = Surface {
+    selects_editor: false,
     has_editor: false,
     render_mode_live: false,
     notices: false,

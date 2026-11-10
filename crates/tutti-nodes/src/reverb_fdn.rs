@@ -1,4 +1,4 @@
-//! The feedback delay network as a [`ReverbNode`], and [`ReverbKind`], which
+//! The feedback delay network as a [`DesignNode`], and [`ReverbKind`], which
 //! spawns the node of either reverb (design 022 step 1c).
 
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use tutti_types::{
 };
 
 use crate::ramp::{LastGood, block_driven};
-use crate::reverb::{FreeverbNode, ReverbDesign, ReverbNode, ReverbParams};
+use crate::reverb::{ControlParams, DesignNode, FreeverbNode, NodeDesign};
 
 /// One cell, read through [`LastGood`]: a block's value is the port's last frame
 /// when the graph modulates it and the cell otherwise, and a non-finite write
@@ -107,7 +107,7 @@ pub struct FdnParams {
     freezable: bool,
 }
 
-impl ReverbParams for FdnParams {
+impl ControlParams for FdnParams {
     type Controls = FdnControls;
 
     fn addrs(&self) -> &'static [UnitAddr] {
@@ -214,7 +214,7 @@ impl ReverbParams for FdnParams {
     }
 }
 
-impl ReverbDesign for FdnDesign {
+impl NodeDesign for FdnDesign {
     type Params = FdnParams;
 
     fn params(&self, c: FdnControls) -> FdnParams {
@@ -235,7 +235,7 @@ impl ReverbDesign for FdnDesign {
 }
 
 /// The feedback delay network as a graph node: mono in, stereo out.
-pub type FdnNode = ReverbNode<FdnDesign>;
+pub type FdnNode = DesignNode<FdnDesign>;
 
 /// Which reverb to spawn: the choice is explicit and built on the control side.
 /// It only spawns the matching node ([`spawn`](Self::spawn)); there is no
@@ -269,12 +269,12 @@ impl ReverbKind {
     #[must_use]
     pub fn spawn(self) -> SpawnedReverb {
         match self {
-            ReverbKind::Freeverb => SpawnedReverb::Freeverb(ReverbNode::new(
+            ReverbKind::Freeverb => SpawnedReverb::Freeverb(DesignNode::new(
                 FreeverbDesign,
                 FreeverbControls::GENERAL_MIDI,
             )),
             ReverbKind::Fdn(design) => {
-                SpawnedReverb::Fdn(ReverbNode::new(design, FdnControls::DEFAULT))
+                SpawnedReverb::Fdn(DesignNode::new(design, FdnControls::DEFAULT))
             }
         }
     }

@@ -27,5 +27,17 @@ MIDI-CI codec.
   bytes a `tutti_ump::SysexAssembler` completes. There is no state machine and no
   inbound path yet (design 017 §5, "MIDI-CI").
 
-No OS, no thread, no clock, and no dependency but `bitflags` and optional `serde`. `tutti-midi-hardware` feeds the
+- `Endpoint`: what one UMP endpoint declares (M2-104 §7.1): UMP version, protocols
+  and JR timestamps supported and active, identity, name, Product Instance Id and up
+  to 32 `FunctionBlock`s, all held inline. `Endpoint::reply` answers an Endpoint
+  Discovery, a Function Block Discovery or a Stream Configuration Request into a
+  caller's `Extend<Ump>`. `Endpoint::midi1_device` is a MIDI 1.0 device with its one
+  inferred block.
+- `Connection`: the discovering side (M2-100 Table 4 steps 2 to 4): Endpoint
+  Discovery, a Stream Configuration Request for the wanted protocol and JR, Function
+  Block Discovery. Time is an `Instant` the caller passes to `on_message` and
+  `on_timeout`; a step is sent three times, a second apart, and a peer that never
+  answers is settled as a MIDI 1.0 device. No backend feeds it yet.
+
+No OS, no thread, no clock, and no dependency but `tutti-ump`, `bitflags` and optional `serde`. `tutti-midi-hardware` feeds the
 table from ALSA and CoreMIDI. Licensed under MIT or Apache-2.0.

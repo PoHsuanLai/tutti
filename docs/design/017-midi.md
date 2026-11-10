@@ -312,6 +312,11 @@ Rules:
   - **Product Instance ID:** at most 42 bytes, every byte ASCII 32 to 126
     (§7.1.5), so a non-ASCII or control byte is refused, not passed through.
 
+  **Done in stage 4b** (`tutti-midi-device`'s `Name<N>`, `EndpointName`, `BlockName`
+  and `ProductInstanceId`, held inline; `new -> Option`, as the range-checked table
+  of CLAUDE.md has it; the assembler caps at the same limit and drops a longer
+  message whole). The next paragraph is the reasoning.
+
   A name is a checked value built on the control side (`new -> Result`, never a
   truncation, as in the range-checked table of CLAUDE.md), so a sender cannot
   emit an over-long name. A receiver caps what it accumulates at the same limit
@@ -404,16 +409,24 @@ Rejected:
 ## 5. Connections
 
 ```rust
-// tutti-midi-device
-pub struct Endpoint { identity: Option<ProductInstance>, protocol: Protocol,
-                      blocks: ArrayVec<FunctionBlock, 32>, /* .. */ }
+// tutti-midi-device (stage 4b, done)
+pub struct Endpoint { /* version, Capabilities, active StreamConfig, identity, name,
+                         instance_id, static flag, up to 32 FunctionBlock, all inline */ }
+impl Endpoint {
+    pub fn midi1_device(name: Option<EndpointName>) -> Self;
+    pub fn reply(&mut self, message: Message, out: &mut impl Extend<Ump>);
+}
 
-pub struct Connection { /* M2-100 Table 4, steps 2 to 5 */ }
+pub struct Connection { /* M2-100 Table 4, steps 2 to 4 */ }
 
 impl Connection {
+    pub fn new(now: Instant) -> (Self, Ump);          // the Endpoint Discovery to send
     pub fn on_message(&mut self, msg: Message, now: Instant) -> Action;
     pub fn on_timeout(&mut self, now: Instant) -> Action;
+    pub fn deadline(&self) -> Option<Instant>;
 }
+pub enum Action { Wait, Send(Ump), Settled(Ending) }
+pub enum Ending { Negotiated, Midi1Fallback }
 ```
 
 A MIDI 1.0 device has no steps 2 to 4 and appears as an `Endpoint` with one
@@ -636,9 +649,8 @@ drawn from an OS random source when the rebuild lands. The codec needs no
 frames the payload (`tutti_ump::frame`, or SysEx7 packets) and reassembles with
 `tutti_ump::SysexAssembler` (`tutti-midi-hardware/tests/midi1_wire_ci.rs` runs the
 whole MIDI 1.0 wire path). The UMP Stream constructors (`endpoint_info` and the
-rest in `tutti-midi-types`' `ump/stream.rs`) were not part of that move: they sit
-in the `ump/` layer that stage 4b rebuilds into the `Connection`, and they keep
-their tests until then.
+rest in `tutti-midi-types`' `ump/stream.rs`) were not part of that move; stage 4b
+rebuilt them as the `Endpoint` and `Connection` and deleted them with their tests.
 
 Deleted: the state machines (`CiInitiator`, `CiResponder`, `capability_inquiry`,
 `DiscoveredCiDevice`, `CiProperty`, `ProfileSwitch`), the profile and property
@@ -1671,6 +1683,30 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    what the deleted negotiator did); the citations in kept code are fixed. The
    rebuilt MIDI-CI minimum (App. F, items 1 to 9 there) lands with the stage that
    needs MIDI-CI.
+   **Stage 4b, the UMP Endpoint and Connection. Done, as a pure core.**
+   `tutti-midi-device` takes its `tutti-ump` edge and gains `Endpoint` (what one
+   endpoint declares, M2-104 §7.1: version, supported and active protocol and JR,
+   identity, name, Product Instance Id, up to 32 `FunctionBlock`s with their
+   MIDI 1.0 flag, UI hint, MIDI-CI version and SysEx 8 streams, all inline; a MIDI
+   1.0 device is `Endpoint::midi1_device`, one inferred block), `Endpoint::reply`
+   (the responder: Endpoint Discovery, Function Block Discovery and a Stream
+   Configuration Request, into a caller's `Extend<Ump>`, no allocation), and
+   `Connection` (the discoverer, M2-100 Table 4 steps 2 to 4: Discovery, a Stream
+   Configuration Request when the Notification is not what is wanted, Function
+   Block Discovery; time an `Instant` argument; a step is sent three times, one
+   second apart (`MAX_ATTEMPTS`, `STEP_TIMEOUT`, ours: the spec gives none), then
+   Discovery and the Request fall back to a MIDI 1.0 device and Function Blocks
+   settle with what came; the Names get `NAME_GRACE`, 100 ms, after the last Info
+   since a block with no name sends none). The three bounded names are checked
+   values. The `midi2`-backed Stream constructors in `tutti-midi-types` are
+   deleted with their tests; `Protocol` stays there for `tutti-midi-hardware`'s
+   `UmpCapability`.
+   Deferred: nothing feeds a `Connection` yet. Wiring it into
+   `tutti-midi-hardware` and the session (the inbound path that delivers Stream
+   messages and the outbound that sends them, the timer that calls `on_timeout`),
+   MIDI-CI Discovery (Table 4 step 5), and `UmpCapability` taking `Endpoint` and
+   `tutti_ump::Protocol` are a later stage. A Connection settles on the
+   Notification it gets, so a device that is on MIDI 2.0 already is not asked again.
    Residue for this stage:
    - **`clock_out.rs` doc is false.** The module doc of `bevy-tutti`'s
      `midi/hardware/clock_out.rs` says the drain cadence does not affect tick

@@ -470,9 +470,7 @@ impl AudioBridge {
             progress: progress.clone(),
             reply,
         }) {
-            // The queue refused the command, which on this path means the
-            // bridge thread is gone.
-            return Err(StateError::PluginCrashed);
+            return Err(self.refused());
         }
         // As in `load_state`: a refusal to answer is not an empty state.
         // Collapsing it to `None`/`vec![]` is what let an unsaved preset look
@@ -511,9 +509,7 @@ impl AudioBridge {
             progress: progress.clone(),
             reply,
         }) {
-            // The queue refused the command, which on this path means the
-            // bridge thread is gone — the plugin is unreachable either way.
-            return Err(StateError::PluginCrashed);
+            return Err(self.refused());
         }
         // A refusal to answer is not an acceptance.
         //
@@ -521,6 +517,17 @@ impl AudioBridge {
         // direction is chunked too, so a total budget capped how large a state
         // could be *sent* just as it capped how large one could be received.
         progress.wait(ask_resp)
+    }
+
+    /// Why the command queue refused a state request: a crashed bridge (its
+    /// queue is drained with errors, and nothing reads it again) or a full one
+    /// (doc 027 D6), which is not a crash.
+    fn refused(&self) -> StateError {
+        if self.lifecycle.is_crashed() {
+            StateError::PluginCrashed
+        } else {
+            StateError::Busy
+        }
     }
 
     /// The plugin's parameters, or `None` when it cannot be asked.
@@ -680,6 +687,43 @@ impl AudioBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A full command queue is `Busy`, not a crash** (doc 027 D6). A bridge
+    /// whose queue nothing drains (no thread) refuses a state request once
+    /// the queue is full; the plugin is not dead and a retry is reasonable.
+    /// Once the bridge is crashed, the same refusal is `PluginCrashed`.
+    ///
+    /// Mutation (run): `refused` answering `PluginCrashed` always (as before)
+    /// → fails.
+    #[test]
+    fn a_full_queue_is_busy_not_a_crash() {
+        let name = format!("tutti-busy-{}", std::process::id());
+        let layout = crate::protocol::SlabLayout {
+            slots: crate::transport::shm::RING_SLOTS as u32,
+            samples_per_channel: 64,
+            format: crate::protocol::SampleFormat::Float32,
+            inputs: vec![crate::protocol::ChannelLayout::STEREO],
+            outputs: vec![crate::protocol::ChannelLayout::STEREO],
+        };
+        let slab = Arc::clone(AudioSlab::create(name, layout).expect("slab").slab());
+        let bridge = AudioBridge {
+            channels: Channels::new(SampleRate(48_000.0)),
+            payloads: PayloadPool::new(),
+            lifecycle: Lifecycle::new(),
+            listener: Arc::new(Mutex::new(None)),
+            audio_buffer: slab,
+            state_progress_timeout: PROGRESS_TIMEOUT,
+        };
+        while bridge.channels.push_command(Command::Reset) {}
+
+        assert_eq!(bridge.save_state(), Err(StateError::Busy));
+        assert_eq!(bridge.load_state(&[1, 2, 3]), Err(StateError::Busy));
+        bridge.lifecycle.mark_crashed("gone");
+        assert_eq!(
+            bridge.load_state(&[1, 2, 3]),
+            Err(StateError::PluginCrashed)
+        );
+    }
 
     /// The negotiated rate is stored once and read live.
     ///

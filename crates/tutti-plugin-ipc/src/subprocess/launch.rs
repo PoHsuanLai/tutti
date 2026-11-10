@@ -10,10 +10,9 @@ use crate::protocol::{
     SampleFormat, StagedState,
 };
 use crate::transport::control::{self as ipc, ControlStream};
-use crate::transport::shm::{AudioSlab, RING_SLOTS, SlabLayout};
+use crate::transport::shm::{AudioSlab, RING_SLOTS, SlabLayout, SlabWriter};
 use std::path::Path;
 use std::process::{Child, Command};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tutti_plugin_types::{Helper, Locator};
@@ -59,8 +58,10 @@ pub struct LaunchedServer {
     pub loaded: LoadedPlugin,
     /// The sample format the blocks travel in.
     pub format: SampleFormat,
-    /// The shared-memory slab the server mapped.
-    pub audio_buffer: Arc<AudioSlab>,
+    /// The shared-memory slab the server mapped, as the writer of its inputs:
+    /// the one in this process (`SlabWriter`). Readers share
+    /// [`SlabWriter::slab`].
+    pub slab: SlabWriter,
     /// What became of the state the launch was given: `None` when it had none,
     /// else the plugin's refusal as text (`Ok` when it took it).
     pub state_restore: Option<std::result::Result<(), String>>,
@@ -188,17 +189,17 @@ pub(super) fn launch_with_state(
             Some(Ok(())) => Some(loaded_error.map_or(Ok(()), Err)),
             None => None,
         };
-        let audio_buffer = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
-        Ok((descriptor, loaded, format, audio_buffer, state_restore))
+        let slab = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
+        Ok((descriptor, loaded, format, slab, state_restore))
     })(&mut process);
 
     match result {
-        Ok((descriptor, loaded, format, audio_buffer, state_restore)) => Ok(LaunchedServer {
+        Ok((descriptor, loaded, format, slab, state_restore)) => Ok(LaunchedServer {
             process,
             descriptor: *descriptor,
             loaded,
             format,
-            audio_buffer,
+            slab,
             state_restore,
         }),
         Err(e) => {
@@ -440,15 +441,15 @@ fn setup_shm(
     loaded: &LoadedPlugin,
     format: SampleFormat,
     shm_name: String,
-) -> Result<Arc<AudioSlab>> {
+) -> Result<SlabWriter> {
     let layout = slab_layout_for(loaded, format, config.max_buffer_size);
-    let audio_buffer = Arc::new(AudioSlab::create(shm_name.clone(), layout.clone())?);
+    let slab = AudioSlab::create(shm_name.clone(), layout.clone())?;
 
     ipc::send(stream, &HostMessage::SetupSharedMemory { shm_name, layout })?;
 
     let timeout = Duration::from_millis(config.timeout_ms);
     match ipc::recv_within(stream, timeout)? {
-        BridgeMessage::SharedMemoryReady => Ok(audio_buffer),
+        BridgeMessage::SharedMemoryReady => Ok(slab),
         ref other => Err(BridgeError::unexpected_message("SharedMemoryReady", other)),
     }
 }
@@ -456,10 +457,14 @@ fn setup_shm(
 fn next_shm_name() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SHM_COUNTER: AtomicU64 = AtomicU64::new(0);
+    // Unguessable for the same reason as the socket (`unique_socket_path`):
+    // `/dev/shm` is shared, and `AudioSlab::create` refuses a name that
+    // exists, so a predictable one is a launch another user can block.
     format!(
-        "tutti_plugin_{}_{}",
+        "tutti_plugin_{}_{}_{}",
         std::process::id(),
         SHM_COUNTER.fetch_add(1, Ordering::Relaxed),
+        crate::config::unguessable(),
     )
 }
 
@@ -869,8 +874,8 @@ mod tests {
         // Both directions are counted. Half this total would mean the two
         // directions share one region, which is the aliasing.
         assert_eq!(
-            layout.byte_size_with_header(0),
-            layout.input_ring_bytes() * 2
+            layout.checked_byte_size_with_header(0),
+            Some(layout.input_ring_bytes() * 2)
         );
     }
 
@@ -965,8 +970,8 @@ mod tests {
             f32_layout.samples_per_channel
         );
         assert_eq!(
-            f64_layout.byte_size_with_header(0),
-            f32_layout.byte_size_with_header(0) * 2
+            f64_layout.checked_byte_size_with_header(0),
+            f32_layout.checked_byte_size_with_header(0).map(|n| n * 2)
         );
     }
 

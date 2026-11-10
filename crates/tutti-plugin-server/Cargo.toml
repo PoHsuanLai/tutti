@@ -98,6 +98,8 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
+# The slab's sample bound (`Pod`) on the generic round-trip helper.
+bytemuck = "1"
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # RT-safety regression: prove the per-block audio path never allocates.

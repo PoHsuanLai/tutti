@@ -30,6 +30,10 @@ bincode = "1"
 
 # Shared memory.
 memmap2 = "0.9"
+# The slab's sample views (`Pod`), so no `unsafe` byte cast of our own.
+bytemuck = "1"
+# Unpredictable slab and socket names (pure Rust; the OS's random source).
+getrandom = "0.3"
 
 crossbeam = "0.8"
 crossbeam-channel = "0.5"
@@ -40,6 +44,10 @@ interprocess = { version = "2" }
 
 thiserror = "2"
 tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+# `O_NOFOLLOW` for the server's open of the slab.
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52", features = [

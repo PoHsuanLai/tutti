@@ -79,14 +79,34 @@ impl SlabLayout {
         self.ring_bytes(self.output_channels())
     }
 
-    /// Total mapping size: header, then both rings.
+    /// Total mapping size: header, then both rings, or `None` when it does not
+    /// fit in `usize`.
+    ///
+    /// Checked because a layout crosses the wire: the server sizes its mapping
+    /// from whatever the peer sent, and an overflowed size would map a small
+    /// file whose offsets the layout then places past its end. Every offset
+    /// into the slab is below this figure, so checking it covers them.
     ///
     /// `header_bytes` comes from the transport layer rather than being computed
     /// here, because this crate's protocol types must stay free of the mmap
     /// details — the header's size is target-dependent (cache-line padding) and
     /// belongs with the code that knows why.
-    pub fn byte_size_with_header(&self, header_bytes: usize) -> usize {
-        header_bytes + self.input_ring_bytes() + self.output_ring_bytes()
+    #[must_use]
+    pub fn checked_byte_size_with_header(&self, header_bytes: usize) -> Option<usize> {
+        let channels = |buses: &BusChannels| {
+            buses
+                .iter()
+                .try_fold(0usize, |sum, l| sum.checked_add(l.count() as usize))
+        };
+        let ring = |channels: usize| {
+            (self.slots as usize)
+                .checked_mul(channels)?
+                .checked_mul(self.samples_per_channel)?
+                .checked_mul(self.sample_size())
+        };
+        header_bytes
+            .checked_add(ring(channels(&self.inputs)?)?)?
+            .checked_add(ring(channels(&self.outputs)?)?)
     }
 }
 
@@ -120,7 +140,27 @@ mod tests {
         // 2 slots x 2 ch x 64 samples x 4 bytes, per direction.
         assert_eq!(l.input_ring_bytes(), 2 * 2 * 64 * 4);
         assert_eq!(l.output_ring_bytes(), 2 * 2 * 64 * 4);
-        assert_eq!(l.byte_size_with_header(128), 128 + 2 * (2 * 2 * 64 * 4));
+        assert_eq!(
+            l.checked_byte_size_with_header(128),
+            Some(128 + 2 * (2 * 2 * 64 * 4))
+        );
+    }
+
+    /// A layout whose size does not fit in `usize` has no size: the server
+    /// maps from a layout the peer sent, so a wrapped figure would map a small
+    /// file under offsets that run past it.
+    ///
+    /// Mutation (run): a `wrapping_mul` for the sample term → `Some` of a
+    /// small number → fails.
+    #[test]
+    fn a_size_that_overflows_is_none() {
+        let mut l = layout(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
+        // 2 slots x 2 channels x 2^62 = 2^64: each ring wraps to exactly 0, so
+        // a wrapping computation answers a small, plausible size.
+        l.samples_per_channel = 1 << (usize::BITS - 2);
+        assert_eq!(l.checked_byte_size_with_header(0), None);
+        l.samples_per_channel = 64;
+        assert_eq!(l.checked_byte_size_with_header(usize::MAX), None);
     }
 
     /// A sidechain widens only the input ring; the two directions are sized

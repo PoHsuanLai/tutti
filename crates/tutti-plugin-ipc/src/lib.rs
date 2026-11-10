@@ -39,7 +39,7 @@ pub use protocol::{
 };
 pub use subprocess::{LaunchedServer, launch, resolve_bundle};
 pub use transport::control::socket_name;
-pub use transport::shm::{AudioSlab, RING_SLOTS};
+pub use transport::shm::{AudioSlab, RING_SLOTS, SlabWriter};
 // Splitting and reassembling plugin state across frames: both ends must chunk
 // identically, so the server uses this one.
 pub use transport::state_chunk;

@@ -30,7 +30,7 @@ pub use tutti_plugin_types::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBuf
 
 pub use crate::util::window::{ContentScale, EditorSize, WindowHandle};
 pub use tutti_plugin_ipc::BridgeConfig;
-pub use tutti_plugin_ipc::{AudioSlab, RING_SLOTS};
+pub use tutti_plugin_ipc::{AudioSlab, RING_SLOTS, SlabWriter};
 pub use tutti_plugin_ipc::{
     BridgeMessage, HostMessage, MAX_FRAME_BYTES, MAX_STATE_BYTES, PROTOCOL_VERSION,
     ProcessAudioData, STATE_CHUNK_BYTES, SlabLayout, StagedState,

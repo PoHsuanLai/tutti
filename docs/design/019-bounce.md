@@ -239,6 +239,33 @@ is_parallel}`.
 | Entity to `NodeKey` resolution, `BounceDone`, `BounceStage`, `BounceInFlight`, the `World` hook | `bevy-tutti` | The adapter adds only what needs Bevy. |
 | `ExportClock`, `PrepareEdit`, `PreparedGraph` | `tutti-session` (kept) | They are session vocabulary; `PreparedGraph` exposes only `fresh_key` and the timeline, not the `RenderGraph`. |
 
+### 5.1 What the pipeline does not copy
+
+`tutti-export` composes other crates' types; it does not restate them. Each
+row is a copy or shim built today, the crate that already owns the knowledge,
+and what replaces the copy. Each copy is removed in the step named, as part of
+that step's work and not as a separate cleanup.
+
+| Built today in `tutti-export` | Owner | Replacement | Step |
+|---|---|---|---|
+| `Dither { Off, Rectangular, Triangular }`, mapped by hand onto `tutti_dsp::DitherShape` in `process/dither.rs` | `tutti-dsp` | `FileTarget` takes `Option<DitherShape>`; `None` is off. No second enum and no mapping. | 3 |
+| The integer LSB `1 / (1 << (bits - 1))`, computed twice: in `DitherState::for_config` and in normalize's integer headroom | `tutti-codec`, whose `Pcm::quantize` holds the scale | One `IntDepth::lsb()` in `tutti-codec`, which both call. The quantizer, the dither amplitude and the headroom then cannot disagree. | 1 |
+| `clipped_in`: a scan of each block for samples the quantizer will clamp, before the encoder sees them | `tutti-codec` (`Pcm::quantize` does the clamp) | The encoder counts what it clamped, plus non-finite samples, and reports the count from `finish`; §4's `Written::clipped_samples` reads it. | 1 |
+| `planned_frames` and `whole_hz` re-derive the resampler's output length to pre-check `Format::max_frames`, and `check_fits` builds `tutti_codec::Error::WavTooLarge` itself | `tutti-dsp` (`StreamingResampler` knows its ratio and flush) and `tutti-codec` (the limit and its error) | The resampler states its output length for an input length. The encoder takes the planned frame count at creation and refuses it with its own error. Export passes numbers and builds neither error. | 3 |
+| Two resample paths: streamed in `pump_blocks`, and whole-buffer `resample_rendered` for normalize's write | `tutti-dsp` (`StreamingResampler`) | One path. Normalize's write pass feeds the spilled planes through the same streamed chain, so a normalized export and a plain one share resample, dither and encode. | 3 |
+| `FrameSource` and `pump_blocks`, a private pull trait and pump beside the edge's | doc 025 (`Source`, `Pull`) | Settled by doc 025 §5.4. Until then they stay private and are not widened. | doc 025 |
+| `pub use` of `tutti_codec::{Format, Pcm, IntDepth, FlacLevel, Quality}`, `tutti_types::ChannelLayout` and `tutti_transport::{RenderClock, FrozenClock}` | their crates | Removed. A type has one path (CLAUDE.md, "Import paths"). The `tutti` umbrella's `export` feature implies `codec` (today it does not), so `tutti::codec::Format` is that path; `tutti::transport` already carries the clocks. | 8 |
+
+Rules a later change keeps:
+
+- Export holds the render plan (latency trim, length, tail), the block loop,
+  the order of the stages, normalize's two passes, progress and cancel, the
+  fork-health and event-loss checks, and the temp-file commit. Everything else
+  it calls.
+- A figure another crate computes (a frame limit, an LSB, a resampled length,
+  a clamp count) is asked of that crate, never recomputed in export.
+- Export builds no other crate's error variant. It wraps the error it is given.
+
 ## 6. Progress and cancellation
 
 ### 6.1 Stages and fraction

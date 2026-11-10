@@ -1423,15 +1423,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glam"
-version = "0.30.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
-dependencies = [
- "libm",
-]
-
-[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3545,7 +3536,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
- "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
@@ -3585,7 +3575,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
- "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
@@ -3814,6 +3803,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-types",
+ "tutti-plugin-types",
  "tutti-rt",
  "tutti-tempo",
  "tutti-transport",
@@ -3897,7 +3887,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-runtime",
- "tutti-midi-types",
  "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin-db",
@@ -3923,7 +3912,6 @@ dependencies = [
  "tutti-clap-host",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-midi-types",
  "tutti-plugin",
  "tutti-plugin-db",
  "tutti-plugin-types",
@@ -3966,7 +3954,6 @@ dependencies = [
  "tracing",
  "tutti-clap-test-plugin",
  "tutti-fixtures",
- "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
@@ -4008,7 +3995,6 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-midi-types",
  "tutti-plugin",
  "tutti-plugin-types",
  "tutti-rt",
@@ -4035,7 +4021,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
- "tutti-midi-types",
  "tutti-rt",
  "tutti-types",
  "tutti-ump",
@@ -4219,7 +4204,6 @@ dependencies = [
  "tutti-nodes",
  "tutti-spatial",
  "tutti-types",
- "vbap",
 ]
 
 [[package]]
@@ -4306,7 +4290,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
- "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-ump",
 ]
@@ -4324,7 +4307,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-ump",
@@ -4376,7 +4358,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
- "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-shared-plugin",
@@ -4455,16 +4436,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "vbap"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22d37258ca2470459e6c0a2dde09e79582e95d1931f68a1dbf3647a1ba3254c9"
-dependencies = [
- "glam",
- "libm",
 ]
 
 [[package]]

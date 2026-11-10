@@ -10,7 +10,8 @@
 //! - Filters: [`SvfCoeffs`] and [`SvfCoefficients`] with [`svf_step`]
 //!   ([`SvfType`]); [`LadderCoeffs`] and [`LadderCoefficients`] with
 //!   [`ladder_step`] ([`LadderType`]); the Linkwitz-Riley [`Crossover`]; and
-//!   [`Real`], the `f32` or `f64` their state runs in.
+//!   [`Real`], the `f32` or `f64` their state runs in; their models ([`SvfModel`],
+//!   [`LadderModel`], [`CrossoverModel`]) and the [`Biquad`] section they share.
 //! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
 //!   curves [`compute_compressor_gain_reduction`], [`compute_gate_gain`],
 //!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`], [`LimiterKernel`] and
@@ -42,6 +43,9 @@
 //!   [`FreeverbDesign`] and [`FdnDesign`] map controls to one, for [`Freeverb`] and
 //!   [`FdnKernel`]; [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula both
 //!   ways.
+//! - Spatial: [`SpeakerLayout`], the pairs or triplets of a speaker array and Pulkki's
+//!   vector base amplitude panning solve over it ([`SpeakerLayout::gains_into`]), with a
+//!   [`SpeakerGeometryError`] for a layout that cannot be built.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Frame-by-bin data: [`StftGeometry`] (window, hop, shape and rate, validated
 //!   together), and [`Grid`] with its typed indices; [`enum@Error`] and [`Result`].
@@ -94,6 +98,7 @@ mod resample;
 mod reverb;
 mod reverb_design;
 mod smoother;
+mod spatial;
 #[cfg(test)]
 mod test_support;
 
@@ -115,8 +120,9 @@ pub use fdn::FdnKernel;
 pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
-    Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,
-    SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
+    Biquad, Crossover, CrossoverError, CrossoverModel, LadderCoefficients, LadderCoeffs,
+    LadderModel, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoefficients, SvfCoeffs,
+    SvfControls, SvfModel, SvfType, fit_to_rate, ladder_step, svf_step,
 };
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
@@ -135,6 +141,7 @@ pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;
+pub use spatial::{MAX_SPEAKERS, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple};
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

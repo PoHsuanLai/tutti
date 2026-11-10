@@ -6,16 +6,14 @@
 //! otherwise only has per *channel*. A [`MpeZoneConfig`] describes that layout,
 //! [`MpeChannelVoiceMap`] hands out its member channels, and
 //! [`PitchBendSensitivity`](tutti_midi_protocol::PitchBendSensitivity) carries the
-//! ranges, and [`PerNoteBendRanges`]
-//! follows the per-note range a stream sets on each channel.
+//! ranges. The per-note range a stream sets on each channel is
+//! `tutti_plugin_types::PerNoteBendRanges`, read by the plugin hosts.
 //!
 //! Types and that one fold: the state machine that drives a zone from
 //! incoming MIDI lives in `tutti-midi-runtime`.
 
-pub mod bend_ranges;
 pub mod voice_map;
 pub mod zone;
 
-pub use bend_ranges::PerNoteBendRanges;
 pub use voice_map::{MpeChannelVoiceMap, NoteRotationAllocator, ZoneInfo};
 pub use zone::{MpeMode, MpeZone, MpeZoneConfig};

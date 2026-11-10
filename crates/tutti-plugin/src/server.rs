@@ -44,7 +44,7 @@ pub use tutti_plugin_types::{
     NoteExpressionValue, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges,
     ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor, PluginTail,
     PointBuf, Preset, PresetId, SampleFormat, Samples, ScaleChanges, ScaleValue, TimeSignature,
-    TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories, WireMidi,
+    TransportChange, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories, WireMidi,
 };
 // Per-format `probed` masks, shared by every loader in this crate and in
 // `tutti-plugin-server`.

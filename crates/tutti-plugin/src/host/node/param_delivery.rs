@@ -184,6 +184,8 @@ pub(crate) struct DeliveryCounters {
     grid_dropped: AtomicU64,
     /// MIDI events the node did not deliver (`midi_intake`).
     pub(super) midi_dropped: AtomicU64,
+    /// Transport changes past the chunk's room (`transport_walk`).
+    transport_dropped: AtomicU64,
     /// The bridge thread's count of the MIDI events it did not send, set
     /// once at bind (an out-of-process node only).
     pub(super) bridge_midi_dropped: OnceLock<Arc<AtomicU64>>,
@@ -574,6 +576,12 @@ impl ParamDelivery {
         self.counters.count_midi_dropped(n);
     }
 
+    /// `n` transport changes the chunk had no room for
+    /// ([`DeliveryCounters::count_transport_dropped`]). RT-safe.
+    pub(crate) fn count_transport_dropped(&self, n: u64) {
+        self.counters.count_transport_dropped(n);
+    }
+
     /// The counters and record this delivery writes, for the node's
     /// controls.
     #[cfg(feature = "vst2")]
@@ -868,6 +876,22 @@ impl DeliveryCounters {
         if n > 0 {
             self.midi_dropped.fetch_add(n, Ordering::Relaxed);
         }
+    }
+
+    /// `n` transport changes the chunk had no room for. RT-safe: one relaxed
+    /// add.
+    pub(crate) fn count_transport_dropped(&self, n: u64) {
+        if n > 0 {
+            self.transport_dropped.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Transport changes since the plugin was bound that did not fit in a
+    /// chunk: see
+    /// [`PluginControls::dropped_transport_changes`](super::PluginControls::dropped_transport_changes).
+    /// RT-safe: one relaxed load.
+    pub(crate) fn dropped_transport_changes(&self) -> u64 {
+        self.transport_dropped.load(Ordering::Relaxed)
     }
 
     /// Add the bridge thread's count to

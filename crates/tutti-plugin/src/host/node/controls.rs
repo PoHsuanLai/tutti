@@ -172,6 +172,17 @@ impl PluginControls {
         self.delivery.dropped_midi_in()
     }
 
+    /// Transport changes inside a chunk that did not fit its inline list
+    /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES), the
+    /// graph's own bound), since the plugin was bound: a map point, a seek, a
+    /// loop wrap, a start or a stop past the eighth in one chunk. Each is
+    /// counted once; its transport waits for the next chunk's first frame
+    /// (doc 020 stage 5b), and VST3, VST2 and AU, which have no transport
+    /// event inside a block, never count one. RT-safe: one relaxed load.
+    pub fn dropped_transport_changes(&self) -> u64 {
+        self.delivery.dropped_transport_changes()
+    }
+
     /// What the node has delivered so far, per listed parameter: what a fork
     /// is seeded with. Control thread: allocates.
     pub(super) fn delivered(&self) -> Vec<(tutti_plugin_types::ParamId, f64)> {

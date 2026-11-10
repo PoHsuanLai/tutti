@@ -16,7 +16,7 @@
 //! A panner is **mono**-to-stereo: one signal placed between two speakers. A
 //! mixer strip is stereo-to-stereo — it *rebalances* a signal that is already
 //! stereo, and must leave it untouched at centre. See
-//! [`BusStripNode::balance_gains`].
+//! [`tutti_dsp::balance_gains`].
 //!
 //! # Every control change is a ramp, never a step
 //!
@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::ramp::LastGood;
+use tutti_dsp::balance_gains;
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
@@ -99,7 +100,7 @@ pub struct BusStripNode {
     ramp_from: Option<StripGains>,
     /// The last finite volume read: a cell a host wrote a NaN or an infinity
     /// into reads as unchanged (see [`LastGood`]). Balance needs none: a NaN
-    /// pan already reads as unity on both sides (`balance_side`).
+    /// pan already reads as unity on both sides (`balance_gains`).
     good: LastGood,
 }
 
@@ -234,39 +235,6 @@ impl BusStripNode {
         v >= 0.5
     }
 
-    /// Per-channel gains for a stereo **balance** at position `pan`.
-    ///
-    /// Attenuates the channel you pan away from and leaves the other at unity:
-    /// `(1, 1)` at centre, `(1, 0)` hard left, `(0, 1)` hard right. Unity at
-    /// centre is the property that matters — a strip must be transparent until
-    /// somebody moves it, and this is what
-    /// the `unity_at_defaults` test pins.
-    ///
-    /// This is **balance, not panning**. A panner *places* a mono signal, so it spreads
-    /// one input across two outputs with an equal-power (`cos`/`sin`) law that
-    /// reads `-3 dB` on each side at centre. Applying that here would attenuate
-    /// an already-stereo signal by 3 dB just for existing. A balance instead
-    /// *rebalances* an existing pair, so centre must be exactly unity.
-    /// Typed in and out: the argument is a *position* and the results are
-    /// *gains*, which is the confusion worth preventing here — both are `-1..1`-
-    /// ish floats, and multiplying a sample by a pan position instead of by its
-    /// derived gain is silent.
-    #[inline]
-    fn balance_gains(pan: Pan) -> (Amplitude, Amplitude) {
-        (
-            Self::balance_side(pan, false),
-            Self::balance_side(pan, true),
-        )
-    }
-
-    /// One side of [`balance_gains`](Self::balance_gains): the right
-    /// channel's gain if `right`, else the left's.
-    #[inline(always)]
-    fn balance_side(pan: Pan, right: bool) -> Amplitude {
-        let p = pan.get().clamp(-1.0, 1.0);
-        Amplitude(if right { 1.0 + p } else { 1.0 - p }.min(1.0))
-    }
-
     /// Gains for a fader at `volume`, balance at `pan`, and `live` (the mute as
     /// a factor).
     ///
@@ -279,7 +247,7 @@ impl BusStripNode {
         // `Amplitude * f32` is the scaling the unit grants; cascading two gain
         // stages multiplies them, which is exactly what balance × fader is.
         let fader = volume * live;
-        let (l, r) = Self::balance_gains(pan);
+        let (l, r) = balance_gains(pan);
         StripGains {
             left: l * fader.get(),
             right: r * fader.get(),
@@ -418,7 +386,8 @@ impl BusStripNode {
             return fader.get();
         }
         let pan = pan.map_or(Pan::CENTER, |p| Pan(p[i]));
-        (Self::balance_side(pan, c == 1) * fader.get()).get()
+        let (l, r) = balance_gains(pan);
+        ((if c == 1 { r } else { l }) * fader.get()).get()
     }
 }
 

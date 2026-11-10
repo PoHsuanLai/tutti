@@ -40,7 +40,7 @@ fn fft_sizes_are_powers_of_two_with_quarter_hops() {
 #[test]
 fn every_fft_size_yields_a_cola_grid() {
     for size in FftSize::PRESETS {
-        let g = Unit::geometry(44_100.0, size);
+        let g = Unit::geometry(SampleRate::new(44_100.0), size);
         assert!(g.is_cola(), "{size:?} is not COLA-compliant");
         assert_eq!(g.window(), size.size());
     }
@@ -50,7 +50,7 @@ fn every_fft_size_yields_a_cola_grid() {
 #[test]
 fn non_positive_sample_rate_does_not_panic() {
     for rate in [0.0, -44_100.0] {
-        let u = Unit::new(rate);
+        let u = Unit::new(SampleRate::new(rate));
         assert_eq!(u.channels(), ChannelLayout::STEREO);
     }
 }
@@ -346,7 +346,8 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
     // reconstruct from; the output ripples between 0.003 and 0.60 rather
     // than holding a steady level. That is geometry, not a regression.
     for factor in [0.5f32, 1.5, 2.0, 4.0] {
-        let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1u16);
+        let mut u =
+            Unit::with_fft_size_and_channels(SampleRate::new(44_100.0), FftSize::N1024, 1u16);
         u.set_stretch_factor(StretchFactor::new(factor));
         assert!(u.is_processing(), "factor {factor} should not bypass");
 
@@ -408,7 +409,7 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
 /// real bound goes unchecked.
 #[test]
 fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
-    let u = Unit::with_channels(44_100.0, 1u16);
+    let u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
 
     // Well past the clamp, in the direction that increases intake.
     u.set_pitch_cents(Cents::new(12_000.0));
@@ -438,7 +439,7 @@ fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
 ///   passes through, and the pitch it reads back is not finite.
 #[test]
 fn a_degenerate_factor_or_transposition_never_reaches_the_hops() {
-    let u = Unit::with_channels(44_100.0, 1u16);
+    let u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
     let (_, synthesis) = u.hops();
     let longest = (synthesis as f32 / (StretchFactor::MIN.get() * MIN_PITCH.to_pitch_ratio()))
         .round() as usize;
@@ -453,7 +454,7 @@ fn a_degenerate_factor_or_transposition_never_reaches_the_hops() {
     ];
     for stretch in bad {
         for pitch in bad {
-            let mut u = Unit::with_channels(44_100.0, 1u16);
+            let mut u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
             u.set_stretch_factor(StretchFactor::new(stretch));
             u.set_pitch_cents(Cents::new(pitch));
             let f = u.stretch_factor().get();
@@ -485,7 +486,7 @@ fn a_degenerate_factor_or_transposition_never_reaches_the_hops() {
 /// of a wave rather than spinning the callback.
 #[test]
 fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
-    let u = Unit::with_channels(44_100.0, 1u16);
+    let u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
 
     u.set_stretch_factor(StretchFactor::new(0.001));
     assert_eq!(u.stretch_factor(), StretchFactor::MIN);
@@ -523,7 +524,7 @@ fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
 /// the tables are not shared → fails.
 #[test]
 fn a_clone_is_a_fresh_filter_on_the_shared_tables() {
-    let mut u = Unit::with_channels(44_100.0, 6u16);
+    let mut u = Unit::with_channels(SampleRate::new(44_100.0), 6u16);
     u.set_stretch_factor(StretchFactor::new(1.5));
     let frame = [0.25f32; 6];
     let mut out = [0.0f32; 6];
@@ -574,7 +575,7 @@ fn a_clone_is_a_fresh_filter_on_the_shared_tables() {
 #[test]
 fn a_clone_and_its_original_tick_independently() {
     let build = || {
-        let u = Unit::with_channels(44_100.0, 2u16);
+        let u = Unit::with_channels(SampleRate::new(44_100.0), 2u16);
         u.set_stretch_factor(StretchFactor::new(2.0));
         u
     };
@@ -624,7 +625,7 @@ fn a_clone_and_its_original_tick_independently() {
 /// `vec![0.0f32; 0].into_boxed_slice()` → fails.
 #[test]
 fn a_clone_arrives_with_its_block_scratch_sized() {
-    let u = Unit::with_channels(44_100.0, 6u16);
+    let u = Unit::with_channels(SampleRate::new(44_100.0), 6u16);
     let c = u.clone();
     for scratch in [&c.ch.scratch_in, &c.ch.scratch_out] {
         assert_eq!(scratch.len(), 6, "one scratch buffer per channel");
@@ -643,7 +644,7 @@ fn a_clone_arrives_with_its_block_scratch_sized() {
 /// a clone is independent now, and `isolate` has nothing to do.)
 #[test]
 fn a_clone_renders_identically() {
-    let mut original = Unit::with_channels(44_100.0, 2u16);
+    let mut original = Unit::with_channels(SampleRate::new(44_100.0), 2u16);
     original.set_stretch_factor(StretchFactor::new(2.0));
 
     let mut clone = original.clone();
@@ -714,7 +715,7 @@ fn filter_lanes_is_tick_per_frame() {
     for &(unit_w, n, stretch, cents) in rows {
         let build = || {
             let u = Unit::with_channels(
-                44_100.0,
+                SampleRate::new(44_100.0),
                 ChannelLayout::try_from(unit_w).expect("a test width is small"),
             );
             u.set_stretch_factor(StretchFactor::new(stretch));
@@ -871,7 +872,7 @@ fn render_440_placed(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
 fn pitch_shift_transposes_by_the_requested_interval() {
     let sr = 48_000.0f32;
     for &cents in &[0.0f32, 1200.0, -1200.0, 700.0, -500.0] {
-        let u = Unit::with_channels(sr as f64, 1u16);
+        let u = Unit::with_channels(SampleRate::new(sr as f64), 1u16);
         u.set_pitch_cents(Cents::new(cents));
 
         let out = render_440(&u, sr, 48_000);
@@ -908,7 +909,7 @@ fn pitch_shift_transposes_by_the_requested_interval() {
 fn a_one_per_tick_feed_makes_stretch_behave_as_varispeed() {
     let sr = 48_000.0f32;
     for &(factor, want) in &[(0.5f32, 220.0f32), (1.0, 440.0), (2.0, 880.0)] {
-        let u = Unit::with_channels(sr as f64, 1u16);
+        let u = Unit::with_channels(SampleRate::new(sr as f64), 1u16);
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let out = render_440(&u, sr, 48_000);
@@ -933,7 +934,7 @@ fn a_one_per_tick_feed_makes_stretch_behave_as_varispeed() {
 fn stretching_a_placed_read_changes_duration_not_pitch() {
     let sr = 48_000.0f32;
     for &factor in &[0.5f32, 1.0, 1.5, 2.0] {
-        let u = Unit::with_channels(sr as f64, 1u16);
+        let u = Unit::with_channels(SampleRate::new(sr as f64), 1u16);
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let out = render_440_placed(&u, sr, 48_000);
@@ -962,7 +963,7 @@ fn pitch_and_stretch_are_independent_on_a_placed_read() {
         (0.5, -1200.0),
         (1.5, 500.0),
     ] {
-        let u = Unit::with_channels(sr as f64, 1u16);
+        let u = Unit::with_channels(SampleRate::new(sr as f64), 1u16);
         u.set_stretch_factor(StretchFactor::new(factor));
         u.set_pitch_cents(Cents::new(cents));
 
@@ -989,14 +990,14 @@ fn pitch_and_stretch_are_independent_on_a_placed_read() {
 fn pitch_shift_preserves_level() {
     let sr = 48_000.0f32;
     let dry = {
-        let u = Unit::with_channels(sr as f64, 1u16);
+        let u = Unit::with_channels(SampleRate::new(sr as f64), 1u16);
         u.set_pitch_cents(Cents::new(0.0));
         rms(&render_440(&u, sr, 48_000)[24_000..24_000 + 8192])
     };
     assert!(dry > 0.1, "reference render was silent ({dry:.4})");
 
     for &cents in &[1200.0f32, -1200.0, 700.0] {
-        let u = Unit::with_channels(sr as f64, 1u16);
+        let u = Unit::with_channels(SampleRate::new(sr as f64), 1u16);
         u.set_pitch_cents(Cents::new(cents));
         let wet = rms(&render_440(&u, sr, 48_000)[24_000..24_000 + 8192]);
         let db = 20.0 * (wet / dry).log10();
@@ -1028,7 +1029,7 @@ fn pitch_shift_preserves_level() {
 /// bounded property that a later change cannot silently deepen.
 #[test]
 fn the_slowest_factor_ripples_because_its_frames_do_not_overlap() {
-    let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1u16);
+    let mut u = Unit::with_fft_size_and_channels(SampleRate::new(44_100.0), FftSize::N1024, 1u16);
     u.set_stretch_factor(StretchFactor::MIN);
     let window = u.ch.vocoders[0].geometry.window().get();
     let (analysis, _) = u.hops();
@@ -1090,7 +1091,7 @@ fn stretching_preserves_the_signals_level() {
     // Faster-than-unity factors keep >=75% analysis overlap, so the phase
     // vocoder has the continuity it needs to reconstruct exactly.
     for factor in [1.0f32, 1.5, 2.0, 4.0] {
-        let mut u = Unit::with_channels(44_100.0, 1u16);
+        let mut u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let size = 64;
@@ -1145,7 +1146,7 @@ fn stretching_preserves_the_signals_level() {
 #[test]
 fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
     for (factor, floor) in [(0.5f32, 0.85f32), (0.25, 0.75)] {
-        let mut u = Unit::with_channels(44_100.0, 1u16);
+        let mut u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let size = 64;
@@ -1191,7 +1192,7 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
 /// there would desynchronise the whole graph by 46 ms at the default 2048.
 #[test]
 fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
-    let mut u = Unit::with_channels(44_100.0, 2u16);
+    let mut u = Unit::with_channels(SampleRate::new(44_100.0), 2u16);
     let window = u.ch.vocoders[0].geometry.window().get();
 
     assert!(!u.is_processing());
@@ -1221,12 +1222,12 @@ fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
 
 #[test]
 fn input_rate_is_unity_when_bypassing() {
-    let u = Unit::with_channels(44_100.0, 1u16);
+    let u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
     assert!(!u.is_processing());
     assert_eq!(u.input_rate(), ReadRate::UNITY);
 
     // Disabled counts as bypassing too.
-    let mut u = Unit::with_channels(44_100.0, 1u16);
+    let mut u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
     u.set_stretch_factor(StretchFactor::new(2.0));
     u.set_enabled(false);
     assert_eq!(u.input_rate(), ReadRate::UNITY);
@@ -1248,13 +1249,13 @@ fn overlap_add_flushes_subnormals() {
 
 #[test]
 fn creation_and_width() {
-    let unit = Unit::new(44100.0);
+    let unit = Unit::new(SampleRate::new(44100.0));
     assert_eq!(unit.channels(), ChannelLayout::STEREO);
     // Its in/out arity is its width: one vocoder per channel.
     assert_eq!(unit.channels().count(), 2);
 
     assert_eq!(
-        Unit::with_channels(44_100.0, 6u16).channels(),
+        Unit::with_channels(SampleRate::new(44_100.0), 6u16).channels(),
         ChannelLayout::from(6u16)
     );
 }
@@ -1263,14 +1264,14 @@ fn creation_and_width() {
 #[test]
 fn zero_width_is_clamped_to_one() {
     assert_eq!(
-        Unit::with_channels(44_100.0, 0u16).channels(),
+        Unit::with_channels(SampleRate::new(44_100.0), 0u16).channels(),
         ChannelLayout::MONO
     );
 }
 
 #[test]
 fn parameters_round_trip_and_clamp() {
-    let unit = Unit::new(44100.0);
+    let unit = Unit::new(SampleRate::new(44100.0));
 
     unit.set_stretch_factor(StretchFactor::new(2.0));
     assert!((unit.stretch_factor().get() - 2.0).abs() < 0.001);
@@ -1291,7 +1292,7 @@ fn parameters_round_trip_and_clamp() {
 
 #[test]
 fn enabled_flag_gates_processing() {
-    let mut unit = Unit::new(44100.0);
+    let mut unit = Unit::new(SampleRate::new(44100.0));
     unit.set_stretch_factor(StretchFactor::new(2.0));
     assert!(unit.is_processing());
 
@@ -1303,7 +1304,7 @@ fn enabled_flag_gates_processing() {
 
 #[test]
 fn unity_parameters_bypass() {
-    let mut unit = Unit::new(44100.0);
+    let mut unit = Unit::new(SampleRate::new(44100.0));
     assert!(!unit.is_processing());
 
     let mut output = [0.0f32; 2];
@@ -1315,7 +1316,7 @@ fn unity_parameters_bypass() {
 /// pair.
 #[test]
 fn six_channel_bypass_passes_all_channels_through() {
-    let mut u = Unit::with_channels(44_100.0, 6u16);
+    let mut u = Unit::with_channels(SampleRate::new(44_100.0), 6u16);
     assert!(!u.is_processing(), "unity stretch/pitch should bypass");
 
     let input: Vec<f32> = (0..6).map(|c| (c + 1) as f32).collect();
@@ -1331,7 +1332,7 @@ fn six_channel_bypass_passes_all_channels_through() {
 /// phase state. Clones happen per graph commit and per voice slot.
 #[test]
 fn clone_carries_parameters_and_width() {
-    let u = Unit::with_channels(44_100.0, 6u16);
+    let u = Unit::with_channels(SampleRate::new(44_100.0), 6u16);
     u.set_stretch_factor(StretchFactor::new(1.5));
 
     let c = u.clone();
@@ -1345,7 +1346,7 @@ fn clone_carries_parameters_and_width() {
 
 #[test]
 fn reset_clears_buffered_audio() {
-    let mut u = Unit::with_channels(44_100.0, 1u16);
+    let mut u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
     u.set_stretch_factor(StretchFactor::new(2.0));
 
     let input = sine(440.0, 44_100.0, 8192);
@@ -1392,7 +1393,7 @@ fn stale_audio_survives_a_discontinuity_until_reset() {
 
     // Prime with DC so "is the output still carrying the old material" is a
     // question about level alone — no phase or frequency argument needed.
-    let mut leaking = Unit::with_channels(44_100.0, 1u16);
+    let mut leaking = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
     leaking.set_stretch_factor(StretchFactor::new(2.0));
     assert!(leaking.is_processing());
     fill(&mut leaking, 0.5, 8192);
@@ -1406,7 +1407,7 @@ fn stale_audio_survives_a_discontinuity_until_reset() {
     );
 
     // Same run, with the flush the fix will perform.
-    let mut flushed = Unit::with_channels(44_100.0, 1u16);
+    let mut flushed = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
     flushed.set_stretch_factor(StretchFactor::new(2.0));
     fill(&mut flushed, 0.5, 8192);
     flushed.reset();
@@ -1442,7 +1443,7 @@ fn vocoder_reconstructs_its_input_at_unity() {
     let fft = FftSize::N1024;
     let size = fft.size().get();
     let hop = fft.hop().get();
-    let mut v = Vocoder::new(Unit::geometry(sample_rate, fft));
+    let mut v = Vocoder::new(Unit::geometry(SampleRate::new(sample_rate), fft));
 
     // Two tones plus a DC offset, so a corrupted DC or Nyquist bin cannot
     // hide behind the tones.
@@ -1523,7 +1524,8 @@ fn vocoder_reconstructs_under_a_non_hann_window() {
     let size = fft.size().get();
     let hop = fft.hop().get();
 
-    let geometry = Unit::geometry(sample_rate, fft).with_window_fn(CosineWindow::HAMMING);
+    let geometry =
+        Unit::geometry(SampleRate::new(sample_rate), fft).with_window_fn(CosineWindow::HAMMING);
     // Hamming COLAs at 4x, same as Hann, so this grid genuinely inverts.
     assert!(geometry.is_cola(), "Hamming at 4x must be COLA");
     let mut v = Vocoder::new(geometry);
@@ -1566,7 +1568,7 @@ fn vocoder_reconstructs_under_a_non_hann_window() {
 /// silently lose four channels, and no stereo test can see that.
 #[test]
 fn six_channel_stretch_reaches_every_channel() {
-    let mut u = Unit::with_channels(44_100.0, 6u16);
+    let mut u = Unit::with_channels(SampleRate::new(44_100.0), 6u16);
     u.set_stretch_factor(StretchFactor::new(2.0));
     assert!(u.is_processing());
 
@@ -1616,7 +1618,8 @@ fn stretch_factor_changes_the_source_consumption_rate() {
     const TICKS: usize = 16_384;
 
     let consumed = |factor: f32| {
-        let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1u16);
+        let mut u =
+            Unit::with_fft_size_and_channels(SampleRate::new(44_100.0), FftSize::N1024, 1u16);
         u.set_stretch_factor(StretchFactor::new(factor));
         let input = sine(440.0, 44_100.0, TICKS);
         let mut frame = [0.0f32; 1];
@@ -1662,7 +1665,7 @@ fn stretch_factor_changes_the_source_consumption_rate() {
 fn isolate_snapshots_stretch_and_pitch() {
     const FRAMES: usize = 16_384;
     let make = || {
-        let unit = Unit::with_channels(48_000.0, 2u16);
+        let unit = Unit::with_channels(SampleRate::new(48_000.0), 2u16);
         unit.set_stretch_factor(StretchFactor::new(1.5));
         unit
     };
@@ -1718,7 +1721,7 @@ fn a_block_past_the_scratch_is_rendered_in_runs() {
     let head = MAX_BUFFER_SIZE;
     let size = head + 300;
     for stretch in [2.0, 1.0] {
-        let mut whole = Unit::with_channels(44_100.0, 2u16);
+        let mut whole = Unit::with_channels(SampleRate::new(44_100.0), 2u16);
         whole.set_stretch_factor(StretchFactor::new(stretch));
         let mut split = whole.clone();
 
@@ -1770,7 +1773,8 @@ fn a_block_past_the_scratch_is_rendered_in_runs() {
 fn a_rate_change_keeps_a_non_default_fft_size() {
     let sr = 96_000.0f32;
     for size in [FftSize::N1024, FftSize::N4096, FftSize::N8192] {
-        let mut u = Unit::with_fft_size_and_channels(48_000.0, size, ChannelLayout::MONO);
+        let mut u =
+            Unit::with_fft_size_and_channels(SampleRate::new(48_000.0), size, ChannelLayout::MONO);
         u.set_pitch_cents(Cents::new(1200.0));
         u.set_sample_rate(SampleRate(f64::from(sr)));
         assert_eq!(
@@ -1800,7 +1804,7 @@ fn a_rate_change_keeps_a_non_default_fft_size() {
 #[test]
 fn a_nan_source_does_not_panic_and_a_reset_recovers() {
     let sr = 48_000.0f32;
-    let u = Unit::with_channels(sr as f64, 1u16);
+    let u = Unit::with_channels(SampleRate::new(sr as f64), 1u16);
     u.set_stretch_factor(StretchFactor::new(1.5));
     u.set_pitch_cents(Cents::new(300.0));
     let mut au = u.clone();

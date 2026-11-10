@@ -23,8 +23,7 @@ fn create_ump_destination() {
 #[test]
 fn packet_words_decode_to_ump_stream_and_channel_voice() {
     use tutti_fixtures::midi::note_on;
-    use tutti_midi_types::ump::UmpMessageType;
-    use tutti_midi_types::{EndpointDiscoveryRequest, endpoint_discovery, message_type};
+    use tutti_midi_types::{EndpointDiscoveryRequest, endpoint_discovery};
 
     let discovery = endpoint_discovery(1, 1, EndpointDiscoveryRequest::all());
     let note = note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
@@ -36,8 +35,8 @@ fn packet_words_decode_to_ump_stream_and_channel_voice() {
 
     let decoded: Vec<_> = split_ump_stream(&packet_words).collect();
     assert_eq!(decoded, vec![discovery, note]);
-    assert_eq!(message_type(&decoded[0]), UmpMessageType::UmpStream);
-    assert_eq!(message_type(&decoded[1]), UmpMessageType::ChannelVoice2);
+    assert_eq!(decoded[0].message_type(), 0xF); // UMP Stream
+    assert_eq!(decoded[1].message_type(), 0x4); // Channel Voice 2
 }
 
 /// The callback wiring: whatever the decode yields must reach the caller's

@@ -9128,8 +9128,11 @@ by width alone.
     zero-fill, widening only) where either has none. A source with an `Unknown` channel is
     `FoldError::Unnamed` whatever the destination; a `Discrete` source is read in
     the engine's order for its width (a count-built wave of 4 is quad).
-    `fold_frame` is deleted; `fold_frame_to_mono` and `fold_frame_to_stereo` stay
-    for the nodes that hold a bare frame.
+    `fold_frame` is deleted, and so are `fold_frame_to_mono`,
+    `fold_frame_to_stereo`, `fold_buffer_to_mono` and `fold_planar_to_mono`
+    (design 024 step 0b, consolidation 3): the nodes that held a bare frame
+    build a `Fold` on the control side (`ConvolverNode`, `HrtfBinauralNode`,
+    `VbapPannerNode`) and `Interleaved::fold_into` applies one to a buffer.
   - **Engine.** `Engine::new` builds, on the control side, the fold from every
     root width (1 to `MAX_ROOT_CHANNELS`) to every device width up to 16, and
     publishes them through an `ArcLend`; each call lends the set once, so a plan

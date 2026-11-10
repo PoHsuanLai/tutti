@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
@@ -242,7 +242,7 @@ fn a_rate_change_rereads_the_port_layout() {
     assert_eq!(active.loaded().info().audio_inputs, 2);
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active.reconfigure(44_100.0, 512).expect("re-activates");
+    active.reconfigure_at(44_100.0, 512).expect("re-activates");
 
     assert_eq!(
         active.loaded().audio_port_count(&main_thread(), true),
@@ -402,7 +402,7 @@ fn a_successful_rate_change_exposes_the_new_layout() {
     );
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active.reconfigure(44_100.0, 512).expect("re-activates");
+    active.reconfigure_at(44_100.0, 512).expect("re-activates");
 
     let after = (
         active.loaded().info().audio_inputs,

@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
 
 use tutti_clap_host::{

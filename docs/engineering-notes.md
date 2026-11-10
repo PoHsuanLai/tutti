@@ -33,7 +33,7 @@ cargo check -p tutti-transport -p tutti-metering -p tutti-engine
 ## The import-path gate
 
 ```bash
-scripts/check-canonical-paths.sh
+cargo xtask check-paths
 ```
 
 Engine types are imported from a crate's root or prelude, never through its
@@ -45,7 +45,7 @@ reason.
 ## The submodule-pin gate
 
 ```bash
-scripts/check-submodule-pins.sh
+cargo xtask check-submodule-pins
 ```
 
 The three VST3 SDK submodules are documented as pinned at `v3.8.0_build_66` in
@@ -695,7 +695,7 @@ comments and docs, and treat it as a bug when you find it:
   `tutti-cpal` would make the device layer depend on all of them and pull a
   device into the recorder and the offline path.)
   `crates/tutti/tests/no_logic.rs` enforces this by reading `lib.rs`, and
-  `scripts/check-canonical-paths.sh` additionally requires every whole-crate
+  `cargo xtask check-paths` additionally requires every whole-crate
   re-export there to be aliased (`pub use tutti_engine as engine`), so
   `tutti::tutti_engine::…` is unspellable.
 

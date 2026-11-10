@@ -683,7 +683,7 @@ mod tests {
             if let Some((frame, hz)) = step
                 && at == frame
             {
-                node.set_rate(hz);
+                node.set_rate(Hz::new(hz));
             }
             let xs = &x[at..at + n];
             let o = tutti_graph::contract::drive(&mut node, SampleRate(48_000.0), &[xs], &[]);
@@ -864,7 +864,7 @@ mod tests {
                 SampleRate(48_000.0),
                 max_block,
             );
-            node.set_rate(7.0);
+            node.set_rate(Hz::new(7.0));
             node
         };
         // 37 frames leaves the count at 5 of 16, with points solved.
@@ -930,7 +930,7 @@ mod tests {
                 SampleRate(48_000.0),
                 128,
             );
-            node.set_rate(7.0);
+            node.set_rate(Hz::new(7.0));
             let mut out = vec![Vec::new(), Vec::new()];
             let (mut at, mut k) = (0, 0);
             while at < x.len() {
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn test_chorus_passthrough_dry() {
         let mut chorus = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
-        chorus.set_mix(0.0);
+        chorus.set_mix(Mix::new(0.0));
         let out = drive_frames(&mut chorus, &[&[0.5], &[-0.3]]);
         assert!((out[0][0] - 0.5).abs() < 0.001);
         assert!((out[1][0] - (-0.3)).abs() < 0.001);
@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn test_chorus_stereo_difference() {
         let mut chorus = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
-        chorus.set_mix(1.0);
+        chorus.set_mix(Mix::new(1.0));
         let ones = [1.0f32; 4410];
         let out = drive_frames(&mut chorus, &[&ones, &ones]);
         let l_sum: f64 = out[0].iter().map(|&s| s as f64).sum();
@@ -978,8 +978,8 @@ mod tests {
     #[test]
     fn test_flanger_feedback_effect() {
         let mut flanger = at_48k(ModDelayNode::flanger(ChannelLayout::STEREO));
-        flanger.set_feedback(0.9);
-        flanger.set_mix(1.0);
+        flanger.set_feedback(Feedback::new(0.9));
+        flanger.set_mix(Mix::new(1.0));
         let mut x = [0.0f32; 501];
         x[0] = 1.0;
         let out = drive_frames(&mut flanger, &[&x, &x]);
@@ -1011,10 +1011,10 @@ mod tests {
     #[test]
     fn each_preset_clamps_depth_to_its_own_range() {
         let chorus = ModDelayNode::chorus(ChannelLayout::STEREO);
-        chorus.set_depth(1.0);
+        chorus.set_depth(Seconds::new(1.0));
         assert_eq!(chorus.controls.depth.load(), Seconds(0.04));
         let flanger = ModDelayNode::flanger(ChannelLayout::STEREO);
-        flanger.set_depth(0.0);
+        flanger.set_depth(Seconds::new(0.0));
         assert_eq!(flanger.controls.depth.load(), Seconds(0.0001));
     }
 
@@ -1026,7 +1026,7 @@ mod tests {
         let x = noise(8, 128);
         let run = change_between_node_blocks(
             || ModDelayNode::chorus(ChannelLayout::STEREO),
-            |n| n.set_mix(0.0),
+            |n| n.set_mix(Mix::new(0.0)),
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
         );

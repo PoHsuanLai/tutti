@@ -392,7 +392,7 @@ fn the_hardware_out_drains_with_stamping_off() {
     let count = Arc::new(AtomicUsize::new(0));
     s.midi().set_hardware_out(Some(UmpOut::new(
         Box::new(CountingSink(Arc::clone(&count))),
-        RATE,
+        SampleRate::new(RATE),
     )));
     let events = s.update();
     assert!(

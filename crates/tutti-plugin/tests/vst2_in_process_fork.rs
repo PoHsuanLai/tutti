@@ -147,8 +147,12 @@ impl Drop for ProbeEnv {
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
-        .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
+    in_process_vst2_client(
+        &main_thread(),
+        path,
+        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+    )
+    .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
 fn prepare_at(rate: f64) -> Prepare {
@@ -427,7 +431,7 @@ fn a_plugin_handed_back_by_into_client_forks() {
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
         tutti_fixtures::vst2_probe(),
-        SAMPLE_RATE,
+        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .expect("the probe opens");
     let handle = plugin.handle().clone();

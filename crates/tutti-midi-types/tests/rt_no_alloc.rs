@@ -105,20 +105,18 @@ fn from_midi1_bytes_on_hostile_bytes_is_allocation_free() {
     });
 }
 
-/// Building a single SysEx7 packet allocates nothing, a byte with its top bit
-/// set included.
+/// Writing SysEx7 packets (`tutti_ump::sysex7_packets`) allocates nothing.
 ///
-/// Mutation (run): `sysex7_single` built through `Sysex7::<Vec<u32>>` again ->
-/// the process aborts.
+/// Mutation (run): `Sysex7Packets::next` built through `Sysex7::<Vec<u32>>` again
+/// -> the process aborts.
 #[test]
-fn sysex7_single_is_allocation_free() {
-    use tutti_midi_types::sysex7_single;
-    use tutti_ump::MidiGroup;
+fn sysex7_packets_are_allocation_free() {
+    use tutti_ump::{MidiGroup, U7, sysex7_packets};
 
+    let long = [U7::of(7); 20];
     assert_no_alloc::assert_no_alloc(|| {
-        for payload in [&[][..], &[1, 2, 3], &[0x81, 0xFF, 2, 3, 4, 5]] {
-            assert!(sysex7_single(MidiGroup::FIRST, payload).is_some());
+        for payload in [&[][..], &[U7::of(1), U7::of(2), U7::of(3)][..], &long[..]] {
+            assert!(sysex7_packets(MidiGroup::FIRST, payload).count() >= 1);
         }
-        assert!(sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
     });
 }

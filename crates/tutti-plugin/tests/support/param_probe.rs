@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 use std::time::{Duration, Instant};
+use tutti_types::SampleRate;
 
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
@@ -40,7 +41,7 @@ pub fn load_vst2_probe(params: usize, sample_rate: f64) -> (PluginClient, Plugin
     let client = PluginClient::new(
         BridgeConfig::default(),
         tutti_fixtures::vst2_probe().to_path_buf(),
-        sample_rate,
+        SampleRate::new(sample_rate),
     );
     // SAFETY: as above. The server has read it; leaving it set would reshape
     // whichever probe loads next.

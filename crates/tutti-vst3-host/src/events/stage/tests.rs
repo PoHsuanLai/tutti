@@ -1,7 +1,6 @@
 use super::*;
 use tutti_graph::UmpAt;
-use tutti_midi_types::{sysex7_fragments, sysex7_packet_count, sysex7_payload};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Message, MidiChannel, MidiGroup, SysexStatus, decode};
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
@@ -34,8 +33,8 @@ fn len(list: &EventList) -> usize {
 /// the second block's quarter bend reads 12 semitones (0.55), not 6 → fails.
 #[test]
 fn a_per_note_bend_range_outlives_its_block() {
+    use tutti_midi_protocol::signed_f32_to_bend_u32;
     use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::convert::signed_f32_to_bend_u32;
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let list = EventList::input();
@@ -103,8 +102,8 @@ fn a_per_note_bend_range_outlives_its_block() {
 #[test]
 fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     use tutti_clap_host::{ClapEvent, EventList as _, InputEventList};
+    use tutti_midi_protocol::signed_f32_to_bend_u32;
     use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::convert::signed_f32_to_bend_u32;
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let bend = |channel: u8| {
@@ -693,10 +692,12 @@ fn a_negative_offset_sorts_before_zero() {
 
 /// **Draining a plugin's SysEx allocates nothing**, whichever way the plugin
 /// handed it over: a framed message in a plain `Data` event (the single-packet
-/// path, with a byte whose top bit is set, which reads with that bit dropped),
-/// and a message of several packets (the reassembled path).
+/// path), and a message of several packets (the reassembled path). A message
+/// with a byte whose top bit is set is malformed: it is dropped (a `Data` event
+/// that does not convert is not counted, like one too long for a packet), and
+/// nothing is read from it with the bit dropped.
 ///
-/// Mutation (run): `sysex7_single` built through midi2's
+/// Mutation (run): `Sysex7Packets::next` built through midi2's
 /// `Sysex7::<Vec<u32>>` again → `assert_no_alloc` aborts on the first
 /// `Data` event.
 #[test]
@@ -706,11 +707,7 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     // Single packet: `F0 .. F7` in a Data event of subtype 0.
     let list = EventList::input();
     let mut staging = list.begin();
-    for bytes in [
-        &[0xF0, 1, 2, 3, 0xF7][..],
-        &[0xF0, 0x81, 0xFF, 2, 0xF7],
-        &[0xF0, 0xF7],
-    ] {
+    for bytes in [&[0xF0, 1, 2, 3, 0xF7][..], &[0xF0, 0xF7]] {
         let data = Data::new(0, bytes).unwrap();
         assert!(staging.push(Event::at(7, Payload::Data(data))));
     }
@@ -720,17 +717,33 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     let payloads: Vec<Vec<u8>> = out
         .iter()
         .map(|e| {
-            let (status, bytes, n) = sysex7_payload(&e.ump).expect("a SysEx7 packet");
-            assert_eq!((status, e.offset), (0, 7));
-            bytes[..n].to_vec()
+            let Ok(Message::Sysex7(_, packet)) = decode(e.ump) else {
+                panic!("a SysEx7 packet");
+            };
+            assert_eq!((packet.status(), e.offset), (SysexStatus::Complete, 7));
+            packet.data().to_vec()
         })
         .collect();
-    assert_eq!(payloads, [vec![1, 2, 3], vec![1, 0x7F, 2], vec![]]);
+    assert_eq!(payloads, [vec![1, 2, 3], vec![]]);
+    assert_eq!(list.dropped(), 0);
+
+    // A byte with its top bit set: the message is dropped whole.
+    let list = EventList::input();
+    let mut staging = list.begin();
+    let data = Data::new(0, &[0xF0, 0x81, 0xFF, 2, 0xF7]).unwrap();
+    assert!(staging.push(Event::at(7, Payload::Data(data))));
+    staging.finish();
+    let mut out = RtMidiEvents::new();
+    drain_midi(&list, &mut out);
+    assert!(out.is_empty());
+    assert!(!out.is_overflowed(), "malformed is not an overflow");
 
     // Several packets, staged through the reassembler and drained.
     let payload: Vec<u8> = (0..20).collect();
     let mut fragments = Vec::new();
-    sysex7_fragments(MidiGroup::FIRST, &payload, &mut fragments);
+    fragments.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+    );
     let packets: Vec<UmpAt> = fragments
         .into_iter()
         .map(|ump| (Offset::ZERO, ump))
@@ -739,5 +752,6 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     assert!(Stager::default().stage(&list, &midi_only(&packets)));
     let mut out = RtMidiEvents::new();
     assert_no_alloc::assert_no_alloc(|| drain_midi(&list, &mut out));
-    assert_eq!(out.len(), sysex7_packet_count(20));
+    // 20 payload bytes, six to a packet (M2-104 section 7.7): 4 packets.
+    assert_eq!(out.len(), 4);
 }

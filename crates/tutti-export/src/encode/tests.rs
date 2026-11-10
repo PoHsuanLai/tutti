@@ -8,7 +8,7 @@ use tutti_types::Seconds;
 fn config(channels: u16, pcm: Pcm) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: SampleRate::from(1_000.0),
+            sample_rate: SampleRate::new(1_000.0),
             duration_seconds: Seconds(0.008),
             ..Default::default()
         },
@@ -85,7 +85,7 @@ fn the_limit_is_judged_at_the_output_rate() {
     let rate = config.render.sample_rate;
     let max = config.encode.format.max_frames(config.encode.channels);
     check_fits(&plan, rate, &config, max).expect("2^31 - 1000 mono 16-bit frames fit");
-    config.resample = Some(crate::Resample::to(2_000.0));
+    config.resample = Some(crate::Resample::to(SampleRate::new(2_000.0)));
     assert!(check_fits(&plan, rate, &config, max).is_err());
 }
 
@@ -100,9 +100,9 @@ fn the_planned_frames_follow_the_plan_and_the_resample() {
     let plan = RenderPlan::new(&config.render).unwrap();
     let rate = config.render.sample_rate;
     assert_eq!(planned_frames(&plan, rate, &config), 8);
-    config.resample = Some(crate::Resample::to(1_100.0));
+    config.resample = Some(crate::Resample::to(SampleRate::new(1_100.0)));
     assert_eq!(planned_frames(&plan, rate, &config), 9);
-    config.resample = Some(crate::Resample::to(1_000.0));
+    config.resample = Some(crate::Resample::to(SampleRate::new(1_000.0)));
     assert_eq!(
         planned_frames(&plan, rate, &config),
         8,

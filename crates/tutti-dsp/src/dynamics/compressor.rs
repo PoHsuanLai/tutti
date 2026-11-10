@@ -100,7 +100,7 @@ impl CompressorKernel {
         sc_level: f32,
         threshold_override: Option<Db>,
     ) -> f32 {
-        let input_db = amplitude_to_db(sc_level);
+        let input_db = amplitude_to_db(Amplitude::new(sc_level));
         let threshold_db = threshold_override
             .filter(|t| t.get().is_finite())
             .unwrap_or(block.threshold);
@@ -109,7 +109,7 @@ impl CompressorKernel {
         let gain_reduction = self.follower.smooth(target_reduction.get());
         self.envelope = sc_level;
         let makeup = ramp_db(block.makeup_from, block.makeup_to, i, n);
-        db_to_amplitude(-gain_reduction + makeup.get()).get()
+        db_to_amplitude(Db::new(-gain_reduction + makeup.get())).get()
     }
 }
 
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn a_steady_level_settles_to_the_static_curve() {
         for (threshold, level_db, ratio) in [(-20.0f32, -10.0f32, 4.0f32), (-30.0, -6.0, 2.0)] {
-            let mut k = CompressorKernel::new(Seconds(0.001), Seconds(0.05), RATE);
+            let mut k = CompressorKernel::new(Seconds(0.001), Seconds(0.05), SampleRate::new(RATE));
             let b = block(threshold, ratio);
             let level = db_to_amplitude(Db(level_db)).get();
             let mut gain = 1.0;
@@ -162,7 +162,7 @@ mod tests {
     /// A level under the threshold is not reduced.
     #[test]
     fn a_level_under_the_threshold_is_left_alone() {
-        let mut k = CompressorKernel::new(Seconds(0.0), Seconds(0.0), RATE);
+        let mut k = CompressorKernel::new(Seconds(0.0), Seconds(0.0), SampleRate::new(RATE));
         let level = db_to_amplitude(Db(-40.0)).get();
         let g = k.gain(&block(-20.0, 4.0), 0, 1, level, None);
         assert_eq!(g, 1.0);
@@ -179,13 +179,13 @@ mod tests {
         let b = block(-20.0, 4.0);
         let level = db_to_amplitude(Db(-10.0)).get();
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut held = CompressorKernel::new(Seconds(0.0), Seconds(0.0), RATE);
+            let mut held = CompressorKernel::new(Seconds(0.0), Seconds(0.0), SampleRate::new(RATE));
             let mut fed = held.clone();
             let want = held.gain(&b, 0, 1, level, None);
             let got = fed.gain(&b, 0, 1, level, Some(Db(bad)));
             assert_eq!(got.to_bits(), want.to_bits(), "{bad}");
         }
-        let mut held = CompressorKernel::new(Seconds(0.0), Seconds(0.0), RATE);
+        let mut held = CompressorKernel::new(Seconds(0.0), Seconds(0.0), SampleRate::new(RATE));
         let mut lowered = held.clone();
         let a = held.gain(&b, 0, 1, level, None);
         let c = lowered.gain(&b, 0, 1, level, Some(Db(-30.0)));

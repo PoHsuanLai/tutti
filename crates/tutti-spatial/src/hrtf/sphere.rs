@@ -7,7 +7,7 @@
 //! length, vertex count and index count, the face indices, and per vertex its
 //! position followed by its left and right responses as `f32`s.
 
-use tutti_dsp::{Complex32, RealFft};
+use tutti_dsp::{Complex32, CosineWindow, RealFft, WindowedSinc};
 
 use super::panner::{HrtfBinauralError, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
 
@@ -242,14 +242,10 @@ fn resample_batched(
     const HALF_WIDTH: f64 = 32.0;
     let step = f64::from(from) / f64::from(to);
     let cutoff = 0.95 * step.recip().min(1.0);
-    let half = HALF_WIDTH / cutoff;
-    let kernel = |t: f64| {
-        let x = std::f64::consts::PI * cutoff * t;
-        let sinc = if x == 0.0 { 1.0 } else { x.sin() / x };
-        let u = std::f64::consts::PI * t / half;
-        let window = 0.42 + 0.5 * u.cos() + 0.08 * (2.0 * u).cos();
-        cutoff * sinc * window
-    };
+    let sinc = WindowedSinc::new(cutoff, HALF_WIDTH, CosineWindow::BLACKMAN)
+        .expect("the cutoff and the crossing count are positive constants");
+    let half = sinc.half_width();
+    let kernel = |t: f64| sinc.weight(t);
     // Responses per batch: at least one, whatever the size.
     let per_batch = (batch_samples / len.max(out_len)).max(1);
     let mut taps = Vec::new();

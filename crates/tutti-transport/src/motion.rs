@@ -323,7 +323,7 @@ impl MotionFsm {
     /// use tutti_types::{At, Beat, Frame};
     /// use tutti_transport::{MotionEvent, Transport, TransportCommand};
     ///
-    /// let transport = Transport::new(48_000.0);
+    /// let transport = Transport::new(tutti_types::SampleRate(48_000.0));
     /// // Start rolling one second into the stream, stop at beat 16.
     /// transport.motion.schedule(At::Frame(Frame(48_000)), MotionEvent::Play)?;
     /// transport.motion.schedule(At::Beat(Beat(16.0)), MotionEvent::stop())?;
@@ -872,7 +872,7 @@ mod tests {
         let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::Play);
         a.drain();
-        m.settings.set_beat(12.0);
+        m.settings.set_beat(Beat::new(12.0));
 
         let _ = m.try_send(MotionEvent::stop_then_locate(Beat(0.0)));
         a.drain();
@@ -911,7 +911,7 @@ mod tests {
     #[test]
     fn stop_and_return_from_a_stop_jumps_immediately() {
         let (m, mut a) = fsm();
-        m.settings.set_beat(9.0);
+        m.settings.set_beat(Beat::new(9.0));
 
         let _ = m.try_send(MotionEvent::stop_then_locate(Beat(0.0)));
         a.drain();

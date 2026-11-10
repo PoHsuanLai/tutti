@@ -12,9 +12,9 @@
 //! Nothing here allocates after [`Midi1Decoder::new`]: the SysEx capture
 //! buffer is reserved there, and the batch is inline.
 
-use tutti_midi_types::{from_midi1_bytes, sysex7_packet_count};
+use tutti_midi_types::from_midi1_bytes;
 
-use crate::{MIDI_STACK_CAPACITY, MidiEventVec, WireMidi, push_sysex_stack};
+use crate::{MIDI_STACK_CAPACITY, MidiEventVec, WireMidi, push_sysex_stack, sysex_packets};
 
 /// The longest SysEx message the decoder delivers, in bytes, delimiters
 /// included: what [`MIDI_STACK_CAPACITY`] SysEx7 packets (six payload bytes
@@ -278,8 +278,11 @@ impl Midi1Decoder {
                 let _ = batch.try_push(event);
             }
             Midi1Message::SysEx(message) => {
-                let packets = sysex7_packet_count(message.len() - 2);
-                if packets > batch.remaining_capacity() {
+                // The splitter hands on a framed message of 7-bit bytes.
+                let Some(packets) = sysex_packets(message) else {
+                    return;
+                };
+                if packets.len() > batch.remaining_capacity() {
                     flush_batch(batch, flush);
                 }
                 // A message of at most `SYSEX_OUT_CAPACITY` bytes has at most
@@ -308,7 +311,7 @@ fn flush_batch(batch: &mut MidiEventVec, flush: &mut impl FnMut(&[WireMidi])) {
 /// reading of it); any other rounds to at least 1, because the 7-bit scale
 /// would otherwise turn a soft note-on into a note-off.
 pub fn note_on_velocity_midi1(velocity: u16) -> u8 {
-    let v = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity) & 0x7F;
+    let v = tutti_midi_protocol::narrow_velocity(velocity).get();
     if velocity == 0 { 0 } else { v.max(1) }
 }
 

@@ -36,10 +36,10 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt, drive_block};
 use support::main_thread;
 
-use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
+use tutti_clap_host::{ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{
     CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
     CMD_UNREGISTER_TIMER, CMD_UNREGISTER_TIMER_IN_DEACTIVATE, Site, ThreadCapture,
@@ -113,24 +113,6 @@ fn callback_requested(inst: &mut ClapLoaded) -> bool {
     let mut requests = Vec::new();
     inst.take_requests(&main_thread(), &mut requests);
     requests.contains(&tutti_plugin_types::Request::Callback)
-}
-
-/// Drive one silent stereo block through the host.
-fn drive_block(inst: &mut Active<f32>, frames: usize) {
-    let mut out_l = vec![0.0f32; frames];
-    let mut out_r = vec![0.0f32; frames];
-    let in_l = vec![0.0f32; frames];
-    let in_r = vec![0.0f32; frames];
-    let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
-    let ins: &[&[f32]] = &[&in_l[..], &in_r[..]];
-    let mut buffer = AudioBuffer32 {
-        inputs: ins,
-        outputs: outs,
-        num_samples: frames,
-        sample_rate: 48_000.0,
-    };
-    inst.process(&mut buffer, &ClapProcessContext::default())
-        .expect("process succeeds");
 }
 
 // --- the exported C symbols, reached across the dlopen seam -----------------
@@ -217,7 +199,7 @@ fn assert_roles(cap: &ThreadCapture, site: Site, want_main: bool, want_audio: bo
 fn host_answers_thread_check_correctly_at_every_call_site() {
     let probe = Probe::acquire();
     let mut inst = probe.activate();
-    drive_block(&mut inst, 128);
+    drive_block(&mut inst, 128, &ClapProcessContext::default());
     // `process` sets `callback_requested`; honouring it is what runs
     // `on_main_thread`, which is the sixth site.
     assert!(
@@ -258,7 +240,7 @@ fn reset_runs_under_the_audio_thread_claim() {
 
     // A block first, so `reset` lands on an instance that has actually
     // processed — the state it exists to clear.
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     inst.reset();
     // Runs strictly after `reset` returned: if the claim leaked, the host would
     // still consider this thread the audio thread here.
@@ -292,7 +274,7 @@ fn audio_thread_role_is_released_when_process_returns() {
     let probe = Probe::acquire();
     let mut inst = probe.activate();
 
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     assert!(callback_requested(inst.loaded_mut()));
     // Runs after `process` returned; if the claim leaked, the host would still
     // consider this thread the audio thread here.
@@ -330,7 +312,7 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
         "no callback should be pending before the plugin asks for one"
     );
 
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
 
     assert!(
         callback_requested(inst.loaded_mut()),
@@ -388,7 +370,7 @@ fn request_restart_from_process_reaches_the_host() {
     );
 
     probe.command(CMD_REQUEST_RESTART);
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
 
     assert!(
         restart_requested(inst.loaded_mut()),
@@ -456,7 +438,7 @@ fn request_process_is_recorded_independently_of_restart() {
     let mut inst = probe.activate();
 
     probe.command(CMD_REQUEST_PROCESS);
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
 
     assert!(
         inst.loaded().take_process_requested(),
@@ -485,7 +467,7 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
     let mut inst = probe.activate();
 
     probe.command(CMD_REQUEST_RESTART);
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     assert!(
         restart_requested(inst.loaded_mut()),
         "restart was requested"
@@ -501,7 +483,7 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
         .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("re-activation after a restart request must succeed");
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
 
     let cap = probe.capture();
     assert_eq!(
@@ -551,7 +533,7 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
 fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
     let probe = Probe::acquire();
     let mut inst = probe.activate();
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
 
     let before = inst.loaded().sample_rate();
     let target = if before == 48_000.0 {
@@ -564,7 +546,7 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
     // rate change. Same discipline as the restart test.
     thread_reset();
 
-    inst.reconfigure(target, 512)
+    inst.reconfigure_at(target, 512)
         .expect("the reference plugin must accept an ordinary DAW sample rate");
 
     assert_eq!(
@@ -595,7 +577,7 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
     // The plugin must be usable afterwards, not merely re-activated: the first
     // block at the new rate has to re-run start_processing, because
     // the deactivation stopped processing on the way down.
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     let cap = probe.capture();
     assert_eq!(
         cap.sites[Site::StartProcessing as usize].visits,
@@ -642,7 +624,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     // `register_timer` main-thread-only). `process` sets callback_requested;
     // honouring it is what gets us to `on_main_thread`.
     probe.command(CMD_REGISTER_TIMER);
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     assert!(callback_requested(inst.loaded_mut()));
     inst.loaded_mut().on_main_thread(&main_thread());
 
@@ -699,7 +681,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 
     // Unregister, again from the main thread.
     probe.command(CMD_UNREGISTER_TIMER);
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     assert!(callback_requested(inst.loaded_mut()));
     inst.loaded_mut().on_main_thread(&main_thread());
     assert!(
@@ -742,7 +724,7 @@ fn host_routes_plugin_log_lines_at_every_severity() {
     // `clap.log` is `[thread-safe]`, but drive it from `on_main_thread` so this
     // test measures routing, not the thread model (which the tests above cover).
     probe.command(CMD_LOG_ALL_SEVERITIES);
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     assert!(callback_requested(inst.loaded_mut()));
     // Drain anything the load/activate path logged so the comparison below sees
     // only the probe's lines.
@@ -893,7 +875,7 @@ fn a_timer_unregistered_from_deactivate_is_accepted_and_does_not_fire_after() {
     let probe = Probe::acquire();
     let mut inst = probe.activate();
     probe.command(CMD_REGISTER_TIMER);
-    drive_block(&mut inst, 64);
+    drive_block(&mut inst, 64, &ClapProcessContext::default());
     assert!(callback_requested(inst.loaded_mut()));
     inst.loaded_mut().on_main_thread(&main_thread());
     assert!(probe.capture().timer_registered);

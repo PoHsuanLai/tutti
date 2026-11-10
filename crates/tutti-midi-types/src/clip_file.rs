@@ -23,9 +23,9 @@ use midi2::ump_stream::{EndOfClip, StartOfClip};
 use midi2::utility::{DeltaClockstamp, DeltaClockstampTpq};
 use midi2::ux::u20;
 
-use crate::translation::scaling::midi1_velocity_to_midi2;
+use tutti_midi_protocol::channel_voice;
 use tutti_types::{Beat, BeatDuration, Bpm};
-use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Ump, Utility};
+use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Ump, Utility, Voice2};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
 pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -409,10 +409,11 @@ impl ParsedClipFile {
             } else {
                 // A Note On at velocity 0 is only an off in MIDI 1.0; a MIDI 2.0
                 // one is neither a start nor an end here.
-                let velocity = if key.is_m2() {
-                    (event.0[1] >> 16) as u16
-                } else {
-                    midi1_velocity_to_midi2((event.0[0] & 0x7F) as u8)
+                // A MIDI 1.0 Note On widens (`channel_voice`), a MIDI 2.0 one
+                // keeps its 16 bits.
+                let velocity = match channel_voice(event) {
+                    Some((_, Voice2::NoteOn { velocity, .. })) => velocity,
+                    _ => 0,
                 };
                 if velocity > 0 {
                     held.entry(map_key).or_default().push((beat, velocity));

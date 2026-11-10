@@ -13,8 +13,9 @@
 //!   control thread when the session rate moves (`SessionRate::set`, a device
 //!   restart), under the plan's lock, which the streamer also holds when it
 //!   writes one.
-//! * Audio writes, streamer reads — `underrun_count`; the streamer writes
-//!   `buffer_fill_level` for its own pacing.
+//! * Audio writes, the stream's handle reads — `underrun_count`
+//!   ([`Stream::status`](crate::Stream::status) drains it into its total); the
+//!   streamer writes `buffer_fill_level` for its own pacing.
 //!
 //! Where a stream stands and how to read it is the ring's, not this cell's
 //! (`prefetch::Ring`): the reader publishes the position it plays and the
@@ -81,7 +82,7 @@ impl Default for PlaybackParams {
 #[derive(Debug)]
 pub struct BufferHealth {
     /// Underruns since the last [`RtState::take_underruns`]. Audio thread
-    /// increments, streamer drains.
+    /// increments, the stream's handle drains.
     underrun_count: AtomicU64,
     /// Ring occupancy as 0-1000, i.e. 0.0-1.0 in thousandths. Fixed-point
     /// because the cell is an integer atomic; the accessors do the scaling.

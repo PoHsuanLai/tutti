@@ -63,7 +63,7 @@ in "There are two umbrellas, and `tutti` holds no code":
 - **The problem was two stacked umbrellas where the lower one owned logic
   the upper one needed**. Re-exporting was never the problem.
 - `crates/tutti/tests/no_logic.rs` keeps it from returning. The gate
-  `scripts/check-canonical-paths.sh` makes `tutti::tutti_x` unspellable.
+  `cargo xtask check-paths` makes `tutti::tutti_x` unspellable.
 
 The user wants something that looks like the deleted package: one API, one
 umbrella, every crate. Any design must answer two questions:
@@ -423,6 +423,7 @@ pub enum SessionEvent {
     ExportDone(Result<ExportOutput, ExportError>),
     DeviceFault(StreamFault),
     MidiOutDropped(u64),
+    BlocksSilenced(u64),                      // blocks the engine rendered silent since the last update: an audible dropout (one per update that saw any; derived from `LoadReading::silenced`; `over_budget` stays a polled reading)
     // ...
 }
 ```
@@ -1061,7 +1062,7 @@ through a second path.
 `pub use`, `pub mod` and `}`, so the `#[cfg]`-gated `pub use tutti_session
 as session;` passes it.
 
-**`check-canonical-paths.sh`:**
+**`check-paths`:**
 
 - The chained gate already covers a chain through `tutti_session`.
 - Add `tutti_session` to the per-module gate invocation in CI, as

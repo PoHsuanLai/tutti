@@ -1,7 +1,9 @@
-//! One activation, both halves held together.
+//! One activation, both halves held together: [`Active`] is the shared
+//! `tutti_fixtures::Active`, and [`Render`] is what a case drives it with.
 
+use tutti_fixtures::Whole;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Loaded, MaxBlock, PluginError, PluginIo, Prepare, ProcessContext,
+    AudioBuffer, AudioBufferMut, Loaded, MaxBlock, PluginIo, Prepare, ProcessContext,
     ProcessOutput, Processor, Sample, SampleFormat, SampleRate, Samples,
 };
 
@@ -40,77 +42,35 @@ impl Width for f64 {
     }
 }
 
-/// The two halves of one activation.
-pub struct Active<L: Loaded> {
-    pair: Option<(L::Processor, L::Controller)>,
-    prepare: Prepare,
-}
+/// One activation, both halves held together.
+pub type Active<L> = tutti_fixtures::Active<Whole<L>>;
 
-impl<L: Loaded> Active<L> {
-    /// Activates `loaded`; a refusal hands the plugin back when the format can.
-    ///
-    /// # Errors
-    ///
-    /// The plugin's refusal.
-    pub fn activate(loaded: L, prepare: Prepare) -> Result<Self, (Option<L>, PluginError)> {
-        match loaded.activate(&main_thread(), prepare) {
-            Ok(pair) => Ok(Self {
-                pair: Some(pair),
-                prepare,
-            }),
-            Err(refused) => Err((refused.plugin, refused.reason)),
-        }
-    }
-
-    fn halves(&mut self) -> &mut (L::Processor, L::Controller) {
-        self.pair.as_mut().expect("both halves")
-    }
-
-    /// Joins the halves back into the loaded plugin.
-    ///
-    /// # Panics
-    ///
-    /// When the plugin will not rejoin them.
-    #[must_use]
-    pub fn deactivate(mut self) -> L {
-        let (processor, controller) = self.pair.take().expect("both halves");
-        L::deactivate(&main_thread(), processor, controller)
-            .unwrap_or_else(|stuck| panic!("halves would not rejoin: {}", stuck.reason))
-    }
-
-    /// Deactivates and activates again with `wanted`.
-    ///
-    /// # Panics
-    ///
-    /// When the halves will not rejoin or the plugin refuses.
-    pub fn reconfigure(&mut self, wanted: Prepare) {
-        let pair = self.pair.take().expect("both halves");
-        let loaded = L::deactivate(&main_thread(), pair.0, pair.1)
-            .unwrap_or_else(|stuck| panic!("halves would not rejoin: {}", stuck.reason));
-        self.pair = Some(
-            loaded
-                .activate(&main_thread(), wanted)
-                .unwrap_or_else(|refused| panic!("reactivation refused: {}", refused.reason)),
-        );
-        self.prepare = wanted;
-    }
-
-    /// The main-thread half.
-    pub fn controller(&mut self) -> &mut L::Controller {
-        &mut self.halves().1
-    }
-
-    /// The realtime half.
-    pub fn processor(&mut self) -> &mut L::Processor {
-        &mut self.halves().0
-    }
-
+/// Renders blocks through an [`Active`]'s Processor.
+pub trait Render {
     /// One block; returns the two output channels.
     ///
     /// # Panics
     ///
     /// When the block does not render.
-    pub fn render<S: Width>(
+    fn render<S: Width>(
+        &mut self,
+        inputs: &[Vec<S>],
+        frames: usize,
+        ctx: &ProcessContext<'_>,
+    ) -> Vec<Vec<S>>;
+
+    /// A block of silence in, the outputs back.
+    fn silent(&mut self, frames: usize) -> Vec<Vec<f32>> {
+        self.render(
+            &[vec![0.0; frames], vec![0.0; frames]],
+            frames,
+            &ProcessContext::new(),
+        )
+    }
+}
+
+impl<L: Loaded> Render for Active<L> {
+    fn render<S: Width>(
         &mut self,
         inputs: &[Vec<S>],
         frames: usize,
@@ -121,7 +81,7 @@ impl<L: Loaded> Active<L> {
         let mut refs: Vec<&mut [S]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut out = ProcessOutput::default();
         let mut io = PluginIo {
-            buffer: S::wrap(AudioBuffer::new(&ins, &mut refs, self.prepare.rate().0)),
+            buffer: S::wrap(AudioBuffer::new(&ins, &mut refs, self.prepare().rate().0)),
             ctx,
             out: &mut out,
         };
@@ -129,15 +89,6 @@ impl<L: Loaded> Active<L> {
             .process(&mut io)
             .expect("the block renders");
         outs
-    }
-
-    /// A block of silence in, the outputs back.
-    pub fn silent(&mut self, frames: usize) -> Vec<Vec<f32>> {
-        self.render(
-            &[vec![0.0; frames], vec![0.0; frames]],
-            frames,
-            &ProcessContext::new(),
-        )
     }
 }
 

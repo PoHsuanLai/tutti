@@ -96,7 +96,7 @@ fn the_facade_contains_no_code() {
 ///
 /// A bare `pub use tutti_engine;` would let a consumer write
 /// `tutti::tutti_engine::Engine` — the redundant path
-/// `scripts/check-canonical-paths.sh` exists to prevent, in a shape its
+/// `cargo xtask check-paths` exists to prevent, in a shape its
 /// chained-path regex cannot see: that regex requires an underscore-bearing
 /// crate segment on both sides, and `tutti::` has none. Aliasing removes the
 /// spelling from the language rather than asking anyone to avoid it.

@@ -1,5 +1,19 @@
 use super::*;
 
+/// What is deliberately *absent* is as load-bearing as what is present.
+/// These must not compile; the ledger is here so a future contributor does
+/// not "helpfully" add them.
+///
+/// - `From<raw> for Unit`, `From<Unit> for raw`, so `.into()` between a unit and
+///   its bare number — a bare float must not become a unit unnamed at the call
+///   site, and a unit must not leave as a float by an `.into()` that hides which
+///   quantity it was. Build with `new`, read with `get` (generic code: the
+///   `Unit` trait's `from_raw` / `to_raw`).
+///
+/// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
+#[test]
+fn omitted_conversions_are_documented() {}
+
 #[test]
 fn cents_and_semitones_convert_rather_than_scale() {
     // `Cents` being `Scalable` means `Cents / 100.0` COMPILES and

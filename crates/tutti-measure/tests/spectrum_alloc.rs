@@ -8,7 +8,7 @@ use std::cell::Cell;
 
 use tutti_dsp::{FftScratch, FrameCount, StftGeometry};
 use tutti_measure::{Banding, Smoothing, SpectrumConfig, SpectrumState, step_spectrum};
-use tutti_types::{Db, Hz, Samples, Seconds};
+use tutti_types::{Db, Hz, SampleRate, Samples, Seconds};
 
 struct Counting;
 
@@ -58,7 +58,8 @@ fn allocations(f: impl FnOnce()) -> usize {
 ///   `fft.forward`) -> the first step counts allocations.
 #[test]
 fn a_spectrum_step_does_not_allocate() {
-    let geometry = StftGeometry::new(48_000.0, Samples(1024), Samples(256)).unwrap();
+    let geometry =
+        StftGeometry::new(SampleRate::new(48_000.0), Samples(1024), Samples(256)).unwrap();
     let plain = SpectrumConfig::new(geometry).unwrap();
     let banded = plain
         .with_banding(Banding::Octave {

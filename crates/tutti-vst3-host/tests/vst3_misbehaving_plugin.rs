@@ -46,7 +46,7 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, LoadOptions, TransportInfo, Vst3
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, LoadError, ParamExt, StateExt};
+use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 /// The in-repo probe bundle, built by `build.rs`.
 const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");

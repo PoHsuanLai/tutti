@@ -80,7 +80,10 @@ fn watch(f: impl FnOnce()) -> (usize, usize) {
 #[test]
 fn the_add_voice_drain_frees_nothing() {
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let wave = Arc::new(Wave::from_samples(48_000.0, &vec![0.5f32; 48_000]));
+    let wave = Arc::new(Wave::from_samples(
+        SampleRate::new(48_000.0),
+        &vec![0.5f32; 48_000],
+    ));
     let (pool, handle) = VoicePool::new().with_handle();
     let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
     let env = t.env(64, SampleRate(48_000.0));
@@ -284,7 +287,10 @@ fn a_removed_disk_voice_on_a_full_retirement_channel_frees_its_ring_in_the_callb
     let env = t.env(64, SampleRate(48_000.0));
     rig.block_in(&env);
 
-    let wave = Arc::new(Wave::from_samples(48_000.0, &vec![0.5f32; 480]));
+    let wave = Arc::new(Wave::from_samples(
+        SampleRate::new(48_000.0),
+        &vec![0.5f32; 480],
+    ));
     let memory = || {
         Box::new(Voice {
             source: VoiceSource::Memory(

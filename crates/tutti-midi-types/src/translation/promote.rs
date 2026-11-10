@@ -8,7 +8,7 @@
 //! packet (still a [`Ump`], i.e. an owned `[u32; 4]`), applying:
 //!   * **velocity-0 NoteOn ⇒ NoteOff** (the MIDI 1.0 historical quirk), and
 //!   * **Channel Voice 1 ⇒ Channel Voice 2 promotion** — 7/14-bit fields widened
-//!     to 16/32-bit via [`scaling`](super::scaling)'s spec Min-Center-Max.
+//!     to 16/32-bit by `tutti_midi_protocol::widen`'s spec Min-Center-Max.
 //!
 //! Consumers then decode with the same `midi2::UmpMessage::try_from(ump.words())`
 //! they would use anyway — but on a stream that is guaranteed single-protocol, so
@@ -16,14 +16,12 @@
 //! (system, utility, SysEx, and CV2 messages with no MIDI-1 analogue) pass through
 //! unchanged.
 
-use midi2::channel_voice1::ChannelVoice1;
 use midi2::channel_voice2::ChannelVoice2;
 use midi2::{Channeled, Grouped, UmpMessage};
+use tutti_midi_protocol::widen;
 use tutti_ump::{
-    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2,
+    Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice1, Voice2, decode,
 };
-
-use super::scaling::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
 
 /// Normalize `ump` to a MIDI 2.0 Channel Voice [`Ump`]. See module docs.
 ///
@@ -36,7 +34,7 @@ pub fn normalize(ump: &Ump) -> Ump {
     };
     let out = match msg {
         UmpMessage::ChannelVoice2(cv2) => fold_note_off_cv2(cv2),
-        UmpMessage::ChannelVoice1(cv1) => Some(promote_cv1(cv1)),
+        UmpMessage::ChannelVoice1(_) => promote_cv1(ump),
         _ => None,
     };
     out.unwrap_or(*ump)
@@ -82,74 +80,21 @@ fn fold_note_off_cv2(cv2: ChannelVoice2<&[u32]>) -> Option<Ump> {
     }
 }
 
-/// Promote a MIDI 1.0 Channel Voice message to the MIDI 2.0 equivalent, widening
-/// resolution via spec Min-Center-Max. Velocity-0 NoteOn folds to NoteOff.
-fn promote_cv1(cv1: ChannelVoice1<&[u32]>) -> Ump {
-    // Both come off the wire already 4-bit-masked by `midi2`'s `u4`, so the
-    // re-mask in `new` is a no-op here — it is the type boundary, not a fix.
-    let g = MidiGroup::masked(u8::from(cv1.group()));
-    let ch = MidiChannel::masked(u8::from(cv1.channel()));
-    match cv1 {
-        ChannelVoice1::NoteOn(m) => {
-            let n = u8::from(m.note_number());
-            let vel = u8::from(m.velocity());
-            if vel == 0 {
-                note_off(g, ch, n, 0)
-            } else {
-                voice(
-                    g,
-                    ch,
-                    Voice2::NoteOn {
-                        note: note(n),
-                        velocity: midi1_velocity_to_midi2(vel),
-                        attribute: Attribute::None,
-                    },
-                )
-            }
-        }
-        ChannelVoice1::NoteOff(m) => note_off(
-            g,
-            ch,
-            u8::from(m.note_number()),
-            midi1_velocity_to_midi2(u8::from(m.velocity())),
-        ),
-        ChannelVoice1::ControlChange(m) => voice(
-            g,
-            ch,
-            Voice2::ControlChange {
-                // `u8::from` is a wire boundary: midi2's `u7` is already in
-                // range, so `CCNumber::masked` masks nothing here.
-                controller: CCNumber::masked(u8::from(m.control())),
-                value: midi1_cc_to_midi2(u8::from(m.control_data())),
-            },
-        ),
-        ChannelVoice1::ChannelPressure(m) => voice(
-            g,
-            ch,
-            Voice2::ChannelPressure(midi1_cc_to_midi2(u8::from(m.pressure()))),
-        ),
-        ChannelVoice1::KeyPressure(m) => voice(
-            g,
-            ch,
-            Voice2::PolyPressure {
-                note: note(u8::from(m.note_number())),
-                value: midi1_cc_to_midi2(u8::from(m.pressure())),
-            },
-        ),
-        ChannelVoice1::PitchBend(m) => voice(
-            g,
-            ch,
-            Voice2::PitchBend(midi1_pitch_bend_to_midi2(u16::from(m.bend()))),
-        ),
-        ChannelVoice1::ProgramChange(m) => voice(
-            g,
-            ch,
-            Voice2::ProgramChange {
-                program: U7::new(u8::from(m.program()) & 0x7F).unwrap_or_default(),
-                bank: None,
-            },
-        ),
-    }
+/// Promote a MIDI 1.0 Channel Voice message to the MIDI 2.0 equivalent
+/// (`tutti_midi_protocol::widen`). Velocity-0 NoteOn folds to NoteOff.
+fn promote_cv1(ump: &Ump) -> Option<Ump> {
+    let Ok(Message::Midi1(address, voice)) = decode(*ump) else {
+        return None;
+    };
+    let wide = match voice {
+        Voice1::NoteOn { note, velocity } if velocity.get() == 0 => Voice2::NoteOff {
+            note,
+            velocity: 0,
+            attribute: Attribute::None,
+        },
+        other => widen(other),
+    };
+    Some(Message::Midi2(address, wide).into())
 }
 
 #[cfg(test)]

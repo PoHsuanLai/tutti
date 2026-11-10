@@ -62,10 +62,10 @@ macro_rules! unit {
         $(unit!(@ability $ability $name, $raw $(, $arg)?);)*
     };
 
-    // `Unit` gives `new`, `get` and `impl Unit`, and includes the `From` and
-    // `Display` abilities below: list `Unit` alone, never `Unit, From` (that
-    // would define `From` twice). Integer quantities list `From` and `Display`
-    // on their own.
+    // `Unit` gives `new`, `get` and `impl Unit`, and includes the `Display`
+    // ability below: list `Unit` alone. There is no `From<raw>` and no
+    // `From<Self> for raw`: a bare number becomes a unit by `new` and leaves by
+    // `get`, named at the call site.
     (@ability Unit $name:ident, $raw:ty) => {
         impl $name {
             /// Wraps a raw float already denominated in this unit.
@@ -92,21 +92,7 @@ macro_rules! unit {
             fn to_raw(self) -> $raw { self.0 }
         }
 
-        unit!(@ability From $name, $raw);
         unit!(@ability Display $name, $raw);
-    };
-
-    // `From<raw>` and `From<Self> for raw`.
-    (@ability From $name:ident, $raw:ty) => {
-        impl From<$raw> for $name {
-            #[inline]
-            fn from(v: $raw) -> Self { Self(v) }
-        }
-
-        impl From<$name> for $raw {
-            #[inline]
-            fn from(v: $name) -> $raw { v.0 }
-        }
     };
 
     // `Display`, as the raw number.

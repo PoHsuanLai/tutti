@@ -45,7 +45,6 @@ use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_midi_types::sysex7_fragments;
 use tutti_plugin_types::ParamId;
 use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -65,7 +64,7 @@ fn at(k: u32) -> Offset {
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, LoadError, ParamExt, StateExt};
+use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 /// A VST3 `ParamID` as the automation vocabulary's address.
 ///
@@ -1287,8 +1286,8 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 /// 64, fails; the sensitivity not stored → 0.55 at sample 192, fails.
 #[test]
 fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
+    use tutti_midi_protocol::signed_f32_to_bend_u32;
     use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::convert::signed_f32_to_bend_u32;
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     if !harness_ready() {
@@ -1560,7 +1559,9 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     let packets = |len: usize| {
         let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
         let mut out = Vec::new();
-        sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+        out.extend(
+            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+        );
         out.into_iter()
             .map(|ump| (Offset::ZERO, ump))
             .collect::<Vec<_>>()

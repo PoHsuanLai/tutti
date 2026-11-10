@@ -34,7 +34,7 @@ use std::sync::{Mutex, MutexGuard};
 #[path = "support/active.rs"]
 mod active;
 
-use active::Active;
+use active::{Active, ActiveExt};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 128;

@@ -126,7 +126,7 @@ impl Node for Script {
             }
             for &(f, ump) in &self.events {
                 if let Some(at) = cx.env.offset_of(Frame(f)) {
-                    let _ = out.push(Event::midi(at, on_port(ump, p).0));
+                    let _ = out.push(Event::midi(at, on_port(ump, p)));
                 }
             }
         }

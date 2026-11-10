@@ -83,6 +83,10 @@ impl CCNumber {
     /// CC 11.
     pub const EXPRESSION: CCNumber = CCNumber(11);
 
+    /// CC 32 — Bank Select LSB, the low 7 bits of a bank
+    /// (MSB is [`BANK_SELECT`](Self::BANK_SELECT)).
+    pub const BANK_SELECT_LSB: CCNumber = CCNumber(32);
+
     /// CC 38 — Data Entry LSB, the low 7 bits of an (N)RPN value
     /// (MSB is [`DATA_ENTRY`](Self::DATA_ENTRY)).
     pub const DATA_ENTRY_LSB: CCNumber = CCNumber(38);
@@ -117,6 +121,12 @@ impl CCNumber {
     pub const RESET_ALL: CCNumber = CCNumber(121);
     /// CC 123.
     pub const ALL_NOTES_OFF: CCNumber = CCNumber(123);
+
+    // Effects depths.
+    /// CC 91 — Effects 1 Depth (reverb send level).
+    pub const REVERB_SEND: CCNumber = CCNumber(91);
+    /// CC 93 — Effects 3 Depth (chorus send level).
+    pub const CHORUS_SEND: CCNumber = CCNumber(93);
 
     // RPN / NRPN parameter select.
     /// CC 98.
@@ -169,6 +179,27 @@ impl CCNumber {
     #[must_use]
     pub const fn masked(raw: u8) -> CCNumber {
         CCNumber(raw & 0x7F)
+    }
+
+    /// The controller that carries the low 7 bits of this one's 14-bit value:
+    /// controllers 0 to 31 are the MSBs and 32 to 63 their LSBs, 32 apart (MIDI
+    /// 1.0 Control Change table). `None` for any other controller, an LSB
+    /// included.
+    ///
+    /// ```
+    /// use tutti_ump::CCNumber;
+    ///
+    /// assert_eq!(CCNumber::DATA_ENTRY.lsb(), Some(CCNumber::DATA_ENTRY_LSB));
+    /// assert_eq!(CCNumber::DATA_ENTRY_LSB.lsb(), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn lsb(self) -> Option<CCNumber> {
+        if self.0 < 32 {
+            Some(CCNumber(self.0 + 32))
+        } else {
+            None
+        }
     }
 
     /// Returns the raw 0-based controller number, for a UMP constructor or a
@@ -266,7 +297,10 @@ mod tests {
         assert_eq!(CCNumber::BALANCE.get(), 8);
         assert_eq!(CCNumber::PAN.get(), 10);
         assert_eq!(CCNumber::EXPRESSION.get(), 11);
+        assert_eq!(CCNumber::BANK_SELECT_LSB.get(), 32);
         assert_eq!(CCNumber::DATA_ENTRY_LSB.get(), 38);
+        assert_eq!(CCNumber::REVERB_SEND.get(), 91);
+        assert_eq!(CCNumber::CHORUS_SEND.get(), 93);
 
         assert_eq!(CCNumber::SUSTAIN.get(), 64);
         assert_eq!(CCNumber::PORTAMENTO_SWITCH.get(), 65);
@@ -302,5 +336,19 @@ mod tests {
             CCNumber::DATA_ENTRY.get() + 32,
             CCNumber::DATA_ENTRY_LSB.get()
         );
+    }
+
+    /// Only the continuous controllers 0 to 31 have an LSB, and it is 32
+    /// above. Mutation (run): `< 32` -> `<= 32` fails at 32; an offset of 31
+    /// fails every row.
+    #[test]
+    fn the_lsb_of_a_controller_is_32_above_for_0_to_31_only() {
+        for raw in 0..=127u8 {
+            let cc = CCNumber::of(raw);
+            let want = (raw < 32).then(|| CCNumber::of(raw + 32));
+            assert_eq!(cc.lsb(), want, "CC {raw}");
+        }
+        assert_eq!(CCNumber::BANK_SELECT.lsb(), Some(CCNumber::BANK_SELECT_LSB));
+        assert_eq!(CCNumber::DATA_ENTRY.lsb(), Some(CCNumber::DATA_ENTRY_LSB));
     }
 }

@@ -58,7 +58,7 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
                 tutti_fixtures::midi::wide_velocity(100),
             )
         })
-        .map(|e: Ump| Event::midi(at, e.0))
+        .map(|e: Ump| Event::midi(at, e))
         .collect();
     synth.events(0, &events);
 

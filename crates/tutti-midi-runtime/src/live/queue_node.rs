@@ -90,7 +90,7 @@ impl Node for MidiQueueNode {
         in_offset_order(events);
         let out = io.event_out(0);
         for ev in events.iter() {
-            let _ = out.push(Event::midi(clamp_stamp(ev.0, block_len), ev.1.0));
+            let _ = out.push(Event::midi(clamp_stamp(ev.0, block_len), ev.1));
         }
         Status::Modified
     }

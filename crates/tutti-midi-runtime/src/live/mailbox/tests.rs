@@ -1,5 +1,6 @@
 use super::*;
 use tutti_graph::{Offset, UmpAt};
+use tutti_ump::MidiGroup;
 
 use tutti_fixtures::midi::{self, wide_velocity};
 

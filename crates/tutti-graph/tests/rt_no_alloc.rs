@@ -428,7 +428,7 @@ impl Node for Spray {
         for at in cx.env.offsets() {
             if cx.env.frame_at(at).get().is_multiple_of(256) {
                 for i in 0..self.burst {
-                    let e = tutti_graph::Event::midi(at, [0x2090_3c64 | i, 0, 0, 0]);
+                    let e = tutti_graph::Event::midi(at, Ump([0x2090_3c64 | i, 0, 0, 0]));
                     if io.event_out(0).push(e).is_err() {
                         self.refused.fetch_add(1, Ordering::Relaxed);
                     }
@@ -855,7 +855,7 @@ fn direct_driving_events_does_not_allocate() {
         .map(|k| {
             Event::midi(
                 Offset::new(k, Samples(64)).expect("inside"),
-                [0x2090_3c64, 0, 0, 0],
+                Ump([0x2090_3c64, 0, 0, 0]),
             )
         })
         .collect();

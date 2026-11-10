@@ -220,7 +220,7 @@ impl Node for PluginClient<Bound> {
                     continue;
                 };
                 // Refused past the port's capacity: counted by the executor.
-                let _ = out.push(Event::midi(at, e.ump.0));
+                let _ = out.push(Event::midi(at, e.ump));
             }
         }
         // (Not pinned end to end: the reference CLAP plugin reads CLAP's own

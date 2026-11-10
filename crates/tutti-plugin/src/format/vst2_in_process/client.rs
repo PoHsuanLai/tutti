@@ -1,10 +1,13 @@
 //! `InProcessVst2Client`: the graph node (`node.rs`) that drives a VST2 plugin
 //! from the host audio thread.
 //!
-//! The plugin (both halves of its activation, `super::instance::Instance`) lives
-//! behind an `Arc<Mutex<_>>` shared with the matching control backend. Audio thread acquires with
-//! `try_lock`; on contention it falls back to silence and bumps
-//! [`InProcessVst2Client::contention_count`].
+//! The audio thread renders through the Processor the node's realtime end
+//! ([`tutti_rt::Rt`]) holds, and takes no lock. The plugin's control side
+//! (`super::instance::Instance`: its `Lifecycle`) is behind an `Arc<Mutex<_>>`
+//! that only control threads take: the handle, the node's `shape` and
+//! `prepare`, a fork. A block with no Processor in hand (it was recalled for a
+//! rate change, or the plugin refused its rate) renders silence, counted by
+//! [`InProcessVst2Client::unlent_blocks`].
 //!
 //! The plugin's render scratch is the Processor's, sized at the activation to
 //! the block the plugin was told; a longer graph block is split before it
@@ -17,7 +20,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_graph::UmpAt;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{MainThread, Processor};
+use tutti_rt::Rt;
 
 use arrayvec::ArrayVec;
 use parking_lot::Mutex;
@@ -25,7 +29,7 @@ use tutti_graph::{Cx, Offset};
 use tutti_tempo::{Cursor, TempoMap};
 use tutti_transport::TempoReader;
 use tutti_types::Samples;
-use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, WireMidi};
+use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, Vst2Processor, WireMidi};
 
 use super::instance::Instance;
 use crate::host::node::transport_source::TransportSource;
@@ -41,9 +45,10 @@ use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, T
 /// declares [`Features::MIDI_OUT`]).
 ///
 /// There is no process isolation: a plugin crash takes the host down. The
-/// audio thread takes the instance lock with `try_lock` and outputs silence on
-/// contention (counted by [`contention_count`](Self::contention_count)). Steady
-/// state processing does not allocate.
+/// audio thread renders through the Processor it was lent and takes no lock;
+/// while it holds none it outputs silence (counted by
+/// [`unlent_blocks`](Self::unlent_blocks)). Steady state processing does not
+/// allocate.
 ///
 /// A graph holding this node forks (`Editor::fork`, which an offline export
 /// takes) **by state transfer**: a second instance of the plugin, from the same
@@ -51,7 +56,11 @@ use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, T
 /// [`BoundInProcessVst2Client::fork_instance`]. The client becomes a graph node by
 /// [`bind`](Self::bind)ing it to the project's tempo map.
 pub struct InProcessVst2Client {
+    /// The plugin's control side. Control threads only: the audio thread
+    /// renders through `rt`.
     pub(super) inner: Arc<Mutex<Instance>>,
+    /// The realtime end the plugin's Processor is lent to.
+    pub(super) rt: Rt<Vst2Processor>,
     pub(super) metadata: PluginInfo,
     /// The pin counts, latency and tail the plugin declared when the node was
     /// built: what `shape` and `process` size by while the instance lock is
@@ -75,20 +84,18 @@ pub struct InProcessVst2Client {
     /// A rate the graph handed this node that the plugin has not been told
     /// about yet, or [`NO_PENDING_RATE`] when there is none.
     ///
-    /// Telling a VST2 plugin its rate means bracketing `effSetSampleRate` in
-    /// `effMainsChanged` — the pair plugins allocate and free their
-    /// rate-dependent buffers in, and which must not race the audio
-    /// thread's `process` on a plugin that is running. So the rate the node
-    /// is prepared at is parked here by [`queue_sample_rate`] and dispatched
-    /// from the main thread by [`drain_sample_rate`] (the editor idle pump),
-    /// the same deferral the out-of-process client gets from its command
-    /// queue.
+    /// Telling a VST2 plugin its rate is a rejoin and an activation
+    /// (`effSetSampleRate` between `effMainsChanged` brackets), which needs the
+    /// main thread. A `prepare` on it runs the change itself; one off it parks
+    /// the rate here ([`queue_sample_rate`]) for the main thread's pump
+    /// ([`drain_sample_rate`], the editor idle pump), the same deferral the
+    /// out-of-process client gets from its command queue.
     ///
     /// Shared with the control backend, which drains it.
     pending_sample_rate: Arc<AtomicU64>,
-    /// Bumped on every audio-thread `try_lock` failure. Shared with the
-    /// loader's handle side.
-    pub(super) contention_count: Arc<AtomicU64>,
+    /// Blocks rendered silent because the realtime end held no Processor.
+    /// Shared with the loader's handle side.
+    pub(super) unlent: Arc<AtomicU64>,
     /// The file the plugin was loaded from: what a fork loads again.
     pub(super) origin: Arc<Path>,
     /// Who tells the plugin the rate the node is prepared at.
@@ -114,7 +121,7 @@ pub struct InProcessVst2Client {
     pub(super) segments: SegmentPoints,
 }
 
-/// Omits `inner`: its mutex is the audio path's, so formatting must not take it.
+/// Omits `inner`: formatting must not wait on the control side's lock.
 impl std::fmt::Debug for InProcessVst2Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InProcessVst2Client")
@@ -137,15 +144,13 @@ pub(super) struct Declared {
 /// Who tells the plugin the rate the node is prepared at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RateDelivery {
-    /// Parked in `pending_sample_rate` for the main thread's editor pump
-    /// (`InProcessVst2Backend::editor_idle`) to dispatch: the live instance,
-    /// whose `effMainsChanged` bracket belongs on the main thread.
+    /// Off the main thread, parked in `pending_sample_rate` for the main
+    /// thread's editor pump (`InProcessVst2Backend::editor_idle`) to dispatch:
+    /// the live instance.
     Parked,
-    /// Dispatched by `prepare` itself, under the instance lock: a fork. Nothing
-    /// pumps a fork's editor (it has no handle), so a parked rate would never
-    /// reach it; and its `prepare` runs on the control thread that forks it,
-    /// with the unit out of any executor (`Node::prepare`'s contract), before
-    /// its first block.
+    /// Off the main thread, refused (silence until a `prepare` on it): a fork.
+    /// Nothing pumps a fork's editor (it has no handle), so a parked rate
+    /// would never reach it.
     InPrepare,
 }
 
@@ -297,11 +302,9 @@ pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: f64) {
 ///
 /// Main thread only: `Instance::set_sample_rate` runs the `effMainsChanged`
 /// bracket, which allocates. This is the drain half of the deferral
-/// [`queue_sample_rate`] opens.
-///
-/// The rate is claimed out of the cell before the lock is tried and put back if
-/// the lock is unavailable — but only if nothing newer arrived meanwhile, so a
-/// stale rate cannot overwrite a fresh one.
+/// [`queue_sample_rate`] opens. The Processor is on the audio thread, so the
+/// change starts with a recall and finishes at a later pump, once the audio
+/// thread has handed it back.
 pub(super) fn drain_sample_rate(
     main: &MainThread,
     cell: &AtomicU64,
@@ -311,30 +314,24 @@ pub(super) fn drain_sample_rate(
     if bits == NO_PENDING_RATE {
         return false;
     }
-    match inner.try_lock() {
-        Some(mut instance) => {
-            // A refusal is kept in the instance and reported by the control side's next
-            // pump (`take_rate_report`), so the result is not read here.
-            let _ = instance.set_sample_rate(main, f64::from_bits(bits));
-            true
-        }
-        None => {
-            let _ =
-                cell.compare_exchange(NO_PENDING_RATE, bits, Ordering::Relaxed, Ordering::Relaxed);
-            false
-        }
-    }
+    // A refusal is kept in the instance and reported by the control side's next
+    // pump (`take_rate_report`), so the result is not read here.
+    let _ = inner
+        .lock()
+        .set_sample_rate(main, f64::from_bits(bits), None);
+    true
 }
 
 impl InProcessVst2Client {
     pub(super) fn new(
         inner: Arc<Mutex<Instance>>,
+        rt: Rt<Vst2Processor>,
         metadata: PluginInfo,
         declared: Declared,
         features: Features,
         sample_rate: f64,
         pending_sample_rate: Arc<AtomicU64>,
-        contention_count: Arc<AtomicU64>,
+        unlent: Arc<AtomicU64>,
         origin: Arc<Path>,
         param_count: usize,
     ) -> Self {
@@ -348,6 +345,7 @@ impl InProcessVst2Client {
         segments.prepare(params.room());
         Self {
             inner,
+            rt,
             metadata,
             declared,
             midi: MidiEventVec::new(),
@@ -356,7 +354,7 @@ impl InProcessVst2Client {
             features,
             sample_rate,
             pending_sample_rate,
-            contention_count,
+            unlent,
             origin,
             rate_delivery: RateDelivery::Parked,
             rate_refused: false,
@@ -396,12 +394,13 @@ impl InProcessVst2Client {
         true
     }
 
-    /// Returns how many times the audio thread found the instance locked and
-    /// output silence instead, since construction.
+    /// Returns how many blocks the node rendered silent because its realtime
+    /// end held no Processor (recalled for a rate change, or a plugin that
+    /// refused its rate), since construction.
     ///
     /// Intended for diagnostics.
-    pub fn contention_count(&self) -> u64 {
-        self.contention_count.load(Ordering::Relaxed)
+    pub fn unlent_blocks(&self) -> u64 {
+        self.unlent.load(Ordering::Relaxed)
     }
 }
 
@@ -415,43 +414,43 @@ impl InProcessVst2Client {
         let sample_rate: f64 = sample_rate.get();
         let changed = sample_rate != self.sample_rate;
         self.sample_rate = sample_rate;
-        match self.rate_delivery {
-            // Parked, not dispatched: `Instance::set_sample_rate` runs the
-            // allocating `effMainsChanged` bracket, which must not race a
-            // block the audio thread is rendering through the live plugin.
-            RateDelivery::Parked => queue_sample_rate(&self.pending_sample_rate, sample_rate),
-            // Only on a change: the fork was loaded at `self.sample_rate`, and
-            // a redundant bracket makes a plugin reallocate its buffers.
-            // A fork's `prepare` runs on the main thread its gather was called
-            // on (`fork.rs`); `prepare` has no token to be handed and cannot
-            // fail, so it asks for the proof. Off the main thread the bracket is
-            // not run, which would leave the plugin at the rate it was loaded
-            // at: the refusal is recorded (`rate_refused`), the node renders
-            // silence rather than audio at the wrong rate, and the next
-            // `prepare` on the main thread clears it.
-            RateDelivery::InPrepare if changed || self.rate_refused => {
-                match MainThread::current() {
-                    Some(main) => {
-                        match self.inner.lock().set_sample_rate(&main, sample_rate) {
-                            Ok(()) => self.rate_refused = false,
-                            Err(reason) => {
-                                // The plugin keeps its old rate: silence, not audio at
-                                // the wrong one, until a prepare it takes.
-                                self.rate_refused = true;
-                                tracing::error!("a forked VST2 plugin refused its rate: {reason}");
-                            }
-                        }
-                    }
-                    None => {
-                        self.rate_refused = true;
-                        tracing::error!(
-                            "a forked VST2 plugin was prepared off the main thread; \
-                             it renders silence until it is prepared on it"
-                        );
-                    }
-                }
+        // Only on a change: a redundant bracket makes a plugin reallocate its
+        // buffers.
+        if !changed && !self.rate_refused {
+            return;
+        }
+        // `prepare` has no token to be handed and cannot fail, so it asks for
+        // the proof. On the main thread the change runs here, to the end: the
+        // node is out of any executor (`Node::prepare`'s contract), so its
+        // realtime end hands the Processor back and takes the new one in this
+        // call.
+        if let Some(main) = MainThread::current() {
+            let outcome = self
+                .inner
+                .lock()
+                .set_sample_rate(&main, sample_rate, Some(&mut self.rt));
+            // A refusal renders silence (no Processor is lent) and is reported
+            // through the handle (`take_rate_report`).
+            self.rate_refused = outcome.is_err();
+            if let Err(reason) = outcome {
+                tracing::error!("a VST2 plugin refused its rate: {reason}");
             }
-            RateDelivery::InPrepare => {}
+            return;
+        }
+        match self.rate_delivery {
+            // Off the main thread the bracket cannot run: parked for the main
+            // thread's pump.
+            RateDelivery::Parked => queue_sample_rate(&self.pending_sample_rate, sample_rate),
+            // A fork has no pump: the refusal is recorded (`rate_refused`), the
+            // node renders silence rather than audio at the wrong rate, and the
+            // next `prepare` on the main thread clears it.
+            RateDelivery::InPrepare => {
+                self.rate_refused = true;
+                tracing::error!(
+                    "a forked VST2 plugin was prepared off the main thread; \
+                     it renders silence until it is prepared on it"
+                );
+            }
         }
     }
 }
@@ -484,11 +483,11 @@ pub(super) fn block_context<'a>(
 /// disjoint borrows of the fields on the caller side without a self-borrow
 /// conflict.
 ///
-/// Returns whether the plugin ran. On `false` (the instance was locked)
+/// Returns whether the plugin ran. On `false` (no Processor in hand)
 /// `outputs` is untouched: the caller writes the silence.
 pub(super) fn drive_f32(
-    inner: &Arc<Mutex<Instance>>,
-    contention: &AtomicU64,
+    rt: &mut Rt<Vst2Processor>,
+    unlent: &AtomicU64,
     params: &ParamDelivery,
     midi: &mut MidiEventVec,
     midi_out: &mut dyn FnMut(&[WireMidi]),
@@ -498,9 +497,9 @@ pub(super) fn drive_f32(
     size: usize,
     sample_rate: f64,
 ) -> bool {
-    // Taken whether or not the plugin runs: a contended block drops its
-    // MIDI rather than play it a block late. Sorted, stably: a queue may hold
-    // it out of order.
+    // Taken whether or not the plugin runs: a block with no Processor drops
+    // its MIDI rather than play it a block late. Sorted, stably: a queue may
+    // hold it out of order.
     let mut midi_events = std::mem::take(midi);
     tutti_plugin_types::insertion_sort_by_key(&mut midi_events, |e| e.offset);
     // The block's MIDI as the graph's `(Offset, Ump)`: every offset came from
@@ -512,17 +511,19 @@ pub(super) fn drive_f32(
         .iter()
         .filter_map(|e| Some((Offset::new((e.offset as usize).min(last), block)?, e.ump)))
         .collect();
-    match inner.try_lock() {
-        Some(mut instance) => {
-            apply_params(&mut instance, params);
+    // Between blocks: take a Processor on offer, or hand this one back
+    // (stopped) when the control side recalled it.
+    match rt.poll(Processor::stop) {
+        Some(processor) => {
+            apply_params(processor, params);
             let ctx = block_context(sample_rate, &timed, transport);
-            let out = instance.process_f32(inputs, outputs, size, &ctx);
+            let out = processor.process_f32(inputs, outputs, size, &ctx);
             // The plugin's MIDI-out, each on its offset.
             midi_out(out);
             true
         }
         None => {
-            contention.fetch_add(1, Ordering::Relaxed);
+            unlent.fetch_add(1, Ordering::Relaxed);
             false
         }
     }
@@ -537,11 +538,11 @@ pub(super) fn drive_f32(
 /// An id the plugin did not declare has no slot (the delivery is closed), so
 /// none reaches here; a write the plugin refuses anyway is counted dropped. (No
 /// test reaches that count: the bound is the count the plugin declared at
-/// load, so a refusal cannot be provoked through the node.) Under the instance
-/// lock, on the audio thread: `setParameter` is the call a VST2 host automates
-/// through, and the Processor's write does not allocate.
-fn apply_params(instance: &mut Instance, params: &ParamDelivery) {
-    params.refused(u64::from(instance.write_automation(params.chunk())));
+/// load, so a refusal cannot be provoked through the node.) On the audio
+/// thread, through the Processor: `setParameter` is the call a VST2 host
+/// automates through, and the Processor's write does not allocate.
+fn apply_params(processor: &mut Vst2Processor, params: &ParamDelivery) {
+    params.refused(u64::from(processor.write_automation(params.chunk())));
 }
 
 #[cfg(test)]

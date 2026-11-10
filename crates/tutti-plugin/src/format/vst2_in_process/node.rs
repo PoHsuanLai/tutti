@@ -15,10 +15,10 @@
 //! VST2 loader sets a chunk's. VST 2.4 has no sample-accurate parameter
 //! event, so a point inside the block lands on its first frame; the two
 //! hosts differ only in that the out-of-process one's chunk is the
-//! pipeline's, this one's the graph's block. A block the audio thread finds
-//! the instance locked for (silence, counted in
-//! [`contention_count`](InProcessVst2Client::contention_count)) delivers
-//! nothing, and its values are owed to the next block. Counted in
+//! pipeline's, this one's the graph's block. A block with no Processor in hand
+//! (silence, counted in
+//! [`unlent_blocks`](InProcessVst2Client::unlent_blocks)) delivers nothing,
+//! and its values are owed to the next block. Counted in
 //! [`InProcessVst2Controls::param_delivery`].
 //!
 //! Forkable by state transfer (see its `IntoNode` below, and `fork.rs`). The
@@ -169,8 +169,8 @@ impl Node for BoundInProcessVst2Client {
                 .map(|out| &mut out[..size])
                 .collect();
             let processed = drive_f32(
-                &this.inner,
-                &this.contention_count,
+                &mut this.rt,
+                &this.unlent,
                 &this.params,
                 &mut this.midi,
                 &mut |events| {
@@ -272,8 +272,8 @@ impl IntoNode for BoundInProcessVst2Client {
 /// every clone is a handle on the same node (the node itself is not
 /// `Clone`). Its block is the out-of-process node's chunk: a block's points
 /// all count as sent, though VST2 is told only each parameter's last one, and
-/// a block the plugin did not run (the instance was locked; see
-/// `contention_count`) loses its MIDI, counted.
+/// a block the plugin did not run (no Processor in hand; see
+/// `unlent_blocks`) loses its MIDI, counted.
 pub type InProcessVst2Controls = NodeControls;
 
 impl InProcessVst2Client {
@@ -284,9 +284,10 @@ impl InProcessVst2Client {
     }
 }
 
-/// The owed path needs the instance lock held across a block, which only
-/// code inside the crate can reach (`InProcessVst2Client::inner`); the rest
-/// of the node's parameter delivery is pinned against the public API in
+/// The owed path needs a block with no Processor in hand, which only code
+/// inside the crate can bring about on cue (a rate change that recalls the
+/// Processor, through `InProcessVst2Client::inner`); the rest of the
+/// node's parameter delivery is pinned against the public API in
 /// `tests/vst2_in_process_params.rs`.
 #[cfg(test)]
 mod owed_tests {
@@ -346,19 +347,35 @@ mod owed_tests {
         assert!(!fork.rate_refused, "a prepare on the main thread clears it");
     }
 
-    /// **A block the instance is locked for owes its values to the next.**
-    /// The control thread holds the instance lock for one block that ramps
-    /// parameter 1 to 0.75: the block renders silent (one contention), the
+    /// Starts a rate change the way one parked for the main thread's pump
+    /// does: the Processor is recalled, so the node's next block hands it
+    /// back and renders without it.
+    fn recall(inner: &parking_lot::Mutex<super::super::instance::Instance>) {
+        inner
+            .lock()
+            .set_sample_rate(&main_thread(), 44_100.0, None)
+            .expect("the change starts");
+    }
+
+    /// Finishes it: the pump collects the Processor and lends the new one.
+    fn pump(inner: &parking_lot::Mutex<super::super::instance::Instance>) {
+        let _ = inner.lock().pump(&main_thread());
+    }
+
+    /// **A block with no Processor in hand owes its values to the next.** A
+    /// rate change recalls the Processor across one block that ramps
+    /// parameter 1 to 0.75: the block renders silent (one unlent block), the
     /// plugin keeps its default (`1 / 16`, the probe's), nothing is counted
-    /// sent and the block is counted deferred. The next block carries no
-    /// event, and the owed value reaches the plugin on it.
+    /// sent and the block is counted deferred. Once the pump has lent the new
+    /// Processor, the next block carries no event, and the owed value reaches
+    /// the plugin on it.
     ///
     /// Mutation (run): `self.params.handed_off(true)` in `process` (the
-    /// contended block counted as delivered) → nothing deferred, and the
+    /// unlent block counted as delivered) → nothing deferred, and the
     /// value is recorded as sent, so the empty block sends nothing and the
     /// plugin keeps `1 / 16` → fails.
     #[test]
-    fn a_contended_block_owes_its_values_to_the_next() {
+    fn an_unlent_block_owes_its_values_to_the_next() {
         let (client, handle) = super::super::load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
@@ -371,26 +388,27 @@ mod owed_tests {
             )
         });
         let inner = std::sync::Arc::clone(&client.inner);
-        let contention = std::sync::Arc::clone(&client.contention_count);
+        let unlent = std::sync::Arc::clone(&client.unlent);
         let controls = client.controls();
         let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
         assert_eq!(read(&handle, 1), Some(1.0 / 16.0), "the probe's default");
+        // The realtime end takes the Processor it was lent.
+        unit.block();
 
-        {
-            let _held = inner.lock();
-            unit.events(
-                0,
-                &[Event::ramp(
-                    Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block"),
-                    ParamRamp::foreign(1, 0.75, tutti_types::Samples(0)),
-                )],
-            );
-            unit.block();
-        }
+        recall(&inner);
+        unit.events(
+            0,
+            &[Event::ramp(
+                Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block"),
+                ParamRamp::foreign(1, 0.75, tutti_types::Samples(0)),
+            )],
+        );
+        unit.block();
+        pump(&inner);
         assert_eq!(
-            contention.load(Ordering::Relaxed),
+            unlent.load(Ordering::Relaxed),
             1,
-            "the block was refused"
+            "the block had no Processor"
         );
         assert_eq!(read(&handle, 1), Some(1.0 / 16.0), "not yet delivered");
         let stats = controls.param_delivery();
@@ -422,19 +440,19 @@ mod owed_tests {
         (packets(60), packets(12))
     }
 
-    /// **A block the instance is locked for loses its MIDI, counted, and
-    /// the SysEx open in it is not completed by its tail.** The dump's first
-    /// three packets reach the plugin; the next three go with a contended
-    /// block; the tail and a second dump follow. The plugin's host never
+    /// **A block with no Processor in hand loses its MIDI, counted, and the
+    /// SysEx open in it is not completed by its tail.** The dump's first three
+    /// packets reach the plugin; the next three go with a block whose
+    /// Processor was recalled; the tail and a second dump follow on the new
+    /// Processor. The node skips the cut dump's tail; the plugin's host never
     /// completes the cut dump: it drops it at the second dump's `START`.
     ///
-    /// Mutation (run): the `intake.lost()` in `process`'s contended branch
-    /// removed → the tail completes the dump with three packets missing, so
-    /// nothing is open at the next `START` and `dropped_sysex` stays 0 →
-    /// fails. Mutation (run): the contended block's MIDI not counted → the
-    /// count is short by three → fails.
+    /// Mutation (run): the `intake.lost()` in `process`'s unlent branch
+    /// removed → the tail is delivered and counted nowhere → the count is
+    /// short → fails. Mutation (run): the unlent block's MIDI not counted →
+    /// the count is short by three → fails.
     #[test]
-    fn a_contended_block_cuts_the_sysex_open_in_it() {
+    fn an_unlent_block_cuts_the_sysex_open_in_it() {
         let (client, _handle) = super::super::load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
@@ -453,20 +471,22 @@ mod owed_tests {
 
         unit.events(0, &cut[..3]);
         unit.block();
-        {
-            let _held = inner.lock();
-            unit.events(0, &cut[3..6]);
-            unit.block();
-        }
+        recall(&inner);
+        unit.events(0, &cut[3..6]);
+        unit.block();
+        pump(&inner);
         let tail: Vec<Event> = cut[6..].iter().chain(&next).copied().collect();
         unit.events(0, &tail);
         unit.block();
 
-        assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
+        // The host keeps one SysEx reassembler across activations, so the
+        // cut dump is still open on it, and its second `START` drops it.
+        let fresh = unit.node.rt.held().expect("the new Processor");
+        assert_eq!(fresh.dropped_sysex(), 1, "the cut dump, whole");
         assert_eq!(
             controls.dropped_midi_in(),
             (3 + cut.len() - 6) as u64,
-            "the contended block's, and the cut dump's tail"
+            "the unlent block's, and the cut dump's tail"
         );
     }
 
@@ -491,7 +511,6 @@ mod owed_tests {
                 tutti_fixtures::vst2_probe()
             )
         });
-        let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
         let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
         let (cut, next) = dumps();
@@ -503,7 +522,8 @@ mod owed_tests {
         unit.events(0, &tail);
         unit.block();
 
-        assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
+        let processor = unit.node.rt.held().expect("lent");
+        assert_eq!(processor.dropped_sysex(), 1, "the cut dump, whole");
         assert_eq!(controls.dropped_midi_in(), (cut.len() - 3) as u64);
     }
 }

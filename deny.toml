@@ -1,4 +1,4 @@
-# cargo-deny policy. CI and `just deny` run `cargo deny check advisories`.
+# cargo-deny policy. CI and `cargo xtask deny` run `cargo deny check advisories`.
 #
 # Only `advisories` is checked. `bans` and `licenses` are left off: the
 # workspace carries vendored VST3 SDK headers, forks and duplicate versions

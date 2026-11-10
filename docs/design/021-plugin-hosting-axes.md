@@ -625,7 +625,7 @@ changes:
 
 ## 10. Staged plan
 
-Each step is one reviewable PR and leaves `just ci` green (with `cargo build -p
+Each step is one reviewable PR and leaves `cargo xtask ci` green (with `cargo build -p
 tutti-plugin-server` first). It runs after the AU FFI lane lands, wherever a
 step touches AU files: PRs #350 and #353 extract `tutti-au-ffi` (layer 4), make
 `tutti-au-host` `forbid(unsafe_code)` and move it from layer 4 to 5, and edit

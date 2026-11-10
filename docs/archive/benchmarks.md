@@ -11,13 +11,13 @@ Recorded 2026-09-22 on:
 | criterion | 0.8.2 |
 
 **These numbers do not travel.** A figure from one machine says nothing about
-another, which is why the machine is named above and why `just bench-save` /
-`just bench-cmp` keep baselines local. Reproduce with:
+another, which is why the machine is named above and why `cargo xtask bench-save` /
+`cargo xtask bench-cmp` keep baselines local. Reproduce with:
 
 ```bash
-just bench                    # full measurement
-just bench-save main          # a baseline on YOUR machine
-just bench-cmp main           # compare a change against it
+cargo xtask bench                    # full measurement
+cargo xtask bench-save main          # a baseline on YOUR machine
+cargo xtask bench-cmp main           # compare a change against it
 ```
 
 ## The unit that matters
@@ -241,13 +241,13 @@ criterion**:
 - **`tutti-sampler/examples/profile_stretch_clone.rs`** — `Net::commit` at
   scale. A counting global allocator, `#[inline(never)]` phase markers for a
   sampling profiler, and a median rather than a mean, because wall-clock
-  spread reached 81× on identical work. `just profile-stretch`.
+  spread reached 81× on identical work. `cargo xtask profile-stretch`.
 
 - **`tutti-plugin/tests/real_plugin_pressure.rs`** — out-of-process plugin
   hosting, driven at true callback pacing, reporting per run the clock it
   read, each block's **wall-time p50 / p99 / worst / over-deadline**, the
   median step and slowest step per block (on-CPU time on Linux), blocked
-  steps, and **non-silent** blocks. `just pressure`. The block figures are
+  steps, and **non-silent** blocks. `cargo xtask pressure`. The block figures are
   printed, not asserted. The tests assert that no step waits for a
   deliberately stalled plugin, which is the regression a block cost cannot
   show (a plugin that answers in time is never waited for); that a working

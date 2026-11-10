@@ -124,6 +124,9 @@ cargo nextest run --workspace     # nextest does NOT run doctests
 cargo test --workspace --doc      # so run these separately
 ```
 
+`cargo xtask help` lists the repo's development commands (the gates CI runs,
+the feature suites, benches); `cargo xtask ci` runs all of CI's checks.
+
 Cloning needs `--recursive`: `tutti-vst3-host` compiles a reference plugin
 against the vendored VST3 SDK, which is a submodule. Without it the build stops
 with instructions.

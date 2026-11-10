@@ -4,7 +4,7 @@ Judges `tutti-measure`'s **pitch** and **loudness** readings against independent
 references — librosa for YIN, pyloudnorm for EBU R128.
 
 ```bash
-just verify-audio                 # renders + judges everything, this included
+cargo xtask verify-audio                 # renders + judges everything, this included
 # or directly:
 cargo run --release \
     -p tutti-measure --example render_analysis_cases -- /tmp/tutti-measure

@@ -931,7 +931,7 @@ timeline in `tutti-transport` (regions). A hosted ARA plugin would then be a
 
 ## 9. Steps
 
-Ordered; each is one reviewable PR that leaves `just ci` green. They run after
+Ordered; each is one reviewable PR that leaves `cargo xtask ci` green. They run after
 doc 021's structure steps 1 to 8, except where a step names a narrower
 dependency: step 3 needs only 021's step 4c (the probe binary), step 2 needs
 `Io::report_tail`, which is built (PR #359).

@@ -36,7 +36,7 @@
 //! The swaps keep the model honest: with every write to `asleep` a
 //! read-modify-write they are totally ordered, and loom has no such
 //! execution to report. Because the artefact needs 4 preemptions, CI and
-//! `just loom` run this model unbounded.
+//! `cargo xtask loom` run this model unbounded.
 //!
 //! # Mutation record
 //!

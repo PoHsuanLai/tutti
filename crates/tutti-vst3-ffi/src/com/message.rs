@@ -67,9 +67,8 @@ impl IMessageTrait for Message {
             ids.current = if id.is_null() {
                 None
             } else {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3
-                // ABI.
+                // SAFETY: `id` is non-null (checked above) and, by the ABI, a
+                // NUL-terminated string valid for this call.
                 Some(Arc::from(unsafe { CStr::from_ptr(id) }))
             };
         })

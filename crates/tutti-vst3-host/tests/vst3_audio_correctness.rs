@@ -1377,7 +1377,7 @@ fn context_requirements_are_read_after_the_component_initializes() {
     let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
         .expect("audio-probe loads");
 
-    let want = Some(tutti_vst3_host::process_context_flags::NEED_TEMPO);
+    let want = Some(tutti_vst3_host::ProcessContextRequirements::NEED_TEMPO);
     assert_eq!(
         loaded.context_requirements(),
         want,

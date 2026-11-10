@@ -79,6 +79,18 @@ pub const fn sdk_enum_i32(v: SdkEnum) -> i32 {
     v as i32
 }
 
+/// [`sdk_enum_i32`] for the `uint32` fields and flag words that carry an SDK
+/// enum constant (`PhysicalUITypeIDs`, `ProcessContext` flags, …). A no-op on
+/// Unix, where `SdkEnum` is `u32`; a sign change on Windows, where it is `i32`.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "a no-op on Unix, where `DefaultEnumType` is `c_uint`; load-bearing on Windows"
+)]
+#[must_use]
+pub const fn sdk_enum_u32(v: SdkEnum) -> u32 {
+    v as u32
+}
+
 /// An SDK struct for which the all-zero bit pattern is a valid value: plain
 /// integers, floats, arrays of them, raw pointers and unions of those.
 ///

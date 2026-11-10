@@ -1,6 +1,6 @@
 //! IAttributeList COM implementation — key/value store for plugin messages.
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use vst3::Steinberg::{
     Vst::{IAttributeList, IAttributeList_::AttrID, IAttributeListTrait, TChar},
-    kInvalidArgument, kResultOk, tresult,
+    kInternalError, kInvalidArgument, kResultOk, tresult,
 };
 use vst3::{Class, ComWrapper};
 
@@ -57,7 +57,7 @@ fn key_from_ptr(key: AttrID) -> Option<String> {
 
 impl IAttributeListTrait for AttributeList {
     unsafe fn setInt(&self, id: AttrID, value: i64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -67,7 +67,9 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn getInt(&self, id: AttrID, value: *mut i64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let value = unsafe { Out::new(value) };
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -76,9 +78,7 @@ impl IAttributeListTrait for AttributeList {
             }
             match self.attributes.lock().get(&k) {
                 Some(AttributeValue::Int(v)) => {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *value = *v };
+                    value.set(*v);
                     kResultOk
                 }
                 _ => kInvalidArgument,
@@ -87,7 +87,7 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn setFloat(&self, id: AttrID, value: f64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -99,7 +99,9 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn getFloat(&self, id: AttrID, value: *mut f64) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let value = unsafe { Out::new(value) };
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -108,9 +110,7 @@ impl IAttributeListTrait for AttributeList {
             }
             match self.attributes.lock().get(&k) {
                 Some(AttributeValue::Float(v)) => {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *value = *v };
+                    value.set(*v);
                     kResultOk
                 }
                 _ => kInvalidArgument,
@@ -119,7 +119,7 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn setString(&self, id: AttrID, string: *const TChar) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -130,9 +130,9 @@ impl IAttributeListTrait for AttributeList {
             let mut ptr = string;
             const MAX_STRING_LEN: usize = 65536;
             while buf.len() < MAX_STRING_LEN {
-                // SAFETY: `string` is non-null (checked above) and the ABI passes
-                // a NUL-terminated `TChar` string valid for the call; `ptr` has
-                // only advanced past units that were not the terminator.
+                // SAFETY: `string` is a non-null NUL-terminated `TChar` string
+                // valid for the call, and `ptr` has only advanced past units
+                // that were not the terminator.
                 let unit = unsafe { *ptr };
                 if unit == 0 {
                     break;
@@ -151,7 +151,7 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn getString(&self, id: AttrID, string: *mut TChar, size_in_bytes: u32) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             if string.is_null() || size_in_bytes == 0 {
                 return kInvalidArgument;
             }
@@ -160,30 +160,22 @@ impl IAttributeListTrait for AttributeList {
             };
             match self.attributes.lock().get(&k) {
                 Some(AttributeValue::String(v)) => {
+                    // `size_in_bytes` is a byte count the caller may make odd; a
+                    // buffer under one `TChar` has no room for a terminator, and
+                    // `max_chars - 1` below must not wrap.
                     let max_chars = (size_in_bytes as usize) / std::mem::size_of::<TChar>();
-                    // A buffer too small to hold even one `TChar` cannot be given a
-                    // terminator, so there is nothing valid to return. `size_in_bytes`
-                    // is a BYTE count on this boundary — the caller is free to pass an
-                    // odd one — and `1` survives the `== 0` guard above only to divide
-                    // to zero here. Rejecting it is what stops `max_chars - 1` below
-                    // from wrapping to `usize::MAX` and writing through a wild pointer.
                     if max_chars == 0 {
                         return kInvalidArgument;
                     }
                     let copy_len = v.len().min(max_chars);
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len)
-                    };
-                    // The stored value already carries its own NUL terminator, so a
-                    // full copy is terminated. On truncation the terminator is lost,
-                    // leaving the caller with an unterminated buffer — write one back
-                    // into the final slot so the returned string is always valid.
+                    // SAFETY: `string` is non-null and valid for `max_chars`
+                    // units (`size_in_bytes / 2`), and `copy_len` is at most that.
+                    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), string, copy_len) };
+                    // A full copy carries the stored value's terminator; a
+                    // truncated one lost it, so the last slot gets one back.
                     if v.len() > max_chars {
-                        // SAFETY: `string` is non-null with room for `max_chars` units
-                        // (`size_in_bytes` / 2, at least 1 as checked above), so the last slot
-                        // is in bounds.
+                        // SAFETY: slot `max_chars - 1` is inside the buffer
+                        // (`max_chars` is at least 1, checked above).
                         unsafe { *string.add(max_chars - 1) = 0 };
                     }
                     kResultOk
@@ -194,17 +186,17 @@ impl IAttributeListTrait for AttributeList {
     }
 
     unsafe fn setBinary(&self, id: AttrID, data: *const c_void, size_in_bytes: u32) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
             if data.is_null() {
                 return kInvalidArgument;
             }
-            // SAFETY: a COM method: `data` is non-null (checked above) and, per the VST3 ABI, valid
-            // for `size_in_bytes` bytes for this call.
+            // SAFETY: `data` is non-null and the ABI makes it valid for
+            // `size_in_bytes` bytes for this call.
             let slice =
-                unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) };
+                unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size_in_bytes as usize) };
             self.attributes
                 .lock()
                 .insert(k, AttributeValue::Binary(Arc::from(slice)));
@@ -227,7 +219,9 @@ impl IAttributeListTrait for AttributeList {
         data: *mut *const c_void,
         size_in_bytes: *mut u32,
     ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // SAFETY: COM out-parameters: each null or valid for this call.
+        let (data, size) = unsafe { (Out::new(data), Out::new(size_in_bytes)) };
+        guard(kInternalError, || {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
@@ -240,17 +234,8 @@ impl IAttributeListTrait for AttributeList {
             match value {
                 Some(v) => {
                     self.lent.lock().insert(k, Arc::clone(&v));
-                    if !data.is_null() {
-                        // SAFETY: a COM method: the plugin passes pointers valid for this call,
-                        // per the
-                        // VST3 ABI.
-                        unsafe { *data = v.as_ptr() as *const c_void };
-                    }
-                    if !size_in_bytes.is_null() {
-                        // SAFETY: `size_in_bytes` is non-null (checked just above) and a valid
-                        // out-pointer for the call.
-                        unsafe { *size_in_bytes = v.len() as u32 };
-                    }
+                    data.set(v.as_ptr().cast());
+                    size.set(v.len() as u32);
                     kResultOk
                 }
                 None => kInvalidArgument,

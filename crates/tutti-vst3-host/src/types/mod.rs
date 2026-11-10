@@ -8,13 +8,13 @@ pub(crate) use tutti_vst3_ffi::K_SAMPLE_64_INT;
 use tutti_vst3_ffi::Vst3Error as FfiError;
 use tutti_vst3_ffi::{BoundBuses, BusBuffers, K_SAMPLE_32_INT, SampleWidth};
 use vst3::Steinberg::KeyModifier_ as Key;
-use vst3::Steinberg::Vst::ePrefetchableSupport_ as Prefetch;
 
 use crate::helpers::sdk_enum_i32;
 pub use tutti_vst3_ffi::{
-    BusInfo, ProcessMode, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
-    Vst3ProgramListInfo, Vst3UnitInfo, keyswitch_type, note_expression_flags, parameter_flags,
-    physical_ui_type, process_context_flags, to_process_context, unit_ids,
+    BusInfo, BusType, KeyswitchKind, NoteExpressionFlags, ParameterFlags, PhysicalUiType,
+    PrefetchSupport, ProcessContextRequirements, ProcessMode, UnitId, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
+    to_process_context,
 };
 
 pub use tutti_plugin_types::{
@@ -31,36 +31,6 @@ pub struct PlainRange {
     pub min: f64,
     /// The plain value at normalized 0 or 1, whichever is higher.
     pub max: f64,
-}
-
-/// A plugin's answer to `IPrefetchableSupport`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrefetchSupport {
-    /// The plugin can never be used in prefetch (offline look-ahead) mode.
-    Never,
-    /// The plugin supports prefetch now.
-    Yes,
-    /// The plugin does not support prefetch now, but may later.
-    NotYet,
-    /// A value the SDK does not define, as returned.
-    Unknown(u32),
-}
-
-impl PrefetchSupport {
-    /// The `ePrefetchableSupport` value the plugin returned.
-    #[must_use]
-    pub fn from_raw(raw: u32) -> Self {
-        let is = |sdk| raw == sdk_enum_i32(sdk) as u32;
-        if is(Prefetch::kIsNeverPrefetchable) {
-            Self::Never
-        } else if is(Prefetch::kIsYetPrefetchable) {
-            Self::Yes
-        } else if is(Prefetch::kIsNotYetPrefetchable) {
-            Self::NotYet
-        } else {
-            Self::Unknown(raw)
-        }
-    }
 }
 
 /// The modifier keys held during a key event (`KeyModifier`).
@@ -500,18 +470,17 @@ mod host_type_tests {
     /// `kIsNotYetPrefetchable` arms in `from_raw` fails the second and third
     /// rows; dropping the `Unknown` arm's payload (`Unknown(0)`) fails the last.
     #[test]
-    #[allow(clippy::unnecessary_cast)] // u32 on unix, c_int on Windows
     fn prefetch_support_maps_each_sdk_value() {
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsNeverPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsNeverPrefetchable)),
             PrefetchSupport::Never
         );
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsYetPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsYetPrefetchable)),
             PrefetchSupport::Yes
         );
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsNotYetPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsNotYetPrefetchable)),
             PrefetchSupport::NotYet
         );
         assert_eq!(PrefetchSupport::from_raw(77), PrefetchSupport::Unknown(77));

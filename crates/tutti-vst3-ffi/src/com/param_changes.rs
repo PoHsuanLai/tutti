@@ -17,7 +17,7 @@
 //! a queue keeps the parameter's latest value, counted
 //! ([`points_dropped`](ParameterChangesImpl::points_dropped)).
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use vst3::Steinberg::Vst::{IParamValueQueue, IParameterChanges, IParameterChangesTrait};
 use vst3::{Class, ComWrapper};
 
@@ -267,12 +267,14 @@ impl IParameterChangesTrait for ParameterChangesImpl {
     /// null, counted when the count is free, while another thread reads or adds
     /// to the list.
     unsafe fn addParameterData(&self, id: *const u32, index: *mut i32) -> *mut IParamValueQueue {
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let index = unsafe { Out::new(index) };
         guard(std::ptr::null_mut(), || {
             if id.is_null() {
                 return std::ptr::null_mut();
             }
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-            // VST3 ABI.
+            // SAFETY: `id` is non-null (checked above) and, by the ABI, valid for
+            // a read of one `ParamID` for this call.
             let param_id = unsafe { *id };
             let Some(mut inner) = self.inner.try_borrow_mut() else {
                 self.count_dropped(1);
@@ -297,10 +299,7 @@ impl IParameterChangesTrait for ParameterChangesImpl {
                     return std::ptr::null_mut();
                 }
             };
-            if !index.is_null() {
-                // SAFETY: non-null (checked), and the ABI passes a valid out-pointer.
-                unsafe { *index = i32::try_from(at).unwrap_or(i32::MAX) };
-            }
+            index.set(i32::try_from(at).unwrap_or(i32::MAX));
             inner.queues[at]
                 .as_com_ref::<IParamValueQueue>()
                 .map_or(std::ptr::null_mut(), |r| r.as_ptr())

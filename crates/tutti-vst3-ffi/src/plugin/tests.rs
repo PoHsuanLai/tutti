@@ -1,4 +1,5 @@
 use super::*;
+use vst3::Steinberg::kResultOk;
 
 /// A string longer than the field is cut to 63 bytes and still terminated;
 /// a short one is copied whole.
@@ -59,4 +60,21 @@ fn a_plugin_is_send_and_not_sync() {
     impl<T: ?Sized> AmbiguousIfSync<()> for T {}
     impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
     <Plugin as AmbiguousIfSync<_>>::probe();
+}
+
+/// **A media type or direction the SDK does not define names none**, and each
+/// defined one round-trips.
+///
+/// Mutation (run, fails): make `from_raw` fall back to `Some(Self::Audio)` /
+/// `Some(Self::Input)` for an unknown value -> the `99` assertions fail.
+#[test]
+fn an_undefined_media_type_or_direction_is_none() {
+    assert_eq!(MediaType::from_raw(99), None);
+    assert_eq!(BusDirection::from_raw(99), None);
+    for kind in [MediaType::Audio, MediaType::Event] {
+        assert_eq!(MediaType::from_raw(kind.raw()), Some(kind));
+    }
+    for direction in [BusDirection::Input, BusDirection::Output] {
+        assert_eq!(BusDirection::from_raw(direction.raw()), Some(direction));
+    }
 }

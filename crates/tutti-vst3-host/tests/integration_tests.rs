@@ -798,14 +798,14 @@ fn plain_range_probe_recovers_real_ranges() {
                 min.is_finite() && max.is_finite(),
                 "{}: param {} ('{}') probed a non-finite range [{min}, {max}]",
                 path.display(),
-                info.id,
+                info.id(),
                 info.title_string()
             );
             assert!(
                 min <= max,
                 "{}: param {} ('{}') probed an inverted range [{min}, {max}]",
                 path.display(),
-                info.id,
+                info.id(),
                 info.title_string()
             );
             if min != 0.0 || (max - 1.0).abs() > 1e-9 {

@@ -38,7 +38,7 @@ pub struct RunLoopActivity {
 
 pub use component_handler::{
     ComponentHandler, NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterEditEvent,
-    PluginNotification, ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
+    PluginNotification, ProgressDescription, ProgressEvent, ProgressKind, RestartFlags, UnitEvent,
 };
 pub(crate) use event_list::event_list_ptr;
 pub use event_list::{

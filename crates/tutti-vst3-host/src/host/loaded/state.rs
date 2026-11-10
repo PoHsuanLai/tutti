@@ -57,7 +57,7 @@ impl Vst3Loaded {
     /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
     /// returns the id directly with no result code, so a plugin that
     /// implements the interface always answers. Main/UI thread.
-    pub fn selected_unit(&self, main: &MainThread) -> Option<i32> {
+    pub fn selected_unit(&self, main: &MainThread) -> Option<crate::UnitId> {
         self.plugin.selected_unit(main)
     }
 
@@ -66,26 +66,25 @@ impl Vst3Loaded {
     /// implement `IUnitInfo` or refuses the id.
     ///
     /// The one write on this interface. Pass
-    /// [`unit_ids::ROOT`] to select the implicit
+    /// [`UnitId::ROOT`](crate::UnitId::ROOT) to select the implicit
     /// top-level unit. Main/UI thread.
     #[must_use]
-    pub fn select_unit(&mut self, main: &MainThread, unit_id: i32) -> bool {
+    pub fn select_unit(&mut self, main: &MainThread, unit_id: crate::UnitId) -> bool {
         self.plugin.select_unit(main, unit_id)
     }
 
     /// Which unit a given bus channel belongs to, or `None` if the plugin
     /// doesn't implement `IUnitInfo` or maps nothing to that channel.
     ///
-    /// `media_type` and `direction` are the SDK's `MediaTypes` and
-    /// `BusDirections` values. Main/UI thread.
+    /// Main/UI thread.
     pub fn unit_by_bus(
         &self,
         main: &MainThread,
-        media_type: i32,
-        direction: i32,
+        media_type: crate::MediaType,
+        direction: crate::BusDirection,
         bus_index: i32,
         channel: i32,
-    ) -> Option<i32> {
+    ) -> Option<crate::UnitId> {
         self.plugin
             .unit_by_bus(main, media_type, direction, bus_index, channel)
     }
@@ -259,7 +258,7 @@ impl Vst3Loaded {
         // parameter is kept once.
         let listed: HashSet<u32> = (0..self.parameter_count(main))
             .filter_map(|i| self.parameter_info_at(main, i))
-            .map(|info| info.id)
+            .map(|info| info.id())
             .collect();
         Ok(latest_listed(pending, &listed)
             .into_iter()

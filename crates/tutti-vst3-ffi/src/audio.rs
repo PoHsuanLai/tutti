@@ -445,8 +445,8 @@ mod tests {
             stub,
             shared,
             side,
-            input: BusBuffers::new(width, &[2], ChannelLayout::from(2u16), BLOCK),
-            output: BusBuffers::new(width, &[2], ChannelLayout::from(2u16), BLOCK),
+            input: BusBuffers::new(width, &[2], ChannelLayout::from(2u16), BLOCK).unwrap(),
+            output: BusBuffers::new(width, &[2], ChannelLayout::from(2u16), BLOCK).unwrap(),
             in_events: EventList::input(),
             out_events: EventList::output(),
             out_params: ParameterChangesImpl::with_queues(1, 16, PointPool::default()),
@@ -536,8 +536,10 @@ mod tests {
         assert_eq!(rig.run_f32(8), Err(Vst3Error::InvalidArgument));
         // and a scratch built for 32-bit on that 64-bit setup is refused by the
         // call.
-        rig.input = BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK);
-        rig.output = BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK);
+        rig.input =
+            BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK).unwrap();
+        rig.output =
+            BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK).unwrap();
         assert_eq!(rig.run_f32(8), Err(Vst3Error::InvalidArgument));
         assert_eq!(rig.processed(), 0);
     }
@@ -550,7 +552,8 @@ mod tests {
     #[test]
     fn unequal_input_and_output_widths_are_refused() {
         let mut rig = rig(SampleWidth::F32, BLOCK);
-        rig.output = BusBuffers::new(SampleWidth::F64, &[2], ChannelLayout::from(2u16), BLOCK);
+        rig.output =
+            BusBuffers::new(SampleWidth::F64, &[2], ChannelLayout::from(2u16), BLOCK).unwrap();
         let (a, b) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
         let (mut c, mut d) = (vec![0.0f64; BLOCK], vec![0.0f64; BLOCK]);
         let ins: [&[f32]; 2] = [&a, &b];

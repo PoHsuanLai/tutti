@@ -1131,7 +1131,7 @@ brought to tutti's shape, and the dependency is dropped:
 `mat * vec`, which are a few dozen lines of `f64` arrays; `tutti-dsp` stays at
 `tutti-types`, `rustfft`, `libm` and `thiserror`, and `glam` leaves `Cargo.lock`.
 
-**Bit-exactness.** The golden digests (`smoother_digest.rs`, `vbap_fold_digest.rs`)
+**Bit-exactness.** The golden digests (`vbap_preset_digest.rs`)
 go through glam's inverse and vector operations, and CLAUDE.md allows a re-record
 only for an argued libm move, so the replacement keeps glam's **operation order**
 (read from glam 0.30's source): `DMat3::inverse` is `tmp0 = y x z`, `tmp1 = z x x`,

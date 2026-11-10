@@ -182,6 +182,114 @@ fn the_sum_of_squared_gains_is_one() {
     }
 }
 
+/// The corrected solve, `gains_into`, is unit power at every bearing and
+/// height for every preset, at every spread (Pulkki: the sum of the squared
+/// gains is 1, so a source's loudness does not depend on where it is). The
+/// grid is an enumeration, not a sample: five presets, seven spreads (0 and
+/// the ends included, where the diffusion blend returns early or is total),
+/// 24 bearings across the seam, and heights from straight down to straight up,
+/// which reaches the regions the raw solve answers with silence (under the
+/// Atmos bed, the poles of a horizontal ring) and the rear of a front-only
+/// pair. The bound is `f32` accumulation over at most 12 gains, each narrowed
+/// from `f64`; the failures it is here for (a missing or doubled
+/// normalisation, a clamped-away arc) are order 1.
+///
+/// Mutations (each run, each fails): the renormalisation in
+/// `unit_power_gains` removed (stereo at 45 degrees, spread 0: 0.933 against
+/// 1); the elevation retreat removed, the solve run once (Atmos at -90 degrees
+/// and the horizontal layouts at +-90, all gains zero); `apply_spread`'s
+/// renormalisation removed (every preset at spread 0.5 is off unit power).
+#[test]
+fn the_corrected_gains_are_unit_power_everywhere() {
+    for (name, layout, _) in presets() {
+        let mut gains = vec![0.0; layout.speaker_count()];
+        for spread in [0.0, 0.01, 0.25, 0.5, 0.75, 0.99, 1.0] {
+            for az in (0..360).step_by(15) {
+                for el in (-90..=90).step_by(30) {
+                    layout.gains_into(
+                        Azimuth(az as f32),
+                        Elevation(el as f32),
+                        Spread::new_clamped(spread),
+                        &mut gains,
+                    );
+                    let sum: f32 = gains.iter().map(|g| g * g).sum();
+                    assert!(
+                        (sum - 1.0).abs() < 1e-3,
+                        "{name} at ({az}, {el}), spread {spread}: power {sum}, gains {gains:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A front-only pair has no depth cue, so `gains_into` mirrors a rear bearing
+/// into the front and hard-pans what is still outside the pair, at full
+/// energy: dead ahead and dead behind are the same equal-power centre, 30
+/// degrees and everything beyond it on that side is the one speaker, and a
+/// pan through 180 degrees never goes silent. The figures are the pan law
+/// at 15 degrees (`0.939071`, `0.343724`) and the equal-power centre.
+///
+/// Mutations (each run, each fails): the clamp applied without the correction
+/// (90 degrees at half energy); the fold without the renormalisation (the same
+/// figure at 90); the renormalisation without the fold (180 degrees silent).
+#[test]
+fn a_front_only_pair_mirrors_the_rear_and_hard_pans_outside_it() {
+    let layout = SpeakerLayout::stereo().unwrap();
+    let centre = core::f32::consts::FRAC_1_SQRT_2;
+    // (azimuth, left, right)
+    for (az, left, right) in [
+        (0.0f32, centre, centre),
+        (15.0, 0.939_071, 0.343_724),
+        (30.0, 1.0, 0.0),
+        (45.0, 1.0, 0.0),
+        (90.0, 1.0, 0.0),
+        (135.0, 1.0, 0.0),
+        (165.0, 0.939_071, 0.343_724),
+        (180.0, centre, centre),
+        (195.0, 0.343_724, 0.939_071),
+        (225.0, 0.0, 1.0),
+        (270.0, 0.0, 1.0),
+        (315.0, 0.0, 1.0),
+        (345.0, 0.343_724, 0.939_071),
+    ] {
+        let mut got = [0.0f32; 2];
+        layout.gains_into(Azimuth(az), Elevation(0.0), Spread::POINT, &mut got);
+        assert!(
+            (got[0] - left).abs() < 1e-3 && (got[1] - right).abs() < 1e-3,
+            "stereo at {az}: {got:?}, want [{left}, {right}]"
+        );
+    }
+}
+
+/// The fold is for a front-only array and nothing else: quad has speakers
+/// behind the listener, so a rear bearing lights the rear pair and a front
+/// bearing the front pair (speakers FL, FR, RL, RR).
+///
+/// Mutation (run, fails): the `has_rear_speakers` gate dropped so every
+/// layout folds (quad at 180 degrees lights the front pair).
+#[test]
+fn a_surrounding_layout_does_not_fold_its_rear_arc() {
+    let layout = SpeakerLayout::quad().unwrap();
+    let at = |az: f32| {
+        let mut g = [0.0f32; 4];
+        layout.gains_into(Azimuth(az), Elevation(0.0), Spread::POINT, &mut g);
+        g
+    };
+    let front = at(0.0);
+    assert!(
+        front[0] + front[1] > 0.9 && front[2] + front[3] < 0.1,
+        "{front:?}"
+    );
+    let rear = at(180.0);
+    assert!(
+        rear[2] + rear[3] > 0.9 && rear[0] + rear[1] < 0.1,
+        "{rear:?}"
+    );
+    let rear_left = at(135.0);
+    assert!(rear_left[2] > 0.9, "{rear_left:?}");
+}
+
 /// The gains are never negative, in or out of the coverage (the clamp), and
 /// the corrected solve's are unit power everywhere.
 ///

@@ -102,11 +102,6 @@ pub use tutti_sf2 as sf2;
 #[cfg(feature = "soundfont")]
 pub use tutti_soundfont as soundfont;
 
-/// Spatial audio (`tutti-spatial`): VBAP speaker panning and binaural HRTF.
-/// Feature `spatial`.
-#[cfg(feature = "spatial")]
-pub use tutti_spatial as spatial;
-
 /// Pure DSP over slices (`tutti-dsp`): the real FFT, filters, dynamics,
 /// convolution, delay, reverb, windows and the STFT geometry.
 /// Feature `dsp`.

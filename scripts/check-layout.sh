@@ -58,8 +58,6 @@
 #   library: `cargo tree -i ogg_next_sys -e normal` finds nothing (WAV is pure
 #   Rust; `export-ogg` is the one path to the C Vorbis library, and the check
 #   sees that it still is one, so it cannot pass by looking at nothing);
-# - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
-#   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
 #   nothing depends on `tutti` or `bevy-tutti`. (`bevy-tutti` is parked, out of
 #   the workspace, and its checks here apply only while it is a member.)
@@ -71,8 +69,6 @@
 #   crate"; `arc-lend` as a `[dependencies]` entry of `tutti-types`: "tutti-types
 #   may depend on no workspace crate"; `tutti-types` as a `[dependencies]` entry
 #   of `tutti-rt`: "tutti-rt may depend on ['arc-lend'] only";
-# - `tutti-spatial` as a `[dev-dependencies]` entry of `tutti-nodes`:
-#   "tutti-nodes must not depend on tutti-spatial";
 # - `tutti-fixtures` as a `[dependencies]` entry of `tutti-dsp`, and as
 #   a `[build-dependencies]` entry of `tutti-plugin`: "normal dependency on
 #   tutti-fixtures; crates/ depends on testing/" and "build dependency
@@ -183,7 +179,7 @@ LAYERS = [
     ["tutti-engine", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-ffi",
      "tutti-plugin-db", "tutti-plugin-ipc"],
-    ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-spatial", "tutti-sampler",
+    ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-sampler",
      "tutti-polysynth", "tutti-soundfont", "tutti-midi-hardware",
      "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host"],
     ["tutti-plugin", "tutti-plugin-probe"],
@@ -452,10 +448,6 @@ if "tutti-graph" in pkgs:
     only("tutti-graph", ["tutti-types", "tutti-rt", "tutti-ump"])
 if "tutti-midi-types" in pkgs:
     only("tutti-midi-types", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-midi-protocol"])
-if "tutti-nodes" in pkgs and "tutti-spatial" in deps_of("tutti-nodes"):
-    fail("tutti-nodes must not depend on tutti-spatial (spatial depends on nodes)")
-if "tutti-spatial" in pkgs and "tutti-nodes" not in deps_of("tutti-spatial"):
-    fail("tutti-spatial must depend on tutti-nodes")
 for name in pkgs:
     users = {d for d, _ in internal_deps(pkgs[name])}
     if "tutti-session" in users and name not in ("tutti", "bevy-tutti"):

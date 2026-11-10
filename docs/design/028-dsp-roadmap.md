@@ -1069,10 +1069,10 @@ traits and the contract machinery (a crate-root test module on `main`; a feature
 in doc 024 Q6's plan), which AllRAD and binaural ambisonic decode
 need: AllRAD is `Series<ShDecode, VbapColumns>` (§3.5) and binaural decode is a
 series with the HRTF pair. Encode, rotation and a plain decoder need neither
-move. The option taken here, algorithms into `tutti-dsp` and nodes staying in
-`tutti-spatial`, is a recommendation, weighed against two alternatives (leave the crate as it
+move. The option first taken here, algorithms into `tutti-dsp` and nodes staying in
+`tutti-spatial`, was a recommendation, weighed against two alternatives (leave the crate as it
 is, or dissolve it into `tutti-nodes` now, which moves every public path and has
-no benefit until `DesignNode` exists); it is taken as a decision on the recommendation (§9 D13), reversible by the owner.
+no benefit until `DesignNode` exists); step 3 below then dissolved the crate into `tutti-nodes`; it is taken as a decision on the recommendation (§9 D13), reversible by the owner.
 
 ### 4.1 What moves, what stays
 
@@ -1206,9 +1206,20 @@ re-derive it.
    gone from `tutti-spatial`, no shim left. Every digest is identical and `tests/vbap_*`
    pass unedited. The mono fold stays as it was: a gain-matrix form changes bits and is
    its own PR.)
-3. **Cleanup.** Trim or drop `tutti-spatial`'s `hrtf` feature, update CLAUDE.md's
-   `tutti-dsp` paragraph, doc 024 rows 44 to 46, the "already a crate" sentence, and
-   the stale comment in `tutti-nodes`' `Cargo.toml` about the convolution.
+3. **Cleanup.** (**Landed**, `dsp/nospatial`: the crate is removed, which is the
+   dissolve-into-`tutti-nodes` alternative of §4's introduction, taken now: the panner
+   nodes, `SpatialTarget`, the smoothers, the layout and fork helpers and `VbapError` are
+   `tutti-nodes`' private `spatial` module, exported at its root (`tutti_nodes::VbapPannerNode`,
+   `HrtfBinauralNode`, their controls), their tests, benches and the `assert_no_alloc` gate
+   beside them, every digest identical; the `hrtf` feature, the self dev-dependency and
+   `tutti-session`'s and `tutti`'s `spatial` and `hrtf` features are gone (the
+   `SessionNode` impls and `Error::Spatial` are ungated); `tutti-nodes` gains one outside
+   dependency, `thiserror`, for `VbapError`.) **3d, the mix builder, is deleted, not
+   moved:** `build_vbap_mix`, `VbapMixParts` and their types had no production user, and
+   with fan-in (doc 013) a mix is a panner per source wired to the output channels.
+   The remaining spatial clean-ups, 3a to 3c and 3e (the node shape, the controls, the
+   errors and names), now happen inside `tutti-nodes`. CLAUDE.md's `tutti-dsp` paragraph,
+   doc 024 rows 44 to 46 and the "already a crate" sentence are updated.
 
 Effort: M in all, as #448 and #451 were. After step 3 the HRIR file format
 (§9 D16) is the one spatial question before ambisonic binaural decode.

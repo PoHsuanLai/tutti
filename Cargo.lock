@@ -3495,7 +3495,6 @@ dependencies = [
  "tutti-session",
  "tutti-sf2",
  "tutti-soundfont",
- "tutti-spatial",
  "tutti-transport",
  "tutti-types",
  "tutti-ump",
@@ -3676,7 +3675,6 @@ dependencies = [
  "tutti-measure",
  "tutti-nodes",
  "tutti-sampler",
- "tutti-spatial",
  "tutti-transport",
  "tutti-types",
 ]
@@ -3851,6 +3849,7 @@ dependencies = [
  "biquad",
  "criterion",
  "libm",
+ "thiserror 2.0.21",
  "tutti-dsp",
  "tutti-engine",
  "tutti-graph",
@@ -4129,7 +4128,6 @@ dependencies = [
  "tutti-sf2",
  "tutti-shared-plugin",
  "tutti-soundfont",
- "tutti-spatial",
  "tutti-tempo",
  "tutti-transport",
  "tutti-types",
@@ -4191,21 +4189,6 @@ dependencies = [
  "tutti-types",
  "tutti-ump",
  "tutti-voicing",
-]
-
-[[package]]
-name = "tutti-spatial"
-version = "0.0.1"
-dependencies = [
- "approx",
- "assert_no_alloc",
- "criterion",
- "thiserror 2.0.21",
- "tutti-dsp",
- "tutti-graph",
- "tutti-nodes",
- "tutti-spatial",
- "tutti-types",
 ]
 
 [[package]]

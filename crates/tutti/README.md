@@ -90,7 +90,7 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::metering` | `tutti-metering` | `LoadMeter` | always |
 | `tutti::types` | `tutti-types` | units, channel layouts, buffer views, RT primitives | always |
 | `tutti::graph` | `tutti-graph` | the audio graph: builder, compiler, `Editor` / `Executor` | always |
-| `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation | always |
+| `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation, VBAP and HRTF panners | always |
 | `tutti::device` | `tutti-cpal` | the sound card: CPAL output stream, mic capture, driver lifecycle | `device` |
 | `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders, `FileOut`, the encoders | `codec` (implied by every format) |
 | `tutti::io` | `tutti-session` | recording: `Recorder` and its `PumpLoop` (the sink is `tutti::codec::FileOut`; a graph tap is a `Source` as it is) | `io` |
@@ -98,7 +98,6 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::sampler` | `tutti-sampler` | sample playback: in-memory and streamed voices, time stretch | `sampler` |
 | `tutti::polysynth` | `tutti-polysynth` | polyphonic subtractive synth node | `synth` |
 | `tutti::soundfont` | `tutti-soundfont` | SoundFont (.sf2) playback node | `soundfont` |
-| `tutti::spatial` | `tutti-spatial` | VBAP speaker panning, binaural HRTF | `spatial` |
 | `tutti::dsp` | `tutti-dsp` | real FFT, windows, filters, dynamics, convolution, delay, reverb | `dsp` |
 | `tutti::measure` | `tutti-measure` | waveform, onsets, pitch, loudness, correlation, spectra, STFT | `dsp` |
 | `tutti::modulation` | `tutti-modulation` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
@@ -127,7 +126,7 @@ None are on by default.
 - `export` — `tutti::export`.
 - `midi` — `tutti::midi`, `tutti::midi_runtime`, `tutti::midi_file`.
 - `midi-hardware` — `tutti::midi_hardware` (implies `midi`).
-- `synth`, `soundfont`, `sampler`, `spatial`, `dsp`, `modulation` — the
+- `synth`, `soundfont`, `sampler`, `dsp`, `modulation` — the
   matching module (`dsp` gives both `tutti::dsp` and `tutti::measure`). `soundfont` implies `midi`; `sampler` implies `wav`.
 - `convolution` — the convolution reverb nodes in `tutti::nodes`.
 - `plugin` — `tutti::plugin` (implies `midi`), with one or more formats:

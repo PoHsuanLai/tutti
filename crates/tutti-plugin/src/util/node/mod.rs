@@ -11,5 +11,5 @@ pub(crate) mod listeners;
 // out-of-crate in-process loaders. The refresh / invalidate sinks stay
 // crate-internal — only the out-of-process bridge fires them, so in-process
 // loaders never construct one.
-pub use listeners::ParameterChangeSink;
 pub(crate) use listeners::{InvalidateSink, RefreshSink};
+pub use listeners::{Listener, ParameterChangeSink};

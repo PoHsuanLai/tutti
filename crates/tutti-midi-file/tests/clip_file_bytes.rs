@@ -40,9 +40,14 @@
 
 use tutti_fixtures::midi;
 use tutti_midi_file::{ClipEvent, ClipHeader, ParsedClipFile, write_clip_file_with_header};
-use tutti_midi_types::flex_set_tempo;
 use tutti_types::{Beat, Bpm};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Flex, Message, MidiChannel, MidiGroup, Ump, decode};
+
+/// A Set Tempo (M2-104 section 7.5.3) of `bpm`, written as its field: 10 ns
+/// units per quarter note, 6e9 / bpm.
+fn flex_set_tempo(group: MidiGroup, bpm: Bpm) -> Ump {
+    Message::Flex(group, Flex::SetTempo((6.0e9 / bpm.get()) as u32)).into()
+}
 
 const TPQ: u16 = 96;
 
@@ -328,7 +333,7 @@ fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
     let tempo_events = |c: &tutti_midi_file::ParsedClipFile| {
         c.events
             .iter()
-            .filter(|ce| tutti_midi_types::ump::flex_tempo_bpm(&ce.event).is_some())
+            .filter(|ce| matches!(decode(ce.event), Ok(Message::Flex(_, Flex::SetTempo(_)))))
             .count()
     };
     assert_eq!(

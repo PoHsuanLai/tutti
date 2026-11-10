@@ -18,8 +18,7 @@ use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
     MidiInputNode, MidiOutNode, MidiQueueNode,
 };
-use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-use tutti_midi_types::{MidiMessage, cc, from_midi1_bytes};
+use tutti_midi_types::{MidiMessage, from_midi1_bytes};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Voice2, decode};
@@ -179,10 +178,13 @@ fn each_event_leaves_on_its_channels_port() {
 #[test]
 fn an_rpn_run_split_across_blocks_is_assembled() {
     let wire = Wire::new(vec![
-        vec![cc_ev(3, cc::RPN_MSB, 0), cc_ev(3, cc::RPN_LSB, 6)],
         vec![
-            cc_ev(3, cc::DATA_ENTRY, 10),
-            cc_ev(3, cc::DATA_ENTRY_LSB, 0),
+            cc_ev(3, CCNumber::RPN_MSB, 0),
+            cc_ev(3, CCNumber::RPN_LSB, 6),
+        ],
+        vec![
+            cc_ev(3, CCNumber::DATA_ENTRY, 10),
+            cc_ev(3, CCNumber::DATA_ENTRY_LSB, 0),
         ],
     ]);
     let (_ed, mut exec, _c, seen) =
@@ -230,7 +232,7 @@ fn a_requested_mpe_mode_is_adopted_once() {
     ]);
     let (_ed, mut exec, controls, seen) =
         rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
-    let mode = MpeMode::LowerZone(MpeZoneConfig::lower(6));
+    let mode = tutti_fixtures::midi::lower_zone(6);
     controls.set_mpe_mode(mode);
     assert_eq!(controls.pending_mpe_mode(), Some(mode));
     for _ in 0..3 {
@@ -280,7 +282,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
     let wire = Wire::new(vec![vec![range]]);
     let (_ed, mut exec, controls, seen) =
         rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
-    controls.set_mpe_mode(MpeMode::LowerZone(MpeZoneConfig::lower(6)));
+    controls.set_mpe_mode(tutti_fixtures::midi::lower_zone(6));
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
     let mut ranges = PerNoteBendRanges::default();
@@ -313,13 +315,13 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
 fn a_member_bend_range_fans_out_over_the_zones_ports() {
     use tutti_plugin_types::PerNoteBendRanges;
     let wire = Wire::new(vec![vec![
-        cc_ev(2, cc::RPN_MSB, 0),
-        cc_ev(2, cc::RPN_LSB, 0),
-        cc_ev(2, cc::DATA_ENTRY, 12),
-        cc_ev(2, cc::DATA_ENTRY_LSB, 0),
+        cc_ev(2, CCNumber::RPN_MSB, 0),
+        cc_ev(2, CCNumber::RPN_LSB, 0),
+        cc_ev(2, CCNumber::DATA_ENTRY, 12),
+        cc_ev(2, CCNumber::DATA_ENTRY_LSB, 0),
         note(1, 60, 5),
     ]]);
-    let node = MidiInputNode::new(Some(wire)).with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+    let node = MidiInputNode::new(Some(wire)).with_mpe(tutti_fixtures::midi::lower_zone(7));
     let (_ed, mut exec, _c, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
@@ -359,15 +361,15 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     use tutti_plugin_types::PerNoteBendRanges;
     let mut batch: Vec<UmpAt> = (0..507).map(|i| note(0, 60, i)).collect();
     batch.extend([
-        cc_ev(2, cc::RPN_MSB, 0),
-        cc_ev(2, cc::RPN_LSB, 0),
-        cc_ev(2, cc::DATA_ENTRY, 12),
-        cc_ev(2, cc::DATA_ENTRY_LSB, 0),
+        cc_ev(2, CCNumber::RPN_MSB, 0),
+        cc_ev(2, CCNumber::RPN_LSB, 0),
+        cc_ev(2, CCNumber::DATA_ENTRY, 12),
+        cc_ev(2, CCNumber::DATA_ENTRY_LSB, 0),
         note(1, 61, 509),
     ]);
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
     let node = MidiInputNode::new(Some(Wire::new(vec![batch])))
-        .with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+        .with_mpe(tutti_fixtures::midi::lower_zone(7));
     let (_ed, mut exec, controls, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
@@ -397,10 +399,10 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
 fn a_note_off_has_room_past_the_capacity() {
     let mut batch: Vec<UmpAt> = (0..504).map(|i| note(0, 60, i)).collect();
     batch.extend([
-        cc_ev(2, cc::RPN_MSB, 0),
-        cc_ev(2, cc::RPN_LSB, 0),
-        cc_ev(2, cc::DATA_ENTRY, 12),
-        cc_ev(2, cc::DATA_ENTRY_LSB, 0),
+        cc_ev(2, CCNumber::RPN_MSB, 0),
+        cc_ev(2, CCNumber::RPN_LSB, 0),
+        cc_ev(2, CCNumber::DATA_ENTRY, 12),
+        cc_ev(2, CCNumber::DATA_ENTRY_LSB, 0),
     ]);
     batch.extend((0..4).map(|k| {
         at(
@@ -410,7 +412,7 @@ fn a_note_off_has_room_past_the_capacity() {
     }));
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
     let node = MidiInputNode::new(Some(Wire::new(vec![batch])))
-        .with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+        .with_mpe(tutti_fixtures::midi::lower_zone(7));
     let (_ed, mut exec, controls, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();

@@ -142,7 +142,7 @@ pub(crate) fn points_for(chunk: usize) -> usize {
 }
 
 /// What the node's parameter delivery has done since the plugin was loaded.
-/// Read with [`PluginControls::param_delivery`](super::PluginControls::param_delivery).
+/// Read with [`NodeControls::param_delivery`](super::NodeControls::param_delivery).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ParamDeliveryStats {
@@ -888,7 +888,7 @@ impl DeliveryCounters {
 
     /// Transport changes since the plugin was bound that did not fit in a
     /// chunk: see
-    /// [`PluginControls::dropped_transport_changes`](super::PluginControls::dropped_transport_changes).
+    /// [`NodeControls::dropped_transport_changes`](super::NodeControls::dropped_transport_changes).
     /// RT-safe: one relaxed load.
     pub(crate) fn dropped_transport_changes(&self) -> u64 {
         self.transport_dropped.load(Ordering::Relaxed)
@@ -903,7 +903,7 @@ impl DeliveryCounters {
 
     /// MIDI events on the node's event input that never reached the
     /// plugin's host, since the plugin was bound: see
-    /// [`PluginControls::dropped_midi_in`](super::PluginControls::dropped_midi_in).
+    /// [`NodeControls::dropped_midi_in`](super::NodeControls::dropped_midi_in).
     /// RT-safe: two relaxed loads.
     pub(crate) fn dropped_midi_in(&self) -> u64 {
         let bridge = self

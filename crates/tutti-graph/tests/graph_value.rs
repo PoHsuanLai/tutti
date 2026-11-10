@@ -339,7 +339,7 @@ fn a_tap_lane_naming_a_missing_source_is_not_a_fault() {
     let mut t = chain();
     t.taps.insert(
         TapId(7),
-        TapSpec {
+        TapSpec::Ports {
             sources: vec![
                 Source::Node(out(B, 0)),
                 Source::Zero,

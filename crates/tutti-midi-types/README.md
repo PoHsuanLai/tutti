@@ -9,27 +9,26 @@ MPE vocabulary. The `tutti` facade re-exports this crate as
 The wire type is `tutti_ump::Ump`: four UMP words, so any MIDI 1.0 / 2.0 /
 SysEx / utility message fits one type. An event in a block is the pair
 `(Offset, Ump)`, the offset kept beside the packet, so no type here carries
-timing. Build a single message with `tutti_ump::Message` and `Ump::from`; build
-a multi-packet one (SysEx, Flex Data, UMP Stream) with the free functions here
-(`tutti_ump::sysex7_packets`, [`flex_set_tempo`], …); decode through
-[`MidiMessage::from_ump`] (a [`MidiMessage`]) or `midi2::UmpMessage::try_from`.
+timing. Build a message with `tutti_ump::Message` and `Ump::from`, decode it
+with `tutti_ump::decode` or, for the "just tell me what it is" view,
+[`MidiMessage::from_ump`].
 
-Around it, these public modules:
-
-- [`ump`] — the UMP surface: SysEx7 and SysEx8 packets, endpoint capabilities,
-  Flex Data, JR Timestamps.
-- [`mpe`] — MIDI Polyphonic Expression (RP-053): zones, modes, note rotation.
-- [`cc`] — CC numbers and CC→target mapping ([`cc::mapping`]).
-- [`translation`] — the MIDI 1↔2 boundary (the widths are `tutti_midi_protocol`'s).
-
-[`MidiMessage`] is at the crate root. `midi2` and `midly` are re-exported whole, so a
-consumer matching this crate's version needs no dependency entry of its own.
+This crate is being emptied (design 017, stage 5b). What is left is
+[`MidiMessage`] and its companions (`ControllerNamespace`, `NoteAttribute`,
+`PerNoteController`, `UnencodableMessage`) at the root, and [`translation`], the
+MIDI 1.0 to 2.0 boundary of the old API. Both read through `midi2`, and the
+next part deletes them, the crate and that dependency. Everything else moved to
+its owner: the MPE zone types are `tutti_midi_protocol`'s, the CC numbers are
+`tutti_ump::CCNumber`'s constants, Flex Data, SysEx, the JR messages and
+`Protocol` are `tutti_ump`'s, the Clip File and its tempo are `tutti-midi-file`'s.
+There is no re-export of `midi2`, `midly`, `ArcLend` or the unit types here: a
+consumer names the crate.
 
 ```rust
 use tutti_midi_types::prelude::*;
 use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
-// Build a note, decode it back — no midi2 imports, no width juggling.
+// Build a note, decode it back.
 let ump = Ump::from(Message::Midi2(
     Address { group: MidiGroup::FIRST, channel: MidiChannel::FIRST },
     Voice2::NoteOn { note: NoteNumber::new(60).unwrap(), velocity: 0x8000, attribute: Attribute::None },
@@ -41,16 +40,12 @@ assert_eq!(msg.note(), Some(60));
 
 ## What it does not own
 
-It is **pure types**: no OS API, no runtime state machine, no audio graph. That
-is what lets it sit under everything MIDI-shaped in the engine — the runtime, the
-hardware layer, the file codecs, the format hosts and both synths all name it,
-and none pulls the others in by doing so.
+It is **pure types**: no OS API, no runtime state machine, no audio graph.
 
 - **No ports.** Enumerating and opening OS endpoints is
   `tutti-midi-hardware`'s.
 - **No mailboxes, nodes or schedulers.** The graph's MIDI nodes, the rings
-  MIDI crosses threads on and clip playback are `tutti-midi-runtime`'s. This
-  crate defines no queue trait: `MidiIn` / `MidiOut` are `tutti-midi-runtime`'s.
+  MIDI crosses threads on and clip playback are `tutti-midi-runtime`'s.
 - **No `.mid` files.** SMF is `tutti-midi-file`'s. The MIDI 2.0 Clip File codec is
   that crate's too.
 
@@ -132,32 +127,16 @@ which is lossless from either protocol.
 
 ## The prelude is deliberately narrow
 
-It pulls in what building and decoding MIDI needs: the decoded view, per-note identity, the unit id, the `normalize` seam, and the Clip File
-codec. The advanced surfaces — UMP-Stream endpoint negotiation, Flex Data,
-RPN/NRPN translation state, MPE zone config, the sync decoders — stay explicit imports so a glob does not flood scope.
+The decoded view, its companions and the `normalize` seam.
 
 ## Where it sits
 
-Depends on `tutti-rt` (for `ArcLend`), `tutti-types` and `tutti-ump` (the `MidiGroup`,
-`MidiChannel` and `CCNumber` newtypes, which callers import from there) plus
-`midi2` and `midly`. Everything
-MIDI-shaped in the engine builds on it: `tutti-engine`, the other `tutti-midi-*`
-crates, the synths and the plugin hosts.
+Depends on `tutti-ump` and `tutti-midi-protocol` (the widths) plus `midi2`,
+until the stage that deletes this crate.
 
 ## Features
 
-`default = []`.
-
-- `serde` — `Serialize` / `Deserialize` on the **authored-configuration** types
-  only, MPE zone setup today. Forwards to `tutti-types/serde`, because
-  `MpeZoneConfig` is built from those newtypes.
-
-The wire types are deliberately not serializable. A MIDI type carries these
-derives only when it is authored configuration, carries no audio-thread-stamped
-field, and has the same shape at rest as on the wire. `MpeMode` passes all
-three; an event in a block (`(Offset, Ump)`) fails the last two — its offset is
-stamped by the audio thread against a block size a document never sees, and
-MIDI has no durational note record.
+None.
 
 ## License
 

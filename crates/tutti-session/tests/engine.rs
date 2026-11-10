@@ -534,9 +534,9 @@ fn an_offline_render_feeds_an_output_tap() {
 /// An output tap follows the outputs when they are re-wired: lane 0 reads
 /// the new source from the next commit on.
 ///
-/// Mutation (run, recorded here): delete `follow_outputs()` from
-/// `Graph::set_output_source` -> the tap keeps reading the old source and the
-/// second half reads 0.5.
+/// Mutation (run, recorded here): `Graph::open_output_tap` opens a ports tap
+/// on a snapshot of each output's first source instead of `TapSpec::Outputs`
+/// -> the tap keeps reading the old source and the second half reads 0.5.
 #[test]
 fn an_output_tap_follows_a_rewired_output() {
     let mut s = offline();

@@ -354,6 +354,19 @@ Today CLAP uses `max(0)` plus `clamp_times`, VST3 uses
     the public names.
 
   These shrink 4a's diff and touch no hosting decision.
+
+  **As built (P8, 2026-11-11).** `TransportSource` (in `transport_source`)
+  holds the meter's reader and the three clocks; `block(features)` lends one
+  block's (`BlockTransport`: `parts`, and `at` for a transport per chunk) and
+  `advance` counts its frames. The tempo map and cursor stay beside it, since
+  each hosting reads the map its own way (the IPC node walks the changes
+  inside a chunk). `NodeControls` holds the meter cell and the delivery
+  counters: `InProcessVst2Controls` is an alias of it, `PluginControls` holds
+  one and derefs to it, and the clients reach it through `controls()`
+  (`PluginClient::set_meter` and the VST2 client's copies are gone; the
+  `Plugin` facade's `set_meter`, which checks the features, stays until 021
+  step 6). The listener is `Listener<A>`, not `Sink<A>`: `tutti_types::Sink`
+  is the engine's audio edge. The three names are its aliases.
 - **The `Host*` traits against `Control`: the gap 021 §10 leaves open**
   (**amends 021 step 4b**, decided here):
   - Parameters, state, presets and automation go to `Control`.

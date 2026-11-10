@@ -350,7 +350,7 @@ impl Plugin {
         match &self.backend {
             Backend::Subprocess(c) => c.controls().meter(),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.meter(),
+            Backend::InProcessVst2(c) => c.controls().meter(),
         }
     }
 

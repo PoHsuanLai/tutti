@@ -122,7 +122,8 @@ struct Pending {
 /// ```
 ///
 /// Explicit wiring — `connect` between nodes, `connect_input` /
-/// `connect_output` at the edges, `chain` for a series:
+/// `connect_output` at the edges (each **adds** a source: a port holds a set,
+/// which the graph sums):
 ///
 /// ```
 /// use tutti_graph::{ForkByClone, GraphBuilder, Prepare};
@@ -142,8 +143,9 @@ struct Pending {
 /// # }
 ///
 /// let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
-/// let half = g.chain(ForkByClone(Gain(0.5))); // global in → half → both outs
+/// let half = g.add(ForkByClone(Gain(0.5)));
 /// let gain = g.add(ForkByClone(Gain(4.0)));
+/// g.connect_input(0, half, 0).connect_output(half, 0, 0); // left = ½ × input
 /// g.connect(half, 0, gain, 0).connect_output(gain, 0, 1); // right = 2 × input
 ///
 /// let mut r = g
@@ -319,7 +321,9 @@ impl GraphBuilder {
         }
     }
 
-    /// Feeds `node`'s input `port` from `source`.
+    /// Feeds `node`'s input `port` from `source` and nothing else: it
+    /// **replaces** the port's set with that one source (`Source::Zero`
+    /// clears it). [`connect`](Self::connect) adds.
     ///
     /// # Panics
     ///
@@ -343,8 +347,12 @@ impl GraphBuilder {
         self
     }
 
-    /// Feeds `to`'s input `to_port` from `from`'s output `from_port`.
-    /// Replaces whatever fed that input: one source per input port.
+    /// Adds `from`'s output `from_port` to the sources of `to`'s input
+    /// `to_port`. A port holds a **set** of sources, which the graph sums
+    /// (doc 013, "Audio fan-in sums"): a second `connect` to the same port
+    /// adds a second addend and does not replace the first, and the same
+    /// source twice is one source. To feed a port from exactly one source
+    /// use [`set_source`](Self::set_source).
     pub fn connect(
         &mut self,
         from: NodeKey,
@@ -353,11 +361,56 @@ impl GraphBuilder {
         to_port: usize,
     ) -> &mut Self {
         let source = Source::Node(self.check_out(from, from_port));
-        self.set_source(to, to_port, source)
+        self.add_source(to, to_port, source)
     }
 
-    /// Feeds `to`'s input `to_port` from `from`'s output `from_port` as it
-    /// was `delay` frames ago — a declared cycle
+    /// Adds `source` to the sources of `node`'s input `port`, beside what it
+    /// holds. `Source::Zero` adds nothing: silence is the empty set.
+    ///
+    /// # Panics
+    ///
+    /// As [`set_source`](Self::set_source).
+    pub fn add_source(&mut self, node: NodeKey, port: usize, source: Source) -> &mut Self {
+        assert!(
+            !matches!(source, Source::Node(p) if p.node == node),
+            "{node:?} cannot feed itself directly; use `feedback`"
+        );
+        let at = self.check_in(node, port);
+        let source = self.check_source(source);
+        self.spec.topology.connect(at, Edge::Direct(source));
+        self
+    }
+
+    /// Feeds `node`'s input `port` from exactly `sources`, replacing whatever
+    /// it held (the empty slice clears it, and so does a `Source::Zero`,
+    /// which is never stored).
+    ///
+    /// # Panics
+    ///
+    /// As [`set_source`](Self::set_source), for every source.
+    pub fn set_sources(&mut self, node: NodeKey, port: usize, sources: &[Source]) -> &mut Self {
+        self.disconnect(node, port);
+        for &source in sources {
+            self.add_source(node, port, source);
+        }
+        self
+    }
+
+    /// Removes `source` from the sources of `node`'s input `port`; the others
+    /// stay. Removing a source the port does not hold does nothing.
+    ///
+    /// # Panics
+    ///
+    /// If the port or the source is out of range.
+    pub fn disconnect_from(&mut self, node: NodeKey, port: usize, source: Source) -> &mut Self {
+        let at = self.check_in(node, port);
+        let source = self.check_source(source);
+        self.spec.topology.disconnect(at, Edge::Direct(source));
+        self
+    }
+
+    /// Adds `from`'s output `from_port`, as it was `delay` frames ago, to the
+    /// sources of `to`'s input `to_port` — a declared cycle
     /// ([`FeedbackFrom`]). `delay` must be at least the maximum block the graph is
     /// built for; [`build`](Self::build) refuses a shorter one.
     pub fn feedback(
@@ -372,26 +425,64 @@ impl GraphBuilder {
         let at = self.check_in(to, to_port);
         self.spec
             .topology
-            .edges
-            .insert(at, vec![Edge::Feedback(FeedbackFrom::new(from, delay))]);
+            .connect(at, Edge::Feedback(FeedbackFrom::new(from, delay)));
         self
     }
 
-    /// Feeds `node`'s input `port` from silence: clears the port, which is
-    /// the same value as one never wired.
+    /// Feeds `node`'s input `port` from silence: clears the port (every
+    /// source, not one: see [`disconnect_from`](Self::disconnect_from)),
+    /// which is the same value as one never wired.
     pub fn disconnect(&mut self, node: NodeKey, port: usize) -> &mut Self {
         self.set_source(node, port, Source::Zero)
     }
 
-    /// Feeds `to`'s input `to_port` from global input `global`.
+    /// Adds global input `global` to the sources of `to`'s input `to_port`,
+    /// as [`connect`](Self::connect) does for a node's output.
     pub fn connect_input(&mut self, global: usize, to: NodeKey, to_port: usize) -> &mut Self {
-        self.set_source(to, to_port, Source::Global(global as u16))
+        self.add_source(to, to_port, Source::Global(global as u16))
     }
 
-    /// Feeds global output `global` from `from`'s output `from_port`.
+    /// Adds `from`'s output `from_port` to the sources of global output
+    /// `global`, beside what it holds: the output is a sink, so several
+    /// sources sum, as at an input port. [`set_output`](Self::set_output) is
+    /// the one-source form.
     pub fn connect_output(&mut self, from: NodeKey, from_port: usize, global: usize) -> &mut Self {
         let source = Source::Node(self.check_out(from, from_port));
-        self.set_output(global, source)
+        self.add_output(global, source)
+    }
+
+    /// Adds `source` to the sources of global output `channel`. `Source::Zero`
+    /// adds nothing.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` or `source` is out of range.
+    pub fn add_output(&mut self, channel: usize, source: Source) -> &mut Self {
+        self.check_channel(channel);
+        let source = self.check_source(source);
+        self.spec.topology.connect_output(channel, source);
+        self
+    }
+
+    /// Removes `source` from the sources of global output `channel`; the
+    /// others stay.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` or `source` is out of range.
+    pub fn disconnect_output_from(&mut self, channel: usize, source: Source) -> &mut Self {
+        self.check_channel(channel);
+        let source = self.check_source(source);
+        self.spec.topology.disconnect_output(channel, source);
+        self
+    }
+
+    fn check_channel(&self, channel: usize) {
+        let n = self.outputs();
+        assert!(
+            channel < n,
+            "the graph has {n} global outputs; output {channel} is out of range"
+        );
     }
 
     /// Feeds global output `channel` from `source`.
@@ -400,11 +491,7 @@ impl GraphBuilder {
     ///
     /// If `channel` or `source` is out of range.
     pub fn set_output(&mut self, channel: usize, source: Source) -> &mut Self {
-        let n = self.outputs();
-        assert!(
-            channel < n,
-            "the graph has {n} global outputs; output {channel} is out of range"
-        );
+        self.check_channel(channel);
         self.spec.topology.outputs[channel] = match self.check_source(source) {
             Source::Zero => Vec::new(),
             source => vec![source],

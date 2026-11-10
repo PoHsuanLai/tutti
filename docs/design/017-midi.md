@@ -158,8 +158,8 @@ event output port carries, so an edge that ends can close them. They have
 different owners, keys and failure modes; unifying them would give one of them a
 question it does not ask.
 
-**`tutti-midi-types` is still about 9,000 lines of pre-017 vocabulary:** `mpe/`, `translation/`, `cc/mapping`, and the `MidiIn` and
-`MidiOut` traits, beside the `MidiEvent` above.
+**`tutti-midi-types` was about 9,000 lines of pre-017 vocabulary:** `mpe/`, `translation/`, `cc/mapping`, and the `MidiIn` and
+`MidiOut` traits, beside the `MidiEvent` above. After stage 5b part (b) it is `MidiMessage` and `translation/`.
 
 ## 2. The hierarchy
 
@@ -1263,8 +1263,8 @@ nothing new: nothing here adds `unsafe` or a lock-free structure.
 
 | Crate | Layer | Holds | Depends on |
 |---|---|---|---|
-| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser`, `Rpn` (an RPN address) and `SYSEX7_MAX_PAYLOAD` | No tutti crate |
-| `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE, `PitchBendSensitivity` | `tutti-ump` |
+| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser`, `Rpn` (an RPN address), `SYSEX7_MAX_PAYLOAD` and `split_stream` (a buffer of concatenated packets) | No tutti crate |
+| `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE zone values (`MpeZoneConfig`, `MpeZones`, `MpeMode`), `PitchBendSensitivity` | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
 | `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
@@ -1295,8 +1295,7 @@ Stage 5b part (a) moved three more groups, with no shim left behind:
   held its path-level half. Its only production users were `tutti-midi-file` itself;
   `tutti-midi-runtime` (the same layer) named it in a doc comment alone and
   `tutti-midi-hardware` re-exported it, which it no longer does (it depends on no
-  file crate). It still builds its UMP words through `midi2` and calls
-  `tutti_midi_types::ump`'s Flex Data builders, which the later parts replace.
+  file crate). Part (b) moved its Flex Data onto `tutti_ump::Flex`.
 - `sync/` (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`, `SmpteFrameRate`,
   `ClockTransportState`) to **`tutti-midi-runtime`**, not `tutti-midi-device`. The
   decoders speak `Bpm` and `Beat`, and `tutti-midi-device` may not depend on
@@ -1311,6 +1310,73 @@ Stage 5b part (a) moved three more groups, with no shim left behind:
   slot table's note-id index).
 - `fixed` (`q7_9_to_f32`, `q7_25_to_f32`) was deleted, with no caller: `tutti_ump::Pitch`
   holds the Q7.9 and Q7.25 words and `Pitch::note_number` is the one conversion.
+
+Stage 5b part (b) emptied `tutti-midi-types` of everything but `MidiMessage` and
+`translation/` (part (c) deletes those), again with no shim, and `midi2` has no user
+left but them and `tutti-ump`'s oracle test. The rule that decided each item: what `tutti_ump` already has is
+deleted and its callers move to `tutti_ump` (`Ump::from(Message)` to build, `decode` to
+read); a packet-level item `tutti_ump` lacks is added there; state and policy go to the
+one crate that owns them; an item with no caller outside its own tests is deleted.
+
+- **`mpe/`** to `tutti-midi-protocol` (it holds only `tutti-ump` and
+  `PitchBendSensitivity`, so it fits; nothing published or atomic is in it). The
+  values are `MpeZone` (`Lower` and `Upper`), `MpeZoneConfig`, `MpeZones` (the one or two
+  zones an instrument holds) and `MpeMode` (`Disabled`, `Zones(MpeZones)`,
+  `SingleChannelRotation { channel: MidiChannel }`). `MpeZoneConfig` has private fields
+  and `MpeZoneConfig::new(zone, member_count) -> Option<Self>`, which refuses a count
+  outside `1..=15` (0 is "disable the zone" in an MCM and is no zone; nothing clamps),
+  with `lower` and `upper` as `new` for each zone; `MpeZoneConfig::from_mcm` returns the
+  `MpeZone` and the count (`0` included) and refuses an MCM off a master channel or
+  above 15. `MpeZones::new(lower, upper) -> Option<Self>` refuses no zone at all, a zone
+  in the wrong role, and two zones whose members share a channel. The lower zone takes
+  `1..=l` and the upper `15-u..=14`, so they are disjoint exactly when `l + u <= 14`
+  (sixteen channels less two masters; this section's earlier "more than 15" was off by
+  one: 8 and 7 share channel 8). The persisted forms (`serde` feature) are read back
+  through the same checks (`try_from` a private raw), so a document cannot hold what
+  `new` refuses; the single-raw `check_range_contract` does not fit a composite, and
+  the tests state each refusal. An MCM that would overlap the zones is ignored by
+  `MpeIngest`. What went: `MpeZone::SingleChannel`, `MpeZoneConfig::single_channel`
+  and `enabled` (no user; a zone was never disabled), the clamping constructors,
+  `NoteRotationAllocator` (`MpeIngest` minted its ids and dropped them: the mode now
+  keeps the one channel and ignores the rest, which is all a receiver owes a rotation
+  sender, M2-104 Appendix C.3), and `MpeChannelVoiceMap`'s host-allocates half
+  (`assign_note`, `release_note`, voice stealing: "not wired into any runtime path").
+  What `MpeIngest` really used of the map, which note a member channel holds, is a
+  private table in `mpe_ingest.rs` (one for both zones, since they share no channel).
+  `ZoneInfo` was a private helper's return type and is `MpeIngest`'s `Role`.
+- **`ump/`**: everything was a `midi2` constructor of what `tutti_ump::Message` builds,
+  except these. Deleted as dead (no caller outside its tests): the chord, key,
+  metronome and Flex text builders and readers (`flex_set_chord_name`,
+  `flex_set_key_signature`, `flex_set_metronome`, `flex_text`, `push_flex_text`,
+  `FlexTextReassembler` and the `Tonic`, `ChordType`, `Alteration`, ... aliases, which
+  are `tutti_ump`'s `ChordName`, `KeySignature`, `Flex::Text` and kin), SysEx8
+  (`sysex8_fragments`, `sysex8_header`, `sysex8_status`, `is_sysex8_abort`: the packet
+  is `Data128::Sysex8`; no code fragments a SysEx8 payload, so no writer is added until
+  one does), `jr_clock_value` and `jr_timestamp_value` (the callers match
+  `Utility::JrClock` and `Utility::JrTimestamp` from `decode`), `Protocol`
+  (`tutti_ump::Protocol`, which also keeps a reserved value; `UmpCapability` takes it,
+  and an unknown protocol opens as MIDI 1.0), `program_change_bank_of` (a private
+  `decode` in `message.rs`, until it goes) and the `midi2`-oracle test files. Added to
+  `tutti_ump`: `split_stream`, the walk of a buffer of concatenated packets by Table 4,
+  from `split_ump_stream` (it reads the same one size table as `Ump::words`; the old
+  copy had a second). Not packet-level: the tempo helpers (`Bpm` against the Set Tempo
+  field, 10 ns units per quarter note, M2-104 section 7.5.3), whose only users are the
+  Clip File and `MidiFile::tempo_map`, are `tutti-midi-file`'s private `flex.rs`;
+  `tutti-ump` has no unit crate. The Clip File now builds and reads its Set Tempo and
+  Set Time Signature as `tutti_ump::Flex`.
+- **`cc/`**: every constant was an alias of a `CCNumber` constant (nothing missing from
+  `CCNumber`), so the aliases are deleted and callers write `CCNumber::BRIGHTNESS`.
+  `cc::mapping` (`CCMapping`, `CCTarget`, `MappingId`) had no user but
+  `tutti-midi-hardware`'s re-export, public fields and an unvalidated range, and is
+  replaced by the CC modulation source of §9: deleted, not moved.
+- **Root re-exports**: `midi2`, `midly`, `ArcLend`, `Beat`, `BeatDuration` and `Bpm` go,
+  from `tutti-midi-types` and with them `tutti-midi-hardware`'s `midi2`, `midly`,
+  `Protocol`, MPE and `CCMapping`, and `tutti-midi-runtime`'s MPE types. A user imports
+  from the real crate. `tutti-midi-types` loses its `serde` feature and its
+  `tutti-types`, `tutti-rt`, `bitflags`, `thiserror`, `serde` and `midly`
+  dependencies. `tutti-polysynth`, `tutti-soundfont` and `tutti-session` drop theirs
+  (the session takes `tutti-midi-protocol` for `MpeMode`); `tutti` re-exports
+  `tutti-midi-protocol` as `tutti::midi_protocol`.
 
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
 out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and
@@ -1336,8 +1402,8 @@ MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only 
 
 `sync`'s clock and MTC decoders have no consumer today beyond `ClockMaster`'s loopback
 tests. They are in the runtime (stage 5b), and are deleted if a clock slave (§9) does
-not use them. `cc::mapping` is
-replaced by a CC modulation source (§9), and `jr_timestamp` is rewritten in
+not use them. `cc::mapping` was deleted (stage 5b part (b); it had no user and is
+replaced by a CC modulation source, §9), and `jr_timestamp` is rewritten in
 `tutti-midi-device`, where it can be negotiated and driven by elapsed time.
 
 ## 7. `midi2` and `midly`
@@ -1722,7 +1788,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    - **One note identity. Done in `tutti-ump`:** `NoteId` lives there, one formula
      (`channel * 128 + note`, `MAX_CHANNEL_NOTE == 2047`), `from_channel_note` takes
      `(MidiChannel, NoteNumber)`, `channel_note()` returns `Option` (a minted id names
-     no pair), and `NoteRotationAllocator` mints from `MAX_CHANNEL_NOTE + 1`. The plugin
+     no pair), and `NoteRotationAllocator` minted from `MAX_CHANNEL_NOTE + 1` (deleted in 5b part (b): nothing used
+     the ids). The plugin
      side below is the Plugins session's. Was: There are two encodings of `(channel, note)` as an id:
      `tutti-midi-types`' `NoteId::from_channel_note` (`channel << 8 | note`, a
      `u32`, typed `MidiChannel`) and `tutti-plugin-types`' `note_id_for` /
@@ -1841,12 +1908,14 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
    to its owner (§6) or is deleted (`clip_file` is in `tutti-midi-file`, `sync/` in
    `tutti-midi-runtime`, `PerNoteMap` in `tutti-polysynth` and `fixed` is gone), then the crate, and `midi2` from the workspace
-   and `Cargo.lock`. With `mpe/`: `MpeZoneConfig` has public fields, so a literal
-   can hold a member count or master channel its constructors would refuse, and a
-   `DualZone` pair totalling more than 15 members (the two spans overlap) is not
-   rejected, only documented as the sender's duty. Give it private fields, a
-   `new -> Option` that refuses what RP-053 does, and a `DualZone` constructor that
-   refuses an overlap, with the range-types contract test.
+   and `Cargo.lock`. Part (a) did `clip_file`, `sync/` and `PerNoteMap`; part (b) did
+   the rest but `MidiMessage` and `translation/` (§6, "Stage 5b part (b)"); part (c)
+   deletes those, the crate and `midi2`. With `mpe/` (part (b), done): `MpeZoneConfig`
+   had public fields, so a literal could hold a member count or master channel its
+   constructors would refuse, and a `DualZone` pair totalling more than 14 members (the
+   two spans overlap) was not rejected, only documented as the sender's duty. It has
+   private fields, a `new -> Option` that refuses what RP-053 does, and `MpeZones::new`
+   refuses an overlap, with tests that state each refusal and a mutation for each.
 - **Stage E. The event tap and the event inlet** (the section of that name).
    E1 the tap in `tutti-graph` and its session API, E2 the inlet (built), E3 the hardware
    out on a tap (`MidiOutNode` deleted), E4 the queues on the inlet

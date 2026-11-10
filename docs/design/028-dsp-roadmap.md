@@ -20,7 +20,7 @@ combinators) are quoted from doc 024 §4.2, not from code. It does not
 contradict [doc 022](022-reverb.md) (the reverb items stay its steps, and its
 exclusion of shimmer stands, §9 D3) or [doc 026](026-stretch.md) (the listening
 gate is still the owner's; formant preservation is a new realization beside
-026's, §3.9). References to "§9" mean this document's. Claims about tutti were
+026's, §3.9). References to "§9" mean this document's; its questions were taken on the recommendation on 2026-11-11 and are recorded as decisions. Claims about tutti were
 checked against that code; claims about the outside world are in §11, each marked
 verified or not.
 
@@ -43,9 +43,9 @@ verified or not.
   justified by composition laws (`Controlled` for a dynamic EQ band, `Filtered`
   for a noise process through an `Lti`, `Oversampled` for up, map, down, and
   `Lure<L, Phi>` for a nonlinearity inside a feedback loop); three amendments
-  proposed to doc 024 §4.2 (`pdc_delay`, a declared alignment delay separate from
-  the measured onset `latency`; the MIMO norms with `h2_norm`; and `Lure`, which
-  needs the owner because it lifts doc 024 Q17); and structures
+  proposed to doc 024 §4.2 (`onset`, the measured first non-zero frame, added
+  beside `latency`, which stays the alignment delay PDC reads; the MIMO norms with
+  `h2_norm`; and `Lure`, which lifts doc 024 Q17); and structures
   (`PolyphaseFir`, `HalfbandIir`, `StftPair`). Single-family queries
   (antiderivatives, the overshoot bound, the formant shift) are inherent methods,
   as doc 024 §4.2 says until a second family answers them.
@@ -68,8 +68,8 @@ verified or not.
   watched, not built.
 - **Non-goals (§7).** Real-time neural stem separation, embedding GPL or closed
   libraries, wave digital filters for now.
-- **Decisions and open questions (§9).** Recorded decisions with their grounds,
-  and the questions that are the owner's, each with a recommendation.
+- **Decisions (§9).** Recorded decisions with their grounds, including those that
+  were open questions, taken on the recommendation on 2026-11-11; none are open.
 
 ## 1. Where tutti stands
 
@@ -124,44 +124,76 @@ query, and a query only one family answers stays an inherent method of its model
    feedback loop around a nonlinearity is a combinator (§3.10).
 3. **If it forces a shape, leave it inherent** and say so (§3.13).
 
+**Wet/dry is the graph's.** No family here proposes a node-level dry/wet. Doc
+013's M4 makes the per-node mix a graph primitive (`Editor::set_mix`), and
+`Blend`/`DryWet` is being retired, so new designs use `NoBlend` and the mix is
+applied by the graph, aligned by the node's declared `latency`.
+
 ### 2.1 Amendments proposed to doc 024
 
 Doc 024 is not edited by this document beyond a pointer. Three amendments to its
 §4.2 are proposed here, each marked **(proposal)** where used. P1 and P2 are
-additive and land in the PR of their first consumer (§9.2 Q2); P3 reverses a
-recorded recommendation of doc 024 and is the owner's.
+additive and land in the PR of their first consumer (§9 D10); P3 reverses a
+recorded recommendation of doc 024 (§9 D10).
 
-**P1. A declared alignment delay, separate from the measured onset.** Doc 024
-defines `System::latency` as the processing part of the onset of the impulse
-response: the first frame at which it is non-zero, and its latency contract case
-measures the first non-zero output. Several processors have a delay PDC must
-align by that is not the onset: a linear-phase FIR (non-zero pre-ringing taps,
-group delay `(L-1)/2`), an IIR half-band (`h[0] != 0`, a frequency-dependent group
-delay), and an STFT effect (one hop of output is ready long before the delay
-that makes the render independent of the block size). Redefining `latency` for
-them would break doc 024's own case, and CLAUDE.md requires that only processing
-latency reach PDC. So:
+**P1. The measured onset, added beside the alignment delay.** `System::latency`
+stays what the graph reads: the one number PDC aligns by, that a node's `Shape`
+declares, and that `latency_plan`, plugin latency and CLAUDE.md ("report only
+processing latency to PDC") already mean. Doc 024 defines it as the processing
+part of the onset of the impulse response, and its Latency contract case measures
+the first non-zero output against it. Several processors have an alignment delay
+that is not the first non-zero frame: a linear-phase FIR (non-zero pre-ringing
+taps before the centre, group delay `(L-1)/2`), an IIR half-band (`h[0] != 0`, a
+frequency-dependent group delay), an STFT effect (the delay that makes the render
+independent of the block size is not when the first output is ready), and a
+reverb (whose first non-zero frame includes its musical pre-delay). So the new
+query is the measured one:
 
 ```rust
 pub trait System {
-    fn latency(&self) -> Samples;                        // the onset of h, measured (doc 024)
-    fn tail(&self, floor: Db) -> Ring;
-    /// (proposal) The delay a graph aligns this node's branch by. Defaults to `latency`.
-    /// Processing delay only: a musical delay is never in it (CLAUDE.md).
-    fn pdc_delay(&self) -> Samples { self.latency() }
+    fn latency(&self) -> Samples;       // the alignment delay: what PDC reads and `Shape` declares (unchanged)
+    fn tail(&self, floor: Db) -> Ring;  // counted from `latency`, not from `onset` (doc 013, "A tail excludes latency")
+    /// (proposal) The first frame at which the response to a unit impulse is non-zero, measured.
+    /// Defaults to `latency`, which is right for a lookahead or a partition (a delayed copy).
+    /// Musical delay (a pre-delay, a tap spacing) is in it and never in `latency`.
+    fn onset(&self) -> Samples { self.latency() }
 }
 ```
 
-The contract measures `latency` against the first non-zero output as today, and
-`pdc_delay` as the delay of a band-limited tone burst below `0.05 fs`, from the
-envelope's centre of mass, within half a frame. A linear-phase FIR declares
-`(L-1)/2` (exact, constant at every frequency); an IIR half-band declares its
-group delay at DC rounded to a frame, and its residual phase deviation above DC is
-a stated phase-error query beside `Fidelity` (which is a magnitude); an STFT effect declares `size - 1` (§3.8). `Shape`'s declared
-latency, which PDC reads, takes `pdc_delay`. A stage with real delay must declare
-it: doc 026's zero latency for the stretcher (D8 there) is a choice made because
-the position-driven voice reads ahead, not a precedent for declaring zero while
-delaying.
+Doc 024's Latency case now measures the first non-zero output against `onset()`;
+a new case checks `latency()` as the delay of a band-limited tone burst below
+`0.05 fs` (from the envelope's centre of mass, within half a frame). Consequences,
+each part of the proposal:
+
+1. **The graph sees one number.** The node adapter puts `latency()` into `Shape`;
+   `onset` never reaches `tutti-graph`, the plan, export or doc 013's M4 mix.
+2. **The tail is counted from `latency`.** For a linear-phase FIR the tail is the
+   remaining `(L-1)/2` taps after the centre, not `L-1`, and
+   `contract::assert_honest_tail` must hold with it (§8). Musical delay still
+   counts toward the tail, as doc 024 says of a pre-delay.
+3. **Pre-ringing before `latency` is aligned away by design.** PDC and export trim
+   the first `latency` frames, so a linear-phase EQ's pre-ringing falls before frame
+   0 of the aligned output, and M4's graph mix aligns the dry by the same number.
+4. **Whole frames, declared at shape time.** A linear-phase FIR design refuses an
+   even `L` at construction (a constructor refusal, not only a mutant), so
+   `(L-1)/2` is a whole number. An IIR half-band declares its group delay at DC
+   rounded to the nearest frame, ties up; its residual phase deviation above DC is
+   a stated phase-error query beside `Fidelity` (which is a magnitude). An STFT
+   effect declares `size - 1` (§3.8). A quality tier that moves `latency` is a new
+   `Shape` (a recompile through the graph's crossfade), never a per-block report.
+5. **The reverb.** Its onset includes the pre-delay (musical delay), so for the
+   reverb `onset() = latency() + min_delay()`, where `Network::min_delay` already
+   adds the pre-delay and each stage's shortest path; its `latency()` is today's
+   (the largest FIR stage latency, zero for the time-domain stages) and does not
+   change. This agrees with doc 024's text (`onset(h) = latency + musical delay`)
+   and with the `Network` implementation of `System` on `main`. When P1 lands the
+   code changes in three places: `System` gains `onset` with its default; `Network`
+   overrides it; and doc 024's Latency case in the `contract` machinery measures
+   `onset()`, with the tone-burst case added for `latency()`.
+
+A stage with real delay must declare it: doc 026's zero latency for the stretcher
+(D8 there) is a choice made because the position-driven voice reads ahead, not a
+precedent for declaring zero while delaying.
 
 **P2. Norms for several inputs and outputs, and the white-noise gain.** For an
 order-0 system `hinf_norm` (the peak of the response over frequency) is the
@@ -193,7 +225,7 @@ circle criterion) is stated once. It lifts Q17 for that case and no other.
 
 | Item | Kind | Class | Answers | Section |
 |---|---|---|---|---|
-| `pdc_delay`, `h2_norm`, MIMO norms | amendments to `System`, `Lti` | 1, all | alignment delay; white-noise gain; matrix norms | 2.1 |
+| `onset`, `h2_norm`, MIMO norms | amendments to `System`, `Lti` | 1, all | measured first frame; white-noise gain; matrix norms | 2.1 |
 | `ShapeKind::f1`, `f2`; `Adaa1`, `Adaa2` | inherent methods; realizations | 3, 4 | antiderivatives; the box-averaged map | 3.1 |
 | `PolyphaseFir`, `HalfbandIir`, `Decimator`, `Oversampled` | models | 6 (`TimeScale`, `Fidelity`) | ratio, reach, stopband; `overshoot_bound` on the FIR only | 3.2 |
 | `Controlled<D, F>` | combinator | 2 / 4 | the `Lti` system at a settled detector level | 3.4 |
@@ -201,7 +233,7 @@ circle criterion) is stated once. It lifts Q17 for that case and no other.
 | `ShEncode`, `ShRotation`, `ShDecode` | models | 1 order 0 | degree energy (on `ShEncode`); isometry; commutation | 3.5 |
 | `Filtered<N, L>` | combinator | 5 (`Noise`) with 1 | shaped psd; variance from `h2_norm` | 3.6 |
 | `BandLimited` | trait | 5 | top harmonic at a floor; aliasing harmonics | 3.7 |
-| `StftPair`, `StftEffect` | structure, model | 1 up to `Fidelity` | window-sum constant; `pdc_delay` | 3.8 |
+| `StftPair`, `StftEffect` | structure, model | 1 up to `Fidelity` | window-sum constant; `latency` | 3.8 |
 | `Lure<L, Phi>` | combinator | new, narrow | sector, circle limit, critical gain, small-signal system | 3.10 |
 
 **Why a combinator with one user is still right.** Doc 024's own combinators
@@ -343,7 +375,7 @@ frames a realization reads either side) and `Fidelity`; a `Decimator<P>` is the
 
 ```rust
 pub struct Oversampled<U, D> { /* up: U, a shaper kind and drive, down: D */ }
-impl<U: TimeScale, D: TimeScale> System for Oversampled<U, D> { /* latency 0; pdc_delay the sum of the stages' */ }
+impl<U: TimeScale, D: TimeScale> System for Oversampled<U, D> { /* latency the sum of the stages'; onset 0 */ }
 impl<D: TimeScale> SteadyState for Oversampled<PolyphaseFir, D> {
     /* steady_state(x) = f(x); peak_gain = l1(down) * sup |f(u)| over |u| <= overshoot_bound(up): the up stage
        can lift |x| <= 1 to overshoot_bound, and the down stage can lift it again by its l1 (>= 1 for a unit-DC low-pass) */
@@ -360,7 +392,7 @@ generalise it.
 `[fp, fs - fp]` is excluded, where a half-band is -6 dB at `fs/2` by
 construction), so `fp` is a field and the band is stated at the prototype's rate;
 the passband ripple over `[0, fp]` from the same `frequency_response`;
-`pdc_delay` (P1); and, on the FIR only, an inherent `overshoot_bound`: the least
+`latency` and `onset` (P1); and, on the FIR only, an inherent `overshoot_bound`: the least
 `B` with `|y| <= B` for every `|x| <= 1` through the up stage, which is the
 maximum over branches of the branch's `l1` (the sign pattern of the worst branch
 attains it, so it is exact). It is a property of the chosen finite FIR, not of
@@ -380,14 +412,14 @@ factor, and it is 026's, not this section's.
 | Ratio | output frames are `N` times input, exactly | phase off by one frame |
 | Stopband | a tone at the image band of the up stage (high-rate input) leaves the up stage under `error_floor`; a tone above `fp` at the down stage's input leaves under it | a prototype with half the taps |
 | Passband | a tone below `fp`: gain within the passband ripple | the gain `N` missing |
-| Latency and delay | the onset equals `latency`; the tone-burst delay equals `pdc_delay` within half a frame; for the FIR `(L-1)/2` is a multiple of `N` | a stage one frame short |
+| Latency and onset | the first non-zero output equals `onset()`; the tone-burst delay equals `latency()` within half a frame; for the FIR `(L-1)/2` is a whole multiple of `N`, refused at construction otherwise | a stage one frame short |
 | Overshoot (FIR) | the worst branch's sign pattern reaches `overshoot_bound` to 1e-9 and no input exceeds it | the sum over all branches |
 | Power complement (IIR) | `|H(w)|^2 + |H(pi-w)|^2 = 1` to 1e-9 at 64 frequencies | a coefficient perturbed |
 | Quality | across tiers `Fidelity` is non-increasing and `Effort` non-decreasing (`Graded`, doc 024 §4.7) | a tier that changes nothing |
 
 A quality change is a rebuild through the graph's crossfade (doc 024 §4.7), so a
-tier that changes `pdc_delay` (an IIR Draft against an FIR Standard) recompiles
-PDC then; the node says so in its docs. Doc 024 Q8 says an export may not yet
+tier that changes `latency` (an IIR Draft against an FIR Standard) is a new `Shape`
+and recompiles PDC then; the node says so in its docs. Doc 024 Q8 says an export may not yet
 render at a different `Quality` from the live graph; this document does not
 reopen it, so the oversampler's tier is the node's, live and export alike.
 
@@ -498,7 +530,7 @@ part must be `Lti`; an up-sample, `abs` and sliding maximum is not linear.
 | Inter-sample peak | a full-scale pair of alternating samples with the peak between them: sample peak `0.707`, true peak `1.0`; the limited true peak is `<= c` plus the stated `Dg` term | detect on the sample peak (today's limiter) |
 | Constant gain | when `g` is constant over the support the output peak equals `g` times the input's to `delta` | gain applied before the interpolator |
 | `Dg` | the measured gain variation over `2S+1` frames is at most the declared figure | an instant attack (`Dg` large) |
-| Delay | `pdc_delay` equals the lookahead plus the interpolator's stage delay, measured by the tone burst | omit the interpolator's |
+| Delay | `latency()` equals the lookahead plus the interpolator's stage delay, measured by the tone burst | omit the interpolator's |
 
 **Lives in** `tutti-dsp/src/dynamics/` (a true-peak detector and a mode of
 `LimiterKernel`, which exists since #443) and a `LimiterNode` mode in
@@ -546,14 +578,15 @@ keeps the model out of `Lti`, not a mutant).
 
 **Linear-phase EQ.** A symmetric FIR by frequency sampling, run by the existing
 `Convolver`. The model is an `Lti` whose group delay is constant; its `latency` is
-the onset (near 0: the pre-ringing taps are non-zero) and its `pdc_delay` is the
-centre tap, `(L-1)/2` (P1). No trait: one family (a symmetric FIR) has this
+the centre tap, `(L-1)/2` (P1; the declared alignment delay), while its `onset()` is
+near 0 (the pre-ringing taps are non-zero) and the pre-ringing falls before frame 0 of
+the aligned output. No trait: one family (a symmetric FIR) has this
 answer. Cases: the magnitude equals the design's on the design grid to 1e-6
 (exact for an odd-length unwindowed inverse DFT of the sampled response) and
 between grid points within the stated interpolation bound; the phase is linear to
 the frequency-sampling error; `l1_norm` equals the sum of absolute taps; the
-tone-burst delay equals `pdc_delay`. Mutant: an even-length or asymmetric FIR
-fails the phase case.
+tone-burst delay equals `latency()`; an even `L` is refused by the constructor; the
+tail is the remaining `(L-1)/2` taps. Mutant: an asymmetric FIR fails the phase case.
 
 **Match EQ and spectral dynamics** are not families: match EQ is a
 `tutti-measure` spectrum, a smoothing and the FIR design; frequency-selective
@@ -603,7 +636,7 @@ mapping, `gl = sqrt((1 - p)/2)`, not `cos((p+1) pi/4)` (at `p = 0.5` it gives 0.
 against 0.383), so folding it onto the cos/sin mapping changes the polysynth's
 render. The consolidated module therefore offers both as named variants and the
 polysynth keeps its own, with no render change; unifying onto one mapping is an
-owner question (§9.2 Q8). The crossfade is the cos/sin law's two-input form. Cases: power 1 at five positions (mutant: `sin` and `cos`
+decision (§9 D17). The crossfade is the cos/sin law's two-input form. Cases: power 1 at five positions (mutant: `sin` and `cos`
 swapped, which preserves power and is caught only by the hard-left case below);
 hard left is `(1, 0)`; centre is `(1/sqrt 2, 1/sqrt 2)` (constant power) or
 `10^(-a/20)`; monotone in `p`.
@@ -788,7 +821,7 @@ pub struct StftPair { /* size, hop (size % hop == 0), periodic analysis and synt
 impl StftPair { pub fn cola_constant(&self) -> f64; pub fn pr_error(&self) -> f64; }
 /// A per-bin real gain constant in time (a spectral EQ, a settled spectral gate) is a plain
 /// slice parameter: no trait until a second implementer exists.
-pub struct StftEffect { /* pair, per-bin gains: Vec<f32> */ }   // latency 0 (onset), pdc_delay size - 1
+pub struct StftEffect { /* pair, per-bin gains: Vec<f32> */ }   // onset 0, latency size - 1
 ```
 
 **Delay.** The first output sample is ready only after a whole window
@@ -796,8 +829,8 @@ pub struct StftEffect { /* pair, per-bin gains: Vec<f32> */ }   // latency 0 (on
 to be analysable). A realization whose render is independent of the host block
 size must delay by the worst case: output sample `n` is last covered by the frame
 starting at `floor(n/H) H`, which needs input up to `n + size - 1` when `n` falls
-on a hop boundary, so `pdc_delay = size - 1` (P1), and the "blocks 1, 17, 64
-bit-identical" case is consistent with it. `latency`, the onset of `h`, is 0 for
+on a hop boundary, so `latency = size - 1` (P1), and the "blocks 1, 17, 64
+bit-identical" case is consistent with it. `onset()`, the first non-zero frame of `h`, is 0 for
 an identity-like map.
 
 **Class.** A per-bin multiplier is a circular convolution, so the system is `Lti`
@@ -816,7 +849,7 @@ same pair: it differs in hops between analysis and synthesis and shares
 the pair.
 
 **Cases:** `pr_error` under 1e-6 and `cola_constant` equal to 1.5 and 2 for the
-two shipped pairs; the identity map returns the input delayed by `pdc_delay` to
+two shipped pairs; the identity map returns the input delayed by `latency` to
 1e-5; a constant gain `g` is `g` times the input; a zero gain at the Nyquist bin
 removes a Nyquist tone; block independence (1, 17, 64 bit-identical); no
 allocation. Mutants: a hop that breaks COLA (`pr_error` rises); a missing
@@ -870,7 +903,7 @@ the listening test. It is a new realization after doc 026 stage 4 (the sampler
 renders through `Retime` and `Transposed`), in the sampler first. A **live**
 pitch shifter needs an input-fed push shape, which doc 026 §12 rejected for lack
 of a consumer ("a live input that would need real latency has no consumer"); a
-live shifter is that consumer, and building it amends 026 §12 (§9 Q1).
+live shifter is that consumer, and building it amends 026 §12 (§9 D9).
 **Effort** M for the realization, M to L for the live shifter and correction.
 
 ### 3.10 A nonlinearity inside a feedback loop
@@ -957,7 +990,7 @@ form); a solver stopping after zero iterations; the unit-delayed feedback, which
 moves `k*` and fails the critical-gain case.
 
 **Lives in** `tutti-dsp/src/filter/` and the `model` module; `Lure` goes to doc 024
-§4.2 at the PR of the first realization, subject to the owner's answer to Q2. Candidates: the nonlinear TPT
+§4.2 at the PR of the first realization, (§9 D10). Candidates: the nonlinear TPT
 ladder, a diode clipper, and Holters's stateful ADAA of a ladder (§3.1). Wave digital filters author the same circuits another
 way and are a non-goal (§7). **Hosted by** after §3.1, §3.2 (these circuits need
 oversampling) and doc 024 step 2. **Effort** M.
@@ -1014,7 +1047,7 @@ stays a plain type with its own tests. These do:
   a `lipschitz` bound from weight norms; a class would claim answers it does not
   have. Its contract is the layer equations on hand-built tiny networks with known
   outputs (an LSTM with zero weights and a set bias has a closed-form state),
-  never against another runtime. §9 Q3 asks whether to build it.
+  never against another runtime. §9 D11 asks whether to build it.
 - **Spring reverb and tape hysteresis:** memory inside the nonlinearity itself;
   not a `Lure` (the loop is linear plus a memoryless map) and not class 4. Out of
   scope until a consumer exists.
@@ -1032,8 +1065,7 @@ series with the HRTF pair. Encode, rotation and a plain decoder need neither
 move. The option taken here, algorithms into `tutti-dsp` and nodes staying in
 `tutti-spatial`, is a recommendation, weighed against two alternatives (leave the crate as it
 is, or dissolve it into `tutti-nodes` now, which moves every public path and has
-no benefit until `DesignNode` exists); it is **not yet an owner decision** and is
-§9 Q5.
+no benefit until `DesignNode` exists); it is taken as a decision on the recommendation (§9 D13), reversible by the owner.
 
 ### 4.1 What moves, what stays
 
@@ -1107,8 +1139,8 @@ feeds **tuple selection** (volume per side length, distances and their ordering)
 not the gains; for the symmetric presets equal distances tie, so a different
 `acos` rounding could reorder a tie. The PR therefore pins the selected tuples of
 the five presets against hand-derived expected sets (a spec figure) **before**
-comparing digests. If a digest still moves, it is a re-record, which needs the
-owner (§9 Q5); the plan is for it not to.
+comparing digests. If a digest still moves, it is a re-record, allowed only for a
+reason argued in the PR (§9 D14); the plan is for it not to.
 
 **Unit types.** Controls arrive per call as `Azimuth`, `Elevation`, `Spread` and
 `StereoWidth`; the solve converts degrees to radians once and works in `f64`
@@ -1128,7 +1160,7 @@ Dropping the dependency removes that variant and adds one that wraps
 VBAP library as LGPL-2.1-or-later (a second permissive notice in the Debian
 testing file could not be read; unverified at the source file). The crate itself
 is MIT. Copying the selection into a `MIT OR Apache-2.0` workspace carries that
-provenance with it, and that is the owner's call (§9 Q6). The tests do not depend
+provenance with it, and that was decided on the recommendation (§9 D15). The tests do not depend
 on it: every VBAP property is a figure from Pulkki's published method (sum of
 squares 1, non-negative gains, at most three non-zero, positive gains inside the
 active triangle, continuity across a triangle edge, a source at a speaker puts
@@ -1151,7 +1183,7 @@ re-derive it.
    the stale comment in `tutti-nodes`' `Cargo.toml` about the convolution.
 
 Effort: M in all, as #448 and #451 were. After step 3 the HRIR file format
-(§9 Q7) is the one spatial question before ambisonic binaural decode.
+(§9 D16) is the one spatial question before ambisonic binaural decode.
 
 ## 5. The ranked roadmap
 
@@ -1162,7 +1194,7 @@ needs; "Pinned to" names the cases (§3). Effort is S, M or L.
 
 | # | Item | Class | Kind | Lives in | Waits on | Pinned to | Effort |
 |---|---|---|---|---|---|---|---|
-| 1 | Oversampler (polyphase FIR and half-band IIR, 2/4/8x, declared `pdc_delay`) | 6 | new models and realizations | `tutti-dsp/resample/` | kernels: none; model: doc 024 step 5 | stopband, passband, ratio, delay, overshoot (§3.2) | M |
+| 1 | Oversampler (polyphase FIR and half-band IIR, 2/4/8x, declared `latency`) | 6 | new models and realizations | `tutti-dsp/resample/` | kernels: none; model: doc 024 step 5 | stopband, passband, ratio, delay, overshoot (§3.2) | M |
 | 2 | ADAA waveshapers, 1st then 2nd order | 4 over a class 3 map | new realization of the waveshaper's model | `tutti-dsp/waveshape.rs` | step 5 (kernels first) | derivative, identity, box average (§3.1) | S |
 | 3 | True-peak limiter; true-peak meter as a tap read by `tutti-measure` | 4 (`SteadyState`, inherent detector) | new realization of the limiter; a reader | `tutti-dsp/dynamics/`, `tutti-measure` | item 1 kernels; doc 024 step 4 | margin, inter-sample peak, `Dg` (§3.3) | S to M |
 | 4 | Utility pack and pan laws (including consolidating the three existing laws) | 1 order 0, 5 | nodes, small designs | `tutti-dsp`, `tutti-nodes` | step 7 for the pan models | matrices, sidebands, DC corner (§3.12, §3.5) | S |
@@ -1176,7 +1208,7 @@ needs; "Pinned to" names the cases (§3). Effort is S, M or L.
 | 12 | Wavetable (mipmapped) and FM/PM | 5 (`BandLimited`) | new designs | `tutti-dsp`, `tutti-polysynth` | step 7 | non-harmonic bins, Bessel amplitudes (§3.7) | M each |
 | 13 | Nonlinear virtual analog: nonlinear TPT ladder, diode clipper | `Lure` | new combinator, new realizations | `tutti-dsp/filter/` | items 1, 2; step 2 | small-signal response, critical gain, circle bound (§3.10) | M |
 | 14 | Ambisonics: bus, encode, rotate, decode; AllRAD; binaural | 1 order 0 | new models | `tutti-dsp/spatial/`, `tutti-spatial` | doc 023 G11; §4 for AllRAD and binaural | degree energy, isometry, commutation (§3.5) | L |
-| 15 | Neural amp and pedal inference | inherent | own core | a new crate, later | after items 1 to 13; §9 Q3 | layer equations (§3.13) | L |
+| 15 | Neural amp and pedal inference | inherent | own core | a new crate, later | after items 1 to 13; §9 D11 | layer equations (§3.13) | L |
 
 The ranking puts table stakes before differentiators, and folds two items in: the
 pan-law item joins the utility pack, because a law is an order-0 matrix with a
@@ -1199,7 +1231,7 @@ waits for the doc 024 step that adds it.
 
 | Stage | Content | Proves it | After |
 |---|---|---|---|
-| A1 | Spatial PR 1: the VBAP solve into `tutti-dsp::spatial`; `vbap` and `glam` dropped (§4) | unedited tests and digests; preset tuples pinned; Pulkki's properties | the owner's approval of §9 Q5 |
+| A1 | Spatial PR 1: the VBAP solve into `tutti-dsp::spatial`; `vbap` and `glam` dropped (§4) | unedited tests and digests; preset tuples pinned; Pulkki's properties | §9 D13 |
 | A2 | Spatial PRs 2 (HRTF) and 3 (cleanup) | `hrtf_render.rs`, contract suite; paths stable | A1 |
 | B1 | Utility pack; pan-law consolidation into `balance.rs` (the polysynth law and the crossfade onto it) (§3.12, §3.5) | matrices, sidebands, DC corner; power figures | none (the pan models adopt `GainMatrix` at step 7) |
 | B2 | Oversampling kernels and ADAA kernels as plain code and free functions (§3.1, §3.2) | derivative, identity, box average, stopband, overshoot, power complement | none |
@@ -1208,7 +1240,7 @@ waits for the doc 024 step that adds it.
 | C1 | EQ family: slopes and tilt on `SeriesN`; then `Controlled` and dynamic EQ; then the linear-phase FIR (§3.4) | Butterworth magnitude, settled response, phase | steps 2, 3, 4; the FIR's model with step 6 (a plain FIR-by-convolver earlier) |
 | C2 | De-esser and transient shaper; noise-shaped dither (§3.6) | `steady_state`, NTF psd, Gerzon-Craven | steps 4 and 7 |
 | D1 | Doc 026 stages 1 to 8 as written (the owner's listening gate first) | doc 026 §7 | the gate |
-| D2 | The formant realization (§3.9); the live shifter if §9 Q1 allows | formant shift within `fs/order` | doc 026 stage 4 |
+| D2 | The formant realization (§3.9); the live shifter if §9 D9 allows | formant shift within `fs/order` | doc 026 stage 4 |
 | D3 | The STFT framework and first kernels (§3.8) | window-sum constant, identity, block independence | doc 026 stage 2 |
 | E1 | Reverb: doc 022 steps 3 and 3b, then the two queries (§3.11) | doc 022 §8 | doc 022 steps 1c, 2; doc 024 step 3 |
 | E2 | Wavetable and FM (§3.7) | non-harmonic bins, Bessel amplitudes | doc 024 step 7 |
@@ -1216,7 +1248,7 @@ waits for the doc 024 step that adds it.
 | F1a | Ambisonics: the `Ambisonic` topology (doc 023 G11); encode, rotation and a plain decoder as `GainMatrix` models and nodes (§3.5) | degree energy, isometry, commutation | G11 only |
 | F1b | AllRAD (`Series<ShDecode, VbapColumns>`) | AllRAD cases | F1a, A1 |
 | F1c | Binaural ambisonic decode | series with the HRTF pair | F1a, A2 |
-| F2 | Neural core (§9 Q3), only if chosen | layer equations | after E3 |
+| F2 | Neural core (§9 D11), only if chosen | layer equations | after E3 |
 
 **Alignment with doc 024 §10.** B3 is step 5; B4 and C2's dynamics half are step
 4 (using B2's kernels, not step 5's adoption); C1 is steps 2 to 4, with the
@@ -1251,11 +1283,12 @@ patterns doc 024 §6 already has, plus one:
 
 | Pattern | Used by | Query it reads |
 |---|---|---|
-| Response against the impulse's FFT (`Lti`) | EQ, FIR, DC block, Hilbert, `Lure::small_signal`, the prototypes | `pdc_delay` (P1) |
+| Response against the impulse's FFT (`Lti`) | EQ, FIR, DC block, Hilbert, `Lure::small_signal`, the prototypes | `latency` against `onset` (P1) |
 | Static curve and harmonics (`Memoryless`) | the shapers, the `phi` of a `Lure` | `ShapeKind::f1`, `f2` (inherent) |
 | Steady state and time constants (`SteadyState`) | the ADAA model, the oversampled shaper, the limiter, `Controlled`'s detector | `Controlled::at` |
 | Generator spectrum (`Periodic`, `Noise`) | wavetable, PM, shaped dither | `BandLimited::top_harmonic`; `Filtered::psd` |
 | Time scale (`TimeScale`, `Fidelity`) | the prototypes, the shifter | inherent `overshoot_bound`, `formant_shift` |
+| Honest tail counted from `latency` (`contract::assert_honest_tail`) | linear-phase FIR (the remaining `(L-1)/2` taps), the limiter, the STFT effect | `System::tail` against `latency` (P1) |
 | **An identity between two models' answers** | rotation against encode, the STFT window-sum constant, mid/side round trip | `GainMatrix::is_isometry`, `column_power` |
 
 The last pattern is new to doc 024: both sides are closed-form queries of models,
@@ -1266,8 +1299,10 @@ comparing a render to a reference render.
 
 ### 9.1 Decisions
 
-Taken on the recommendation (the owner's standing delegation of lane decisions),
-2026-11-11; each is reversible by the owner.
+Taken on the recommendation, 2026-11-11 (the owner's standing delegation of lane
+decisions and approval to change sound for argued fixes); each is reversible by the
+owner. D9 to D17 were open questions and are recorded here with their
+recommendation as the decision.
 
 | # | Decision | Ground |
 |---|---|---|
@@ -1279,27 +1314,26 @@ Taken on the recommendation (the owner's standing delegation of lane decisions),
 | D6 | The STFT pair lives in `tutti-dsp/src/stft.rs`. Doc 026 stage 2 is not delayed: `LockedVocoder` is written on `StftGeometry` as 026 says, and the pair is factored out afterwards (D3 follows stage 2) with the vocoder moved onto it only if the two share code | §3.8; a separate crate would cut `tutti-dsp` along a boundary every processor crosses |
 | D7 | The formant estimator is private to the realization in `tutti-dsp`; no trait | §3.9; doc 024 Q24's cut |
 | D8 | `AngleSmoother` stays in `tutti-spatial`; the nodes own smoothing and the `Arc` of the HRTF set | §4.1; doc 024 row 46, consolidation 2 |
+| D9 | A live pitch shifter's input-fed push shape amends doc 026 §12 when the shifter is built, and not before; the sampler realization (stage D2 of §6) does not need it | §3.9; doc 026 §12 rejected the shape for lack of a consumer |
+| D10 | Doc 024 §4.2 amendments: P1 (`onset` added; `latency` stays the alignment delay, per the PDC owner's naming) and P2 (MIMO norms, `h2_norm`) land with their first consumers (P1 with the oversampler or linear-phase EQ, P2 with the dither work); P3 (`Lure<L, Phi>`) for the ladder and diode clipper only, at the PR of the first realization, and a general `Feedback<A, B>` stays declined | §2.1, §3.10; P3 lifts doc 024 Q17 for one loop shape whose stability argument is the circle criterion |
+| D11 | Neural inference: none now; hosted plugins cover NAM-class models. If built later: a pure-Rust core (LSTM, GRU, 1-D convolution, dense) in a new crate above `tutti-dsp`, weights as control-side data, no allocation on the audio thread, no `candle`/`ort` there, with §3.13's contract. Revisit after items 1 to 13 | §3.13, §7 |
+| D12 | Commit to ambisonics, first through third order in ACN/SN3D, with the `Ambisonic` topology (G11) first and AllRAD and binaural decode as the deliverable; not above order 3 until a consumer asks | §3.5 |
+| D13 | The spatial consolidation is taken as §4 describes: algorithms into `tutti-dsp`, nodes and the smoother stay, in the three PRs of §4.3 | §4 |
+| D14 | If a golden digest moves despite the bit-exact plan, a re-record is allowed only for a reason argued in the PR; the plan is to keep the digests bit-exact by pinning the preset tuples and glam's operation order first | §4.2 |
+| D15 | The VBAP speaker-tuple selection is re-derived from Pulkki's published method and held to the spec cases of §4.2, so that no code derived from Ardour's `vbap_speakers.cc` (listed LGPL-2.1-or-later in Debian's copyright file, unverified at the source file) enters the workspace; the mathematics of the solve is kept as it is | §4.2 |
+| D16 | The HRIR runtime format stays `hrir_sphere_builder`'s; SOFA (AES69-2022, netCDF/HDF5) is read by an offline conversion tool outside `xtask` (which takes no dependencies) and the engine; whether a maintained pure-Rust HDF5 reader exists is unverified, and a C library needs the owner first | §4, §11 |
+| D17 | The polysynth's pan law (`sqrt((1-p)/2)`) and the cos/sin mapping stay as two named variants of the consolidated law, so the polysynth render does not change; unifying them is an argued render change, not part of this work | §3.5 |
 
-### 9.2 Open questions (the owner's)
+### 9.2 Open questions
 
-| # | Question | Recommendation |
-|---|---|---|
-| Q1 | A live pitch shifter needs an input-fed push shape, which doc 026 §12 rejected for lack of a consumer. Amend 026 §12 when the shifter is built? | Yes, when it is built, and not before. The sampler realization (stage D2 of §6) does not need it |
-| Q2 | Doc 024 §4.2 amendments. P1 (`pdc_delay`) and P2 (MIMO norms, `h2_norm`) are additive; P3 (`Lure<L, Phi>`) lifts doc 024 Q17's "No feedback composition" for one loop shape, whose stability argument is the circle criterion (§3.10). Approve? | Approve P1 and P2 to land with their first consumers (P1 with the oversampler or linear-phase EQ, P2 with the dither work), not in step 1b, which does not grow. Approve P3 for the ladder and diode clipper only, at the PR of the first realization; a general `Feedback<A, B>` stays declined |
-| Q3 | Neural inference: an own minimal core, or none? | None now. Hosted plugins cover NAM-class models. If built: a pure-Rust core (LSTM, GRU, 1-D convolution, dense) in a new crate above `tutti-dsp`, weights as control-side data, no allocation on the audio thread, no `candle`/`ort` there, and §3.13's contract. Decide after items 1 to 13 |
-| Q4 | Commit to ambisonics? | Yes, to first through third order in ACN/SN3D, with the `Ambisonic` topology (G11) first and AllRAD and binaural decode as the deliverable. Not above order 3 until a consumer asks |
-| Q5 | Approve the spatial consolidation (§4: algorithms to `tutti-dsp`, nodes stay, the smoother stays)? | Approve, in the three PRs of §4.3 |
-| Q5b | If a golden digest moves despite the bit-exact plan, approve an argued re-record? | Only for a reason argued in the PR. The plan is to keep the digests bit-exact by pinning the preset tuples and glam's operation order first |
-| Q6 | The VBAP tuple selection's provenance and licence (§4.2) | Re-derive the selection from Pulkki's published method and hold it to the spec cases, so no code derived from Ardour's `vbap_speakers.cc` (LGPL per Debian's copyright file, unverified at the source) enters the workspace; keep the solve's mathematics as it is |
-| Q7 | An HRIR file format: SOFA (AES69-2022, a netCDF/HDF5 container) or the `hrir_sphere_builder` format? | Keep the sphere format as the runtime form. SOFA is read by an offline conversion tool outside `xtask` (which takes no dependencies) and the engine. Whether a maintained pure-Rust HDF5 reader exists is unverified, and the owner's rule asks before a C library |
-| Q8 | The polysynth's pan law (`sqrt((1-p)/2)`) and the shared cos/sin mapping differ, so unifying them changes the polysynth's render (§3.5). Unify? | No. Keep both as named variants of the consolidated law; the polysynth render is unchanged. Unify only if the owner wants one mapping, and then as an argued render change |
+None open.
 
 ## 10. What was type-checked
 
 The sketches of §3 were checked in a throwaway crate kept outside the repository,
 with `cargo check` and `cargo test` clean. Doc 024's class traits and the vocabulary
 types are **stand-ins** (the `model` module is not on `main`), `TimeScale` is
-restated as doc 026 §3.2 defines it (including `reach`), and the proposed `pdc_delay`
+restated as doc 026 §3.2 defines it (including `reach`), and the proposed `onset`
 and `h2_norm` are added to the stand-in traits. Every trait kept in this document
 has an implementer there (`GainMatrix`: a pan law, mid/side, `ShEncode`, a yaw
 rotation; `BandLimited`: a wavetable and a PM pair), and the combinators

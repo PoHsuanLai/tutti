@@ -798,7 +798,7 @@ mod tests {
     fn lookahead_frames_are_the_ceil_of_the_exact_product() {
         // 0.1 s at 48 kHz: `0.1 * 48000` is 4800 in f64, so ceil is 4800. The
         // f32 nearest 0.1 times 48000 is 4800.00007, which ceils to 4801.
-        // Mutation (run): `.narrowed()` (or `as f32`) on the lookahead in
+        // Mutation (run): a round trip through `f32` (`from_f32(x.to_f32())`) on the lookahead in
         // `with_lookahead` or `prepare` makes the ring 4801 and fails.
         let device = tutti_types::SampleRate(48_000.0);
         let mut lim = LimiterNode::new(-6.0, -0.3).with_lookahead(Seconds(0.1));

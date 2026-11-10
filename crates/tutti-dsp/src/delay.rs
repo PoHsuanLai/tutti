@@ -201,7 +201,7 @@ mod tests {
     /// `f64`, so its `_ceil` is 4800, where the `f32` nearest 0.1 times 48000
     /// is 4800.00007 and rounds up to 4801.
     ///
-    /// Mutation (run): `max_delay_secs.narrowed()` before `to_samples_ceil`
+    /// Mutation (run): rounding `max_delay_secs` through `f32` (`Seconds::from_f32(s.to_f32())`) before `to_samples_ceil`
     /// (the old `f32` detour) makes the line 4801 frames and fails.
     #[test]
     fn a_line_is_sized_from_the_exact_seconds() {

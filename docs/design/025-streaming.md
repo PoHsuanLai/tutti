@@ -10,7 +10,7 @@ This design gives each its own shape, removes the runtime rules a type can
 carry, and orders the work as PRs that each stay green.
 
 Status: design, stages 0 to 4 landed (§8); stage 5 is specified as seven cuts,
-cuts 1 to 5 built. The sections that describe a defect (§1) describe the tree
+cuts 1 to 6 built. The sections that describe a defect (§1) describe the tree
 before stage 3. The decisions of 2026-11-07 and the stage 5 decisions of
 2026-11-10, which fold in a read-only review of the disk streamer
 (`streamer/`), are the owner's, taken as recommended, and are recorded with
@@ -240,7 +240,7 @@ impl Stream {                  // every command is addressed to this stream (its
 }
 
 pub struct StreamReader { .. } // audio side, !Clone, moved into the voice
-impl StreamReader {            // (wraps PosReader and Reader<RingMap>)
+impl StreamReader {            // (wraps PosReader and Reader<RingControl>)
     pub fn block(&mut self, play: u64, reads: [Range<u64>; 2]) -> Block<'_>;
 }
 pub struct Block<'r> { .. }    // !Send; borrows the reader; slot claim and Loan<RingControl>
@@ -1024,7 +1024,7 @@ Each stage is one PR that stays green. Line figures are estimates.
      `Close`. `Voice::channel_index`, the pool's number for a stream, went with
      it: a disk voice knows its stream (`DiskVoice::stream`) and the pool
      forwards its loop there. `StreamAddr`'s `Option` and the pool's
-     `StreamTable` remain, as cut 6's.
+     `StreamTable` remained until cut 6, which deleted them (its note).
    - **An abandoned open is closed.** Dropping an `Opening` abandons the open:
      the streamer that answers into nobody removes the stream it opened.
    - **The reply cell is a bounded channel, not a hand-built cell.** A
@@ -1083,8 +1083,8 @@ Each stage is one PR that stays green. Line figures are estimates.
    - **The pool keeps forwarding by id, through `StreamerPort`.** The pool's
      voices hold a reader, not the handle, and a `Stream` cannot live in a voice
      (its drop sends on a bounded queue, which the audio thread must not do),
-     so until cut 6 replaces `forward_loop` and the pool's `StreamTable` the
-     pool sends the id-addressed loop command over a clone of the port a
+     so until cut 6 replaced `forward_loop` and the pool's `StreamTable` (it did:
+     its note) the pool sent the id-addressed loop command over a clone of the port a
      `Stream` sends by. `StreamerPort` is public and opaque (it names a
      streamer and has no method a host can call:
      `DiskStreamer::port()`, `VoicePool::with_streamer(port)`); the
@@ -1097,9 +1097,9 @@ Each stage is one PR that stays green. Line figures are estimates.
      `SessionRate`**, `Mutex<Vec<(file rate, Weak<RtState>)>>`, not a shared
      map: the ratio must be re-derived at once on `set_sample_rate` (a test pins
      it) and the streamer owns no channel back from the control side for it.
-     One lock orders a stream's registering against a rate change. Cut 6 makes
+     One lock orders a stream's registering against a rate change. Cut 6 made
      the ratio the streamer's own, derived on a rate event, and the registry
-     goes with `RtState`.
+     went with `RtState` (its note).
    - **The driver typestate is `DiskStreamer<D = Running>`** with `Built`
      (private), `Running` (a thread; `Drop` stops it) and `ByHand`
      (`test-support`; `step_once`, `step_until_settled`). The manual/hand-stepped
@@ -1111,10 +1111,10 @@ Each stage is one PR that stays green. Line figures are estimates.
      `new` is cut 5's.
    - **`dashmap`'s last user is `streamer/cache.rs`'s `LruCache`**, which the
      export fork reads from the control thread (`control.rs`'s `describe`).
-     Cut 6's `StreamFile` removes that read, and with it the dependency.
-   - **`Stream` has no `status()` or `file()`** (cut 5 and 6), and no
-     `set_direction` (cut 6: direction is still `RtState`'s, polled by
-     `apply_directions`).
+     Cut 6's `StreamFile` removed that read, and the dependency went: the cache is
+     now a map behind one lock (its note).
+   - **`Stream` has no `status()` or `file()`** (cut 5 and 6: both built; see
+     their notes), and no `set_direction` (cut 6: built, a command).
    - **`StreamReader::id` stays public**, beside `Stream::id`: the voice
      (`DiskVoice::stream`) and the pool address the stream by it.
 
@@ -1196,14 +1196,16 @@ Each stage is one PR that stays green. Line figures are estimates.
      as before; the status only says so.
    - **Underruns are read by the handle, not written by the streamer.**
      `Stream::status` drains the voice's `RtState::take_underruns` into a total
-     it keeps (an atomic in the `Stream`, which now holds the `Arc<RtState>`
-     until cut 6 replaces the health cell), so the status cell is written by
+     it keeps (an atomic in the `Stream`, which now holds the `Arc<RtState>`; cut 6
+     renamed that cell `Cells` and kept the count in it, the stream's health
+     cell), so the status cell is written by
      the streamer alone and is not touched by the audio side, and the
      streamer's thread does not poll a count. It is the first reader of
      `take_underruns`; the total is since the stream opened.
    - **The applied loop is not in `StreamStatus`.** §2.6 puts `loop_` there;
-     it is `RingControl`'s (cut 6). The downgrade of an unreadable lead-in is
-     still a log line and the loop in the fork's `StreamRecord`.
+     it is `RingControl`'s (cut 6, which also put it in the status as
+     `StreamStatus::loop_`). The downgrade of an unreadable lead-in is still a
+     log line and the loop in the fork's `StreamRecord`.
    - **`SpawnError` is `Error::Spawn`**, a variant of the crate's one
      `non_exhaustive` error, not a type of its own: `new` already returned
      the crate `Result`, and the session maps it.
@@ -1264,6 +1266,115 @@ Each stage is one PR that stays green. Line figures are estimates.
    fallible), `step.rs`'s `Handles` and `StreamerCycle::new` (the queue the
    decode lane answers on). No escaping panic is tested end to end: it is the
    same drop as a dropped streamer.
+
+   *As built, cut 6.* A stream's published control, scalar cells and file are
+   its own, and the pool steers a stream through its handle. `RingControl
+   { map, direction, loop_ }` is the one value the streamer publishes through
+   the ring's `ArcLend`; the voice lends it once per block (`LiveRead::render`
+   reads the map from it) and a fork reads it on the control side. The
+   streamer is its only publisher: `Ring::publish_map` (every mapping change)
+   keeps the applied loop, `Ring::publish_loop` keeps the map, and the cycle's
+   per-ring `reclaim_control` is the sweep. `Stream::set_direction` is a
+   command (`SetDirection`), so `apply_directions` and its per-cycle poll are
+   gone; `Stream::set_loop` records the loop on the handle only once its send
+   succeeded (`Stream::loop_`, `Stream::direction`). `StreamStatus` gained the
+   applied loop (`loop_`, so it is `PartialEq` and no longer `Eq`). `RtState`
+   is `Cells` (`streamer/cells.rs`): speed, stretch rate, gain, conversion
+   ratio and the underrun count, one per stream. `StreamFile { path, file_rate,
+   resident }` is public and immutable, held by `Stream::file` and
+   `StreamReader::file`. Deleted: `RtState`, `StreamRecord`, `StreamOrigin`,
+   `StreamFile`'s old shape, the pool's `forward_loop`, `roll_back`,
+   `StreamTable` and `forwarding`, `DiskStreamer::port`, `VoicePool::with_streamer`
+   (and `with_channels`' streamer argument), `StreamerPort` as a public type
+   (it is the crate's private way onto the queue), `DiskVoice::set_direction`,
+   `DiskVoiceControls::set_direction`, `apply_direction`, `fade_frames` as a
+   cell (`Ring::fade_frames` is a field, passed to `RegionBuffer::for_file`),
+   `buffer_margin`, `buffer_fill_level` (`refill_one` returns the level in
+   `Refilled::fill`, `Record::fill` keeps it), the `SessionRate` registry, and
+   the `dashmap` dependency.
+
+   Departures from the row and §2.7, each because the code made the sketch
+   impossible or worse at this cut:
+   - **Gain stays a cell, in `Cells`, not a field of `DiskVoice`.**
+     `DiskVoiceControls::set_gain` writes it from the control thread through
+     `&self` and the fork template shares it, as the crate's node convention
+     has it. Per-stream is what S3 asks: `build_stream` makes one `Cells` per
+     open and nothing else holds it. The test is
+     `two_voices_opened_in_sequence_on_one_file_share_no_cell`.
+   - **The direction is the map's.** `RingControl::direction` is set when the
+     control is built, from the newest arrangement's `reverse`, so it cannot
+     disagree with what the reader reads the slots by and is published once,
+     with the map that carries it. `RingControl` is `Clone` (not `Copy`: the map
+     holds a fade record), and `publish_loop` clones the map to republish it.
+   - **A fork reads `ArcLend::current`, not a registered reader.** It is a lock
+     and an owning `Arc` on the control side, with no slot registered, and the
+     fork gets the loop as applied and the direction in one read. A fork of a
+     stream that has ended is a fork whose stream's `StatusCell::closed` is set
+     (the record's drop sets it): `Ended` is a level (the file is in the ring)
+     and a fault is sticky, so neither says the record is gone. A fork of a fork
+     keeps the direction it was given (`Offline::direction`).
+   - **`StreamFile::resident` is the writer's wave**, not a cache lookup at
+     fork time. It is `Some` exactly for a file decoded whole, and the cache
+     eviction between decode and pin that cut 5 recorded no longer costs the
+     fork a second decode.
+   - **The ratio is the streamer's, and a rate change reaches it on its next
+     take.** `SessionRate` is a value cell; `DiskStreamer::set_sample_rate`
+     stores it and sends `SessionRate`, and `Streams::rerate` re-derives every
+     record's ratio. A stream built between the store and the command reads the
+     new rate and is re-derived to the same ratio, so no lock orders the two. The
+     change is not instant: a hand-stepped streamer needs a step.
+   - **The pool holds `Stream`s, in its handle.** A streaming voice is added with
+     `VoicePoolHandle::add_streaming(id, voice, stream, stretch)`, which takes
+     the stream (a failed add hands it back in `StreamingAddError`) and ends it
+     when the slot is removed or replaced. `send` for a loop or a direction
+     queues the command first and then sets it on the stream, so a full queue
+     refuses it with nothing changed and the one undo is the voice's record,
+     re-queued when the stream is gone. The table is `Mutex<HashMap<SlotId,
+     Arc<Mutex<Stream>>>>`: the table lock is held for a lookup or a queue plus a
+     table change, the stream's own lock across the streamer send, so a remove or
+     a memory add never waits on another voice's send. A streaming voice added
+     without a stream (an `AddVoice`, `insert_voice`) has its `On` loop and its
+     reverse dropped and counted (`loops_no_streamer`, new `directions_dropped`),
+     and the drain records a loop or a direction only when the command names the
+     slot's own stream (`Queued::forwarded` is a `StreamId`).
+   - **The cache is one map behind one lock.** Two threads touch it (the
+     streamer and the decode lane), so it is a `Mutex<HashMap>`, and an evicted
+     wave drops after the lock.
+   - **Left to cut 7:** the loop's negative-position clamp in `loop_command`
+     (a refusal needs an error on `set_loop`; the comment named cut 6, and now
+     says so); `Mapping::forward_loop` is `active_loop` (a name the deleted pool
+     function shared).
+
+   Tests, each with the mutation run and its result. S3
+   (`two_voices_opened_in_sequence_on_one_file_share_no_cell`): one shared
+   `Cells` in `build_stream`, and `handle_direction` turning the last record,
+   each fail it. Direction (`direction_is_published_once_and_read_from_the_lent_control`):
+   `RingControl::new` fixing `Forward`, `handle_direction` returning early and
+   the `SetDirection` arm removed each fail it. The fork reads the applied loop
+   (`a_fork_plays_the_loop_as_applied_not_as_asked`, a damaged FLAC whose
+   lead-in cannot be read): `capture_loop` publishing the ask, the fork taking
+   `Off`, and `publish_loop` publishing nothing each fail it.
+   `a_failed_send_leaves_the_stream_as_it_was` (`set_loop` and `set_direction`
+   recording before the send) fails. Reclaim:
+   `a_cycle_frees_a_control_the_reader_held_across_its_replacement` and
+   `..._a_loop_publish` fail with the `reclaim_control` loop removed. File and
+   status: `a_stream_names_its_file` (no resident wave, a wrong path) and
+   `a_fork_of_a_closed_stream_fails_even_after_a_decode_fault` (the fork deciding
+   from the phase, `close` not set in the drop) fail. Step table: a direction
+   reaches a live stream only (both mutations), a rate event re-derives each
+   stream's own ratio (live-only, first stream's rate); the rate test
+   (`a_rate_change_re_derives_every_streams_ratio`) fails with the command not
+   sent, not handled, or the rate not stored. The pool: every test in
+   `voice_pool.rs` for loops, directions, counts, waits, full queues, the undo
+   of a crowded-out add, the stream ending with its voice, and a remove not
+   waiting (the table lock held across a send) carries its mutation, each run
+   and failed. Ported without an assertion changed: `tier_alignment`,
+   `export_fork_sampler`, `block_length_invariance`, the loop, differential and
+   offline suites; the fork tests that turned a voice's direction turn the
+   stream's and step the streamer (`reverse` in `offline_disk_voice.rs`).
+   Removed with their subjects: the cache's `describe` test, `RtState`'s buffer
+   fill test, the pool's insert-time forward tests (`with_streamer` is gone), and
+   the handle-seeding test.
 
    Cuts 1 and 2 are independent of the rest and of each other and may land in
    either order, or after 3. Cut 3 is the smallest useful cut and is the first

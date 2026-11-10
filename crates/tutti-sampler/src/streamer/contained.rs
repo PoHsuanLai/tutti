@@ -241,12 +241,12 @@ fn underruns_are_read_from_the_status() {
     assert_eq!(stream.status().underruns, 0);
 
     for _ in 0..3 {
-        reader.rt_state.report_underrun();
+        reader.cells.report_underrun();
     }
     assert_eq!(stream.status().underruns, 3);
     assert_eq!(stream.status().underruns, 3, "a read does not consume it");
-    reader.rt_state.report_underrun();
-    reader.rt_state.report_underrun();
+    reader.cells.report_underrun();
+    reader.cells.report_underrun();
     assert_eq!(stream.status().underruns, 5, "the total counts on");
 }
 
@@ -607,4 +607,157 @@ fn a_panicking_decode_fails_that_open_only() {
     );
     let opening = sampler.open(&path, Placement::HEAD);
     settle(&mut sampler, opening).expect("the lane decodes the next file");
+}
+
+// ---------------------------------------------------------------------------
+// Cut 6: what a fork reads.
+// ---------------------------------------------------------------------------
+
+/// **A fork reads the loop as the streamer applied it, not as it was
+/// asked.** A loop whose crossfade lead-in lies past a damaged file's cut
+/// cannot be read, so the streamer plays it hard (no crossfade) and says so:
+/// the stream's status and the ring's published control carry the downgrade,
+/// the handle's own copy carries the request, and a fork of the voice plays the
+/// downgrade.
+///
+/// Mutation (run): `capture_loop` publishing the asked loop (`ask` where
+/// `recorded` is) → the status and the fork read the crossfade the stream
+/// never played → fails. Mutation (run): `fork_copy` taking the loop from
+/// `Stream::loop_`'s request (hard-wired `Off`/the ask instead of the applied
+/// control) → the fork reads the wrong loop → fails.
+#[test]
+fn a_fork_plays_the_loop_as_applied_not_as_asked() {
+    use crate::LoopSetting;
+    use tutti_types::SamplePosition;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = cut_flac(dir.path());
+    let meta = tutti_codec::Wave::read_metadata(&path).expect("the cut file has a header");
+    let total = meta.total_frames.expect("flac reports a length");
+    let mut sampler = DiskStreamer::manual(
+        SampleRate::new(f64::from(meta.sample_rate)),
+        Default::default(),
+    )
+    .expect("builds");
+    let opening = sampler.open(&path, Placement::HEAD);
+    let (mut stream, reader) = settle(&mut sampler, opening).expect("a cut file opens");
+    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
+
+    // The loop's fade leads in from just before its start, which is past the
+    // cut: unreadable.
+    let (start, end) = (total as f64 * 0.95, total as f64);
+    let asked = LoopSetting::On {
+        start: SamplePosition(start.floor()),
+        end: SamplePosition(end),
+        crossfade_frames: 100,
+    };
+    stream.set_loop(asked).expect("the streamer lives");
+    let _ = sampler.step_until_settled(1_000);
+
+    let LoopSetting::On {
+        crossfade_frames, ..
+    } = stream.status().loop_
+    else {
+        panic!("the loop was not applied: {:?}", stream.status().loop_)
+    };
+    assert_eq!(crossfade_frames, 0, "the unreadable lead-in plays hard");
+    assert_eq!(stream.loop_(), asked, "the handle's copy is the request");
+    assert_eq!(
+        voice.forked_loop(),
+        None,
+        "setup: a live voice is not a fork"
+    );
+    let fork = voice.fork_copy();
+    assert_eq!(
+        fork.forked_loop(),
+        Some(stream.status().loop_),
+        "the fork plays the loop as applied"
+    );
+    assert_ne!(fork.forked_loop(), Some(asked));
+}
+
+/// A stream names its file: its path, its own rate, and the wave when the
+/// streamer holds the file whole. A seekable file is read a piece at a time and
+/// has none; a file that cannot seek is decoded whole to be streamed, and the
+/// stream's file is that wave itself (not a second decode), the one its writer
+/// reads. The reader names the same file as the handle.
+///
+/// Mutation (run): `build_stream` passing `None` as the resident wave → the
+/// mp3's file has none → fails. Mutation (run): `build_stream` naming the
+/// file by a path other than the stream's → fails.
+#[test]
+fn a_stream_names_its_file() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let wav = constant_file(dir.path(), "a.wav", 8_000, 1, 0.25);
+    let mut sampler =
+        DiskStreamer::manual(SampleRate::new(8_000.0), Default::default()).expect("builds");
+    let opening = sampler.open(&wav, Placement::HEAD);
+    let (stream, reader) = settle(&mut sampler, opening).expect("opens");
+    assert_eq!(stream.file().path(), wav);
+    assert_eq!(stream.file().file_rate(), SampleRate::new(8_000.0));
+    assert!(stream.file().resident().is_none(), "read a piece at a time");
+    assert_eq!(reader.file().path(), stream.file().path());
+    assert_eq!(reader.file_rate(), SampleRate::new(8_000.0));
+
+    #[cfg(feature = "mp3")]
+    {
+        let mp3 = mp3(dir.path());
+        let wave = tutti_codec::Wave::read(&mp3).expect("the fixture decodes");
+        let mut sampler =
+            DiskStreamer::manual(wave.sample_rate(), Default::default()).expect("builds");
+        let opening = sampler.open(&mp3, Placement::HEAD);
+        let (stream, _reader) = settle(&mut sampler, opening).expect("opens");
+        assert_eq!(stream.file().path(), mp3);
+        assert_eq!(stream.file().file_rate(), wave.sample_rate());
+        let resident = stream
+            .file()
+            .resident()
+            .expect("decoded whole to be streamed");
+        assert_eq!(resident.len(), wave.len());
+        assert_eq!(resident.at(0, 100), wave.at(0, 100));
+    }
+}
+
+/// A fork of a stream whose record is gone says so even when the stream met
+/// a decode fault first: the fault word is sticky (the first fault stays), so
+/// "the stream is closed" is a fact of its own, which the voice reads.
+///
+/// Mutation (run): `fork_copy` deciding the stream is gone from
+/// `StatusCell::phase() == Faulted(StreamerGone)` instead of `closed()` → the
+/// decode-faulted stream still reads `Faulted(Decode)` after its close → the
+/// fork plays on → fails.
+#[test]
+fn a_fork_of_a_closed_stream_fails_even_after_a_decode_fault() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = cut_flac(dir.path());
+    let meta = tutti_codec::Wave::read_metadata(&path).expect("the cut file has a header");
+    let mut sampler = DiskStreamer::manual(
+        SampleRate::new(f64::from(meta.sample_rate)),
+        Default::default(),
+    )
+    .expect("builds");
+    let opening = sampler.open(&path, Placement::HEAD);
+    let (stream, reader) = settle(&mut sampler, opening).expect("a cut file opens");
+    assert_eq!(
+        stream.status().phase,
+        StreamPhase::Faulted(StreamFault::Decode),
+        "setup: the stream met its fault first"
+    );
+    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
+    assert!(
+        voice
+            .fork_copy()
+            .fault()
+            .is_some_and(|l| l.fault().is_none()),
+        "a fork of a stream still served is healthy"
+    );
+
+    drop(stream);
+    let _ = sampler.step_once();
+    let fork = voice.fork_copy();
+    let fault = fork.fault().and_then(|latch| latch.fault());
+    assert!(
+        fault.is_some_and(|e| e.to_string().contains("ended")),
+        "the closed stream's fork carries the failure"
+    );
 }

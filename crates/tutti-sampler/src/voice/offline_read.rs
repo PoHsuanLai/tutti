@@ -54,7 +54,7 @@ use super::interp::{
 };
 use super::loop_span::{LoopSpan, blend};
 use super::types::Direction;
-use crate::streamer::control::StreamFile;
+use crate::streamer::StreamFile;
 
 // A read is placed by the `Place` the voice built from its file's topology
 // (`DiskSource::with_reader`), the same one its live read uses: the caller
@@ -107,6 +107,9 @@ pub(crate) enum ReadFault {
 pub(crate) struct OfflineRead {
     /// What to play. Shared by clones: it is a description, never written.
     file: Arc<StreamFile>,
+    /// The loop the stream ran when the fork was taken, as the streamer
+    /// applied it (`RingControl`); `Off` for none.
+    loop_: LoopSetting,
     /// The open file. `None` until the first read and after a
     /// [`close`](Self::close); never cloned: a clone opens its own, so no two
     /// renders share a decoder's cursor.
@@ -125,6 +128,7 @@ impl Clone for OfflineRead {
     fn clone(&self) -> Self {
         Self {
             file: Arc::clone(&self.file),
+            loop_: self.loop_,
             open: None,
             len: self.len,
             fault: Arc::clone(&self.fault),
@@ -144,16 +148,23 @@ impl std::fmt::Debug for OfflineRead {
 }
 
 impl OfflineRead {
-    /// A reader for `file`, latching its failures into `fault`. Opens
-    /// nothing yet.
-    pub(crate) fn new(file: StreamFile, fault: Arc<FaultLatch>) -> Self {
+    /// A reader for `file` looped as `loop_`, latching its failures into
+    /// `fault`. Opens nothing yet.
+    pub(crate) fn new(file: Arc<StreamFile>, loop_: LoopSetting, fault: Arc<FaultLatch>) -> Self {
         Self {
-            file: Arc::new(file),
+            file,
+            loop_,
             open: None,
             len: None,
             fault,
             failed: false,
         }
+    }
+
+    /// The loop this reader plays (tests).
+    #[cfg(test)]
+    pub(crate) fn loop_setting(&self) -> LoopSetting {
+        self.loop_
     }
 
     /// This reader, closed, latching into `fault` from now on: what a fork
@@ -196,7 +207,7 @@ impl OfflineRead {
         // Past what this direction can play, known without opening the file.
         let played_out = match direction {
             Direction::Reverse => true,
-            Direction::Forward => self.file.loop_ == LoopSetting::Off,
+            Direction::Forward => self.loop_ == LoopSetting::Off,
         };
         if played_out
             && let Some(len) = self.len
@@ -206,7 +217,7 @@ impl OfflineRead {
             out.fill(0.0);
             return;
         }
-        let setting = self.file.loop_;
+        let setting = self.loop_;
         let Some(open) = self.open() else {
             out.fill(0.0);
             return;
@@ -265,7 +276,7 @@ impl OfflineRead {
                 Err(what) => {
                     self.failed = true;
                     self.fault.latch(OfflineReadError {
-                        path: self.file.path.clone(),
+                        path: self.file.path().to_path_buf(),
                         what,
                     });
                 }
@@ -290,7 +301,7 @@ impl Open {
     /// the file by its path — header only when it can seek, a whole decode
     /// when it cannot.
     fn from_file(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
-        if let Some(wave) = &file.resident {
+        if let Some(wave) = file.resident() {
             return Ok(Self::Resident(Arc::clone(wave)));
         }
         Self::open_path(file, fault)
@@ -298,12 +309,12 @@ impl Open {
 
     #[cfg(codec)]
     fn open_path(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
-        let decoder = tutti_codec::FileIn::open(&file.path)?;
+        let decoder = tutti_codec::FileIn::open(file.path())?;
         let channels = usize::from(decoder.layout().count());
         match decoder.total_frames().filter(|_| decoder.seekable()) {
             Some(len) => Ok(Self::Paged(Box::new(Pages {
                 decoder,
-                path: file.path.clone(),
+                path: file.path().to_path_buf(),
                 fault,
                 channels,
                 len: len.get(),
@@ -315,7 +326,7 @@ impl Open {
             // wave: no second, interleaved copy.
             None => {
                 drop(decoder);
-                Wave::read(&file.path)
+                Wave::read(file.path())
                     .map(|wave| Self::Resident(Arc::new(wave)))
                     .map_err(ReadFault::from)
             }
@@ -551,12 +562,8 @@ mod tests {
 
     fn reader(path: std::path::PathBuf) -> OfflineRead {
         OfflineRead::new(
-            StreamFile {
-                path,
-                file_rate: SampleRate(48_000.0),
-                loop_: LoopSetting::Off,
-                resident: None,
-            },
+            Arc::new(StreamFile::new(path, SampleRate(48_000.0), None)),
+            LoopSetting::Off,
             Arc::default(),
         )
     }
@@ -607,15 +614,15 @@ mod tests {
         use tutti_dsp::cubic_hermite;
         let dir = tempfile::tempdir().expect("a temp dir");
         let mut read = OfflineRead::new(
-            StreamFile {
-                path: ramp_file(dir.path()),
-                file_rate: SampleRate(48_000.0),
-                loop_: LoopSetting::On {
-                    start: SamplePosition(10.0),
-                    end: SamplePosition(20.0),
-                    crossfade_frames: 0,
-                },
-                resident: None,
+            Arc::new(StreamFile::new(
+                ramp_file(dir.path()),
+                SampleRate(48_000.0),
+                None,
+            )),
+            LoopSetting::On {
+                start: SamplePosition(10.0),
+                end: SamplePosition(20.0),
+                crossfade_frames: 0,
             },
             Arc::default(),
         );
@@ -688,12 +695,8 @@ mod tests {
 
         let fault = Arc::<FaultLatch>::default();
         let mut read = OfflineRead::new(
-            StreamFile {
-                path,
-                file_rate: SampleRate(44_100.0),
-                loop_: LoopSetting::Off,
-                resident: None,
-            },
+            Arc::new(StreamFile::new(path, SampleRate(44_100.0), None)),
+            LoopSetting::Off,
             Arc::clone(&fault),
         );
         let mut out = [0.0f32; 2];
@@ -730,12 +733,8 @@ mod tests {
             for direction in [Direction::Forward, Direction::Reverse] {
                 for pos in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
                     let mut read = OfflineRead::new(
-                        StreamFile {
-                            path: path.clone(),
-                            file_rate: SampleRate(48_000.0),
-                            loop_,
-                            resident: None,
-                        },
+                        Arc::new(StreamFile::new(path.clone(), SampleRate(48_000.0), None)),
+                        loop_,
                         Arc::default(),
                     );
                     let mut out = [1.0f32; 2];

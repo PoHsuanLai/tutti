@@ -54,7 +54,7 @@ mod wrap_fade;
 pub use build::{memory_voice, voice_width};
 /// The control-plane protocol and the two handles that send it — one per owner
 /// ([`VoicePool`] and [`VoiceNode`]). Documented on [`command`].
-pub use command::{VoiceCommand, VoiceNodeHandle, VoicePoolHandle};
+pub use command::{StreamingAddError, VoiceCommand, VoiceNodeHandle, VoicePoolHandle};
 /// Disk-streaming playback: the reader, its source and its configuration.
 ///
 /// See [`disk_voice`] for the full docs on each; they are re-exported flat so a

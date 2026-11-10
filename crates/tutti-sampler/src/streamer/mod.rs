@@ -9,11 +9,12 @@
 //! a pure step; the control side of a stream is [`Stream`], whose drop ends it.
 
 mod cache;
+mod cells;
 mod command;
 mod config;
 #[cfg(test)]
 mod contained;
-pub(crate) mod control;
+mod control;
 mod decode;
 mod handlers;
 mod io;
@@ -23,21 +24,20 @@ mod metrics;
 mod open;
 mod prefetch;
 mod record;
-mod rt_state;
 mod status;
 mod step;
 mod stream;
 mod thread;
 
+pub(crate) use cells::Cells;
 pub use command::StreamId;
 pub(crate) use command::StreamerCommand;
 pub(crate) use config::BufferConfig;
 pub(crate) use handlers::SessionRate;
 #[cfg(test)]
 pub(crate) use loops::GUARD_FRAMES;
-pub(crate) use loops::{Arrangement, RingMap};
+pub(crate) use loops::{Arrangement, RingControl, RingMap};
 pub(crate) use prefetch::SharedReader;
-pub(crate) use rt_state::RtState;
 #[cfg(any(test, feature = "test-support"))]
 pub use thread::ByHand;
 pub use thread::Running;
@@ -50,10 +50,12 @@ pub(crate) type StreamerSender = crossbeam_channel::Sender<StreamerCommand>;
 
 // The streamer's public face: the handle a host holds to drive disk streaming,
 // and the one failure every stream-control command can report.
-pub use control::StreamerGone;
+pub use control::{StreamFile, StreamerGone};
 pub use open::{Open, OpenError, Opening, Placement, RefusedPlacement, StreamReader};
+pub(crate) use status::StatusCell;
 pub use status::{StreamFault, StreamPhase, StreamStatus};
-pub use stream::{Stream, StreamerPort};
+pub use stream::Stream;
+pub(crate) use stream::StreamerPort;
 
 // The hand-driven cycle's verdict. Public only alongside the driver that
 // produces it — the threaded streamer consumes its own outcomes.
@@ -342,15 +344,7 @@ impl<D> DiskStreamer<D> {
             width,
             reply,
         });
-        Opening::new(id, answer, self.port())
-    }
-
-    /// The way onto this streamer's command queue, for a
-    /// [`VoicePool`](crate::VoicePool) that forwards its streaming voices'
-    /// loops here ([`VoicePool::with_streamer`](crate::VoicePool::with_streamer)).
-    #[must_use]
-    pub fn port(&self) -> StreamerPort {
-        StreamerPort::new(self.streamer_tx.clone())
+        Opening::new(id, answer, StreamerPort::new(self.streamer_tx.clone()))
     }
 
     /// READ port: a cloneable [`Status`] snapshot carrying the session rate.
@@ -364,17 +358,27 @@ impl<D> DiskStreamer<D> {
     ///
     /// Every open stream keeps its file and its position (in file frames, which
     /// the rate does not touch) and has its conversion ratio re-derived against
-    /// the new rate, so it plays on at the right pitch and speed from the next
-    /// block; a stream opened later derives its ratio against the new rate too,
-    /// and every [`Status`] — clones taken earlier included — reports it.
-    /// `&self`: the rate is one shared cell and the ratios are atomics, so a
-    /// host holding the streamer behind a shared reference can call it.
+    /// the new rate, so it plays on at the right pitch and speed; a stream
+    /// opened later derives its ratio against the new rate too, and every
+    /// [`Status`] — clones taken earlier included — reports it at once. The
+    /// ratios are the streamer's own to write, so the re-derivation happens on
+    /// its thread when it takes the command this sends: at its next cycle (a
+    /// hand-stepped streamer, at its next step). `&self`: the rate is one
+    /// shared cell and the command a send, so a host holding the streamer
+    /// behind a shared reference can call it.
+    ///
+    /// Waits while the streamer's bounded queue is full, as every stream
+    /// command does; a streamer that is gone has no ratio to re-derive.
     ///
     /// Control thread only. Nothing changes for a disk voice already in the
     /// graph beyond its ratio: its placement gate converts beats to file frames
     /// at the file's own rate, which is not the session's.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
         self.shared.session_rate.set(sample_rate.into());
+        // The rate is stored before the command is sent, so whichever the
+        // streamer reads first (a stream it builds, or this) sees it. A gone
+        // streamer has nothing to re-derive.
+        let _ = self.streamer_tx.send(StreamerCommand::SessionRate);
     }
 
     /// The streamer's wave cache (tests).
@@ -472,8 +476,10 @@ mod tests {
     /// - a 44.1 kHz file streamed after it gets 44.1/48, not unity.
     ///
     /// Mutations (run):
-    /// - `SessionRate::set` not re-deriving the open streams → the first
-    ///   ratio stays 48/44.1 → fails;
+    /// - the `SessionRate` command not re-deriving the open streams (the
+    ///   `Streams::rerate` call removed) → the first ratio stays 48/44.1 →
+    ///   fails;
+    /// - `DiskStreamer::set_sample_rate` not sending the command → the same;
     /// - `SessionRate::set` not storing the rate → the early `Status` reports
     ///   44.1 kHz → fails;
     /// - `open_stream_region` deriving against the build's 44.1 kHz (what the
@@ -499,7 +505,7 @@ mod tests {
         };
 
         let (_first_stream, first) = stream(&mut sampler, &at_48);
-        let first_ratio = Arc::clone(&first.rt_state);
+        let first_ratio = Arc::clone(&first.cells);
         assert_eq!(
             first_ratio.src_ratio(),
             SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0))
@@ -511,18 +517,28 @@ mod tests {
 
         sampler.set_sample_rate(SampleRate::new(48_000.0));
         assert_eq!(
+            early.sample_rate(),
+            SampleRate(48_000.0),
+            "the rate is stored at once"
+        );
+        assert_eq!(
+            first_ratio.src_ratio(),
+            SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0)),
+            "the ratio is the streamer's to write: it moves when the streamer takes the command"
+        );
+        let _ = sampler.step_once();
+        assert_eq!(
             first_ratio.src_ratio(),
             SrcRatio::UNITY,
             "the open stream is re-rated"
         );
-        assert_eq!(early.sample_rate(), SampleRate(48_000.0));
 
         let voice = crate::DiskVoice::from_reader(first, Beat(0.0), None);
         assert_eq!(voice.file_sample_rate(), SampleRate(48_000.0));
 
         let (_second_stream, second) = stream(&mut sampler, &at_44);
         assert_eq!(
-            second.rt_state.src_ratio(),
+            second.cells.src_ratio(),
             SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(48_000.0))
         );
     }

@@ -479,7 +479,7 @@ impl PlaybackSlot {
             }
             (VoiceSource::Disk(reader), Some(unit)) if stretching => {
                 // The disk tier has no cursor to scale: the stretch rate is
-                // published into the `RtState` the reader's step reads, where
+                // published into the `Cells` the reader's step reads, where
                 // it composes with varispeed and the conversion. Published per
                 // block rather than on the parameter-change path because the
                 // rate is the *filter's*, and a voice returned to unity must

@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::streamer::StreamerPort;
+use crate::streamer::{Stream, StreamId};
 use crate::stretch;
 
 use super::memory_source::{LoopSetting, VoiceWindow};
-use super::pool::{DrainCounters, LoopRoute, PoolDrops, Retired, StreamAddr, forward_loop};
+use super::pool::{DrainCounters, LoopRoute, PoolDrops, Retired, without_stream};
 use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
@@ -87,8 +87,11 @@ pub enum VoiceCommand {
     /// built entirely on the ECS/streamer side before the send.
     ///
     /// One add command for both tiers. The tier rides inside `source` and
-    /// the stream inside the disk voice, so a host does not fork
-    /// on in-memory versus streaming to spawn a voice.
+    /// the stream's reader inside the disk voice, so a host does not fork
+    /// on in-memory versus streaming to spawn a voice. A streaming voice added
+    /// this way has no [`Stream`] to set its loop or direction on, so both are
+    /// dropped and counted ([`PoolDrops`]): add it with
+    /// [`VoicePoolHandle::add_streaming`], which takes the stream, to steer it.
     AddVoice {
         /// Identifies the slot for every later command aimed at this voice. An
         /// add at an id already resident replaces that slot.
@@ -163,8 +166,9 @@ pub enum VoiceCommand {
         gain: Amplitude,
     },
     /// Set the voice's varispeed. Both tiers carry speed in-unit: in-memory
-    /// stores it on the `MemorySource`, streaming forwards it to the shared
-    /// state the streamer ring also reads, so one command reaches both.
+    /// stores it on the `MemorySource`, streaming writes the stream's cells,
+    /// which the streamer also reads to size its fills, so one command reaches
+    /// both.
     UpdateSpeed {
         /// The slot to set.
         id: SlotId,
@@ -175,15 +179,14 @@ pub enum VoiceCommand {
     /// Set or clear the voice's loop region.
     ///
     /// Routed by tier: in-memory primes the range on the `MemorySource` in
-    /// the drain; streaming is forwarded to the streamer, which owns the
-    /// loop-start fadein head the reader cannot reach, by
-    /// [`VoicePoolHandle::send`] on the calling thread, before the command is
-    /// queued. A streaming voice whose forward fails (no streamer channel, a
-    /// streamer that exited) is not queued: the loss is counted
-    /// ([`PoolDrops`]), and the intent is not recorded — a `Playback`
-    /// claiming a loop the stream never set would be replayed as real on the
-    /// next insert. The drain records a streaming slot's loop only when the
-    /// handle forwarded it to that slot's own stream
+    /// the drain; streaming is the stream's, which owns the loop-start
+    /// fadein head the reader cannot reach: [`VoicePoolHandle::send`] queues
+    /// the command and sets the loop on the voice's [`Stream`] on the calling
+    /// thread. A streaming voice the handle holds no stream for (added without
+    /// one) is not set: the loss is counted ([`PoolDrops`]) and the intent is
+    /// not recorded — a `Playback` claiming a loop the stream never set would
+    /// be replayed as real on the next insert. The drain records a streaming
+    /// slot's loop only when the handle named that slot's own stream
     /// ([`PoolDrops::loops_not_forwarded`] otherwise).
     UpdateLoop {
         /// The slot to set.
@@ -195,8 +198,9 @@ pub enum VoiceCommand {
     ///
     /// One command reaches both tiers, which is why it is not folded into
     /// [`UpdateSpeed`](Self::UpdateSpeed): in-memory drives a reversed index in
-    /// the hot read, streaming forwards to the shared state the streamer ring
-    /// reads.
+    /// the hot read, streaming is the stream's direction
+    /// ([`Stream::set_direction`]), which [`VoicePoolHandle::send`] sets on
+    /// the voice's stream beside queueing the record.
     UpdateReverse {
         /// The slot to set.
         id: SlotId,
@@ -310,15 +314,16 @@ impl std::fmt::Debug for VoiceCommand {
 
 /// A [`VoiceCommand`] as the handle queues it for the drain.
 ///
-/// `forwarded` is the streamer stream the handle sent a loop command's
-/// setting to before queueing it (`None` for every other command, and for a
-/// loop it did not forward). The drain records a streaming slot's loop only
-/// when this names that slot's stream, so whether a loop reached the streamer
-/// is decided from the command itself, never from what the handle believed
-/// the slot held. Only [`VoicePoolHandle::send`] builds one.
+/// `forwarded` is the stream the handle sets a loop or direction command's
+/// setting on (it holds that stream, and sets the setting on it beside
+/// queueing the command): `None` for every other command, and for a loop or
+/// direction it holds no stream for. The drain records a streaming slot's loop
+/// or direction only when this names that slot's stream, so whether a setting
+/// reached a stream is decided from the command itself, never from what the
+/// handle believed the slot held. Only [`VoicePoolHandle::send`] builds one.
 pub(crate) struct Queued {
     pub(crate) cmd: VoiceCommand,
-    pub(crate) forwarded: Option<StreamAddr>,
+    pub(crate) forwarded: Option<StreamId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -513,21 +518,22 @@ impl VoiceNodeHandle {
 /// Held by the host (an ECS system, typically) and cloned freely — the sender is
 /// multi-producer. It mirrors the reader's width, and shares the rate the
 /// reader was last prepared at, so [`send`](Self::send) can build a stretch
-/// filter that matches, on this thread. It holds the pool's streamer (the
-/// pool gives it up in [`with_handle`](super::pool::VoicePool::with_handle)),
-/// and knows which streamer stream each streaming voice it added reads, so
-/// `send` forwards a streaming loop to the streamer itself: the pool's drain
-/// has nothing to send to the streamer with.
+/// filter that matches, on this thread. It holds the [`Stream`] of every
+/// streaming voice added through [`add_streaming`](Self::add_streaming), so
+/// `send` sets a streaming voice's loop and direction on its stream itself: the
+/// pool's drain has no stream to set them on, and a stream cannot live in a
+/// voice (its drop sends on a bounded queue, which the audio thread must not
+/// do). A stream ends when its voice is removed.
 ///
 /// # Ids the drain refused
 ///
 /// An add the drain refuses at the voice cap
-/// ([`PoolDrops::voices_refused`]) still leaves its id in the handle's stream
-/// table, until a [`Remove`](VoiceCommand::Remove) or another add at that id:
+/// ([`PoolDrops::voices_refused`]) still leaves its stream in the handle's table,
+/// until a [`Remove`](VoiceCommand::Remove) or another add at that id:
 /// a host that gives every note a fresh id should `Remove` the ids it sees
 /// refused (they come back through
 /// [`collect_retired`](Self::collect_retired)), or the table grows by one
-/// entry per refused streaming add. A loop sent for such an id reaches a
+/// stream per refused streaming add. A loop sent for such an id reaches a
 /// stream nothing plays, and the drain finds no slot to record it on.
 #[derive(Clone, Debug)]
 pub struct VoicePoolHandle {
@@ -550,44 +556,44 @@ pub struct VoicePoolHandle {
     /// What the pool's drain dropped or refused; read by
     /// [`drops`](Self::drops).
     pub(crate) counters: Arc<DrainCounters>,
-    /// The pool's streamer, which a streaming voice's loop is forwarded to.
-    /// `None` for a pool built without one.
-    pub(crate) streamer: Option<StreamerPort>,
-    /// The streamer stream of every streaming voice this handle (or a clone)
-    /// added, by slot, with the loop last forwarded to it; a slot holding a
-    /// memory voice has no entry. Written by `send` as it queues an add, a
-    /// remove or a streaming loop, and seeded from the voices a pool held
-    /// when its handle was made.
+    /// The stream of every streaming voice this handle (or a clone) added with
+    /// [`add_streaming`](Self::add_streaming), by slot; a slot holding a memory
+    /// voice, or a streaming one added without a stream, has no entry.
     ///
-    /// It decides only where `send` forwards a loop, never whether the
-    /// drain records one: a voice inserted with
-    /// [`insert_voice`](super::pool::VoicePool::insert_voice) after the
-    /// handle was made is not in it, and the drain then refuses that slot's
-    /// loops ([`PoolDrops::loops_not_forwarded`]).
-    pub(crate) streams: StreamTable,
-    /// Held across every streamer forward, so forwards (and the commands
-    /// queued behind them) reach the streamer and the pool in one order. The
-    /// stream table's lock is never held across a forward, so a command
-    /// that sends nothing to the streamer never waits on one.
-    pub(crate) forwarding: Arc<Mutex<()>>,
+    /// It decides only where `send` sets a loop or a direction, never whether
+    /// the drain records one: a voice inserted with
+    /// [`insert_voice`](super::pool::VoicePool::insert_voice) after the handle
+    /// was made is not in it, and the drain then refuses that slot's loops
+    /// ([`PoolDrops::loops_not_forwarded`]).
+    pub(crate) streams: SlotStreams,
 }
 
-/// [`VoicePoolHandle::streams`]. Locked only for a lookup or for queueing
-/// (so the table and the queue's order agree), never across a streamer
-/// forward. Control threads only.
-pub(crate) type StreamTable = Arc<Mutex<HashMap<SlotId, StreamEntry>>>;
+/// [`VoicePoolHandle::streams`]: the table is locked for a lookup or for
+/// queueing a command beside changing it, never across a send to the streamer;
+/// each stream has a lock of its own, held across the send, so two commands for
+/// one slot reach its stream and the pool in one order and a command for another
+/// slot (a remove, an in-memory add) never waits on the streamer. Control
+/// threads only.
+pub(crate) type SlotStreams = Arc<Mutex<HashMap<SlotId, Arc<Mutex<Stream>>>>>;
 
-/// A streaming slot's entry in a [`StreamTable`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct StreamEntry {
-    /// Its streamer stream; `None` for a streaming voice with no streamer
-    /// channel.
-    pub(crate) addr: Option<StreamAddr>,
-    /// The loop last forwarded to `addr` with a command the pool then
-    /// queued: what a forward whose command cannot be queued rolls the
-    /// streamer back to.
-    pub(crate) loop_: LoopSetting,
+/// A streaming add that did not reach the pool: why, and the stream, which the
+/// handle takes only once the add is queued. Its loop and direction are as they
+/// were before the call.
+#[derive(Debug)]
+pub struct StreamingAddError {
+    /// Why the add was refused, with the command (the voice) it carried.
+    pub error: SendError,
+    /// The stream that was to steer the voice, handed back.
+    pub stream: Stream,
 }
+
+impl std::fmt::Display for StreamingAddError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, f)
+    }
+}
+
+impl std::error::Error for StreamingAddError {}
 
 impl VoicePoolHandle {
     /// Frees everything the audio thread has retired since the last call — removed
@@ -614,9 +620,7 @@ impl VoicePoolHandle {
     }
 
     /// Queues a command, doing any allocation it implies here, on the calling
-    /// (control) thread. A streaming loop whose forward cannot be made, or
-    /// whose slot was removed while it was forwarded, returns `Ok` without
-    /// being queued (see below).
+    /// (control) thread.
     ///
     /// This is the one chokepoint every command passes through, which makes it the
     /// right place to keep the audio thread clean: `drain_commands` runs from
@@ -627,195 +631,243 @@ impl VoicePoolHandle {
     /// `Ok` means only that the command was *queued* — the pool applies it on the
     /// audio thread, and that outcome is not available synchronously.
     ///
-    /// # A streaming voice's loop
+    /// # A streaming voice's loop and direction
     ///
-    /// An [`UpdateLoop`](VoiceCommand::UpdateLoop) aimed at a streaming voice, and
-    /// an [`AddVoice`](VoiceCommand::AddVoice) of one, forward the loop to
-    /// the pool's streamer (a loop command naming the voice's stream) here,
-    /// and queue the command only once the streamer has taken it, so the
-    /// voice's `Playback` never records a loop the streamer did not receive.
-    /// A forward that cannot be made (a pool without a streamer, a voice
-    /// without a streamer channel, a streamer that exited) is counted
-    /// ([`PoolDrops::loops_no_streamer`], [`PoolDrops::loops_streamer_gone`]);
-    /// the loop command is then not queued (it returns `Ok`), and an add is
-    /// queued with its loop `Off`.
-    ///
-    /// A loop sent while another thread removes its slot, or replaces it
-    /// with an in-memory voice, is ordered before that command: it reaches
-    /// the old stream and is not queued.
+    /// An [`UpdateLoop`](VoiceCommand::UpdateLoop) or
+    /// [`UpdateReverse`](VoiceCommand::UpdateReverse) aimed at a streaming voice
+    /// the handle holds the stream of ([`add_streaming`](Self::add_streaming))
+    /// is queued, and then set on that stream ([`Stream::set_loop`],
+    /// [`Stream::set_direction`]) here. The queue is tried first, so a full
+    /// queue refuses the command before the stream hears of it and `Err` leaves
+    /// both as they were. A stream that cannot take it (its streamer has exited:
+    /// permanent) is counted ([`PoolDrops::loops_streamer_gone`],
+    /// [`PoolDrops::directions_dropped`]) and the voice's record is put back to
+    /// what the stream has: the previous setting is queued again, as far as the
+    /// queue has room for it. The command returns `Ok`. A voice added without a
+    /// stream has none to set: its `On` loop and its reverse are dropped when
+    /// it is added, and counted.
     ///
     /// # Blocking
     ///
-    /// That forward waits while the streamer's queue is full, as
-    /// a [`Stream`](crate::Stream)'s commands do: as long as a stalled streamer stalls, and for
-    /// good on a streamer nobody drains (a controller never started, or a
-    /// `DiskStreamer::manual` stepped on this thread). While it waits,
-    /// another thread's streaming add or streaming loop through a clone of
-    /// this handle waits with it, so the streamer and the pool see forwards in
-    /// one order. Every other command (a remove, an in-memory add or loop,
-    /// every update but a loop) never waits on the streamer.
+    /// Setting a loop or a direction waits while the streamer's queue is full,
+    /// as a [`Stream`]'s commands do: as long as a stalled streamer stalls, and
+    /// for good on a streamer nobody drains (a controller never started, or a
+    /// `DiskStreamer::manual` stepped on this thread). While it waits, another
+    /// thread's command for *that voice* through a clone of this handle waits
+    /// with it, so its stream and the pool see them in one order. Every other
+    /// command (a remove, an in-memory add or loop, an update for another
+    /// voice) never waits on another thread's stream.
     ///
     /// # Errors
     ///
     /// `Err` means the command is gone: a dropped `AddVoice` is a note that
-    /// never sounds, a dropped `Remove` a voice that never stops. For a
-    /// streaming loop or add, the streamer is left on the loop it had: a full
-    /// queue is refused before the forward, and a forward whose command then
-    /// cannot be queued (another thread filled the queue meanwhile) is
-    /// undone by forwarding the stream's previous loop again (`Off` for a
-    /// stream the handle had not added). On that rare path the streamer
-    /// applies the refused loop and then the rollback, which can be briefly
-    /// audible when a loop change re-arms the fade-in; and a rolled-back
-    /// add on a stream the handle had not added sends `Off`, clearing a loop
-    /// a host set on that channel with its own loop. That is a
+    /// never sounds, a dropped `Remove` a voice that never stops. That is a
     /// failure a caller can act on rather than log, which is why it is `#[must_use]` — see
     /// [`SendError::is_disconnected`] for which of the two is worth retrying.
     #[must_use = "a dropped command is a note that never sounds or a voice that never stops"]
     pub fn send(&self, cmd: VoiceCommand) -> Result<(), SendError> {
         match self.prepare(cmd) {
-            VoiceCommand::AddVoice { id, voice, stretch } => match voice.loop_route() {
-                LoopRoute::Memory => {
+            VoiceCommand::AddVoice {
+                id,
+                mut voice,
+                stretch,
+            } => {
+                // No stream comes with this add: a streaming voice's loop and
+                // direction have nowhere to go.
+                if matches!(voice.loop_route(), LoopRoute::Stream(_)) {
+                    without_stream(&mut voice, &self.counters);
+                }
+                let displaced = {
                     let mut streams = self.streams();
                     self.queue(VoiceCommand::AddVoice { id, voice, stretch }, None)?;
-                    streams.remove(&id);
-                    Ok(())
-                }
-                LoopRoute::Stream(addr) => self.send_stream_add(id, voice, stretch, addr),
-            },
+                    streams.remove(&id)
+                };
+                // The slot this replaced held a stream of its own, if any: it
+                // ends (a send), outside the table's lock.
+                drop(displaced);
+                Ok(())
+            }
             VoiceCommand::Remove(id) => {
-                let mut streams = self.streams();
-                self.queue(VoiceCommand::Remove(id), None)?;
-                streams.remove(&id);
+                let displaced = {
+                    let mut streams = self.streams();
+                    self.queue(VoiceCommand::Remove(id), None)?;
+                    streams.remove(&id)
+                };
+                drop(displaced);
                 Ok(())
             }
             VoiceCommand::UpdateLoop { id, setting } => self.send_loop(id, setting),
+            VoiceCommand::UpdateReverse { id, direction } => self.send_reverse(id, direction),
             cmd => self.queue(cmd, None),
         }
     }
 
-    /// Queues the add of a streaming voice on `addr`, once the streamer has
-    /// taken its loop (queued `Off` when the forward cannot be made).
-    fn send_stream_add(
+    /// Adds a streaming voice, and takes the [`Stream`] that feeds it: from now
+    /// on the voice's loop and direction are set on that stream by
+    /// [`send`](Self::send), and the stream ends when the voice is removed or
+    /// replaced (a [`Remove`](VoiceCommand::Remove), or an add at the same id).
+    ///
+    /// The voice's own `play.loop_` and `play.direction` are set on the stream
+    /// first, if they differ from what it has, and the add is queued only
+    /// after: a loop the stream could not take is dropped from the add and
+    /// counted ([`PoolDrops::loops_streamer_gone`]), as a direction is
+    /// ([`PoolDrops::directions_dropped`]), so the voice's `Playback` never
+    /// claims one its stream was not told. A stretch filter the voice needs is
+    /// built here, as [`send`](Self::send) builds it. A voice whose source is not
+    /// a streaming one is added as `send` adds it, and the stream is ended.
+    ///
+    /// Control thread. Setting the loop waits while the streamer's queue is
+    /// full ([`send`](Self::send), "Blocking").
+    ///
+    /// # Errors
+    ///
+    /// A boxed [`StreamingAddError`] when the add did not reach the pool: the
+    /// [`SendError`] (full or disconnected) with the voice, and the stream,
+    /// handed back with its loop and direction as they were before the call.
+    pub fn add_streaming(
+        &self,
+        id: SlotId,
+        voice: Voice,
+        stream: Stream,
+        stretch: Option<stretch::Unit>,
+    ) -> Result<(), Box<StreamingAddError>> {
+        let VoiceCommand::AddVoice { id, voice, stretch } = self.prepare(VoiceCommand::AddVoice {
+            id,
+            voice: Box::new(voice),
+            stretch,
+        }) else {
+            unreachable!("`prepare` returns the command kind it was given")
+        };
+        if !matches!(voice.loop_route(), LoopRoute::Stream(_)) {
+            return self
+                .send(VoiceCommand::AddVoice { id, voice, stretch })
+                .map_err(|error| Box::new(StreamingAddError { error, stream }));
+        }
+        self.add_stream_voice(id, voice, stream, stretch)
+    }
+
+    /// The streaming half of [`add_streaming`](Self::add_streaming): `voice`
+    /// is a streaming voice, its stretch filter already built.
+    fn add_stream_voice(
         &self,
         id: SlotId,
         mut voice: Box<Voice>,
+        mut stream: Stream,
         stretch: Option<stretch::Unit>,
-        addr: Option<StreamAddr>,
-    ) -> Result<(), SendError> {
-        let _forwarding = self.forwarding();
-        let previous = {
-            let streams = self.streams();
-            if self.tx.is_full() {
-                return Err(SendError::Full(VoiceCommand::AddVoice {
-                    id,
-                    voice,
-                    stretch,
-                }));
-            }
-            streams
-                .values()
-                .find(|e| e.addr.is_some() && e.addr == addr)
-                .map_or(LoopSetting::Off, |e| e.loop_)
-        };
-        let forwarded = forward_loop(
-            self.streamer.as_ref(),
-            addr,
-            voice.play.loop_,
-            &self.counters,
-        );
-        if !forwarded {
-            voice.play.loop_ = LoopSetting::Off;
+    ) -> Result<(), Box<StreamingAddError>> {
+        if self.tx.is_full() {
+            let error = SendError::Full(VoiceCommand::AddVoice { id, voice, stretch });
+            return Err(Box::new(StreamingAddError { error, stream }));
         }
-        let loop_ = voice.play.loop_;
-        let mut streams = self.streams();
-        match self.queue(VoiceCommand::AddVoice { id, voice, stretch }, None) {
-            Ok(()) => {
-                streams.insert(id, StreamEntry { addr, loop_ });
+        // What the stream had, to put back if the add cannot be queued.
+        let (was_loop, was_direction) = (stream.loop_(), stream.direction());
+        if voice.play.loop_ != was_loop && stream.set_loop(voice.play.loop_).is_err() {
+            DrainCounters::bump(&self.counters.loops_streamer_gone);
+            voice.play.loop_ = was_loop;
+        }
+        if voice.play.direction != was_direction
+            && stream.set_direction(voice.play.direction).is_err()
+        {
+            DrainCounters::bump(&self.counters.directions_dropped);
+            voice.play.direction = was_direction;
+        }
+        // The slot holds what the stream was given (or kept): a loop it could
+        // not take is not claimed.
+        let queued = {
+            let mut streams = self.streams();
+            let cmd = VoiceCommand::AddVoice { id, voice, stretch };
+            match self.queue(cmd, None) {
+                Ok(()) => Ok(streams.insert(id, Arc::new(Mutex::new(stream)))),
+                Err(error) => Err((error, stream)),
+            }
+        };
+        match queued {
+            // The slot this replaced held a stream of its own, if any: it ends
+            // (a send), outside the table's lock.
+            Ok(displaced) => {
+                drop(displaced);
                 Ok(())
             }
-            Err(e) => {
-                drop(streams);
-                if forwarded {
-                    self.roll_back(addr, previous);
+            // Another thread filled the queue meanwhile: the stream goes back
+            // as it came (best effort: a streamer that is gone has nothing
+            // left to undo).
+            Err((error, mut stream)) => {
+                if stream.loop_() != was_loop {
+                    let _ = stream.set_loop(was_loop);
                 }
-                Err(e)
+                if stream.direction() != was_direction {
+                    let _ = stream.set_direction(was_direction);
+                }
+                Err(Box::new(StreamingAddError { error, stream }))
             }
         }
     }
 
-    /// Queues `cmd`, the loop command setting `setting` on slot `id`, once
-    /// the streamer has taken the loop when `id` is a streaming voice; drops it
-    /// (counted) when the forward cannot be made.
+    /// Queues the loop command setting `setting` on slot `id`, and sets it on
+    /// the slot's stream when the handle holds one. The queue first: a full one
+    /// refuses the command with nothing changed; a stream that cannot take it
+    /// (its streamer is gone) is counted and the voice's record is put back.
     fn send_loop(&self, id: SlotId, setting: LoopSetting) -> Result<(), SendError> {
         let cmd = VoiceCommand::UpdateLoop { id, setting };
-        // An in-memory (or unknown) slot: queued without touching the
-        // forwarding lock, so it never waits on the streamer.
-        {
-            let streams = self.streams();
-            if !streams.contains_key(&id) {
-                return self.queue(cmd, None);
-            }
-        }
-        let _forwarding = self.forwarding();
-        let entry = {
-            let streams = self.streams();
-            // Looked up again: the slot may have changed while this waited.
-            let Some(&entry) = streams.get(&id) else {
-                return self.queue(cmd, None);
-            };
-            if self.tx.is_full() {
-                return Err(SendError::Full(cmd));
-            }
-            entry
+        let Some(entry) = self.stream_of(id) else {
+            // An in-memory (or unknown) slot: nothing to set it on.
+            return self.queue(cmd, None);
         };
-        if !forward_loop(self.streamer.as_ref(), entry.addr, setting, &self.counters) {
-            return Ok(());
+        let mut stream = entry.lock().unwrap_or_else(PoisonError::into_inner);
+        let previous = stream.loop_();
+        self.queue(cmd, Some(stream.id()))?;
+        if stream.set_loop(setting).is_err() {
+            DrainCounters::bump(&self.counters.loops_streamer_gone);
+            // The one undo: the voice's record goes back to the loop the stream
+            // has. A full queue leaves it; a streamer that is gone plays
+            // nothing either way.
+            let _ = self.queue(
+                VoiceCommand::UpdateLoop {
+                    id,
+                    setting: previous,
+                },
+                Some(stream.id()),
+            );
         }
-        let mut streams = self.streams();
-        // Only a `Remove` or an in-memory add can have changed the entry
-        // meanwhile: a streaming add takes the forwarding lock this holds.
-        match streams.get_mut(&id) {
-            Some(now) => match self.queue(cmd, entry.addr) {
-                Ok(()) => {
-                    now.loop_ = setting;
-                    Ok(())
-                }
-                Err(e) => {
-                    drop(streams);
-                    self.roll_back(entry.addr, entry.loop_);
-                    Err(e)
-                }
-            },
-            // A `Remove`, or an in-memory add at this id, was queued while
-            // the streamer took the loop: this loop is ordered before it, and
-            // the slot it addressed is gone.
-            _ => Ok(()),
-        }
+        Ok(())
     }
 
-    /// Puts the streamer back on `previous` after a forward whose command
-    /// could not be queued. A streamer that has exited meanwhile has nothing
-    /// left to undo.
-    fn roll_back(&self, addr: Option<StreamAddr>, previous: LoopSetting) {
-        if let Some((streamer, addr)) = self.streamer.as_ref().zip(addr) {
-            let _ = streamer.send_loop(addr.stream, previous);
+    /// [`send_loop`](Self::send_loop) for the direction.
+    fn send_reverse(&self, id: SlotId, direction: Direction) -> Result<(), SendError> {
+        let cmd = VoiceCommand::UpdateReverse { id, direction };
+        let Some(entry) = self.stream_of(id) else {
+            // An in-memory slot reverses its own index; a streaming slot
+            // without a stream here is counted by the drain.
+            return self.queue(cmd, None);
+        };
+        let mut stream = entry.lock().unwrap_or_else(PoisonError::into_inner);
+        let previous = stream.direction();
+        self.queue(cmd, Some(stream.id()))?;
+        if stream.set_direction(direction).is_err() {
+            DrainCounters::bump(&self.counters.directions_dropped);
+            let _ = self.queue(
+                VoiceCommand::UpdateReverse {
+                    id,
+                    direction: previous,
+                },
+                Some(stream.id()),
+            );
         }
+        Ok(())
+    }
+
+    /// The stream the handle holds for slot `id`, if any.
+    pub(crate) fn stream_of(&self, id: SlotId) -> Option<Arc<Mutex<Stream>>> {
+        self.streams().get(&id).cloned()
     }
 
     /// The stream table, locked.
-    fn streams(&self) -> std::sync::MutexGuard<'_, HashMap<SlotId, StreamEntry>> {
+    fn streams(&self) -> std::sync::MutexGuard<'_, HashMap<SlotId, Arc<Mutex<Stream>>>> {
         self.streams.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The forwarding lock, held.
-    fn forwarding(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.forwarding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Queues `cmd` for the drain, with the stream its loop was forwarded to.
-    fn queue(&self, cmd: VoiceCommand, forwarded: Option<StreamAddr>) -> Result<(), SendError> {
+    /// Queues `cmd` for the drain, with the stream its loop was set on.
+    fn queue(&self, cmd: VoiceCommand, forwarded: Option<StreamId>) -> Result<(), SendError> {
         self.tx
             .try_send(Queued { cmd, forwarded })
             .map_err(|e| match e {

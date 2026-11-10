@@ -142,8 +142,8 @@ host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
   messages over a caller's buffer) and `SysexMessage` (a checked `F0 .. F7`). Before:
   `tutti-plugin-types`' `SysExAssembler` (about 790 lines) and `tutti-midi-runtime`'s
   `Sysex7PacketReassembler`, with `Sysex8PacketReassembler` and the FlexText
-  reassembly beside them. The plugin crates' `SysExAssembler`, `unframed` and
-  `is_framed` still stand until the Plugins session moves them.
+  reassembly beside them. The plugin crates' `SysExAssembler`, `is_framed` and the
+  public `unframed` are gone (doc 027 M6); `sysex_packets` stays as the plugin side's lenient bridge.
 - *Note identity, one place since stage 3c.* `tutti_ump::NoteId`, `channel * 128 + note`,
   which is also the plugin formats' wire value. Before: `tutti-midi-types`' `NoteId`
   (`channel << 8 | note`) beside `tutti-plugin-types`' `note_id_for` (still standing,
@@ -859,7 +859,7 @@ Audio, in `crates/tutti-graph`:
   `a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly`).
 - The session opens it (`Graph::open_tap`, `tutti-session/src/graph.rs:1739`) and
   reaps readers dropped first in `Phase::Reclaim` (`reap_taps`, `graph.rs:1792`).
-- The inlet is `InletNode` over a standalone `TapReader` (`inlet.rs`).
+- The inlet is `InletNode` over a `TapReader::pair` ring (`inlet.rs`).
   `Graph::open_inlet` and `add_inlet` (`graph.rs:722`, `739`) refuse a producer of
   another rate (`InletError::RateMismatch`). The node is unforkable.
 
@@ -1700,8 +1700,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      note, not `u8`s. Oracle: the round trip for every channel and note, and
      a host-minted id never decoding a plugin's own id space (the existing
      `None` rule).
-   - **Remaining for the Plugins session.** Their `SysExAssembler`, `unframed`,
-     `is_framed` and `note_id_for` callers move to `SysexAssembler`, `SysexMessage` and
+   - **Remaining for the Plugins session.** (The `SysExAssembler`, `unframed` and
+     `is_framed` callers have moved to `SysexAssembler` and `SysexMessage`: doc 027 M6.) Their `note_id_for` callers move to
      `NoteId` (the `i32` wire value is `NoteId::raw` at the FFI edge); the AU host's
      `Midi1Parser` move (the `Midi1Decoder` and `Midi1Splitter` deletion); and the five
      `framed` test helpers go to `tutti_ump::frame`.

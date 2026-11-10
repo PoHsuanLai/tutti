@@ -69,6 +69,19 @@ fn streamer_with(path: &Path, config: tutti_sampler::DiskStreamerConfig) -> (Rig
     (Rig { streamer, stream }, reader)
 }
 
+/// Turns the rig's stream to reverse and lets the streamer apply it: the
+/// direction is the stream's (`Stream::set_direction`), published with its
+/// ring's control, where a fork reads it.
+fn reverse(rig: &mut Rig) {
+    rig.stream
+        .set_direction(tutti_sampler::Direction::Reverse)
+        .expect("the streamer is alive");
+    assert!(
+        rig.streamer.step_until_settled(1_000) < 1_000,
+        "the reversed ring settles"
+    );
+}
+
 /// The live voice of the stream `reader` reads, placed at `beat`.
 fn live_voice(reader: StreamReader, beat: f64) -> DiskVoice {
     DiskVoice::from_reader(reader, Beat(beat), None)
@@ -432,9 +445,9 @@ fn a_reversed_fork_is_silent_past_the_first_frame() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
-    let (_streamer, reader) = streamer_on(&path);
-    let mut voice = live_voice(reader, 0.0);
-    voice.set_direction(tutti_sampler::Direction::Reverse);
+    let (mut rig, reader) = streamer_on(&path);
+    let voice = live_voice(reader, 0.0);
+    reverse(&mut rig);
     let clock = clock_at(SR);
     let mut copy = fork(&voice, SR);
     let [l, _] = render(&mut *copy.node, &clock, LEN + 2_000);
@@ -566,16 +579,18 @@ fn a_fork_told_no_rate_fails_rather_than_guess() {
 /// `a_reversed_fork_is_silent_past_the_first_frame`'s.)
 ///
 /// Mutation (run): the reverse mirror removed from `OfflineRead::read_into`
-/// → plays forwards → fails.
+/// → plays forwards → fails. Mutation (run): `DiskVoice::fork_copy` handing
+/// the copy `Direction::Forward` instead of the ring's published direction →
+/// plays forwards → fails.
 #[test]
 fn a_reversed_fork_plays_the_file_backwards() {
     const LEN: usize = 100_000;
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
-    let (_streamer, reader) = streamer_on(&path);
-    let mut voice = live_voice(reader, 0.0);
-    voice.set_direction(tutti_sampler::Direction::Reverse);
+    let (mut rig, reader) = streamer_on(&path);
+    let voice = live_voice(reader, 0.0);
+    reverse(&mut rig);
     let clock = clock_at(SR);
     let mut copy = fork(&voice, SR);
     let [l, _] = render(&mut *copy.node, &clock, LEN);
@@ -823,7 +838,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         let mut voice = live_voice(reader, 1.0);
         voice.set_speed(tutti_types::PlaybackRate::new(case.speed));
         if case.reverse {
-            voice.set_direction(tutti_sampler::Direction::Reverse);
+            reverse(&mut rig);
         }
         let mut wave = tutti_codec::Wave::new(2, SampleRate::new(case.file_rate as f64));
         for i in 0..LEN {

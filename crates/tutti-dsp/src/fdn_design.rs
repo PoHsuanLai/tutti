@@ -492,20 +492,6 @@ mod tests {
         fn fill(&self, rate: SampleRate, trips: f32) -> usize {
             (trips * self.bounds(&self.ceiling(rate)).line) as usize
         }
-
-        /// Not the diffusion-0 probe: the kernel writes a diagonal matrix as
-        /// the reflection along line 0 (`I - 2 e0 e0^T`, a unit vector like every
-        /// other so a ramp keeps it orthogonal), which flips the sign of line 0's
-        /// loop. That changes no decay (so the decay cases run it) and moves line 0's
-        /// comb teeth half a spacing, which the model (an identity) does not say.
-        fn response_probes(&self) -> Option<Vec<FdnControls>> {
-            Some(
-                self.static_probes()
-                    .into_iter()
-                    .filter(|c| c.diffusion.get() > 0.0)
-                    .collect(),
-            )
-        }
     }
 
     impl ReverbCase for FdnDesign {
@@ -973,6 +959,71 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// At diffusion 0 the lines do not couple: each is its own comb with a
+    /// positive loop gain, so the response's sum (its value at DC) is
+    /// `wet * sum_j c_j b_j / (1 - g_j)`, with `g_j` the line's DC loop gain. A
+    /// sign on one line's loop would make its term `c b / (1 + g)`, a small
+    /// fraction of the figure at a long decay.
+    ///
+    /// Mutation (run): in `FdnKernel::retarget` aim `mix` at 1 for every matrix,
+    /// so a diagonal network is the reflection `I - 2 e0 e0^T` along line 0 (the
+    /// kernel's old realization of it, a sign on line 0's loop): this test and the
+    /// `response` case at diffusion 0 both fail.
+    #[test]
+    fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
+        use crate::{Effect, Realization, Setup};
+        let rate = SampleRate(48_000.0);
+        let d = freezable();
+        let mut k = d.realization();
+        k.prepare(
+            &d.bounds(&Ceiling::at(rate).unwrap()),
+            &Setup {
+                rate,
+                max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+                input: ChannelLayout::MONO,
+                output: ChannelLayout::STEREO,
+            },
+        );
+        let net = d.design(
+            &with(|c| {
+                c.decay = [Seconds(2.0); 3];
+                c.diffusion = Mix(0.0);
+                c.modulation = Depth(0.0);
+                c.pre_delay = Seconds(0.0);
+                c.width = StereoWidth(1.0);
+            }),
+            rate,
+        );
+        let Some(Stage::Fdn(f)) = net.stages.iter().find(|s| matches!(s, Stage::Fdn(_))) else {
+            panic!("an FDN stage");
+        };
+        assert_eq!(f.matrix, Matrix::Diagonal);
+        let expected: f64 = (0..f.lines.len())
+            .map(|j| {
+                let b = f64::from(f.input[j]);
+                let c = f64::from(f.output.rows[0][j]);
+                let g = f64::from(f.lines[j].absorption.gain(Band::Low).get());
+                b * c / (1.0 - g)
+            })
+            .sum::<f64>()
+            * f64::from(net.wet.to_amplitude().get());
+        k.retarget(&net);
+        let mut sum = 0.0f64;
+        for block in 0..(10 * 48_000 / 64) {
+            let mut x = [0.0f32; 64];
+            if block == 0 {
+                x[0] = 1.0;
+            }
+            let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+            k.process(&[&x], &mut [&mut l, &mut r]);
+            sum += l.iter().map(|&v| f64::from(v)).sum::<f64>();
+        }
+        assert!(
+            (sum - expected).abs() < 0.01 * expected.abs(),
+            "the response sums to {sum}, the identity's comb bank to {expected}"
+        );
     }
 
     /// A frozen tail keeps its energy through a diffusion ramp from 0 to 1: the

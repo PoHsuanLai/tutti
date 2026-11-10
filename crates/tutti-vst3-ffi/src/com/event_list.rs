@@ -10,7 +10,7 @@
 //!
 //! What goes in is the host's to decide. [`EventList::begin`] opens a block
 //! for staging ([`Staging`]); [`EventList::with_events`] reads what the plugin
-//! wrote. The input list reassembles multi-packet SysEx ([`SysExAssembler`])
+//! wrote. The input list reassembles multi-packet SysEx ([`SysexAssembler`])
 //! and a message may span blocks; one past [`SYSEX_MESSAGE_CAPACITY`] is
 //! dropped whole and counted ([`EventList::sysex_dropped`]).
 
@@ -28,11 +28,10 @@ use crate::types::{
 #[cfg(doc)]
 use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
 use tutti_plugin_types::{
-    HARMONY_CAPACITY, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, StableOrder, SysExAssembler, SysExRef,
-    SysExStep,
+    HARMONY_CAPACITY, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, StableOrder, sysex_assembler,
 };
 use tutti_rt::{AudioThreadCell, BorrowGuard};
-use tutti_ump::Ump;
+use tutti_ump::{SysexAssembler, SysexRef, SysexStep, Ump};
 
 /// The room for per-note expression values in one input block: one per MIDI
 /// event. The host enforces it at staging so a dense expression block cannot
@@ -66,7 +65,7 @@ struct Inner {
     /// Reassembles multi-packet SysEx and owns the bytes a [`Payload::SysEx`]
     /// of the input list points at. An open message carries into the next
     /// block.
-    sysex: SysExAssembler,
+    sysex: SysexAssembler<Box<[u8]>>,
     /// The bytes of SysEx messages the plugin `addEvent`ed to an output list
     /// (its pointer is valid only for the call), reserved there only.
     sysex_out: Vec<u8>,
@@ -74,7 +73,7 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(sysex: SysExAssembler, sysex_out_room: usize) -> Self {
+    fn new(sysex: SysexAssembler<Box<[u8]>>, sysex_out_room: usize) -> Self {
         Self {
             events: Vec::with_capacity(EVENT_CAPACITY),
             text_arena: TextArena::new(),
@@ -117,7 +116,7 @@ impl Inner {
         self.sysex_out.extend_from_slice(payload);
         self.push(Event {
             header,
-            payload: Payload::SysEx(SysExRef::new(start, size)),
+            payload: Payload::SysEx(SysexRef::new(start, size)),
         })
     }
 
@@ -188,19 +187,19 @@ impl Class for EventList {
 
 impl EventList {
     /// A plugin's input list: reserves the SysEx reassembly buffer
-    /// ([`SysExAssembler::reserved`], about 66 KiB) with the event storage.
+    /// ([`sysex_assembler`], about 66 KiB) with the event storage.
     /// Off the audio thread.
     pub fn input() -> ComWrapper<Self> {
-        Self::with_sysex(SysExAssembler::reserved(), 0)
+        Self::with_sysex(sysex_assembler(), 0)
     }
 
     /// A plugin's output list, which the plugin fills through `addEvent`: no
     /// reassembly buffer. Off the audio thread.
     pub fn output() -> ComWrapper<Self> {
-        Self::with_sysex(SysExAssembler::default(), SYSEX_OUT_ROOM)
+        Self::with_sysex(SysexAssembler::new(Box::default(), 0), SYSEX_OUT_ROOM)
     }
 
-    fn with_sysex(sysex: SysExAssembler, sysex_out_room: usize) -> ComWrapper<Self> {
+    fn with_sysex(sysex: SysexAssembler<Box<[u8]>>, sysex_out_room: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             inner: AudioThreadCell::new(Inner::new(sysex, sysex_out_room)),
             busy: AtomicU64::new(0),
@@ -325,7 +324,7 @@ impl EventList {
     /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END`, past the buffer's
     /// room in one block, cut by a lost tail
     /// ([`lose_sysex_tail`](Self::lose_sysex_tail)) or open at a
-    /// [`reset_sysex`](Self::reset_sysex). See [`SysExAssembler`].
+    /// [`reset_sysex`](Self::reset_sysex). See [`SysexAssembler`].
     pub fn sysex_dropped(&self) -> u64 {
         self.inner.borrow().sysex.dropped()
     }
@@ -400,8 +399,8 @@ impl Staging<'_> {
     }
 
     /// Feeds one MIDI event to the SysEx reassembler.
-    pub fn reassemble(&mut self, event: &Ump) -> SysExStep {
-        self.0.sysex.push(event)
+    pub fn reassemble(&mut self, event: &Ump) -> SysexStep {
+        self.0.sysex.push(*event)
     }
 
     /// Puts the block in frame order, stably, and closes it.

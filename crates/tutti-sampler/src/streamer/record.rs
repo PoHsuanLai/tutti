@@ -9,7 +9,8 @@
 //! the step that removes the record, so "link gone but region kept" cannot be
 //! written. The record also holds the stream's [`StatusCell`]: what the
 //! control side reads of it is written here, the level (`Opening`, `Live`,
-//! `Ended`) and a decode fault by the refill, and `StreamerGone` by the drop.
+//! `Ended`) and a decode fault by the refill, and `StreamerGone` and the close
+//! by the drop.
 //!
 //! Work on one record runs under [`Record::contained`]: a panic faults that
 //! stream and no other (doc 025 decision 20, B5).
@@ -23,14 +24,14 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use super::cache::StreamPin;
+use super::cells::Cells;
 use super::command::StreamId;
-use super::control::StreamRecord;
 use super::decode::panic_message;
 use super::io::refill::Refilled;
 use super::prefetch::RegionOut;
-use super::rt_state::RtState;
 use super::status::{Served, StatusCell, StreamFault};
-use crate::voice::LoopSetting;
+use crate::voice::Direction;
+use tutti_types::{SampleRate, SrcRatio};
 
 /// Where a stream is in its life. A closed stream has no record, so there is
 /// no `Closing`: the step that closes it removes the record.
@@ -52,20 +53,24 @@ pub(super) struct Record {
     phase: Phase,
     /// The ring's writer, the decoder and the resident wave.
     pub(super) out: RegionOut,
-    /// The cell the voice shares: the streamer reads speed, direction and
-    /// stretch from it to size and steer a fill.
-    pub(super) rt_state: Arc<RtState>,
+    /// The stream's scalar cells, shared with its voice: the streamer reads
+    /// speed and stretch from them to size a fill, and writes the conversion
+    /// ratio.
+    pub(super) cells: Arc<Cells>,
+    /// The file's own rate: what the conversion ratio is derived from.
+    file_rate: SampleRate,
     /// The file's length in frames, as the stream found it: what a loop's end
     /// is clamped to, as every tier clamps it (`LoopSpan::new`).
     pub(super) file_frames: u64,
-    /// What a fork of the stream's voice needs; ended when this goes.
-    shared: Arc<StreamRecord>,
     /// Keeps the streamed wave pinned in the cache for exactly the stream's
     /// life, so a fully-buffered (hence cold) stream is never evicted
     /// mid-read.
     _pin: StreamPin,
     /// What the control side reads of this stream ([`Stream::status`](crate::Stream::status)).
     status: Arc<StatusCell>,
+    /// How full the ring was at the last refill, as a fraction of its
+    /// capacity: what the pacing asks whether the stream is healthy by.
+    fill: f32,
     /// Its work panicked: faulted, and removed at the end of the cycle
     /// ([`Streams::reap`]).
     dead: bool,
@@ -74,20 +79,21 @@ pub(super) struct Record {
 impl Record {
     pub(super) fn new(
         out: RegionOut,
-        rt_state: Arc<RtState>,
+        cells: Arc<Cells>,
+        file_rate: SampleRate,
         file_frames: u64,
-        shared: Arc<StreamRecord>,
         pin: StreamPin,
         status: Arc<StatusCell>,
     ) -> Self {
         Self {
             phase: Phase::Opening,
             out,
-            rt_state,
+            cells,
+            file_rate,
             file_frames,
-            shared,
             _pin: pin,
             status,
+            fill: 0.0,
             dead: false,
         }
     }
@@ -116,7 +122,8 @@ impl Record {
     /// fault (it stays); the file's end in the ring is `Ended`; a primed ring
     /// is `Live`. A ring not yet primed leaves the status as it was, so a
     /// stream is `Opening` until its first primed refill and `Live` after it.
-    pub(super) fn settle(&self, refilled: &Refilled) {
+    pub(super) fn settle(&mut self, refilled: &Refilled) {
+        self.fill = refilled.fill;
         if !refilled.read_ok {
             self.status.fault(StreamFault::Decode);
         }
@@ -147,24 +154,30 @@ impl Record {
         self.phase == Phase::Live && !self.dead
     }
 
-    /// Records the loop the stream now runs, as applied, for a fork to read.
-    /// The one place a loop changes, so the streamer's loop and a fork's
-    /// cannot disagree.
-    pub(super) fn set_loop(&self, applied: LoopSetting) {
-        self.shared.set_loop(applied);
+    /// How full the ring was at the last refill (0 before the first).
+    pub(super) fn fill(&self) -> f32 {
+        self.fill
+    }
+
+    /// Derives the conversion ratio against `session`: the file's rate over the
+    /// session's. The streamer is the ratio's one writer, when the stream opens
+    /// and when the session rate moves.
+    pub(super) fn rerate(&self, session: SampleRate) {
+        self.cells
+            .set_src_ratio(SrcRatio::for_rates(self.file_rate, session));
     }
 }
 
-/// The stream is over the moment its record goes, so a voice still holding the
-/// fork's record, on a ring the streamer no longer feeds, forks to silence as
-/// it plays live, and a handle that outlives the streamer reads
+/// The stream is over the moment its record goes, so a voice on a ring the
+/// streamer no longer feeds forks to silence as it plays live (the status says
+/// it is closed), and a handle that outlives the streamer reads
 /// `Faulted(StreamerGone)` (a fault already there stays). This is also how a
 /// panic that escapes the per-stream containment tells every stream: it drops
 /// the whole table.
 impl Drop for Record {
     fn drop(&mut self) {
         self.status.fault(StreamFault::StreamerGone);
-        self.shared.end();
+        self.status.close();
     }
 }
 
@@ -186,6 +199,8 @@ pub(super) enum Cmd {
     Close(StreamId),
     /// Set (`Some`) or clear (`None`) the stream's loop.
     Loop(StreamId, Option<LoopAsk>),
+    /// Turn the stream to a direction.
+    Direction(StreamId, Direction),
 }
 
 /// What the driver does after a step. Nothing here is the table's own change:
@@ -199,6 +214,9 @@ pub(super) enum Effect {
     /// Capture this loop into the stream's ring and record it as applied
     /// (`handle_loop`): it reads the file.
     Loop(StreamId, Option<LoopAsk>),
+    /// Turn the stream's ring to this direction (`handle_direction`): a
+    /// mapping change, which reads the file for the fade's record.
+    Direction(StreamId, Direction),
 }
 
 /// Every open stream, one [`Record`] each, found by id.
@@ -254,6 +272,13 @@ impl Streams {
     pub(super) fn reap(&mut self) {
         self.records.retain(|record| !record.dead);
     }
+
+    /// Re-derives every stream's conversion ratio against `session`.
+    pub(super) fn rerate(&self, session: SampleRate) {
+        self.records
+            .iter()
+            .for_each(|record| record.rerate(session));
+    }
 }
 
 /// Applies `cmd` to `streams` and says what the driver does about it.
@@ -289,6 +314,11 @@ pub(super) fn step(streams: &mut Streams, cmd: Cmd) -> &[Effect] {
         Cmd::Loop(id, ask) => {
             if streams.get(id).is_some_and(Record::is_live) {
                 streams.effects.push(Effect::Loop(id, ask));
+            }
+        }
+        Cmd::Direction(id, direction) => {
+            if streams.get(id).is_some_and(Record::is_live) {
+                streams.effects.push(Effect::Direction(id, direction));
             }
         }
     }

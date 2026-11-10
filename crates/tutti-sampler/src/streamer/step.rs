@@ -1,15 +1,14 @@
 //! One streamer cycle, synchronously.
 //!
-//! The streamer's work is a loop over two steps — apply direction changes
-//! to each ring's mapping, refill the rings
-//! (following each reader to where it plays). Neither is asynchronous: they
-//! walk the stream table, decode from a file, and write into a ring. The only
+//! The streamer's work is a loop over one step after its commands: refill the
+//! rings (following each reader to where it plays). It is not asynchronous: it
+//! walks the stream table, decodes from a file, and writes into a ring. The only
 //! async in the streamer is the *pacing* — the timer the loop parks on when
 //! there is nothing urgent to do. (What a *command* does to the table is the
 //! pure [`step`](super::record::step), not this.)
 //!
 //! This module is that work with the pacing removed. [`StreamerCycle::step`]
-//! drains the command queue, runs the two steps, and reports what the pacing
+//! drains the command queue, runs the refill, and reports what the pacing
 //! layer should do next as a [`StepOutcome`]. The async loop in
 //! [`loop_body`](super::loop_body) is then the pacing layer and nothing else.
 //!
@@ -32,8 +31,7 @@ use super::StreamerSender;
 use super::command::StreamerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, Local, handle_command};
-use super::io::refill::{refill_all, refill_all_parallel};
-use super::loops::{Mapping, apply_mapping};
+use super::io::refill::{FILL_THRESHOLD, refill_all, refill_all_parallel};
 use super::record::Streams;
 
 /// What the pacing layer should do after one streamer cycle.
@@ -99,11 +97,10 @@ impl StreamerCycle {
     }
 
     /// Run one cycle: drain every queued command, free every ring's retired
-    /// maps, then — when any channel is streaming — apply direction changes and
-    /// refill the rings.
+    /// controls, then — when any channel is streaming — refill the rings.
     ///
-    /// Direction changes are applied *before* refill so the refill writes the
-    /// new mapping this cycle.
+    /// A direction change is a command, applied in the drain, so the refill
+    /// writes the new mapping this cycle.
     ///
     /// `drain` is called until it yields `None`; commands are applied
     /// non-blockingly, so a step never waits for one to arrive.
@@ -120,20 +117,17 @@ impl StreamerCycle {
             handle_command(cmd, shared, &self.config, &mut self.local);
         }
 
-        // Every ring's retired maps, whether or not this cycle publishes
+        // Every ring's retired controls, whether or not this cycle publishes
         // one: the streamer is their only publisher, and its cycle is the
         // control-side tick they get. A lock and a length check per ring
         // when nothing is retired.
         for record in self.local.streams.records() {
-            record.out.ring().reclaim_maps();
+            record.out.ring().reclaim_control();
         }
 
         if self.local.streams.is_empty() {
             return StepOutcome::Idle;
         }
-
-        self.apply_directions();
-        self.local.streams.reap();
 
         // Frames resident across every streaming ring, sampled before the
         // refill so the outcome can say whether the refill actually achieved
@@ -145,55 +139,24 @@ impl StreamerCycle {
                 self.local.streams.records_mut(),
                 &shared.metrics,
                 self.config.chunk_size,
-                self.local.buffer_margin,
             );
         } else {
             refill_all(
                 self.local.streams.records_mut(),
                 &shared.metrics,
                 self.config.chunk_size,
-                self.local.buffer_margin,
                 &mut self.local.interleave_buffer,
             );
         }
 
         self.local.streams.reap();
 
-        if buffers_healthy(&self.local.streams, self.local.buffer_margin) {
+        if buffers_healthy(&self.local.streams) {
             StepOutcome::Healthy
         } else if total_buffered(&self.local.streams) > buffered_before {
             StepOutcome::Busy
         } else {
             StepOutcome::Stalled
-        }
-    }
-
-    /// Turn each ring whose stream changed direction (`RtState`'s, set by the
-    /// voice): reverse is a mapping (the file mirrored,
-    /// loop ignored), so the change is `apply_mapping`'s — a switch the reader
-    /// crossfades across just past the block it is in.
-    fn apply_directions(&mut self) {
-        for record in self
-            .local
-            .streams
-            .records_mut()
-            .iter_mut()
-            .filter(|r| r.is_live())
-        {
-            let fade = self.config.seek_crossfade_frames;
-            let _ = record.contained(|record| {
-                let reverse = record.rt_state.is_reverse();
-                let rate = record.rt_state.read_rate().get();
-                let writer = &mut record.out;
-                if writer.content().current.reverse == reverse {
-                    return;
-                }
-                let new = Mapping {
-                    reverse,
-                    ..writer.content().current.clone()
-                };
-                apply_mapping(writer, new, fade, rate);
-            });
         }
     }
 }
@@ -215,15 +178,13 @@ fn total_buffered(streams: &Streams) -> usize {
 
 /// True when no stream needs a refill — i.e. the loop can safely park on a
 /// short timer instead of spinning.
-fn buffers_healthy(streams: &Streams, buffer_margin: f64) -> bool {
-    let fill_threshold = (0.75 / buffer_margin) as f32;
-
+fn buffers_healthy(streams: &Streams) -> bool {
     // Every live stream must be at or above its refill threshold.
     streams
         .records()
         .iter()
         .filter(|r| r.is_live())
-        .all(|r| r.rt_state.buffer_fill() >= fill_threshold)
+        .all(|r| r.fill() >= FILL_THRESHOLD)
 }
 
 #[cfg(test)]
@@ -242,14 +203,14 @@ mod tests {
     use super::super::record::{Cmd, step};
     use super::*;
 
-    /// A map the reader held across the streamer's last publish is freed by
-    /// the streamer's next cycle, with no further publish, whether or not a
-    /// stream is live (this one's reader was never delivered).
+    /// A `RingControl` the reader held across the streamer's last publish is
+    /// freed by the streamer's next cycle, with no further publish, whether or
+    /// not a stream is live (this one's reader was never delivered).
     ///
-    /// Mutation (run): the cycle's per-ring `reclaim_maps` loop removed → the
-    /// map is still retired after the step, fails.
+    /// Mutation (run): the cycle's per-ring `reclaim_control` loop removed → the
+    /// control is still retired after the step, fails.
     #[test]
-    fn a_cycle_frees_a_map_the_reader_held_across_its_replacement() {
+    fn a_cycle_frees_a_control_the_reader_held_across_its_replacement() {
         let config = BufferConfig::default();
         let shared = Handles {
             cache: Arc::new(LruCache::new(
@@ -267,16 +228,61 @@ mod tests {
             super::super::record::tests::record(id, PathBuf::from("t.wav"), 1024, 1u16);
         let _ = step(&mut cycle.local.streams, Cmd::Open(Box::new(record)));
 
-        let mut map = ring.map_reader();
+        let mut control = ring.control_reader();
         {
             // A block in progress across the publish.
-            let _held = map.lend();
+            let _held = control.lend();
             ring.publish_map(RingMap::plain(Arrangement::plain(64), 1));
         }
-        assert_eq!(ring.retired_maps(), 1, "pinned until a scan");
+        assert_eq!(ring.retired_controls(), 1, "pinned until a scan");
         // The stream is still `Opening` (its reader never delivered), so the
-        // cycle refills nothing, but it still sweeps the ring's maps.
+        // cycle refills nothing, but it still sweeps the ring's controls.
         let _ = cycle.step(&shared, || None);
-        assert_eq!(ring.retired_maps(), 0, "freed by the cycle");
+        assert_eq!(ring.retired_controls(), 0, "freed by the cycle");
+    }
+
+    /// The same sweep frees a `RingControl` held across a *loop* publish
+    /// (the applied loop replaces the control without a new map): the value
+    /// the reader held is retired by the replacement and freed by the next
+    /// cycle, with nothing published since.
+    ///
+    /// Mutation (run): the cycle's per-ring `reclaim_control` loop removed →
+    /// the control is still retired after the step → fails. Mutation (run):
+    /// `Ring::publish_loop` publishing nothing (the new loop dropped) → the
+    /// first assertion fails.
+    #[test]
+    fn a_cycle_frees_a_control_the_reader_held_across_a_loop_publish() {
+        let config = BufferConfig::default();
+        let shared = Handles {
+            cache: Arc::new(LruCache::new(
+                config.cache_max_entries,
+                config.cache_max_bytes,
+            )),
+            metrics: Arc::new(Metrics::new()),
+            session_rate: SessionRate::new(SampleRate(48_000.0)),
+            seams: Seams::default(),
+        };
+        let (reports, _queue) = crossbeam_channel::bounded(8);
+        let mut cycle = StreamerCycle::new(config, reports);
+        let (record, ring, _pos) =
+            super::super::record::tests::record(StreamId(1), PathBuf::from("t.wav"), 1024, 1u16);
+        let _ = step(&mut cycle.local.streams, Cmd::Open(Box::new(record)));
+
+        let mut control = ring.control_reader();
+        let applied = crate::voice::LoopSetting::On {
+            start: tutti_types::SamplePosition(0.0),
+            end: tutti_types::SamplePosition(64.0),
+            crossfade_frames: 0,
+        };
+        {
+            let held = control.lend();
+            assert_eq!(held.loop_, crate::voice::LoopSetting::Off);
+            ring.publish_loop(applied);
+        }
+        assert_eq!(ring.applied().loop_, applied, "the loop is published");
+        assert_eq!(ring.retired_controls(), 1, "pinned until a scan");
+        let _ = cycle.step(&shared, || None);
+        assert_eq!(ring.retired_controls(), 0, "freed by the cycle");
+        assert_eq!(control.lend().loop_, applied, "the reader sees the new one");
     }
 }

@@ -369,7 +369,7 @@ pub(super) mod realization {
     pub fn response<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
-        for c in d.response_probes().unwrap_or_else(|| d.static_probes()) {
+        for c in d.static_probes() {
             if d.marginal(&c) {
                 continue;
             }

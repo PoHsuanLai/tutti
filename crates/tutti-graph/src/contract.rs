@@ -26,7 +26,7 @@
 //! let row = Row::new(
 //!     "pulse, 37 frames late",
 //!     || Box::new(Pulse::new(Latency::new(Samples(37)))),
-//!     Excite::Event { port: 0, kind: EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0])) },
+//!     Excite::Event { port: 0, kind: EventKind::Midi(Ump([0x4090_3c00, 0xC800_0000, 0, 0])) },
 //!     Detect::Exact(vec![1.0]),
 //! );
 //! row.check(Path::BehindPdc);
@@ -80,7 +80,7 @@ use crate::OutPort;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail, UnitAddr,
 };
-use tutti_ump::{Message, NoteNumber, Ump, Voice1, Voice2, decode};
+use tutti_ump::{Message, NoteNumber, Ump, Voice2, decode};
 
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
@@ -908,8 +908,9 @@ impl Row {
     /// key struck again is right to drop the earlier strike), and this case
     /// is about merge order and carry, so each source's note is its own and
     /// each response is expected under any retrigger rule. Anything that is
-    /// not a note message (a controller, a ramp) is sent as it is: two
-    /// identical events merged are what the rows of an echoing node pin.
+    /// not a MIDI 2.0 note (a controller, a ramp, and a MIDI 1.0 message: rows
+    /// are excited with MIDI 2.0) is sent as it is: two identical events
+    /// merged are what the rows of an echoing node pin.
     fn other_source_kind(kind: EventKind) -> EventKind {
         let EventKind::Midi(ump) = kind else {
             return kind;
@@ -919,20 +920,6 @@ impl Row {
             NoteNumber::new(note.get() + 1).unwrap_or_else(|| NoteNumber::of(note.get() - 1))
         };
         let message = match decode(ump) {
-            Ok(Message::Midi1(a, Voice1::NoteOn { note, velocity })) => Message::Midi1(
-                a,
-                Voice1::NoteOn {
-                    note: other(note),
-                    velocity,
-                },
-            ),
-            Ok(Message::Midi1(a, Voice1::NoteOff { note, velocity })) => Message::Midi1(
-                a,
-                Voice1::NoteOff {
-                    note: other(note),
-                    velocity,
-                },
-            ),
             Ok(Message::Midi2(
                 a,
                 Voice2::NoteOn {
@@ -1727,7 +1714,7 @@ impl Node for Sum {
 ///     Row::new(
 ///         "Pulse",
 ///         || Box::new(Pulse::new(Latency::ZERO)),
-///         Excite::Event { port: 0, kind: EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0])) },
+///         Excite::Event { port: 0, kind: EventKind::Midi(Ump([0x4090_3c00, 0xC800_0000, 0, 0])) },
 ///         Detect::Exact(vec![1.0]),
 ///     )
 /// }

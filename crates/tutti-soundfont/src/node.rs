@@ -8,7 +8,7 @@
 
 use tutti_graph::{
     ConstantMask, Cx, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask,
-    SortedEvents, Status,
+    Status,
 };
 use tutti_types::ChannelLayout;
 
@@ -62,13 +62,7 @@ impl Node for SoundFontUnit {
         // No clamp: `prepare` sized the scratch to the prepared `MaxBlock`,
         // and the graph never hands a node a longer block.
         let size = io.frames();
-        let events = if io.event_input_count() > 0 {
-            io.events(0)
-        } else {
-            SortedEvents::EMPTY
-        };
-        let count = tutti_midi_runtime::gather_midi(events, &mut self.midi_buffer);
-        self.render_events(size, count);
+        self.render_events(io.sub_blocks(0));
         let heard = self.take_heard();
         if self.is_idle() && !heard.has_any() {
             return Status::Idle;

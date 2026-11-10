@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tutti_midi_protocol::{narrow_bend, narrow_value};
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Semitones};
-use tutti_ump::{Attribute, CCNumber, MidiChannel, U7, Voice2};
+use tutti_ump::{CCNumber, MidiChannel, U7, Voice2};
 use tutti_voicing::{Mode, Order, Retrigger, Rules, Steal, Voicing};
 
 use crate::array_math::ArrayMath;
@@ -29,10 +29,6 @@ use crate::render::Render;
 use crate::settings::Settings;
 use crate::soundfont_math::SoundFontMath;
 use crate::voices::Voices;
-
-/// The release velocity of a Note Off that a Note On at velocity 0 stands for
-/// (M2-104 Appendix D.3.1), which a SoundFont does not read.
-const NEUTRAL_RELEASE: u16 = 0x8000;
 
 /// The gain applied to the mix of every voice, on every plane: the sends carry
 /// it too, so an effect node after the unit is unity-gain.
@@ -270,19 +266,9 @@ impl Player {
     /// dropped.
     pub(crate) fn apply(&mut self, channel: MidiChannel, message: Voice2) {
         match message {
-            // A MIDI 2.0 Note On at velocity 0 is a Note Off here, as it
-            // always has been (M2-104 7.4.2 keeps it a Note On; that is for
-            // the translation stage).
-            Voice2::NoteOn {
-                note, velocity: 0, ..
-            } => self.dispatch(
-                channel,
-                Voice2::NoteOff {
-                    note,
-                    velocity: NEUTRAL_RELEASE,
-                    attribute: Attribute::None,
-                },
-            ),
+            // A Note On at velocity 0 is a Note On (M2-104 §7.4.2), struck at
+            // the least MIDI 1.0 velocity (`Patch`'s `.max(1)`); a MIDI 1.0 one
+            // arrived as a Note Off (`channel_voice` widens it, App. D.3.1).
             Voice2::NoteOn { .. } | Voice2::NoteOff { .. } => self.dispatch(channel, message),
             Voice2::ControlChange { controller, value } => {
                 self.control(channel, controller, narrow_value(value));

@@ -12,9 +12,7 @@
 //! [`ParamNode`], inserted through [`tutti_graph::param_parts`], so a fork
 //! starts from the values last set through the set (see `src/fork.rs`).
 
-use tutti_graph::{
-    Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, SortedEvents, Status,
-};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{ChannelLayout, UnitParam};
 
 use super::PolySynth;
@@ -36,10 +34,6 @@ pub const SYNTH_PARAMS: [UnitParam; 3] = [
 fn block_driven(io: &Io<'_>, k: usize) -> Option<f32> {
     io.param(k).frames().and_then(|v| v.last().copied())
 }
-
-/// The synth's MIDI scratch, in events: a block's event input past it is
-/// dropped.
-pub(super) const MIDI_BUFFER: usize = 512;
 
 /// The most oscillator lanes (`max_voices` × unison sub-voices) a synth
 /// may render and still declare [`Cost::Moderate`](tutti_graph::Cost).
@@ -97,12 +91,7 @@ impl Node for PolySynth {
         if let Some(unison) = &mut self.unison {
             unison.sync_from_atomics([block_driven(&io, 1), block_driven(&io, 2)]);
         }
-        let events = if io.event_input_count() > 0 {
-            io.events(0)
-        } else {
-            SortedEvents::EMPTY
-        };
-        let count = tutti_midi_runtime::gather_midi(events, &mut self.midi_buffer);
+        let blocks = io.sub_blocks(0);
         let volume = block_driven(&io, 0).map_or_else(
             || {
                 let cell = self.master_volume.load().get();
@@ -119,11 +108,11 @@ impl Node for PolySynth {
             return Status::Modified;
         };
         match right {
-            Some(right) => self.render_events(frames, count, volume, &mut |i, l, r| {
+            Some(right) => self.render_events(blocks, volume, &mut |i, l, r| {
                 left[i] = l;
                 right[i] = r;
             }),
-            None => self.render_events(frames, count, volume, &mut |i, l, _| left[i] = l),
+            None => self.render_events(blocks, volume, &mut |i, l, _| left[i] = l),
         }
         Status::Modified
     }

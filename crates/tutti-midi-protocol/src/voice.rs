@@ -1,14 +1,15 @@
-//! The stateless `Voice1` to `Voice2` widening.
+//! The stateless `Voice1` to `Voice2` widening, and reading a channel voice
+//! message through it.
 
 use crate::scale;
-use tutti_ump::{Attribute, Voice1, Voice2};
+use tutti_ump::{Address, Attribute, Message, Ump, Voice1, Voice2, decode};
 
 /// The release velocity a MIDI 1.0 Note On at velocity 0 becomes (M2-104
 /// Appendix D.3.1).
 const NOTE_ON_ZERO_RELEASE: u16 = 0x8000;
 
 /// The MIDI 2.0 message that means what `voice` means (M2-104 Appendix D.3,
-/// M2-115 section 3). The caller keeps the [`Address`](tutti_ump::Address)
+/// M2-115 section 3). The caller keeps the [`Address`]
 /// unchanged.
 ///
 /// Transitional for a consumer: see the crate docs. Control Changes that
@@ -47,5 +48,36 @@ pub fn widen(voice: Voice1) -> Voice2 {
         },
         Voice1::ChannelPressure(pressure) => Voice2::ChannelPressure(scale::value(pressure.get())),
         Voice1::PitchBend(bend) => Voice2::PitchBend(scale::bend(bend.get())),
+    }
+}
+
+/// `message` as MIDI 2.0 when it is a MIDI 1.0 channel voice message
+/// ([`widen`], address kept); every other message as it came.
+///
+/// Stateless, like `widen`: a MIDI 1.0 RPN run widens as plain Control
+/// Changes. An edge that can see a whole stream runs a
+/// [`Translator`](crate::Translator) instead.
+#[inline]
+#[must_use]
+pub fn widen_message(message: Message) -> Message {
+    match message {
+        Message::Midi1(address, voice) => Message::Midi2(address, widen(voice)),
+        other => other,
+    }
+}
+
+/// The channel voice message `ump` carries, as the MIDI 2.0 message it means
+/// (M2-104 Appendix D.3: a MIDI 1.0 one is widened, so its Note On at velocity
+/// 0 is a Note Off, while a MIDI 2.0 Note On at velocity 0 stays a Note On), or
+/// `None` for any other packet, one [`decode`] cannot frame included.
+///
+/// What an instrument reads: one match on [`Voice2`], whichever protocol the
+/// packet was sent in.
+#[inline]
+#[must_use]
+pub fn channel_voice(ump: Ump) -> Option<(Address, Voice2)> {
+    match decode(ump).ok().map(widen_message)? {
+        Message::Midi2(address, voice) => Some((address, voice)),
+        _ => None,
     }
 }

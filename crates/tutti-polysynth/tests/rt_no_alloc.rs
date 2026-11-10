@@ -4,13 +4,12 @@
 //! polyphonic synth. It owns:
 //! - a `Vec<SynthVoice>` (allocated once on build),
 //! - a `Vec` of finished-voice indices (sized once, to `max_voices`),
-//! - a `midi_buffer` its event input is gathered into,
 //! - and a `mix_buffer` scalar pair.
 //!
 //! A block takes its event input's MIDI, iterates active voices, and mixes
 //! into the output. Driven by hand through `support::Hand` (the graph's own
-//! by-hand driver, `tutti_graph::contract::Direct`, underneath). A regression that grows `midi_buffer`
-//! at runtime, or that frees the finished-indices buffer on the audio
+//! by-hand driver, `tutti_graph::contract::Direct`, underneath). A regression that collects the
+//! block's events at runtime, or that frees the finished-indices buffer on the audio
 //! thread, would land here.
 //!
 //! Note that most tests below run at `max_voices: 8`, so they exercise the
@@ -478,8 +477,8 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 /// The rest of the suite is blind to this: every other test warms the
 /// instance, and so the thread, before opening the gate.
 ///
-/// Mutation (run): a lazily initialised `thread_local!` `Vec` touched in
-/// `tutti_midi_runtime::gather_midi` → the gate aborts on the cold thread.
+/// Mutation (run): a lazily initialised `thread_local!` `Vec` touched in the
+/// synth's `render_events` → the gate aborts on the cold thread.
 #[test]
 fn a_first_block_on_a_cold_thread_is_allocation_free() {
     let mut synth = Hand::new(
@@ -503,8 +502,8 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
 /// inside the gate: publishing is the control thread's.
 ///
 /// Mutation: a `Vec` built in `MidiClipNode::process` → the gate aborts.
-/// Mutation: the synth's `tutti_midi_runtime::gather_midi` collecting the event input into a
-/// `Vec` before merging → the gate aborts.
+/// Mutation (run): the synth's `render_events` collecting the block's chunks
+/// into a `Vec` → the gate aborts.
 #[test]
 fn a_clip_into_a_synth_is_allocation_free() {
     use tutti_graph::NodeKey;

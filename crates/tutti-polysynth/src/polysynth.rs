@@ -17,11 +17,8 @@ use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
-use tutti_graph::Offset;
-use tutti_graph::UmpAt;
-use tutti_midi_protocol::narrow_value;
-use tutti_midi_protocol::widen;
-use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
+use tutti_graph::{EventKind, SubBlocks};
+use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::mpe::PitchBendSensitivity;
 use tutti_midi_types::ump::{
@@ -31,8 +28,7 @@ use tutti_midi_types::ump::{
 use tutti_midi_types::{NoteId, cc};
 use tutti_types::{Amplitude, Param, Tail};
 use tutti_ump::{
-    CCNumber, Message, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Ump, Unknown,
-    Voice1, Voice2, decode,
+    CCNumber, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Ump, Voice2,
 };
 use tutti_voicing::{Controller, Effect, Stop, Zones};
 
@@ -97,8 +93,6 @@ pub struct PolySynth {
     /// The last finite master volume the node read: a cell a host wrote a NaN
     /// or an infinity into reads as this, not as itself.
     last_volume: f32,
-    /// The block's MIDI, sorted by offset: its event input's.
-    midi_buffer: Vec<UmpAt>,
     /// Voices that finished this span. Sized to `max_voices` and only cleared,
     /// so it never allocates on the audio thread.
     finished_indices: Vec<usize>,
@@ -164,7 +158,6 @@ impl PolySynth {
             mpe_range_default,
             master_volume,
             last_volume: Amplitude::UNITY.get(),
-            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(max_voices),
         })
     }
@@ -348,48 +341,26 @@ impl PolySynth {
         self.unison.as_ref().map(|u| u.all_params())
     }
 
-    /// Decodes one packet and applies it. The only place the synth reads the
+    /// Reads one packet and applies it. The only place the synth reads the
     /// wire: everything below takes typed values.
     ///
-    /// The group is ignored: one synth is one instrument, whatever group its
-    /// notes arrive on. This is a sink, so a message it has no use for
-    /// (including one `decode` cannot frame) is unused, not an error.
+    /// A MIDI 1.0 channel voice message is read as the MIDI 2.0 one it means
+    /// ([`channel_voice`]), so a note sounds the same on either wire. The group
+    /// is ignored: one synth is one instrument, whatever group its notes arrive
+    /// on. This is a sink, so a message that is not channel voice (a clock,
+    /// sysex, one `decode` cannot frame) is unused, not an error.
     fn process_midi_event(&mut self, ump: Ump) {
-        match decode(ump) {
-            Ok(Message::Midi1(address, voice)) => self.voice1(address.channel, voice),
-            Ok(Message::Midi2(address, voice)) => self.voice2(address.channel, voice),
-            // Not channel voice: a synth has no clock, sysex, flex data or
-            // stream state to follow.
-            Ok(
-                Message::Utility(_)
-                | Message::System(..)
-                | Message::Sysex7(..)
-                | Message::Data128(..)
-                | Message::Flex(..)
-                | Message::Stream(_),
-            ) => {}
-            // A reserved or undefined packet, with its words kept in
-            // `Unknown`: nothing here forwards them, so they are unused.
-            Err(Unknown(_)) => {}
+        if let Some((address, voice)) = channel_voice(ump) {
+            self.voice2(address.channel, voice);
         }
-    }
-
-    /// A MIDI 1.0 channel voice message, widened to the MIDI 2.0 message that
-    /// means the same (M2-104 App. D.3), so a note sounds the same on either wire.
-    fn voice1(&mut self, channel: MidiChannel, voice: Voice1) {
-        self.voice2(channel, widen(voice));
     }
 
     /// A MIDI 2.0 channel voice message.
     fn voice2(&mut self, channel: MidiChannel, voice: Voice2) {
         match voice {
-            // Native MIDI 2.0 velocity 0 is a Note Off here, as it always has
-            // been (M2-104 §7.4.2 keeps it a Note On; that is for the
-            // translation stage). A widened MIDI 1.0 Note On at velocity 0
-            // never gets here: it arrives as a `NoteOff`.
-            Voice2::NoteOn {
-                note, velocity: 0, ..
-            } => self.handle_note_off(note, channel),
+            // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 §7.4.2),
+            // sounding at velocity 0. A MIDI 1.0 one arrives as a `NoteOff`
+            // (`channel_voice` widens it, App. D.3.1).
             Voice2::NoteOn {
                 note,
                 velocity,
@@ -847,25 +818,24 @@ impl PolySynth {
         }
     }
 
-    /// Render `size` frames, applying the first `midi_count` entries of the
-    /// (sorted) `midi_buffer` at their frame offsets.
-    ///
-    /// The block is split at each event so the event lands on its frame, and
-    /// the pieces go to [`render_span`](Self::render_span). Nothing here is
-    /// bounded by a block size, so any block length renders every frame.
+    /// Renders a block split at its events (`Io::sub_blocks`): each chunk's
+    /// MIDI is applied, then its frames go to
+    /// [`render_span`](Self::render_span), so every event lands on its frame.
+    /// Nothing here is bounded by a block size or an event count, so any
+    /// block renders every frame and reads every event.
     fn render_events(
         &mut self,
-        size: usize,
-        midi_count: usize,
+        blocks: SubBlocks<'_>,
         volume: f32,
         emit: &mut impl FnMut(usize, f32, f32),
     ) {
-        let mut walk = BlockSplitter::new(size, Overrun::Defer);
-        while let Some(step) = walk.step(&self.midi_buffer[..midi_count]) {
-            match step {
-                Step::Event((_, ump)) => self.process_midi_event(ump),
-                Step::Span(span) => self.render_span(span.start, span.len(), volume, emit),
+        for (range, events) in blocks {
+            for event in events {
+                if let EventKind::Midi(ump) = event.kind {
+                    self.process_midi_event(ump);
+                }
             }
+            self.render_span(range.start, range.len(), volume, emit);
         }
     }
 }
@@ -920,7 +890,6 @@ impl Clone for PolySynth {
             mpe_range_default: self.mpe_range_default,
             master_volume: self.master_volume.clone(),
             last_volume: self.last_volume,
-            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }

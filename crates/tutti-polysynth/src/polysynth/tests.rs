@@ -889,15 +889,21 @@ fn test_velocity_zero_note_on_is_note_off() {
     assert_eq!(synth.active_voice_count(), 1);
     assert!(synth.voices[0].gate_value() > 0.0);
 
-    // Note on with velocity 0 = note off (MIDI standard)
-    let vel0_off = ev_note_on(0, 60, 0);
+    // A MIDI 1.0 Note On at velocity 0 is a Note Off (M2-104 App. D.3.1).
+    let vel0_off = Ump::from(Message::Midi1(
+        address(0),
+        Voice1::NoteOn {
+            note: NoteNumber::of(60),
+            velocity: U7::of(0),
+        },
+    ));
     queue_midi(&mut synth, &[vel0_off]);
     synth.tick(&[], &mut output);
 
     assert_eq!(
         synth.voices[0].gate_value(),
         0.0,
-        "Note-on with velocity 0 should act as note-off"
+        "a MIDI 1.0 Note On at velocity 0 is a Note Off"
     );
 }
 
@@ -2570,12 +2576,10 @@ fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
     }
 }
 
-/// Every way to end a note ends it: a Note Off on either wire, and a Note On
-/// at velocity 0 on either wire. A MIDI 2.0 Note On at velocity 0 is a Note On
-/// in M2-104 §7.4.2; the synth has always read it as a Note Off, and this pins
-/// that for the translation stage to change. Mutations, each failing this
-/// test: the MIDI 2.0 velocity-0 arm sounding a note; the MIDI 1.0 velocity-0
-/// guard removed; the MIDI 1.0 Note Off ignored.
+/// Every way to end a note ends it: a Note Off on either wire, and a MIDI 1.0
+/// Note On at velocity 0 (M2-104 App. D.3.1). Mutations, each failing this
+/// test: the MIDI 1.0 velocity-0 guard removed (in `widen`); the MIDI 1.0 Note
+/// Off ignored.
 #[test]
 fn every_note_off_form_releases_the_note() {
     let note = NoteNumber::of(60);
@@ -2609,14 +2613,6 @@ fn every_note_off_form_releases_the_note() {
                 attribute: Attribute::None,
             },
         ),
-        Message::Midi2(
-            address(0),
-            Voice2::NoteOn {
-                note,
-                velocity: 0,
-                attribute: Attribute::None,
-            },
-        ),
     ];
     for off in offs {
         let mut synth = poly_synth();
@@ -2625,6 +2621,35 @@ fn every_note_off_form_releases_the_note() {
         synth.apply_midi(ump(off));
         assert_eq!(sounding(&synth), 0, "{off:?}");
     }
+}
+
+/// A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 §7.4.2): it holds a
+/// key until its Note Off, unlike the MIDI 1.0 one, which is a Note Off.
+///
+/// Mutation (run): `voice2` reading a velocity-0 `NoteOn` as a Note Off (the
+/// arm this stage removed) -> no key held -> fails.
+#[test]
+fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
+    let note = NoteNumber::of(60);
+    let mut synth = poly_synth();
+    synth.apply_midi(ump(Message::Midi2(
+        address(0),
+        Voice2::NoteOn {
+            note,
+            velocity: 0,
+            attribute: Attribute::None,
+        },
+    )));
+    assert_eq!(sounding(&synth), 1, "the key is held");
+    synth.apply_midi(ump(Message::Midi2(
+        address(0),
+        Voice2::NoteOff {
+            note,
+            velocity: 0,
+            attribute: Attribute::None,
+        },
+    )));
+    assert_eq!(sounding(&synth), 0, "its Note Off releases it");
 }
 
 /// Pitch bend and the sustain pedal act alike from either wire. Mutations,

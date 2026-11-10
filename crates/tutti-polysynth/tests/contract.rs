@@ -9,9 +9,9 @@
 //! one frame after its onset: a constant lead of one frame
 //! (`Row::with_lead`), the same on every path.
 //!
-//! Mutations (run): `tutti_midi_runtime::gather_midi` writing every event at offset 0 (the
-//! `frame_offset: e.offset.get()` replaced by `0`) → the note sounds at its
-//! block's start → the paths that see a non-zero offset fail; the row without its
+//! Mutations (run): the synth's `render_events` applying every chunk's events
+//! before the first frame → the note sounds at its block's start → the paths
+//! that see a non-zero offset fail; the row without its
 //! lead → every path fails one frame late.
 
 use tutti_fixtures::midi;

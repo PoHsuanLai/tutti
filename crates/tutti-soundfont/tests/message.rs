@@ -6,10 +6,14 @@
 //!
 //! Mutation record (each planted in `src/`, seen to fail at the named tests,
 //! restored):
-//! - the `.max(1)` on the Note On velocity removed ->
-//!   `a_nonzero_velocity_that_narrows_to_zero_still_sounds`;
-//! - the `velocity: 0` Note On arm removed ->
-//!   `a_note_on_at_velocity_0_leaves_no_voice_sounding`;
+//! - not seen here: the `.max(1)` on the Note On velocity (`voices.rs`, and the
+//!   region choice in `patch.rs`) removed. A voice struck at MIDI 1.0 velocity
+//!   0 or 1 is far below what these renders resolve, so no test in this file
+//!   tells them apart; the pedal tests pin Note On against Note Off instead;
+//! - `widen`'s velocity-0 Note On guard removed (in `tutti-midi-protocol`) ->
+//!   `a_midi_1_note_on_at_velocity_0_is_a_note_off`;
+//! - `Player::apply` reading a MIDI 2.0 Note On at velocity 0 as a Note Off ->
+//!   `a_midi_2_note_on_at_a_velocity_that_narrows_to_zero_is_a_note_on`;
 //! - `narrow_value` (in `tutti-midi-protocol`) shifting by 24 ->
 //!   `control_change_7_reaches_the_synth_at_its_value`;
 //! - the bend's LSB and MSB swapped -> `a_bend_reaches_the_synth_at_its_value`;
@@ -110,28 +114,40 @@ fn held_rms(events: &[Ump]) -> f32 {
     rms(&out[11_025..])
 }
 
-/// A velocity-0 Note On is a Note Off, whether it arrived as a MIDI 1.0
-/// message or a native one: the note it ends decays to silence.
+/// A MIDI 1.0 Note On at velocity 0 is a Note Off (M2-104 App. D.3.1). The
+/// evidence is the sustain pedal, as below: held down, it keeps a released
+/// note sounding, where a Note On would strike the key again and end it; let
+/// up, the note decays to silence.
 #[test]
-fn a_note_on_at_velocity_0_leaves_no_voice_sounding() {
-    let end_1 = m1(Voice1::NoteOn {
+fn a_midi_1_note_on_at_velocity_0_is_a_note_off() {
+    let end = m1(Voice1::NoteOn {
         note: NoteNumber::of(60),
         velocity: U7::of(0),
     });
-    let end_2 = note_on_2(60, 0);
-    for (name, end) in [("MIDI 1.0", end_1), ("MIDI 2.0", end_2)] {
-        let mut unit = unit();
-        let playing = rms(&render(&mut unit, &[note_on_2(60, 0xC000)], 22_050)[11_025..]);
-        assert!(playing > 0.001, "{name}: the note must sound at all");
-        render(&mut unit, &[end], 44_100);
-        let after = rms(&render(&mut unit, &[], 1_000));
-        assert!(after < playing * 0.01, "{name}: {after} against {playing}");
-    }
+    let pedal = |value| {
+        m2(Voice2::ControlChange {
+            controller: CCNumber::of(64),
+            value,
+        })
+    };
+    let mut unit = organ();
+    let out = render(&mut unit, &[pedal(u32::MAX), note_on_2(60, 0xFFFF)], 22_050);
+    let held = rms(&out[11_025..]);
+    assert!(held > 0.001, "the note must sound at all");
+    render(&mut unit, &[end], 22_050);
+    let pedalled = rms(&render(&mut unit, &[], 11_025));
+    assert!(
+        pedalled > held * 0.5,
+        "the pedal holds a Note Off: {pedalled} against {held}"
+    );
+    render(&mut unit, &[pedal(0)], 44_100);
+    let after = rms(&render(&mut unit, &[], 1_000));
+    assert!(after < held * 0.01, "{after} against {held}");
 }
 
-/// A nonzero 16-bit velocity below 0x0200 narrows to 0, which MIDI 1.0 reads as
-/// a Note Off. A native one is a Note On (M2-104 section 7.4.2) and must be
-/// played as one. The evidence is the sustain pedal (SF2 2.04 section 9.2, CC
+/// A 16-bit velocity below 0x0200, 0 included, narrows to 0, which MIDI 1.0
+/// reads as a Note Off. A MIDI 2.0 Note On at any velocity is a Note On (M2-104
+/// section 7.4.2) and must be played as one. The evidence is the sustain pedal (SF2 2.04 section 9.2, CC
 /// 64): a Note Off on the held key would be stored and run when the pedal
 /// lifts, so the note keeps sounding; a Note On strikes the key again, which
 /// releases the earlier strike whatever holds it (the retrigger rule), and the
@@ -142,8 +158,8 @@ fn a_note_on_at_velocity_0_leaves_no_voice_sounding() {
 /// Mutation (run): `Player::apply` reading a velocity below 0x200 as a Note Off leaves
 /// the pedal-held note sounding, and the test fails.
 #[test]
-fn a_nonzero_velocity_that_narrows_to_zero_still_sounds() {
-    for velocity in [1, 0x01FF] {
+fn a_midi_2_note_on_at_a_velocity_that_narrows_to_zero_is_a_note_on() {
+    for velocity in [0, 1, 0x01FF] {
         let mut unit = organ();
         let pedal = m2(Voice2::ControlChange {
             controller: CCNumber::of(64),
@@ -366,4 +382,25 @@ fn a_reserved_attribute_type_is_ignored_not_a_reason_to_drop_the_note() {
             "type {kind}: the Note Off was dropped: {after} against {held}"
         );
     }
+}
+
+/// Every event of a block is read, however many it carries: a note after 600
+/// controllers in one block sounds. The unit read a block through a fixed
+/// scratch of 256 events before stage 3b and dropped the rest.
+///
+/// Mutation (run): `render_events` reading at most 256 events a block (a
+/// `.take(256)` over the chunks' events) → the note is dropped → silence →
+/// fails.
+#[test]
+fn a_block_with_more_events_than_any_scratch_reads_them_all() {
+    let mut events = vec![
+        m2(Voice2::ControlChange {
+            controller: CCNumber::of(1),
+            value: 0,
+        });
+        600
+    ];
+    events.push(note_on_2(60, 0xFFFF));
+    let out = render(&mut organ(), &events, 22_050);
+    assert!(rms(&out[11_025..]) > 0.001, "the last event sounds");
 }

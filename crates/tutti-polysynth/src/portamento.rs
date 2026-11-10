@@ -6,9 +6,10 @@
 //! the synth is polyphonic.
 //!
 //! Interpolation is logarithmic, so a glide is even in musical interval rather
-//! than in [`Hz`]; [`PortamentoCurve`] reshapes only how far along that
-//! interval the glide has travelled.
+//! than in [`Hz`]; the [`Law`] of [`PortamentoConfig::curve`] reshapes only how far along
+//! that interval the glide has travelled.
 
+use tutti_curve::Law;
 use tutti_types::{Hz, SampleRate, Seconds, Semitones};
 
 /// When a new note glides from the previous pitch rather than jumping to its
@@ -28,25 +29,6 @@ pub enum PortamentoMode {
     Off,
 }
 
-/// The shape of the glide's progress over its duration.
-///
-/// All three interpolate the pitch itself logarithmically — the glide is
-/// even in musical interval, not in [`Hz`] — and all three end exactly on the
-/// target. The curve only reshapes how the progress fraction advances.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum PortamentoCurve {
-    /// Constant rate of interval change. The default.
-    #[default]
-    Linear,
-    /// Slow start, fast finish (progress squared): the pitch lingers near the
-    /// old note and arrives abruptly.
-    Exponential,
-    /// Fast start, slow finish (square root of progress): the pitch leaves the
-    /// old note immediately and eases into the new one.
-    Logarithmic,
-}
-
 /// How pitch glide behaves between notes.
 ///
 /// A [`PolySynth`](crate::PolySynth) built with `None` here has no glide state
@@ -56,8 +38,15 @@ pub struct PortamentoConfig {
     /// When to glide. [`Off`](PortamentoMode::Off) by default, which makes the
     /// rest of these fields inert.
     pub mode: PortamentoMode,
-    /// The shape of the glide.
-    pub curve: PortamentoCurve,
+    /// The shape of the glide: the [`Law`] of its progress over its duration.
+    ///
+    /// The pitch itself is interpolated logarithmically (the glide is even in
+    /// musical interval, not in [`Hz`]) and every law ends exactly on the
+    /// target; the law only reshapes how the progress fraction advances.
+    /// [`Linear`](Law::Linear) is the constant rate of interval change;
+    /// `PowerIn(2.0)` lingers near the old note and arrives abruptly;
+    /// `PowerIn(0.5)` leaves the old note at once and eases into the new one.
+    pub curve: Law,
     /// Glide duration in [`Seconds`], or the *base* duration when
     /// [`constant_time`](Self::constant_time) is false. `0.0` disables the
     /// glide as surely as [`PortamentoMode::Off`] does.
@@ -75,7 +64,7 @@ impl Default for PortamentoConfig {
     fn default() -> Self {
         Self {
             mode: PortamentoMode::Off,
-            curve: PortamentoCurve::Linear,
+            curve: Law::Linear,
             time: Seconds(0.1),
             constant_time: true,
         }
@@ -199,11 +188,7 @@ impl Portamento {
     /// The pitch at `progress` along the glide, through the curve.
     #[inline]
     fn glide_at(&self, progress: f32) -> Hz {
-        let t = match self.config.curve {
-            PortamentoCurve::Linear => progress,
-            PortamentoCurve::Exponential => progress * progress,
-            PortamentoCurve::Logarithmic => progress.sqrt(),
-        };
+        let t = self.config.curve.eval(progress);
         let log_start = self.start_freq.get().ln();
         let log_target = self.target_freq.get().ln();
         Hz((log_start + (log_target - log_start) * t).exp())

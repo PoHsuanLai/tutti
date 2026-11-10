@@ -61,11 +61,7 @@ fn test_legato_only() {
 
 #[test]
 fn test_curve_shapes() {
-    for curve in [
-        PortamentoCurve::Linear,
-        PortamentoCurve::Exponential,
-        PortamentoCurve::Logarithmic,
-    ] {
+    for curve in [Law::Linear, Law::PowerIn(2.0), Law::PowerIn(0.5)] {
         let config = PortamentoConfig {
             mode: PortamentoMode::Always,
             curve,
@@ -99,11 +95,7 @@ fn test_curve_shapes() {
 /// step's) → fails on `current()`.
 #[test]
 fn advance_is_that_many_ticks() {
-    for curve in [
-        PortamentoCurve::Linear,
-        PortamentoCurve::Exponential,
-        PortamentoCurve::Logarithmic,
-    ] {
+    for curve in [Law::Linear, Law::PowerIn(2.0), Law::PowerIn(0.5)] {
         let config = PortamentoConfig {
             mode: PortamentoMode::Always,
             curve,
@@ -145,5 +137,53 @@ fn advance_is_that_many_ticks() {
                 "a finished glide is its target"
             );
         }
+    }
+}
+
+/// FNV-1a over the bits of every pitch a glide renders, per shape: two glides
+/// (up, then a retarget half-way down) stepped by `tick` and by `advance`.
+/// The pitch goes through `ln` and `exp`, which reach libm, so the digests are
+/// goldens (`assert_golden`), recorded on the target named there.
+///
+/// Mutation (run): the square-root shape taken as `PowerIn(0.25)` (or
+/// the quadratic as `PowerIn(3.0)`) moves that shape's digest only.
+#[test]
+fn glide_render_digests() {
+    fn digest(curve: Law) -> u64 {
+        let config = PortamentoConfig {
+            mode: PortamentoMode::Always,
+            curve,
+            time: Seconds(0.01),
+            ..Default::default()
+        };
+        let mut porta = Portamento::new(config, SampleRate::new(48000.0));
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut eat = |hz: Hz| {
+            for byte in hz.get().to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        porta.reset(Hz::new(220.0));
+        porta.set_target(Hz::new(1760.0), false);
+        for _ in 0..240 {
+            eat(porta.tick());
+        }
+        porta.set_target(Hz::new(311.0), false);
+        for _ in 0..300 {
+            eat(porta.tick());
+        }
+        porta.set_target(Hz::new(95.0), false);
+        for steps in [1usize, 7, 64, 3, 128, 500] {
+            eat(porta.advance(steps));
+        }
+        hash
+    }
+    for (name, curve) in [
+        ("linear", Law::Linear),
+        ("quadratic", Law::PowerIn(2.0)),
+        ("square-root", Law::PowerIn(0.5)),
+    ] {
+        // Recorded values are placeholders (0) until the lead records them on glibc 2.39.
+        tutti_nodes::testing::assert_golden(name, digest(curve), 0);
     }
 }

@@ -14,11 +14,14 @@ use tutti_types::SampleRate;
 
 use super::StreamerSender;
 use super::cache::LruCache;
+#[cfg(test)]
+use super::command::StreamId;
 use super::command::StreamerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, SessionRate};
 use super::loop_body::{Pacing, streamer_loop};
 use super::metrics::Metrics;
+#[cfg(test)]
 use super::plan::ChannelPlan;
 #[cfg(any(test, feature = "test-support"))]
 use super::step::StepOutcome;
@@ -226,13 +229,11 @@ impl StreamerThread {
         cycle.step(&self.shared, || queue.and_then(|rx| rx.try_recv().ok()))
     }
 
-    /// The shared per-channel plan map, keyed by channel index.
-    ///
-    /// This is the reader-factory: a plan whose `link` the streamer has installed
-    /// yields the ring consumer and the `RtState` a disk voice is built from.
-    /// Both the streamer and the control thread hold it, so an entry may appear or
+    /// The shared per-stream plan map, keyed by [`StreamId`]. Both the
+    /// streamer and the control thread hold it, so an entry may appear or
     /// change between two reads.
-    pub fn plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
+    #[cfg(test)]
+    pub(crate) fn plans(&self) -> Arc<DashMap<StreamId, ChannelPlan>> {
         Arc::clone(&self.shared.plans)
     }
 
@@ -320,12 +321,12 @@ mod tests {
         let tx = streamer.command_sender();
         streamer.start();
 
-        for channel_index in [90, 91] {
-            tx.try_send(StreamerCommand::StopStreaming { channel_index })
+        for stream in [StreamId(90), StreamId(91)] {
+            tx.try_send(StreamerCommand::StopStreaming { stream })
                 .expect("room in an empty queue");
             assert!(
                 within(Duration::from_secs(10), || tx.is_empty()),
-                "command {channel_index} waited on the streamer's 60 s wait"
+                "command {stream} waited on the streamer's 60 s wait"
             );
             // Let the streamer finish its cycle and wait again.
             thread::sleep(Duration::from_millis(20));
@@ -345,7 +346,9 @@ mod tests {
             StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
         unstarted.stop();
         assert_eq!(
-            Commands::new(unstarted.command_sender()).send(Command::Stop { channel_index: 0 }),
+            Commands::new(unstarted.command_sender()).send(Command::Stop {
+                stream: StreamId(0)
+            }),
             Err(StreamerGone),
             "a controller stopped before it started"
         );
@@ -354,11 +357,18 @@ mod tests {
             StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
         streamer.start();
         let commands = Commands::new(streamer.command_sender());
-        assert_eq!(commands.send(Command::Stop { channel_index: 0 }), Ok(()));
+        assert_eq!(
+            commands.send(Command::Stop {
+                stream: StreamId(0)
+            }),
+            Ok(())
+        );
 
         streamer.stop();
         assert_eq!(
-            commands.send(Command::Stop { channel_index: 0 }),
+            commands.send(Command::Stop {
+                stream: StreamId(0)
+            }),
             Err(StreamerGone)
         );
     }
@@ -373,12 +383,19 @@ mod tests {
         let mut streamer =
             StreamerThread::with_config(1, SampleRate::new(48_000.0), BufferConfig::default());
         let commands = Commands::new(streamer.command_sender());
-        assert_eq!(commands.send(Command::Stop { channel_index: 0 }), Ok(()));
+        assert_eq!(
+            commands.send(Command::Stop {
+                stream: StreamId(0)
+            }),
+            Ok(())
+        );
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let waiter = {
             let commands = commands.clone();
             thread::spawn(move || {
-                let _ = done_tx.send(commands.send(Command::Stop { channel_index: 1 }));
+                let _ = done_tx.send(commands.send(Command::Stop {
+                    stream: StreamId(1),
+                }));
             })
         };
         // The queue is full and nothing drains it: the send is waiting.
@@ -414,13 +431,17 @@ mod tests {
         // at the bound rather than filling and blocking the probe.
         assert!(
             within(Duration::from_secs(10), || matches!(
-                tx.try_send(StreamerCommand::StopStreaming { channel_index: 0 }),
+                tx.try_send(StreamerCommand::StopStreaming {
+                    stream: StreamId(0)
+                }),
                 Err(crossbeam_channel::TrySendError::Disconnected(_))
             )),
             "the thread exited but the queue still accepts commands"
         );
         assert_eq!(
-            Commands::new(tx).send(Command::Stop { channel_index: 0 }),
+            Commands::new(tx).send(Command::Stop {
+                stream: StreamId(0)
+            }),
             Err(StreamerGone)
         );
     }

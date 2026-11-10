@@ -17,14 +17,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
 use tutti_graph::NodeKey;
+use tutti_sampler::testing::settle;
 use tutti_sampler::{
-    Command, DiskStreamer, DiskVoice, MemorySource, Playback, Voice, VoiceNode, VoiceSource,
+    DiskStreamer, DiskVoice, MemorySource, Placement, Playback, StreamReader, Voice, VoiceNode,
+    VoiceSource,
 };
 use tutti_session::{
     Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, Session,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::{Beat, Bpm, SamplePosition, SampleRate};
+use tutti_types::{Beat, Bpm, SampleRate};
 
 const RATE: f64 = 48_000.0;
 
@@ -207,31 +209,23 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
     w.finalize().expect("writes");
 }
 
-/// A hand-stepped streamer at the export's rate streaming `path` on
-/// channel 0, primed.
-fn streamer_on(path: &Path) -> DiskStreamer {
+/// A hand-stepped streamer at the export's rate streaming `path`, primed, and
+/// the stream's reader. The streamer is held by the test: a fork reads the
+/// file through the streamer's cache while it lives.
+fn streamer_on(path: &Path) -> (DiskStreamer, StreamReader) {
     let mut streamer = DiskStreamer::manual(SampleRate(RATE), Default::default()).expect("builds");
-    streamer
-        .commands()
-        .send(Command::Stream {
-            channel_index: 0,
-            file_path: path.to_path_buf(),
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
+    let opening = streamer.open(path, Placement::HEAD);
+    let reader = settle(&mut streamer, opening).expect("the file opens");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
     );
-    streamer
+    (streamer, reader)
 }
 
-/// The live voice on channel 0, placed at `beat`.
-fn disk_voice(streamer: &DiskStreamer, beat: f64) -> DiskVoice {
-    streamer
-        .status()
-        .take_disk_voice(0, Beat(beat), None)
-        .expect("the link is installed")
+/// The live voice of the stream `reader` reads, placed at `beat`.
+fn disk_voice(reader: StreamReader, beat: f64) -> DiskVoice {
+    DiskVoice::from_reader(reader, Beat(beat), None)
 }
 
 fn node_of(source: VoiceSource) -> VoiceNode {
@@ -239,7 +233,6 @@ fn node_of(source: VoiceSource) -> VoiceNode {
         Voice {
             source,
             play: Playback::default(),
-            channel_index: None,
         },
         2u16,
     )
@@ -270,12 +263,12 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, RATE as u32, LEN);
     // A stream serves one live voice, so each of the two has its own.
-    let (streamer, other) = (streamer_on(&path), streamer_on(&path));
+    let ((_streamer, reader), (_other, other_reader)) = (streamer_on(&path), streamer_on(&path));
 
     let mut session = session();
     let (disk_node, memory_node): (NodeKey, NodeKey) = {
-        let bare = disk_voice(&streamer, 3.0);
-        let wrapped = node_of(VoiceSource::Disk(disk_voice(&other, 3.0)));
+        let bare = disk_voice(reader, 3.0);
+        let wrapped = node_of(VoiceSource::Disk(disk_voice(other_reader, 3.0)));
         let mut wave = tutti_codec::Wave::new(2, RATE);
         for i in 0..LEN {
             wave.push_frame(&[value(i), -value(i)]);
@@ -334,11 +327,11 @@ fn a_node_export_of_a_disk_voice_plays_its_file() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, RATE as u32, 4_800);
-    let streamer = streamer_on(&path);
+    let (_streamer, reader) = streamer_on(&path);
 
     let mut session = session();
     let voice = {
-        let voice = node_of(VoiceSource::Disk(disk_voice(&streamer, 1.0)));
+        let voice = node_of(VoiceSource::Disk(disk_voice(reader, 1.0)));
         session.graph().insert(voice).0
     };
     let planes = render(
@@ -369,11 +362,11 @@ fn a_disk_voice_at_another_rate_exports_resampled() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp_24k.wav");
     write_ramp(&path, 24_000, 24_000);
-    let streamer = streamer_on(&path);
+    let (_streamer, reader) = streamer_on(&path);
 
     let mut session = session();
     {
-        let voice = disk_voice(&streamer, 1.0);
+        let voice = disk_voice(reader, 1.0);
         let (node, _) = session.graph().insert(voice);
         session.graph().set_outputs_from(node);
     }
@@ -426,11 +419,11 @@ fn live_disk_playback_is_untouched_while_its_voice_exports() {
     // file while the export renders.
     let len = 30 * RATE as usize;
     write_ramp(&path, RATE as u32, len);
-    let mut streamer = streamer_on(&path);
+    let (mut streamer, reader) = streamer_on(&path);
     let live_clock = timeline(120.0);
 
     let mut session = session();
-    let (node, _) = session.graph().insert(disk_voice(&streamer, 0.0));
+    let (node, _) = session.graph().insert(disk_voice(reader, 0.0));
     session.graph().set_outputs_from(node);
     session.render_frame(&mut [0.0, 0.0]);
     let mut live = session.graph().take_audio_side();
@@ -519,11 +512,11 @@ fn an_export_leaves_nothing_open_behind_it() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, RATE as u32, 4_800);
-    let streamer = streamer_on(&path);
+    let (_streamer, reader) = streamer_on(&path);
 
     let mut session = session();
     {
-        let voice = disk_voice(&streamer, 0.0);
+        let voice = disk_voice(reader, 0.0);
         let (node, _) = session.graph().insert(voice);
         session.graph().set_outputs_from(node);
     }
@@ -551,11 +544,11 @@ fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("vanished.wav");
     write_ramp(&path, RATE as u32, 4_800);
-    let streamer = streamer_on(&path);
+    let (_streamer, reader) = streamer_on(&path);
 
     let mut session = session();
     let clip = {
-        let voice = disk_voice(&streamer, 0.0);
+        let voice = disk_voice(reader, 0.0);
         let (node, _) = session.graph().insert(voice);
         session.graph().set_outputs_from(node);
         node

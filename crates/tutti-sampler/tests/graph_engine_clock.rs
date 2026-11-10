@@ -63,7 +63,6 @@ fn pool(cents: f32) -> VoicePool {
                 pitch: Cents::new(cents),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
     pool

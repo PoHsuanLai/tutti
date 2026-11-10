@@ -79,7 +79,6 @@ fn the_add_voice_drain_frees_nothing() {
                 stretch: StretchFactor::new(2.0),
                 ..Playback::default()
             },
-            channel_index: None,
         })
     };
     for id in [1, 2, 1] {

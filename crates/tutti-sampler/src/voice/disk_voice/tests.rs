@@ -1,9 +1,9 @@
 use super::*;
-use crate::streamer::{RegionBuffer, RegionId};
+use crate::streamer::{RegionBuffer, StreamId};
 use crate::testing::{MockTransport, block, play};
 use std::path::PathBuf;
 use tutti_graph::contract::Direct;
-use tutti_types::{Bpm, SamplePosition, Samples};
+use tutti_types::{Bpm, Samples};
 
 /// The rate the tests' blocks run at.
 const SR: f64 = 44_100.0;
@@ -32,26 +32,26 @@ fn under(voice: &mut DiskVoice, t: &MockTransport, rate: f64, n: usize) -> Vec<V
 /// Tests still author stereo pairs for readability; flatten them at the one
 /// boundary rather than rewriting every fixture. The frames land at
 /// straight positions `0..`.
-fn make_reader_with_samples(samples: &[(f32, f32)]) -> SharedReader {
+fn make_reader_with_samples(samples: &[(f32, f32)]) -> (SharedReader, tutti_rt::PosReader) {
     make_reader_at(samples, 0)
 }
 
 /// [`make_reader_with_samples`], the frames landing at straight positions
 /// `start..` (where a placed voice reads them).
-fn make_reader_at(samples: &[(f32, f32)], start: u64) -> SharedReader {
-    let (mut writer, reader) =
-        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64, 2u16);
+fn make_reader_at(samples: &[(f32, f32)], start: u64) -> (SharedReader, tutti_rt::PosReader) {
+    let (mut writer, reader, pos) =
+        RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), samples.len() + 64, 2u16);
     writer.reset(start);
     writer.set_play(start);
     let flat: Vec<f32> = samples.iter().flat_map(|&(l, r)| [l, r]).collect();
     writer.push_interleaved(&flat);
-    reader
+    (reader, pos)
 }
 
 fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<RtState>) {
-    let reader = make_reader_with_samples(samples);
+    let (reader, pos) = make_reader_with_samples(samples);
     let state = Arc::new(RtState::new());
-    let unit = DiskSource::new(reader, Arc::clone(&state));
+    let unit = DiskSource::new(reader, pos, Arc::clone(&state));
     (unit, state)
 }
 
@@ -106,7 +106,8 @@ fn make_clip_reader_at(
     duration: Option<BeatDuration>,
 ) -> DiskVoice {
     let state = Arc::new(RtState::new());
-    let inner = DiskSource::new(make_reader_at(samples, at), Arc::clone(&state));
+    let (ring, pos) = make_reader_at(samples, at);
+    let inner = DiskSource::new(ring, pos, Arc::clone(&state));
     DiskVoice::new(
         inner,
         state,
@@ -250,20 +251,10 @@ fn a_fork_closes_its_file_once_past_its_window() {
     w.finalize().expect("writes");
     let mut streamer =
         crate::DiskStreamer::manual(SampleRate(48_000.0), Default::default()).expect("builds");
-    streamer
-        .commands()
-        .send(crate::Command::Stream {
-            channel_index: 0,
-            file_path: path,
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
-    let _ = streamer.step_until_settled(1_000);
+    let opening = streamer.open(&path, crate::Placement::HEAD);
+    let reader = crate::testing::settle(&mut streamer, opening).expect("the file opens");
     // Beats [0, 1): 24 000 frames at 120 BPM.
-    let voice = streamer
-        .status()
-        .take_disk_voice(0, Beat::new(0.0), Some(BeatDuration::new(1.0)))
-        .expect("the link is installed");
+    let voice = crate::DiskVoice::from_reader(reader, Beat::new(0.0), Some(BeatDuration::new(1.0)));
 
     let render = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut copy = voice.fork_copy();
@@ -312,19 +303,9 @@ fn a_stopped_clock_silences_a_fork() {
     w.finalize().expect("writes");
     let mut streamer =
         crate::DiskStreamer::manual(SampleRate(48_000.0), Default::default()).expect("builds");
-    streamer
-        .commands()
-        .send(crate::Command::Stream {
-            channel_index: 0,
-            file_path: path,
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
-    let _ = streamer.step_until_settled(1_000);
-    let voice = streamer
-        .status()
-        .take_disk_voice(0, Beat::new(0.0), None)
-        .expect("the link is installed");
+    let opening = streamer.open(&path, crate::Placement::HEAD);
+    let reader = crate::testing::settle(&mut streamer, opening).expect("the file opens");
+    let voice = crate::DiskVoice::from_reader(reader, Beat::new(0.0), None);
 
     for single in [false, true] {
         let mut copy = voice.fork_copy();
@@ -364,11 +345,12 @@ fn a_stopped_clock_silences_a_fork() {
 /// severed source's next block claims a new range -> fails.
 #[test]
 fn a_severed_copy_holds_no_live_reader() {
-    let (mut writer, ring) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4_096, 2u16);
+    let (mut writer, ring, pos) =
+        RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), 4_096, 2u16);
     writer.push_interleaved(&[0.5; 2 * 1_000]);
     let state = Arc::new(RtState::new());
     let mut live = DiskVoice::new(
-        DiskSource::new(ring, Arc::clone(&state)),
+        DiskSource::new(ring, pos, Arc::clone(&state)),
         state,
         DiskVoiceConfig {
             window: VoiceWindow::default(),
@@ -649,8 +631,8 @@ fn wide_value(k: u64, c: usize) -> f32 {
 /// `t` = 0 returns the frame itself.
 fn wide_clip(width: usize) -> DiskVoice {
     const AT: u64 = 22_000;
-    let (mut writer, reader) = RegionBuffer::with_capacity(
-        RegionId(1),
+    let (mut writer, reader, pos) = RegionBuffer::with_capacity(
+        StreamId(1),
         PathBuf::new(),
         4096,
         ChannelLayout::try_from(width).expect("a test width is small"),
@@ -662,7 +644,7 @@ fn wide_clip(width: usize) -> DiskVoice {
         .collect();
     writer.push_interleaved(&flat);
     let state = Arc::new(RtState::new());
-    let inner = DiskSource::new(reader, Arc::clone(&state));
+    let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     DiskVoice::new(
         inner,
         state,
@@ -748,8 +730,8 @@ fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
 fn placed_clip(topology: tutti_types::ChannelTopology) -> DiskVoice {
     const AT: u64 = 22_000;
     let width = topology.positions().len();
-    let (mut writer, reader) =
-        RegionBuffer::for_file(RegionId(1), PathBuf::new(), 4096, topology, usize::MAX);
+    let (mut writer, reader, pos) =
+        RegionBuffer::for_file(StreamId(1), PathBuf::new(), 4096, topology, usize::MAX);
     writer.reset(AT);
     writer.set_play(AT);
     let flat: Vec<f32> = (AT..AT + 2_000)
@@ -757,7 +739,7 @@ fn placed_clip(topology: tutti_types::ChannelTopology) -> DiskVoice {
         .collect();
     writer.push_interleaved(&flat);
     let state = Arc::new(RtState::new());
-    let inner = DiskSource::new(reader, Arc::clone(&state));
+    let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     DiskVoice::new(
         inner,
         state,
@@ -944,7 +926,6 @@ fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
             Voice {
                 source: VoiceSource::Disk(wide_clip(width)),
                 play: Playback::default(),
-                channel_index: None,
             },
         );
         let pool = tutti_graph::contract::prepared(pool, SampleRate(SR), BLOCK);
@@ -1052,15 +1033,15 @@ fn reset_clears_state() {
 }
 
 /// Build a `channels`-wide ring pre-filled with `frames` interleaved frames.
-fn make_wide_reader(frames: &[f32], channels: usize) -> SharedReader {
-    let (mut writer, reader) = RegionBuffer::with_capacity(
-        RegionId(1),
+fn make_wide_reader(frames: &[f32], channels: usize) -> (SharedReader, tutti_rt::PosReader) {
+    let (mut writer, reader, pos) = RegionBuffer::with_capacity(
+        StreamId(1),
         PathBuf::new(),
         frames.len() / channels + 64,
         ChannelLayout::try_from(channels).expect("a test width is small"),
     );
     writer.push_interleaved(frames);
-    reader
+    (reader, pos)
 }
 
 /// Outside its transport window a voice must silence EVERY channel.
@@ -1074,9 +1055,9 @@ fn make_wide_reader(frames: &[f32], channels: usize) -> SharedReader {
 fn outside_the_window_silences_every_channel() {
     for width in [1usize, 6] {
         let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
-        let ring = make_wide_reader(&frames, width);
+        let (ring, pos) = make_wide_reader(&frames, width);
         let state = Arc::new(RtState::new());
-        let inner = DiskSource::new(ring, state.clone());
+        let inner = DiskSource::new(ring, pos, state.clone());
         assert_eq!(
             inner.channels(),
             ChannelLayout::try_from(width).expect("a test width is small"),
@@ -1158,10 +1139,10 @@ fn cached_stride_reads_every_channel_at_width_six() {
     let frames: Vec<f32> = (0..128)
         .flat_map(|_| (1..=width).map(|c| c as f32))
         .collect();
-    let ring = make_wide_reader(&frames, width);
+    let (ring, pos) = make_wide_reader(&frames, width);
     let state = Arc::new(RtState::new());
     let mut voice = DiskVoice::new(
-        DiskSource::new(ring, state.clone()),
+        DiskSource::new(ring, pos, state.clone()),
         state,
         DiskVoiceConfig {
             window: VoiceWindow::default(),
@@ -1305,7 +1286,6 @@ fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
         Voice {
             source: VoiceSource::Disk(wide_clip(2)),
             play: Playback::default(),
-            channel_index: None,
         },
     );
     let pool = tutti_graph::contract::prepared(pool, SampleRate(SR), BLOCK);
@@ -1446,13 +1426,14 @@ fn a_block_with_no_position_leaves_the_lanes_alone() {
 fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
-    let (mut writer, reader) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1u16);
+    let (mut writer, reader, pos) =
+        RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), 4096, 1u16);
     RegionBuffer::place(&mut writer, AT, 256);
     let from = writer.window().0;
     let flat: Vec<f32> = (from..from + 2_000).map(|k| k as f32).collect();
     writer.push_interleaved(&flat);
     let state = Arc::new(RtState::new());
-    let inner = DiskSource::new(reader, Arc::clone(&state));
+    let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     let mut voice = DiskVoice::new(
         inner,
         state,
@@ -1500,13 +1481,14 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
 fn a_skipped_block_releases_the_ring_to_the_writer() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
-    let (mut writer, reader) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1u16);
+    let (mut writer, reader, pos) =
+        RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), 4096, 1u16);
     writer.reset(AT);
     writer.set_play(AT);
     let flat: Vec<f32> = (AT..AT + 2_000).map(|k| k as f32).collect();
     writer.push_interleaved(&flat);
     let state = Arc::new(RtState::new());
-    let inner = DiskSource::new(reader, Arc::clone(&state));
+    let inner = DiskSource::new(reader, pos, Arc::clone(&state));
     let mut voice = DiskVoice::new(
         inner,
         state,
@@ -1550,7 +1532,7 @@ fn a_skipped_block_releases_the_ring_to_the_writer() {
 /// returning every block's bits and the underruns counted. A skipped
 /// block is rendered as the zeros it stands for.
 fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
-    use crate::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};
+    use crate::{DiskStreamer, DiskStreamerConfig, StepOutcome};
     const BLOCK: usize = 64;
     let _guard = NoSkip::on(no_skip);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1571,23 +1553,14 @@ fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
     w.finalize().expect("finalize wav");
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    streamer
-        .commands()
-        .send(Command::Stream {
-            channel_index: 0,
-            file_path: path,
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
+    let opening = streamer.open(&path, crate::Placement::HEAD);
+    let reader = crate::testing::settle(&mut streamer, opening).expect("the file opens");
     for _ in 0..4096 {
         if streamer.step_once() != StepOutcome::Busy {
             break;
         }
     }
-    let mut voice = streamer
-        .status()
-        .take_disk_voice(0, Beat::new(0.0), None)
-        .expect("a primed stream gives a voice");
+    let mut voice = crate::DiskVoice::from_reader(reader, Beat::new(0.0), None);
     voice.set_render_rate(SampleRate(SR));
     let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
     let mut clock = crate::voice::clock::Clock::new();

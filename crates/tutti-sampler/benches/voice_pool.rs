@@ -29,8 +29,8 @@ use tutti_codec::Wave;
 use tutti_graph::contract::Direct;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
-    Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback, SlotId,
-    StepOutcome, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
+    DiskStreamer, DiskStreamerConfig, DiskVoice, LoopSetting, MemorySource, Open, Placement,
+    Playback, SlotId, StepOutcome, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
 use tutti_types::{Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor};
 
@@ -124,7 +124,6 @@ fn pool_with(n: usize, stretch: f32, cents: f32) -> Rig {
                         pitch: Cents::new(cents),
                         ..Default::default()
                     },
-                    channel_index: None,
                 }),
                 stretch: None,
             })
@@ -315,27 +314,19 @@ fn pool_knobs(
             w.finalize().expect("finalize wav");
             let mut s =
                 DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-            for channel_index in 0..n {
-                s.commands()
-                    .send(Command::Stream {
-                        channel_index,
-                        file_path: path.clone(),
-                        offset: SamplePosition(0.0),
-                    })
-                    .expect("the streamer is alive");
-            }
+            let openings: Vec<_> = (0..n).map(|_| s.open(&path, Placement::HEAD)).collect();
             for _ in 0..4096 {
                 if s.step_once() != StepOutcome::Busy {
                     break;
                 }
             }
-            let voices = (0..n)
-                .map(|channel_index| {
-                    let v = s
-                        .status()
-                        .take_disk_voice(channel_index, knobs.start, None)
-                        .expect("a primed stream gives a voice");
-                    VoiceSource::Disk(v)
+            let voices = openings
+                .into_iter()
+                .map(|opening| {
+                    let Open::Ready(reader) = opening.poll() else {
+                        panic!("a primed stream answers its open");
+                    };
+                    VoiceSource::Disk(DiskVoice::from_reader(reader, knobs.start, None))
                 })
                 .collect();
             streamer = Some(s);
@@ -354,7 +345,6 @@ fn pool_knobs(
                         loop_: knobs.loop_,
                         ..Default::default()
                     },
-                    channel_index: None,
                 }),
                 // Built on this (control) thread, as `VoicePoolHandle::send`
                 // builds one for a real host.
@@ -480,7 +470,6 @@ impl Clips {
                 let node = VoiceNode::new(Voice {
                     source: VoiceSource::Memory(source),
                     play: Playback::default(),
-                    channel_index: None,
                 });
                 Direct::new(node, SampleRate(SR), block)
             })

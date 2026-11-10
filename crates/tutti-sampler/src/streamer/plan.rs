@@ -1,16 +1,14 @@
-//! Per-channel streamer plan for a streaming playback.
+//! Per-stream streamer plan for a streaming playback.
 
 use std::sync::Arc;
-use tutti_types::{PlaybackRate, SampleRate, SrcRatio};
+use tutti_types::SampleRate;
 
 use super::cache::StreamPin;
-use super::command::RegionId;
+use super::command::StreamId;
 use super::control::StreamRecord;
-use super::prefetch::SharedReader;
 use super::rt_state::RtState;
-use crate::voice::types::Direction;
 
-/// Loop playback configuration for one streaming channel.
+/// Loop playback configuration for one stream.
 pub(crate) struct LoopConfig {
     /// `(start, end)` in file frames, half-open, as it was asked for.
     pub(crate) range: (u64, u64),
@@ -20,16 +18,12 @@ pub(crate) struct LoopConfig {
     pub(crate) crossfade_frames: usize,
 }
 
-/// Active streaming connection for a channel.
+/// Active streaming connection for a stream.
 ///
-/// Groups the ring buffer consumer, region identity, and optional loop config
-/// into one value. Created by `start_streaming`, dropped by `stop_streaming`.
-/// `region_id` is cached so the streamer reads it without touching the
-/// [`SharedReader`], the ring every voice taken from the stream reads by
-/// position (`prefetch::Ring`).
+/// Groups the stream's identity and optional loop config into one value.
+/// Created by `start_streaming`, dropped with its plan when the stream closes.
 pub(crate) struct Link {
-    pub(crate) consumer: SharedReader,
-    pub(crate) region_id: RegionId,
+    pub(crate) region_id: StreamId,
     /// The loop, as the streamer runs it. Written only through
     /// [`set_loop`](Self::set_loop), which also tells the stream's
     /// [`StreamRecord`].
@@ -38,14 +32,14 @@ pub(crate) struct Link {
     /// recovered from the stream's [`SrcRatio`] (`file / session`): the ratio
     /// is re-derived from this when the session rate moves
     /// (`SessionRate::set`), and a placement gate converts beats to file
-    /// frames with it (`Status::take_disk_voice`).
+    /// frames with it (`StreamReader::file_rate`).
     pub(crate) file_rate: SampleRate,
     /// The file's length in frames, as the stream found it: what a loop's end
     /// is clamped to, as every tier clamps it (`LoopSpan::new`).
     pub(crate) file_frames: u64,
     /// What a fork of a voice on this stream needs to play the same file
     /// itself: the stream's own small record, shared with every voice taken
-    /// from it (`take_streaming_unit`). The region writer that also knows the
+    /// from it (`StreamReader`). The region writer that also knows the
     /// path is streamer-thread-local, out of any other thread's reach.
     pub(crate) record: Arc<StreamRecord>,
     /// Keeps the streamed wave pinned in the [`LruCache`](super::cache::LruCache)
@@ -74,23 +68,19 @@ impl Link {
     }
 }
 
-/// The stream is over the moment its link goes (stopped, or replaced by a
-/// new stream on the channel), so a voice still holding its record — on a
-/// ring the streamer no longer feeds — forks to silence, as it plays live.
+/// The stream is over the moment its link goes (stopped), so a voice still
+/// holding its record — on a ring the streamer no longer feeds — forks to
+/// silence, as it plays live.
 impl Drop for Link {
     fn drop(&mut self) {
         self.record.end();
     }
 }
 
-/// Per-channel streamer-thread state.
-///
-/// `Idle` when no file is streaming, `Streaming` when active. The enum makes
-/// it impossible to have a loop config without an active link.
-///
-/// `rt_state` lives outside the enum because they persist
-/// across idle/streaming transitions (the audio thread holds an `Arc<RtState>`
-/// clone that must stay alive).
+/// One stream's streamer-thread state: its link, and the control cell the
+/// voice shares (the audio thread holds an `Arc<RtState>` clone that must stay
+/// alive past the plan). Held in the plan map under the stream's id, and
+/// dropped from it when the stream closes.
 pub struct ChannelPlan {
     pub(crate) link: Option<Link>,
     pub(crate) rt_state: Arc<RtState>,
@@ -106,11 +96,11 @@ impl Default for ChannelPlan {
 }
 
 impl ChannelPlan {
-    /// Attach a ring buffer consumer, caching its region id.
+    /// Install the stream's link under `region_id`.
     ///
     /// `cache_pin` keeps the streamed wave resident in the LRU cache for the
     /// stream's lifetime; it is stored in the `Link` and released when
-    /// `stop_streaming` drops the link. Pass `None` for a stream that holds no
+    /// the stream closes and the link drops. Pass `None` for a stream that holds no
     /// resident cache entry (incremental disk streaming). `file_rate` is the
     /// file's own rate (see [`Link::file_rate`]); `file_path` the file, and
     /// `cache` the streamer's wave cache, both for the stream's
@@ -118,16 +108,14 @@ impl ChannelPlan {
     /// [`Link::file_frames`]).
     pub fn start_streaming(
         &mut self,
-        consumer: SharedReader,
+        region_id: StreamId,
         cache_pin: Option<StreamPin>,
         file_rate: SampleRate,
         file_frames: u64,
         file_path: std::path::PathBuf,
         cache: std::sync::Weak<super::cache::LruCache>,
     ) {
-        let region_id = consumer.region_id();
         self.link = Some(Link {
-            consumer,
             region_id,
             loop_config: None,
             file_rate,
@@ -137,35 +125,8 @@ impl ChannelPlan {
         });
     }
 
-    /// Fully reset the channel: drop the link (and its loop config), and reset `rt_state` to defaults. The `rt_state` Arc itself
-    /// stays alive because the audio thread may still hold a clone.
-    pub fn stop_streaming(&mut self) {
-        self.link = None;
-        self.rt_state.set_speed(PlaybackRate::UNITY);
-        self.rt_state.set_direction(Direction::Forward);
-        self.rt_state.set_src_ratio(SrcRatio::UNITY);
-    }
-
     /// Clone of the RT-shared state handle for passing to the audio thread.
     pub fn rt_state(&self) -> Arc<RtState> {
         Arc::clone(&self.rt_state)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_stop_streaming_resets_everything() {
-        let mut state = ChannelPlan::default();
-        state.rt_state.set_speed(PlaybackRate::new(2.0));
-        state.rt_state.set_reverse(true);
-
-        state.stop_streaming();
-
-        assert!(state.link.is_none());
-        assert_eq!(state.rt_state.speed(), PlaybackRate::UNITY);
-        assert!(!state.rt_state.is_reverse());
     }
 }

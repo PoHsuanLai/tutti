@@ -41,7 +41,6 @@ pub fn memory_voice(
         // `None`: the streamer channel is a disk-tier concept. `Voice`'s own doc
         // says it is "meaningless for `Memory` (loop is primed directly on the
         // `MemorySource`)".
-        channel_index: None,
     })
 }
 
@@ -96,23 +95,5 @@ mod tests {
                 file.count()
             );
         }
-    }
-
-    #[test]
-    fn a_memory_voice_carries_no_streamer_channel() {
-        let wave = Arc::new(Wave::with_capacity(2, 48_000.0, 128));
-        let v = memory_voice(
-            wave,
-            ChannelLayout::STEREO,
-            Playback::default(),
-            Default::default(),
-        )
-        .expect("a stereo wave places");
-        assert!(
-            v.channel_index.is_none(),
-            "the streamer channel is a disk-tier concept; `Voice`'s doc calls it \
-             meaningless for Memory"
-        );
-        assert!(matches!(v.source, VoiceSource::Memory(_)));
     }
 }

@@ -126,7 +126,7 @@ where each stands:
 |---|---|---|
 | B1 | A re-`Stream` on a streaming channel overwrote the `Link` and leaked the old region | **Fixed, #420** (the replaced stream frees its region) |
 | B2 | `StreamPin` decremented an entry it never incremented | **Fixed, #420** (a pin releases its own count) |
-| B3 | A `take_disk_voice` after a re-`Stream` is sent but before the streamer applies it succeeds on the *old* link: the new voice binds to a ring that is no longer fed, and the record says the stream ended | **Confirmed real by reading** (`control.rs`: `take_streaming_unit` reads whatever `plan.link` is now; `NotStreaming` cannot tell "never opened" from "reopening"). Open. Fixed by cut 3 (§8), which makes the reader the reply of one open |
+| B3 | A `take_disk_voice` after a re-`Stream` is sent but before the streamer applies it succeeds on the *old* link: the new voice binds to a ring that is no longer fed, and the record says the stream ended | **Confirmed real by reading** (`control.rs`: `take_streaming_unit` reads whatever `plan.link` is now; `NotStreaming` cannot tell "never opened" from "reopening"). **Fixed, cut 3** (§8): the reader is the reply of one open, so there is no lookup to read the old stream's ring; its test is `two_opens_each_yield_the_reader_of_their_own_stream` |
 | B4 | `SetVarispeed` and `Seek` carry only a channel, so one queued for the old stream applies to the next file, or to an idle plan and is inherited by the next stream | Open. Fixed by cut 4: every command names a stream |
 | B5 | No panic containment on the streamer thread: a decoder panic freezes every ring and the only symptom is `StreamerGone` on the next send | Open. Cut 5 |
 | B6 | Two seeks inside one block replay a stale target (the epoch and target pair) | Dies with the free-running reader, cut 1 |
@@ -905,7 +905,7 @@ Each stage is one PR that stays green. Line figures are estimates.
    doc's smallest-useful-cut idea (the open and the by-value reader first,
    the plan map behind it, then delete the map), with the dead machinery
    deleted first so that nothing is ported that has no caller. B1 and B2 are
-   fixed on main (#420); B3 is open until cut 3. Line figures are not
+   fixed on main (#420); B3 by cut 3. Line figures are not
    promised: recount each cut with `git diff --stat`.
 
    | Cut | Lands | Deletes | Pins |
@@ -966,6 +966,92 @@ Each stage is one PR that stays green. Line figures are estimates.
    `a_table_subscribed_after_a_hand_step_reaches_the_cycle` tests, which only
    pinned the subscription, went with it. **Behaviour change:** a streamed disk
    voice no longer plays late by its output channel's compensation.
+
+   *As built, cut 3.* An open is a request and a reply, and the reader is the
+   reply. `DiskStreamer::open(&Path, Placement) -> Opening` mints a `StreamId`
+   on the control side, queues `StreamerCommand::Open { id, file_path, start,
+   width, reply }` and returns an `Opening` holding the reply's one cell (a
+   bounded-1 channel); `Opening::poll(self)` consumes it and answers `Open`
+   (`Pending(Opening)`, `Ready(StreamReader)` or `Failed(OpenError)`). A
+   dropped reply sender, the streamer's thread gone, is `Failed(StreamerGone)`
+   at the first poll. `StreamReader` is the audio side's one reader: the ring's
+   `PosReader`, the `Reader<RingMap>` the open registered on the control side
+   (so a voice built from it registers nothing), the `Place`, the voice's
+   width, the file's rate and the `StreamOrigin`; it is not `Clone`, and
+   `DiskVoice::from_reader(reader, start_beat, duration)` moves it into the
+   voice. Both rules have a `compile_fail` doctest with a compiling twin
+   (`Opening` polled twice, `StreamReader` cloned) and a recorded mutation
+   (`poll(&self)`, an `impl Clone`). Gone: `Command::Stream`,
+   `TakeVoiceError` (both variants and `Place`: the placement is now an open's
+   failure), `Ring`'s `Mutex<Option<PosReader>>` and `take_reader`,
+   `take_streaming_unit`, `Status::take_disk_voice{,_into}` and the `Status`
+   plan map, `handle_stream_file`'s silent returns and its `yield_now` poll
+   loops (the doc example's, the tests'), `WaveIn` (one caller: it is the
+   function `read_wave` now), `ChannelPlan::stop_streaming`, `Link.consumer`
+   and `Local`'s region-id mint. `Open::Failed` carries `Io(ErrorKind)` for a
+   file that cannot be opened, `Format` for one that opens and is not audio
+   this build decodes, `Placement(PlaceError)` for a channel no speaker names
+   or an unordered narrowing, and `StreamerGone`; a test per variant.
+   `Placement::new` refuses a negative or non-finite position
+   (`check_range_contract`, with an optional `serde` feature the crate's own
+   dev-dependency turns on) and names its flooring of a fractional frame.
+
+   Departures from §2.3's sketch, each because the code made the sketch
+   impossible or worse at this cut:
+   - **`Open::Ready(StreamReader)`, not `Ready(Stream, StreamReader)`.** The
+     `Stream` handle is cut 4's. Until then a stream is stopped and looped by
+     its id: `Command::Loop { stream, setting }` and `Command::Stop { stream }`
+     replace the channel number, `StreamReader::id()` and `Opening::id()` are
+     where an id comes from, and **`StreamId` is public**, an opaque `Copy`
+     with no constructor (the row says private, but a public `Command` names
+     it; cut 4 makes it the `Stream`'s id). It is also the plan map's key and
+     the `RegionMap`'s: `RegionId` is renamed, not kept beside it.
+   - **The width is a second entry, not a field of `Placement`.**
+     `Placement` is only where the reader starts, so it can be a clean range
+     type; `DiskStreamer::open_into(path, place, width)` asks for another
+     voice width than the file's, and `open` is its `None`. The placement is
+     built on the streamer's thread after the probe, before any ring exists,
+     so a refusal leaves nothing to free (it used to be a `take_disk_voice`
+     error that left the reader in the plan).
+   - **`StreamReader` has no `block`** (cut 7's), and `DiskVoice` is built
+     with `DiskVoice::from_reader`, an inherent function, not by a `Status`
+     method; `Status` holds only the session rate.
+   - **A re-open on a channel is not a thing.** With no channel number each
+     open is a stream of its own and the plan map is keyed by the open's id, so
+     B1's "replaced stream" cannot occur; its test, `a_replaced_stream_is_freed`,
+     became `a_stopped_stream_is_freed` (a `Weak` of the ring, dead in the step
+     that applies the `Stop`), and the cut 4 row's restatement stands on
+     `Close`. `Voice::channel_index`, the pool's number for a stream, went with
+     it: a disk voice knows its stream (`DiskVoice::stream`) and the pool
+     forwards its loop there. `StreamAddr`'s `Option` and the pool's
+     `StreamTable` remain, as cut 6's.
+   - **An abandoned open is closed.** Dropping an `Opening` abandons the open:
+     the streamer that answers into nobody removes the stream it opened.
+   - **The reply cell is a bounded channel, not a hand-built cell.** A
+     `crossbeam_channel` of one is already "written once, read once" and its
+     disconnect is the `StreamerGone` verdict; nothing new is lock-free.
+
+   B3's test is `two_opens_each_yield_the_reader_of_their_own_stream`
+   (`streamer/open/tests.rs`): two opens, the second made before the streamer
+   has run, are both `Pending`; after a step each yields the reader of its own
+   open (`StreamReader::id`), each plays its own file (dyadic constants, to the
+   bit), and the first ring is freed in the step that stops its stream.
+   Mutation (run): `poll` receiving from one reply shared by the streamer's
+   opens, newest overwriting (what a channel lookup was) makes the first poll
+   take the second stream's answer and the test fails. The old scenario cannot
+   be written: a reader comes only from its own `Opening`.
+   `tier_parity`, `live_loop`, `offline_disk_voice`, `tier_alignment`,
+   `block_length_invariance` and the disk voice tests pass with no assertion
+   changed; they were ported in how they obtain a voice. Four tests of
+   deleted code went: a second take refused (`a_stream_serves_one_live_voice`,
+   `a_ring_serves_one_live_reader`: now the two doctests), the region-id mint's
+   monotonic test and `ChannelPlan::stop_streaming`'s reset test. The
+   `Place`-refusal-leaves-the-reader step of the 5.1 test is now "a refusal
+   leaves nothing, and the file opens at stereo and at its own width". The
+   other ports: `a_fork_of_a_stream_that_is_gone_plays_nothing` stops the
+   stream where it restarted the channel, and
+   `a_loop_for_a_replaced_stream_leaves_the_new_one_alone` is
+   `a_loop_for_a_stopped_stream_leaves_the_others_alone`.
 
    Cuts 1 and 2 are independent of the rest and of each other and may land in
    either order, or after 3. Cut 3 is the smallest useful cut and is the first

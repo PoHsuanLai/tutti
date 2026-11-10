@@ -7,22 +7,19 @@
 //! - [`Commands`] wraps the streamer command channel and exposes a single
 //!   [`send`](Commands::send) over a public [`Command`] enum — mirroring the
 //!   audio-thread [`VoicePoolHandle`](crate::VoicePoolHandle).
-//! - [`Status`] wraps the sample rate + channel-plan map and exposes reads
-//!   ([`sample_rate`](Status::sample_rate)) plus the reader-factory
-//!   [`take_disk_voice`](Status::take_disk_voice).
+//! - [`Status`] wraps the session rate and exposes reads
+//!   ([`sample_rate`](Status::sample_rate)).
+//!
+//! A stream is opened with [`DiskStreamer::open`](crate::DiskStreamer::open),
+//! whose reply is the stream's [`StreamReader`](crate::StreamReader).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dashmap::DashMap;
-
-use crate::streamer::{
-    ChannelPlan, RegionId, SessionRate, StreamerCommand, StreamerGone, StreamerSender,
-    TakeVoiceError,
-};
-use crate::voice::{DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
+use crate::streamer::{SessionRate, StreamId, StreamerCommand, StreamerGone, StreamerSender};
+use crate::voice::LoopSetting;
 use tutti_codec::Wave;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, SamplePosition, SampleRate};
+use tutti_types::SampleRate;
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`).
@@ -68,30 +65,23 @@ impl std::fmt::Debug for Source {
 /// A streamer stream-control command, one public variant per streaming operation.
 ///
 /// Each variant maps to exactly one internal `StreamerCommand`; the [`Commands`]
-/// port performs that mapping in [`send`](Commands::send).
+/// port performs that mapping in [`send`](Commands::send). A stream is
+/// addressed by its [`StreamId`] ([`StreamReader::id`](crate::StreamReader::id)):
+/// a command for a stream the streamer no longer holds is ignored.
 ///
 /// # Positions are in frames
 ///
-/// Every [`SamplePosition`] here indexes the file in frames, not in
-/// interleaved samples and not in engine-rate frames. A caller that divides by
-/// the channel count, or that converts through the session rate instead of the
-/// file's own, addresses a fraction of the intended point — a 6-channel file
-/// then seeks to a sixth of where it was asked to.
+/// Every [`SamplePosition`](tutti_types::SamplePosition) here indexes the file
+/// in frames, not in interleaved samples and not in engine-rate frames. A
+/// caller that divides by the channel count, or that converts through the
+/// session rate instead of the file's own, addresses a fraction of the
+/// intended point — a 6-channel file then seeks to a sixth of where it was
+/// asked to.
 ///
 /// Negative positions are clamped to zero on dispatch rather than rejected.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Command {
-    /// Register a disk-streaming source for a timeline clip on `channel_index`,
-    /// starting `offset` frames into the file. Maps to `StreamAudioFile`.
-    Stream {
-        /// Streamer channel this stream occupies. One live stream per index.
-        channel_index: usize,
-        /// The file to stream. Opened by the streamer thread, not here.
-        file_path: PathBuf,
-        /// Start position, in frames from the head of the file.
-        offset: SamplePosition,
-    },
     /// Enable, replace or disable looping. `LoopSetting::On { .. }` maps to
     /// `SetStreamLoop`; `LoopSetting::Off` maps to `ClearStreamLoop`.
     ///
@@ -99,17 +89,16 @@ pub enum Command {
     /// being played, crossfaded; one further ahead, exactly where it takes
     /// effect. See [`LoopSetting::On`] for the whole rule.
     Loop {
-        /// Streamer channel carrying the stream to loop.
-        channel_index: usize,
+        /// The stream to loop.
+        stream: StreamId,
         /// The loop intent. Its `start`/`end` are file frames and its
         /// `crossfade_frames` are frames, matching this enum's rule.
         setting: LoopSetting,
     },
-    /// Stop the stream on a channel, dropping its ring and link. Maps to
-    /// `StopStreaming`.
+    /// Stop a stream, dropping its ring and link. Maps to `StopStreaming`.
     Stop {
-        /// Streamer channel to tear down.
-        channel_index: usize,
+        /// The stream to tear down.
+        stream: StreamId,
     },
 }
 
@@ -118,46 +107,25 @@ impl Command {
     /// variants meet the streamer's.
     fn into_streamer(self) -> StreamerCommand {
         match self {
-            Command::Stream {
-                channel_index,
-                file_path,
-                offset,
-            } => StreamerCommand::StreamAudioFile {
-                channel_index,
-                file_path,
-                offset_samples: offset.get().max(0.0) as usize,
-            },
-            Command::Loop {
-                channel_index,
-                setting,
-            } => loop_command(channel_index, None, setting),
-            Command::Stop { channel_index } => StreamerCommand::StopStreaming { channel_index },
+            Command::Loop { stream, setting } => loop_command(stream, setting),
+            Command::Stop { stream } => StreamerCommand::StopStreaming { stream },
         }
     }
 }
 
-/// The streamer's command for a loop `setting` on `channel_index`, meant for
-/// `stream` when the sender knows it (see `StreamerCommand::SetStreamLoop`).
-fn loop_command(
-    channel_index: usize,
-    stream: Option<RegionId>,
-    setting: LoopSetting,
-) -> StreamerCommand {
+/// The streamer's command for a loop `setting` on `stream`.
+fn loop_command(stream: StreamId, setting: LoopSetting) -> StreamerCommand {
     match setting {
         LoopSetting::On {
             start,
             end,
             crossfade_frames,
         } => StreamerCommand::SetStreamLoop {
-            channel_index,
             stream,
             range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
             crossfade_frames,
         },
-        LoopSetting::Off => StreamerCommand::ClearStreamLoop {
-            channel_index,
-            stream,
-        },
+        LoopSetting::Off => StreamerCommand::ClearStreamLoop { stream },
     }
 }
 
@@ -199,19 +167,16 @@ impl Commands {
         self.tx.send(cmd.into_streamer()).map_err(|_| StreamerGone)
     }
 
-    /// Sets or clears the loop of the stream `stream` on `channel_index`:
-    /// [`send`](Self::send)'s `Command::Loop`, which the streamer ignores once
-    /// the channel carries another stream (the voice's stopped, or the
-    /// channel restarted on another file). Control thread; waits as `send`
-    /// does.
+    /// Sets or clears the loop of `stream`: [`send`](Self::send)'s
+    /// `Command::Loop`, which the streamer ignores once the stream is gone.
+    /// Control thread; waits as `send` does.
     pub(crate) fn send_stream_loop(
         &self,
-        channel_index: usize,
-        stream: RegionId,
+        stream: StreamId,
         setting: LoopSetting,
     ) -> Result<(), StreamerGone> {
         self.tx
-            .send(loop_command(channel_index, Some(stream), setting))
+            .send(loop_command(stream, setting))
             .map_err(|_| StreamerGone)
     }
 
@@ -238,17 +203,13 @@ impl Commands {
     }
 }
 
-/// READ port onto the streaming engine: a cloneable snapshot of the sample rate
-/// and the channel-plan map, exposing state reads plus the reader-factory.
+/// READ port onto the streaming engine: a cloneable snapshot of the session
+/// rate.
 #[derive(Clone)]
 pub struct Status {
     sample_rate: SessionRate,
-    plans: Arc<DashMap<usize, ChannelPlan>>,
 }
 
-// `ChannelPlan` isn't `Debug` (it holds streamer-internal cache/link state), so
-// hand-roll a summary rather than deriving — never touch the map's contents to
-// avoid contending with the streamer thread.
 impl std::fmt::Debug for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Status")
@@ -258,8 +219,8 @@ impl std::fmt::Debug for Status {
 }
 
 impl Status {
-    pub(crate) fn new(sample_rate: SessionRate, plans: Arc<DashMap<usize, ChannelPlan>>) -> Self {
-        Self { sample_rate, plans }
+    pub(crate) fn new(sample_rate: SessionRate) -> Self {
+        Self { sample_rate }
     }
 
     /// The session rate: the one the streamer was built with, or the one
@@ -269,109 +230,12 @@ impl Status {
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate.get()
     }
-
-    /// Builds a [`DiskVoice`] for a channel whose streamer stream is ready, placed
-    /// on the timeline at `start_beat` for `duration` (the transport it reads
-    /// is its block's, from the graph).
-    ///
-    /// Pulls the ring consumer and shared RT state out of the channel's plan and
-    /// wraps them in a placement-gated reader. `start_beat` and `duration` are
-    /// musical time — the gate converts them to file frames using the file's
-    /// own rate, not the session's: the rate the streamer recorded when it opened
-    /// the stream, so a session rate that moves later (a device restart) leaves
-    /// the gate's frames where they were.
-    ///
-    /// The voice also keeps a read-only handle onto the streamer's record of
-    /// the stream, so a fork of it for an offline render (an export) can read
-    /// the same file on its own rather than through the live ring; see
-    /// `DiskVoice::fork_copy`.
-    ///
-    /// Control thread; the returned voice is then moved into the graph.
-    ///
-    /// # Errors
-    ///
-    /// [`TakeVoiceError::NotStreaming`] while the streamer has not opened the
-    /// stream yet: a caller polls again next frame rather than treating it as
-    /// a failure. [`TakeVoiceError::ReaderTaken`] once a voice has been taken
-    /// from the stream: a stream serves one live voice. The voice is as wide
-    /// as the file ([`voice_width`](crate::voice_width)) and plays its
-    /// channels where they are, unless the file's order is not the engine's
-    /// (a WAV 7.1): that is permuted to it. A file with a channel no speaker
-    /// names (a second LFE, a wide or high speaker) is
-    /// [`TakeVoiceError::Place`].
-    pub fn take_disk_voice(
-        &self,
-        channel_index: usize,
-        start_beat: Beat,
-        duration: Option<BeatDuration>,
-    ) -> Result<DiskVoice, TakeVoiceError> {
-        self.take_placed_disk_voice(channel_index, None, start_beat, duration)
-    }
-
-    /// [`take_disk_voice`](Self::take_disk_voice) for a voice `width` channels
-    /// wide: the file's channels are placed into it by their
-    /// [`ChannelTopology`](tutti_types::ChannelTopology), as
-    /// [`memory_voice`](crate::memory_voice) places a wave. A file in another
-    /// order than the engine's (a WAV 7.1 lists the rears before the sides) is
-    /// permuted to it, one wider than `width` with an order is folded into it,
-    /// and a mono one takes the centre of a wider frame.
-    ///
-    /// The placement is built here, on the control side, before the stream's
-    /// reader is taken; the audio thread only applies it.
-    ///
-    /// # Errors
-    ///
-    /// As [`take_disk_voice`](Self::take_disk_voice), and
-    /// [`TakeVoiceError::Place`] when the file cannot be placed into `width`:
-    /// a channel no speaker names (a second LFE, a wide or high speaker), or a
-    /// narrowing with an unordered end (a 5.1 file into 5 channels, 10 into
-    /// 8). The stream keeps its reader, so a caller may take again at another
-    /// width.
-    pub fn take_disk_voice_into(
-        &self,
-        channel_index: usize,
-        width: ChannelLayout,
-        start_beat: Beat,
-        duration: Option<BeatDuration>,
-    ) -> Result<DiskVoice, TakeVoiceError> {
-        self.take_placed_disk_voice(channel_index, Some(width), start_beat, duration)
-    }
-
-    fn take_placed_disk_voice(
-        &self,
-        channel_index: usize,
-        width: Option<ChannelLayout>,
-        start_beat: Beat,
-        duration: Option<BeatDuration>,
-    ) -> Result<DiskVoice, TakeVoiceError> {
-        let (inner, rt_state, file_sample_rate, origin) =
-            crate::streamer::control::take_streaming_unit(&self.plans, channel_index, width)?;
-
-        Ok(DiskVoice::new(
-            inner,
-            rt_state,
-            DiskVoiceConfig {
-                window: VoiceWindow {
-                    start: start_beat,
-                    duration,
-                },
-                file_sample_rate,
-            },
-        )
-        .with_origin(origin))
-    }
-
-    /// The loop the stream on `channel_index` runs, as the streamer last set
-    /// it; `None` when the channel streams nothing (tests).
-    #[cfg(test)]
-    pub(crate) fn stream_loop(&self, channel_index: usize) -> Option<LoopSetting> {
-        crate::streamer::control::stream_loop(&self.plans, channel_index)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::SamplePosition;
 
     /// A `Commands` whose streamer is already gone — the state a real handle
     /// reaches once `StreamerThread::stop` has run.
@@ -384,7 +248,7 @@ mod tests {
     ///
     /// Covering every variant, not one representative: the arms send
     /// independently, so a variant whose `Result` went unpropagated would accept
-    /// `Stream`, `Loop` or `Stop` indefinitely and do nothing —
+    /// `Loop` or `Stop` indefinitely and do nothing —
     /// indistinguishable from working playback, and invisible to a test that
     /// only exercised its neighbours.
     #[test]
@@ -392,16 +256,8 @@ mod tests {
         let cmds = dead_streamer();
 
         assert_eq!(
-            cmds.send(Command::Stream {
-                channel_index: 0,
-                file_path: "/nonexistent.wav".into(),
-                offset: SamplePosition(0.0),
-            }),
-            Err(StreamerGone)
-        );
-        assert_eq!(
             cmds.send(Command::Loop {
-                channel_index: 0,
+                stream: StreamId(0),
                 setting: LoopSetting::Off,
             }),
             Err(StreamerGone),
@@ -409,7 +265,7 @@ mod tests {
         );
         assert_eq!(
             cmds.send(Command::Loop {
-                channel_index: 0,
+                stream: StreamId(0),
                 setting: LoopSetting::On {
                     start: SamplePosition(0.0),
                     end: SamplePosition(100.0),
@@ -420,7 +276,9 @@ mod tests {
             "the Loop/On arm is a separate send from Loop/Off"
         );
         assert_eq!(
-            cmds.send(Command::Stop { channel_index: 0 }),
+            cmds.send(Command::Stop {
+                stream: StreamId(0)
+            }),
             Err(StreamerGone)
         );
     }
@@ -430,9 +288,15 @@ mod tests {
     fn send_all_reports_nothing_queued_to_a_dead_streamer() {
         let cmds = dead_streamer();
         let queued = cmds.send_all([
-            Command::Stop { channel_index: 0 },
-            Command::Stop { channel_index: 1 },
-            Command::Stop { channel_index: 2 },
+            Command::Stop {
+                stream: StreamId(0),
+            },
+            Command::Stop {
+                stream: StreamId(1),
+            },
+            Command::Stop {
+                stream: StreamId(2),
+            },
         ]);
         assert_eq!(
             queued, 0,
@@ -447,8 +311,12 @@ mod tests {
         let cmds = Commands::new(tx);
 
         let queued = cmds.send_all([
-            Command::Stop { channel_index: 0 },
-            Command::Stop { channel_index: 1 },
+            Command::Stop {
+                stream: StreamId(0),
+            },
+            Command::Stop {
+                stream: StreamId(1),
+            },
         ]);
 
         assert_eq!(queued, 2);

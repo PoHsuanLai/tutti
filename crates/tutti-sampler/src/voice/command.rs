@@ -87,7 +87,7 @@ pub enum VoiceCommand {
     /// built entirely on the ECS/streamer side before the send.
     ///
     /// One add command for both tiers. The tier rides inside `source` and
-    /// the streamer channel inside `Voice::channel_index`, so a host does not fork
+    /// the stream inside the disk voice, so a host does not fork
     /// on in-memory versus streaming to spawn a voice.
     AddVoice {
         /// Identifies the slot for every later command aimed at this voice. An
@@ -407,7 +407,6 @@ impl std::error::Error for SendError {}
 /// # let voice = Voice {
 /// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),
-/// #     channel_index: None,
 /// # };
 /// let (_node, handle) = VoiceNode::new(voice).with_handle();
 /// // A standalone voice node has no door for a pool command.
@@ -424,7 +423,6 @@ impl std::error::Error for SendError {}
 /// # let voice = Voice {
 /// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),
-/// #     channel_index: None,
 /// # };
 /// let (_node, handle) = VoiceNode::new(voice).with_handle();
 /// handle.set_placement(tutti_types::Beat::new(1.0), None);
@@ -800,7 +798,7 @@ impl VoicePoolHandle {
     /// left to undo.
     fn roll_back(&self, addr: Option<StreamAddr>, previous: LoopSetting) {
         if let Some((streamer, addr)) = self.streamer.as_ref().zip(addr) {
-            let _ = streamer.send_stream_loop(addr.channel_index, addr.stream, previous);
+            let _ = streamer.send_stream_loop(addr.stream, previous);
         }
     }
 

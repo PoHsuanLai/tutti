@@ -1,11 +1,12 @@
 //! The streaming tier places a file's channels as the memory tier does.
 //!
 //! A disk voice reads its ring at the file's own width and order, and the
-//! `Place` built from the file's topology when the voice is taken puts the
+//! `Place` built from the file's topology when the stream opens puts the
 //! channels where the engine has them: a WAV 7.1 (rears before sides) is
 //! permuted, a channel no speaker names is refused, and a narrowing with an
-//! unordered end is refused, all as `TakeVoiceError::Place` at the call that
-//! takes the voice. A file already in the engine's order is read as it was.
+//! unordered end is refused, all as `OpenError::Placement` from the open that
+//! would have made the stream. A file already in the engine's order is read as
+//! it was.
 //!
 //! The files are written here, as WAVE_FORMAT_EXTENSIBLE float with the
 //! channel mask hand-written: channel `c` holds the constant `(c + 1) / 16`
@@ -16,9 +17,10 @@
 use std::path::Path;
 
 use tutti_graph::contract;
-use tutti_sampler::testing::MockTransport;
+use tutti_sampler::testing::{MockTransport, settle};
 use tutti_sampler::{
-    Command, Direction, DiskStreamer, DiskVoice, LoopSetting, PlaceError, TakeVoiceError,
+    Command, Direction, DiskStreamer, DiskVoice, LoopSetting, OpenError, PlaceError, Placement,
+    StreamId, StreamReader,
 };
 use tutti_types::{
     Beat, Bpm, ChannelLayout, ChannelTopology, FoldEnd, FoldError, SamplePosition, SampleRate,
@@ -72,31 +74,39 @@ fn write_wav(path: &Path, channels: u16, mask: u32) {
     std::fs::write(path, out).expect("writes the file");
 }
 
-/// A hand-stepped disk streamer streaming `path` on channel 0, primed.
-fn streamer_on(path: &Path) -> DiskStreamer {
+/// A hand-stepped disk streamer, and the answer to opening `path` on it (at
+/// `width`, or the file's own), primed.
+fn open(
+    path: &Path,
+    width: Option<ChannelLayout>,
+) -> (DiskStreamer, Result<StreamReader, OpenError>) {
     let mut streamer = DiskStreamer::manual(SampleRate(SR), Default::default()).expect("builds");
-    streamer
-        .commands()
-        .send(Command::Stream {
-            channel_index: 0,
-            file_path: path.to_path_buf(),
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
-    assert!(
-        streamer.step_until_settled(1_000) < 1_000,
-        "the ring primes"
-    );
-    streamer
+    let opening = match width {
+        Some(width) => streamer.open_into(path, Placement::HEAD, width),
+        None => streamer.open(path, Placement::HEAD),
+    };
+    let reader = settle(&mut streamer, opening);
+    if reader.is_ok() {
+        assert!(
+            streamer.step_until_settled(1_000) < 1_000,
+            "the ring primes"
+        );
+    }
+    (streamer, reader)
 }
 
-/// A file written to a temp dir and streamed.
-fn stream(channels: u16, mask: u32) -> (tempfile::TempDir, DiskStreamer) {
+/// A file written to a temp dir and streamed at its own width.
+fn stream(channels: u16, mask: u32) -> (tempfile::TempDir, DiskStreamer, StreamReader) {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("placed.wav");
     write_wav(&path, channels, mask);
-    let streamer = streamer_on(&path);
-    (dir, streamer)
+    let (streamer, reader) = open(&path, None);
+    (dir, streamer, reader.expect("a placeable file opens"))
+}
+
+/// The voice that plays `reader`, placed at beat 0 for the file's length.
+fn voice_of(reader: StreamReader) -> DiskVoice {
+    DiskVoice::from_reader(reader, Beat::new(0.0), None)
 }
 
 /// The last block of a few rendered from `voice`, planar: the ring is full and
@@ -132,16 +142,13 @@ const WAV_5_1: u32 = 0x3F; // FL FR FC LFE BL BR
 /// rears. The expectation is derived from the speakers, not the placement:
 /// engine channel `i` plays the file channel that feeds the same speaker.
 ///
-/// Mutation (run): `take_streaming_unit` building `Place::native` in place of
+/// Mutation (run): `open_stream_region` building `Place::native` in place of
 /// `Place::for_topology` (the disk tier as it was) -> the voice plays the
 /// file's order and fails on channel 4.
 #[test]
 fn a_wav_order_seven_one_is_permuted_to_the_engines_order() {
-    let (_dir, streamer) = stream(8, WAV_7_1);
-    let voice = streamer
-        .status()
-        .take_disk_voice(0, Beat::new(0.0), None)
-        .expect("a 7.1 file places at its own width");
+    let (_dir, _streamer, reader) = stream(8, WAV_7_1);
+    let voice = voice_of(reader);
     let file = {
         use tutti_types::Speaker::*;
         ChannelTopology::new([
@@ -167,19 +174,22 @@ fn a_wav_order_seven_one_is_permuted_to_the_engines_order() {
 }
 
 /// A file with a channel no speaker names (bit 25 is a second LFE) is refused
-/// when the voice is taken, at any width, and the stream keeps its reader.
+/// when the stream is opened, at any width: the open fails with the placement's
+/// refusal, where it used to open and fail at the voice.
 ///
-/// Mutation (run): `take_streaming_unit` falling back to `Place::native` when
-/// `Place::for_topology` refuses (`unwrap_or_else`) -> the take succeeds and
+/// Mutation (run): `open_stream_region` falling back to `Place::native` when
+/// `Place::for_topology` refuses (`unwrap_or_else`) -> the open succeeds and
 /// fails the first assertion. (The `Unknown` check in `for_topology` is also
 /// `Fold::to_width`'s, so removing it alone changes nothing for a wide file.)
 #[test]
 fn a_file_with_a_second_lfe_is_refused() {
-    let (dir, streamer) = stream(2, 0x0200_0001);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("placed.wav");
+    write_wav(&path, 2, 0x0200_0001);
     // The fixture is what it says: bit 25 is the decoder's second LFE
     // (`tutti-codec`'s `a_flag_with_no_speaker_keeps_its_slot_as_unknown`).
     assert_eq!(
-        tutti_codec::FileIn::open(dir.path().join("placed.wav"))
+        tutti_codec::FileIn::open(&path)
             .expect("opens")
             .topology()
             .positions(),
@@ -188,70 +198,48 @@ fn a_file_with_a_second_lfe_is_refused() {
             tutti_types::Speaker::Unknown(25)
         ]
     );
-    let status = streamer.status();
-    let refused = TakeVoiceError::Place(PlaceError::Fold(FoldError::Unnamed {
+    let refused = OpenError::Placement(PlaceError::Fold(FoldError::Unnamed {
         end: FoldEnd::Source,
         channel: 1,
     }));
-    assert_eq!(
-        status.take_disk_voice(0, Beat::new(0.0), None).err(),
-        Some(refused)
-    );
-    assert_eq!(
-        status
-            .take_disk_voice_into(0, ChannelLayout::STEREO, Beat::new(0.0), None)
-            .err(),
-        Some(refused)
-    );
-    // Refused before the reader was taken: asked again, it is still the
-    // placement that is refused, never `ReaderTaken`. (No width places an
-    // unnamed channel, so the retake that succeeds is in the 5.1 case.)
-    assert_eq!(
-        status.take_disk_voice(0, Beat::new(0.0), None).err(),
-        Some(refused)
-    );
+    for width in [None, Some(ChannelLayout::STEREO)] {
+        let (_streamer, answer) = open(&path, width);
+        assert_eq!(answer.err(), Some(refused.clone()), "width {width:?}");
+    }
 }
 
-/// A 5.1 file into a 5-wide voice has no order to narrow by: refused, and the
-/// stream keeps its reader, so the same file then takes at its own width and
-/// at stereo (a fold by position).
+/// A 5.1 file into a 5-wide voice has no order to narrow by: the open is
+/// refused, and a refusal leaves nothing behind, so the same file then opens at
+/// stereo (a fold by position) and at its own width.
 ///
 /// Mutation (run): the width given to `Place::for_topology` replaced by the
-/// file's own in `take_streaming_unit` -> the 5-wide take succeeds and fails
+/// file's own in `open_stream_region` -> the 5-wide open succeeds and fails
 /// the first assertion. (Also the `unwrap_or_else` fallback above.)
 #[test]
 fn a_five_one_file_into_a_five_wide_voice_is_refused() {
-    let (_dir, streamer) = stream(6, WAV_5_1);
-    let status = streamer.status();
-    let refused = status
-        .take_disk_voice_into(0, ChannelLayout::from(5u16), Beat::new(0.0), None)
-        .err();
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("placed.wav");
+    write_wav(&path, 6, WAV_5_1);
+    let (mut streamer, refused) = open(&path, Some(ChannelLayout::from(5u16)));
+    let refused = refused.err();
     assert!(
         matches!(
             refused,
-            Some(TakeVoiceError::Place(PlaceError::Fold(
+            Some(OpenError::Placement(PlaceError::Fold(
                 FoldError::Unplaced { channel: 5, .. }
             )))
         ),
         "{refused:?}"
     );
-    // Refused again, not `ReaderTaken`, and then the reader is still there.
-    assert_eq!(
-        status
-            .take_disk_voice_into(0, ChannelLayout::from(5u16), Beat::new(0.0), None)
-            .err(),
-        refused
-    );
-    let stereo = status
-        .take_disk_voice_into(0, ChannelLayout::STEREO, Beat::new(0.0), None)
-        .expect("a refusal leaves the reader, and 5.1 folds to stereo");
-    assert_eq!(settled_block(stereo).len(), 2);
-    // That take is the stream's one: the next is `ReaderTaken`, so the
-    // refusals above were not it.
-    assert_eq!(
-        status.take_disk_voice(0, Beat::new(0.0), None).err(),
-        Some(TakeVoiceError::ReaderTaken)
-    );
+    // Refused again, the same way: nothing the first refusal did changed it.
+    let opening = streamer.open_into(&path, Placement::HEAD, ChannelLayout::from(5u16));
+    assert_eq!(settle(&mut streamer, opening).err(), refused);
+    let opening = streamer.open_into(&path, Placement::HEAD, ChannelLayout::STEREO);
+    let stereo = settle(&mut streamer, opening).expect("5.1 folds to stereo");
+    assert_eq!(settled_block(voice_of(stereo)).len(), 2);
+    let opening = streamer.open(&path, Placement::HEAD);
+    let own = settle(&mut streamer, opening).expect("and opens at its own width");
+    assert_eq!(settled_block(voice_of(own)).len(), 6);
 }
 
 /// A stereo file plays as it was: the voice is two wide and every sample is the
@@ -261,11 +249,8 @@ fn a_five_one_file_into_a_five_wide_voice_is_refused() {
 /// the channels are exchanged and it fails (and the 7.1 case with it).
 #[test]
 fn a_stereo_file_is_unchanged() {
-    let (_dir, streamer) = stream(2, 0x3);
-    let voice = streamer
-        .status()
-        .take_disk_voice(0, Beat::new(0.0), None)
-        .expect("stereo places");
+    let (_dir, _streamer, reader) = stream(2, 0x3);
+    let voice = voice_of(reader);
     assert_channels(&settled_block(voice), &[value(0), value(1)], "stereo");
 }
 
@@ -279,11 +264,8 @@ fn a_stereo_file_is_unchanged() {
 fn a_fork_places_the_file_as_the_live_voice_does() {
     use tutti_graph::{ForkMode, IntoNode, Prepare};
     use tutti_types::Samples;
-    let (_dir, streamer) = stream(8, WAV_7_1);
-    let voice = streamer
-        .status()
-        .take_disk_voice(0, Beat::new(0.0), None)
-        .expect("places");
+    let (_dir, _streamer, reader) = stream(8, WAV_7_1);
+    let voice = voice_of(reader);
     let forked = voice
         .clone()
         .into_parts()
@@ -398,9 +380,9 @@ fn fixtures() -> [Fixture; 3] {
     ]
 }
 
-/// A file with a Fixture's shape, streamed on channel 0.
-fn stream_fixture(f: &Fixture) -> (tempfile::TempDir, DiskStreamer) {
-    let (dir, streamer) = stream(f.channels, f.mask);
+/// A file with a Fixture's shape, streamed.
+fn stream_fixture(f: &Fixture) -> (tempfile::TempDir, DiskStreamer, StreamReader) {
+    let (dir, streamer, reader) = stream(f.channels, f.mask);
     assert_eq!(
         tutti_codec::FileIn::open(dir.path().join("placed.wav"))
             .expect("opens")
@@ -408,7 +390,7 @@ fn stream_fixture(f: &Fixture) -> (tempfile::TempDir, DiskStreamer) {
             .positions(),
         f.speakers
     );
-    (dir, streamer)
+    (dir, streamer, reader)
 }
 
 /// Every sample of `block` is within rounding of `want` (a fold sums in `f32`).
@@ -427,17 +409,14 @@ fn assert_near(block: &[Vec<f32>], want: &[f32; 8], what: &str) {
 /// 8, where the tier cut them to their first 8), to the figures `Fold`'s rules
 /// give, and a WAV-order 7.1 is permuted.
 ///
-/// Mutation (run): `take_streaming_unit` building `Place::native(width)` ->
+/// Mutation (run): `open_stream_region` building `Place::native(width)` ->
 /// the read has no fold (a `debug_assert` in `Place::frame`, a read of the
 /// first 8 in release) and the figures are the file's first eight channels.
 #[test]
 fn a_file_wider_than_a_frame_folds_into_it() {
     for f in fixtures() {
-        let (_dir, streamer) = stream_fixture(&f);
-        let voice = streamer
-            .status()
-            .take_disk_voice(0, Beat::new(0.0), None)
-            .expect("named speakers place");
+        let (_dir, _streamer, reader) = stream_fixture(&f);
+        let voice = voice_of(reader);
         assert_near(
             &settled_block(voice),
             &f.want,
@@ -514,9 +493,9 @@ fn lanes<N: tutti_graph::Node>(direct: &contract::Direct<N>) -> Vec<Vec<f32>> {
     (0..8).map(|c| direct.output(c).to_vec()).collect()
 }
 
-fn loop_1000_3000() -> Command {
+fn loop_1000_3000(stream: StreamId) -> Command {
     Command::Loop {
-        channel_index: 0,
+        stream,
         setting: LoopSetting::On {
             start: SamplePosition(1_000.0),
             end: SamplePosition(3_000.0),
@@ -539,15 +518,15 @@ fn loop_1000_3000() -> Command {
 fn a_fork_places_every_read_path() {
     for f in fixtures() {
         for path in ["forward", "looped", "reversed"] {
-            let (_dir, mut streamer) = stream_fixture(&f);
+            let (_dir, mut streamer, reader) = stream_fixture(&f);
             if path == "looped" {
-                streamer.commands().send(loop_1000_3000()).expect("alive");
+                streamer
+                    .commands()
+                    .send(loop_1000_3000(reader.id()))
+                    .expect("alive");
                 assert!(streamer.step_until_settled(1_000) < 1_000);
             }
-            let mut voice = streamer
-                .status()
-                .take_disk_voice(0, Beat::new(0.0), None)
-                .expect("places");
+            let mut voice = voice_of(reader);
             if path == "reversed" {
                 voice.set_direction(Direction::Reverse);
             }
@@ -577,15 +556,15 @@ fn a_fork_places_every_read_path() {
 fn a_fork_placed_read_is_allocation_free() {
     for f in fixtures() {
         for looped in [false, true] {
-            let (_dir, mut streamer) = stream_fixture(&f);
+            let (_dir, mut streamer, reader) = stream_fixture(&f);
             if looped {
-                streamer.commands().send(loop_1000_3000()).expect("alive");
+                streamer
+                    .commands()
+                    .send(loop_1000_3000(reader.id()))
+                    .expect("alive");
                 assert!(streamer.step_until_settled(1_000) < 1_000);
             }
-            let voice = streamer
-                .status()
-                .take_disk_voice(0, Beat::new(0.0), None)
-                .expect("places");
+            let voice = voice_of(reader);
             let mut direct =
                 contract::Direct::new(Boxed(fork_unprepared(&voice)), SampleRate(SR), BLOCK);
             let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -617,11 +596,9 @@ fn a_fork_placed_read_is_allocation_free() {
 #[test]
 fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
     for f in fixtures() {
-        let (_dir, mut streamer) = stream_fixture(&f);
-        let voice = streamer
-            .status()
-            .take_disk_voice(0, Beat::new(0.0), None)
-            .expect("places");
+        let (_dir, mut streamer, reader) = stream_fixture(&f);
+        let id = reader.id();
+        let voice = voice_of(reader);
         let mut direct = contract::Direct::new(voice, SampleRate(SR), BLOCK);
         let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         for b in 0..90 {
@@ -629,7 +606,7 @@ fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
             // change near the playhead is crossfaded over, so the reader
             // crosses a switch (`cross_switch`).
             if b == 44 {
-                streamer.commands().send(loop_1000_3000()).expect("alive");
+                streamer.commands().send(loop_1000_3000(id)).expect("alive");
             }
             assert_no_alloc::assert_no_alloc(|| direct.block_in(&clock.env(BLOCK, SR)));
             clock.advance(BLOCK as i64, SR);

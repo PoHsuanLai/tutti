@@ -50,8 +50,8 @@ use std::sync::Arc;
 
 use tutti_codec::Wave;
 use tutti_graph::{Node, contract};
-use tutti_sampler::testing::MockTransport;
-use tutti_sampler::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};
+use tutti_sampler::testing::{MockTransport, settle};
+use tutti_sampler::{DiskStreamer, DiskStreamerConfig, Placement, StepOutcome};
 use tutti_sampler::{DiskVoice, MemorySource, VoiceWindow};
 use tutti_types::{Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate};
 
@@ -323,44 +323,27 @@ fn prime(streamer: &mut DiskStreamer) {
     );
 }
 
-/// Build a hand-driven streamer plus a disk voice on `channel`, streaming
-/// `path` from `at_sec`, with its ring already primed.
+/// Build a disk voice on a hand-driven streamer, streaming `path` from
+/// `at_sec`, with its ring already primed.
 ///
 /// Two properties this shape buys. The clock is placed at `at_sec` and
 /// stays there through priming, because priming is stepping rather than
 /// rendering (a warm-up that rendered would walk the transport forward, and
-/// the measurement would be taken somewhere the caller had not asked for). And `take_disk_voice` is called
-/// exactly once, after the `Stream` command has demonstrably been applied,
-/// rather than in a retry loop that cannot tell "not yet" from "never".
-fn stream_at(
-    streamer: &mut DiskStreamer,
-    path: &Path,
-    at_sec: f64,
-    channel: usize,
-) -> (DiskVoice, Arc<Clock>) {
+/// the measurement would be taken somewhere the caller had not asked for). And the voice is built
+/// exactly once, from the reader the open answered with, rather than from a
+/// retry loop that cannot tell "not yet" from "never".
+fn stream_at(streamer: &mut DiskStreamer, path: &Path, at_sec: f64) -> (DiskVoice, Arc<Clock>) {
     let clock = Clock::new(120.0);
     clock.seek_seconds(at_sec);
 
-    streamer
-        .commands()
-        .send(Command::Stream {
-            channel_index: channel,
-            file_path: path.to_path_buf(),
-            offset: SamplePosition(at_sec * SR),
-        })
-        .expect("the streamer is alive in this test");
-
+    let start = Placement::new(SamplePosition(at_sec * SR)).expect("a position in the file");
+    let opening = streamer.open(path, start);
+    let reader = settle(streamer, opening).unwrap_or_else(|e| {
+        panic!("the streamer could not open the file streaming from {at_sec}s: {e}")
+    });
     prime(streamer);
 
-    let voice = streamer
-        .status()
-        .take_disk_voice(channel, Beat::new(0.0), None)
-        .unwrap_or_else(|e| {
-            panic!(
-                "the streamer applied its commands and reported its rings full, but gave no \
-                 voice for channel {channel} streaming from {at_sec}s: {e}"
-            )
-        });
+    let voice = DiskVoice::from_reader(reader, Beat::new(0.0), None);
     let voice = contract::prepared(voice, SampleRate(SR), BLOCK);
     clock.seek_seconds(at_sec);
 
@@ -403,7 +386,7 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     // ---- disk tier -------------------------------------------------------
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    let (mut disk, disk_clock) = stream_at(&mut streamer, &path, 0.0, 0);
+    let (mut disk, disk_clock) = stream_at(&mut streamer, &path, 0.0);
 
     // Both tiers start at the playhead's origin, so no warm-up realignment is
     // needed: priming by stepping leaves the disk clock where it was placed.
@@ -478,7 +461,7 @@ fn a_disk_voice_produces_audio_from_a_real_file() {
 
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    let (mut voice, clock) = stream_at(&mut streamer, &path, 0.0, 0);
+    let (mut voice, clock) = stream_at(&mut streamer, &path, 0.0);
 
     let out = render_streamed(&mut voice, &mut streamer, &clock, 100);
 
@@ -536,12 +519,12 @@ fn streaming_from_an_offset_delivers_that_part_of_the_file() {
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
 
-    // Spread across the file. A distinct channel per case: the streamer keys its
-    // plans by channel index, so re-streaming the same channel reuses that
-    // channel's live region rather than starting cleanly from the new offset —
-    // which made every case after the first report the first one's position.
-    for (i, at) in [0.0f64, 3.0, 8.0, 10.0].into_iter().enumerate() {
-        let (mut voice, clock) = stream_at(&mut streamer, &path, at, i);
+    // Spread across the file. Each case is a stream of its own, started cleanly
+    // from its offset: an open never reuses another's region (when the streamer
+    // keyed its plans by channel, re-streaming a channel made every case after
+    // the first report the first one's position).
+    for at in [0.0f64, 3.0, 8.0, 10.0] {
+        let (mut voice, clock) = stream_at(&mut streamer, &path, at);
         clock.seek_seconds(at);
         let got = render(&mut voice, &clock, 64);
 
@@ -594,10 +577,10 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
 
     // Start at 20 s so both a forward (to 28 s) and a backward (to 5 s) seek are
-    // real moves, and neither is reachable by simply playing on. A distinct
-    // channel per case: the streamer keys its plans by channel index.
-    for (i, target) in [28.0f64, 5.0].into_iter().enumerate() {
-        let (mut voice, clock) = stream_at(&mut streamer, &path, 20.0, i);
+    // real moves, and neither is reachable by simply playing on. Each case is a
+    // stream of its own.
+    for target in [28.0f64, 5.0] {
+        let (mut voice, clock) = stream_at(&mut streamer, &path, 20.0);
 
         // Confirm the pre-seek position, so a "seek landed" verdict cannot be
         // satisfied by a stream that was already there.
@@ -660,7 +643,7 @@ fn a_seek_transition_does_not_clip() {
 
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    let (mut voice, clock) = stream_at(&mut streamer, &path, 10.0, 0);
+    let (mut voice, clock) = stream_at(&mut streamer, &path, 10.0);
 
     // Capture the whole transition, including the crossfade. One streamer cycle
     // per block puts the reposition inside the captured span rather than before
@@ -716,7 +699,7 @@ fn disk_varispeed_transposes_by_its_factor() {
 
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    let (mut voice, clock) = stream_at(&mut streamer, &path, 0.0, 0);
+    let (mut voice, clock) = stream_at(&mut streamer, &path, 0.0);
 
     // The control, at unity. Everything below is measured against this, so a
     // constant offset in the harness cannot masquerade as a correct ratio.
@@ -789,7 +772,7 @@ fn the_tiers_agree_under_varispeed() {
 
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    let (mut disk, disk_clock) = stream_at(&mut streamer, &path, 0.0, 0);
+    let (mut disk, disk_clock) = stream_at(&mut streamer, &path, 0.0);
 
     for factor in [2.0f32, 0.5] {
         // --- disk ---

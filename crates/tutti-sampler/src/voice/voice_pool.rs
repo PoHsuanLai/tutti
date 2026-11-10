@@ -12,6 +12,7 @@ use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
 use super::node::*;
 use super::pool::*;
 use super::types::*;
+use crate::streamer::StreamId;
 use crossbeam_channel::bounded;
 use std::sync::Arc;
 use tutti_codec::Wave;
@@ -76,7 +77,6 @@ fn add_ram_clip(handle: &VoicePoolHandle, id: SlotId, sampler: MemorySource) {
             voice: Box::new(Voice {
                 source: VoiceSource::Memory(sampler),
                 play: Playback::default(),
-                channel_index: None,
             }),
             stretch: None,
         })
@@ -113,7 +113,6 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
                 stretch: StretchFactor::new(2.0),
                 ..Playback::default()
             },
-            channel_index: None,
         },
         1u16,
     );
@@ -188,7 +187,6 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
                     stretch: StretchFactor::new(2.0),
                     ..Playback::default()
                 },
-                channel_index: None,
             },
             1u16,
         )
@@ -253,7 +251,6 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
                     .expect("a placeable wave"),
             ),
             play: Playback::default(),
-            channel_index: None,
         },
     );
     let NodeParts {
@@ -360,7 +357,6 @@ fn a_transport_seek_flushes_stretch_state() {
                     stretch: StretchFactor::new(2.0),
                     ..Playback::default()
                 },
-                channel_index: None,
             }),
             // The sender materialises the filter on the control thread, as
             // `VoicePoolHandle::send` does for a voice that arrives
@@ -454,7 +450,6 @@ fn a_transport_seek_flushes_a_standalone_voice_node() {
                 stretch: StretchFactor::new(2.0),
                 ..Playback::default()
             },
-            channel_index: None,
         },
         1u16,
     );
@@ -519,7 +514,6 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
                 stretch: StretchFactor::new(2.0),
                 ..Playback::default()
             },
-            channel_index: None,
         },
         1u16,
     );
@@ -598,7 +592,6 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
                 voice: Box::new(Voice {
                     source: VoiceSource::Memory(source),
                     play,
-                    channel_index: None,
                 }),
                 stretch: None,
             })
@@ -648,7 +641,6 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
                         direction,
                         ..Playback::default()
                     },
-                    channel_index: None,
                 },
                 1u16,
             );
@@ -694,7 +686,7 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
     const BLOCK: usize = 64;
     const BLOCKS: usize = 8;
 
-    use crate::streamer::{RegionBuffer, RegionId};
+    use crate::streamer::{RegionBuffer, StreamId};
     use crate::voice::{DiskSource, DiskVoice, DiskVoiceConfig, VoiceWindow};
     use std::path::PathBuf;
 
@@ -716,15 +708,15 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
                 [s, s]
             })
             .collect();
-        let (mut writer, reader) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192 + 64, 2u16);
+        let (mut writer, reader, pos) =
+            RegionBuffer::with_capacity(StreamId(1), PathBuf::new(), 8192 + 64, 2u16);
         writer.push_interleaved(&flat);
         let ring = std::sync::Arc::clone(&reader);
         // ONE `RtState`, shared by the source and the gate — `DiskVoice::new`
         // requires it, and the published stretch rate is read back through
         // the same cell. Two separate states here made the fix look inert.
         let state = Arc::new(RtState::new());
-        let inner = DiskSource::new(reader, Arc::clone(&state));
+        let inner = DiskSource::new(reader, pos, Arc::clone(&state));
         let voice = DiskVoice::new(
             inner,
             Arc::clone(&state),
@@ -747,7 +739,6 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
                 voice: Box::new(Voice {
                     source: VoiceSource::Disk(voice),
                     play,
-                    channel_index: None,
                 }),
                 stretch: None,
             })
@@ -845,7 +836,6 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
                     stretch: StretchFactor::new(2.0),
                     ..Playback::default()
                 },
-                channel_index: None,
             }),
             stretch: None,
         })
@@ -983,7 +973,6 @@ fn insert_voice_is_audible_without_channel() {
                 pitch: Cents::new(0.0),
             },
             source: VoiceSource::Memory(sampler),
-            channel_index: None,
         },
     );
 
@@ -1040,7 +1029,6 @@ fn a_pool_with_no_handle_has_no_channel_and_is_empty() {
                 pitch: Cents::new(0.0),
             },
             source: VoiceSource::Memory(sampler),
-            channel_index: None,
         },
     );
     tick(&mut unit, &transport, SR, &mut out);
@@ -1256,7 +1244,6 @@ fn voice_node_is_a_standalone_graph_node() {
     let voice = Voice {
         source: VoiceSource::Memory(sampler),
         play: Playback::default(),
-        channel_index: None,
     };
 
     // As a standalone node: 0 in, 2 out, produces audio.
@@ -1286,7 +1273,6 @@ fn voice_node_is_a_standalone_graph_node() {
                 pitch: Cents::new(0.0),
             },
             source: VoiceSource::Memory(sampler2),
-            channel_index: None,
         },
     );
     let mut node2 = VoiceNode::new(Voice {
@@ -1294,7 +1280,6 @@ fn voice_node_is_a_standalone_graph_node() {
             MemorySource::placed(make_wave(100), Beat::new(0.0), None).expect("a placeable wave"),
         ),
         play: Playback::default(),
-        channel_index: None,
     });
     let mut mixer_out = [0.0f32; 2];
     let mut node_out = [0.0f32; 2];
@@ -1325,7 +1310,6 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
     let voice = Voice {
         source: VoiceSource::Memory(sampler),
         play: Playback::default(),
-        channel_index: None,
     };
     let fork = voice
         .fork_copy(tutti_graph::ForkMode::Live)
@@ -1362,7 +1346,7 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
 /// and a fork.
 #[test]
 fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
-    use crate::streamer::{RegionBuffer, RegionId, RtState};
+    use crate::streamer::{RegionBuffer, RtState, StreamId};
     use crate::voice::disk_voice::DiskSource;
     use crate::voice::disk_voice::{DiskVoice, DiskVoiceConfig};
 
@@ -1370,11 +1354,11 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
     let (mut unit, handle) = VoicePool::new().with_handle();
 
     // Build a Disk voice with no streamer channel.
-    let (writer, reader) =
-        RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2u16);
+    let (writer, reader, pos) =
+        RegionBuffer::with_capacity(StreamId(1), std::path::PathBuf::new(), 128, 2u16);
     drop(writer);
     let state = std::sync::Arc::new(RtState::new());
-    let inner = DiskSource::new(reader, state.clone());
+    let inner = DiskSource::new(reader, pos, state.clone());
     let clip_reader = DiskVoice::new(
         inner,
         state,
@@ -1394,7 +1378,6 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
             voice: Box::new(Voice {
                 source: VoiceSource::Disk(clip_reader),
                 play: Playback::default(),
-                channel_index: None,
             }),
             stretch: None,
         })
@@ -1422,23 +1405,22 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
     );
 }
 
-/// A streaming voice on streamer channel `channel_index` over a ring whose
-/// writer is gone: enough for a loop forward, which reads only the tier,
-/// the channel and the ring's stream.
-fn streaming_voice(channel_index: Option<usize>) -> Voice {
-    streaming_voice_of(channel_index, 1)
+/// A streaming voice over a ring whose writer is gone: enough for a loop
+/// forward, which reads only the tier and the ring's stream.
+fn streaming_voice() -> Voice {
+    streaming_voice_of(1)
 }
 
-/// [`streaming_voice`] over stream `RegionId(region)`.
-fn streaming_voice_of(channel_index: Option<usize>, region: u64) -> Voice {
-    use crate::streamer::{RegionBuffer, RegionId, RtState};
+/// [`streaming_voice`] over stream `StreamId(region)`.
+fn streaming_voice_of(region: u64) -> Voice {
+    use crate::streamer::{RegionBuffer, RtState, StreamId};
     use crate::voice::disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
 
-    let (writer, reader) =
-        RegionBuffer::with_capacity(RegionId(region), std::path::PathBuf::new(), 128, 2u16);
+    let (writer, reader, pos) =
+        RegionBuffer::with_capacity(StreamId(region), std::path::PathBuf::new(), 128, 2u16);
     drop(writer);
     let state = Arc::new(RtState::new());
-    let inner = DiskSource::new(reader, state.clone());
+    let inner = DiskSource::new(reader, pos, state.clone());
     Voice {
         source: VoiceSource::Disk(DiskVoice::new(
             inner,
@@ -1452,7 +1434,6 @@ fn streaming_voice_of(channel_index: Option<usize>, region: u64) -> Voice {
             },
         )),
         play: Playback::default(),
-        channel_index,
     }
 }
 
@@ -1508,7 +1489,7 @@ fn a_loop_the_streamer_takes_is_recorded() {
     let (commands, streamer) = test_streamer(4);
     let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
     let id = SlotId(3);
-    let voice = streaming_voice(Some(0));
+    let voice = streaming_voice();
     let VoiceSource::Disk(disk) = &voice.source else {
         unreachable!()
     };
@@ -1529,12 +1510,10 @@ fn a_loop_the_streamer_takes_is_recorded() {
             sent.as_slice(),
             [
                 crate::streamer::StreamerCommand::ClearStreamLoop {
-                    channel_index: 0,
-                    stream: Some(a),
+                    stream: a,
                 },
                 crate::streamer::StreamerCommand::SetStreamLoop {
-                    channel_index: 0,
-                    stream: Some(b),
+                    stream: b,
                     ..
                 },
             ] if *a == stream && *b == stream
@@ -1565,7 +1544,7 @@ fn the_drain_sends_nothing_to_the_streamer() {
     handle
         .send(VoiceCommand::AddVoice {
             id,
-            voice: Box::new(looped(streaming_voice(Some(0)))),
+            voice: Box::new(looped(streaming_voice())),
             stretch: None,
         })
         .expect("the command queue has room in a test");
@@ -1599,7 +1578,7 @@ fn a_loop_a_gone_streamer_never_received_is_not_recorded() {
     handle
         .send(VoiceCommand::AddVoice {
             id,
-            voice: Box::new(looped(streaming_voice(Some(0)))),
+            voice: Box::new(looped(streaming_voice())),
             stretch: None,
         })
         .expect("the command queue has room in a test");
@@ -1635,7 +1614,7 @@ fn a_handle_knows_the_voices_inserted_before_it() {
     let (commands, streamer) = test_streamer(8);
     let mut pool = VoicePool::with_streamer(commands);
     let id = SlotId(5);
-    pool.insert_voice(id, streaming_voice(Some(2)));
+    pool.insert_voice(id, streaming_voice());
     assert_eq!(streamer.len(), 1, "the insert forwards its own loop");
     let (mut pool, handle) = pool.with_handle();
     handle
@@ -1645,8 +1624,7 @@ fn a_handle_knows_the_voices_inserted_before_it() {
     assert!(matches!(
         streamer.try_iter().last(),
         Some(crate::streamer::StreamerCommand::SetStreamLoop {
-            channel_index: 2,
-            stream: Some(_),
+            stream: StreamId(1),
             ..
         })
     ));
@@ -1674,7 +1652,7 @@ fn the_drains_silent_drops_are_counted() {
     handle
         .send(VoiceCommand::AddVoice {
             id,
-            voice: Box::new(streaming_voice(Some(0))),
+            voice: Box::new(streaming_voice()),
             stretch: None,
         })
         .expect("the command queue has room in a test");
@@ -1720,7 +1698,7 @@ fn a_handle_send_waits_for_the_streamer() {
     handle
         .send(VoiceCommand::AddVoice {
             id,
-            voice: Box::new(streaming_voice(Some(0))),
+            voice: Box::new(streaming_voice()),
             stretch: None,
         })
         .expect("the command queue has room in a test");
@@ -1756,7 +1734,9 @@ fn a_handle_send_waits_for_the_streamer() {
 fn a_control_thread_insert_waits_for_the_streamer() {
     let (commands, streamer) = test_streamer(1);
     commands
-        .send(crate::ports::Command::Stop { channel_index: 9 })
+        .send(crate::ports::Command::Stop {
+            stream: StreamId(9),
+        })
         .expect("room for one");
     let mut pool = VoicePool::with_streamer(commands);
     // The streamer catches up a moment later.
@@ -1765,7 +1745,7 @@ fn a_control_thread_insert_waits_for_the_streamer() {
         assert!(streamer.recv().is_ok());
         streamer
     });
-    pool.insert_voice(SlotId(1), looped(streaming_voice(Some(0))));
+    pool.insert_voice(SlotId(1), looped(streaming_voice()));
     let streamer = drainer.join().unwrap();
     assert!(matches!(
         pool.playback_of(SlotId(1)).expect("slot exists").loop_,
@@ -1822,7 +1802,6 @@ fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
                 .expect("a placeable wave"),
             ),
             play,
-            channel_index: None,
         }
     };
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -1856,24 +1835,21 @@ fn memory_voice() -> Voice {
             MemorySource::new(Arc::new(Wave::zero(2, 44_100.0, 0.01))).expect("a placeable wave"),
         ),
         play: Playback::default(),
-        channel_index: None,
     }
 }
 
-/// The loop a streamer's commands leave `channel` on, the last one wins:
+/// The loop a streamer's commands leave `stream` on, the last one wins:
 /// `None` cleared, `Some(range)` looping.
 fn last_loop(
     sent: &[crate::streamer::StreamerCommand],
-    channel: usize,
+    stream: StreamId,
 ) -> Option<Option<(u64, u64)>> {
     use crate::streamer::StreamerCommand as B;
     sent.iter().rev().find_map(|c| match c {
         B::SetStreamLoop {
-            channel_index,
-            range,
-            ..
-        } if *channel_index == channel => Some(Some(*range)),
-        B::ClearStreamLoop { channel_index, .. } if *channel_index == channel => Some(None),
+            stream: s, range, ..
+        } if *s == stream => Some(Some(*range)),
+        B::ClearStreamLoop { stream: s } if *s == stream => Some(None),
         _ => None,
     })
 }
@@ -1905,7 +1881,7 @@ fn a_loop_for_a_voice_inserted_after_the_handle_is_not_recorded() {
     let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
     assert!(pool.streamer.is_none(), "the streamer moved to the handle");
     let id = SlotId(6);
-    pool.insert_voice(id, streaming_voice(Some(2)));
+    pool.insert_voice(id, streaming_voice());
     handle
         .send(loop_on(id))
         .expect("the command queue has room in a test");
@@ -1932,10 +1908,10 @@ fn a_loop_forwarded_to_a_replaced_stream_is_not_recorded() {
     let (commands, streamer) = test_streamer(8);
     let mut pool = VoicePool::with_streamer(commands);
     let id = SlotId(6);
-    pool.insert_voice(id, streaming_voice_of(Some(2), 1));
+    pool.insert_voice(id, streaming_voice_of(1));
     let (mut pool, handle) = pool.with_handle();
     pool.clear_voices();
-    pool.insert_voice(id, streaming_voice_of(Some(2), 2));
+    pool.insert_voice(id, streaming_voice_of(2));
     handle
         .send(loop_on(id))
         .expect("the command queue has room in a test");
@@ -1962,7 +1938,7 @@ fn a_full_queue_refuses_a_streaming_loop_or_add_before_the_streamer() {
     let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
     let id = SlotId(2);
     handle
-        .send(add(id, streaming_voice(Some(0))))
+        .send(add(id, streaming_voice()))
         .expect("the command queue has room in a test");
     fill_queue(&handle, 1, 0);
     let err = handle.send(loop_on(id)).expect_err("the queue is full");
@@ -1972,7 +1948,7 @@ fn a_full_queue_refuses_a_streaming_loop_or_add_before_the_streamer() {
     ));
     assert_eq!(streamer.len(), 1, "only the add's own loop was forwarded");
     let err = handle
-        .send(add(SlotId(5), looped(streaming_voice_of(Some(1), 5))))
+        .send(add(SlotId(5), looped(streaming_voice_of(5))))
         .expect_err("the queue is full");
     assert!(matches!(
         err,
@@ -2022,7 +1998,7 @@ fn a_loop_crowded_out_of_the_queue_rolls_the_streamer_back() {
     let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
     let id = SlotId(2);
     handle
-        .send(add(id, looped(streaming_voice(Some(0)))))
+        .send(add(id, looped(streaming_voice())))
         .expect("the command queue has room in a test");
     fill_queue(&handle, 1, 1);
     let racer = handle.clone();
@@ -2063,7 +2039,7 @@ fn a_loop_crowded_out_of_the_queue_rolls_the_streamer_back() {
         "{result:?}"
     );
     assert_eq!(
-        last_loop(&sent, 0),
+        last_loop(&sent, StreamId(1)),
         Some(Some((0, 64))),
         "the streamer is back on the add's loop: {sent:?}"
     );
@@ -2091,7 +2067,7 @@ fn a_remove_never_waits_on_another_threads_forward() {
     let (mut pool, handle) = VoicePool::with_streamer(commands).with_handle();
     let id = SlotId(2);
     handle
-        .send(add(id, streaming_voice(Some(0))))
+        .send(add(id, streaming_voice()))
         .expect("the command queue has room in a test");
     assert_eq!(streamer.len(), 1, "the streamer's queue is full");
     let looper = handle.clone();
@@ -2189,7 +2165,6 @@ fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
         Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback::default(),
-            channel_index: None,
         },
         ChannelLayout::try_from(wide).expect("a test width is small"),
     );
@@ -2238,7 +2213,6 @@ fn both_nodes_declare_their_width() {
         let voice = Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback::default(),
-            channel_index: None,
         };
         let vn = VoiceNode::with_channels(
             voice,
@@ -2282,7 +2256,6 @@ fn six_channel_clip_reaches_all_six_reader_outputs() {
         Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback::default(),
-            channel_index: None,
         },
     );
 
@@ -2332,7 +2305,6 @@ fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
                 stretch: StretchFactor::new(2.0),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
 
@@ -2400,7 +2372,6 @@ fn send_builds_the_stretch_filter_not_the_drain() {
                 stretch,
                 ..Default::default()
             },
-            channel_index: None,
         }
     };
 
@@ -2515,7 +2486,6 @@ fn a_missing_stretch_filter_reads_dry_not_silent() {
                 stretch: StretchFactor::new(2.0),
                 ..Default::default()
             },
-            channel_index: None,
         },
         None,
     );

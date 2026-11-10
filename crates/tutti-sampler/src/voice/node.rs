@@ -419,7 +419,6 @@ mod tests {
         let voice = Voice {
             source: VoiceSource::Memory(MemorySource::new(wave).expect("a placeable wave")),
             play: Playback::default(),
-            channel_index: None,
         };
         let (mut node, handle) = VoiceNode::new(voice).with_handle();
         {

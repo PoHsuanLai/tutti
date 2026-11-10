@@ -13,20 +13,26 @@ use std::sync::atomic::Ordering;
 use tutti_types::{SampleRate, SrcRatio};
 
 use super::cache::LruCache;
-use super::command::{RegionId, StreamerCommand};
+use super::command::{Reply, StreamId, StreamerCommand};
 use super::config::BufferConfig;
+use super::control::StreamOrigin;
 use super::io::refill::load_wave;
-use super::loops::{LeadIn, Mapping, RingLoop, RingMap, apply_mapping, buffer_size_for_file};
+use super::loops::{LeadIn, Mapping, RingLoop, apply_mapping, buffer_size_for_file};
 use super::metrics::Metrics;
+use super::open::{OpenError, Opened};
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::RegionBuffer;
 use super::region_map::RegionMap;
+use crate::nonempty;
+use crate::voice::interp::Place;
+use crate::voice_width;
+use tutti_types::ChannelLayout;
 
 /// Arc'd handles shared between `StreamerThread` (controller) and the streamer
 /// loop. `Clone` is cheap — every field is an `Arc`.
 #[derive(Clone)]
 pub(super) struct Handles {
-    pub plans: Arc<DashMap<usize, ChannelPlan>>,
+    pub plans: Arc<DashMap<StreamId, ChannelPlan>>,
     pub cache: Arc<LruCache>,
     pub metrics: Arc<Metrics>,
     /// The session rate each stream's [`SrcRatio`] is derived against.
@@ -55,13 +61,13 @@ impl SessionRate {
     /// Move the rate, then re-derive the ratio of every stream that is open.
     ///
     /// Why the ratio is derived under the plan's lock on both sides.
-    /// `handle_stream_file` reads the rate and sets the ratio while it holds
+    /// `open_stream_region` reads the rate and sets the ratio while it holds
     /// the plan's entry; this stores the rate first and then takes each entry.
     /// So a stream the streamer opens concurrently either set its ratio before
     /// this took its entry (and is re-derived here), or takes the entry after
     /// this released it, and then reads the new rate. Neither order leaves a
     /// stream on the old ratio.
-    pub(super) fn set(&self, rate: SampleRate, plans: &DashMap<usize, ChannelPlan>) {
+    pub(super) fn set(&self, rate: SampleRate, plans: &DashMap<StreamId, ChannelPlan>) {
         self.0.store(rate.get(), Ordering::SeqCst);
         for plan in plans.iter() {
             if let Some(link) = &plan.link {
@@ -79,8 +85,6 @@ pub(super) struct Local {
     /// Headroom multiplier on the refill threshold — a larger margin refills
     /// earlier and more often.
     pub buffer_margin: f64,
-    /// Monotonic id source; see [`mint_region_id`](Self::mint_region_id).
-    pub next_region_id: u64,
     /// Flat interleaved refill scratch. Streamer-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
 }
@@ -92,25 +96,17 @@ impl Local {
         Self {
             regions: RegionMap::new(),
             buffer_margin: 1.0,
-            next_region_id: 0,
             interleave_buffer: Vec::with_capacity(base_chunk_size),
         }
-    }
-
-    /// The next region id, starting at 1. Monotonic and never reused, which is
-    /// what lets [`RegionMap`] skip compaction on removal.
-    pub(super) fn mint_region_id(&mut self) -> RegionId {
-        self.next_region_id += 1;
-        RegionId(self.next_region_id)
     }
 }
 
 /// Dispatch one command on the streamer thread.
 ///
-/// Every arm is infallible and silently no-ops when its channel is absent or not
-/// streaming: commands race the streams they name (a `Stop` may arrive after the
-/// stream already ended), and there is no caller left to report to by the time
-/// the streamer sees one.
+/// An open is answered on its own reply. Every other arm is infallible and
+/// silently no-ops for a stream the streamer no longer holds: commands race
+/// the streams they name (a `Stop` may arrive after the stream already ended),
+/// and there is no caller left to report to by the time the streamer sees one.
 pub(super) fn handle_command(
     cmd: StreamerCommand,
     shared: &Handles,
@@ -118,42 +114,21 @@ pub(super) fn handle_command(
     local: &mut Local,
 ) {
     match cmd {
-        StreamerCommand::StreamAudioFile {
-            channel_index,
+        StreamerCommand::Open {
+            id,
             file_path,
-            offset_samples,
-        } => {
-            handle_stream_file(
-                channel_index,
-                file_path,
-                offset_samples,
-                shared,
-                config,
-                local,
-            );
-        }
-        StreamerCommand::StopStreaming { channel_index } => {
-            if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-                // Capture the region id before dropping the link so its writer
-                // (ring buffer + RegionMeta) can be freed from the RegionMap;
-                // otherwise every stopped stream leaks for the streamer's lifetime.
-                let region_id = plan.link.as_ref().map(|link| link.region_id);
-                plan.stop_streaming();
-                drop(plan);
-                if let Some(region_id) = region_id {
-                    local.regions.remove(region_id);
-                }
-            }
-        }
+            start,
+            width,
+            reply,
+        } => handle_open(id, file_path, start, width, reply, shared, config, local),
+        StreamerCommand::StopStreaming { stream } => close_stream(stream, shared, local),
 
         StreamerCommand::SetStreamLoop {
-            channel_index,
             stream,
             range,
             crossfade_frames,
         } => {
             handle_set_stream_loop(
-                channel_index,
                 stream,
                 Some((range, crossfade_frames)),
                 shared,
@@ -161,15 +136,20 @@ pub(super) fn handle_command(
                 local,
             );
         }
-        StreamerCommand::ClearStreamLoop {
-            channel_index,
-            stream,
-        } => {
-            handle_set_stream_loop(channel_index, stream, None, shared, config, local);
+        StreamerCommand::ClearStreamLoop { stream } => {
+            handle_set_stream_loop(stream, None, shared, config, local);
         }
 
         StreamerCommand::Shutdown => {}
     }
+}
+
+/// Close `stream`: its plan (and with it the link, the cache pin and the
+/// stream's record) and its region go together, or every stopped stream would
+/// leak its ring and decoder for the streamer's lifetime.
+fn close_stream(stream: StreamId, shared: &Handles, local: &mut Local) {
+    shared.plans.remove(&stream);
+    local.regions.remove(stream);
 }
 
 /// Try to open an incremental disk decoder for `file_path`. Returns
@@ -199,24 +179,56 @@ fn open_stream(
     Some((meta, decoder))
 }
 
-/// Start streaming `file_path` on `channel_index` from frame `offset_samples`.
+/// Open stream `id` on `file_path`, its window starting at frame `start`, and
+/// answer on `reply`: the reader's parts, or why there is none.
 ///
-/// Probes metadata for ring sizing and the conversion ratio *without* decoding
-/// the whole file, builds the region ring at the file's own width, installs
-/// the reader on the channel's plan, and pins the wave in the cache for the
-/// stream's lifetime. Falls back to the whole-file `load_wave` path when the
-/// format is not seekable.
-///
-/// Silently returns when the file cannot be turned into audio at all — there is
-/// no caller left to report to on this thread.
-fn handle_stream_file(
-    channel_index: usize,
+/// A caller that dropped its `Opening` before the answer abandoned the open,
+/// so the stream is closed again rather than fed for nobody.
+#[allow(clippy::too_many_arguments)]
+fn handle_open(
+    id: StreamId,
     file_path: PathBuf,
-    offset_samples: usize,
+    start: u64,
+    width: Option<ChannelLayout>,
+    reply: Reply,
     shared: &Handles,
     config: &BufferConfig,
     local: &mut Local,
 ) {
+    let answer = open_stream_region(id, file_path, start, width, shared, config, local);
+    if let Err(abandoned) = reply.send(answer)
+        && abandoned.0.is_ok()
+    {
+        close_stream(id, shared, local);
+    }
+}
+
+/// Why `file_path` could not be turned into audio: the file itself when it
+/// cannot be opened, else a format this build cannot decode.
+fn unreadable(file_path: &std::path::Path) -> OpenError {
+    match std::fs::File::open(file_path) {
+        Err(error) => OpenError::Io(error.kind()),
+        Ok(_) => OpenError::Format,
+    }
+}
+
+/// Start streaming `file_path` as stream `id` from frame `start`.
+///
+/// Probes metadata for ring sizing and the conversion ratio *without* decoding
+/// the whole file, builds the region ring at the file's own width, installs
+/// the stream's plan, and pins the wave in the cache for the stream's
+/// lifetime. Falls back to the whole-file `load_wave` path when the format is
+/// not seekable. The placement into `width` (the file's own when `None`) is
+/// built, and so refused, before anything is built.
+fn open_stream_region(
+    id: StreamId,
+    file_path: PathBuf,
+    start: u64,
+    width: Option<ChannelLayout>,
+    shared: &Handles,
+    config: &BufferConfig,
+    local: &mut Local,
+) -> Result<Opened, OpenError> {
     // Probe metadata (frame count / sample rate) for ring sizing + src_ratio
     // WITHOUT decoding the whole file. Prefer real incremental streaming; fall
     // back to the whole-file `load_wave` + `LruCache` path when the format
@@ -232,9 +244,8 @@ fn handle_stream_file(
             None,
         ),
         None => {
-            let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
-                return;
-            };
+            let wave = load_wave(&shared.cache, &shared.metrics, &file_path)
+                .ok_or_else(|| unreadable(&file_path))?;
             (
                 wave.len() as u64,
                 wave.sample_rate(),
@@ -246,9 +257,8 @@ fn handle_stream_file(
     };
     #[cfg(not(codec))]
     let (file_length, file_sr, file_topology, resident) = {
-        let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
-            return;
-        };
+        let wave = load_wave(&shared.cache, &shared.metrics, &file_path)
+            .ok_or_else(|| unreadable(&file_path))?;
         (
             wave.len() as u64,
             wave.sample_rate(),
@@ -257,10 +267,14 @@ fn handle_stream_file(
         )
     };
 
+    // Where the file's channels go in the voice, built (and so refused) now,
+    // before a ring exists to free again.
+    let width = voice_width(width.unwrap_or_else(|| nonempty(file_topology.layout())));
+    let place = Place::for_topology(&file_topology, width).map_err(OpenError::Placement)?;
+
     // Sizing only: a rate that moves before the ratio is set below changes the
     // ring's depth, never what it plays.
     let buffer_capacity = buffer_size_for_file(file_length, shared.session_rate.get());
-    let region_id = local.mint_region_id();
 
     // The ring carries the file at its OWN width and order, and its topology:
     // the voice that reads the ring places it through the same `Place` the
@@ -270,8 +284,8 @@ fn handle_stream_file(
     // `mut` is used by the `set_decoder` call below, which every codec feature
     // gates — so a build with none of them on sees an unused `mut` rather than
     // a dead binding.
-    let (mut producer, consumer) = RegionBuffer::for_file(
-        region_id,
+    let (mut producer, ring, pos) = RegionBuffer::for_file(
+        id,
         file_path.clone(),
         buffer_capacity,
         file_topology,
@@ -290,25 +304,8 @@ fn handle_stream_file(
 
     // The window starts where the reader will play: the offset. A placed
     // voice reads at its clock; the compiler aligns the voice in the graph.
-    let start = offset_samples as u64;
     RegionBuffer::place(&mut producer, start, config.seek_crossfade_frames);
-
-    shared.plans.entry(channel_index).or_default();
-    // A channel left reversed streams its new file reversed.
-    let reverse = shared
-        .plans
-        .get(&channel_index)
-        .is_some_and(|plan| plan.rt_state.is_reverse());
-    if reverse {
-        let mapping = Mapping {
-            reverse: true,
-            ..Mapping::plain(file_length as usize)
-        };
-        consumer.publish_map(RingMap::plain(mapping.arrangement(), 0));
-        producer.set_content(super::loops::Content::new(mapping));
-    }
-
-    local.regions.register(region_id, producer);
+    local.regions.register(id, producer);
 
     // Pin the streamed wave in the LRU cache for the stream's lifetime. On the
     // fallback path `load_wave` inserted the whole file into the cache, so this
@@ -316,33 +313,46 @@ fn handle_stream_file(
     // stream goes cold and would otherwise be picked as the LRU victim). On the
     // incremental-decode path the wave isn't cached, so `pin` finds no entry and
     // the guard is inert — harmless. Held inside the `Link` (see
-    // `ChannelPlan::start_streaming`) so it releases when streaming stops.
+    // `ChannelPlan::start_streaming`) so it releases when the stream closes.
     let cache_pin = Some(shared.cache.pin(&file_path));
 
-    // A stream already on the channel is replaced: its region goes with its
-    // link, as on `StopStreaming`, or its writer and decoder live on.
-    let mut replaced = None;
-    if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-        replaced = plan.link.as_ref().map(|link| link.region_id);
-        plan.start_streaming(
-            consumer,
-            cache_pin,
-            file_sr,
-            file_length,
-            file_path,
-            Arc::downgrade(&shared.cache),
-        );
-        // Same derivation the in-memory tier uses
-        // (`MemorySource::set_session_sample_rate`), through the one shared
-        // constructor. Hand-rolling the division here instead would leave the
-        // two tiers agreeing only by convention. The rate is read while this
-        // holds the plan, which is what `SessionRate::set` relies on.
-        plan.rt_state
-            .set_src_ratio(SrcRatio::for_rates(file_sr, shared.session_rate.get()));
-    }
-    if let Some(region_id) = replaced {
-        local.regions.remove(region_id);
-    }
+    // The plan is installed and its ratio set while this holds the entry,
+    // which is what `SessionRate::set` relies on: it stores the rate first and
+    // then takes each entry, so a stream is either re-derived by it, or
+    // derives against the new rate itself.
+    let mut plan = shared.plans.entry(id).or_default();
+    plan.start_streaming(
+        id,
+        cache_pin,
+        file_sr,
+        file_length,
+        file_path,
+        Arc::downgrade(&shared.cache),
+    );
+    // Same derivation the in-memory tier uses
+    // (`MemorySource::set_session_sample_rate`), through the one shared
+    // constructor. Hand-rolling the division here instead would leave the
+    // two tiers agreeing only by convention.
+    plan.rt_state
+        .set_src_ratio(SrcRatio::for_rates(file_sr, shared.session_rate.get()));
+    let origin = plan
+        .link
+        .as_ref()
+        .map(|link| StreamOrigin::new(Arc::clone(&link.record)))
+        .expect("the link was installed just above");
+    let rt_state = plan.rt_state();
+    drop(plan);
+
+    Ok(Opened {
+        id,
+        ring,
+        pos,
+        rt_state,
+        file_rate: file_sr,
+        origin,
+        place,
+        width,
+    })
 }
 
 /// Set (`Some((range, crossfade_frames))`) or clear (`None`) a streaming
@@ -361,33 +371,23 @@ fn handle_stream_file(
 /// cannot be read plays the loop hard, is logged, and is what the stream's
 /// record says (so a fork plays it hard too).
 ///
-/// No-op when the channel isn't currently streaming (no `link`) — the loop
-/// config has nowhere to live without an active stream — and when `stream`
-/// names a stream other than the one the channel carries: the loop was set
-/// on a voice whose stream has since stopped or been replaced, and is not
-/// the new stream's.
+/// No-op when `stream` isn't open (no plan, no `link`) — the loop config has
+/// nowhere to live without an active stream, and the loop was set on a voice
+/// whose stream has since stopped.
 fn handle_set_stream_loop(
-    channel_index: usize,
-    stream: Option<RegionId>,
+    stream: StreamId,
     setting: Option<((u64, u64), usize)>,
     shared: &Handles,
     config: &BufferConfig,
     local: &mut Local,
 ) {
-    let Some((region_id, len, rate)) = shared.plans.get(&channel_index).and_then(|plan| {
+    let Some((len, rate)) = shared.plans.get(&stream).and_then(|plan| {
         let link = plan.link.as_ref()?;
-        if stream.is_some_and(|stream| stream != link.region_id) {
-            return None;
-        }
-        Some((
-            link.region_id,
-            link.file_frames as usize,
-            plan.rt_state.read_rate().get(),
-        ))
+        Some((link.file_frames as usize, plan.rt_state.read_rate().get()))
     }) else {
         return;
     };
-    let Some(writer) = local.regions.get_mut(region_id) else {
+    let Some(writer) = local.regions.get_mut(stream) else {
         return;
     };
 
@@ -414,30 +414,12 @@ fn handle_set_stream_loop(
     };
     apply_mapping(writer, new, config.seek_crossfade_frames, rate);
 
-    if let Some(mut plan) = shared.plans.get_mut(&channel_index)
+    if let Some(mut plan) = shared.plans.get_mut(&stream)
         && let Some(link) = plan.link.as_mut()
     {
         link.set_loop(recorded.map(|(range, crossfade_frames)| LoopConfig {
             range,
             crossfade_frames,
         }));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_mint_region_id_is_monotonic() {
-        let mut local = Local::new(4096);
-
-        let id1 = local.mint_region_id();
-        let id2 = local.mint_region_id();
-        let id3 = local.mint_region_id();
-
-        assert_eq!(id1, RegionId(1));
-        assert_eq!(id2, RegionId(2));
-        assert_eq!(id3, RegionId(3));
     }
 }

@@ -1,8 +1,7 @@
 use super::error::Result;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::ChannelLayout;
-use tutti_types::fold_frame_to_mono;
 use tutti_types::{Azimuth, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
+use tutti_types::{ChannelLayout, Fold};
 
 use super::panner::{BlockGains, VbapPanner};
 use crate::SpatialTarget;
@@ -128,6 +127,9 @@ pub struct VbapPannerNode {
     /// [`reset`](Node::reset) (which a fork runs): the ramp then starts from the smoother's
     /// current position instead, so there is no stale vector to glide from.
     ramp_from: Option<BlockGains>,
+    /// The stereo input folded to mono, for the mono-fold branch. Built at
+    /// construction.
+    fold: Fold,
     /// The last finite azimuth, elevation, spread and width the cells held. The
     /// de-zipper smoother is recursive, so one NaN or ±∞ bearing would leave
     /// it NaN for good; a non-finite write reads as unchanged instead.
@@ -304,6 +306,8 @@ impl VbapPannerNode {
             sample_rate: SampleRate::SR_48K,
             speaker_of_channel: speaker_of_channel(layout),
             ramp_from: None,
+            fold: Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO)
+                .expect("stereo folds to mono"),
             good: LastFinite {
                 azimuth: 0.0,
                 elevation: 0.0,
@@ -380,6 +384,9 @@ fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
     inverse
 }
 
+/// Frames of the mono-fold branch's stack scratch.
+const FOLD_CHUNK: usize = 64;
+
 /// Render one output channel for one block: speaker `speaker`'s gain ramped
 /// linearly from `from` to `to`, applied to the stereo pair.
 ///
@@ -392,7 +399,8 @@ fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
 /// bit for bit, and a block edge the exact solve.
 ///
 /// When both ends came from the mono-fold branch the pair is folded
-/// (`fold(l, r) * g`); otherwise each end is expressed as a (left,
+/// (`mono * g`, `mono` the stereo-to-mono `fold` of `left` and `right`, taken
+/// a chunk of frames at a time through a stack scratch); otherwise each end is expressed as a (left,
 /// right) gain pair — [`BlockGains::pair`] — so a width crossing the
 /// mono-fold threshold between blocks crossfades instead of stepping.
 #[inline]
@@ -400,6 +408,7 @@ fn render_channel(
     from: &BlockGains,
     to: &BlockGains,
     speaker: Option<usize>,
+    fold: &Fold,
     left: &[f32],
     right: &[f32],
     out: &mut [f32],
@@ -418,15 +427,28 @@ fn render_channel(
     if from.mono && to.mono {
         let (g_from, g_to) = (from.a[s], to.a[s]);
         let delta = g_to - g_from;
-        if delta.to_bits() == 0 {
-            for ((o, &l), &r) in out.iter_mut().zip(left).zip(right) {
-                *o = fold_frame_to_mono(&[l, r]) * g_to;
+        let held = delta.to_bits() == 0;
+        let mut mono = [0.0f32; FOLD_CHUNK];
+        for (k, o) in out.chunks_mut(FOLD_CHUNK).enumerate() {
+            let at = k * FOLD_CHUNK;
+            let mono = &mut mono[..o.len()];
+            fold.planar_channel(
+                |c| {
+                    let plane = if c == 0 { left } else { right };
+                    &plane[at..at + o.len()]
+                },
+                0,
+                mono,
+            );
+            if held {
+                for (o, &m) in o.iter_mut().zip(&*mono) {
+                    *o = m * g_to;
+                }
+            } else {
+                for (i, (o, &m)) in o.iter_mut().zip(&*mono).enumerate() {
+                    *o = m * (g_to - delta * remaining(at + i));
+                }
             }
-            return;
-        }
-        for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
-            let gain = g_to - delta * remaining(i);
-            *o = fold_frame_to_mono(&[l, r]) * gain;
         }
     } else {
         let (a_from, b_from) = from.pair(s);
@@ -501,6 +523,7 @@ impl Node for VbapPannerNode {
                 &from,
                 &to,
                 self.speaker_of_channel[ch],
+                &self.fold,
                 left,
                 right,
                 &mut out[..size],

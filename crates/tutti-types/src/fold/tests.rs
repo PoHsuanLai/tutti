@@ -1215,3 +1215,38 @@ fn declared_keeps_a_discrete_source_by_index() {
         .frame(&[1.0; 6], &mut reference);
     assert_eq!(stereo, reference);
 }
+
+/// The −3 dB coefficient is `1/√2`, 0.7071, and its square is a half
+/// (−3.0103 dB); and a fold applies it as written, not through the constant
+/// alone (a centre-only 5.1 lands at 0.7071 on both sides).
+///
+/// Mutation (run): `M3DB` -> `0.9 · FRAC_1_SQRT_2`, then -> `0.5` fails.
+#[test]
+#[allow(
+    clippy::approx_constant,
+    reason = "the figure is pinned independently of the constant under test"
+)]
+fn the_minus_3_db_coefficient_is_the_itu_figure() {
+    assert!((M3DB - 0.7071).abs() < 1e-4, "{M3DB}");
+    assert!((M3DB * M3DB - 0.5).abs() < 1e-7);
+    assert!((20.0 * M3DB.log10() + 3.0103).abs() < 1e-3);
+    let mut out = [0.0f32; 2];
+    fold(&smpte(6), &smpte(2)).frame(&[0.0, 0.0, 1.0, 0.0, 0.0, 0.0], &mut out);
+    assert!(
+        (out[0] - 0.7071).abs() < 1e-4 && out[0] == out[1],
+        "{out:?}"
+    );
+}
+
+/// The matrix is not normalised: full scale on every 5.1 channel folds to
+/// `1 + 2 · 0.7071 = 2.4142` per side (the LFE is dropped).
+///
+/// Mutation (run): normalise by dividing the 5.1 sum by `1 + 2·M3DB` -> `1.0`
+/// fails.
+#[test]
+fn full_scale_five_one_folds_above_full_scale() {
+    let mut out = [0.0f32; 2];
+    fold(&smpte(6), &smpte(2)).frame(&[1.0; 6], &mut out);
+    assert!((out[0] - 2.414_213_6).abs() < 1e-6, "{}", out[0]);
+    assert_eq!(out[0], out[1]);
+}

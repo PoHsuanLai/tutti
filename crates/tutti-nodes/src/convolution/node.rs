@@ -21,7 +21,7 @@ use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::AtomicF32;
-use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Samples, fold_frame_to_mono};
+use tutti_types::{Amplitude, ChannelLayout, Fold, Mix, SampleRate, Samples};
 use tutti_types::{Latency, Tail, UnitParam};
 
 use super::params::WetDry;
@@ -59,7 +59,7 @@ pub enum IrChannelConfig {
     /// from each channel's own position, with no cross-coupling. A 1-channel
     /// node is this configuration.
     Mono,
-    /// All inputs folded to mono (the engine's [`fold_frame_to_mono`]), then
+    /// All inputs folded to mono (the engine's [`Fold`] to one channel), then
     /// convolved with one IR per output channel. At width 2 this is the classic
     /// mono-to-stereo reverb: one source, two decorrelated tails.
     MonoToStereo,
@@ -121,11 +121,10 @@ pub struct ConvolverNode {
     /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
     sample_rate: SampleRate,
     latency_samples: usize,
-    /// One frame of input, gathered per sample for the
-    /// [`MonoToStereo`](IrChannelConfig::MonoToStereo) fold, which takes an
-    /// interleaved frame. Width-long, allocated at construction; unused by the
-    /// other configurations.
-    frame: Vec<f32>,
+    /// The fold of every input to mono, for
+    /// [`MonoToStereo`](IrChannelConfig::MonoToStereo); `None` for the other
+    /// configurations. Built at construction, applied to whole planes.
+    fold: Option<Fold>,
     /// The folded mono block, for [`MonoToStereo`](IrChannelConfig::MonoToStereo).
     /// Sized at `prepare` for the graph's maximum block.
     mono: Vec<f32>,
@@ -173,6 +172,13 @@ impl ConvolverNode {
         // figure is true of the whole node.
         debug_assert!(convolvers.iter().all(|c| c.latency() == latency_samples));
         let width = convolvers.len();
+        let fold = (config == IrChannelConfig::MonoToStereo).then(|| {
+            let layout =
+                ChannelLayout::try_from(width).expect("the width was checked above to fit u16");
+            Fold::widths(layout, ChannelLayout::MONO).unwrap_or_else(|e| {
+                panic!("a {width}-wide folded ConvolverNode has no fold to mono: {e}")
+            })
+        });
         Self {
             dry: (0..width).map(|_| DryAlign::new(latency_samples)).collect(),
             convolvers,
@@ -180,7 +186,7 @@ impl ConvolverNode {
             params: WetDry::default(),
             sample_rate: SampleRate::DEFAULT,
             latency_samples,
-            frame: vec![0.0; width],
+            fold,
             mono: Vec::new(),
             last: None,
             good: [LastGood::fixed(0.5), LastGood::fixed(1.0)],
@@ -253,7 +259,10 @@ impl ConvolverNode {
     ///
     /// # Panics
     ///
-    /// If `irs` is empty or longer than `u16::MAX`.
+    /// If `irs` is empty or longer than `u16::MAX`, or its width has no fold to
+    /// mono: only 1, 2, 4, 6, 8 and 12 have an order ([`Fold::widths`] places
+    /// any other by index and refuses to narrow it), where an unmatrixed width
+    /// once dropped its centre and surrounds without warning.
     pub fn folded(irs: &[&[f32]], block_size: usize) -> Self {
         Self::per_ir(irs, block_size, IrChannelConfig::MonoToStereo)
     }
@@ -411,15 +420,11 @@ impl ConvolverNode {
                 }
             }
             IrChannelConfig::MonoToStereo => {
-                // Folded once per block, not once per output channel. The fold
-                // takes an interleaved frame, so each frame is gathered into the
-                // width-long scratch first.
-                for i in 0..size {
-                    for (c, f) in self.frame.iter_mut().enumerate() {
-                        *f = input(c)[i];
-                    }
-                    self.mono[i] = fold_frame_to_mono(&self.frame);
-                }
+                // Folded once per block, not once per output channel.
+                self.fold
+                    .as_ref()
+                    .expect("a MonoToStereo node builds its fold")
+                    .planar_channel(input, 0, &mut self.mono[..size]);
                 for c in 0..n {
                     let x = input(c);
                     let out = &mut outputs.get(c)[at..at + size];
@@ -519,7 +524,7 @@ impl ParamNode for ConvolverNode {
             params,
             sample_rate: self.sample_rate,
             latency_samples: self.latency_samples,
-            frame: vec![0.0; self.width()],
+            fold: self.fold.clone(),
             mono: vec![0.0; self.mono.len()],
             last: None,
             good: self.good,
@@ -1020,7 +1025,7 @@ mod golden {
     /// Folded at width 6: every output is the engine's 6-to-1 fold of the frame
     /// convolved with that output's IR (fully wet, so only the IR path shows).
     ///
-    /// Mutation: folding with a plain average instead of `fold_frame_to_mono`,
+    /// Mutation: folding with a plain average instead of the fold,
     /// or convolving the channel's own input instead of the fold, fails this.
     #[test]
     fn a_six_channel_fold_convolves_the_engine_fold() {
@@ -1032,10 +1037,13 @@ mod golden {
         node.set_mix(1.0);
         let x = signal(6, 700);
         let got = render(node, &x);
+        let to_mono = Fold::widths(ChannelLayout::from(6u16), ChannelLayout::MONO).unwrap();
         let mono: Vec<f32> = (0..700)
             .map(|i| {
                 let frame: Vec<f32> = x.iter().map(|xc| xc[i]).collect();
-                fold_frame_to_mono(&frame)
+                let mut mono = [0.0f32];
+                to_mono.frame(&frame, &mut mono);
+                mono[0]
             })
             .collect();
         for c in 0..6 {

@@ -50,7 +50,7 @@ impl<'a> Interleaved<'a> {
     ///
     /// A **trailing partial frame is kept in `data` but not counted** by
     /// [`len`](Self::len), matching
-    /// [`fold_buffer_to_mono`](crate::fold_buffer_to_mono). A chunked caller
+    /// the way a whole-buffer fold reads it. A chunked caller
     /// legitimately hands over a buffer that ends mid-frame and carries the
     /// remainder forward itself.
     ///
@@ -140,31 +140,30 @@ impl<'a> Interleaved<'a> {
         self.data.chunks_exact(self.stride())
     }
 
-    /// Folds every frame to a single mono sample, per the ITU/Dolby matrices.
+    /// Folds every frame through `fold` into a caller-owned buffer, reusing its
+    /// allocation: the result is interleaved at the fold's destination width,
+    /// [`len`](Self::len) frames long. A trailing partial frame is ignored.
     ///
-    /// The method form of [`fold_buffer_to_mono`](crate::fold_buffer_to_mono).
-    /// Allocates the result; [`fold_to_mono_into`](Self::fold_to_mono_into)
-    /// reuses a buffer instead. A trailing partial frame is ignored, matching
-    /// [`len`](Self::len).
-    pub fn fold_to_mono(&self) -> Vec<f32> {
-        crate::fold_buffer_to_mono(self.data, self.layout)
-    }
-
-    /// Folds to mono into a caller-owned buffer, reusing its allocation.
+    /// `out` is resized to the result, so it is a destination and not an
+    /// accumulator: what it held is overwritten. It grows only when it has less capacity than the result, so a streaming
+    /// consumer that reuses one `out` stops allocating once it has seen its
+    /// largest chunk. `fold` is built once on the control side
+    /// ([`Fold::widths`](crate::Fold::widths) for a mono result).
     ///
-    /// `out` is cleared first, so it is a destination and not an accumulator.
-    /// It grows only when it has less capacity than [`len`](Self::len), so a
-    /// streaming consumer that reuses one `out` stops allocating once it has
-    /// seen its largest chunk.
-    pub fn fold_to_mono_into(&self, out: &mut Vec<f32>) {
-        out.clear();
-        let ch = self.stride();
-        if ch == 1 {
-            out.extend_from_slice(self.data);
-            return;
+    /// # Panics
+    ///
+    /// If `fold` does not read this buffer's width.
+    pub fn fold_into(&self, fold: &crate::Fold, out: &mut Vec<f32>) {
+        assert_eq!(
+            fold.src_layout(),
+            self.layout,
+            "the fold reads another width"
+        );
+        let width = usize::from(fold.dst_layout().count());
+        out.resize(self.len() * width, 0.0);
+        for (frame, dst) in self.iter_frames().zip(out.chunks_exact_mut(width)) {
+            fold.frame(frame, dst);
         }
-        out.reserve(self.len());
-        out.extend(self.data.chunks_exact(ch).map(crate::fold_frame_to_mono));
     }
 
     /// Deinterleaves into caller-owned planes, reusing their allocations.
@@ -435,7 +434,7 @@ mod tests {
 
     /// A ragged tail is carried, not rejected and not counted.
     ///
-    /// This is `fold_buffer_to_mono`'s existing contract — a chunked caller
+    /// This is the whole-buffer fold's contract — a chunked caller
     /// hands over a buffer ending mid-frame and carries the remainder itself.
     /// A constructor that panicked here would break that caller.
     #[test]
@@ -565,38 +564,57 @@ mod tests {
         );
     }
 
-    /// The method and the free function are one policy, not two — including at
-    /// the ragged tail and at mono, the two places a re-implementation drifts.
+    /// `fold_into` writes each whole frame through the fold, at every width
+    /// that has a matrix, ignores a ragged tail and overwrites a dirtied `out`.
+    /// The expected figures are the analytic ones: a frame's mono is its
+    /// average at two channels and `(Lo + Ro) * M3DB` from three up.
+    ///
+    /// Mutation (run): the resize counting one frame too many
+    /// (`data.len() / stride + 1`) fails the width-1 length.
     #[test]
-    fn fold_to_mono_agrees_with_the_free_function() {
-        for layout in [
-            ChannelLayout::MONO,
-            ChannelLayout::STEREO,
-            ChannelLayout::QUAD,
-            ChannelLayout::from(6u16),
-        ] {
-            // Deliberately not a whole number of frames at any of these widths
-            // except mono: 25 is coprime with 2, 4 and 6.
-            let buf: Vec<f32> = (0..25).map(|i| i as f32 * 0.01).collect();
-            let it = Interleaved::new(&buf, layout);
+    fn fold_into_folds_whole_frames_at_each_width() {
+        use crate::{Fold, M3DB};
+        // 25 samples: not a whole number of frames at 2, 4 or 6 channels.
+        let buf: Vec<f32> = (0..25).map(|i| i as f32 * 0.01).collect();
+        let to_mono = |w: u16| Fold::widths(ChannelLayout::from(w), ChannelLayout::MONO).unwrap();
 
-            let expected = crate::fold_buffer_to_mono(&buf, layout);
-            assert_eq!(it.fold_to_mono(), expected, "{layout:?}");
+        // One channel copies; two average.
+        let mut out = vec![99.0f32; 3];
+        Interleaved::new(&buf, ChannelLayout::MONO).fold_into(&to_mono(1), &mut out);
+        assert_eq!(out, buf, "width 1, a dirtied `out` cleared");
+        Interleaved::new(&buf, ChannelLayout::STEREO).fold_into(&to_mono(2), &mut out);
+        assert_eq!(out.len(), 12, "the partial frame is not counted");
+        assert_eq!(out[0], (buf[0] + buf[1]) * 0.5);
+        assert_eq!(out[11], (buf[22] + buf[23]) * 0.5);
 
-            // Pre-dirtied, to prove `_into` clears rather than appends.
-            let mut out = vec![99.0f32; 3];
-            it.fold_to_mono_into(&mut out);
-            assert_eq!(out, expected, "{layout:?} via fold_to_mono_into");
-        }
+        // Quad (FL FR BL BR): Lo = FL + M3DB * BL, Ro = FR + M3DB * BR, and the
+        // mono is (Lo + Ro) * M3DB.
+        let quad = Fold::widths(ChannelLayout::QUAD, ChannelLayout::MONO).unwrap();
+        Interleaved::new(&buf, ChannelLayout::QUAD).fold_into(&quad, &mut out);
+        assert_eq!(out.len(), 6);
+        let (lo, ro) = (buf[0] + M3DB * buf[2], buf[1] + M3DB * buf[3]);
+        assert_eq!(out[0], (lo + ro) * M3DB);
+
+        // A centre-only 5.1 reaches a stereo result on both sides, two wide.
+        let five = [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0];
+        let stereo = Fold::widths(ChannelLayout::from(6u16), ChannelLayout::STEREO).unwrap();
+        Interleaved::new(&five, ChannelLayout::from(6u16)).fold_into(&stereo, &mut out);
+        assert_eq!(out, [M3DB, M3DB]);
     }
 
     /// A window folds only the frames it names — the reason `window` is
     /// denominated in frames at all.
+    ///
+    /// Mutation (run): `fold_into` reading `self.data` whole instead of
+    /// `iter_frames` fails.
     #[test]
     fn folding_a_window_folds_only_that_window() {
         let buf = [1.0f32, 1.0, 2.0, 2.0, 3.0, 3.0];
         let it = Interleaved::new(&buf, ChannelLayout::STEREO);
-        assert_eq!(it.window(1..3).fold_to_mono(), vec![2.0, 3.0]);
+        let fold = crate::Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO).unwrap();
+        let mut out = Vec::new();
+        it.window(1..3).fold_into(&fold, &mut out);
+        assert_eq!(out, vec![2.0, 3.0]);
     }
 
     #[test]

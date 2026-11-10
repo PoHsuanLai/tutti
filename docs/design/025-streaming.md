@@ -378,7 +378,7 @@ capture path should not make silently. What is open is whether `Dither`
 (and `Resample`) become adapters that both export and the recorder use,
 replacing export's private chain; as `Sink` adapters (wrapping the file sink) a
 recorder opts in with one line, and as `Source` adapters export keeps its order
-rule. This is an **owner decision, not settled** (§10, decision A).
+rule. Decided 2026-11-10: `Dither` alone, as a `Sink` adapter at stage 7 (§10, decision A).
 
 Decision of 2026-11-07: wait for a second pipeline (resample on record, import to the project
 rate, a bounce path) or for acceptance of the Ogg change. If pushed, push
@@ -522,8 +522,9 @@ Each stage is one PR that stays green. Line figures are estimates.
    Smallest useful cut: `Opening` and the by-value reader first, keeping the plan
    map behind it, then delete the map.
 6. **Doorbell wake and backstop tick** (§7).
-7. **Adapters** (`Resample`, `Dither`, `Stage`) on the trigger in §5.3, which
-   the recorder's integer-PCM path may already meet (decision A, §10).
+7. **The `Dither` sink adapter** (decision A, §10): export and the recorder
+   share it. `Resample` and the `Stage` marker wait for a pipeline that needs
+   them.
 8. **`Cue`** only with a measured gap.
 
 The smallest useful version of the whole design is stages 0, 1 and 3, and the
@@ -563,16 +564,15 @@ Firewheel (disk streaming not implemented). No new dependency is proposed.
 
 ## 10. What is not decided, and how each is settled
 
-**A. Do `Dither` and `Resample` become shared adapters?** An owner decision.
-Decision 3 waited for a second pipeline; the recorder writing integer PCM is
-one (§5.3), undithered by design today. Options: (a) keep waiting and leave the
-recorder undithered; (b) push `Resample` and `Dither` with the `Stage` marker as
-`Sink` adapters, used by export and opt-in by the recorder, accepting the Ogg
-block-size change; (c) push `Dither` alone as a sink adapter, since a recorder
-has no resample. Recommendation: (c) at stage 7, after stage 3, with a test that
-a live 16-bit take and an export of the same signal agree when dithered alike;
-`Resample` waits for a pipeline that needs it. Whether a recorder should dither
-by default is a separate product call and stays off.
+**A. Do `Dither` and `Resample` become shared adapters?** Decided by the owner
+on 2026-11-10: **`Dither` alone becomes a `Sink` adapter at stage 7, after stage 3.**
+Export uses it in place of its private `DitherState`, and the recorder opts in
+with one line. A test checks that a live 16-bit take and an export of the same
+signal agree when dithered alike. `Resample` waits for a pipeline that needs it;
+a recorder has none, and pushing it now would change the Ogg block split for one
+user. A recorder does not dither by default; that stays a product call.
+The rejected options were to keep waiting with the recorder undithered, or to
+push `Resample` and `Dither` together and accept the Ogg change.
 
 1. **Is the gap on a jump outside the window audible or late enough to need a
    `Cue`?** Unmeasured. Settle with a streamer test that jumps on a

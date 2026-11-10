@@ -67,7 +67,8 @@ pub enum Phase {
     /// that is not published again gets that scan here. A lock and a
     /// length check per cell when nothing is retired. It also closes the
     /// graph's taps whose readers were dropped
-    /// ([`Graph::open_tap`](crate::Graph::open_tap)).
+    /// ([`Graph::open_tap`](crate::Graph::open_tap),
+    /// [`Graph::open_event_tap`](crate::Graph::open_event_tap)).
     Reclaim,
 }
 

@@ -34,7 +34,7 @@ impl Node for Every4 {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         for at in cx.env.offsets() {
             let f = cx.env.frame_at(at).get();
-            if f % 4 == 0 {
+            if f.is_multiple_of(4) {
                 let _ = io.event_out(0).push(Event::midi(at, [f as u32, 0, 0, 0]));
             }
         }

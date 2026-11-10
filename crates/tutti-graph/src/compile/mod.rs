@@ -912,13 +912,18 @@ pub fn compile(
         }
     }
 
-    // A master meter reads each output channel as it leaves the alignment
-    // delay, so with one declared the delay is its own op writing a slot that
-    // the `Output` op and the meter both read (one ring, the same key).
+    // A master meter or an outputs tap reads each output channel as it leaves
+    // the alignment delay, so with one declared the delay is its own op
+    // writing a slot that the `Output` op and the reader both read (one ring,
+    // the same key).
     let master_meter = topology
         .meters
         .values()
-        .any(|spec| matches!(spec, crate::MeterSpec::Outputs));
+        .any(|spec| matches!(spec, crate::MeterSpec::Outputs))
+        || topology
+            .taps
+            .values()
+            .any(|spec| matches!(spec, crate::TapSpec::Outputs { .. }));
     let mut output_refs: Vec<ARef> = Vec::with_capacity(topology.outputs.len());
     for (channel, sources) in topology.outputs.iter().enumerate() {
         let channel = channel as u16;
@@ -1013,8 +1018,27 @@ pub fn compile(
     // other lanes' rings are keyed by their own lane and source.
     let mut tap_ids: Vec<crate::TapId> = Vec::new();
     for (&tap, spec) in &topology.taps {
-        let mut srcs = Vec::with_capacity(spec.sources.len());
-        for (lane, source) in spec.sources.iter().enumerate() {
+        let (sources, align) = match spec {
+            crate::TapSpec::Outputs { width } => {
+                // What each output channel carries, post-sum and aligned
+                // (above); a lane past the output count is silence.
+                let srcs: Vec<ARef> = (0..*width)
+                    .map(|c| output_refs.get(c).copied().unwrap_or(ARef::Zero))
+                    .collect();
+                let op = em.push(Pre::Tap {
+                    tap: tap_ids.len() as u32,
+                    srcs: srcs.clone(),
+                });
+                for src in srcs {
+                    em.read_aref(src, op);
+                }
+                tap_ids.push(tap);
+                continue;
+            }
+            crate::TapSpec::Ports { sources, align } => (sources, *align),
+        };
+        let mut srcs = Vec::with_capacity(sources.len());
+        for (lane, source) in sources.iter().enumerate() {
             let (mut src, dep) = match *source {
                 Source::Node(p) => match (audio_out_val.get(&p), dense.get(&p.node)) {
                     (Some(&v), Some(&n)) => (ARef::Val(v), departure(n)),
@@ -1026,7 +1050,7 @@ pub fn compile(
                 },
                 Source::Zero => (ARef::Zero, Latency::ZERO),
             };
-            if spec.align == crate::TapAlign::ToOutput && src != ARef::Zero {
+            if align == crate::TapAlign::ToOutput && src != ARef::Zero {
                 let d = dep.gap_to(total);
                 if !d.is_zero() {
                     let ARef::Val(v) = src else {

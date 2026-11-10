@@ -212,9 +212,13 @@ fn every_source_reads_back_as_written() {
         GraphSource::Silence,
     ] {
         graph.set_source(sink, 0, source);
-        assert_eq!(graph.source(sink, 0), source, "node port");
+        let held: Vec<GraphSource> = match source {
+            GraphSource::Silence => Vec::new(),
+            one => vec![one],
+        };
+        assert_eq!(graph.sources(sink, 0), held, "node port");
         graph.set_output_source(1, source);
-        assert_eq!(graph.output_source(1), source, "global output");
+        assert_eq!(graph.output_sources(1), held, "global output");
     }
 }
 
@@ -249,7 +253,7 @@ fn every_setter_stores_silence_as_the_empty_set() {
 
     graph.widen_outputs(4).expect("widens");
     assert!(graph.planned_compensation().is_some(), "widened root");
-    assert_eq!(graph.output_source(3), GraphSource::Silence);
+    assert_eq!(graph.output_sources(3), []);
 }
 
 /// `remove` says whether the node was there, so removing a node twice is a

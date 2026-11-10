@@ -55,6 +55,16 @@ fn unit() -> Hand {
     Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).unwrap())
 }
 
+const BLOCK_FRAMES: usize = support::BLOCK;
+
+/// A unit on GM program 16 at `rate`.
+fn unit_at(rate: SampleRate) -> Hand {
+    let mut unit =
+        Hand::new(SoundFontUnit::new(load_test_soundfont(), &Settings::new(rate)).unwrap());
+    unit.program_change(MidiChannel::FIRST, U7::of(16));
+    unit
+}
+
 /// A unit on GM program 16, a drawbar organ: it holds its level for as long as
 /// the key is down, so a level that changes is a message's doing.
 fn organ() -> Hand {
@@ -330,6 +340,48 @@ fn a_full_bend_spans_the_registered_sensitivity() {
             "{want_cents} cents: {got} vs {want}"
         );
     }
+}
+
+/// A node prepared again at another rate (`with_sample_rate`, which `prepare`
+/// calls) keeps the channel's bend wheel and its RPN 0 sensitivity: the unit
+/// is set to a 7-semitone range and a full bend, re-rated to 48 kHz, and a note
+/// there sounds 7 semitones above the same note unbent at 48 kHz.
+///
+/// Mutation (run, seen to fail): `Player::with_sample_rate` not carrying the
+/// `Voicing` gives the default 2-semitone range (and no wheel: the bend was
+/// sent before the re-rate, so the new player's wheel is centred).
+#[test]
+fn a_re_rated_unit_keeps_the_bend_and_its_range() {
+    let rate = SampleRate(48_000.0);
+    let key = m2(Voice2::NoteOn {
+        note: NoteNumber::of(55),
+        velocity: 0xC000,
+        attribute: Attribute::None,
+    });
+    let sensitivity = m2(Voice2::Registered {
+        bank: U7::of(0),
+        index: U7::of(0),
+        value: (7 << 7) << 18,
+    });
+    let full = m2(Voice2::PitchBend(u32::MAX));
+    let sustained = |hand: &mut Hand, events: &[Ump]| {
+        let out = render(hand, events, 40_000);
+        out[8_000..].to_vec()
+    };
+
+    let mut source = organ();
+    render(&mut source, &[sensitivity, full], BLOCK_FRAMES);
+    let mut moved = Hand::at(source.with_sample_rate(rate).unwrap(), rate);
+    let bent = period(&sustained(&mut moved, &[key]), 200, 500);
+
+    let mut fresh = unit_at(rate);
+    let still = period(&sustained(&mut fresh, &[key]), 200, 500);
+    let want = 2.0_f64.powf(7.0 / 12.0);
+    assert!(
+        ((still / bent) / want - 1.0).abs() < 5e-5,
+        "{} vs {want}",
+        still / bent
+    );
 }
 
 /// Messages RustySynth has no setter for are decoded and dropped: the render

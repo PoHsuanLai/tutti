@@ -495,6 +495,10 @@ impl Player {
     pub(crate) fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
         let mut player = Self::new(&self.font, &self.settings.with_sample_rate(sample_rate))?;
         player.channels = self.channels.clone();
+        // The core's channel state (wheel, sensitivity); its notes are not
+        // the new player's, which has no voice.
+        player.voicing = self.voicing.clone();
+        player.voicing.forget_notes();
         Ok(player)
     }
 

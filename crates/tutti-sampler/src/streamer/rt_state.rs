@@ -99,11 +99,11 @@ impl Default for BufferHealth {
 
 /// The one cell a streaming channel's streamer side and audio side both hold.
 ///
-/// Lives behind an `Arc` shared by the [`ChannelPlan`](super::plan::ChannelPlan)
+/// Lives behind an `Arc` shared by the streamer's `Record`
 /// and the disk voice, which is why every publisher below takes `&self`: no
 /// exclusive reference exists on either side, and none is needed.
 ///
-/// Outlives any single stream — `stop_streaming` resets the fields but keeps the
+/// Outlives any single stream — closing a stream keeps the
 /// `Arc` alive, because the audio thread may still hold its clone.
 #[derive(Debug)]
 pub struct RtState {

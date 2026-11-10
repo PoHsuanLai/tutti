@@ -155,6 +155,70 @@ pub fn play(
     out
 }
 
+// ---------------------------------------------------------------------------
+// Opening a stream in a test.
+// ---------------------------------------------------------------------------
+
+/// The answer to `opening` from a hand-stepped streamer: steps it until the
+/// streamer has answered, then until it has primed (`step_until_settled`), so
+/// the reader's ring holds what the threaded streamer would have read by the
+/// time a voice plays. The [`Stream`](crate::Stream) is the caller's to keep
+/// while the voice plays: dropping it ends the stream.
+///
+/// # Errors
+///
+/// The open's own failure, as the streamer answered it.
+///
+/// # Panics
+///
+/// If the streamer has not answered within 1000 steps: a hand-stepped streamer
+/// answers on the first step it takes, so that is a hang, not a slow machine.
+pub fn settle(
+    streamer: &mut crate::DiskStreamer<crate::ByHand>,
+    mut opening: crate::Opening,
+) -> Result<(crate::Stream, crate::StreamReader), crate::OpenError> {
+    for _ in 0..1_000 {
+        let _ = streamer.step_once();
+        match opening.poll() {
+            crate::Open::Pending(again) => opening = again,
+            crate::Open::Ready(stream, reader) => {
+                let _ = streamer.step_until_settled(1_000);
+                return Ok((stream, reader));
+            }
+            crate::Open::Failed(error) => return Err(error),
+        }
+    }
+    panic!("a hand-stepped streamer did not answer an open in 1000 steps");
+}
+
+/// The answer to `opening` from a streamer running its own thread, waited for
+/// up to ten seconds.
+///
+/// # Errors
+///
+/// The open's own failure, as the streamer answered it.
+///
+/// # Panics
+///
+/// If the streamer has not answered by then.
+pub fn settle_threaded(
+    mut opening: crate::Opening,
+) -> Result<(crate::Stream, crate::StreamReader), crate::OpenError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match opening.poll() {
+            crate::Open::Pending(again) => opening = again,
+            crate::Open::Ready(stream, reader) => return Ok((stream, reader)),
+            crate::Open::Failed(error) => return Err(error),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the streamer did not answer an open in 10 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

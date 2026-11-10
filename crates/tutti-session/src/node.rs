@@ -262,7 +262,6 @@ mod tests {
                 tutti_sampler::Voice {
                     source: tutti_sampler::VoiceSource::Memory(source),
                     play: tutti_sampler::Playback::default(),
-                    channel_index: None,
                 }
             )));
         }

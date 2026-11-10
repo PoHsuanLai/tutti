@@ -162,19 +162,21 @@ impl Clone for LiveRead {
 }
 
 impl LiveRead {
-    /// A reader over `ring` through its one `reader` (`None`: silent), `width`
-    /// wide (at most [`MAX_SAMPLER_CHANNELS`]), placing the ring's channels by
-    /// `place`. Control thread: with a `reader`, it registers a reader of the
-    /// ring's map, which may allocate.
+    /// A reader over `ring` through its one `reader` and the reader of the
+    /// ring's map registered beside it (`None`: silent), `width` wide (at most
+    /// [`MAX_SAMPLER_CHANNELS`]), placing the ring's channels by `place`. Both
+    /// are registered by whoever built them, on the control side: building the
+    /// pair is what may allocate, and this does not.
     pub(crate) fn new(
         ring: SharedReader,
-        reader: Option<PosReader>,
+        feed: Option<(PosReader, Reader<RingMap>)>,
         width: usize,
         place: Place,
     ) -> Self {
         let src = ring.channels().count().max(1) as usize;
+        let (reader, map) = feed.unzip();
         Self {
-            map: reader.as_ref().map(|_| ring.map_reader()),
+            map,
             ring,
             reader,
             place,

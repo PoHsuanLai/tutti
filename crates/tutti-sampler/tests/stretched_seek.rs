@@ -45,7 +45,6 @@ fn render(frames: usize, seek_at: usize) -> Vec<f32> {
                     stretch: StretchFactor::new(2.0),
                     ..Default::default()
                 },
-                channel_index: None,
             }),
             stretch: None,
         })

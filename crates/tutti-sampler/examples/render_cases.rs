@@ -61,7 +61,6 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
             voice: Box::new(Voice {
                 source: VoiceSource::Memory(source),
                 play,
-                channel_index: None,
             }),
             stretch: None,
         })

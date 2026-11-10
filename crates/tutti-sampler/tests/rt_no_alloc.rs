@@ -263,7 +263,6 @@ fn voice_pool_process_steady_state_is_allocation_free() {
                     pitch: Cents::new(0.0),
                 },
                 source: VoiceSource::Memory(sampler),
-                channel_index: None,
             },
         );
     }
@@ -320,7 +319,6 @@ fn cloned_voice_pool_with_stretch_is_allocation_free() {
                 pitch: Cents::new(0.0),
             },
             source: VoiceSource::Memory(sampler),
-            channel_index: None,
         },
     );
 
@@ -361,7 +359,6 @@ fn voice_pool_one_frame_blocks_are_allocation_free() {
                     pitch: Cents::new(0.0),
                 },
                 source: VoiceSource::Memory(sampler),
-                channel_index: None,
             },
         );
     }
@@ -421,7 +418,6 @@ fn placed_voice(wave: &Arc<Wave>, stretch: f32) -> Voice {
             pitch: Cents::new(0.0),
         },
         source: VoiceSource::Memory(sampler),
-        channel_index: None,
     }
 }
 
@@ -618,7 +614,6 @@ fn run_stretch_drain_under_guard() {
             voice: Box::new(Voice {
                 source: VoiceSource::Memory(sampler),
                 play: Playback::default(),
-                channel_index: None,
             }),
             stretch: None,
         })
@@ -768,7 +763,6 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
                 pitch: Cents::new(0.0),
             },
             source: VoiceSource::Memory(sampler),
-            channel_index: None,
         },
     );
     assert_eq!(reader.shape().audio_out.count(), 6);
@@ -867,7 +861,6 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
                         stretch: StretchFactor::new(2.0),
                         ..Default::default()
                     },
-                    channel_index: None,
                 }),
                 stretch: None,
             })
@@ -935,7 +928,6 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
                         stretch: StretchFactor::new(2.0),
                         ..Default::default()
                     },
-                    channel_index: None,
                 }),
                 stretch: None,
             })
@@ -991,7 +983,6 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
                         stretch: StretchFactor::new(2.0),
                         ..Default::default()
                     },
-                    channel_index: None,
                 }),
                 stretch: None,
             })
@@ -1057,7 +1048,6 @@ fn an_add_past_the_voice_cap_is_refused_without_allocating() {
         Box::new(Voice {
             source: VoiceSource::Memory(source),
             play,
-            channel_index: None,
         })
     };
 
@@ -1145,7 +1135,6 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
         Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback::default(),
-            channel_index: None,
         },
     );
 
@@ -1215,7 +1204,6 @@ fn voice_node_command_drain_does_not_allocate() {
         Voice {
             source: VoiceSource::Memory(source),
             play: Playback::default(),
-            channel_index: None,
         },
         ChannelLayout::STEREO,
     )

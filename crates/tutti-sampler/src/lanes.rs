@@ -377,7 +377,6 @@ mod tests {
         let mut node = VoiceNode::new(Voice {
             source: VoiceSource::Memory(source.clone()),
             play: Default::default(),
-            channel_index: None,
         });
         let mut memory = source;
         assert_eq!(pool.scratch_size(), (UNPREPARED_FRAMES, 2));

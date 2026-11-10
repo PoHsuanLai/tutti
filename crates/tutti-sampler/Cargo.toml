@@ -23,6 +23,12 @@ default = ["wav"]
 # stretch::Unit) compile Bevy-free for direct `tutti_graph` use either way.
 bevy = ["dep:bevy_ecs"]
 
+# `serde` for `Placement` (a range-checked position: it serialises as the bare
+# `f64` and refuses what `Placement::new` refuses). Off by default; the crate's
+# own dev-dependency turns it on so its contract test runs under a plain
+# `cargo nextest run`.
+serde = ["dep:serde"]
+
 # Drive the streamer's cycle by hand instead of by its thread.
 #
 # Exposes `DiskStreamer::manual` + `step_once`, which run the *same*
@@ -72,6 +78,7 @@ bevy_ecs = { version = "0.19", default-features = false, optional = true }
 
 tracing = "0.1"
 thiserror = "2"
+serde = { version = "1", optional = true, features = ["derive"] }
 
 # Lock-free
 crossbeam-channel = "0.5"
@@ -98,7 +105,7 @@ criterion.workspace = true
 # workspace's testing policy names outright: a test that cannot fail claims
 # coverage it does not have, and one that silently does not run is the same
 # claim with fewer clues.
-tutti-sampler = { path = ".", features = ["test-support", "flac"] }
+tutti-sampler = { path = ".", features = ["test-support", "flac", "serde"] }
 # Stimulus nodes (`tutti_nodes::testing`). `tutti-nodes` does not
 # depend on this crate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }

@@ -20,7 +20,7 @@ use tutti_midi_types::ump::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
     UmpMessageType, message_type, sysex7_payload,
 };
-use tutti_ump::Ump;
+use tutti_ump::{Key, KeyEvent, Ump};
 
 use crate::protocol::{MidiEventVec, WireMidi};
 
@@ -119,27 +119,33 @@ impl MidiIntake {
         if self.push(list, event) {
             return 0;
         }
-        if self.exhausted || !is_off(&event.ump.0) || !list.is_full() {
+        let Some(KeyEvent::Off(off)) = event.ump.key_event() else {
+            return 1;
+        };
+        if self.exhausted || !list.is_full() {
             return 1;
         }
         #[cfg(test)]
         {
             self.scans += 1;
         }
-        let key = key_of(&event.ump.0);
         let mut latest_on = None;
         let mut latest_other = None;
         let mut victim = None;
         for (i, e) in list.iter().enumerate().rev() {
-            let w = e.ump.0[0];
-            if is_on(&e.ump.0) {
-                if key_of(&e.ump.0) == key {
-                    victim = Some(i);
-                    break;
+            match e.ump.key_event() {
+                Some(KeyEvent::On(on)) => {
+                    if same_note(on, off) {
+                        victim = Some(i);
+                        break;
+                    }
+                    latest_on.get_or_insert(i);
                 }
-                latest_on.get_or_insert(i);
-            } else if is_channel_message(w) && !is_off(&e.ump.0) {
-                latest_other.get_or_insert(i);
+                Some(KeyEvent::Off(_)) => {}
+                _ if e.ump.address().is_some() => {
+                    latest_other.get_or_insert(i);
+                }
+                _ => {}
             }
         }
         match victim.or(latest_on).or(latest_other) {
@@ -180,33 +186,10 @@ impl MidiIntake {
     }
 }
 
-/// Whether the UMP in `data` is a MIDI 1.0 or 2.0 channel voice message.
-fn is_channel_message(w: u32) -> bool {
-    matches!(w >> 28, 0x2 | 0x4)
-}
-
-/// Whether `data` is a note-on that starts a note (a MIDI 1.0 note-on at
-/// velocity 0 is a note-off).
-fn is_on(data: &[u32; 4]) -> bool {
-    let w = data[0];
-    (w >> 20) & 0xf == 0x9 && is_channel_message(w) && (w >> 28 == 0x4 || w & 0x7f != 0)
-}
-
-/// Whether `data` is a note-off (or a MIDI 1.0 note-on at velocity 0).
-fn is_off(data: &[u32; 4]) -> bool {
-    let w = data[0];
-    is_channel_message(w)
-        && match (w >> 20) & 0xf {
-            0x8 => true,
-            0x9 => w >> 28 == 0x2 && w & 0x7f == 0,
-            _ => false,
-        }
-}
-
-/// A note message's group, channel and note number.
-fn key_of(data: &[u32; 4]) -> (u32, u32, u32) {
-    let w = data[0];
-    ((w >> 24) & 0xf, (w >> 16) & 0xf, (w >> 8) & 0x7f)
+/// Whether `a` and `b` are the same note: group, channel and number, whichever
+/// protocol spelled each (a MIDI 1.0 off ends a MIDI 2.0 on).
+fn same_note(a: Key, b: Key) -> bool {
+    (a.lane(), a.note()) == (b.lane(), b.note())
 }
 
 /// A SysEx7 packet's status, or `None` for any other message.
@@ -217,9 +200,9 @@ fn sysex7_status(event: &Ump) -> Option<u8> {
     sysex7_payload(event).map(|(status, _, _)| status)
 }
 
-/// The bit of `event`'s UMP group in the intake's per-group masks.
+/// The bit of a SysEx7 packet's group in the intake's per-group masks.
 fn group_bit(event: &Ump) -> u16 {
-    1u16 << ((event.0[0] >> 24) & 0xF)
+    event.group().map_or(0, |group| 1 << group.get())
 }
 
 #[cfg(test)]
@@ -499,17 +482,43 @@ mod tests {
             Some(&on(127)),
             "a refused note-on displaces nothing"
         );
-        assert!(list.iter().all(|e| is_on(&e.ump.0)));
+        assert!(
+            list.iter()
+                .all(|e| matches!(e.ump.key_event(), Some(KeyEvent::On(_))))
+        );
         assert_eq!(intake.push_displacing(&mut list, off(5)), 1);
         assert_eq!(list.len(), MIDI_STACK_CAPACITY);
         assert_eq!(list.last(), Some(&off(5)));
         // The later note-on of key 5 (index 133) is the one that went.
         let ons_of_5 = list
             .iter()
-            .filter(|e| is_on(&e.ump.0) && key_of(&e.ump.0).2 == 5)
+            .filter(|e| matches!(e.ump.key_event(), Some(KeyEvent::On(k)) if k.note() == 5))
             .count();
         assert_eq!(ons_of_5, 1);
         assert_eq!(list[5], on(5));
+    }
+
+    /// A MIDI 1.0 note-off ends a MIDI 2.0 note-on of the same group, channel
+    /// and number: it displaces that note's on, not the latest one.
+    ///
+    /// Mutation (run): `same_note` comparing whole `Key`s (the protocol bit
+    /// too) → the latest note-on goes instead → fails.
+    #[test]
+    fn a_midi1_note_off_displaces_its_midi2_note_on() {
+        let mut intake = MidiIntake::default();
+        let mut list = MidiEventVec::new();
+        for i in 0..MIDI_STACK_CAPACITY {
+            assert_eq!(intake.push_displacing(&mut list, on((i % 128) as u8)), 0);
+        }
+        // A MIDI 1.0 Note Off (type 2, status 0x80), group 0, channel 0, key 5.
+        let m1_off = wire(Ump([0x2080_0000 | (5 << 8), 0, 0, 0]));
+        assert_eq!(intake.push_displacing(&mut list, m1_off), 1);
+        assert_eq!(list.last(), Some(&m1_off));
+        assert_eq!(
+            list[MIDI_STACK_CAPACITY - 2],
+            on(127),
+            "the latest on stays"
+        );
     }
 
     /// The worst case is bounded: a full list of 256 note-ons met by 8,192
@@ -534,7 +543,12 @@ mod tests {
         }
         let took = start.elapsed();
         assert_eq!(lost, 8_192);
-        assert_eq!(list.iter().filter(|e| is_on(&e.ump.0)).count(), 0);
+        assert_eq!(
+            list.iter()
+                .filter(|e| matches!(e.ump.key_event(), Some(KeyEvent::On(_))))
+                .count(),
+            0
+        );
         assert_eq!(list.len(), MIDI_STACK_CAPACITY);
         // 256 passes that displace and one that finds nothing: not 8,192.
         assert_eq!(intake.scans, 257);

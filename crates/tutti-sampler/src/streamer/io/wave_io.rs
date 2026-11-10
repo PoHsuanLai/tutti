@@ -1,17 +1,15 @@
 //! The read half of the streamer's cold-path disk refill.
 //!
 //! The streamer moves frames from a resident (whole-file) [`Wave`] into a
-//! per-region ring buffer. This module owns the source end: [`WaveIn`] is the
-//! one place the planar `wave.at(0,i)/at(1,i)` unpack lives — a cursor over a
-//! `Wave` with mono up-mix and zero-pad past end. A loop is not its business:
-//! the refill cuts its reads at the loop's end and places each run
-//! (`loops::Mapping::fill`), so a `WaveIn` always reads the file straight on.
+//! per-region ring buffer. This module owns the source end: [`read_wave`] and
+//! [`wave_frame_into`] are the one place the planar `wave.at(0,i)/at(1,i)`
+//! unpack lives, with mono up-mix and zero-pad past end. A loop is not its
+//! business: the refill cuts its reads at the loop's end and places each run
+//! (`loops::Mapping::fill`), so a read always runs the file straight on.
 //!
-//! Both ends speak flat interleaved `&[f32]` at a runtime width, with the
-//! stride owned by the type and every count denominated in frames. The sink
-//! end is [`RegionOut::push_interleaved`](crate::streamer::prefetch::RegionOut::push_interleaved).
-//! `WaveIn` is not a [`Source`](tutti_types::Source): it never ends (see its type
-//! docs).
+//! Both ends speak flat interleaved `&[f32]` at a runtime width, with every
+//! count denominated in frames. The sink end is
+//! [`RegionOut::push_interleaved`](crate::streamer::prefetch::RegionOut::push_interleaved).
 
 use crate::nonempty;
 use crate::voice::interp::Place;
@@ -41,66 +39,19 @@ pub(crate) fn wave_frame_into(wave: &Wave, place: &Place, idx: usize, out: &mut 
     place.frame(src_ch, |c| wave.at(c, idx), out);
 }
 
-/// A forward reader over a resident `Wave`, reading from an internal cursor.
-/// Past the end it yields silence, so it is an *unbounded* source — the
-/// caller bounds the transfer by the size of the scratch buffer it fills.
+/// Read file frames `at..` of a resident `wave` into `out` (`channels` wide,
+/// floored at one), zero past its end: the whole-file source a region without
+/// a decoder reads, and the loop's reads of a resident file.
 ///
-/// # Not a [`Source`](tutti_types::Source)
-///
-/// A `Source` answers each pull with a verdict (starved, ended, failed), and
-/// `WaveIn` has none to give: [`fill_interleaved`](Self::fill_interleaved)
-/// always fills the whole buffer, with silence past the end of the wave, so it
-/// never ends and never waits on a producer. It stays inherent, and the
-/// *caller* owns the bound, which `refill_forward` does by sizing the scratch
-/// buffer.
-pub(crate) struct WaveIn<'w> {
-    wave: &'w Wave,
-    /// Output interleave width — independent of `wave.channels()`, which
-    /// [`wave_frame_into`]'s policy reconciles per frame.
-    channels: ChannelLayout,
-    /// Where the wave goes in a frame of [`channels`](Self::channels): as it
-    /// stands, a mono one placed by the lone-centre rule (the ring carries the
-    /// file at its own width and order).
-    place: Place,
-    cursor: usize,
-}
-
-impl<'w> WaveIn<'w> {
-    /// A cursor over `wave` starting at frame `start`, emitting frames at
-    /// `channels` wide. `channels` is floored at one — the output width is
-    /// independent of `wave.channels()`, which [`wave_frame_into`]'s policy
-    /// reconciles per frame.
-    pub(crate) fn new(wave: &'w Wave, start: usize, channels: impl Into<ChannelLayout>) -> Self {
-        let channels = nonempty(channels.into());
-        Self {
-            wave,
-            channels,
-            place: Place::native(channels),
-            cursor: start,
-        }
-    }
-
-    /// Fill `out` with interleaved frames at this source's width, advancing the
-    /// cursor. Always fills the whole buffer — past the end that means
-    /// zero-padded silence.
-    ///
-    /// # The return is not a pull's count
-    ///
-    /// The loop below has no early exit, so this returns `out.len() / ch`
-    /// unconditionally: a pure function of the buffer, carrying nothing back
-    /// about the source. The production callers (`loops::Mapping::fill`'s
-    /// runs) discard it; the refill takes its frame count from
-    /// `RegionOut::push_interleaved`.
-    pub(crate) fn fill_interleaved(&mut self, out: &mut [f32]) -> usize {
-        // Stride derived once, above the frame loop.
-        let ch = self.channels.count() as usize;
-        let mut frames = 0;
-        for frame in out.chunks_exact_mut(ch) {
-            wave_frame_into(self.wave, &self.place, self.cursor, frame);
-            self.cursor += 1;
-            frames += 1;
-        }
-        frames
+/// It fills the whole buffer, so it is not a [`Source`](tutti_types::Source):
+/// it never ends and has no verdict to give. The caller owns the bound, by the
+/// size of the scratch buffer it hands in.
+pub(crate) fn read_wave(wave: &Wave, at: usize, out: &mut [f32], channels: ChannelLayout) {
+    let channels = nonempty(channels);
+    let place = Place::native(channels);
+    let stride = channels.count() as usize;
+    for (k, frame) in out.chunks_exact_mut(stride).enumerate() {
+        wave_frame_into(wave, &place, at + k, frame);
     }
 }
 
@@ -208,29 +159,26 @@ mod tests {
     }
 
     #[test]
-    fn wave_in_polls_forward_frames() {
+    fn read_wave_polls_forward_frames() {
         let wave = test_wave(&[(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)]);
-        let mut src = WaveIn::new(&wave, 0, 2u16);
         let mut out = [0.0f32; 6];
-        assert_eq!(src.fill_interleaved(&mut out), 3);
+        read_wave(&wave, 0, &mut out, ChannelLayout::STEREO);
         assert_eq!(out, [0.1, 0.1, 0.2, 0.2, 0.3, 0.3]);
     }
 
     #[test]
-    fn wave_in_zero_pads_past_end() {
+    fn read_wave_zero_pads_past_end() {
         let wave = test_wave(&[(0.2, 0.2)]);
-        let mut src = WaveIn::new(&wave, 1, 2u16);
         let mut out = [9.0f32; 4];
-        src.fill_interleaved(&mut out);
+        read_wave(&wave, 1, &mut out, ChannelLayout::STEREO);
         assert_eq!(out, [0.0; 4]);
     }
 
     #[test]
-    fn wave_in_reads_six_channels() {
+    fn read_wave_reads_six_channels() {
         let wave = indexed_wave(6, 4);
-        let mut src = WaveIn::new(&wave, 0, 6u16);
         let mut out = [0.0f32; 12];
-        assert_eq!(src.fill_interleaved(&mut out), 2);
+        read_wave(&wave, 0, &mut out, ChannelLayout::from(6u16));
         for f in 0..2 {
             for c in 0..6 {
                 assert_eq!(out[f * 6 + c], (c + 1) as f32, "frame {f} channel {c}");

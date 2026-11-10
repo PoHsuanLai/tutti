@@ -1,5 +1,6 @@
 //! Regression gate: the pool's command drain must not free on the audio
-//! thread.
+//! thread, and a disk stream's ring is freed where the doc says (doc 025 §10
+//! Q4).
 //!
 //! `tests/rt_no_alloc.rs` guards allocation, and says why it cannot see a
 //! free: `assert_no_alloc` counts allocations only. This file counts
@@ -14,12 +15,18 @@ use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_graph::contract::Direct;
 use tutti_sampler::testing::MockTransport;
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
+use tutti_sampler::testing::settle;
+use tutti_sampler::{
+    ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, SlotId, Stream, Voice,
+    VoiceCommand, VoicePool, VoiceSource,
+};
 use tutti_types::{Beat, Bpm, SampleRate, StretchFactor};
 
 thread_local! {
     static WATCHING: Cell<bool> = const { Cell::new(false) };
     static FREES: Cell<usize> = const { Cell::new(0) };
+    /// The largest single free made while watching, in bytes.
+    static BIGGEST: Cell<usize> = const { Cell::new(0) };
 }
 
 struct CountFrees;
@@ -33,6 +40,7 @@ unsafe impl GlobalAlloc for CountFrees {
         let _ = WATCHING.try_with(|w| {
             if w.get() {
                 let _ = FREES.try_with(|f| f.set(f.get() + 1));
+                let _ = BIGGEST.try_with(|b| b.set(b.get().max(layout.size())));
             }
         });
         unsafe { System.dealloc(ptr, layout) }
@@ -44,11 +52,18 @@ static ALLOCATOR: CountFrees = CountFrees;
 
 /// Frees made on this thread while `f` runs.
 fn frees_during(f: impl FnOnce()) -> usize {
+    watch(f).0
+}
+
+/// How many frees, and the largest one in bytes, made on this thread while `f`
+/// runs.
+fn watch(f: impl FnOnce()) -> (usize, usize) {
     FREES.with(|c| c.set(0));
+    BIGGEST.with(|c| c.set(0));
     WATCHING.with(|w| w.set(true));
     f();
     WATCHING.with(|w| w.set(false));
-    FREES.with(|c| c.get())
+    (FREES.with(|c| c.get()), BIGGEST.with(|c| c.get()))
 }
 
 /// Adding voices, and replacing one, frees nothing in the drain. Three
@@ -79,7 +94,6 @@ fn the_add_voice_drain_frees_nothing() {
                 stretch: StretchFactor::new(2.0),
                 ..Playback::default()
             },
-            channel_index: None,
         })
     };
     for id in [1, 2, 1] {
@@ -108,5 +122,206 @@ fn the_add_voice_drain_frees_nothing() {
         handle.collect_retired(),
         1,
         "the replaced slot is retired to the control thread"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A disk stream's ring: who frees it (doc 025 §10 Q4).
+// ---------------------------------------------------------------------------
+
+/// A ring is at least 4 096 frames of the file's width in 4-byte slots, so a
+/// free of this many bytes or more, in a block or a step, is a ring (the
+/// writer's decoder and the voice's buffers are all smaller than this for a
+/// stereo file under the default config).
+const RING_BYTES: usize = 4_096 * 2 * 4;
+
+/// A stereo WAV two seconds long.
+fn write_wav(path: &std::path::Path) {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 48_000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(path, spec).expect("writes");
+    for i in 0..96_000 {
+        let s = (i as f32 * 0.01).sin() * 0.25;
+        w.write_sample(s).expect("writes");
+        w.write_sample(s).expect("writes");
+    }
+    w.finalize().expect("writes");
+}
+
+/// A hand-stepped streamer streaming a fresh file, and the stream's handle and
+/// reader.
+fn stream() -> (
+    tempfile::TempDir,
+    DiskStreamer<ByHand>,
+    Stream,
+    tutti_sampler::StreamReader,
+) {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("two_seconds.wav");
+    write_wav(&path);
+    let mut streamer =
+        DiskStreamer::manual(SampleRate(48_000.0), Default::default()).expect("builds");
+    let opening = streamer.open(&path, Placement::HEAD);
+    let (stream, reader) = settle(&mut streamer, opening).expect("the file opens");
+    (dir, streamer, stream, reader)
+}
+
+/// **Dropping a `Stream` sends; the streamer frees.** With the voice's reader
+/// already gone (so the streamer's writer is the ring's last holder), dropping
+/// the handle on the control thread frees no ring, and the ring is freed in the
+/// streamer's step that handles the close: the thread that steps, never the one
+/// that drops the handle.
+///
+/// Mutation (run): `Drop for Stream` without its `Close` send -> the step
+/// frees no ring and the second assertion fails. Mutation (run): `Drop for
+/// Stream` freeing in place (sending nothing and holding the ring itself, via a
+/// clone of it) -> the first assertion fails.
+#[test]
+fn dropping_a_stream_frees_the_ring_in_the_streamers_step() {
+    let (_dir, mut streamer, stream, reader) = stream();
+    drop(reader);
+
+    let (_, biggest) = watch(|| drop(stream));
+    assert!(
+        biggest < RING_BYTES,
+        "dropping the handle freed a {biggest}-byte block: the ring, on the dropping thread"
+    );
+    let (_, biggest) = watch(|| {
+        let _ = streamer.step_once();
+    });
+    assert!(
+        biggest >= RING_BYTES,
+        "the close's step freed at most {biggest} bytes: the ring was not freed there"
+    );
+}
+
+/// A pool with the disk voice of a stream whose handle has been dropped and
+/// closed, so the voice's reader is the ring's **last holder**: its drop
+/// frees the ring wherever it happens.
+fn pool_holding_the_last_holder(
+    streamer: &mut DiskStreamer<ByHand>,
+    stream: Stream,
+    reader: tutti_sampler::StreamReader,
+) -> (VoicePool, tutti_sampler::VoicePoolHandle) {
+    let (pool, handle) = VoicePool::new().with_handle();
+    handle
+        .send(VoiceCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(Voice {
+                source: VoiceSource::Disk(DiskVoice::from_reader(reader, Beat::new(0.0), None)),
+                play: Playback::default(),
+            }),
+            stretch: None,
+        })
+        .expect("room");
+    drop(stream);
+    let _ = streamer.step_once();
+    (pool, handle)
+}
+
+/// **The remove path: a voice's last holder of a ring is never dropped on the
+/// audio thread.** The voice is removed through the handle; the drain frees
+/// nothing (the slot goes over the retirement channel) and the control thread's
+/// `collect_retired` frees the ring. Answers doc 025 §10 Q4 for the normal path:
+/// no, a disk voice's drop is on the control thread.
+///
+/// Mutation (run): `retire` dropping the value in the drain instead of sending
+/// it -> the drain frees the ring -> fails.
+#[test]
+fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
+    let (_dir, mut streamer, stream, reader) = stream();
+    let (pool, handle) = pool_holding_the_last_holder(&mut streamer, stream, reader);
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
+    let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
+    let env = t.env(64, SampleRate(48_000.0));
+    rig.block_in(&env);
+    assert_eq!(rig.node.voice_count(), 1, "setup: the voice is in");
+
+    handle.send(VoiceCommand::Remove(SlotId(1))).expect("room");
+    let (frees, _) = watch(|| {
+        rig.block_in(&env);
+    });
+    assert_eq!(rig.node.voice_count(), 0);
+    assert_eq!(
+        frees, 0,
+        "the drain freed {frees} time(s) on the audio thread"
+    );
+    assert_eq!(handle.drops().freed_in_callback, 0);
+
+    let (_, biggest) = watch(|| {
+        assert_eq!(handle.collect_retired(), 1);
+    });
+    assert!(
+        biggest >= RING_BYTES,
+        "the control thread's collection freed at most {biggest} bytes: no ring"
+    );
+}
+
+/// **The degraded path: it does.** When the retirement channel is full (the
+/// control thread has not collected), a removed voice is dropped in the
+/// callback, counted as `freed_in_callback`, and a voice that is the ring's
+/// last holder frees the ring there. This pins the doc's answer to §10 Q4: the
+/// audio thread's "never frees" holds except on that counted path, for a
+/// stream's ring as for anything else the voice holds. A `Stream` is not
+/// involved: its handle is the control side's and was dropped first.
+///
+/// The channel is filled by replacing a slot 64 times without collecting: each
+/// replaced slot is retired.
+///
+/// Mutation (run): the 64 replacing adds removed -> the channel has room, the
+/// voice is retired, the drain frees nothing and `freed_in_callback` stays 0
+/// -> fails.
+#[test]
+fn a_removed_disk_voice_on_a_full_retirement_channel_frees_its_ring_in_the_callback() {
+    let (_dir, mut streamer, stream, reader) = stream();
+    let (pool, handle) = pool_holding_the_last_holder(&mut streamer, stream, reader);
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
+    let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
+    let env = t.env(64, SampleRate(48_000.0));
+    rig.block_in(&env);
+
+    let wave = Arc::new(Wave::from_samples(48_000.0, &vec![0.5f32; 480]));
+    let memory = || {
+        Box::new(Voice {
+            source: VoiceSource::Memory(
+                MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+                    .expect("a placeable wave"),
+            ),
+            play: Playback::default(),
+        })
+    };
+    // 65 adds at one id: the first makes the slot, the next 64 each retire the
+    // one before. Two drains: a drain takes at most 64 commands.
+    for batch in [33, 32] {
+        for _ in 0..batch {
+            handle
+                .send(VoiceCommand::AddVoice {
+                    id: SlotId(2),
+                    voice: memory(),
+                    stretch: None,
+                })
+                .expect("room");
+        }
+        rig.block_in(&env);
+    }
+    assert_eq!(
+        handle.drops().freed_in_callback,
+        0,
+        "setup: the channel took every retirement, and is now full"
+    );
+
+    handle.send(VoiceCommand::Remove(SlotId(1))).expect("room");
+    let (frees, biggest) = watch(|| {
+        rig.block_in(&env);
+    });
+    assert_eq!(handle.drops().freed_in_callback, 1, "counted");
+    assert!(frees > 0);
+    assert!(
+        biggest >= RING_BYTES,
+        "the callback freed at most {biggest} bytes: the ring was not freed there"
     );
 }

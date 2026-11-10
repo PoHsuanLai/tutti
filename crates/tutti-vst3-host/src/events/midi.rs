@@ -1,7 +1,7 @@
 //! A UMP event to VST3 event and back.
 
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::{midi1, narrow, widen};
+use tutti_midi_protocol::{midi1, narrow, widen, widen_message};
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
@@ -358,7 +358,7 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
             let message = Midi1Parser::message(MidiGroup::FIRST, bytes)?;
             return Some(WireMidi {
                 offset: frame,
-                ump: Ump::from(widened(message)),
+                ump: Ump::from(widen_message(message)),
             });
         }
         Payload::LegacyCcOut(e) => return super::legacy_cc::decode(e, frame),
@@ -374,14 +374,4 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
         offset: frame,
         ump: built,
     })
-}
-
-/// A MIDI 1.0 channel voice message as the MIDI 2.0 message that means the
-/// same (M2-104 App. D.3), so the engine sees one vocabulary whatever the
-/// source. Any other message is forwarded unchanged.
-fn widened(message: Message) -> Message {
-    match message {
-        Message::Midi1(address, voice) => Message::Midi2(address, widen(voice)),
-        other => other,
-    }
 }

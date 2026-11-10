@@ -27,7 +27,7 @@ use tutti_types::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
 
 use super::DiskVoice;
 use crate::testing::{MockTransport, block};
-use crate::{Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource};
+use crate::{ByHand, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Stream};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -124,8 +124,12 @@ impl Setup {
 
 /// A live voice on a hand-stepped streamer, and the clock it is placed on.
 struct Live {
-    streamer: DiskStreamer,
+    streamer: DiskStreamer<ByHand>,
     voice: DiskVoice,
+    /// The voice's stream.
+    stream: Stream,
+    /// The neighbours' streams and readers, held so their rings stay read.
+    _neighbours: Vec<(Stream, crate::StreamReader)>,
     clock: Arc<MockTransport>,
 }
 
@@ -134,49 +138,45 @@ impl Live {
         Self::with(path, Setup::looped(loop_, speed))
     }
 
-    /// Stream `path` on channel 0 from where the clock starts, with the
-    /// setup's loop, under the streamer's default config (its seek
-    /// crossfade included), and take a live voice placed at beat 0.
+    /// Stream `path` from where the clock starts, with the setup's loop, under
+    /// the streamer's default config (its seek crossfade included), and build
+    /// a live voice placed at beat 0 from the first stream's reader.
     fn with(path: &Path, setup: Setup) -> Self {
         let config = DiskStreamerConfig::default();
         let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
-        for channel in 0..=setup.neighbours {
-            streamer
-                .commands()
-                .send(Command::Stream {
-                    channel_index: channel,
-                    file_path: path.to_path_buf(),
-                    offset: SamplePosition(setup.beat / 2.0 * SR),
-                })
-                .expect("the streamer is alive");
-        }
+        let start = crate::Placement::new(SamplePosition(setup.beat / 2.0 * SR))
+            .expect("a position in the file");
+        let openings: Vec<_> = (0..=setup.neighbours)
+            .map(|_| streamer.open(path, start))
+            .collect();
         assert!(
             streamer.step_until_settled(1_000) < 1_000,
             "the ring primes"
         );
+        let mut readers: Vec<_> = openings
+            .into_iter()
+            .map(|opening| match opening.poll() {
+                crate::Open::Ready(stream, reader) => (stream, reader),
+                other => panic!("a primed stream answers its open: {other:?}"),
+            })
+            .collect();
+        let (mut stream, reader) = readers.remove(0);
         if setup.loop_ != LoopSetting::Off {
-            streamer
-                .commands()
-                .send(Command::Loop {
-                    channel_index: 0,
-                    setting: setup.loop_,
-                })
-                .expect("the streamer is alive");
+            stream.set_loop(setup.loop_).expect("the streamer is alive");
             assert!(
                 streamer.step_until_settled(1_000) < 1_000,
                 "the ring primes"
             );
         }
         let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::of(120.0));
-        let mut voice = streamer
-            .status()
-            .take_disk_voice(0, Beat(0.0), None)
-            .expect("the link is installed");
+        let mut voice = DiskVoice::from_reader(reader, Beat(0.0), None);
         voice.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
         voice.set_speed(PlaybackRate::new(setup.speed));
         Self {
             streamer,
             voice,
+            stream,
+            _neighbours: readers,
             clock,
         }
     }
@@ -204,12 +204,8 @@ impl Live {
     }
 
     fn loop_(&mut self, setting: LoopSetting) {
-        self.streamer
-            .commands()
-            .send(Command::Loop {
-                channel_index: 0,
-                setting,
-            })
+        self.stream
+            .set_loop(setting)
             .expect("the streamer is alive");
     }
 
@@ -997,33 +993,14 @@ fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     assert_same_outside("across a seek inside a block", &got, &want, &[fade]);
 }
 
-/// A stream serves one live voice: a
-/// second `take_disk_voice` on the same channel is refused, naming why.
-///
-/// Mutation (run): the ring's reader put back after a take (the slot
-/// `replace`d with what was taken) → a second voice is handed out → fails.
-#[test]
-fn a_stream_serves_one_live_voice() {
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("ramp.wav");
-    write_ramp(&path, SR as u32, 10_000);
-    let live = Live::new(&path, LoopSetting::Off, 1.0);
-    let second = live.streamer.status().take_disk_voice(0, Beat(0.0), None);
-    assert_eq!(
-        second.err(),
-        Some(crate::TakeVoiceError::ReaderTaken),
-        "a second live voice was handed out"
-    );
-}
-
 /// A pool on `streamer`'s streamer, prepared, holding `voice` (a streaming
-/// voice on channel 0) at `id`; and its handle.
+/// voice) at `id`; and its handle.
 fn pool_with(
-    streamer: &DiskStreamer,
+    streamer: &DiskStreamer<ByHand>,
     id: crate::SlotId,
     voice: DiskVoice,
 ) -> (crate::VoicePool, crate::VoicePoolHandle) {
-    let (mut pool, handle) = crate::VoicePool::with_streamer(streamer.commands()).with_handle();
+    let (mut pool, handle) = crate::VoicePool::with_streamer(streamer.port()).with_handle();
     pool.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     handle
         .send(crate::VoiceCommand::AddVoice {
@@ -1031,7 +1008,6 @@ fn pool_with(
             voice: Box::new(crate::Voice {
                 source: crate::VoiceSource::Disk(voice),
                 play: crate::Playback::default(),
-                channel_index: Some(0),
             }),
             stretch: None,
         })
@@ -1039,24 +1015,18 @@ fn pool_with(
     (pool, handle)
 }
 
-/// Streams `path` on channel 0 of a fresh hand-stepped streamer from frame 0,
-/// primed.
-fn streaming(path: &Path) -> DiskStreamer {
+/// Streams `path` on a fresh hand-stepped streamer from frame 0, primed, and
+/// returns the streamer and the stream's handle and reader.
+fn streaming(path: &Path) -> (DiskStreamer<ByHand>, Stream, crate::StreamReader) {
     let mut streamer =
         DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
-    streamer
-        .commands()
-        .send(Command::Stream {
-            channel_index: 0,
-            file_path: path.to_path_buf(),
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
+    let opening = streamer.open(path, crate::Placement::HEAD);
+    let (stream, reader) = crate::testing::settle(&mut streamer, opening).expect("the file opens");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
     );
-    streamer
+    (streamer, stream, reader)
 }
 
 /// A loop set through a pool's handle on a live streaming voice reaches
@@ -1074,11 +1044,8 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
-    let mut streamer = streaming(&path);
-    let voice = streamer
-        .status()
-        .take_disk_voice(0, Beat(0.0), None)
-        .expect("the link is installed");
+    let (mut streamer, _stream, reader) = streaming(&path);
+    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
     let id = crate::SlotId(1);
     let (mut pool, handle) = pool_with(&streamer, id, voice);
     handle
@@ -1113,45 +1080,31 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     );
 }
 
-/// A loop set on a voice whose channel has since been restarted on
-/// another stream leaves the new stream alone. The handle forwards the
-/// loop naming the voice's stream; the streamer, finding the channel on
-/// another one, ignores it. A host's own `Command::Loop`, which names only
-/// the channel, still loops whatever the channel streams.
+/// A loop set on a voice whose stream has since been stopped leaves the
+/// streams that are open alone. The handle forwards the loop naming the
+/// voice's stream; the streamer, no longer holding it, ignores it. The other
+/// stream's own handle still loops that one.
 ///
-/// Mutation (run): `handle_set_stream_loop` without its stream check → the
-/// new stream loops → fails.
+/// Mutation (run): `handle_loop` applying a loop for a stream it does not
+/// hold to every open stream -> the other stream loops -> fails.
 #[test]
-fn a_loop_for_a_replaced_stream_leaves_the_new_one_alone() {
+fn a_loop_for_a_stopped_stream_leaves_the_others_alone() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let (first, second) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
     write_ramp(&first, SR as u32, 10_000);
     write_ramp(&second, SR as u32, 12_000);
-    let mut streamer = streaming(&first);
-    let voice = streamer
-        .status()
-        .take_disk_voice(0, Beat(0.0), None)
-        .expect("the link is installed");
+    let (mut streamer, first_stream, reader) = streaming(&first);
+    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
     let id = crate::SlotId(1);
     let (_pool, handle) = pool_with(&streamer, id, voice);
 
-    // The host restarts channel 0 on another file; the pool still holds
-    // the voice on the old stream.
-    let commands = streamer.commands();
-    commands
-        .send(Command::Stop { channel_index: 0 })
-        .expect("the streamer is alive");
-    commands
-        .send(Command::Stream {
-            channel_index: 0,
-            file_path: second.clone(),
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
-    assert!(
-        streamer.step_until_settled(1_000) < 1_000,
-        "the ring primes"
-    );
+    // The host stops the voice's stream and opens another file; the pool still
+    // holds the voice on the old stream.
+    drop(first_stream);
+    let opening = streamer.open(&second, crate::Placement::HEAD);
+    let (mut other, other_reader) =
+        crate::testing::settle(&mut streamer, opening).expect("the file opens");
+    let applied = || other_reader.origin.describe().map(|file| file.loop_);
 
     handle
         .send(crate::VoiceCommand::UpdateLoop {
@@ -1165,21 +1118,15 @@ fn a_loop_for_a_replaced_stream_leaves_the_new_one_alone() {
         .expect("the command queue has room in a test");
     assert!(streamer.step_until_settled(1_000) < 1_000);
     assert_eq!(
-        streamer.status().stream_loop(0),
+        applied(),
         Some(LoopSetting::Off),
-        "a loop meant for the stopped stream was applied to its successor"
+        "a loop meant for the stopped stream was applied to another"
     );
 
-    // The host's own loop, by channel, still reaches the stream there.
-    commands
-        .send(Command::Loop {
-            channel_index: 0,
-            setting: loop_on(1_000.0, 3_001.0, 0),
-        })
+    // The other stream's own handle still reaches it.
+    other
+        .set_loop(loop_on(1_000.0, 3_001.0, 0))
         .expect("the streamer is alive");
     assert!(streamer.step_until_settled(1_000) < 1_000);
-    assert_eq!(
-        streamer.status().stream_loop(0),
-        Some(loop_on(1_000.0, 3_001.0, 0))
-    );
+    assert_eq!(applied(), Some(loop_on(1_000.0, 3_001.0, 0)));
 }

@@ -42,7 +42,6 @@ fn stretched(wave: &Arc<Wave>) -> VoiceNode {
             stretch: StretchFactor::new(0.5),
             ..Default::default()
         },
-        channel_index: None,
     })
 }
 
@@ -170,7 +169,6 @@ fn each_node_declares_its_class() {
             MemorySource::placed(Arc::clone(&wave), Beat(0.0), None).expect("a placeable wave"),
         ),
         play: Playback::default(),
-        channel_index: None,
     });
     assert_eq!(
         MemorySource::new(Arc::clone(&wave))

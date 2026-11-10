@@ -51,6 +51,7 @@ num-traits = "0.2"
 num_enum = "0.5.2"
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 tutti-graph = { path = "../tutti-graph" }
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-ump = { path = "../tutti-ump", default-features = false }

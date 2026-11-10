@@ -54,21 +54,23 @@ struct CacheEntry {
     /// Active stream count. Non-zero while a stream is reading this wave; the
     /// LRU refuses to evict a pinned entry (a fully-buffered stream would go
     /// cold and get evicted out from under its reader otherwise).
-    pins: AtomicU32,
+    pins: Arc<AtomicU32>,
 }
 
 /// RAII guard that keeps a cache entry pinned (unevictable) for the lifetime of
 /// a stream. Acquired by [`LruCache::pin`], released on `Drop`. Held inside the
 /// streamer's stream link so it lives exactly as long as the stream.
 pub struct StreamPin {
-    cache: Arc<LruCache>,
-    path: PathBuf,
+    /// The counter of the entry this pin incremented, not the entry that
+    /// happens to sit under the path when it drops. `None` when there was no
+    /// entry to pin.
+    pins: Option<Arc<AtomicU32>>,
 }
 
 impl Drop for StreamPin {
     fn drop(&mut self) {
-        if let Some(entry) = self.cache.cache.get(&self.path) {
-            entry.pins.fetch_sub(1, Ordering::Relaxed);
+        if let Some(pins) = &self.pins {
+            pins.fetch_sub(1, Ordering::Relaxed);
         }
     }
 }
@@ -149,7 +151,7 @@ impl LruCache {
                 wave,
                 last_access: AtomicU64::new(self.next_tick()),
                 size_bytes: size,
-                pins: AtomicU32::new(0),
+                pins: Arc::new(AtomicU32::new(0)),
             },
         );
         self.current_bytes.fetch_add(size, Ordering::Relaxed);
@@ -159,17 +161,15 @@ impl LruCache {
     /// [`StreamPin`] is alive. Held by an active stream (in `ChannelPlan::Link`)
     /// so a fully-buffered — hence cold — stream is never evicted mid-read.
     ///
-    /// No-op-on-drop is safe if the entry is absent (e.g. never admitted): the
-    /// pin count only exists on a live entry, so the guard's `Drop` simply finds
-    /// nothing to decrement. Callers pin *after* insertion in practice.
-    pub fn pin(self: &Arc<Self>, path: &Path) -> StreamPin {
-        if let Some(entry) = self.cache.get(path) {
+    /// If the entry is absent (never admitted: an incremental stream) the
+    /// guard is inert. The guard holds the entry's own counter, so its drop
+    /// releases exactly what it took, whatever is under the path by then.
+    pub fn pin(&self, path: &Path) -> StreamPin {
+        let pins = self.cache.get(path).map(|entry| {
             entry.pins.fetch_add(1, Ordering::Relaxed);
-        }
-        StreamPin {
-            cache: Arc::clone(self),
-            path: path.to_path_buf(),
-        }
+            Arc::clone(&entry.pins)
+        });
+        StreamPin { pins }
     }
 
     /// Whether inserting `incoming` bytes would exceed the entry-count or
@@ -240,6 +240,30 @@ mod tests {
             cache.get(Path::new("small.wav")).is_some(),
             "evicted for it"
         );
+    }
+
+    /// A pin released releases exactly what it took: a pin on an absent path
+    /// (an incremental stream) holds nothing, so dropping it must not unpin an
+    /// entry that was inserted for the same path afterwards.
+    ///
+    /// Mutation (run): `StreamPin` decrementing the entry under its path again
+    /// (not the counter it incremented) -> the live pin is cancelled, the
+    /// entry is evicted for the newcomer -> fails.
+    #[test]
+    fn a_pin_releases_only_what_it_took() {
+        // One entry fits: any insert of another path must evict an unpinned one.
+        let cache = Arc::new(LruCache::new(1, 1024 * 1024));
+        let path = PathBuf::from("p.wav");
+        let absent = cache.pin(&path);
+        cache.insert(path.clone(), make_wave(100));
+        let live = cache.pin(&path);
+        drop(absent);
+        cache.insert(PathBuf::from("other.wav"), make_wave(100));
+        assert!(
+            cache.get(&path).is_some(),
+            "a pinned entry was evicted: another pin's drop unpinned it"
+        );
+        drop(live);
     }
 
     #[test]

@@ -126,7 +126,7 @@ fn the_svf_renders_what_it_always_did() {
         },
     );
     println!("DIGEST svf {digest:#018x}");
-    assert_golden("svf_render", digest, 0x0);
+    assert_golden("svf_render", digest, 0xf13a_ae01_ca0d_27c9);
 }
 
 /// A stereo f32 bell at 44.1 kHz: the gain moves at block 30 and the cutoff by
@@ -156,7 +156,7 @@ fn the_svf_bell_renders_what_it_always_did() {
         },
     );
     println!("DIGEST svf_bell {digest:#018x}");
-    assert_golden("svf_bell_render", digest, 0x0);
+    assert_golden("svf_bell_render", digest, 0xc913_d3e2_bb80_c6df);
 }
 
 /// The EQ band: a mono high shelf, its gain and cutoff cells moved at block 50, a
@@ -178,7 +178,7 @@ fn the_eq_band_renders_what_it_always_did() {
         },
     );
     println!("DIGEST eq_band {digest:#018x}");
-    assert_golden("eq_band_render", digest, 0x0);
+    assert_golden("eq_band_render", digest, 0x93db_5839_71fc_e46b);
 }
 
 /// A stereo 24 dB ladder: the resonance and cutoff cells move at block 40, the
@@ -208,7 +208,7 @@ fn the_ladder_renders_what_it_always_did() {
         },
     );
     println!("DIGEST ladder {digest:#018x}");
-    assert_golden("ladder_render", digest, 0x0);
+    assert_golden("ladder_render", digest, 0xfacb_ee3a_dce1_3507);
 }
 
 /// A stereo three-band crossover: the first split moves by its cell at block 40
@@ -230,5 +230,5 @@ fn the_crossover_renders_what_it_always_did() {
         },
     );
     println!("DIGEST crossover {digest:#018x}");
-    assert_golden("crossover_render", digest, 0x0);
+    assert_golden("crossover_render", digest, 0xe487_a6a1_7b13_6f8d);
 }

@@ -175,6 +175,7 @@ use crate::command::{CommandRx, Deliveries, overlay_capacity};
 use crate::cost::Schedule;
 use crate::event::PortCount;
 use crate::event::{Event, EventWriter, SortedEvents, merge_into};
+use crate::event_tap::EventTapWriter;
 use crate::fade::CrossfadeCurve;
 use crate::held::{Held, Keys, Tables};
 use crate::history::TransportHistory;
@@ -193,7 +194,7 @@ use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
 use crate::tap::TapWriter;
-use crate::{MeterId, TapId};
+use crate::{EventTapId, MeterId, TapId};
 use tutti_types::PlayReading;
 
 /// Events per block an event output port holds when its node declares no
@@ -350,6 +351,7 @@ pub(crate) struct Commit {
 #[derive(Debug, Default)]
 pub(crate) struct Opened {
     pub(crate) taps: Vec<(TapId, TapWriter)>,
+    pub(crate) event_taps: Vec<(EventTapId, EventTapWriter)>,
     pub(crate) meters: Vec<(MeterId, MeterWriter)>,
 }
 
@@ -665,6 +667,8 @@ struct State {
     event_fb: Vec<Option<EventFifo>>,
     /// One producer per planned tap lane (`None`: nobody opened it).
     taps: Vec<Option<TapWriter>>,
+    /// One producer per planned event tap (`None`: nobody opened it).
+    event_taps: Vec<Option<EventTapWriter>>,
     /// One set of cells per planned meter (`None`: nobody opened it).
     meters: Vec<Option<MeterWriter>>,
     inject: Vec<Inject>,
@@ -689,6 +693,7 @@ impl State {
             audio_fb: Vec::new(),
             event_fb: Vec::new(),
             taps: Vec::new(),
+            event_taps: Vec::new(),
             meters: Vec::new(),
             inject: Vec::new(),
             has_inject: Vec::new(),
@@ -1240,16 +1245,21 @@ impl Executor {
                     .and_then(Option::take);
                 Some(match (d.key, carried) {
                     (
-                        DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. },
+                        DelayKey::Event { from, .. }
+                        | DelayKey::ParamEvent { from, .. }
+                        | DelayKey::EventTap { from, .. },
                         Some(Ring::Event(mut f)),
                     ) => {
                         f.retune(d.len);
                         f.resize(rate(from), max_block);
                         Ring::Event(f)
                     }
-                    (DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }, _) => {
-                        Ring::Event(EventFifo::sized(d.len, rate(from), max_block))
-                    }
+                    (
+                        DelayKey::Event { from, .. }
+                        | DelayKey::ParamEvent { from, .. }
+                        | DelayKey::EventTap { from, .. },
+                        _,
+                    ) => Ring::Event(EventFifo::sized(d.len, rate(from), max_block)),
                     (_, Some(Ring::Audio(mut r))) => {
                         r.retune(d.len);
                         Ring::Audio(r)
@@ -1325,6 +1335,35 @@ impl Executor {
                         old_taps
                             .get(k)
                             .and_then(|&i| old.taps.get_mut(i))
+                            .and_then(Option::take)
+                    })
+            })
+            .collect();
+
+        // Event taps, the same way. A tap whose port is missing has an entry
+        // and no op, so its writer is carried across plans all the same.
+        let old_event_taps: BTreeMap<EventTapId, usize> = old_plan
+            .map(|p| {
+                p.event_taps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, k)| (*k, i))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let event_taps: Vec<Option<EventTapWriter>> = plan
+            .event_taps
+            .iter()
+            .map(|k| {
+                opened
+                    .event_taps
+                    .iter()
+                    .position(|(o, _)| o == k)
+                    .map(|at| opened.event_taps.swap_remove(at).1)
+                    .or_else(|| {
+                        old_event_taps
+                            .get(k)
+                            .and_then(|&i| old.event_taps.get_mut(i))
                             .and_then(Option::take)
                     })
             })
@@ -1593,6 +1632,7 @@ impl Executor {
             audio_fb,
             event_fb,
             taps,
+            event_taps,
             meters,
             inject,
             has_inject,
@@ -1792,6 +1832,7 @@ impl Executor {
                 audio_fb,
                 event_fb,
                 taps,
+                event_taps,
                 meters,
                 inject,
                 has_inject,
@@ -1856,6 +1897,7 @@ impl Executor {
                         audio_fb,
                         event_fb,
                         taps,
+                        event_taps,
                         meters: &*meters,
                         inject,
                         has_inject,
@@ -1955,6 +1997,11 @@ impl Executor {
                                     &plan.audio_list[srcs.range()],
                                     frames,
                                 );
+                            }
+                        }
+                        Op::EventTap { tap, src } => {
+                            if let Some(tap) = event_taps[tap as usize].as_mut() {
+                                crate::event_tap::event_tap_op(tap, &*st.events, src, &env);
                             }
                         }
                         Op::Meter { meter, srcs } => {

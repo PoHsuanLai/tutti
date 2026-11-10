@@ -199,7 +199,7 @@ const fn meter_work(lanes: u64) -> Work {
     }
 }
 
-/// An event op (a merge, an event delay, an event capture).
+/// An event op (a merge, an event delay, an event capture, an event tap).
 const EVENTS: Work = Work {
     fixed: 100,
     per_frame: 0,
@@ -215,7 +215,10 @@ pub(crate) fn op_work(op: &Op, shapes: &[Shape]) -> Work {
         | Op::Capture { .. }
         | Op::Tap { .. } => COPY,
         Op::Meter { srcs, .. } => meter_work(u64::from(srcs.len)),
-        Op::EventDelay { .. } | Op::EventMerge { .. } | Op::EventCapture { .. } => EVENTS,
+        Op::EventDelay { .. }
+        | Op::EventMerge { .. }
+        | Op::EventCapture { .. }
+        | Op::EventTap { .. } => EVENTS,
         Op::Node { unit, .. } => node_work(&shapes[unit as usize]),
     }
 }

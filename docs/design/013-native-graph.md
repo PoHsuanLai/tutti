@@ -6575,6 +6575,7 @@ the four lanes above, the graph's own surface is:
 | Buses and coercion between declared layouts | Lane 4 |
 | Latency compensation, tails, feedback edges | Built (the compiler) |
 | Tap and level meter on any port | Built (`Op::Tap`, `Op::Meter`) |
+| Event tap (any event output, out to a thread) | Built (`Op::EventTap`, `EventTapReader`, `Graph::open_event_tap`; doc 017, stage E1) |
 | Inlet (a thread's ring into the graph) | Built (`Graph::open_inlet`; `InletNode` is its implementation, not a node an author adds) |
 | Event fan-in (merge) | Built (`Op::EventMerge`) |
 | Param modulation and automation on a param port | Built (doc 014: the compiler's lane per param) |
@@ -6594,14 +6595,19 @@ the four lanes above, the graph's own surface is:
   they mean. It is **M4**, after M1. It gives any node,
   a plugin included, the parallel-processing knob hosts expose per effect,
   with the latency alignment only the graph can do.
-- **Event tap and event inlet.** Audio has a tap and an inlet; events have
-  neither as a primitive. Copying events out of any event port is done today
-  by MIDI-specific nodes (`MidiOutNode`, the queue nodes), and feeding events
-  in by `MidiInputNode` and `MidiQueueNode`. An event tap (`Op::EventTap`,
-  `TapReader`'s event sibling) and an event inlet (`Graph::open_event_inlet`)
-  would make those nodes users of the primitive. It is the MIDI lanes' work
-  (doc 017 owns the event side) and gets its own amendment there; this
-  document records only that it belongs to the graph.
+- **Event tap and event inlet.** Audio has a tap and an inlet; events had
+  neither as a primitive. Copying events out of any event port was done by
+  MIDI-specific nodes (`MidiOutNode`, the queue nodes), and feeding events
+  in by `MidiInputNode` and `MidiQueueNode`. The **event tap is built**
+  (doc 017 stage E1): `Op::EventTap`, `TapReader`'s event sibling, a plan op of
+  the `EVENTS` cost class that claims its `EventTapWriter` like `Op::Tap`
+  claims its lanes, `DelayKey::EventTap` for `TapAlign::ToOutput`, carried
+  across plans by `EventTapId` (a port that goes missing keeps its table entry
+  and gets no op), and not in a fork. The reference interpreter knows no taps,
+  audio or event, so the serial/pooled comparison and analytic figures hold it
+  (`tests/event_tap.rs`). The event inlet (`Graph::open_event_inlet`) is E2.
+  It is the MIDI lanes' work (doc 017 owns the event side); this document
+  records only that it belongs to the graph.
 
 **Kept as nodes, on purpose:**
 

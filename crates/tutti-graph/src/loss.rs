@@ -142,7 +142,11 @@ impl Dropped {
     /// to the output port that feeds it.
     pub(crate) fn charge_delay(&mut self, plan: &Plan, delay: u32, count: u64) {
         let from = match plan.delays.get(delay as usize).map(|d| d.key) {
-            Some(DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }) => Some(from),
+            Some(
+                DelayKey::Event { from, .. }
+                | DelayKey::ParamEvent { from, .. }
+                | DelayKey::EventTap { from, .. },
+            ) => Some(from),
             _ => None,
         };
         self.charge(from, count);

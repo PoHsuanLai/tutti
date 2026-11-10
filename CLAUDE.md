@@ -66,6 +66,17 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
     (`tutti-engine/src/hearing.rs`).
   Both count what a slow reader loses (`TapReader::take_lost`, and
   `Source::take_lost` through `Recorder::lost`).
+- Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
+  and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
+  `Editor::open_event_tap` / `Graph::open_event_tap` on one event output, read
+  through `EventTapReader` (its own type, not a `TapReader`: no lanes, no
+  layout). MIDI only, each event a `TapEvent { frame, ump }` on the graph's
+  absolute clock (a `u64`, after any `TapAlign` delay), the ring `note_off_room`
+  of the capacity named at open so a note-off outlives the others, loss counted
+  in events (`take_lost`). A port that goes missing later reads nothing and
+  counts nothing; a closed tap compiles to no op and a fork carries none. Its
+  frames are on the rate the reader was opened at (`EventTapReader::rate`), so
+  whoever re-prepares at another rate reopens it (`Graph::reopen_event_taps`).
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
   `InletNode` (`tutti-graph`) copies a standalone ring (`TapReader::standalone`)
   a thread of your own fills (a capture callback) into the graph, and

@@ -42,12 +42,12 @@ use std::sync::Arc;
 use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
-    CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, InletNode,
-    IntoNode, MeterReader, MissingSource, ParamIn, ParamMod, ParamRange, ParamSet, Prepare,
-    TapReader, TapWriter, Transport,
+    CommitError, Editor, EventEdge, EventIn, EventOut, EventTapReader, Executor, Fade,
+    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, ParamIn, ParamMod, ParamRange,
+    ParamSet, Prepare, TapReader, TapWriter, Transport,
 };
 use tutti_graph::{Edge, InPort, NodeKey, OutPort, Source};
-use tutti_graph::{MeterId, MeterSpec, TapAlign, TapId};
+use tutti_graph::{EventTapId, MeterId, MeterSpec, TapAlign, TapId};
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
@@ -341,6 +341,12 @@ pub struct Graph {
     fed_edges: BTreeMap<NodeKey, Vec<EventSource>>,
     /// The id the next tap takes.
     next_tap: u32,
+    /// The id the next event tap takes.
+    next_event_tap: u32,
+    /// Each open event tap as it was opened (its port, alignment and
+    /// capacity), so [`reopen_event_taps`](Self::reopen_event_taps) can open it
+    /// again.
+    event_taps: BTreeMap<EventTapId, (EventSource, TapAlign, usize)>,
     /// The taps that copy the graph's outputs ([`open_output_tap`](Self::open_output_tap)),
     /// by the channels they were opened with: their sources follow the outputs.
     output_taps: BTreeMap<TapId, usize>,
@@ -498,6 +504,8 @@ impl Graph {
             feeds: BTreeMap::new(),
             fed_edges: BTreeMap::new(),
             next_tap: 0,
+            next_event_tap: 0,
+            event_taps: BTreeMap::new(),
             output_taps: BTreeMap::new(),
             next_meter: 1,
             master_meter: Some(master_meter),
@@ -1814,6 +1822,114 @@ impl Graph {
         if reaped > 0 {
             let open = &self.editor.spec().topology.taps;
             self.output_taps.retain(|id, _| open.contains_key(id));
+            self.edited = true;
+        }
+        reaped
+    }
+
+    /// Opens a tap on one event output of a node and returns its reader: the
+    /// MIDI events the port carries, each with the frame it was due on
+    /// ([`TapEvent`](tutti_graph::TapEvent)), on the clock of the rate the
+    /// graph is prepared at now ([`EventTapReader::rate`]). The tap is
+    /// compiled by the next commit and fed by every block that renders after
+    /// it; a copy of events, the event sibling of [`open_tap`](Self::open_tap).
+    ///
+    /// `capacity` is a count of events. A non-note-off is refused once that
+    /// many are held, a note-off is kept up to
+    /// [`note_off_room`](tutti_graph::note_off_room) of it, and each refusal is
+    /// counted ([`EventTapReader::take_lost`]). `align` is as for a plan tap:
+    /// [`TapAlign::ToOutput`] delays the port by the compensation an output of
+    /// the same node gets, so the frames line up with the audio the graph
+    /// outputs; [`TapAlign::Raw`] reads it as it leaves its node. Ramps,
+    /// segments, harmony and resync are not copied.
+    ///
+    /// The port must exist now, edits not yet committed included
+    /// ([`MissingSource::Node`] or [`MissingSource::EventPort`] otherwise, and
+    /// nothing is opened). One that vanishes later reads no events, counts no
+    /// loss and fails no commit. Dropping the reader leaves the tap open until
+    /// [`close_event_tap`](Self::close_event_tap) or the session's next
+    /// [`Reclaim`](crate::Phase::Reclaim) phase, which closes it.
+    ///
+    /// **A re-prepare at another rate moves the graph's clock to a new scale,**
+    /// so a reader's frames stay on the rate it was opened at only until then;
+    /// the caller that re-rates the graph reopens its taps
+    /// ([`reopen_event_taps`](Self::reopen_event_taps)).
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] for a port that is not in the graph now.
+    pub fn open_event_tap(
+        &mut self,
+        source: EventSource,
+        align: TapAlign,
+        capacity: usize,
+    ) -> Result<EventTapReader, MissingSource> {
+        let id = EventTapId(self.next_event_tap);
+        let reader = self.editor.open_event_tap(
+            id,
+            EventOut {
+                node: source.node,
+                port: source.port,
+            },
+            align,
+            capacity,
+        )?;
+        self.next_event_tap += 1;
+        self.event_taps.insert(id, (source, align, capacity));
+        self.edited = true;
+        Ok(reader)
+    }
+
+    /// Closes an event tap: its op leaves the plan at the next commit and the
+    /// ring is freed on this side. Closing a closed tap does nothing.
+    pub fn close_event_tap(&mut self, id: EventTapId) {
+        self.event_taps.remove(&id);
+        self.editor.close_event_tap(id);
+        self.edited = true;
+    }
+
+    /// Opens every event tap again, at the rate the graph is prepared at now,
+    /// and returns the new readers: each replaces the tap of the same
+    /// [`id`](EventTapReader::id), so the reader it supersedes is fed no more.
+    /// What a caller does after a re-prepare at another rate
+    /// ([`set_sample_rate`](Self::set_sample_rate); a device session's restart
+    /// re-rates the graph too), so that one reader's frames are always on one
+    /// scale. A tap whose node was removed since is not reopened and is
+    /// dropped from the graph's list.
+    ///
+    /// The graph cannot do this by itself: a reader belongs to the thread that
+    /// drains it, and the new one has to reach that thread.
+    pub fn reopen_event_taps(&mut self) -> Vec<EventTapReader> {
+        let open: Vec<(EventTapId, (EventSource, TapAlign, usize))> = self
+            .event_taps
+            .iter()
+            .map(|(&id, &opened)| (id, opened))
+            .collect();
+        let mut readers = Vec::with_capacity(open.len());
+        for (id, (source, align, capacity)) in open {
+            let port = EventOut {
+                node: source.node,
+                port: source.port,
+            };
+            match self.editor.open_event_tap(id, port, align, capacity) {
+                Ok(reader) => readers.push(reader),
+                Err(_) => {
+                    self.event_taps.remove(&id);
+                    self.editor.close_event_tap(id);
+                }
+            }
+        }
+        self.edited = true;
+        readers
+    }
+
+    /// Closes the event taps whose readers were dropped, and returns how many.
+    /// The session's [`Reclaim`](crate::Phase::Reclaim) phase runs it.
+    pub(crate) fn reap_event_taps(&mut self) -> usize {
+        let reaped = self.editor.reap_event_taps();
+        if reaped > 0 {
+            let open = &self.editor.spec().topology.event_taps;
+            self.event_taps.retain(|id, _| open.contains_key(id));
             self.edited = true;
         }
         reaped

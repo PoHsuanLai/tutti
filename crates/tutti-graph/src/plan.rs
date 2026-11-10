@@ -138,6 +138,14 @@ pub enum DelayKey {
         /// What feeds it.
         from: Source,
     },
+    /// An aligned event tap's source, delayed to the output time as an event
+    /// edge into an output-time sink would be.
+    EventTap {
+        /// The event tap.
+        tap: crate::EventTapId,
+        /// The event output copied.
+        from: EventOut,
+    },
     /// One lane of an aligned tap, delayed like an output channel.
     Tap {
         /// The tap.
@@ -401,6 +409,14 @@ pub enum Op {
         tap: u32,
         /// Audio slot per lane (into [`Plan::audio_list`]).
         srcs: Span,
+    },
+    /// Push every MIDI event of an event slot into an event tap's ring, each
+    /// stamped with its frame.
+    EventTap {
+        /// Index into `Plan::event_taps`.
+        tap: u32,
+        /// Event slot read.
+        src: u32,
     },
     /// Fold a block of every lane of a meter into its cells.
     Meter {
@@ -877,6 +893,10 @@ pub struct Plan {
     pub(crate) event_feedback: Vec<FeedbackSpec>,
     pub(crate) delays: Vec<DelaySpec>,
     pub(crate) taps: Vec<crate::TapId>,
+    /// The event taps the topology names, by id. An op names one by its index
+    /// here; a tap whose port does not exist has an entry and no op, so its
+    /// writer is carried across plans and resumes when the port returns.
+    pub(crate) event_taps: Vec<crate::EventTapId>,
     /// The meters the plan measures, with their lane counts.
     pub(crate) meters: Vec<(crate::MeterId, usize)>,
     pub(crate) units: Vec<PlanUnit>,

@@ -2091,8 +2091,8 @@ struct RefWeight {
 /// The value a sink holds: none is silence, one plain addend is itself (an
 /// alias, so a `-0.0` stays), anything else is the left fold
 /// `((+0.0 + w_0 * a_0) + w_1 * a_1) + ..` in `f32`, one rounding per add
-/// and per multiply, each lane weighted by `w[i] = from + (to - from) * ((i +
-/// 1) / frames)` (doc 013, "Audio fan-in sums", points 1 and 2, and "Edge
+/// and per multiply, each lane weighted by
+/// `w[i] = from + (to - from) * ((i + 1) / frames)` (doc 013, "Audio fan-in sums", points 1 and 2, and "Edge
 /// gain"). Skips nothing, silent addends and a weight of `1.0` or `0.0`
 /// included: the executor skips the silent ones and takes no multiply at
 /// `1.0`, and must agree.

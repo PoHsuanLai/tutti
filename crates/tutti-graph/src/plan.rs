@@ -949,7 +949,7 @@ pub struct Plan {
     /// The lanes of every [`Op::WeightedSum`], flattened (its `lanes` span
     /// indexes this): the edge of each weighted addend, `None` for a plain
     /// one. The executor keeps one lane state per entry, and carries a
-    /// weighted lane's across a commit by its [`EdgeId`](crate::EdgeId).
+    /// weighted lane's across a commit by its [`EdgeId`].
     pub(crate) sum_lanes: Vec<Option<EdgeId>>,
     /// The node ops, lowered for the executor. Derived from the fields
     /// above; `verify` checks each record against its op.

@@ -191,7 +191,21 @@ enum Action {
     /// body: a live peer that is part-way through a frame most of the time,
     /// though every frame completes within `split`.
     SplitEvents { split: Duration },
+    /// Send `count` events `gap` apart, answer nothing, then look whether the
+    /// host's next request is already waiting (within 300 ms): `probe` becomes
+    /// [`PROBE_WAITING`] or [`PROBE_NOT_YET`]. The waiting request is handled
+    /// as the next one.
+    EventsThenProbe {
+        count: usize,
+        gap: Duration,
+        probe: Arc<std::sync::atomic::AtomicU8>,
+    },
 }
+
+/// [`Action::EventsThenProbe`] found the host's next request already sent.
+const PROBE_WAITING: u8 = 1;
+/// [`Action::EventsThenProbe`] found nothing sent yet.
+const PROBE_NOT_YET: u8 = 2;
 
 struct MockServer {
     bridge: Arc<PluginBridge>,
@@ -263,9 +277,14 @@ impl MockServer {
         let server = std::thread::Builder::new()
             .name(format!("mock-hostile-{label}"))
             .spawn(move || {
+                let mut next = None;
                 loop {
-                    let Ok(msg) = recv_host_msg(&stream) else {
-                        return; // host hung up
+                    let msg = match next.take() {
+                        Some(msg) => msg,
+                        None => match recv_host_msg(&stream) {
+                            Ok(msg) => msg,
+                            Err(_) => return, // host hung up
+                        },
                     };
                     match respond(msg) {
                         Action::Reply(m) => {
@@ -306,6 +325,30 @@ impl MockServer {
                                     return;
                                 }
                             }
+                        }
+                        Action::EventsThenProbe { count, gap, probe } => {
+                            for n in 0..count {
+                                std::thread::sleep(gap);
+                                let event = BridgeMessage::LatencyChanged {
+                                    samples: crate::protocol::Samples(n),
+                                };
+                                if send_bridge_msg(&stream, &event).is_err() {
+                                    return;
+                                }
+                            }
+                            use interprocess::local_socket::traits::Stream as _;
+                            let _ = stream.set_recv_timeout(Some(Duration::from_millis(300)));
+                            let waiting = recv_host_msg(&stream).ok();
+                            let _ = stream.set_recv_timeout(None);
+                            probe.store(
+                                if waiting.is_some() {
+                                    PROBE_WAITING
+                                } else {
+                                    PROBE_NOT_YET
+                                },
+                                Ordering::SeqCst,
+                            );
+                            next = waiting;
                         }
                         Action::SplitEvents { split } => {
                             let mut s = &stream;
@@ -1617,28 +1660,32 @@ fn a_late_query_reply_is_not_the_next_querys_answer() {
 }
 
 /// **A plugin that keeps sending events does not extend a request's budget**
-/// (doc 027 D7). The first `GetParameter` gets 6.5 s of `LatencyChanged`
-/// events at 100 ms and no answer. The bridge gives up at its 5 s budget and
-/// sends the next request, which the peer answers once its events stop; with
-/// the budget restarting per event the bridge waited until 11.5 s, past the
-/// second caller's own wait.
+/// (doc 027 D7). The first `GetParameter` gets 6 s of `LatencyChanged` events
+/// at 100 ms and no answer. The bridge gives up at its 5 s budget and sends
+/// the next request, so when the events stop it is already waiting at the
+/// peer; with the budget restarting per event the bridge would still be
+/// waiting, until 5 s after the last event.
+///
+/// The peer looks for the waiting request rather than the test timing the
+/// answer: an oversleeping runner only lengthens the events, which widens the
+/// margin. (A first version required the answer within the second caller's
+/// 5 s wait, which macOS runners' 100 ms sleeps overran.)
 ///
 /// Mutation (run): `recv_reply` passing the whole `timeout` to each read (the
-/// per-message restart) → the second query answers `None` → fails.
+/// per-message restart) → nothing is waiting when the events stop → fails.
 #[test]
 fn a_chatty_plugin_does_not_extend_the_budget() {
     let asked = Arc::new(AtomicU64::new(0));
+    let probe = Arc::new(std::sync::atomic::AtomicU8::new(0));
     let mock = MockServer::start("chatty", {
         let asked = Arc::clone(&asked);
+        let probe = Arc::clone(&probe);
         move |msg| match msg {
             HostMessage::GetParameter { .. } if asked.fetch_add(1, Ordering::SeqCst) == 0 => {
-                Action::ReplyManySlowly {
-                    msgs: (0..65)
-                        .map(|n| BridgeMessage::LatencyChanged {
-                            samples: crate::protocol::Samples(n),
-                        })
-                        .collect(),
+                Action::EventsThenProbe {
+                    count: 60,
                     gap: Duration::from_millis(100),
+                    probe: Arc::clone(&probe),
                 }
             }
             HostMessage::GetParameterList => {
@@ -1650,12 +1697,22 @@ fn a_chatty_plugin_does_not_extend_the_budget() {
         }
     });
 
+    let start = Instant::now();
     assert_eq!(mock.bridge.parameter(ParamId::new(1)), None);
+    // Sends the next request; its answer waits for the events to stop.
+    let _ = mock.bridge.parameters();
     assert!(
-        mock.bridge.parameters().is_some(),
-        "the bridge was still waiting on the chatty request"
+        wait_until(|| probe.load(Ordering::SeqCst) != 0),
+        "the peer never finished its events"
     );
-    assert!(!mock.bridge.is_crashed());
+    assert_eq!(
+        probe.load(Ordering::SeqCst),
+        PROBE_WAITING,
+        "when the events stopped ({:?} in) the bridge had not sent its next \
+         request: it was still waiting on the chatty one",
+        start.elapsed()
+    );
+    assert!(!mock.bridge.is_crashed(), "{:?}", mock.bridge.crash_cause());
 }
 
 /// **A live peer caught part-way through a frame at the budget is not declared

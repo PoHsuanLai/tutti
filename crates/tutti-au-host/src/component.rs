@@ -167,9 +167,18 @@ fn enumerate_with_desc(desc: AudioComponentDescription) -> Vec<AuComponentInfo> 
 }
 
 /// Enumerates every Audio Unit registered with AudioToolbox.
+///
+/// The wildcard description matches every AudioComponent, and AudioToolbox
+/// registers its codecs as components too (encoders, decoders, the Dolby
+/// transcoders); those are not Audio Units, so a component whose type is no
+/// [`AuType`] is left out. A scan that listed them offered a decoder as a
+/// plugin, and instantiating one as a unit fails, or on some systems traps.
 #[cfg(target_os = "macos")]
 pub fn enumerate_components() -> Vec<AuComponentInfo> {
     enumerate_with_desc(AudioComponentDescription::default())
+        .into_iter()
+        .filter(|c| !matches!(c.component_type, AuType::Unknown(_)))
+        .collect()
 }
 
 /// Enumerates only Audio Units of a given [`AuType`].
@@ -287,6 +296,27 @@ mod tests {
         assert!(
             !components.is_empty(),
             "Expected at least one Audio Unit on the system"
+        );
+    }
+
+    /// Only Audio Units: the codecs AudioToolbox registers as components (an
+    /// AAC decoder, ships with macOS) are not listed.
+    ///
+    /// Mutation (run): `enumerate_components` without its type filter -> the
+    /// decoders are listed -> fails.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn enumeration_lists_no_codec() {
+        let components = enumerate_components();
+        let odd: Vec<_> = components
+            .iter()
+            .filter(|c| matches!(c.component_type, AuType::Unknown(_)))
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(odd.is_empty(), "listed as Audio Units: {odd:?}");
+        assert!(
+            !components.iter().any(|c| c.name.contains("AAC Decoder")),
+            "a codec is listed as an Audio Unit"
         );
     }
 

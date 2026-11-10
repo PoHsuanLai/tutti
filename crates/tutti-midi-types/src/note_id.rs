@@ -7,7 +7,7 @@
 //! of (channel, note), so behaviour is identical to keying on the raw pair; under
 //! Note Number Rotation an allocator mints distinct ids via [`NoteId::from_raw`].
 
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteNumber};
 
 /// Stable per-note identity.
 ///
@@ -56,8 +56,8 @@ impl NoteId {
     /// The MIDI note number, for the [`from_channel_note`](Self::from_channel_note) encoding.
     #[inline]
     #[must_use]
-    pub const fn note_number(self) -> u8 {
-        (self.0 & 0x7f) as u8
+    pub const fn note_number(self) -> NoteNumber {
+        NoteNumber::masked(self.0 as u8)
     }
 
     /// The MIDI channel, for the [`from_channel_note`](Self::from_channel_note) encoding.

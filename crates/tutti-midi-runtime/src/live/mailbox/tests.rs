@@ -58,12 +58,8 @@ fn cloned_sender_pushes_to_same_receiver() {
 #[test]
 fn sender_note_helpers_match_explicit_events() {
     let (sender, receiver) = MidiMailbox::pair();
-    sender.note_on(
-        MidiChannel::FIRST,
-        NoteNumber::new(60).unwrap(),
-        U7::new(100).unwrap(),
-    );
-    sender.note_off(MidiChannel::FIRST, NoteNumber::new(60).unwrap());
+    sender.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
+    sender.note_off(MidiChannel::FIRST, NoteNumber::of(60));
     let mut buf = [(0, Ump([0; 4])); 4];
     assert_eq!(receiver.poll_into(&mut buf), 2);
     assert_eq!(buf[0], raw(note_on(60, 100)));
@@ -77,11 +73,7 @@ fn dropped_receiver_keeps_sender_pushable() {
     let (sender, receiver) = MidiMailbox::pair();
     drop(receiver);
     assert_eq!(sender.queue(&[note_on(60, 100), note_on(64, 100)]), 2);
-    assert!(sender.note_on(
-        MidiChannel::FIRST,
-        NoteNumber::new(67).unwrap(),
-        U7::new(100).unwrap()
-    ));
+    assert!(sender.note_on(MidiChannel::FIRST, NoteNumber::of(67), U7::of(100)));
 }
 
 /// A partial accept reports the prefix that landed, not the count offered.

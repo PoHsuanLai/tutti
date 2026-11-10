@@ -144,6 +144,22 @@ fn real_time_and_groupless_and_other_groups_do_not_terminate() {
     assert_eq!(sysex7_to_ci(&run), Some(discovery([1, 2, 3])));
 }
 
+/// A reserved message type has no group field (M2-104 names the message
+/// types that carry one), so it is on no group's run and ends none, whatever
+/// its second nibble holds.
+///
+/// Mutation: ending the run on the second nibble of any type (the old
+/// `group_of`) fails the count below.
+#[test]
+fn a_reserved_message_type_does_not_terminate() {
+    let packets = multi_packet_run(MidiGroup::FIRST);
+    let mut r = Sysex7PacketReassembler::new();
+    r.push(&packets[0]);
+    // MT 0x6 (reserved, 32 bits), second nibble 0: group 1's bits if it had one.
+    assert!(r.push(&Ump([0x6000_0000, 0, 0, 0])).is_none());
+    assert_eq!(r.in_flight_count(), 1, "the run survives a reserved type");
+}
+
 #[test]
 fn system_common_terminates_but_real_time_does_not() {
     // System Common (0xF1..=0xF6) shares MT 0x1 with Real Time but is not
@@ -154,7 +170,7 @@ fn system_common_terminates_but_real_time_does_not() {
     assert!(
         r.push(&Ump::from(Message::System(
             MidiGroup::FIRST,
-            System::SongSelect(U7::new(3).unwrap()),
+            System::SongSelect(U7::of(3)),
         )))
         .is_none()
     );

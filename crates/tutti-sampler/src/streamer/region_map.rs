@@ -1,4 +1,4 @@
-//! Butler-thread-local map of `RegionId` → `RegionOut`.
+//! Streamer-thread-local map of `RegionId` → `RegionOut`.
 //!
 //! Structurally a `Vec<RegionOut>` with a `HashMap<RegionId, usize>`
 //! side-index. The `Vec` is required because the parallel refill path uses
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use super::command::RegionId;
 use super::prefetch::RegionOut;
 
-/// The butler thread's private table of live region writers.
+/// The streamer thread's private table of live region writers.
 ///
 /// Not shared: the producer half of every ring lives here and nowhere else,
 /// which is what lets the parallel refill hand out disjoint `&mut`s.
@@ -96,7 +96,7 @@ impl RegionMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::butler::prefetch::RegionBuffer;
+    use crate::streamer::prefetch::RegionBuffer;
     use std::path::PathBuf;
 
     fn make_writer(region_id: RegionId) -> RegionOut {

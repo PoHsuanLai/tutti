@@ -1,4 +1,4 @@
-//! Butler-thread disk I/O: reading wave data into the ring.
+//! Streamer-thread disk I/O: reading wave data into the ring.
 //!
 //! Strictly the read path — [`refill`] decides how much to move and moves it,
 //! [`wave_io`] unpacks a resident wave into interleaved frames. Loop-boundary

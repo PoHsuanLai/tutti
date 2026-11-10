@@ -18,8 +18,8 @@
 //! use tutti_midi_protocol::widen;
 //! use tutti_ump::{NoteNumber, U7, Voice1, Voice2};
 //!
-//! let note = NoteNumber::new(60).unwrap();
-//! let on = Voice1::NoteOn { note, velocity: U7::new(64).unwrap() };
+//! let note = NoteNumber::of(60);
+//! let on = Voice1::NoteOn { note, velocity: U7::of(64) };
 //! // 7-bit centre 0x40 is 16-bit centre 0x8000 (M2-115 section 3).
 //! let Voice2::NoteOn { velocity, .. } = widen(on) else { unreachable!() };
 //! assert_eq!(velocity, 0x8000);

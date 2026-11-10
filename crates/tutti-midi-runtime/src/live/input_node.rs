@@ -59,13 +59,11 @@ pub const MIDI_INPUT_DENSITY: EventDensity = EventDensity::per_kiloframe(128);
 
 /// The port an event leaves a [`MidiInputNode`] from.
 pub fn input_port_of(event: &Ump) -> usize {
-    // The channel nibble of a channel voice message (UMP type 0x2 or 0x4: the
-    // same bit position in both), read without a full decode.
-    let word = event.0[0];
-    match (word >> 28) & 0x0F {
-        0x2 | 0x4 => usize::from(MidiChannel::masked(((word >> 16) & 0x0F) as u8).get()),
-        _ => CHANNELLESS_PORT,
-    }
+    // The channel of a channel voice message (UMP type 0x2 or 0x4), read
+    // without a full decode.
+    event
+        .channel()
+        .map_or(CHANNELLESS_PORT, |channel| usize::from(channel.get()))
 }
 
 /// The ports a node listening to `channel` (every channel when `None`) takes

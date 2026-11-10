@@ -80,7 +80,7 @@ use crate::OutPort;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail, UnitAddr,
 };
-use tutti_ump::Ump;
+use tutti_ump::{Message, NoteNumber, Ump, Voice1, Voice2, decode};
 
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
@@ -911,19 +911,61 @@ impl Row {
     /// not a note message (a controller, a ramp) is sent as it is: two
     /// identical events merged are what the rows of an echoing node pin.
     fn other_source_kind(kind: EventKind) -> EventKind {
-        let EventKind::Midi(Ump(mut words)) = kind else {
+        let EventKind::Midi(ump) = kind else {
             return kind;
         };
-        let message_type = words[0] >> 28;
-        let status = (words[0] >> 20) & 0xF;
-        // MIDI 1.0 (type 2) and MIDI 2.0 (type 4) channel voice, Note Off or
-        // Note On: the key is the second byte of the first word in both.
-        if matches!(message_type, 2 | 4) && matches!(status, 8 | 9) {
-            let key = (words[0] >> 8) & 0x7F;
-            let other = if key < 127 { key + 1 } else { key - 1 };
-            words[0] = (words[0] & !(0x7F << 8)) | (other << 8);
-        }
-        EventKind::Midi(Ump(words))
+        // The neighbouring key: one up, or one down at 127.
+        let other = |note: NoteNumber| {
+            NoteNumber::new(note.get() + 1).unwrap_or_else(|| NoteNumber::of(note.get() - 1))
+        };
+        let message = match decode(ump) {
+            Ok(Message::Midi1(a, Voice1::NoteOn { note, velocity })) => Message::Midi1(
+                a,
+                Voice1::NoteOn {
+                    note: other(note),
+                    velocity,
+                },
+            ),
+            Ok(Message::Midi1(a, Voice1::NoteOff { note, velocity })) => Message::Midi1(
+                a,
+                Voice1::NoteOff {
+                    note: other(note),
+                    velocity,
+                },
+            ),
+            Ok(Message::Midi2(
+                a,
+                Voice2::NoteOn {
+                    note,
+                    velocity,
+                    attribute,
+                },
+            )) => Message::Midi2(
+                a,
+                Voice2::NoteOn {
+                    note: other(note),
+                    velocity,
+                    attribute,
+                },
+            ),
+            Ok(Message::Midi2(
+                a,
+                Voice2::NoteOff {
+                    note,
+                    velocity,
+                    attribute,
+                },
+            )) => Message::Midi2(
+                a,
+                Voice2::NoteOff {
+                    note: other(note),
+                    velocity,
+                    attribute,
+                },
+            ),
+            _ => return kind,
+        };
+        EventKind::Midi(Ump::from(message))
     }
 
     fn event_kind(&self) -> EventKind {

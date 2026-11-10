@@ -13,14 +13,6 @@ use tutti_ump::{
     System, U7, U14, Ump, Utility, Voice2,
 };
 
-fn note(n: u8) -> NoteNumber {
-    NoteNumber::new(n).unwrap_or_else(|| panic!("note {n} out of range"))
-}
-
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap_or_else(|| panic!("{v} is not 7-bit"))
-}
-
 fn voice(group: MidiGroup, channel: MidiChannel, v: Voice2) -> Ump {
     Message::Midi2(Address { group, channel }, v).into()
 }
@@ -35,7 +27,7 @@ pub fn note_on(group: MidiGroup, channel: MidiChannel, n: u8, velocity: u16) -> 
         group,
         channel,
         Voice2::NoteOn {
-            note: note(n),
+            note: NoteNumber::of(n),
             velocity,
             attribute: tutti_ump::Attribute::None,
         },
@@ -48,7 +40,7 @@ pub fn note_off(group: MidiGroup, channel: MidiChannel, n: u8, velocity: u16) ->
         group,
         channel,
         Voice2::NoteOff {
-            note: note(n),
+            note: NoteNumber::of(n),
             velocity,
             attribute: tutti_ump::Attribute::None,
         },
@@ -76,7 +68,7 @@ pub fn per_note_pitch_bend(group: MidiGroup, channel: MidiChannel, n: u8, value:
         group,
         channel,
         Voice2::PerNotePitchBend {
-            note: note(n),
+            note: NoteNumber::of(n),
             value,
         },
     )
@@ -90,14 +82,14 @@ pub fn program_change(
     bank: Option<u16>,
 ) -> Ump {
     let bank = bank.map(|b| Bank {
-        msb: u7(((b >> 7) & 0x7F) as u8),
-        lsb: u7((b & 0x7F) as u8),
+        msb: U7::of(((b >> 7) & 0x7F) as u8),
+        lsb: U7::of((b & 0x7F) as u8),
     });
     voice(
         group,
         channel,
         Voice2::ProgramChange {
-            program: u7(program),
+            program: U7::of(program),
             bank,
         },
     )
@@ -114,7 +106,7 @@ pub fn poly_pressure(group: MidiGroup, channel: MidiChannel, n: u8, value: u32) 
         group,
         channel,
         Voice2::PolyPressure {
-            note: note(n),
+            note: NoteNumber::of(n),
             value,
         },
     )
@@ -132,8 +124,8 @@ pub fn registered_controller(
         group,
         channel,
         Voice2::Registered {
-            bank: u7(bank),
-            index: u7(index),
+            bank: U7::of(bank),
+            index: U7::of(index),
             value,
         },
     )
@@ -151,8 +143,8 @@ pub fn assignable_controller(
         group,
         channel,
         Voice2::Assignable {
-            bank: u7(bank),
-            index: u7(index),
+            bank: U7::of(bank),
+            index: U7::of(index),
             value,
         },
     )
@@ -170,8 +162,8 @@ pub fn relative_registered_controller(
         group,
         channel,
         Voice2::RelativeRegistered {
-            bank: u7(bank),
-            index: u7(index),
+            bank: U7::of(bank),
+            index: U7::of(index),
             delta,
         },
     )
@@ -189,8 +181,8 @@ pub fn relative_assignable_controller(
         group,
         channel,
         Voice2::RelativeAssignable {
-            bank: u7(bank),
-            index: u7(index),
+            bank: U7::of(bank),
+            index: U7::of(index),
             delta,
         },
     )
@@ -208,13 +200,13 @@ pub fn per_note_controller(
 ) -> Ump {
     let v = if registered {
         Voice2::RegisteredPerNote {
-            note: note(n),
+            note: NoteNumber::of(n),
             controller: RegisteredPerNoteController::from(index),
             value,
         }
     } else {
         Voice2::AssignablePerNote {
-            note: note(n),
+            note: NoteNumber::of(n),
             controller: index,
             value,
         }
@@ -234,7 +226,7 @@ pub fn per_note_management(
         group,
         channel,
         Voice2::PerNoteManagement {
-            note: note(n),
+            note: NoteNumber::of(n),
             detach,
             reset,
         },
@@ -263,8 +255,7 @@ pub fn stop(group: MidiGroup) -> Ump {
 
 /// Song Position Pointer, in MIDI beats.
 pub fn song_position(group: MidiGroup, position: u16) -> Ump {
-    let p = U14::new(position).unwrap_or_else(|| panic!("{position} is not 14-bit"));
-    system(group, System::SongPosition(p))
+    system(group, System::SongPosition(U14::of(position)))
 }
 
 /// A Utility NOOP.
@@ -292,8 +283,8 @@ mod tests {
     // status nibble for NoteOff's in `note_on` and the first assert fails.
     #[test]
     fn note_on_and_off_have_the_spec_layout() {
-        let g = MidiGroup::masked(2);
-        let c = MidiChannel::masked(5);
+        let g = MidiGroup::of(2);
+        let c = MidiChannel::of(5);
         // M2-104 §7.4.2: type 4, group, status 9 / 8, channel; note, attr type;
         // velocity in the high half of word 1.
         assert_eq!(
@@ -307,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "note 128 out of range")]
+    #[should_panic(expected = "a NoteNumber is 7 bits")]
     fn an_out_of_range_note_is_refused() {
         let _ = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 128, 1);
     }

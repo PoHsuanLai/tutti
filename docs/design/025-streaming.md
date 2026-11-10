@@ -466,8 +466,8 @@ still needs:
   (`priority.rs`, #341): `Highest` (nice -20, `HIGHEST`) and `Raised` (about
   nice -10, `ABOVE_NORMAL`), never a real-time class, and it reports what the
   OS granted. The plugin server uses `Highest`.
-- The butler thread asks for `Raised` and logs the outcome
-  (`butler/thread.rs`). A refusal is harmless. Grounds: Ardour's butler sets no
+- The streamer thread asks for `Raised` and logs the outcome
+  (`streamer/thread.rs`). A refusal is harmless. Grounds: Ardour's butler sets no
   CPU priority and LinuxSampler's disk thread runs at nice -10; on Linux
   `Highest` is at most nice -20 under `SCHED_OTHER`, `EPERM` unprivileged, never
   real time. Linux I/O priority (`ioprio_set`, as Ardour's butler) is added
@@ -476,9 +476,9 @@ still needs:
 
 **Not done, the disk stream's part.**
 
-- The butler loop still waits on its command queue with `recv_timeout`, 1 ms
+- The streamer loop still waits on its command queue with `recv_timeout`, 1 ms
   idle and 3 ms healthy, and yields while a ring is below threshold
-  (`butler/loop_body.rs`, `step.rs`). It should sleep on a `Doorbell`, rung by a
+  (`streamer/loop_body.rs`, `step.rs`). It should sleep on a `Doorbell`, rung by a
   voice when a ring crosses its refill threshold, with the wait timed to the
   earliest ring deadline instead of a fixed tick.
 - A **slow backstop tick** stays, because `Phase::Reclaim`-style `reclaim()` of
@@ -559,7 +559,7 @@ Each stage is one PR that stays green. Line figures are estimates.
      (a plugin is a node, `AudioBuffer` is not an edge), the slab (a transport,
      not an edge), the `Cargo.toml` comments that called the plugin crates'
      `tutti-types` edge the I/O vocabulary, and the root and crate READMEs.
-4. **Rename butler to disk streamer** (§6). Mechanical, net 0, with
+4. **Rename butler to disk streamer** (§6). Done: mechanical, net 0, with
    `DiskStreamer` in `streamer/mod.rs`.
 5. **`Stream`, `Opening`, `StreamReader`, `Block`.** Removes the plan map,
    `Link`, `take_streaming_unit`, `Ring::take_reader`, `TakeVoiceError`,
@@ -636,9 +636,9 @@ push `Resample` and `Dither` together and accept the Ogg change.
    either ordering, fails it. The ordering primitive lives in `tutti-rt` (see
    §8, stage 3).
 4. **Is a `StreamRecord` ever dropped on the audio thread?** Two comments
-   disagree. `butler/prefetch.rs` says a ring's last handle is never dropped on
+   disagree. `streamer/prefetch.rs` says a ring's last handle is never dropped on
    the audio thread, because retired units travel back to the control thread
-   (`Editor::collect`). `butler/control.rs` says a voice, the last holder of a
+   (`Editor::collect`). `streamer/control.rs` says a voice, the last holder of a
    `StreamRecord`, can drop it on the audio thread. Reading the tree narrows it
    without settling it: a disk voice is held by the sampler's `VoicePool`,
    which retires removed slots over a channel to the control thread, but a

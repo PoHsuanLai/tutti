@@ -1,7 +1,7 @@
 //! The crate-wide error type, for the paths that can fail on file access.
 //!
 //! Narrower failures live with the operation that raises them — [`ProbeError`]
-//! for a header read, `ButlerGone` for a command that outlived its thread —
+//! for a header read, `StreamerGone` for a command that outlived its thread —
 //! because a caller of those branches on the specific cause rather than on "an
 //! error happened".
 //!

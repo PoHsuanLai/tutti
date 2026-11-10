@@ -4,16 +4,17 @@
 //! The public constructor refuses a value out of range. The codec builds one
 //! from bits it has just masked, through the private `wire`.
 
-/// A raw number above the largest the type holds, from `TryFrom<u8>` on an
-/// address type.
+/// A raw number above the largest the type holds, from `TryFrom` on an
+/// address type or a bit-width field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutOfRange {
-    /// What was out of range: "channel", "group" or "controller number".
+    /// What was out of range: "channel", "group", "controller number", or a
+    /// field's type name.
     pub what: &'static str,
     /// The refused number.
-    pub value: u8,
+    pub value: u32,
     /// The largest the type accepts.
-    pub max: u8,
+    pub max: u32,
 }
 
 impl core::fmt::Display for OutOfRange {
@@ -28,11 +29,14 @@ impl core::fmt::Display for OutOfRange {
 
 impl std::error::Error for OutOfRange {}
 
-// A bit-width field: `new` refuses above `MAX`, `wire` masks.
+// A bit-width field, to the shape of a range-checked value (CLAUDE.md, "Range-
+// checked values"): `new` refuses above `MAX`, `of` panics, `masked` masks.
 macro_rules! bits {
-    ($(#[$doc:meta])* $name:ident, $repr:ty, $width:expr) => {
+    ($(#[$doc:meta])* $name:ident, $repr:ty, $repr_name:literal, $width:expr) => {
         $(#[$doc])*
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(try_from = $repr_name, into = $repr_name))]
         pub struct $name($repr);
 
         impl $name {
@@ -40,22 +44,69 @@ macro_rules! bits {
             pub const MAX: Self = Self((1 << $width) - 1);
 
             /// The value, or `None` when it needs more bits than the field has.
+            #[inline]
             #[must_use]
             pub const fn new(raw: $repr) -> Option<Self> {
                 if raw <= Self::MAX.0 { Some(Self(raw)) } else { None }
             }
 
+            /// The value, for a literal or a constant. For a value that
+            /// arrives from outside, use [`new`](Self::new).
+            ///
+            /// # Panics
+            ///
+            /// When `raw` needs more bits than the field has; in a `const`
+            /// that is a compile error.
+            #[inline]
+            #[must_use]
+            #[track_caller]
+            pub const fn of(raw: $repr) -> Self {
+                match Self::new(raw) {
+                    Some(value) => value,
+                    None => panic!(concat!("a ", stringify!($name), " is ", stringify!($width), " bits")),
+                }
+            }
+
+            /// The low bits of `raw` the field holds. Only for bits the wire
+            /// has just framed (a decoder's field, a byte a MIDI 1.0 parser
+            /// has already checked); a value from anywhere else is checked
+            /// with [`new`](Self::new).
+            #[inline]
+            #[must_use]
+            pub const fn masked(raw: $repr) -> Self {
+                Self(raw & Self::MAX.0)
+            }
+
             /// The raw value.
+            #[inline]
             #[must_use]
             pub const fn get(self) -> $repr {
                 self.0
             }
+        }
 
-            // Masked, for the codec: the wire cannot carry more.
-            pub(crate) const fn wire(raw: $repr) -> Self {
-                Self(raw & Self::MAX.0)
+        impl From<$name> for $repr {
+            #[inline]
+            fn from(value: $name) -> $repr {
+                value.0
             }
         }
+
+        impl TryFrom<$repr> for $name {
+            type Error = OutOfRange;
+
+            #[inline]
+            fn try_from(raw: $repr) -> Result<Self, OutOfRange> {
+                Self::new(raw).ok_or(OutOfRange {
+                    what: stringify!($name),
+                    value: raw as u32,
+                    max: Self::MAX.0 as u32,
+                })
+            }
+        }
+
+        // Deliberately no infallible `From<$repr>`: it would have to mask or
+        // fail (`masked` is the named one that masks).
     };
 }
 
@@ -92,32 +143,26 @@ macro_rules! bounded {
 
 bits!(
     /// A 4-bit value: an MDS id, a chord degree.
-    U4, u8, 4
+    U4, u8, "u8", 4
 );
 bits!(
     /// A 7-bit data byte (`0..=127`): a velocity, a pressure, a program, a
     /// controller value, a SysEx byte.
-    U7, u8, 7
+    U7, u8, "u8", 7
 );
 bits!(
     /// A 14-bit value (`0..=16383`): a MIDI 1.0 pitch bend, a song position.
-    U14, u16, 14
+    U14, u16, "u16", 14
 );
 bits!(
     /// A MIDI note number on the wire (`0..=127`). The musical pitch is
     /// `tutti_types::Note`, which converts with `u8::try_from`.
-    NoteNumber, u8, 7
+    NoteNumber, u8, "u8", 7
 );
 bits!(
     /// A Delta Clockstamp: ticks since the previous event (20 bits).
-    DeltaTicks, u32, 20
+    DeltaTicks, u32, "u32", 20
 );
-
-impl From<U7> for u8 {
-    fn from(value: U7) -> Self {
-        value.get()
-    }
-}
 
 bounded!(
     /// A Function Block number (`0..=31`). A reserved number read from the wire

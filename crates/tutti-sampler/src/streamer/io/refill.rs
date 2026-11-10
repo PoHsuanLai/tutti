@@ -1,4 +1,4 @@
-//! Ring refill for the butler thread: keep each ring filled ahead of where
+//! Ring refill for the streamer thread: keep each ring filled ahead of where
 //! its reader plays.
 //!
 //! The reader publishes the straight position it plays (`Ring::play`); the
@@ -72,8 +72,8 @@ fn varifill_chunk(
 
 /// Refill every streaming channel's ring in turn, serially.
 ///
-/// `interleave_buffer` is the butler's reusable scratch, passed in so a refill
-/// does not allocate per cycle. Butler thread throughout — this both blocks on
+/// `interleave_buffer` is the streamer's reusable scratch, passed in so a refill
+/// does not allocate per cycle. Streamer thread throughout — this both blocks on
 /// disk and may grow that buffer, so it must never run on the audio thread.
 pub(crate) fn refill_all(
     plans: &DashMap<usize, ChannelPlan>,
@@ -228,7 +228,7 @@ fn refill_one(
 /// With no codec feature enabled there is no decoder to call, so the miss arm is
 /// gated out and a miss is simply `None`. The cache *lookup* stays live in both
 /// builds: entries reach it from elsewhere, and a hit needs no decoder.
-pub(in crate::butler) fn load_wave(
+pub(in crate::streamer) fn load_wave(
     cache: &LruCache,
     metrics: &Metrics,
     file_path: &Path,
@@ -420,7 +420,7 @@ mod tests {
 
     /// A voice whose reader sits at an unbounded position (the audio thread's
     /// saturating cast turns `inf` into a huge `u64`) must neither panic the
-    /// butler nor make it read the disk or move the window again each cycle:
+    /// streamer nor make it read the disk or move the window again each cycle:
     /// its window parks empty at the position limit, so its reads miss and
     /// that voice is silent. (The test ring's length is unknown, so its end
     /// is `u64::MAX`; the reader sits one frame short of it. A looped stream

@@ -590,7 +590,7 @@ fn a_zero_length_crossfade_is_a_hard_loop() {
 /// Worth stating, because the combination is narrower than it looks. A placed
 /// voice loops going forward (`MemorySource::read_placed_into`, as a disk
 /// voice's stream loops), but a reversed read ignores the loop, as the
-/// butler's reverse refill does — so the loop setting is inert here.
+/// streamer's reverse refill does — so the loop setting is inert here.
 ///
 /// That is worth knowing rather than asserting around: this test pins that the
 /// combination is *safe* (bounded, finite, audible) rather than claiming it

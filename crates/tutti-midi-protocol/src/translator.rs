@@ -116,8 +116,8 @@ struct Channel {
 /// let address = Address { group: MidiGroup::FIRST, channel: MidiChannel::FIRST };
 /// let cc = |controller: u8, value: u8| {
 ///     Ump::from(Message::Midi1(address, Voice1::ControlChange {
-///         controller: CCNumber::new(controller).unwrap(),
-///         value: U7::new(value).unwrap(),
+///         controller: CCNumber::of(controller),
+///         value: U7::of(value),
 ///     }))
 /// };
 /// let mut translator = Translator::new();
@@ -148,10 +148,7 @@ impl Translator {
     /// A translator with nothing selected on any channel.
     #[must_use]
     pub const fn new() -> Self {
-        const ZERO: U7 = match U7::new(0) {
-            Some(zero) => zero,
-            None => panic!("0 is a 7-bit value"),
-        };
+        const ZERO: U7 = U7::of(0);
         const EMPTY: Channel = Channel {
             rpn: Number {
                 bank: ZERO,

@@ -1,4 +1,4 @@
-//! Stream preroll: the butler's half of delay compensation.
+//! Stream preroll: the streamer's half of delay compensation.
 //!
 //! A source outside the audio graph cannot be delayed by a node inside it —
 //! instead it reads earlier, so its audio arrives already aligned.
@@ -7,7 +7,7 @@
 //! visible: that computes *how much* compensation each channel needs; this
 //! consumes the answer. Not `io/` either — it moves no frames.
 //!
-//! # A change moves the reader, and the butler follows
+//! # A change moves the reader, and the streamer follows
 //!
 //! The preroll is published on the stream's ring (`Ring::preroll`); the reader
 //! plays straight position `clock - preroll` (a free-running reader, its own
@@ -23,15 +23,15 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tutti_graph::PrerollTable;
 
-/// The butler's handle on the published compensation table, if any.
+/// The streamer's handle on the published compensation table, if any.
 ///
-/// Built for each cycle (`ButlerThread::cycle`, and `ButlerThread::with_pdc`
+/// Built for each cycle (`StreamerThread::cycle`, and `StreamerThread::with_pdc`
 /// for a cycle already stepped by hand) from the subscription the controller
 /// keeps.
 ///
 /// Covered by `live_loop`'s `an_entry_past_the_loop_and_a_preroll_land_where_
-/// the_memory_tier_plays`, a hand-stepped butler whose cycle is built by the
-/// same `ButlerThread::cycle` the thread's is. Mutations (run): `with_pdc`
+/// the_memory_tier_plays`, a hand-stepped streamer whose cycle is built by the
+/// same `StreamerThread::cycle` the thread's is. Mutations (run): `with_pdc`
 /// not keeping the feed → fails; a stream opened at preroll 0 instead of its
 /// channel's entry (`handle_stream_file`) → fails.
 #[derive(Default)]
@@ -49,7 +49,7 @@ impl PdcFeed {
     }
 
     /// `channel_index`'s preroll in the table now: 0 with no table, or past
-    /// its end. Butler thread.
+    /// its end. Streamer thread.
     pub(crate) fn preroll(&self, channel_index: usize) -> u64 {
         self.table.as_ref().map_or(0, |table| {
             table.preroll(channel_index).unwrap_or_default().get() as u64
@@ -65,7 +65,7 @@ impl PdcFeed {
 /// fall beyond the end of the table are left alone — a missing entry reads as
 /// zero compensation, which is the same answer as "none needed".
 ///
-/// A no-op when nothing is subscribed. Butler thread: it reads the table
+/// A no-op when nothing is subscribed. Streamer thread: it reads the table
 /// under one lock for the pass rather than per channel, and it must never
 /// run on the audio thread.
 pub(crate) fn apply_pdc_updates(pdc: &PdcFeed, plans: &DashMap<usize, ChannelPlan>) {
@@ -100,8 +100,8 @@ pub(crate) fn apply_pdc_updates(pdc: &PdcFeed, plans: &DashMap<usize, ChannelPla
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::butler::command::RegionId;
-    use crate::butler::prefetch::{RegionBuffer, SharedReader};
+    use crate::streamer::command::RegionId;
+    use crate::streamer::prefetch::{RegionBuffer, SharedReader};
     use std::path::PathBuf;
     use tutti_types::Samples;
 

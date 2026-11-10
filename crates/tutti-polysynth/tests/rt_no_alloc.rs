@@ -201,38 +201,37 @@ fn polysynth_every_decoded_message_is_allocation_free() {
         group: MidiGroup::FIRST,
         channel: MidiChannel::of(1),
     };
-    let note = NoteNumber::new(60).unwrap();
-    let u7 = |v| U7::new(v).unwrap();
+    let note = NoteNumber::of(60);
     let ev = |m: Message| Ump::from(m);
     let m1 = |v| ev(Message::Midi1(address, v));
     let m2 = |v| ev(Message::Midi2(address, v));
     let events = [
         m1(Voice1::NoteOn {
             note,
-            velocity: u7(100),
+            velocity: U7::of(100),
         }),
         m1(Voice1::PolyPressure {
             note,
-            pressure: u7(50),
+            pressure: U7::of(50),
         }),
         m1(Voice1::ControlChange {
             controller: CCNumber::of(1),
-            value: u7(20),
+            value: U7::of(20),
         }),
         m1(Voice1::ControlChange {
             controller: CCNumber::of(64),
-            value: u7(127),
+            value: U7::of(127),
         }),
-        m1(Voice1::PitchBend(U14::new(9000).unwrap())),
-        m1(Voice1::ChannelPressure(u7(5))),
-        m1(Voice1::ProgramChange(u7(5))),
+        m1(Voice1::PitchBend(U14::of(9000))),
+        m1(Voice1::ChannelPressure(U7::of(5))),
+        m1(Voice1::ProgramChange(U7::of(5))),
         m1(Voice1::NoteOff {
             note,
-            velocity: u7(0),
+            velocity: U7::of(0),
         }),
         m1(Voice1::NoteOn {
             note,
-            velocity: u7(0),
+            velocity: U7::of(0),
         }),
         m2(Voice2::NoteOn {
             note,
@@ -268,28 +267,28 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             reset: true,
         }),
         m2(Voice2::Registered {
-            bank: u7(0),
-            index: u7(7),
+            bank: U7::of(0),
+            index: U7::of(7),
             value: 12 << 25,
         }),
         // Pitch Bend Sensitivity (RPN 0) on the master channel, then
         // Reset All Controllers and All Notes Off.
         m2(Voice2::Registered {
-            bank: u7(0),
-            index: u7(0),
+            bank: U7::of(0),
+            index: U7::of(0),
             value: 7 << 25,
         }),
         m1(Voice1::ControlChange {
             controller: CCNumber::of(121),
-            value: u7(0),
+            value: U7::of(0),
         }),
         m1(Voice1::ControlChange {
             controller: CCNumber::of(123),
-            value: u7(0),
+            value: U7::of(0),
         }),
         m2(Voice2::Assignable {
-            bank: u7(1),
-            index: u7(2),
+            bank: U7::of(1),
+            index: U7::of(2),
             value: 3,
         }),
         m2(Voice2::ControlChange {

@@ -21,8 +21,6 @@ use tutti_midi_types::ump::{
 };
 use tutti_ump::{MidiGroup, Ump};
 
-use crate::group::group_of;
-
 /// Whether `event` may appear between a SysEx7 Start and its End without
 /// terminating the message (M2-104 §7.7.1).
 ///
@@ -133,12 +131,18 @@ impl Sysex7PacketReassembler {
             //
             // Terminating drops the partial run rather than emitting it: the
             // message never got its End, so its payload is incomplete.
-            if !is_sysex_transparent(event) {
-                self.take_group(group_of(event));
+            //
+            // A message with no group (a reserved message type) is on no
+            // group's run, so it ends none: "the next message on the group
+            // terminates it" (M2-104 §7.7.1) names a message that has a group.
+            if !is_sysex_transparent(event)
+                && let Some(group) = event.group()
+            {
+                self.take_group(group);
             }
             return None;
         }
-        let group = group_of(event);
+        let group = event.group()?;
         let (status, _bytes, _n) = sysex7_payload(event)?;
 
         match status {

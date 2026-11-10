@@ -9,7 +9,6 @@
 // down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
 
 mod gather;
-mod group;
 mod ledger;
 mod live;
 mod negotiate;

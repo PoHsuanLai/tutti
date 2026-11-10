@@ -2,13 +2,13 @@
 //! timeline, and a disk-streamed clip. The session halves of what
 //! `bevy-tutti`'s export suite pinned before that crate was parked.
 //!
-//! The live voice plays what the butler streams into its ring; the fork
+//! The live voice plays what the streamer streams into its ring; the fork
 //! cannot (the ring's one consumer is the live audio thread, and a seek
-//! moves the live stream), so it reads the file the butler's record names
+//! moves the live stream), so it reads the file the streamer's record names
 //! itself, on the render's thread (tutti-sampler's `offline_read`), never
 //! from the live ring.
 //!
-//! The butler is hand-stepped (`DiskStreamer::manual`), so a refill is a
+//! The streamer is hand-stepped (`DiskStreamer::manual`), so a refill is a
 //! step, not a race with a render that runs faster than real time.
 
 use std::path::Path;
@@ -207,7 +207,7 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
     w.finalize().expect("writes");
 }
 
-/// A hand-stepped butler at the export's rate streaming `path` on
+/// A hand-stepped streamer at the export's rate streaming `path` on
 /// channel 0, primed.
 fn streamer_on(path: &Path) -> DiskStreamer {
     let mut streamer = DiskStreamer::manual(SampleRate(RATE), Default::default()).expect("builds");
@@ -218,7 +218,7 @@ fn streamer_on(path: &Path) -> DiskStreamer {
             file_path: path.to_path_buf(),
             offset: SamplePosition(0.0),
         })
-        .expect("the butler is alive");
+        .expect("the streamer is alive");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
@@ -399,18 +399,18 @@ fn a_disk_voice_at_another_rate_exports_resampled() {
 }
 
 /// **Live disk playback is untouched while its voice exports.** The live
-/// graph renders on its own thread (the butler stepped between its
+/// graph renders on its own thread (the streamer stepped between its
 /// blocks, its clock moved after each), from before the export starts
 /// until after it reports, while a master export forks the same voice.
 /// The live voice plays the file's frames one after another the whole
-/// time: a render that popped its ring, or asked its butler to seek,
+/// time: a render that popped its ring, or asked its streamer to seek,
 /// would show as a jump. The export plays the clip from its first frame.
 ///
 /// Mutation (run, failed): the fork a plain clone of the live voice
 /// (`DiskVoice::fork_copy` returning `self.clone()`) → the export reads
 /// nothing from the file → fails on the export's frames. Not caught
 /// here: a fork sharing the live control cell (`fork_copy` without
-/// `detached`) — the offline read never asks that cell's butler to seek,
+/// `detached`) — the offline read never asks that cell's streamer to seek,
 /// so the live side plays on untouched with or without it (run: every
 /// disk test passes). A fork has no live path to take, so the live-side
 /// assertion pins an outcome the structure guarantees rather than one a
@@ -501,10 +501,10 @@ fn open_handles(path: &Path) -> usize {
 }
 
 /// **An export leaves nothing open behind it.** The fork's only resource
-/// is the file it reads (it registers no butler stream: it holds no
+/// is the file it reads (it registers no streamer stream: it holds no
 /// command handle to register one with), and it is closed once the
 /// export has reported: the process holds the same handles on the file
-/// as before, the live butler's. That the fork opened it at all is the
+/// as before, the live streamer's. That the fork opened it at all is the
 /// export playing the clip.
 ///
 /// Linux only: it counts handles through `/proc/self/fd`, which the other
@@ -539,7 +539,7 @@ fn an_export_leaves_nothing_open_behind_it() {
 
 /// **A disk voice whose file cannot be read fails the export by its node's
 /// key**, with the file, rather than write its silence as a success. The file
-/// is removed after the stream started (the live butler keeps its own
+/// is removed after the stream started (the live streamer keeps its own
 /// handle); the fork re-opens it by its path, cannot, and its render is
 /// `Error::ForkFailed` naming the voice's key.
 ///

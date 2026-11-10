@@ -35,7 +35,7 @@ pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
 /// let keys = editor.insert(NodeKey(1), "keyboard", MidiQueueNode::new());
-/// assert!(keys.note_on(MidiChannel::FIRST, NoteNumber::new(60).unwrap(), U7::new(100).unwrap()));
+/// assert!(keys.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)));
 /// ```
 pub struct MidiQueueNode {
     rx: MidiReceiver,

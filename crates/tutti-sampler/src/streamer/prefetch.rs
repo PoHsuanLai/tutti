@@ -1,7 +1,7 @@
-//! A stream's ring: file frames the butler has read ahead, indexed by
+//! A stream's ring: file frames the streamer has read ahead, indexed by
 //! position.
 //!
-//! One ring per streaming region. The butler writes frames into it
+//! One ring per streaming region. The streamer writes frames into it
 //! ([`RegionOut`]); the audio thread reads them ([`Ring`], through a
 //! [`SharedReader`]). Nothing on the reading side locks, allocates or waits.
 //!
@@ -12,14 +12,14 @@
 //! placing it. The reader looks the four taps a position needs up by position,
 //! so it seats on the clock exactly as the memory tier does and reads what the
 //! memory tier reads, at any rate; a jump inside the window costs nothing; and
-//! a jump outside it is the butler moving the window to where the reader now
+//! a jump outside it is the streamer moving the window to where the reader now
 //! plays (`Ring::play`), with no flush, no stale frames to discard and no
 //! read head to guess.
 //!
 //! The slots, the window and the protocol that keeps a write from ever
 //! landing under a read are `tutti_rt::PosRing`'s (its module docs have the
 //! argument, and `tutti-rt/tests/pos_ring_loom.rs` checks it under loom).
-//! Its one `PosWriter` is the butler's [`RegionOut`]'s; its one `PosReader`
+//! Its one `PosWriter` is the streamer's [`RegionOut`]'s; its one `PosReader`
 //! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
 //! one live reader per ring is the type's rule, not a flag's. This module
 //! adds what a disk stream needs on top: the region, the file, the map the
@@ -33,7 +33,7 @@
 //!
 //! # Where a ring is dropped
 //!
-//! The butler's writer holds one handle, every voice taken from the stream
+//! The streamer's writer holds one handle, every voice taken from the stream
 //! another. A voice in a live graph is dropped where the graph frees units:
 //! under the graph's executor, retired units travel back to the control thread
 //! (`tutti_graph::Editor::collect`), so the last handle is never dropped on
@@ -67,11 +67,11 @@ pub(crate) const HISTORY_FRAMES: u64 = 4;
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum TakeVoiceError {
-    /// The channel streams nothing yet: the butler has not applied its
+    /// The channel streams nothing yet: the streamer has not applied its
     /// `Command::Stream`. Poll again next frame.
     NotStreaming,
     /// The stream already has its live reader. A ring serves one — it has
-    /// one `PosReader` to hand out: the butler fills ahead of the one position
+    /// one `PosReader` to hand out: the streamer fills ahead of the one position
     /// it is told (where the reader plays), so two readers at two positions
     /// would pull its window back and forth, each starving the other. Take one
     /// voice per stream, or stream the file again on another channel.
@@ -111,7 +111,7 @@ impl std::error::Error for TakeVoiceError {
     }
 }
 
-/// A region's ring, shared by the butler's writer and the audio thread's
+/// A region's ring, shared by the streamer's writer and the audio thread's
 /// reader.
 pub(crate) struct Ring {
     region_id: RegionId,
@@ -128,22 +128,22 @@ pub(crate) struct Ring {
     /// control thread only (`take_reader`); the audio thread holds the reader
     /// itself.
     reader: Mutex<Option<PosReader>>,
-    /// Butler → reader: the channel's PDC preroll, in file frames: the reader
+    /// Streamer → reader: the channel's PDC preroll, in file frames: the reader
     /// plays straight position `gate - preroll`.
     preroll: AtomicU64,
-    /// Butler → reader: where a free-running reader starts (the stream's
+    /// Streamer → reader: where a free-running reader starts (the stream's
     /// offset).
     origin: AtomicU64,
-    /// Butler → reader: a free-running reader's seek, `(epoch, target)`.
+    /// Streamer → reader: a free-running reader's seek, `(epoch, target)`.
     seek_epoch: AtomicU64,
     seek_target: AtomicU64,
-    /// Butler → reader: output frames a reader's crossfade lasts.
+    /// Streamer → reader: output frames a reader's crossfade lasts.
     fade_frames: AtomicU64,
-    /// Butler → reader: how to read the slots, lent through the reader the
+    /// Streamer → reader: how to read the slots, lent through the reader the
     /// voice registers ([`map_reader`](Self::map_reader)).
     map: Arc<ArcLend<RingMap>>,
     /// The live reader is a placed voice (it follows its clock, so a relayed
-    /// seek must not move where the butler fills).
+    /// seek must not move where the streamer fills).
     placed: AtomicBool,
 }
 
@@ -221,12 +221,12 @@ impl Ring {
         self.core.play()
     }
 
-    /// Butler: publish how to read the slots.
+    /// Streamer: publish how to read the slots.
     pub(crate) fn publish_map(&self, map: RingMap) {
         self.map.publish(Arc::new(map));
     }
 
-    /// Butler: free the maps the reader has let go of since the last
+    /// Streamer: free the maps the reader has let go of since the last
     /// [`publish_map`](Self::publish_map), without publishing. A ring whose
     /// map stops changing would otherwise keep one a block held across its
     /// last publish for as long as the ring lives.
@@ -240,12 +240,12 @@ impl Ring {
         self.map.retired_len()
     }
 
-    /// Butler: the channel's PDC preroll.
+    /// Streamer: the channel's PDC preroll.
     pub(crate) fn set_preroll(&self, preroll: u64) {
         self.preroll.store(preroll, Ordering::Relaxed);
     }
 
-    /// Butler: seek a free-running reader to `target`.
+    /// Streamer: seek a free-running reader to `target`.
     pub(crate) fn request_seek(&self, target: u64) {
         self.seek_target.store(target, Ordering::Relaxed);
         self.seek_epoch.fetch_add(1, Ordering::Release);
@@ -279,9 +279,9 @@ impl Ring {
 /// The audio thread's handle on a region's ring.
 pub(crate) type SharedReader = Arc<Ring>;
 
-/// The butler's end of a region's ring: the writer, its source (a disk
+/// The streamer's end of a region's ring: the writer, its source (a disk
 /// decoder, or the file resident whole) and what it holds (`loops::Content`).
-/// Butler-thread-local.
+/// Streamer-thread-local.
 pub(crate) struct RegionOut {
     ring: Arc<Ring>,
     /// The ring's one writer.
@@ -608,7 +608,7 @@ mod tests {
     /// frames decoded before the cut, zero-fills the rest, returns `false` and
     /// sets the `fault_logged` flag (the log line itself is not captured). A
     /// read at frame 0 afterwards clears the flag. Called directly, not
-    /// through a butler step or a voice.
+    /// through a streamer step or a voice.
     ///
     /// Mutation (run): discarding `got` on a fault (zero-filling all of
     /// `out`, as the old `Err` arm did) fails the kept-frames assertion.

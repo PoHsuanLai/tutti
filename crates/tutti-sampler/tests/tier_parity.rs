@@ -1,10 +1,10 @@
 //! The two playback tiers must sound the same.
 //!
 //! `VoiceSource` has two variants: `Memory` indexes an `Arc<Wave>` resident in
-//! RAM, `Disk` reads a ring the butler thread refills from a file. The crate's
+//! RAM, `Disk` reads a ring the streamer thread refills from a file. The crate's
 //! own invariant says they "differ ONLY in the *essential* per-sample read" —
 //! same interpolation kernel, same channel policy, same placement gate. This
-//! file tests that end to end, through the butler.
+//! file tests that end to end, through the streamer.
 //!
 //! # Why this specific comparison
 //!
@@ -23,26 +23,26 @@
 //!
 //! # How readiness is handled: by counting, not by waiting
 //!
-//! The butler is driven by hand here — [`DiskStreamer::manual`] plus
-//! [`step_once`](DiskStreamer::step_once) — so there is no butler thread, no
+//! The streamer is driven by hand here — [`DiskStreamer::manual`] plus
+//! [`step_once`](DiskStreamer::step_once) — so there is no streamer thread, no
 //! sleep, no `Instant`, and no timeout anywhere in this file.
 //!
-//! That is not cosmetic. The threaded butler parks 1 ms when idle and 3 ms when
+//! That is not cosmetic. The threaded streamer parks 1 ms when idle and 3 ms when
 //! its rings are healthy, so polling it at 5–10 ms against a liveness ceiling
 //! races a producer the test cannot see, and the ceiling is really a guess
 //! about the machine. Worse, polling by *rendering* advances the clock, so a
 //! warm-up that needs several attempts walks the transport deep into the file
 //! and the measurement is taken somewhere else entirely.
 //!
-//! Stepping removes both. [`prime`] runs cycles until the butler stops making
+//! Stepping removes both. [`prime`] runs cycles until the streamer stops making
 //! progress ([`StepOutcome`] other than `Busy`), which is exactly the point
-//! the threaded butler would park — and it takes single-digit cycles. Where a
-//! test still needs the butler to keep up with a long render, [`render_streamed`]
+//! the threaded streamer would park — and it takes single-digit cycles. Where a
+//! test still needs the streamer to keep up with a long render, [`render_streamed`]
 //! interleaves a step per block, which is the same relationship the thread has
 //! to the audio callback with the timing indeterminacy removed.
 //!
-//! The step is the shipped one: `butler_loop_async` is written in terms of the
-//! same `ButlerCycle::step`, so what this file drives and what a host runs
+//! The step is the shipped one: `streamer_loop_async` is written in terms of the
+//! same `StreamerCycle::step`, so what this file drives and what a host runs
 //! cannot diverge.
 
 use std::path::Path;
@@ -60,11 +60,11 @@ const BLOCK: usize = 64;
 /// Blocks rendered for the actual comparison, after warm-up.
 const COMPARE_BLOCKS: usize = 200;
 
-/// Ceiling on butler cycles spent priming a ring before the test calls the
-/// butler broken.
+/// Ceiling on streamer cycles spent priming a ring before the test calls the
+/// streamer broken.
 ///
 /// A liveness bound, not a pacing knob. Priming takes single-digit cycles in
-/// practice; a butler still reporting [`StepOutcome::Busy`] after this many is
+/// practice; a streamer still reporting [`StepOutcome::Busy`] after this many is
 /// one that refills forever without ever catching up, and exhausting the budget
 /// is the failure — never a reason to proceed and measure silence.
 const PRIME_BUDGET: usize = 512;
@@ -94,7 +94,7 @@ const SEEK_TOL_HZ: f64 = 40.0;
 ///
 /// Only the two tests that move an *already running* stream pay this cost at
 /// all. [`streaming_from_an_offset_delivers_that_part_of_the_file`] does not: it
-/// checks where a stream *starts*, and the butler seeks the writer to the offset
+/// checks where a stream *starts*, and the streamer seeks the writer to the offset
 /// before the first refill, so a short file is prefilled from the right place —
 /// it takes [`OFFSET_FILE_SECS`] instead.
 ///
@@ -264,16 +264,16 @@ fn push_block(unit: &mut dyn Node, clock: &Clock, out: &mut Vec<(f32, f32)>) {
     clock.advance(BLOCK);
 }
 
-/// [`render`], with one butler cycle run per block.
+/// [`render`], with one streamer cycle run per block.
 ///
-/// The step stands where the butler thread's own cycle would: the reader has
-/// just drained a block, so the butler gets its chance to refill before the next
-/// one. A long render against a hand-driven butler needs this — otherwise the
+/// The step stands where the streamer thread's own cycle would: the reader has
+/// just drained a block, so the streamer gets its chance to refill before the next
+/// one. A long render against a hand-driven streamer needs this — otherwise the
 /// ring drains to empty partway through and the tail of the measurement is
 /// silence that no amount of stepping afterwards can put back.
 ///
 /// This is only used where a render outruns what one priming can cover; short
-/// spans take plain [`render`], which keeps the butler provably out of the
+/// spans take plain [`render`], which keeps the streamer provably out of the
 /// measurement.
 fn render_streamed(
     voice: &mut DiskVoice,
@@ -296,13 +296,13 @@ fn peak(frames: &[(f32, f32)]) -> f32 {
         .fold(0.0f32, |a, &(l, r)| a.max(l.abs()).max(r.abs()))
 }
 
-/// Run butler cycles until it stops making progress, and fail if it never does
+/// Run streamer cycles until it stops making progress, and fail if it never does
 /// inside [`PRIME_BUDGET`].
 ///
 /// [`StepOutcome::Busy`] is precisely "a ring is below its refill threshold and
-/// this cycle put frames into it" — the condition the threaded butler declines
+/// this cycle put frames into it" — the condition the threaded streamer declines
 /// to park on. Stopping when it clears leaves the rings exactly as full as the
-/// threaded butler would leave them before its first park, so this is the
+/// threaded streamer would leave them before its first park, so this is the
 /// shipped readiness point and not a test-chosen approximation of one.
 ///
 /// Note it is `!= Busy` and not `== Healthy`. `Healthy` is a fraction of ring
@@ -318,7 +318,7 @@ fn prime(streamer: &mut DiskStreamer) {
         }
     }
     panic!(
-        "the butler refilled for {PRIME_BUDGET} cycles without ever catching up or running out \
+        "the streamer refilled for {PRIME_BUDGET} cycles without ever catching up or running out \
          of material -- measuring past this point would say nothing about the engine"
     );
 }
@@ -348,7 +348,7 @@ fn stream_at(
             file_path: path.to_path_buf(),
             offset: SamplePosition(at_sec * SR),
         })
-        .expect("the butler is alive in this test");
+        .expect("the streamer is alive in this test");
 
     prime(streamer);
 
@@ -357,7 +357,7 @@ fn stream_at(
         .take_disk_voice(channel, Beat::new(0.0), None)
         .unwrap_or_else(|e| {
             panic!(
-                "the butler applied its commands and reported its rings full, but gave no \
+                "the streamer applied its commands and reported its rings full, but gave no \
                  voice for channel {channel} streaming from {at_sec}s: {e}"
             )
         });
@@ -465,9 +465,9 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     }
 }
 
-/// A disk voice must reach audio at all, in a bounded number of butler cycles.
+/// A disk voice must reach audio at all, in a bounded number of streamer cycles.
 ///
-/// Split out from the parity test so a butler that never primes its ring is
+/// Split out from the parity test so a streamer that never primes its ring is
 /// reported as its own failure rather than as "the tiers disagree" — the
 /// minimum end-to-end claim the streaming path has to satisfy.
 #[test]
@@ -503,9 +503,9 @@ fn a_disk_voice_produces_audio_from_a_real_file() {
 // `varifill_chunk` scales the refill chunk by how empty the ring is, so the
 // first cycle after a `Stream` sizes its read to the whole ring. Priming depth
 // is therefore not a property with a shallow failure mode to catch: reporting
-// `Healthy` unconditionally from `ButlerCycle::step` — i.e. stopping `prime`
+// `Healthy` unconditionally from `StreamerCycle::step` — i.e. stopping `prime`
 // after exactly one cycle — still leaves 8 s of audio resident, and a 6 s
-// butler-free render still passes.
+// streamer-free render still passes.
 //
 // Recorded rather than deleted silently: the next person to notice the gap
 // should know it was looked at, and that the assertion an obvious test would
@@ -536,7 +536,7 @@ fn streaming_from_an_offset_delivers_that_part_of_the_file() {
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
 
-    // Spread across the file. A distinct channel per case: the butler keys its
+    // Spread across the file. A distinct channel per case: the streamer keys its
     // plans by channel index, so re-streaming the same channel reuses that
     // channel's live region rather than starting cleanly from the new offset —
     // which made every case after the first report the first one's position.
@@ -575,8 +575,8 @@ fn streaming_from_an_offset_delivers_that_part_of_the_file() {
 /// # This was `#[ignore]`d, and stepping is what un-ignored it
 ///
 /// The engine was never at fault: the in-crate
-/// `butler::streamer::tests::a_backward_seek_repositions_the_live_stream` has
-/// always shown the butler moving the stream. What failed was the *harness*: it polled for the
+/// `streamer::streamer::tests::a_backward_seek_repositions_the_live_stream` has
+/// always shown the streamer moving the stream. What failed was the *harness*: it polled for the
 /// new material by rendering, each poll advanced the clock, a placed voice
 /// follows the clock, and the read head chased its own tail — so the target moved
 /// while the test waited for it.
@@ -595,7 +595,7 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
 
     // Start at 20 s so both a forward (to 28 s) and a backward (to 5 s) seek are
     // real moves, and neither is reachable by simply playing on. A distinct
-    // channel per case: the butler keys its plans by channel index.
+    // channel per case: the streamer keys its plans by channel index.
     for (i, target) in [28.0f64, 5.0].into_iter().enumerate() {
         let (mut voice, clock) = stream_at(&mut streamer, &path, 20.0, i);
 
@@ -621,11 +621,11 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
                 channel_index: i,
                 file_position: SamplePosition(target * SR),
             })
-            .expect("the butler is alive in this test");
+            .expect("the streamer is alive in this test");
 
-        // Render *with* the butler cycling. The placed voice reads where the
-        // clock now is (the `Command::Seek` moves the butler's window there
-        // too); the butler fills it on the cycle after the first block, which
+        // Render *with* the streamer cycling. The placed voice reads where the
+        // clock now is (the `Command::Seek` moves the streamer's window there
+        // too); the streamer fills it on the cycle after the first block, which
         // plays the old continuation and then crossfades to the target.
         // `a_seek_transition_does_not_clip` is the test that looks at that
         // transition; this one is about where the stream *settles*: the first
@@ -658,7 +658,7 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
 
 /// A seek transition must stay bounded — no click, no summed crossfade.
 ///
-/// The butler repositions click-free with a crossfade, so the join must not
+/// The streamer repositions click-free with a crossfade, so the join must not
 /// overshoot. A crossfade that summed instead of fading would reach roughly twice
 /// the source's own peak; a discontinuity would show as a spike.
 #[test]
@@ -678,9 +678,9 @@ fn a_seek_transition_does_not_clip() {
             channel_index: 0,
             file_position: SamplePosition(30.0 * SR),
         })
-        .expect("the butler is alive in this test");
+        .expect("the streamer is alive in this test");
 
-    // Capture the whole transition, including the crossfade. One butler cycle
+    // Capture the whole transition, including the crossfade. One streamer cycle
     // per block puts the reposition inside the captured span rather than before
     // it — the crossfade is what this test exists to look at.
     clock.seek_seconds(30.0);
@@ -763,8 +763,8 @@ fn disk_varispeed_transposes_by_its_factor() {
         let want = base_hz * factor as f64;
 
         // A varispeed change moves the file position without moving the
-        // playhead, so the gate re-seeks and the butler refills from the new
-        // offset. Under the threaded butler that took an unknown amount of wall
+        // playhead, so the gate re-seeks and the streamer refills from the new
+        // offset. Under the threaded streamer that took an unknown amount of wall
         // clock and this loop polled for it; here the seek is applied by the
         // very next cycle, so priming once is the whole wait.
         prime(&mut streamer);
@@ -817,7 +817,7 @@ fn the_tiers_agree_under_varispeed() {
         // are compared at different points in the file.
         disk_clock.seek_seconds(0.0);
         disk.set_speed(PlaybackRate::new(factor));
-        // The gate re-seeks on a varispeed change; the butler applies it on the
+        // The gate re-seeks on a varispeed change; the streamer applies it on the
         // next cycle, so step rather than sleep.
         prime(&mut streamer);
         disk_clock.seek_seconds(0.0);

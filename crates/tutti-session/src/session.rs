@@ -1078,7 +1078,7 @@ impl Session {
     /// the graph (a disk stream seeks by it). Republished with every plan;
     /// empty until the first.
     ///
-    /// Shared, not copied: a clone of the `Arc` (the sampler's butler takes
+    /// Shared, not copied: a clone of the `Arc` (the sampler's streamer takes
     /// one) reads every later plan's table. Read a channel with
     /// [`PrerollTable::preroll`], `None` past the table's end. No audio
     /// thread reads it, so it is a plain lock, not a published cell.

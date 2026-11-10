@@ -73,20 +73,20 @@ impl U14 {
     /// inverse of [`msb`](Self::msb) and [`lsb`](Self::lsb).
     #[must_use]
     pub const fn from_halves(msb: U7, lsb: U7) -> Self {
-        Self::wire((msb.get() as u16) << 7 | lsb.get() as u16)
+        Self::masked((msb.get() as u16) << 7 | lsb.get() as u16)
     }
 
     /// The upper seven bits: the second data byte of a pitch bend or a song
     /// position.
     #[must_use]
     pub const fn msb(self) -> U7 {
-        U7::wire((self.get() >> 7) as u8)
+        U7::masked((self.get() >> 7) as u8)
     }
 
     /// The lower seven bits: the first data byte.
     #[must_use]
     pub const fn lsb(self) -> U7 {
-        U7::wire((self.get() & 0x7F) as u8)
+        U7::masked((self.get() & 0x7F) as u8)
     }
 }
 

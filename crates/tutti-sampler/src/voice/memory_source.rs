@@ -63,11 +63,11 @@ pub enum LoopSetting {
     ///
     /// When a change is heard. On the memory tier a change is a store,
     /// heard at the next frame. On a live disk stream (`Command::Loop`) the
-    /// butler rewrites the ring it has read ahead, from where the old and new
+    /// streamer rewrites the ring it has read ahead, from where the old and new
     /// loops first differ: when that is far enough ahead of the playhead, the
     /// change is heard exactly where the memory tier hears it; when it is at
     /// or near the playhead, it lands about 256 frames past the block being
-    /// played (plus up to a butler cycle), crossfaded over the stream's seek
+    /// played (plus up to a streamer cycle), crossfaded over the stream's seek
     /// crossfade (`BufferConfig::seek_crossfade_frames`) from what the old
     /// loop would have played. From there on the live voice plays the new
     /// loop exactly as the memory tier does. An export fork taken after the
@@ -662,7 +662,7 @@ impl MemorySource {
 
     /// Re-derives the sample-rate conversion ratio for a new session rate.
     ///
-    /// The derivation itself lives in [`SrcRatio::for_rates`] — the butler's
+    /// The derivation itself lives in [`SrcRatio::for_rates`] — the streamer's
     /// streaming path calls the same function, so the two tiers cannot drift
     /// apart on matched-rate detection or the divide-by-zero guard.
     pub fn set_session_sample_rate(&mut self, session_rate: impl Into<SampleRate>) {
@@ -672,7 +672,7 @@ impl MemorySource {
     /// Applies a [`LoopSetting`]: `On` primes the range + crossfade, `Off`
     /// clears the range and disables looping.
     ///
-    /// In-memory only. The streaming tier's loop is butler-owned (a
+    /// In-memory only. The streaming tier's loop is streamer-owned (a
     /// `Command::Loop` from the reader's drain), which is why this is inherent
     /// rather than a shared trait method — there is no honest way for one call
     /// to mean both.
@@ -693,7 +693,7 @@ impl MemorySource {
     /// Loops over `[loop_start, loop_end)` in source samples, with
     /// `crossfade_frames` frames of loop crossfade (0 = a hard loop).
     ///
-    /// The loop plays whole frames (its points are truncated, as the butler
+    /// The loop plays whole frames (its points are truncated, as the streamer
     /// takes a stream's), and the fade leads into the loop's start: the last
     /// `crossfade_frames` before the end blend toward the frames *before* the
     /// start, so the wrap continues seamlessly there — or, with too little
@@ -776,7 +776,7 @@ impl MemorySource {
     ///   inside it, and the loop's fade and seam are read as `LoopSpan` has
     ///   them, as the offline disk reader reads the same stream's loop.
     /// - Reverse mirrors the position about the last frame (`len - 1 -
-    ///   pos`) and ignores the loop, as the butler's reverse refill does. It is
+    ///   pos`) and ignores the loop, as the streamer's reverse refill does. It is
     ///   silent where a forward read would be, at and past `len`: the mirror
     ///   of a read past the end is a read before the start, and it must fall
     ///   silent rather than hold frame 0 as DC. Between the two (`pos` in
@@ -1454,7 +1454,7 @@ fn crossfade_wraps<H: AsMut<[f32]>>(
 /// short loop. A zero-or-negative-length region has nothing to wrap into, so the
 /// position pins to `loop_start` rather than producing NaN.
 ///
-/// Deliberately NOT shared with the butler's `wave_io::wrap_into`: that one is
+/// Deliberately NOT shared with the streamer's `wave_io::wrap_into`: that one is
 /// integer-domain over a range the caller has already validated, while this
 /// reads a fractional position and must survive a degenerate range. Unifying
 /// them would put a lossy cast on the per-sample read path.

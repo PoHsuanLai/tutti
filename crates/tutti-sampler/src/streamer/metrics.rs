@@ -1,4 +1,4 @@
-//! Butler-thread read throughput, used to size refill chunks.
+//! Streamer-thread read throughput, used to size refill chunks.
 //!
 //! Deliberately just the one measurement. A counter nothing loads is not
 //! instrumentation, it is cost on every read — so the only figure kept here is
@@ -27,11 +27,11 @@ use tutti_types::Seconds;
 /// Disk read throughput over a sliding window, the sole input varifill takes
 /// from measurement rather than from the ring's own fill level.
 ///
-/// Butler-thread only. `record_read` `try_lock`s and drops the sample on
+/// Streamer-thread only. `record_read` `try_lock`s and drops the sample on
 /// contention: a missed measurement costs a slightly stale chunk size, and
 /// blocking a refill to record one would cost an underrun.
 pub struct Metrics {
-    /// Only accessed from the butler thread.
+    /// Only accessed from the streamer thread.
     throughput: Mutex<ThroughputTracker>,
 }
 

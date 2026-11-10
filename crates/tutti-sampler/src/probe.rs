@@ -2,18 +2,18 @@
 //!
 //! A caller choosing a playback tier ([`Source::Memory`](crate::Source) vs
 //! [`Source::Disk`](crate::Source)) needs two facts about a file: how long it is,
-//! and whether the butler can serve arbitrary ranges from it. Both come from the
+//! and whether the streamer can serve arbitrary ranges from it. Both come from the
 //! container header, and neither needs a single audio packet decoded.
 //!
 //! # Why this lives in the sampler
 //!
 //! The answer is a fact about this crate's streaming machinery, not about the
-//! file in isolation. "Can it stream" means "can the butler's incremental decoder
+//! file in isolation. "Can it stream" means "can the streamer's incremental decoder
 //! seek in it, given the codecs compiled into this build" — three conditions the
-//! butler already applies internally when a stream is registered
-//! (`butler::handlers::open_stream`). A host deriving the same verdict from
+//! streamer already applies internally when a stream is registered
+//! (`streamer::handlers::open_stream`). A host deriving the same verdict from
 //! `Wave::read_metadata` would be re-implementing a rule it cannot see, and the
-//! two would drift the moment the butler's capabilities changed. Butler and host
+//! two would drift the moment the streamer's capabilities changed. Streamer and host
 //! read the same function — which is the point of it being public.
 //!
 //! This is not a decode: `Wave::read_metadata` reads the container head and
@@ -39,7 +39,7 @@ pub struct SampleFacts {
     /// `None` for some streamed/VBR formats that do not store a length. A
     /// caller sizing a preload window against this must treat `None` as
     /// "unknown", not as "zero" — and note that [`streamable`](Self::streamable)
-    /// is already `false` whenever this is `None`, because the butler cannot
+    /// is already `false` whenever this is `None`, because the streamer cannot
     /// stream a file whose end it cannot find.
     pub frames: Option<Samples>,
     /// The file's own rate, which need not be the engine's.
@@ -60,7 +60,7 @@ pub struct SampleFacts {
     /// ([`PlaceError`](crate::PlaceError)). A host that wants to say so before
     /// it loads the file reads it here.
     pub topology: ChannelTopology,
-    /// Whether this build's butler can stream this file.
+    /// Whether this build's streamer can stream this file.
     ///
     /// The sampler's verdict, not a property of the file alone. False when the
     /// container reports no frame count, when the decoder declines to seek, or
@@ -68,7 +68,7 @@ pub struct SampleFacts {
     ///
     /// A caller that sees `false` has no tier choice left: the file must be
     /// played wholly from memory, because the streaming path does not exist for
-    /// it. That is the same fallback the butler takes internally
+    /// it. That is the same fallback the streamer takes internally
     /// (`load_wave` + `LruCache`).
     pub streamable: bool,
 }
@@ -139,13 +139,13 @@ pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     })
 }
 
-/// The butler's conditions for streaming a file, in the order it applies them.
+/// The streamer's conditions for streaming a file, in the order it applies them.
 ///
-/// The one place these conditions live: `butler::handlers::open_stream` asks
+/// The one place these conditions live: `streamer::handlers::open_stream` asks
 /// [`probe`] for its verdict instead of re-deriving it, so a host picking a
-/// playback tier and the butler cannot disagree.
+/// playback tier and the streamer cannot disagree.
 fn streamable(path: &Path, meta: &tutti_codec::WaveMetadata) -> bool {
-    // 1. No frame count means no seekable end — the butler falls back whole-file.
+    // 1. No frame count means no seekable end — the streamer falls back whole-file.
     if meta.total_frames.is_none() {
         return false;
     }

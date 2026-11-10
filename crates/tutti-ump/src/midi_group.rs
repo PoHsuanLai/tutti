@@ -135,8 +135,8 @@ impl TryFrom<u8> for MidiGroup {
     fn try_from(raw: u8) -> Result<Self, OutOfRange> {
         Self::new(raw).ok_or(OutOfRange {
             what: "group",
-            value: raw,
-            max: Self::LAST.0,
+            value: u32::from(raw),
+            max: u32::from(Self::LAST.0),
         })
     }
 }

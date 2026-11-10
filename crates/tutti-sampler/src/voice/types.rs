@@ -59,7 +59,7 @@ impl From<bool> for Direction {
 /// # The two variants differ only in the essential per-sample read
 ///
 /// [`Memory`](Self::Memory) indexes an `Arc<Wave>`; [`Disk`](Self::Disk) pops
-/// the butler-fed ring, emitting silence while seeking and crossfading on
+/// the streamer-fed ring, emitting silence while seeking and crossfading on
 /// refill. Every *cold* control op is a `match` on this enum — `apply_gain`,
 /// `apply_speed`, `apply_direction` and `apply_placement`.
 ///
@@ -87,7 +87,7 @@ impl From<bool> for Direction {
 pub enum VoiceSource {
     /// The whole source is resident in memory.
     Memory(MemorySource),
-    /// The source streams incrementally from the butler's ring.
+    /// The source streams incrementally from the streamer's ring.
     Disk(DiskVoice),
 }
 
@@ -146,7 +146,7 @@ impl VoiceSource {
     /// Set varispeed.
     ///
     /// The two tiers store it differently — a unit-local field in memory, an
-    /// atomic shared with the butler and every clone on disk — which is exactly
+    /// atomic shared with the streamer and every clone on disk — which is exactly
     /// why the bound belongs to [`PlaybackRate`] rather than to either of these
     /// arms: a bound applied in one arm is a bound the other silently skips.
     #[inline]
@@ -188,7 +188,7 @@ impl VoiceSource {
 /// it is currently doing.
 ///
 /// Each [`VoiceSource`] applies this its own way — the in-memory tier stores the
-/// state on its resident DSP, the streaming tier forwards to the butler's shared
+/// state on its resident DSP, the streaming tier forwards to the streamer's shared
 /// control cell — and the apply fan-out is the [`VoiceSource`] match. This is
 /// the description; the source holds the applied state.
 ///
@@ -238,13 +238,13 @@ pub struct Voice {
     pub source: VoiceSource,
     /// The control intent applied to [`source`](Self::source).
     pub play: Playback,
-    /// Butler channel index for a [`VoiceSource::Disk`] source; `None` for
+    /// Streamer channel index for a [`VoiceSource::Disk`] source; `None` for
     /// [`Memory`](VoiceSource::Memory).
     ///
     /// A pool's control side (its handle's `send`, and `insert_voice`)
     /// forwards the voice's loop to this channel over the typed
     /// [`Commands`](crate::Commands) handle. Looping on the disk tier is
-    /// butler-owned — it reads a fade-in head off disk and mutates the stream
+    /// streamer-owned — it reads a fade-in head off disk and mutates the stream
     /// plan, neither of which the reader can reach — so forwarding is the honest
     /// path rather than an indirection. Meaningless for `Memory`, where the loop
     /// is primed directly on the source.

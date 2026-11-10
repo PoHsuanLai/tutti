@@ -8,6 +8,8 @@
 //! *id* per note (128-note polyphony on one channel, at the cost of the wire
 //! addressing caveat documented on that type).
 
+use tutti_ump::{MidiChannel, NoteNumber};
+
 use super::zone::MpeZoneConfig;
 use crate::note_id::NoteId;
 
@@ -58,31 +60,29 @@ impl NoteRotationAllocator {
     /// Mint a fresh id for a note-on of `note`, recording it as the active id
     /// for that note number. Returns the minted id.
     #[inline]
-    pub fn note_on(&mut self, note: u8) -> NoteId {
+    pub fn note_on(&mut self, note: NoteNumber) -> NoteId {
         let id = NoteId::from_raw(self.next);
         // Advance, skipping the two reserved values (0 and u32::MAX).
         self.next = match self.next.wrapping_add(1) {
             0 | u32::MAX => 1,
             n => n,
         };
-        if let Some(slot) = self.active.get_mut(note as usize) {
-            *slot = Some(id);
-        }
+        self.active[usize::from(note.get())] = Some(id);
         id
     }
 
     /// Resolves the active id for `note` (for routing a per-note message that
     /// arrived by note number). `None` if no live note of that number.
     #[inline]
-    pub fn resolve(&self, note: u8) -> Option<NoteId> {
-        self.active.get(note as usize).copied().flatten()
+    pub fn resolve(&self, note: NoteNumber) -> Option<NoteId> {
+        self.active[usize::from(note.get())]
     }
 
     /// Clears the active id for `note` on note-off, returning the id that was
     /// freed (so the caller can release the matching voice/expression).
     #[inline]
-    pub fn note_off(&mut self, note: u8) -> Option<NoteId> {
-        self.active.get_mut(note as usize).and_then(Option::take)
+    pub fn note_off(&mut self, note: NoteNumber) -> Option<NoteId> {
+        self.active[usize::from(note.get())].take()
     }
 
     /// Forget all live notes (e.g. all-notes-off / reset).
@@ -114,9 +114,9 @@ impl NoteRotationAllocator {
 #[derive(Debug)]
 pub struct MpeChannelVoiceMap {
     /// Channel (0-15) -> note number
-    channel_to_note: [Option<u8>; 16],
+    channel_to_note: [Option<NoteNumber>; 16],
     /// Note number -> channel
-    note_to_channel: [Option<u8>; 128],
+    note_to_channel: [Option<MidiChannel>; 128],
     /// Assignment stamp per channel: the value of `clock` when the channel's
     /// current note was assigned. Used to pick the oldest voice when stealing.
     assigned_at: [u64; 16],
@@ -142,39 +142,36 @@ impl MpeChannelVoiceMap {
     }
 
     /// Allocates a member channel for `note`, stealing the oldest sounding
-    /// voice when all member channels are occupied. `None` when `note` is not
-    /// a MIDI note (128 or above) or the zone has no member channels.
-    pub fn assign_note(&mut self, note: u8) -> Option<u8> {
-        if note >= 128 {
-            return None;
-        }
-
-        if let Some(ch) = self.note_to_channel[note as usize] {
+    /// voice when all member channels are occupied. `None` when the zone has
+    /// no member channels.
+    pub fn assign_note(&mut self, note: NoteNumber) -> Option<MidiChannel> {
+        if let Some(ch) = self.note_to_channel[usize::from(note.get())] {
             return Some(ch);
         }
 
-        let member_range = self.zone_config.member_channel_range();
+        let members = || {
+            self.zone_config
+                .member_channel_range()
+                .filter_map(MidiChannel::new)
+        };
 
         // Prefer any free channel; among free channels the lowest is fine.
-        let free = member_range
-            .clone()
-            .find(|&ch| self.channel_to_note[ch as usize].is_none());
+        let free = members().find(|ch| self.channel_to_note[usize::from(ch.get())].is_none());
 
         let channel = match free {
             Some(ch) => ch,
             // All occupied — steal the channel whose note was assigned
             // longest ago (smallest stamp).
-            None => member_range
-                .clone()
-                .min_by_key(|&ch| self.assigned_at[ch as usize])?,
+            None => members().min_by_key(|ch| self.assigned_at[usize::from(ch.get())])?,
         };
 
-        if let Some(old_note) = self.channel_to_note[channel as usize] {
-            self.note_to_channel[old_note as usize] = None;
+        let slot = usize::from(channel.get());
+        if let Some(old_note) = self.channel_to_note[slot] {
+            self.note_to_channel[usize::from(old_note.get())] = None;
         }
-        self.channel_to_note[channel as usize] = Some(note);
-        self.note_to_channel[note as usize] = Some(channel);
-        self.assigned_at[channel as usize] = self.clock;
+        self.channel_to_note[slot] = Some(note);
+        self.note_to_channel[usize::from(note.get())] = Some(channel);
+        self.assigned_at[slot] = self.clock;
         self.clock += 1;
         Some(channel)
     }
@@ -183,16 +180,11 @@ impl MpeChannelVoiceMap {
     ///
     /// The counterpart to [`assign_note`](Self::assign_note); a note bound with
     /// [`bind_channel`](Self::bind_channel) is released with
-    /// [`unbind_channel`](Self::unbind_channel) instead. A note number of 128 or
-    /// above is ignored rather than panicking.
-    pub fn release_note(&mut self, note: u8) {
-        if note >= 128 {
-            return;
-        }
-
-        if let Some(channel) = self.note_to_channel[note as usize] {
-            self.channel_to_note[channel as usize] = None;
-            self.note_to_channel[note as usize] = None;
+    /// [`unbind_channel`](Self::unbind_channel) instead.
+    pub fn release_note(&mut self, note: NoteNumber) {
+        if let Some(channel) = self.note_to_channel[usize::from(note.get())] {
+            self.channel_to_note[usize::from(channel.get())] = None;
+            self.note_to_channel[usize::from(note.get())] = None;
         }
     }
 
@@ -200,23 +192,15 @@ impl MpeChannelVoiceMap {
     /// MPE). The caller supplies the channel the controller already chose; this
     /// does not pick a channel or steal voices — see the type docs for the
     /// distinction from [`assign_note`](Self::assign_note).
-    pub fn bind_channel(&mut self, channel: u8, note: u8) {
-        if channel < 16 {
-            self.channel_to_note[channel as usize] = Some(note);
-        }
-        if note < 128 {
-            self.note_to_channel[note as usize] = Some(channel);
-        }
+    pub fn bind_channel(&mut self, channel: MidiChannel, note: NoteNumber) {
+        self.channel_to_note[usize::from(channel.get())] = Some(note);
+        self.note_to_channel[usize::from(note.get())] = Some(channel);
     }
 
     /// Clears the `channel`↔`note` binding made by [`bind_channel`](Self::bind_channel).
-    pub fn unbind_channel(&mut self, channel: u8, note: u8) {
-        if channel < 16 {
-            self.channel_to_note[channel as usize] = None;
-        }
-        if note < 128 {
-            self.note_to_channel[note as usize] = None;
-        }
+    pub fn unbind_channel(&mut self, channel: MidiChannel, note: NoteNumber) {
+        self.channel_to_note[usize::from(channel.get())] = None;
+        self.note_to_channel[usize::from(note.get())] = None;
     }
 
     /// The note `channel` is currently playing, if any.
@@ -225,28 +209,20 @@ impl MpeChannelVoiceMap {
     /// per-*note* one: pressure arriving on a member channel belongs to whatever
     /// note that channel holds.
     #[inline]
-    pub fn note_for_channel(&self, channel: u8) -> Option<u8> {
-        if channel < 16 {
-            self.channel_to_note[channel as usize]
-        } else {
-            None
-        }
+    pub fn note_for_channel(&self, channel: MidiChannel) -> Option<NoteNumber> {
+        self.channel_to_note[usize::from(channel.get())]
     }
 
     /// The channel currently carrying `note`, if any.
     #[inline]
-    pub fn channel_for_note(&self, note: u8) -> Option<u8> {
-        if note < 128 {
-            self.note_to_channel[note as usize]
-        } else {
-            None
-        }
+    pub fn channel_for_note(&self, note: NoteNumber) -> Option<MidiChannel> {
+        self.note_to_channel[usize::from(note.get())]
     }
 
     /// Reports whether `channel` belongs to this map's zone in either role.
     #[inline]
-    pub fn handles_channel(&self, channel: u8) -> bool {
-        self.zone_config.handles_channel(channel)
+    pub fn handles_channel(&self, channel: MidiChannel) -> bool {
+        self.zone_config.handles_channel(channel.get())
     }
 
     /// Drops every binding and resets the stealing clock.

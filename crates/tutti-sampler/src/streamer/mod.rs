@@ -1,19 +1,72 @@
-//! The sampler streaming-engine handle. See [`DiskStreamer`].
+//! Asynchronous disk I/O for audio file streaming.
+//!
+//! A background "streamer" thread decodes from disk into one SPSC ring per
+//! channel; the audio thread only ever pops. Nothing here blocks or allocates on
+//! the audio thread — the split is what makes the streaming tier real-time safe.
 
-use super::{BufferConfig, ButlerSender, ButlerThread};
+mod cache;
+mod command;
+mod config;
+pub(crate) mod control;
+mod handlers;
+mod io;
+mod loop_body;
+mod loops;
+mod metrics;
+mod plan;
+mod prefetch;
+mod preroll;
+mod region_map;
+mod rt_state;
+mod step;
+mod thread;
+
+pub(crate) use command::{RegionId, StreamerCommand};
+pub(crate) use config::BufferConfig;
+pub(crate) use handlers::SessionRate;
+#[cfg(test)]
+pub(crate) use loops::GUARD_FRAMES;
+pub(crate) use loops::{Arrangement, RingMap};
+pub(crate) use plan::ChannelPlan;
+pub(crate) use prefetch::SharedReader;
+pub(crate) use rt_state::RtState;
+pub(crate) use thread::StreamerThread;
+
+/// The sending end of the streamer's command queue: a bounded
+/// `crossbeam_channel`, sent on by control threads only. A send waits while
+/// the queue is full and fails once the streamer has gone (every receiver
+/// dropped: the thread's on its exit, the controller's on `stop`).
+pub(crate) type StreamerSender = crossbeam_channel::Sender<StreamerCommand>;
+
+// The streamer's public face: the handle a host holds to drive disk streaming,
+// and the one failure every stream-control command can report.
+pub use control::StreamerGone;
+pub use prefetch::TakeVoiceError;
+
+// The hand-driven cycle's verdict. Public only alongside the driver that
+// produces it — the threaded streamer consumes its own outcomes.
+#[cfg(any(test, feature = "test-support"))]
+pub use step::StepOutcome;
+
+// Test-only re-exports for unit tests outside the streamer module tree (e.g.
+// `units::disk_voice`) that build readers directly. Gated so they
+// do not count as dead code in normal builds.
+#[cfg(test)]
+pub(crate) use prefetch::RegionBuffer;
+
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 use std::sync::Arc;
 use tutti_graph::PrerollTable;
 use tutti_types::SampleRate;
 
-/// The disk-streaming engine: owns the butler thread that reads files into
+/// The disk-streaming engine: owns the streamer thread that reads files into
 /// per-stream rings for [`DiskVoice`](crate::DiskVoice)s to play.
 ///
 /// A host builds one at startup with [`new`](Self::new) and holds it for the
-/// lifetime of the audio engine; dropping it stops the butler thread. Stream
+/// lifetime of the audio engine; dropping it stops the streamer thread. Stream
 /// control is split into two cloneable ports: the WRITE port
-/// [`commands`](Self::commands) (a [`Commands`] over the butler's command
+/// [`commands`](Self::commands) (a [`Commands`] over the streamer's command
 /// channel) and the READ port [`status`](Self::status) (a [`Status`] carrying
 /// the sample rate and building the [`DiskVoice`](crate::DiskVoice) for a
 /// stream).
@@ -39,7 +92,7 @@ use tutti_types::SampleRate;
 ///     offset: SamplePosition(0.0),
 /// })?;
 ///
-/// // The butler opens the file on its own thread; poll until the stream is
+/// // The streamer opens the file on its own thread; poll until the stream is
 /// // ready, then place the voice at beat 0 for the file's full length.
 /// let voice = loop {
 ///     match streamer.status().take_disk_voice(0, Beat(0.0), None) {
@@ -54,23 +107,23 @@ use tutti_types::SampleRate;
 /// # }
 /// ```
 pub struct DiskStreamer {
-    butler_tx: ButlerSender,
-    butler: ButlerThread,
+    streamer_tx: StreamerSender,
+    streamer: StreamerThread,
 }
 
-// `butler`/`butler_tx` hold a thread handle + command channel that can't
-// derive `Debug`; print the sample rate and note the live butler thread.
+// `streamer`/`streamer_tx` hold a thread handle + command channel that can't
+// derive `Debug`; print the sample rate and note the live streamer thread.
 impl std::fmt::Debug for DiskStreamer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiskStreamer")
-            .field("sample_rate", &self.butler.session_rate().get())
+            .field("sample_rate", &self.streamer.session_rate().get())
             .finish_non_exhaustive()
     }
 }
 
 impl DiskStreamer {
     /// Creates the streaming engine at `sample_rate` (the engine's rate) and
-    /// spawns the butler thread.
+    /// spawns the streamer thread.
     ///
     /// Configure with [`DiskStreamerConfig`] (`Default` + struct-update); pass
     /// `Default::default()` for the tuned defaults. Allocates and spawns a
@@ -84,27 +137,31 @@ impl DiskStreamer {
     ///
     /// # Panics
     ///
-    /// If the OS refuses to spawn the butler thread.
+    /// If the OS refuses to spawn the streamer thread.
     pub fn new(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let mut butler = ButlerThread::with_config(256, sample_rate.into(), config.buffer_config);
+        let mut streamer =
+            StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
         if let Some(ref pdc) = config.pdc {
-            butler = butler.with_pdc(Arc::clone(pdc));
+            streamer = streamer.with_pdc(Arc::clone(pdc));
         }
 
-        let butler_tx = butler.command_sender();
-        butler.start();
+        let streamer_tx = streamer.command_sender();
+        streamer.start();
 
-        Ok(DiskStreamer { butler_tx, butler })
+        Ok(DiskStreamer {
+            streamer_tx,
+            streamer,
+        })
     }
 
-    /// Creates the streaming engine without spawning the butler thread;
+    /// Creates the streaming engine without spawning the streamer thread;
     /// cycles are then run by hand with [`step_once`](Self::step_once).
     /// Requires the `test-support` feature.
     ///
     /// The step is the same one the thread runs, so this is the shipped path
     /// with its pacing removed rather than a parallel implementation. What it
-    /// buys is a butler whose progress is *counted* instead of waited for: a
+    /// buys is a streamer whose progress is *counted* instead of waited for: a
     /// test can say "after this many cycles the ring holds audio", where the
     /// threaded streamer only lets it say "after this long it probably does".
     ///
@@ -125,73 +182,77 @@ impl DiskStreamer {
     /// ```
     #[cfg(any(test, feature = "test-support"))]
     pub fn manual(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let mut butler = ButlerThread::with_config(256, sample_rate.into(), config.buffer_config);
+        let mut streamer =
+            StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
         if let Some(ref pdc) = config.pdc {
-            butler = butler.with_pdc(Arc::clone(pdc));
+            streamer = streamer.with_pdc(Arc::clone(pdc));
         }
 
-        let butler_tx = butler.command_sender();
+        let streamer_tx = streamer.command_sender();
 
-        Ok(DiskStreamer { butler_tx, butler })
+        Ok(DiskStreamer {
+            streamer_tx,
+            streamer,
+        })
     }
 
-    /// Runs one butler cycle on the calling thread, reporting whether the
-    /// butler still has urgent work ([`Busy`](crate::StepOutcome::Busy)) or has
+    /// Runs one streamer cycle on the calling thread, reporting whether the
+    /// streamer still has urgent work ([`Busy`](crate::StepOutcome::Busy)) or has
     /// caught up ([`Healthy`](crate::StepOutcome::Healthy) /
     /// [`Idle`](crate::StepOutcome::Idle)).
     ///
     /// That verdict is what makes a step-driven test terminate on a *condition*
     /// rather than on a step budget: stepping until `Healthy` primes every ring
-    /// exactly as far as the threaded butler would before it parks.
+    /// exactly as far as the threaded streamer would before it parks.
     ///
     /// # Panics
     ///
-    /// If this streamer owns a running butler thread — i.e. it came from
+    /// If this streamer owns a running streamer thread — i.e. it came from
     /// [`new`](Self::new) rather than [`manual`](Self::manual). The two drivers
-    /// own the same butler-local state and cannot share it.
+    /// own the same streamer-local state and cannot share it.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn step_once(&mut self) -> super::StepOutcome {
-        self.butler.step_once()
+    pub fn step_once(&mut self) -> StepOutcome {
+        self.streamer.step_once()
     }
 
-    /// Steps until the butler stops making progress, or `budget` cycles have run
+    /// Steps until the streamer stops making progress, or `budget` cycles have run
     /// — whichever comes first. Returns the number of cycles taken.
     ///
     /// "Stops making progress" is any outcome other than
-    /// [`Busy`](super::StepOutcome::Busy): the rings are full enough
-    /// ([`Healthy`](super::StepOutcome::Healthy)), nothing is streaming
-    /// ([`Idle`](super::StepOutcome::Idle)), or a ring below threshold is one no
-    /// further cycle can grow ([`Stalled`](super::StepOutcome::Stalled), the
+    /// [`Busy`](StepOutcome::Busy): the rings are full enough
+    /// ([`Healthy`](StepOutcome::Healthy)), nothing is streaming
+    /// ([`Idle`](StepOutcome::Idle)), or a ring below threshold is one no
+    /// further cycle can grow ([`Stalled`](StepOutcome::Stalled), the
     /// normal state near the end of a file). Waiting for `Healthy` alone would
     /// never return there.
     ///
     /// The budget is a liveness bound, not a pacing knob: reaching it means the
-    /// butler is refilling forever without ever catching up, and a caller should
+    /// streamer is refilling forever without ever catching up, and a caller should
     /// treat that as the failure it is rather than proceeding to measure.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use = "an exhausted budget means the rings never primed"]
     pub fn step_until_settled(&mut self, budget: usize) -> usize {
         for taken in 0..budget {
-            if self.step_once() != super::StepOutcome::Busy {
+            if self.step_once() != StepOutcome::Busy {
                 return taken + 1;
             }
         }
         budget
     }
 
-    /// WRITE port: a cloneable [`Commands`] handle over the butler command
+    /// WRITE port: a cloneable [`Commands`] handle over the streamer command
     /// channel. Drive streaming with `commands().send(Command::…)`.
     #[must_use]
     pub fn commands(&self) -> Commands {
-        Commands::new(self.butler_tx.clone())
+        Commands::new(self.streamer_tx.clone())
     }
 
     /// READ port: a cloneable [`Status`] snapshot carrying the sample rate and
     /// the channel-plan map (the reader-factory).
     #[must_use]
     pub fn status(&self) -> Status {
-        Status::new(self.butler.session_rate(), self.butler.plans())
+        Status::new(self.streamer.session_rate(), self.streamer.plans())
     }
 
     /// Moves the session rate to `sample_rate`: what a device restart at a new
@@ -209,22 +270,22 @@ impl DiskStreamer {
     /// graph beyond its ratio: its placement gate converts beats to file frames
     /// at the file's own rate, which is not the session's.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
-        self.butler.set_session_rate(sample_rate.into());
+        self.streamer.set_session_rate(sample_rate.into());
     }
 }
 
-// `butler` has its own `Drop` impl; auto-drop handles cleanup.
+// `streamer` has its own `Drop` impl; auto-drop handles cleanup.
 
 /// Configuration for [`DiskStreamer::new`]. `Default` + struct-update.
 #[derive(Clone, Default)]
 pub struct DiskStreamerConfig {
-    /// Butler buffer / cache configuration. Default is tuned for
+    /// Streamer buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
     /// Subscription to a per-channel delay-compensation table, indexed by
     /// channel index and denominated in [`Samples`](tutti_types::Samples).
     ///
-    /// While set, the butler pre-rolls each stream by its channel's entry so
+    /// While set, the streamer pre-rolls each stream by its channel's entry so
     /// downstream effects stay sample-aligned. Published by whoever runs
     /// `tutti_graph::compensate` over the audio graph — the table is
     /// [`Compensation::channels`](tutti_graph::Compensation::channels).
@@ -250,9 +311,9 @@ mod tests {
     /// A backward `Command::Seek` must actually reposition the live stream.
     ///
     /// The end-to-end test (`tests/tier_parity.rs`) observes only the audio,
-    /// where a butler that ignored the seek and one that repositioned while
+    /// where a streamer that ignored the seek and one that repositioned while
     /// the reader drained pre-seek material can look alike. In-crate the
-    /// butler's own state is visible, so this observes its reposition signal
+    /// streamer's own state is visible, so this observes its reposition signal
     /// directly: a regression that repositioned late (rather than not at all)
     /// fails here first and unambiguously.
     ///
@@ -269,7 +330,7 @@ mod tests {
     ///
     /// # No thread, no timeout
     ///
-    /// The butler is stepped by hand, so "has the butler seen the command yet"
+    /// The streamer is stepped by hand, so "has the streamer seen the command yet"
     /// is answered by *having stepped* rather than by polling a 5 s deadline at
     /// 10 ms. A step returns only once the command is applied, so the assertions
     /// below are unconditional: there is no state in which the answer is "not
@@ -311,15 +372,15 @@ mod tests {
                 file_path: path.clone(),
                 offset: SamplePosition(20.0 * SR),
             })
-            .expect("the butler is alive in this test");
+            .expect("the streamer is alive in this test");
 
         // One step applies the queued `Stream`, which is what installs the link.
         let _ = sampler.step_once();
 
-        let plans = sampler.butler.plans();
+        let plans = sampler.streamer.plans();
         assert!(
             plans.get(&0).is_some_and(|p| p.link.is_some()),
-            "one butler cycle after a Stream command and no link is installed"
+            "one streamer cycle after a Stream command and no link is installed"
         );
 
         let window = || {
@@ -340,7 +401,7 @@ mod tests {
                 channel_index: 0,
                 file_position: SamplePosition(5.0 * SR),
             })
-            .expect("the butler is alive in this test");
+            .expect("the streamer is alive in this test");
 
         let _ = sampler.step_once();
 
@@ -348,7 +409,7 @@ mod tests {
         assert!(
             from <= target && target < to,
             "the ring holds [{from}, {to}) in the cycle that applied a backward seek to \
-             {target} — the butler did not reposition the stream"
+             {target} — the streamer did not reposition the stream"
         );
     }
 
@@ -376,7 +437,7 @@ mod tests {
             sampler
                 .commands()
                 .send(command)
-                .expect("the butler is alive")
+                .expect("the streamer is alive")
         };
         send(
             &sampler,
@@ -401,7 +462,7 @@ mod tests {
             );
             let _ = sampler.step_until_settled(1_000);
         }
-        let plans = sampler.butler.plans();
+        let plans = sampler.streamer.plans();
         let window = plans
             .get(&0)
             .and_then(|p| p.link.as_ref().map(|l| l.consumer.window()))
@@ -411,7 +472,7 @@ mod tests {
             "the loop plays on past its end: {window:?}"
         );
         assert!(
-            sampler.butler.cache().get(&path).is_none(),
+            sampler.streamer.cache().get(&path).is_none(),
             "a loop change decoded the whole file"
         );
     }
@@ -450,7 +511,7 @@ mod tests {
     /// - `SessionRate::set` not storing the rate → the early `Status` reports
     ///   44.1 kHz → fails;
     /// - `handle_stream_file` deriving against the build's 44.1 kHz (what the
-    ///   old `ButlerCycle::sample_rate` copy did) → the later stream gets
+    ///   old `StreamerCycle::sample_rate` copy did) → the later stream gets
     ///   unity → fails;
     /// - `status()` copying the rate into a fresh cell → the early `Status`
     ///   reports 44.1 kHz → fails.
@@ -474,10 +535,10 @@ mod tests {
                     file_path: path.to_path_buf(),
                     offset: SamplePosition(0.0),
                 })
-                .expect("the butler is alive in this test");
+                .expect("the streamer is alive in this test");
             let _ = sampler.step_once();
         };
-        let plans = sampler.butler.plans();
+        let plans = sampler.streamer.plans();
         let ratio = |channel| plans.get(&channel).expect("streaming").rt_state.src_ratio();
 
         stream(&mut sampler, 0, &at_48);
@@ -498,27 +559,27 @@ mod tests {
         assert_eq!(ratio(1), SrcRatio::for_rates(44_100.0, 48_000.0));
     }
 
-    /// Stepping and threading are exclusive owners of the butler's local state.
+    /// Stepping and threading are exclusive owners of the streamer's local state.
     ///
     /// This is the one thing the hand driver can get wrong that the thread
     /// cannot: two `Local`s, two region maps, and rings one of them does not
     /// know exist. Cheaper to fail loudly at `start` than to debug a stream that
     /// refills into a ring nobody reads.
     #[test]
-    #[should_panic(expected = "start on a hand-stepped butler")]
-    fn a_hand_stepped_butler_refuses_to_also_start_a_thread() {
-        let mut butler =
-            ButlerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
-        let _ = butler.step_once();
-        butler.start();
+    #[should_panic(expected = "start on a hand-stepped streamer")]
+    fn a_hand_stepped_streamer_refuses_to_also_start_a_thread() {
+        let mut streamer =
+            StreamerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
+        let _ = streamer.step_once();
+        streamer.start();
     }
 
-    /// The butler reads the caller's table, not a copy of it: a figure
-    /// the caller sets after the streamer is built reaches the butler's
+    /// The streamer reads the caller's table, not a copy of it: a figure
+    /// the caller sets after the streamer is built reaches the streamer's
     /// cycle (`manual`), and the threaded streamer (`new`) hands its
     /// threads the caller's own table.
     ///
-    /// Mutations (run): `DiskStreamer::manual` handing the butler a copy of
+    /// Mutations (run): `DiskStreamer::manual` handing the streamer a copy of
     /// the table → the cycle still reads 100, fails; `DiskStreamer::new`
     /// handing a copy → not the same table, fails.
     #[test]
@@ -531,13 +592,13 @@ mod tests {
 
         let mut stepped = DiskStreamer::manual(44100.0, config.clone()).unwrap();
         let _ = stepped.step_once();
-        assert_eq!(stepped.butler.manual_preroll(0), Some(100));
+        assert_eq!(stepped.streamer.manual_preroll(0), Some(100));
         pdc.set(&[Samples(512), Samples(0)]);
         let _ = stepped.step_once();
-        assert_eq!(stepped.butler.manual_preroll(0), Some(512));
+        assert_eq!(stepped.streamer.manual_preroll(0), Some(512));
 
         let threaded = DiskStreamer::new(44100.0, config).unwrap();
-        let held = threaded.butler.pdc_table().expect("subscribed");
+        let held = threaded.streamer.pdc_table().expect("subscribed");
         assert!(Arc::ptr_eq(held, &pdc), "the caller's table, not a copy");
     }
 }

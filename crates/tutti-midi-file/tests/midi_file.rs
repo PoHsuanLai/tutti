@@ -387,10 +387,7 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
     assert_eq!(op(&cc), (0x4, 0xB));
     assert_eq!((cc.words()[0] >> 8) & 0x7F, 7, "the controller index");
     assert_eq!(cc.words()[1], 0xC924_9249);
-    assert_eq!(
-        MidiChannel::masked(((cc.0[0] >> 16) & 0xF) as u8),
-        MidiChannel::of(2)
-    );
+    assert_eq!(cc.channel(), Some(MidiChannel::of(2)));
 
     let (at, bend) = timed[1];
     assert_eq!(at, Beat(0.25));

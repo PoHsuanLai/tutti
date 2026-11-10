@@ -1,24 +1,24 @@
-//! Shared state between butler and audio thread.
+//! Shared state between streamer and audio thread.
 //!
 //! Every field is atomic or lock-free, so both sides read and publish without a
 //! lock ever reaching the audio callback. The fields are grouped into orthogonal
 //! sub-structs (playback, health) — one `Arc`, one allocation — each
-//! `#[repr(align(64))]` so a butler write to one group cannot false-share a
+//! `#[repr(align(64))]` so a streamer write to one group cannot false-share a
 //! cache line with an audio-thread read of another.
 //!
 //! # Which side writes what
 //!
-//! * Butler (or control) writes, audio reads — speed, direction,
+//! * Streamer (or control) writes, audio reads — speed, direction,
 //!   `src_ratio`, gain, the stretch rate. `src_ratio` is re-derived by the
 //!   control thread when the session rate moves (`SessionRate::set`, a device
-//!   restart), under the plan's lock, which the butler also holds when it
+//!   restart), under the plan's lock, which the streamer also holds when it
 //!   writes one.
-//! * Audio writes, butler reads — `underrun_count`; the butler writes
+//! * Audio writes, streamer reads — `underrun_count`; the streamer writes
 //!   `buffer_fill_level` for its own pacing.
 //!
 //! Where a stream stands and how to read it is the ring's, not this cell's
 //! (`prefetch::Ring`): the reader publishes the position it plays and the
-//! butler follows it, so there is nothing to request and nothing to flush.
+//! streamer follows it, so there is nothing to request and nothing to flush.
 
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use tutti_types::{Amplitude, AtomicF32, Param64, PlaybackRate, ReadRate, SrcRatio};
@@ -28,7 +28,7 @@ use crate::voice::types::Direction;
 /// Varispeed, direction, rate conversion, stretch and gain — the cells the audio
 /// thread loads on the per-sample path.
 ///
-/// Cache-line aligned so butler writes here do not false-share with
+/// Cache-line aligned so streamer writes here do not false-share with
 /// [`BufferHealth`], which the audio thread writes on the same block.
 #[repr(align(64))]
 #[derive(Debug)]
@@ -52,7 +52,7 @@ pub struct PlaybackParams {
     ///
     /// Held here rather than in `DiskSource` because the stretch filter and the
     /// ring reader never meet: the filter lives in the `PlaybackSlot`, the reader
-    /// behind the butler's `SharedReader`. `RtState` is the cell both already
+    /// behind the streamer's `SharedReader`. `RtState` is the cell both already
     /// share, and it is where the other two rate factors compose.
     ///
     /// A [`Param64`], not an `AtomicF32` like its neighbours: [`ReadRate`] is
@@ -76,12 +76,12 @@ impl Default for PlaybackParams {
 ///
 /// Cache-line aligned: the audio thread writes `buffer_fill_level` and
 /// `underrun_count` every block, and that must not evict [`PlaybackParams`]
-/// out from under the butler.
+/// out from under the streamer.
 #[repr(align(64))]
 #[derive(Debug)]
 pub struct BufferHealth {
     /// Underruns since the last [`RtState::take_underruns`]. Audio thread
-    /// increments, butler drains.
+    /// increments, streamer drains.
     underrun_count: AtomicU64,
     /// Ring occupancy as 0-1000, i.e. 0.0-1.0 in thousandths. Fixed-point
     /// because the cell is an integer atomic; the accessors do the scaling.
@@ -97,7 +97,7 @@ impl Default for BufferHealth {
     }
 }
 
-/// The one cell a streaming channel's butler side and audio side both hold.
+/// The one cell a streaming channel's streamer side and audio side both hold.
 ///
 /// Lives behind an `Arc` shared by the [`ChannelPlan`](super::plan::ChannelPlan)
 /// and the disk voice, which is why every publisher below takes `&self`: no
@@ -137,7 +137,7 @@ impl RtState {
     ///
     /// What a disk voice severed for an offline render keeps
     /// (`DiskVoice::fork_copy`): its controls as a snapshot, like every other
-    /// forked unit's, in a cell no butler and no live voice shares.
+    /// forked unit's, in a cell no streamer and no live voice shares.
     pub(crate) fn detached(&self) -> Self {
         let state = Self::new();
         state.set_speed(self.speed());
@@ -239,7 +239,7 @@ impl RtState {
         }
     }
 
-    /// Publish the playback direction. The butler reads it each refill cycle to
+    /// Publish the playback direction. The streamer reads it each refill cycle to
     /// choose the forward or the reversed refill path.
     pub fn set_direction(&self, direction: Direction) {
         self.playback
@@ -265,7 +265,7 @@ impl RtState {
         self.playback.src_ratio.load()
     }
 
-    /// Publish the conversion ratio. Written by the butler when a stream starts,
+    /// Publish the conversion ratio. Written by the streamer when a stream starts,
     /// and re-derived when the session rate moves, from [`SrcRatio::for_rates`]
     /// — the same derivation the in-memory tier uses, so neither tier can pick
     /// the ratio up backwards.
@@ -288,7 +288,7 @@ impl RtState {
     }
 
     /// Publish ring occupancy as a fraction, clamped to `0.0..=1.0` and stored
-    /// in thousandths. The butler compares it against a refill threshold to
+    /// in thousandths. The streamer compares it against a refill threshold to
     /// decide both chunk size and whether it may park on a timer.
     pub fn set_buffer_fill(&self, level: f32) {
         let scaled = (level.clamp(0.0, 1.0) * 1000.0) as u32;

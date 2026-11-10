@@ -25,6 +25,11 @@ are not vendored (`crates/tutti-midi-types/docs/midi2-spec/README.md`).
   changes a message's meaning (§4).
 - **Connections as a state machine.** M2-100's connection steps are a no-I/O
   `Connection`, driven by tests with no device (§5).
+- **Events cross the graph's edge through two primitives.** An event tap
+  (`Op::EventTap`) copies any event output to a thread, and an event inlet
+  (`Graph::open_event_inlet`) feeds a thread's events in, counted and never
+  blocked on. The four MIDI edge nodes become users of them ("Event tap and event
+  inlet").
 - **Crates follow the layers** (§6).
 - **`midi2` is removed** (§7).
 - **Events are not silently lost.** Capacity follows the block size, note-offs
@@ -805,11 +810,366 @@ Every MIDI feature has four layers:
 | Chase on seek | `ChaseIndex` |
 | Clock, MTC and MMC slave | `ClockFollower` |
 | CC modulation and MIDI learn | `Binding`, `LearnState` |
+| Events across the graph's edge | `EventTapReader`, `EventInletWriter` (`tutti-graph`) |
 
 The same pattern is already in use: the plugin hosts' pure `step` (design 016),
 `Phase::Poll`, `PhaseCx { now }`, and `Session::update() -> Vec<SessionEvent>`.
 Audio devices (design 018) follow the pattern and share `Phase::Poll`. They share
 no code with MIDI.
+
+## Event tap and event inlet
+
+Audio crosses the graph's edge through a tap (`Op::Tap`, `TapReader`,
+`Graph::open_tap`) and an inlet (`InletNode`, `Graph::open_inlet`). Events cross
+it through four MIDI nodes that each copy by hand: `MidiOutNode`,
+`MidiQueueNode`, `TimedQueueNode` and `MidiInputNode`. The owner decided on
+2026-11-11 (design 013, "What else is, and is not, a graph primitive") that
+copying events out of any event port and into the graph is the graph's own
+primitive, and that this document, which owns the event side, specifies it. This
+section is that amendment. The `tutti-graph` parts (the op, the node, the
+writer and reader types) are reviewed by the graph's owner; the rest is
+`tutti-session` and the MIDI crates.
+
+The test design 013 applies: a primitive says where a signal goes, a node
+computes one. Copying an event out to a thread, or in from one, is placement.
+Translating MIDI 1.0, splitting by channel and merging MPE zones are
+computation, and stay nodes.
+
+### Survey: what exists
+
+Audio, in `crates/tutti-graph`:
+
+- A tap is declared on the `Topology` (`TapSpec { sources, align }`,
+  `graph.rs:416`), opened by `Editor::open_tap` (`editor.rs:563`), which refuses a
+  source that does not exist now (`MissingSource`, `editor.rs:312`, which is
+  `#[non_exhaustive]`) and queues the writer in `pending_taps`.
+- The compiler emits one `Op::Tap` per tap (`compile/mod.rs:951`). `TapAlign::ToOutput`
+  adds, per lane, the delay an output channel of the same source gets
+  (`DelayKey::Tap`, `plan.rs:99`); `Raw` reads the source as it leaves its node. A
+  lane whose port is missing reads `ARef::Zero`. A closed tap is not in the
+  topology and emits nothing.
+- The writer (`TapWriter`, `tap.rs:42`) is a `ringbuf` `HeapProd` per lane. It rides
+  the commit (`exec.rs:344`, carried by id at `exec.rs:1307`), is claimed by the op
+  in the parallel executor (`par.rs:540`), writes nothing with no reader
+  (`read_is_held`), and counts what the rings refused in an `Arc<AtomicU64>` the
+  reader takes (`take_lost`, `tap.rs`). Both ends assert they are not dropped on
+  the audio thread (`RtScope::check_outside`).
+- `cost.rs:216` puts `Op::Tap` in the `COPY` work class. `compile/verify.rs:682`
+  checks the tap index. A fork carries no tap (`tests/tap.rs`
+  `a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly`).
+- The session opens it (`Graph::open_tap`, `tutti-session/src/graph.rs:1739`) and
+  reaps readers dropped first in `Phase::Reclaim` (`reap_taps`, `graph.rs:1792`).
+- The inlet is `InletNode` over a standalone `TapReader` (`inlet.rs`).
+  `Graph::open_inlet` and `add_inlet` (`graph.rs:722`, `739`) refuse a producer of
+  another rate (`InletError::RateMismatch`). The node is unforkable.
+
+Events in the graph:
+
+- An `Event` is `{ offset: Offset, kind: EventKind }`, `Copy`, at most 32 bytes
+  (`event.rs:731`). `EventKind::Midi(Ump)` is one variant beside `Ramp`, `Segment`,
+  `Harmony` and `Resync`. An offset is meaningless outside the block; `Env::frame`
+  is the block's first `Frame` and `Env::frame_at` and `Env::offset_of` are the
+  only conversions (`time.rs:297`, `302`). `Env::due(At)` already resolves a
+  scheduled time to `Due::{In(Offset), Late, NotYet}` (`time.rs:306`).
+- Ops reach event slots through `EventSlots` (`slots.rs:125`). `Op::EventMerge`
+  (`plan.rs:364`) and `Op::EventDelay` are the event ops; `cost.rs:218` puts both in
+  the `EVENTS` class. A port's capacity is `Shape::with_event_capacity`, and
+  `note_off_room(cap)` is the extra room a note-off may use (`event.rs:1000`).
+  `Io::count_lost` adds to the executor's dropped-event count (`io.rs:287`).
+
+The four MIDI nodes, in `crates/tutti-midi-runtime/src/live`:
+
+| Node | What it does | Ring and loss | Users | What it does beyond copying |
+|---|---|---|---|---|
+| `MidiOutNode` (`out_node.rs`) | Event input to a control thread | `MidiMailbox`, a `crossbeam` `ArrayQueue` of `(u32, Ump)`, 1024; a full ring drops the rest and counts (`dropped`) | The session's hardware out, fed by the clock (`MidiNodes::hardware_out`, drained in `Phase::MidiOut`, `midi.rs:482`); `ClockNode` docs | Stamps each event with `Env::frame + offset` truncated to `u32`, which wraps at about 25 hours. Fork discards |
+| `MidiQueueNode` (`queue_node.rs`) | Control thread to one event output | `MidiMailbox` of 256, `MidiSender` is `Clone` and MPMC; a full ring refuses (`bool`) | The session's live inputs (`Live`, `midi.rs`), keyboards, tests | Sorts by stamp, clamps the stamp into the block (a control thread's stamp is 0). Fork is a new empty queue |
+| `TimedQueueNode` (`timed_queue.rs`) | Control thread to one event output, each event on its frame | `ArrayQueue<Stamped>` of 256 plus a waiting list of the same size; `TimedSender` is `Clone`; refuses when full (`TimedSendError::Full`), counts evictions (`dropped`) | `InstrumentHandle` (`tutti-session/src/instrument.rs:323`), which is `Clone` | Holds an event until the block that contains its frame. A late event lands at offset 0, not dropped. `Moment` (frame and rate) rescales waiting events when the graph is re-prepared at another rate. A note-off or CC 120 or 123 is kept in preference to any other event. Reads the node's clock through a `SeqReader`. `At::Beat` is refused. Fork is silent |
+| `MidiInputNode` (`input_node.rs`) | A `MidiIn` polled each block, to 17 event outputs | The hardware port rings, drained on the audio thread by `HardwareMidiDrain`; a block's translation that does not fit is dropped whole and counted (`dropped_events`, and `Io::count_lost`) | The session's hardware input | `Translator` (MIDI 1.0 to 2.0, RPN, Bank Select), `MpeIngest` (classic MPE to native), one port per channel and a channelless one, a note-off's room past the capacity, an MPE mode request read through an `ArcLend`. The arrival `Instant` to `Offset` conversion is on the audio thread, in the drain (`tutti-midi-hardware/src/port/manager.rs:173`) |
+
+So three of the four do plain copying plus ordering and stamping, and the
+fourth (`MidiInputNode`) is a translator with a ring on its front. That
+splits what becomes the primitive from what stays a node.
+
+### The event tap
+
+`Op::EventTap`, `TapReader`'s event sibling: one event output port of any node,
+copied into a ring a thread of your own drains.
+
+| Question | Decision | Reason |
+|---|---|---|
+| Which port | One event **output** of a node (`EventOut`, as `connect_event` names a source). Not an input, and not a list | An input port is a merge of its sources and has a time of its own (aligned to its node's other inputs); the tap would have to choose between before and after that alignment. A reader that wants a node's input taps its sources. A list of sources would be a merge the compiler already has as `Op::EventMerge`; several taps merge in the reader by frame, which is what the frame is for |
+| Which events | `EventKind::Midi` only. Ramps, segments, harmony and resync are graph control, and are neither copied nor counted | They mean nothing outside the graph, and an `Event` is not what a thread wants to hold. If a consumer needs them, that is a second kind of tap |
+| Time | `TapAlign` as it is: `ToOutput` delays the source by the compiler's `Op::EventDelay` to the outputs' time, `Raw` reads the port as it leaves its node. `ToOutput` is the default | The same compensation an audio tap gets. A MIDI out to hardware should line up with the audio the graph outputs; a reader that wants the node's own time asks for `Raw`. A source that departs later than every output reads as `Raw`, as for audio. `DelayKey::EventTap { tap, from }` names the delay |
+| What the reader gets | `TapEvent { frame: Frame, ump: Ump }`, 24 bytes, `Copy`. `frame` is `Env::frame_at(offset)` of the block the op ran in, after any alignment delay | An offset is relative to a block the reader never sees. An absolute frame on the graph's clock keeps the spacing between events whatever the block sizes were, orders events across taps and against the transport's `At::Frame`, and is what `ClockMap` converts to an OS time for output scheduling (§5, "Timing at the edge"). `u64`, so it does not wrap the way `MidiOutNode`'s `u32` stamp does |
+| A bypassed or muted node | Doc 013's `NodeMode`: a `Bypassed` or `Muted` node's event outputs are empty, so a tap on one reads nothing for those blocks (no loss is counted). An `EventInletNode` is not bypassed in practice; if it is, its waiting list holds and late events land at offset 0 when it runs again | Keeps M1 and E1 in agreement: `NodeMode` decides what a port carries, and the tap copies what it carries |
+| Capacity | An event count named at open (a count of events, a bare `usize` as `Shape::with_event_capacity` takes one: no unit covers it). The ring holds `note_off_room(capacity)`; an event that is not a note-off is refused once `capacity` are held | The ring that decides what a slow reader loses should keep what a hung note needs: the same rule the ports follow (§8). The check is the producer's own occupancy, which can only be an underestimate, as in `TapWriter` |
+| Loss | A refused event is counted once in an `Arc<AtomicU64>` shared with the reader: `EventTapReader::take_lost() -> u64`, events, cleared by the read. A block with no reader writes nothing and counts nothing | As `TapReader::take_lost`. The count is also the session's drop report (`MidiOutDropped`) |
+| Reader | One consumer: `&mut self`, not `Clone`. `pop_into(&mut self, &mut [TapEvent]) -> usize`, `available()`, `id()`, `watch()` | A second consumer is a second tap. Reading advances the read index |
+| Missing port | The port goes missing later (node replaced by one with fewer event outputs, node removed): the compiler emits no op, the writer stays in the plan's tap table, the commit succeeds, the reader sees no events and is not told, and nothing counts as lost. Opening refuses a source that does not exist now: `MissingSource::EventPort { node, port, width }` (the enum is `#[non_exhaustive]`; `Port` names an audio output) | Silence is the absence of events, so there is nothing to write. The writer is kept so a later commit that restores the port resumes it |
+| Closed and fork | A closed tap is not in the topology and compiles to no op, and its writer is freed on the control side with the old state. A fork carries none. Reopening an id replaces the tap. Reader dropped first: the tap writes nothing until reaped (`reap_taps` takes event taps too) | As `Op::Tap`. An export fork has no wire to send to, which is what `MidiOutNode`'s discarding fork did |
+| Commit | `EventTapWriter` rides the commit in a new `Commit.event_taps: Vec<(EventTapId, EventTapWriter)>`, carried by id across plans, as the audio writers are (`exec.rs:1307`) | No new mechanism. `EventTapId` is its own type: the audio `TapId` names a `Topology.taps` key, and the two maps must not share a namespace |
+
+**The type: its own `EventTapReader`, not a generic `TapReader`.** `TapReader`
+is a set of `f32` lanes read in whole frames, and it is a `Source`, an
+interleaved stream with a layout. An event tap has no lanes, no layout, a
+variable count per block and a 24-byte element. Making `TapReader` generic would
+carry a lane count and a `Source` impl into a type that has neither. The
+boundary in one sentence: *`EventTapReader` pops the MIDI events a graph port
+carried, each with the frame it was due on.* `TapId`, `Observer` and the
+`lost`/`alive` plumbing are a few lines and are written again, not shared
+through a trait, because the sharing would be the only thing the two readers
+have in common. If a second event reader appears, a small private struct for
+the shared `lost`, `alive` and `read_is_held` logic is the refactor, not a trait.
+It lives in its own file beside `tap.rs` and does not change `TapWriter` or
+`TapReader`.
+
+**The op.** `Op::EventTap { tap: u32, src: u32 }` reads one event slot through
+`EventSlots::ev` and pushes `Event`s with `frame = Env::frame_at(offset)`; the
+frame reaches the op as the block's start frame, the one datum the executor
+already holds per block. The writer is claimed through the same split-claim
+as `taps` (`par.rs:282`), a new `event_taps` slice. The op never touches a unit,
+a ring or an output directly. Its read of the slot makes the producing node a
+task dependency, as `Op::Tap` does for an audio slot (`em.read_event`, beside
+`em.read_aref`).
+
+**The cost class.** `EVENTS`, with `Op::EventDelay` and `Op::EventMerge`
+(`cost.rs:218`): a ring push per event, nothing per frame. The PR records a
+measurement beside the audio tap's, as the cost model asks.
+
+**Lock-free structure: none new.** `ringbuf`'s `HeapRb<TapEvent>` split, which
+`tutti-graph` already depends on, one producer (the executor) and one consumer.
+No `tutti-rt` addition and no loom model is needed, because nothing here is a
+new structure; the tests below pin the code path as `tests/tap.rs` does.
+
+```rust
+// tutti-graph
+pub struct EventTapId(pub u32);
+pub struct TapEvent { pub frame: Frame, pub ump: Ump }       // Copy
+pub struct EventTapSpec { pub source: EventOut, pub align: TapAlign }
+pub struct EventTapReader { /* ring consumer, lost, alive */ }
+impl EventTapReader {
+    pub fn pop_into(&mut self, out: &mut [TapEvent]) -> usize;
+    pub fn available(&self) -> usize;
+    pub fn take_lost(&self) -> u64;
+    pub fn id(&self) -> EventTapId;
+    pub fn rate(&self) -> SampleRate;   // the scale of every frame it pops
+    pub fn watch(&self) -> Weak<()>;
+}
+impl Editor {
+    pub fn open_event_tap(&mut self, id: EventTapId, source: EventOut,
+                          align: TapAlign, capacity: usize)
+        -> Result<EventTapReader, MissingSource>;
+    pub fn close_event_tap(&mut self, id: EventTapId);
+}
+
+// tutti-session
+impl Graph {
+    pub fn open_event_tap(&mut self, source: EventSource, align: TapAlign,
+                          capacity: usize) -> Result<EventTapReader, MissingSource>;
+}
+```
+
+### The event inlet
+
+`Graph::open_event_inlet`: a ring a thread of your own fills, drained into one
+event output port of a node. Counted, never blocked on. The inverse of the tap,
+as the audio inlet is.
+
+| Question | Decision | Reason |
+|---|---|---|
+| The node | `EventInletNode` in `tutti-graph`, an inlet implementation like `InletNode`, not a node an author adds: no inputs, one event output, `Cost::Light`, event capacity the ring's | The graph already has a node-shaped place for "something outside feeds a port". An op would need the arena to wake it with no input edge; the node needs nothing new |
+| What the producer pushes | `EventInletWriter::push(at: At, ump: Ump) -> Result<(), Refused>`. `At::NextBlock` is "as soon as possible": the next block's first frame. `At::Frame(f)` is a frame on the graph's clock. `At::Beat` is refused (`Refused::Beat`): the producer has no transport, as `TimedSender::send` has none | `At` is the type a command takes elsewhere (`MotionFsm::schedule`), and `Env::due(At)` resolves it already. The node does not invent a second rule for late or early |
+| The clock the frame is on | The graph's, as `Moment { frame, rate }`: `EventInletWriter::clock() -> Moment` reads where the node's last block ended, published by the node through a `tutti-rt` `SeqWriter` (the `TimedQueueNode` mechanism). `push_at(moment, ump)` names an instant that survives a re-prepare at another rate: the node rescales waiting events with `Frame::rescaled`. `Moment` moves to `tutti-types`, which already holds `Frame` and `SampleRate` | The frame clock counts frames at the current rate; a re-prepare moves it to the same wall time at the new rate (`timed_queue.rs` docs). A raw frame read before and sent after is wrong, a `Moment` is not |
+| A timestamp from another clock | **Not this stage.** The writer takes graph-clock frames or `At::NextBlock` only. A producer holding an OS timestamp needs `ClockMap` (§5, "Timing at the edge", not built) to give a `Moment`, and calls `push_at`. Until then a producer that has no better stamp pushes `At::NextBlock`, which is what `MidiQueueNode` does today | `ClockMap` is pure and takes two clocks' readings; building it is stage 4's. The inlet's contract does not change when it lands: it only gives producers a better `Moment` |
+| What the node does with the ring | Each block: drains the ring into a waiting list sized once at open (the ring's capacity), resolves each entry with `Env::due`: `In(offset)` is emitted on that offset, `Late` is emitted at offset 0 and counted late, `NotYet` waits. Emission order is due frame, then arrival order, so a note-off sent after its note-on never overtakes it | The waiting list is `TimedQueueNode`'s, kept whole. It is scheduling, not MIDI, and every producer that names a frame needs it |
+| Priority | When the waiting list is full, the latest-due event that is not a note-off is evicted; a note-off or CC 120 or 123 is kept in preference to any other. The predicate is one function in `tutti-ump` (`Ump::is_note_off` today; the panic controllers join it there, since `tutti-ump` owns the bit positions) | The rule `TimedQueueNode` has, and the one §8 gives ports. `tutti-graph` already knows the note-off (`note_off_room`) |
+| Capacity | An event count named at open: the ring, the waiting list and the port's declared capacity are that number. The port refuses what it cannot take and the node counts it with `Io::count_lost`, so an export watching `dropped_event_count` sees it | As `MidiQueueNode` and `TimedQueueNode` today. Default 256 events, which is theirs |
+| Loss | Three counts, each in a shared atomic read from the writer side (`EventInletWriter::lost()`, `late()`; one `take`-style read each): refused at the ring because it was full (the writer counts, never blocks), evicted from the waiting list, and refused by the port. The writer's `push` returns `Err(Refused::Full)` so a caller that can say "not now" does. Late is a count, not a loss | The audio inlet's rule: what fills or empties the ring is counted, never blocked on. The writer cannot block: `push` is a ring push |
+| Producers | **One.** `EventInletWriter` is `Send`, not `Clone`, `push(&mut self, ..)`. Several producers are several inlets; the graph's event fan-in (`Op::EventMerge`, stable in source order) merges them, as audio fan-in sums | The ring is `ringbuf`'s SPSC, and a second producer would need a new lock-free structure with a loom model for a case the graph already answers. See Open questions: `InstrumentHandle` is `Clone` today |
+| Fork | **Silent**: the fork is a node with the same port and an empty ring, and no writer. It is not unforkable, which the audio inlet is | An offline render has no live events: nothing arriving is the right result, and it is what `MidiQueueNode`, `TimedQueueNode` and `MidiOutNode` do now. Refusing the fork would stop the export of any project with a keyboard in it. The audio inlet differs because silence in place of a live signal would be an export that looks complete and is not |
+| Reset | `reset` keeps the ring and the waiting list: a note-off waiting must still arrive | As both queue nodes |
+
+```rust
+// tutti-graph
+pub struct EventInletWriter { /* ring producer, SeqReader<Reading>, counters */ }
+impl EventInletWriter {
+    pub fn push(&mut self, at: At, ump: Ump) -> Result<(), Refused>;
+    pub fn push_at(&mut self, at: Moment, ump: Ump) -> Result<(), Refused>;
+    pub fn clock(&self) -> Moment;
+    pub fn lost(&self) -> u64;
+    pub fn late(&self) -> u64;
+}
+pub enum Refused { Full, Beat }
+pub struct EventInletNode { /* ring consumer, waiting list, SeqWriter */ }
+impl EventInletNode {
+    pub fn standalone(capacity: usize) -> (Self, EventInletWriter);
+}
+
+// tutti-session
+impl Graph {
+    pub fn open_event_inlet(&mut self, capacity: usize) -> (NodeKey, EventInletWriter);
+    pub fn add_event_inlet(&mut self, node: EventInletNode) -> NodeKey;   // a ring the producer's layer built first
+}
+```
+
+There is no `RateMismatch`: the audio inlet refuses a producer of another rate
+because it cannot resample. An event carries a frame and a `Moment` a rate, so
+the rate is the stamp's, and nothing is resampled.
+
+**Lock-free structure.** `ringbuf` SPSC for the ring and `tutti-rt`'s `SeqWriter`
+and `SeqReader` for the clock reading; both exist, and the sequence lock
+has its model. No new structure, so no new loom model. The waiting list is a
+`Vec` allocated at open and sorted by insertion (the `in_offset_order` code
+today); it allocates nothing in `process`.
+
+### The parallel executor
+
+- **Tap.** An op, `EVENTS` class, claims its writer and reads one slot through
+  `EventSlots`. It reaches no unit, ring or output. The render must be
+  bit-identical to the serial one: a tap's content is a function of its source
+  slot, so the parallel suite compares the tap's events serial against pooled.
+- **Inlet.** A node, `Cost::Light`, so a block of event-only work may be packed
+  with its neighbours. Nodes communicate only through ports: the ring is not a
+  port, it is the boundary, and exactly one node pops it. A render that includes
+  an inlet is not bit-comparable to another run unless the ring was filled before
+  the run, the same limit as the audio inlet; the serial-equality test pre-fills.
+- **No allocation.** Both run inside `assert_no_alloc` on every participant of
+  the pool (`TestPool::no_alloc`, as `tests/inlet_no_alloc.rs`).
+- **`unsafe`.** None: `tutti-graph` stays `#![forbid(unsafe_code)]`.
+
+### What becomes of the nodes
+
+| Today | Becomes | What moves where |
+|---|---|---|
+| `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` | **Deleted.** The session opens an `EventTapReader` on the clock node's event output, `ToOutput`, and `Phase::MidiOut` drains it | `tutti-session` owns the open and the policy. `drain_receiver_through`'s rebasing goes: a tap's frames are real, so `MidiOutRouter::route` takes `(Frame, Ump)`; `UmpOut`, `JrStream` and the stamper stay where they are. The drop report reads `take_lost`. `MidiNodes::hardware_out` and `out_controls` go. `tutti-midi-hardware` stays the OS backend and the pump |
+| `MidiQueueNode` | **Deleted.** `EventInletNode` with `At::NextBlock` | `MidiSender`'s key helpers (`note_on`, `note_off`, which build a `Voice2` into a `Ump`) become a thin MIDI wrapper over `EventInletWriter` in `tutti-midi-runtime`, since the graph builds no message. The session's live input (`Live`) holds that wrapper |
+| `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Moved up:** the node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer, behind the session's own lock if it must stay `Clone` (below) |
+| `MidiMailbox`, `MidiReceiver`, the `MidiOut` trait | **Deleted when their last user moves**, if no non-graph user remains. The host's own outbound mailbox (read in `drain_receiver_through`) is one such: it stays until the host's outbound path is its own, and is named when it is | Stage E4 audits it |
+| `MidiInputNode` | **Splits.** The wire side (the `MidiIn` poll, the arrival-time offset) becomes an inlet fed from the OS callback; `MidiIngestNode`, the translator, MPE and per-channel split, stays a node in `tutti-midi-runtime` with one event input and 17 outputs | **Blocked on `ClockMap`** (§5, "Timing at the edge"): today the `Instant` to `Offset` conversion runs on the audio thread in the drain, and an inlet's producer must give a `Moment`. Until then `MidiInputNode` is unchanged. It also needs one inlet per open device, since an inlet has one producer; the merge across devices is the graph's fan-in. That leaves the translator's per-channel state per device, where today it is shared across the merged ports |
+
+`ClockNode`, `MidiClipNode`, the harmony node, `compile_routes` and
+`MpeIngest` compute events and stay. `bevy-tutti` is parked and is not
+updated: the names it uses disappear, as CLAUDE.md allows.
+
+### Tests
+
+From the definition, none against another render, as the rest of the graph's
+tests are (CLAUDE.md, "Direction"). Each names its mutation.
+
+The tap (`tutti-graph/tests/event_tap.rs`, and the differential and parallel suites):
+
+- **Every event at its frame, across block sizes.** A scripted source (a clip's
+  events at known frames) read through the tap at block sizes 1, 7, 64 and 513
+  yields the same `(frame, ump)` list, equal to the script. Mutation: read
+  `offset` as the frame; stamp the block's start with the previous block's.
+- **Loss is counted.** A ring of capacity C and a reader that never drains: the
+  tap holds C non-note-offs, `take_lost` is the rest, and a note-off past C is
+  kept up to the reserve. Mutation: count each lost event twice; drop the
+  reserve; push with no reader.
+- **A port removed reads nothing.** Remove or narrow the tapped node: the commit
+  succeeds, no op is emitted for it, `take_lost` is 0, and restoring the port
+  resumes the stream. Mutation: fail the commit; count the missing port as loss.
+- **Aligned against raw on a latent path.** A source behind a node of declared
+  latency L, beside an output path of latency M greater than L: raw frames are the
+  script's, aligned frames are the script's plus the compiler's gap, an
+  analytic figure (`M - L`). Mutation: skip the delay; delay a raw tap.
+- **Closed, fork, reopen.** A closed tap leaves no `Op::EventTap` in the plan; a
+  fork carries none; reopening an id replaces the tap; a reader dropped first is
+  reaped on the control side, and dropped on the audio thread panics in debug
+  (as `a_reader_dropped_on_the_audio_thread_panics`).
+- **Only MIDI is copied.** A port carrying a ramp and a note: the tap holds the
+  note. **Opening refuses** a node or port that does not exist
+  (`MissingSource::EventPort`).
+- **Parallel.** The pooled render's tap list equals the serial one's, and the
+  pool runs inside `assert_no_alloc` (`TestPool::no_alloc`).
+- **One consumer**, a `compile_fail` doctest that `EventTapReader` is not `Clone`.
+
+The inlet (`tutti-graph/tests/event_inlet.rs`):
+
+- **An event pushed at frame F appears on F's block at offset F minus the block's
+  start**, for block sizes 1, 7, 64 and 513 and for F at every position in a
+  block, including the last frame and the first of the next. Mutation: off by one
+  at the block edge; emit at offset 0.
+- **As soon as possible** (`NextBlock`) is the next block's first frame; **late**
+  lands at offset 0 and is counted late; **not yet** waits across blocks and is
+  not lost. Mutation: drop a late event; emit an early one.
+- **Order.** Equal frames leave in the order pushed; a note-off sent after its
+  note-on does not overtake it.
+- **Overflow is counted and nothing blocks.** A producer faster than the graph:
+  `Refused::Full`, `lost()` equals the refusals. A full waiting list evicts the
+  latest non-note-off and keeps the note-off; a port narrower than the burst
+  counts the rest in `dropped_event_count`. Mutation: evict the note-off;
+  count in `late` instead of `lost`.
+- **Rate.** A `Moment` read at 48 kHz and sent after a re-prepare at 44.1 kHz
+  lands at the same wall time (`timed_queue`'s existing figures, now on the node).
+- **Fork is silent**: an export of a graph holding an inlet commits and
+  renders no event from it.
+- **Parallel serial-equality**, with the ring pre-filled before each run, and the
+  **no-alloc gate** on every participant (`tests/inlet_no_alloc.rs`'s shape).
+  A `compile_fail` doctest that the writer is not `Clone`.
+
+The migrations keep their existing tests (`edge_nodes.rs`, `event_loss.rs`,
+`rt_no_alloc.rs`, `cost_classes.rs`, `rt_no_alloc_hardware_poll.rs`) moved to
+the new owner, not rewritten: the property each pins is the one the primitive
+now carries.
+
+### Open questions
+
+Each with the recommendation to take unless the owner says otherwise.
+
+1. **Which event kinds a tap copies.** Recommended: `Midi` only. If a consumer
+   wants the param stream out of the graph, it is a second tap, not a wider one.
+2. **One source per tap.** Recommended: one; a reader merges taps by frame. If
+   the hardware out ever has two sources, the session merges two readers (a
+   small k-way merge by `frame`). The alternative is a list of sources on one
+   `Op::EventMerge` and a tap on its result.
+3. **Several producers.** `InstrumentHandle` is `Clone` and `MidiSender` is MPMC
+   today. Recommended: the primitive is SPSC, the session wraps the writer in a
+   `Mutex` for the handles that clone (the lock is on control threads, never the
+   audio thread), and a hardware callback gets an inlet of its own. The
+   alternative is an MPSC ring in `tutti-rt` with a loom model, which is a
+   larger change for a case a lock on the control side already covers.
+4. **Re-prepare at another rate and the tap. Decided (review of #458).** A
+   tap's frames are on the graph clock at the rate prepared when they were
+   written, so frames from before and after a re-prepare at another rate are on
+   different scales. The session reopens its event taps when it re-prepares, so
+   one reader's frames are always on one scale, the rate it was opened at
+   (`EventTapReader::rate() -> SampleRate`), which is what a reader converts
+   with. A rate field per `TapEvent` was rejected: it costs every element for a
+   rare event.
+5. **`At::Beat` on the inlet.** Recommended: refused, as `TimedSender` refuses it:
+   a beat waits on the transport and may wait forever, which makes the waiting
+   list's bound unclear. Revisit if a producer needs it.
+6. **The inlet's fork is silent, the audio inlet's is refused.** Recommended:
+   silent, as above. The owner should confirm the two differ on purpose.
+7. **Where the panic-controller predicate lives.** Recommended: `tutti-ump`, beside
+   `is_note_off`, because it reads bit positions; the name is the PR's.
+8. **One inlet and one ingest node per hardware device.** Recommended, in stage E5,
+   which also changes where the translator's state lives (per device, not shared
+   across merged ports). Whether that is wanted is decided with `ClockMap`.
+9. **The default alignment of the hardware out's tap.** Recommended: `ToOutput`,
+   so MIDI leaves with the audio. The pump still owes the device's own output
+   latency, which only `ClockMap`'s output side can know.
+10. **`MidiMailbox`'s other users.** A host's outbound mailbox is not a graph
+    crossing. Recommended: audit in E4; if one remains it is named and kept, and
+    `MidiOut` stays for it.
+
+### Staging
+
+Each PR passes CI by itself. PRs that touch `tutti-graph` are reviewed by the
+graph's owner. CLAUDE.md asks that design 013 be updated when the code it
+describes changes: each graph PR edits that document's primitive table.
+
+| PR | Holds | Touches `tutti-graph` |
+|---|---|---|
+| **E1** | The event tap: `EventTapId`, `EventTapSpec`, `Topology.event_taps`, `EventTapWriter` and `EventTapReader`, `Editor::open_event_tap`, `MissingSource::EventPort`, the compiler's op and `DelayKey::EventTap`, `verify`, `cost`, the serial, pooled and reference interpreters, the commit carry, reap. The tests above. Then `tutti-session`: `Graph::open_event_tap` and the `Reclaim` reap | Yes |
+| **E2** | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
+| **E3** | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
+| **E4** | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |
+| **E5** | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode` | No. After E2 and `ClockMap` (stage 4, timing) |
+
+E3 and E4 are independent of each other. The loom, miri and doc gates need
+nothing new: nothing here adds `unsafe` or a lock-free structure.
 
 ## 6. Crates
 
@@ -818,11 +1178,11 @@ no code with MIDI.
 | `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser` | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
-| `tutti-midi-hardware` | Transport | OS backends, no graph; `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
+| `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
 | `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes | `tutti-graph`, `tutti-midi-protocol` |
-| `tutti-graph` | Graph | Event ports hold `Ump` | `tutti-types`, `tutti-ump` |
+| `tutti-graph` | Graph | Event ports hold `Ump`; the event tap and the event inlet | `tutti-types`, `tutti-ump` |
 | `tutti-midi-file` | Files | SMF, Clip File | `tutti-ump`, `tutti-tempo` |
 | `tutti-tempo` | Time | `TempoMap` (beat to sample); not MIDI | `tutti-types` |
 
@@ -1365,6 +1725,13 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    rejected, only documented as the sender's duty. Give it private fields, a
    `new -> Option` that refuses what RP-053 does, and a `DualZone` constructor that
    refuses an overlap, with the range-types contract test.
+- **Stage E. The event tap and the event inlet** (the section of that name).
+   E1 the tap in `tutti-graph` and its session API, E2 the inlet, E3 the hardware
+   out on a tap (`MidiOutNode` deleted), E4 the queues on the inlet
+   (`MidiQueueNode`, `TimedQueueNode` deleted), E5 `MidiInputNode` split, after
+   `ClockMap`. E1 and E2 touch `tutti-graph`. Behaviour change: a tap's frame is
+   a `u64` where `MidiOutNode`'s stamp was a wrapping `u32`, and a note-off has
+   room past the ring's capacity.
 7. **Capabilities** (§9).
 
 ## 11. Testing

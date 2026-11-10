@@ -43,7 +43,7 @@ const UNBOUNDED: u64 = u64::MAX;
 ///
 /// `tutti-dsp` holds no `Param` (it is a library of algorithms over plain
 /// values), so the cells live here, one struct per [`Design`]: the cells the
-/// algorithm exposes, their addresses ([`ADDRS`](Self::ADDRS)), and the
+/// algorithm exposes, their addresses ([`addrs`](Self::addrs)), and the
 /// function from a block's port values to the algorithm's
 /// [`Controls`](Self::Controls).
 pub trait ReverbParams: Clone + Send + 'static {
@@ -51,11 +51,10 @@ pub trait ReverbParams: Clone + Send + 'static {
     type Controls: Copy + PartialEq + Send;
 
     /// The addresses of the params the graph may modulate, in port order after
-    /// the node's mix (port 0), which is the node's and no algorithm's.
-    const ADDRS: &'static [UnitAddr];
-
-    /// Cells that hold `initial`. Control side; allocates.
-    fn new(initial: Self::Controls) -> Self;
+    /// the node's mix (port 0), which is the node's and no algorithm's. A method,
+    /// not a constant: a design that can freeze has a freeze param and one that
+    /// cannot has none.
+    fn addrs(&self) -> &'static [UnitAddr];
 
     /// Adds each cell to `set` under its address.
     fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder;
@@ -87,6 +86,9 @@ pub trait ReverbParams: Clone + Send + 'static {
 pub trait ReverbDesign: Design + 'static {
     /// The cells.
     type Params: ReverbParams<Controls = Self::Controls>;
+
+    /// Cells that hold `initial`. Control side; allocates.
+    fn params(&self, initial: Self::Controls) -> Self::Params;
 }
 
 /// Freeverb's cells: the room size and the damping, as positions on `0..1`.
@@ -100,26 +102,18 @@ pub struct FreeverbParams {
 impl ReverbParams for FreeverbParams {
     type Controls = FreeverbControls;
 
-    const ADDRS: &'static [UnitAddr] = &[
-        UnitAddr::first(UnitParam::RoomSize),
-        UnitAddr::first(UnitParam::Damping),
-    ];
-
-    fn new(initial: FreeverbControls) -> Self {
-        let fallback = FreeverbControls::GENERAL_MIDI;
-        Self {
-            room: Param::new(initial.room),
-            damp: Param::new(initial.damp),
-            good: [
-                LastGood::new(initial.room.get(), fallback.room.get()),
-                LastGood::new(initial.damp.get(), fallback.damp.get()),
-            ],
-        }
+    fn addrs(&self) -> &'static [UnitAddr] {
+        const ADDRS: [UnitAddr; 2] = [
+            UnitAddr::first(UnitParam::RoomSize),
+            UnitAddr::first(UnitParam::Damping),
+        ];
+        &ADDRS
     }
 
     fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
-        set.param(Self::ADDRS[0], self.room.as_atomic())
-            .param(Self::ADDRS[1], self.damp.as_atomic())
+        let addrs = self.addrs();
+        set.param(addrs[0], self.room.as_atomic())
+            .param(addrs[1], self.damp.as_atomic())
     }
 
     fn base(&self, k: usize) -> Option<f32> {
@@ -169,6 +163,18 @@ impl ReverbParams for FreeverbParams {
 
 impl ReverbDesign for FreeverbDesign {
     type Params = FreeverbParams;
+
+    fn params(&self, initial: FreeverbControls) -> FreeverbParams {
+        let fallback = FreeverbControls::GENERAL_MIDI;
+        FreeverbParams {
+            room: Param::new(initial.room),
+            damp: Param::new(initial.damp),
+            good: [
+                LastGood::new(initial.room.get(), fallback.room.get()),
+                LastGood::new(initial.damp.get(), fallback.damp.get()),
+            ],
+        }
+    }
 }
 
 /// The Freeverb as a graph node: mono in, stereo out.
@@ -279,10 +285,11 @@ impl<D: ReverbDesign> ReverbNode<D> {
         let rate = SampleRate::DEFAULT;
         let channels = design.channels();
         let kernel = design.kernel();
+        let params = design.params(controls);
         let mut node = Self {
             design,
             kernel,
-            params: <D::Params as ReverbParams>::new(controls),
+            params,
             mode,
             mix: Param::new(Mix::WET),
             good_mix: LastGood::fixed(Mix::WET.get()),
@@ -409,7 +416,7 @@ impl<D: ReverbDesign> Node for ReverbNode<D> {
     fn shape(&self) -> Shape {
         let mut addrs = vec![UnitAddr::first(UnitParam::Wet)];
         if matches!(self.mode, Mode::Live) {
-            addrs.extend_from_slice(<D::Params as ReverbParams>::ADDRS);
+            addrs.extend_from_slice(self.params.addrs());
         }
         Shape::audio(self.channels.input, self.channels.output)
             .with_cost(cost(self.kernel.effort()))
@@ -449,6 +456,12 @@ impl<D: ReverbDesign> Node for ReverbNode<D> {
 
         // The tail owed: measured from the last non-silent input frame, the
         // longer figure held until a shorter decay has been heard out.
+        // A tail that was unbounded (a freeze) and is not now rings out from
+        // here: the energy it held is in the loop, owed to the settings in force.
+        if self.ring == UNBOUNDED && current != UNBOUNDED {
+            self.ring = current;
+            self.since = 0;
+        }
         let last_input = (0..inputs)
             .filter_map(|c| io.input(c)[..size].iter().rposition(|&s| s != 0.0))
             .max();

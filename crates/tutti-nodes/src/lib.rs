@@ -132,6 +132,13 @@ mod dry_align;
 mod reverb;
 pub use reverb::{FreeverbNode, FreeverbParams, ReverbDesign, ReverbNode, ReverbParams};
 
+// The feedback delay network as a `ReverbNode`, and the choice between the two.
+mod reverb_fdn;
+pub use reverb_fdn::{FdnNode, FdnParams, ReverbKind, SpawnedReverb};
+
+// The designs and controls that sit in a `ReverbNode<D>`'s signature.
+pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
+
 // Spatial panners (VBAP, binaural) are `tutti-spatial`'s, which depends on
 // this crate; nothing here names it.
 

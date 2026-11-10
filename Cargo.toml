@@ -76,6 +76,7 @@ members = [
     "crates/tutti-nodes",
     "crates/tutti-spatial",
     "crates/tutti-dsp",
+    "crates/tutti-measure",
     "crates/tutti-plugin",
     "crates/tutti-plugin-server",
     "crates/tutti-plugin-types",

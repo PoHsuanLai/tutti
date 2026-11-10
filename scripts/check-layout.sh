@@ -20,6 +20,7 @@
 # - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
 #   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
 #   `tutti-graph` on those three;
+# - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
 # - `tutti-midi-device` depends on no workspace crate;
 # - `tutti-codec` depends on `tutti-types` alone;
@@ -162,7 +163,7 @@ LAYERS = [
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
     ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-midi-types", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
-    ["tutti-transport", "tutti-plugin-types"],
+    ["tutti-transport", "tutti-plugin-types", "tutti-measure"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-ffi",
      "tutti-plugin-db"],
@@ -381,6 +382,8 @@ if "tutti-plugin-db" in pkgs:
 for n in ("tutti-dsp", "tutti-modulation"):
     if n in pkgs:
         only(n, ["tutti-types"])
+if "tutti-measure" in pkgs:
+    only("tutti-measure", ["tutti-types", "tutti-dsp"])
 for n in ("tutti-graph", "tutti-midi-types"):
     if n in pkgs:
         only(n, ["tutti-types", "tutti-rt", "tutti-ump"])

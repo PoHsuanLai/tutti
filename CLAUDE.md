@@ -327,9 +327,17 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
                  `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
-  tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
-                 dynamics, convolver, delay lines, waveshapers
+  tutti-dsp      pure algorithms over slices: the real FFT, the cosine windows and `StftGeometry`, filters,
+                 dynamics, convolver, delay lines, reverb, waveshapers, the export
+                 resampler
   tutti-modulation modulation compiler
+  tutti-measure  the analyzers, measurements over slices that read audio and return
+                 numbers: loudness (EBU R128, windowed momentary and short-term), peaks
+                 and waveform blocks, pitch (`yin`), onsets, spectra, spectral shape,
+                 stereo correlation and ballistics, the vectorscope, silence regions,
+                 cross-correlation and take alignment, tempo and beats, notes, chroma, key
+                 and chords, and the STFT transforms; depends on `tutti-types`
+                 and `tutti-dsp` (the FFT, the windows, `StftGeometry`)
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
   tutti-metering `LoadMeter` (level meters are plan ops: `tutti-graph`'s `MeterReader`)
@@ -369,7 +377,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-midi-types`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
-3. `tutti-transport`, `tutti-plugin-types`
+3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
    `tutti-plugin-db`
@@ -497,12 +505,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, ebur128, libm and thiserror; `tutti-graph` is a dev-dependency only), keeps every
+  rustfft, libm and thiserror), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
-  analyzers, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
+  `Error`, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
@@ -520,7 +529,21 @@ list (normal and build edges; dev-dependencies may go anywhere).
   instance), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`).
-- **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only
+- `tutti-measure` depends on `tutti-types` and `tutti-dsp` alone among workspace
+  crates (its outside deps are `ebur128`, the only place it is pulled, and
+  `thiserror`; `tutti-graph` is a dev-dependency only, for the README's tap
+  example), keeps every module private (`tutti_measure::Loudness`, never
+  `tutti_measure::loudness::Loudness`; CI runs the per-module path gate on it), is
+  `#![forbid(unsafe_code)]` and has no `bevy` feature or other feature. Like
+  `tutti-dsp` it has no graph, runtime or `Arc`-published state: every control
+  arrives per call as a plain config value, and a measurement that runs a
+  stream is a `Config`/`State`/`step` triple. It reuses `tutti-dsp`'s
+  `RealFft`/`FftScratch`, `Complex`, `StftGeometry`, `Grid`, `Error` and
+  `CosineWindow` and does not copy them: those serve the processors too (the
+  sampler's vocoder builds on `StftGeometry`).
+  A processor goes in `tutti-dsp`, a measurement in `tutti-measure`.
+- **A pure algorithm over slices goes in `tutti-dsp` (or, if it only reads audio and
+  returns a measurement, `tutti-measure`); a node file holds only
   the `Node` adapter.** Where an algorithm needs a `Param<U>` read, an atomic or
   a non-finite guard (`LastGood`), the node reads and guards it and hands the
   algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
@@ -842,7 +865,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
   render; the note logic went to `tutti-voicing`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
+  crates, `tutti-analysis` → `tutti-dsp`, whose analyzers are now `tutti-measure`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →

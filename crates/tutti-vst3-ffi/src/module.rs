@@ -509,17 +509,17 @@ impl FactoryInfo {
 /// while `PFactoryInfo::flags` is `int32` on both, so each cast below is a
 /// no-op on one platform and load-bearing on the other. Same reason
 /// [`crate::physical_ui_type`] carries this allow.
-#[allow(clippy::unnecessary_cast)]
 pub mod factory_flags {
     use vst3::Steinberg::PFactoryInfo_::FactoryFlags_;
 
     /// The exported class list can change each time the module is loaded, so
     /// class information must not be cached.
-    pub const CLASSES_DISCARDABLE: i32 = FactoryFlags_::kClassesDiscardable as i32;
+    pub const CLASSES_DISCARDABLE: i32 = crate::sdk_enum_i32(FactoryFlags_::kClassesDiscardable);
     /// The component will not be unloaded until process exit.
-    pub const COMPONENT_NON_DISCARDABLE: i32 = FactoryFlags_::kComponentNonDiscardable as i32;
+    pub const COMPONENT_NON_DISCARDABLE: i32 =
+        crate::sdk_enum_i32(FactoryFlags_::kComponentNonDiscardable);
     /// The plugin's strings are entirely Unicode-encoded.
-    pub const UNICODE: i32 = FactoryFlags_::kUnicode as i32;
+    pub const UNICODE: i32 = crate::sdk_enum_i32(FactoryFlags_::kUnicode);
 }
 
 /// Descriptor for a single class (plugin variant) within a factory.

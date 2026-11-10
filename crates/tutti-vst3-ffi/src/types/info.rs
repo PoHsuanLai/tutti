@@ -383,19 +383,18 @@ impl Vst3NoteExpressionInfo {
 /// Windows — normalised to `i32` here (the bit values fit either way).
 // Casts are `u32 as i32` on unix and no-ops on Windows (where the SDK enum is
 // already `c_int`); allow the latter's "unnecessary cast" lint.
-#[allow(clippy::unnecessary_cast)]
 pub mod note_expression_flags {
     use super::NoteExpressionTypeFlags_;
 
     /// Expression is bipolar (value centred at 0.5).
-    pub const IS_BIPOLAR: i32 = NoteExpressionTypeFlags_::kIsBipolar as i32;
+    pub const IS_BIPOLAR: i32 = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsBipolar);
     /// Expression is sampled once at note-on (not continuously).
-    pub const IS_ONE_SHOT: i32 = NoteExpressionTypeFlags_::kIsOneShot as i32;
+    pub const IS_ONE_SHOT: i32 = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsOneShot);
     /// Expression value is absolute rather than relative.
-    pub const IS_ABSOLUTE: i32 = NoteExpressionTypeFlags_::kIsAbsolute as i32;
+    pub const IS_ABSOLUTE: i32 = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsAbsolute);
     /// `associatedParameterId` is valid.
     pub const ASSOCIATED_PARAMETER_ID_VALID: i32 =
-        NoteExpressionTypeFlags_::kAssociatedParameterIDValid as i32;
+        crate::sdk_enum_i32(NoteExpressionTypeFlags_::kAssociatedParameterIDValid);
 }
 
 /// Host-facing keyswitch (articulation) descriptor — a flat snake_case view over
@@ -601,18 +600,17 @@ pub mod keyswitch_type {
 ///
 /// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
 /// the former's lint.
-#[allow(clippy::unnecessary_cast)]
 pub mod physical_ui_type {
     use super::PhysicalUITypeIDs_;
 
     /// Horizontal movement of the physical control.
-    pub const X_MOVEMENT: u32 = PhysicalUITypeIDs_::kPUIXMovement as u32;
+    pub const X_MOVEMENT: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIXMovement);
     /// Vertical movement of the physical control.
-    pub const Y_MOVEMENT: u32 = PhysicalUITypeIDs_::kPUIYMovement as u32;
+    pub const Y_MOVEMENT: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIYMovement);
     /// Pressure applied to the physical control.
-    pub const PRESSURE: u32 = PhysicalUITypeIDs_::kPUIPressure as u32;
+    pub const PRESSURE: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIPressure);
     /// Sentinel for "no physical UI type" / unmapped.
-    pub const INVALID: u32 = PhysicalUITypeIDs_::kInvalidPUITypeID as u32;
+    pub const INVALID: u32 = crate::sdk_enum_u32(PhysicalUITypeIDs_::kInvalidPUITypeID);
 }
 
 /// VST3 `IPrefetchableSupport` result constants, mirroring
@@ -621,16 +619,15 @@ pub mod physical_ui_type {
 ///
 /// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
 /// the former's lint.
-#[allow(clippy::unnecessary_cast)]
 pub mod prefetchable_support {
     use super::ePrefetchableSupport_;
 
     /// The plugin can never be used in prefetch (offline look-ahead) mode.
-    pub const NEVER: u32 = ePrefetchableSupport_::kIsNeverPrefetchable as u32;
+    pub const NEVER: u32 = crate::sdk_enum_u32(ePrefetchableSupport_::kIsNeverPrefetchable);
     /// The plugin currently supports prefetch.
-    pub const YET: u32 = ePrefetchableSupport_::kIsYetPrefetchable as u32;
+    pub const YET: u32 = crate::sdk_enum_u32(ePrefetchableSupport_::kIsYetPrefetchable);
     /// The plugin doesn't currently support prefetch (but may later).
-    pub const NOT_YET: u32 = ePrefetchableSupport_::kIsNotYetPrefetchable as u32;
+    pub const NOT_YET: u32 = crate::sdk_enum_u32(ePrefetchableSupport_::kIsNotYetPrefetchable);
 }
 
 #[cfg(test)]

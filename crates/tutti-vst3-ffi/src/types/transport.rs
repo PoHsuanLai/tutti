@@ -16,32 +16,33 @@ use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 /// The casts below are `u32 as u32` no-ops on unix and `c_int as u32`
 /// conversions on Windows (where the SDK enum is signed); allow the lint that
 /// only the former triggers.
-#[allow(clippy::unnecessary_cast)]
 pub mod process_context_flags {
     use vst3::Steinberg::Vst::IProcessContextRequirements_::Flags_;
 
     /// Plugin needs `systemTime`.
-    pub const NEED_SYSTEM_TIME: u32 = Flags_::kNeedSystemTime as u32;
+    pub const NEED_SYSTEM_TIME: u32 = crate::sdk_enum_u32(Flags_::kNeedSystemTime);
     /// Plugin needs `continousTimeSamples`.
-    pub const NEED_CONTINOUS_TIME_SAMPLES: u32 = Flags_::kNeedContinousTimeSamples as u32;
+    pub const NEED_CONTINOUS_TIME_SAMPLES: u32 =
+        crate::sdk_enum_u32(Flags_::kNeedContinousTimeSamples);
     /// Plugin needs `projectTimeMusic`.
-    pub const NEED_PROJECT_TIME_MUSIC: u32 = Flags_::kNeedProjectTimeMusic as u32;
+    pub const NEED_PROJECT_TIME_MUSIC: u32 = crate::sdk_enum_u32(Flags_::kNeedProjectTimeMusic);
     /// Plugin needs `barPositionMusic`.
-    pub const NEED_BAR_POSITION_MUSIC: u32 = Flags_::kNeedBarPositionMusic as u32;
+    pub const NEED_BAR_POSITION_MUSIC: u32 = crate::sdk_enum_u32(Flags_::kNeedBarPositionMusic);
     /// Plugin needs `cycleStartMusic` / `cycleEndMusic`.
-    pub const NEED_CYCLE_MUSIC: u32 = Flags_::kNeedCycleMusic as u32;
+    pub const NEED_CYCLE_MUSIC: u32 = crate::sdk_enum_u32(Flags_::kNeedCycleMusic);
     /// Plugin needs `samplesToNextClock`.
-    pub const NEED_SAMPLES_TO_NEXT_CLOCK: u32 = Flags_::kNeedSamplesToNextClock as u32;
+    pub const NEED_SAMPLES_TO_NEXT_CLOCK: u32 =
+        crate::sdk_enum_u32(Flags_::kNeedSamplesToNextClock);
     /// Plugin needs `tempo`.
-    pub const NEED_TEMPO: u32 = Flags_::kNeedTempo as u32;
+    pub const NEED_TEMPO: u32 = crate::sdk_enum_u32(Flags_::kNeedTempo);
     /// Plugin needs `timeSigNumerator` / `timeSigDenominator`.
-    pub const NEED_TIME_SIGNATURE: u32 = Flags_::kNeedTimeSignature as u32;
+    pub const NEED_TIME_SIGNATURE: u32 = crate::sdk_enum_u32(Flags_::kNeedTimeSignature);
     /// Plugin needs the (host-track) chord field.
-    pub const NEED_CHORD: u32 = Flags_::kNeedChord as u32;
+    pub const NEED_CHORD: u32 = crate::sdk_enum_u32(Flags_::kNeedChord);
     /// Plugin needs `frameRate`.
-    pub const NEED_FRAME_RATE: u32 = Flags_::kNeedFrameRate as u32;
+    pub const NEED_FRAME_RATE: u32 = crate::sdk_enum_u32(Flags_::kNeedFrameRate);
     /// Plugin needs the transport-state bits in `state`.
-    pub const NEED_TRANSPORT_STATE: u32 = Flags_::kNeedTransportState as u32;
+    pub const NEED_TRANSPORT_STATE: u32 = crate::sdk_enum_u32(Flags_::kNeedTransportState);
 }
 
 /// Builds a VST3 [`ProcessContext`](vst3::Steinberg::Vst::ProcessContext)
@@ -86,20 +87,19 @@ pub fn to_process_context(
     // `StatesAndFlags_::*` is `u32` on unix, `c_int` (i32) on Windows — the casts
     // below are no-ops on one target and sign-changes on the other. Cleanest is
     // to normalise to `u32` at the edge.
-    #[allow(clippy::unnecessary_cast)]
     let state = {
         let mut state = 0u32;
         // The play/record/cycle bits are part of the transport state the plugin
         // reads only when it asked for kNeedTransportState.
         if wants(need::NEED_TRANSPORT_STATE) {
             if t.state.playing {
-                state |= StatesAndFlags_::kPlaying as u32;
+                state |= crate::sdk_enum_u32(StatesAndFlags_::kPlaying);
             }
             if t.state.recording {
-                state |= StatesAndFlags_::kRecording as u32;
+                state |= crate::sdk_enum_u32(StatesAndFlags_::kRecording);
             }
             if t.state.cycle_active {
-                state |= StatesAndFlags_::kCycleActive as u32;
+                state |= crate::sdk_enum_u32(StatesAndFlags_::kCycleActive);
             }
         }
         // `kCycleValid` is deliberately NOT set above beside `kCycleActive`.
@@ -120,7 +120,7 @@ pub fn to_process_context(
             && is_usable(t.loop_region.start_quarters)
             && is_usable(t.loop_region.end_quarters)
         {
-            state |= StatesAndFlags_::kCycleValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kCycleValid);
         }
         // Each `*Valid` bit advertises that the matching field below is filled,
         // so it must track the same requirement gate — AND the value must be one
@@ -133,26 +133,26 @@ pub fn to_process_context(
         // the audio buffer. The VST2 path gates on the value the same way, via
         // the shared `is_usable` in `tutti-plugin-types`.
         if wants(need::NEED_PROJECT_TIME_MUSIC) && is_usable(t.position.quarters) {
-            state |= StatesAndFlags_::kProjectTimeMusicValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kProjectTimeMusicValid);
         }
         if wants(need::NEED_BAR_POSITION_MUSIC) && is_usable(t.bar.position_quarters) {
-            state |= StatesAndFlags_::kBarPositionValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kBarPositionValid);
         }
         // Tempo carries a domain rule beyond finiteness: zero or negative BPM
         // is not a tempo, and a plugin dividing by it produces an infinity.
         // Matches the VST2 path's `is_usable(..) && > 0.0`.
         if wants(need::NEED_TEMPO) && is_usable(t.timing.tempo) && t.timing.tempo > 0.0 {
-            state |= StatesAndFlags_::kTempoValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kTempoValid);
         }
         if wants(need::NEED_TIME_SIGNATURE) {
-            state |= StatesAndFlags_::kTimeSigValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kTimeSigValid);
         }
         // `continousTimeSamples` is filled below whenever the plugin asked for
         // it, so `kContTimeValid` must be set on the same condition. Without the
         // bit a spec-correct plugin ignores the field entirely — the value was
         // being computed and shipped into a dead slot.
         if wants(need::NEED_CONTINOUS_TIME_SAMPLES) {
-            state |= StatesAndFlags_::kContTimeValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kContTimeValid);
         }
         // The host clock and the MIDI clock: flagged only when the snapshot
         // has them (an offline render has no host clock; an unusable tempo
@@ -160,10 +160,10 @@ pub fn to_process_context(
         // the field below. `kSmpteValid` / `kChordValid` stay clear: their
         // fields have no producer.
         if wants(need::NEED_SYSTEM_TIME) && t.system_time_ns.is_some() {
-            state |= StatesAndFlags_::kSystemTimeValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kSystemTimeValid);
         }
         if wants(need::NEED_SAMPLES_TO_NEXT_CLOCK) && to_clock.is_some() {
-            state |= StatesAndFlags_::kClockValid as u32;
+            state |= crate::sdk_enum_u32(StatesAndFlags_::kClockValid);
         }
         state
     };
@@ -240,7 +240,6 @@ pub fn to_process_context(
 // `as u32` normalisations below are redundant on one target and load-bearing on
 // the other — the same reason `to_process_context` carries this allow. Taking
 // clippy's suggestion here would compile on macOS and break Windows.
-#[allow(clippy::unnecessary_cast)]
 mod tests {
     use super::process_context_flags as need;
     use super::*;
@@ -289,7 +288,7 @@ mod tests {
         t.timing.tempo = f64::NAN;
         let ctx = to_process_context(&t, all);
         assert_eq!(
-            ctx.state & StatesAndFlags_::kTempoValid as u32,
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kTempoValid),
             0,
             "a NaN tempo must not be flagged valid — the plugin will compute \
              with it"
@@ -301,7 +300,7 @@ mod tests {
         t.timing.tempo = 0.0;
         let ctx = to_process_context(&t, all);
         assert_eq!(
-            ctx.state & StatesAndFlags_::kTempoValid as u32,
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kTempoValid),
             0,
             "a zero tempo must not be flagged valid"
         );
@@ -310,7 +309,7 @@ mod tests {
         t.position.quarters = f64::INFINITY;
         let ctx = to_process_context(&t, all);
         assert_eq!(
-            ctx.state & StatesAndFlags_::kProjectTimeMusicValid as u32,
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kProjectTimeMusicValid),
             0,
             "an infinite musical position must not be flagged valid"
         );
@@ -318,9 +317,12 @@ mod tests {
         // The gate must not fire on good values — otherwise it would pass by
         // clearing every bit unconditionally.
         let ctx = to_process_context(&populated_transport(), all);
-        assert_ne!(ctx.state & StatesAndFlags_::kTempoValid as u32, 0);
         assert_ne!(
-            ctx.state & StatesAndFlags_::kProjectTimeMusicValid as u32,
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kTempoValid),
+            0
+        );
+        assert_ne!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kProjectTimeMusicValid),
             0
         );
     }
@@ -343,28 +345,37 @@ mod tests {
 
         // All the validity flags + transport-state bits set.
         let s = ctx.state;
-        assert_ne!(s & StatesAndFlags_::kPlaying as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kRecording as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kCycleActive as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kProjectTimeMusicValid as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kBarPositionValid as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kTempoValid as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kTimeSigValid as u32, 0);
+        assert_ne!(s & crate::sdk_enum_u32(StatesAndFlags_::kPlaying), 0);
+        assert_ne!(s & crate::sdk_enum_u32(StatesAndFlags_::kRecording), 0);
+        assert_ne!(s & crate::sdk_enum_u32(StatesAndFlags_::kCycleActive), 0);
         assert_ne!(
-            s & StatesAndFlags_::kContTimeValid as u32,
+            s & crate::sdk_enum_u32(StatesAndFlags_::kProjectTimeMusicValid),
+            0
+        );
+        assert_ne!(
+            s & crate::sdk_enum_u32(StatesAndFlags_::kBarPositionValid),
+            0
+        );
+        assert_ne!(s & crate::sdk_enum_u32(StatesAndFlags_::kTempoValid), 0);
+        assert_ne!(s & crate::sdk_enum_u32(StatesAndFlags_::kTimeSigValid), 0);
+        assert_ne!(
+            s & crate::sdk_enum_u32(StatesAndFlags_::kContTimeValid),
             0,
             "continousTimeSamples is filled, so kContTimeValid must be set"
         );
 
         // The host clock, and the MIDI clock: 4.0 quarters is on a clock.
         assert_eq!(ctx.systemTime, 9_000_000_000);
-        assert_ne!(s & StatesAndFlags_::kSystemTimeValid as u32, 0);
+        assert_ne!(
+            s & crate::sdk_enum_u32(StatesAndFlags_::kSystemTimeValid),
+            0
+        );
         assert_eq!(ctx.samplesToNextClock, 0);
-        assert_ne!(s & StatesAndFlags_::kClockValid as u32, 0);
+        assert_ne!(s & crate::sdk_enum_u32(StatesAndFlags_::kClockValid), 0);
 
         // Fields with no producer are neither written nor flagged.
-        assert_eq!(s & StatesAndFlags_::kSmpteValid as u32, 0);
-        assert_eq!(s & StatesAndFlags_::kChordValid as u32, 0);
+        assert_eq!(s & crate::sdk_enum_u32(StatesAndFlags_::kSmpteValid), 0);
+        assert_eq!(s & crate::sdk_enum_u32(StatesAndFlags_::kChordValid), 0);
     }
 
     /// Per `ivstprocesscontext.h`, each `*Valid` bit must be set iff its field
@@ -385,31 +396,31 @@ mod tests {
             (
                 "projectTimeMusic",
                 need::NEED_PROJECT_TIME_MUSIC,
-                StatesAndFlags_::kProjectTimeMusicValid as u32,
+                crate::sdk_enum_u32(StatesAndFlags_::kProjectTimeMusicValid),
                 |c| c.projectTimeMusic != 0.0,
             ),
             (
                 "barPositionMusic",
                 need::NEED_BAR_POSITION_MUSIC,
-                StatesAndFlags_::kBarPositionValid as u32,
+                crate::sdk_enum_u32(StatesAndFlags_::kBarPositionValid),
                 |c| c.barPositionMusic != 0.0,
             ),
             (
                 "tempo",
                 need::NEED_TEMPO,
-                StatesAndFlags_::kTempoValid as u32,
+                crate::sdk_enum_u32(StatesAndFlags_::kTempoValid),
                 |c| c.tempo != 0.0,
             ),
             (
                 "timeSig",
                 need::NEED_TIME_SIGNATURE,
-                StatesAndFlags_::kTimeSigValid as u32,
+                crate::sdk_enum_u32(StatesAndFlags_::kTimeSigValid),
                 |c| c.timeSigNumerator != 0,
             ),
             (
                 "continousTimeSamples",
                 need::NEED_CONTINOUS_TIME_SAMPLES,
-                StatesAndFlags_::kContTimeValid as u32,
+                crate::sdk_enum_u32(StatesAndFlags_::kContTimeValid),
                 |c| c.continousTimeSamples != 0,
             ),
             // `cycleStartMusic` was the one filled field missing from this
@@ -419,13 +430,13 @@ mod tests {
             (
                 "systemTime",
                 need::NEED_SYSTEM_TIME,
-                StatesAndFlags_::kSystemTimeValid as u32,
+                crate::sdk_enum_u32(StatesAndFlags_::kSystemTimeValid),
                 |c| c.systemTime != 0,
             ),
             (
                 "cycleStartMusic",
                 need::NEED_CYCLE_MUSIC,
-                StatesAndFlags_::kCycleValid as u32,
+                crate::sdk_enum_u32(StatesAndFlags_::kCycleValid),
                 |c| c.cycleStartMusic != 0.0,
             ),
         ];
@@ -476,12 +487,12 @@ mod tests {
         // are still `mem::zeroed` here.
         let transport_only = to_process_context(&t, need::NEED_TRANSPORT_STATE);
         assert_ne!(
-            transport_only.state & StatesAndFlags_::kCycleActive as u32,
+            transport_only.state & crate::sdk_enum_u32(StatesAndFlags_::kCycleActive),
             0,
             "a cycling transport must still report kCycleActive"
         );
         assert_eq!(
-            transport_only.state & StatesAndFlags_::kCycleValid as u32,
+            transport_only.state & crate::sdk_enum_u32(StatesAndFlags_::kCycleValid),
             0,
             "kCycleValid claims cycleStartMusic/cycleEndMusic are meaningful, \
              but nothing asked for them and they are still zero"
@@ -495,7 +506,7 @@ mod tests {
         // computed and thrown away.
         let cycle_only = to_process_context(&t, need::NEED_CYCLE_MUSIC);
         assert_ne!(
-            cycle_only.state & StatesAndFlags_::kCycleValid as u32,
+            cycle_only.state & crate::sdk_enum_u32(StatesAndFlags_::kCycleValid),
             0,
             "cycle bounds were filled but not flagged — the plugin ignores them"
         );
@@ -513,7 +524,7 @@ mod tests {
 
         let ctx = to_process_context(&t, need::NEED_CYCLE_MUSIC);
         assert_eq!(
-            ctx.state & StatesAndFlags_::kCycleValid as u32,
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kCycleValid),
             0,
             "a NaN bound must not be advertised as valid"
         );
@@ -533,19 +544,34 @@ mod tests {
 
         // Requested.
         assert_eq!(ctx.tempo, 128.0);
-        assert_ne!(ctx.state & StatesAndFlags_::kTempoValid as u32, 0);
+        assert_ne!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kTempoValid),
+            0
+        );
 
         // Not requested → left zeroed, valid bit clear.
         assert_eq!(ctx.timeSigNumerator, 0);
         assert_eq!(ctx.timeSigDenominator, 0);
-        assert_eq!(ctx.state & StatesAndFlags_::kTimeSigValid as u32, 0);
+        assert_eq!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kTimeSigValid),
+            0
+        );
         assert_eq!(ctx.barPositionMusic, 0.0);
-        assert_eq!(ctx.state & StatesAndFlags_::kBarPositionValid as u32, 0);
+        assert_eq!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kBarPositionValid),
+            0
+        );
         assert_eq!(ctx.continousTimeSamples, 0);
 
         // Transport-state not requested → no play/record/cycle bits.
-        assert_eq!(ctx.state & StatesAndFlags_::kPlaying as u32, 0);
-        assert_eq!(ctx.state & StatesAndFlags_::kCycleActive as u32, 0);
+        assert_eq!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kPlaying),
+            0
+        );
+        assert_eq!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kCycleActive),
+            0
+        );
     }
 
     /// A loop scenario: the continuous clock has advanced past where the
@@ -562,7 +588,7 @@ mod tests {
         assert_eq!(ctx.continousTimeSamples, 100_000);
         assert_ne!(ctx.projectTimeSamples, ctx.continousTimeSamples);
         assert_ne!(
-            ctx.state & StatesAndFlags_::kContTimeValid as u32,
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kContTimeValid),
             0,
             "without kContTimeValid the plugin ignores continousTimeSamples"
         );
@@ -580,7 +606,10 @@ mod tests {
         assert_eq!(ctx.projectTimeSamples, 1_234);
         assert_eq!(ctx.continousTimeSamples, 1_234);
         assert_eq!(ctx.projectTimeSamples, ctx.continousTimeSamples);
-        assert_ne!(ctx.state & StatesAndFlags_::kContTimeValid as u32, 0);
+        assert_ne!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kContTimeValid),
+            0
+        );
     }
 
     /// Always-on fields (sampleRate, projectTimeSamples) are populated even
@@ -613,15 +642,27 @@ mod tests {
         let t = populated_transport().with_position_quarters(4.0 + 0.2 / 24.0);
         let ctx = to_process_context(&t, wants);
         assert_eq!(ctx.samplesToNextClock, -188);
-        assert_ne!(ctx.state & StatesAndFlags_::kClockValid as u32, 0);
+        assert_ne!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kClockValid),
+            0
+        );
         assert_eq!(ctx.systemTime, 9_000_000_000);
-        assert_ne!(ctx.state & StatesAndFlags_::kSystemTimeValid as u32, 0);
+        assert_ne!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kSystemTimeValid),
+            0
+        );
 
         let mut bare = populated_transport().with_tempo(0.0);
         bare.system_time_ns = None;
         let ctx = to_process_context(&bare, wants);
-        assert_eq!(ctx.state & StatesAndFlags_::kClockValid as u32, 0);
-        assert_eq!(ctx.state & StatesAndFlags_::kSystemTimeValid as u32, 0);
+        assert_eq!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kClockValid),
+            0
+        );
+        assert_eq!(
+            ctx.state & crate::sdk_enum_u32(StatesAndFlags_::kSystemTimeValid),
+            0
+        );
         assert_eq!(ctx.samplesToNextClock, 0);
         assert_eq!(ctx.systemTime, 0);
     }

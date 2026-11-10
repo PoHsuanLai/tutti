@@ -31,9 +31,7 @@ use super::message::Message;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
-use vst3::Steinberg::Linux::{
-    FileDescriptor, IEventHandler, IRunLoop, ITimerHandler, TimerInterval,
-};
+use vst3::Steinberg::Linux::IRunLoop;
 
 #[cfg(target_os = "linux")]
 use super::run_loop::RunLoop;
@@ -101,49 +99,7 @@ impl HostApplication {
 }
 
 #[cfg(target_os = "linux")]
-impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
-    unsafe fn registerEventHandler(
-        &self,
-        handler: *mut IEventHandler,
-        fd: FileDescriptor,
-    ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            // SAFETY: the plugin passes a handler it keeps alive until it
-            // unregisters it, and calls from the UI thread (the `IRunLoop` contract).
-            unsafe {
-                self.run_loop
-                    .register_event_handler(handler, fd, self.owner)
-            }
-        })
-    }
-
-    unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.unregister_event_handler(handler)
-        })
-    }
-
-    unsafe fn registerTimer(
-        &self,
-        handler: *mut ITimerHandler,
-        milliseconds: TimerInterval,
-    ) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            // SAFETY: as for `registerEventHandler`: alive until unregistered, UI
-            // thread.
-            unsafe {
-                self.run_loop
-                    .register_timer(handler, milliseconds, self.owner)
-            }
-        })
-    }
-
-    unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.unregister_timer(handler)
-        })
-    }
-}
+super::run_loop::delegate_run_loop!(HostApplication);
 
 impl IHostApplicationTrait for HostApplication {
     unsafe fn getName(&self, name: *mut String128) -> tresult {

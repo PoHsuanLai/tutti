@@ -500,18 +500,17 @@ mod host_type_tests {
     /// `kIsNotYetPrefetchable` arms in `from_raw` fails the second and third
     /// rows; dropping the `Unknown` arm's payload (`Unknown(0)`) fails the last.
     #[test]
-    #[allow(clippy::unnecessary_cast)] // u32 on unix, c_int on Windows
     fn prefetch_support_maps_each_sdk_value() {
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsNeverPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsNeverPrefetchable)),
             PrefetchSupport::Never
         );
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsYetPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsYetPrefetchable)),
             PrefetchSupport::Yes
         );
         assert_eq!(
-            PrefetchSupport::from_raw(P::kIsNotYetPrefetchable as u32),
+            PrefetchSupport::from_raw(crate::helpers::sdk_enum_u32(P::kIsNotYetPrefetchable)),
             PrefetchSupport::NotYet
         );
         assert_eq!(PrefetchSupport::from_raw(77), PrefetchSupport::Unknown(77));

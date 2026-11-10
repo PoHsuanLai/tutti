@@ -50,7 +50,7 @@ pub use tutti_vst3_ffi::{
 
 use vst3::Steinberg::Vst::{BusInfo_::BusFlags_, BusTypes_::kMain};
 
-use crate::helpers::sdk_enum_i32;
+use crate::helpers::{sdk_enum_i32, sdk_enum_u32};
 
 /// Whether this host activates a bus at load, given its `busType` and `flags`.
 ///
@@ -69,8 +69,7 @@ const K_MAIN: i32 = sdk_enum_i32(kMain);
 /// `BusFlags` is `DefaultEnumType`, which is `u32` on unix and `c_int` on
 /// Windows — so the cast is a no-op here and load-bearing there. Same reason
 /// [`crate::physical_ui_type`] carries this allow.
-#[allow(clippy::unnecessary_cast)]
-const BUS_DEFAULT_ACTIVE: u32 = BusFlags_::kDefaultActive as u32;
+const BUS_DEFAULT_ACTIVE: u32 = sdk_enum_u32(BusFlags_::kDefaultActive);
 
 #[cfg(test)]
 mod bus_activation_policy_tests {
@@ -105,9 +104,9 @@ mod bus_activation_policy_tests {
     /// sidechain that asked to be active is exactly such a bus.
     #[test]
     fn other_bus_flags_do_not_mask_the_default_active_bit() {
-        #[allow(clippy::unnecessary_cast)] // platform-varying; see BUS_DEFAULT_ACTIVE
-        const K_IS_CONTROL_VOLTAGE: u32 =
-            vst3::Steinberg::Vst::BusInfo_::BusFlags_::kIsControlVoltage as u32;
+        const K_IS_CONTROL_VOLTAGE: u32 = crate::helpers::sdk_enum_u32(
+            vst3::Steinberg::Vst::BusInfo_::BusFlags_::kIsControlVoltage,
+        );
 
         assert!(wants_activation(
             K_AUX,

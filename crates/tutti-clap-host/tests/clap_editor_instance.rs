@@ -56,3 +56,29 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
 
     assert_eq!(read().sites[tick].visits, 1, "a period-0 timer is due");
 }
+
+/// **The editor's `save_state` is the plugin's own state**, what the host
+/// gives the audio instance when the editor closes (design 021 Q8).
+///
+/// The probe keeps its parameter values in process globals, which every
+/// instance in this process shares, so a round trip between two instances
+/// here cannot tell a carried state from a shared one; the bytes are compared
+/// with what the loaded plugin saves instead. That the audio instance takes
+/// them is the bridge's (`state_back_tests` in `tutti-plugin`).
+///
+/// Mutation (run): make `ClapEditor::save_state` return `Ok(Vec::new())` →
+/// fails.
+#[test]
+fn an_editors_state_is_the_plugins_state() {
+    use tutti_plugin_types::Control;
+
+    let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+    let path = tutti_fixtures::publish_with_extension(&real, "clap");
+    let main = main_thread();
+    let mut editor = ClapLoaded::load_editor(&main, &path, &Load::new()).expect("loads");
+
+    let through_editor = editor.save_state(&main).expect("saves");
+    let plugin = Control::save_state(editor.loaded_mut(), &main).expect("saves");
+    assert!(!plugin.is_empty(), "the probe saves a state");
+    assert_eq!(through_editor, plugin);
+}

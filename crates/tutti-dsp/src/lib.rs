@@ -43,6 +43,9 @@
 //!   [`FreeverbDesign`] and [`FdnDesign`] map controls to one, for [`Freeverb`] and
 //!   [`FdnKernel`]; [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula both
 //!   ways.
+//! - Spatial: [`SpeakerLayout`], the pairs or triplets of a speaker array and Pulkki's
+//!   vector base amplitude panning solve over it ([`SpeakerLayout::gains_into`]), with a
+//!   [`SpeakerGeometryError`] for a layout that cannot be built.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Frame-by-bin data: [`StftGeometry`] (window, hop, shape and rate, validated
 //!   together), and [`Grid`] with its typed indices; [`enum@Error`] and [`Result`].
@@ -95,6 +98,7 @@ mod resample;
 mod reverb;
 mod reverb_design;
 mod smoother;
+mod spatial;
 #[cfg(test)]
 mod test_support;
 
@@ -137,6 +141,7 @@ pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;
+pub use spatial::{MAX_SPEAKERS, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple};
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

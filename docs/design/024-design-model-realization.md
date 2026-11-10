@@ -341,13 +341,14 @@ like, per CLAUDE.md "Unit types").
 | 41 | 6 | **SoundFont voice render** (`render.rs`, `voice.rs`, `region_ex.rs`; the generator sum of SF2 9.4) | sample playback with interpolation, oscillator | **Partly** | The design half is pure and fits: SF2 generators (cents, timecents, centibels) to voice parameters through the 9.3 conversions. The sample-playback oscillator is a resampling read whose model is a pitch ratio and a loop; no response to speak of |
 | 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `frequency_response`; the realization consumes at a variable rate (`input_rate`), so not an `Effect<M>`. Doc 026 gives it the shape: a `StretchDesign` with a `Retime<M>` realization (position-driven, `splice`, `reach`) |
 | 43 | E | **Sampler butler and voices** (`tutti-sampler/src/butler/`, `voice/`) | streaming I/O | **No** | I/O and scheduling, not an algorithm |
-| 44 | 1, order 0 | **VBAP** (`tutti-spatial/src/vbap/`) | `VbapPanner::solve_block` with angle smoothing | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the realization's |
+| 44 | 1, order 0 | **VBAP** (the layout and solve in `tutti-dsp/src/spatial/`, `SpeakerLayout`; the node and the smoothing in `tutti-spatial/src/vbap/`) | `VbapPanner::solve_block` with angle smoothing over `SpeakerLayout::gains_into` | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the realization's |
 | 45 | 1 (2) | **HRTF binaural** (`tutti-spatial/src/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `frequency_response` is the HRIR's FFT, `tail` is `ir_len - 1` (`ring_out`), `latency` the delay compensation. Published like row 16 |
 
 Whether the instruments' controls are typed units was not audited row by row.
 What the code shows: `Adsr` is `Seconds` and `Amplitude`
 (`tutti-types/src/value/adsr.rs`); the VBAP panner takes `Azimuth`, `Elevation`,
-`Spread` and `StereoWidth`, and the `vbap` crate it calls takes bare `f64` degrees
+`Spread` and `StereoWidth`, and the solve it calls (`vbap` 0.1 until doc 028 section 4.3's PR 1
+moved it into `tutti-dsp`) takes bare `f64` degrees
 (the code's own comment: "The types stop at the trigonometry"); the polysynth's
 `SynthConfig` is a plain config struct whose fields a step-6 PR would type or
 justify (CLAUDE.md "Unit types").

@@ -21,7 +21,6 @@ test-support = []
 tutti-types = { path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
 
 # The wire.
@@ -63,7 +62,6 @@ windows = { version = "0.52", features = [
 [dev-dependencies]
 tempfile = "3"
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
-tutti-midi-types = { path = "../tutti-midi-types" }
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the launch tests serve: a dev-dependency for the
 # artifact, which cargo builds beside the test binary.

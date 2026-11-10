@@ -31,7 +31,7 @@
 //! which this transform has just made per-note bends: so it becomes a
 //! per-note bend sensitivity (RPN #00/07, M2-104 §7.4.13) on each of the
 //! zone's member channels, the message a per-note receiver
-//! ([`PerNoteBendRanges`](tutti_midi_types::PerNoteBendRanges)) follows.
+//! (`tutti_plugin_types::PerNoteBendRanges`) follows.
 //!
 //! An MPE Configuration Message resets the zone it configures to MPE's
 //! default ranges (RP-053 / M1-100-UM, "Pitch Bend Sensitivity": a receiver

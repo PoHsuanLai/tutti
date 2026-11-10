@@ -1114,7 +1114,7 @@ brought to tutti's shape, and the dependency is dropped:
 | In the crate | What it is | In `tutti-dsp` |
 |---|---|---|
 | `SpeakerConfigBuilder`, `SpeakerConfig` | a builder of `(azimuth, elevation)` pairs that picks speaker **pairs** (2D: a 2x2 inverse each) or **triplets** (3D: candidates by `volume / side-sum`, pruning of crossing edges shortest first via `lines_intersect`, an interior-speaker rejection by `is_inside_triangle`, a 3x3 inverse) | a `SpeakerLayout` value built on the control side from the topology's speaker positions; the tuple table is a `Box<[Tuple]>` with `[u16; 3]` indices and a length, not a `Vec<usize>` per tuple; `build` returns a typed `SpeakerGeometryError` |
-| `VBAPanner::compute_gains_into` | for each tuple, candidate gains `M^-1 d`; the tuple with the largest minimum gain wins; gains clamped at 0 and normalised to `sum g^2 = 1` | `solve(&self, direction, &mut [f32])`: the same selection and normalisation, no allocation, narrowing from `f64` once; the allocating `compute_gains` is not copied |
+| `VBAPanner::compute_gains_into` | for each tuple, candidate gains `M^-1 d`; the tuple with the largest minimum gain wins; gains clamped at 0 and normalised to `sum g^2 = 1` | `SpeakerLayout::gains_into(&self, azimuth, elevation, spread, out: &mut [f32])`: the same selection and normalisation, no allocation, narrowing from `f64` once; the allocating `compute_gains` is not copied |
 | `math`: `spherical_to_cartesian`, `cartesian_to_spherical`, `lines_intersect`, `point_on_arc` | trigonometry in `DVec3` with `libm::sincos`, `asin`, `atan2` | the same on a private `[f64; 3]` with `dot`, `cross`, `angle_between`, `normalize_or_zero`, a 3x3 inverse and a 2x2 inverse, about 80 lines; `libm` is already a `tutti-dsp` dependency |
 | `presets` | stereo, stereo wide, LCR, quad, 5.1, 7.1, 7.1.4, 5.1.4, hexagon, octagon | only the five tutti uses (stereo, quad, 5.1, 7.1, 7.1.4) |
 | `Speaker::with_distance` | a distance, unused by the solve | dropped |
@@ -1170,7 +1170,15 @@ re-derive it.
 
 ### 4.3 The PRs
 
-1. **The VBAP solve.** The solve and the layout into `tutti-dsp::spatial`; the
+1. **The VBAP solve.** (**Landed**, `dsp/spatial-vbap`: `tutti-dsp`'s `SpeakerLayout`,
+   `SpeakerGeometryError`, `PanningMode`, `Tuple`, `MAX_SPEAKERS`; `VbapError::Geometry`
+   replaces `Vbap`; `vbap` and `glam` are out of `Cargo.lock`. The selection is Pulkki's
+   method, the convex-hull facets of the speaker directions with the shortest diagonal of a
+   coplanar polygon (D15), not the crate's. Stereo, quad, 5.1 and 7.1 render bit for bit as
+   before; **Atmos 7.1.4's tuples changed** (the crate's selection left the centre speaker
+   in no triplet and listed each coplanar square twice over, overlapping; thirteen
+   non-overlapping triangles now) and its digest moved, argued in the PR and pinned by
+   `tutti-dsp`'s `spatial` tests and `tutti-spatial`'s `vbap_preset_digest.rs`.) The solve and the layout into `tutti-dsp::spatial`; the
    `vbap` dependency and `VbapError::Vbap` replaced; `glam` leaves the lock. Proof:
    the moved tests and digests unedited; the tuple sets of the five presets pinned;
    Pulkki's properties as new cases; `cargo tree -p tutti-dsp` shows no `glam`.

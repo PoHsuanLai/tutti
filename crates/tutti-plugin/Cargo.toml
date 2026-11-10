@@ -54,7 +54,6 @@ tutti-graph = { path = "../tutti-graph" }
 atomic_float = "1.1"
 
 # MIDI support
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime" }
 
 # The process edge: the wire, the slab, the server's launch and the client of a
@@ -133,7 +132,6 @@ criterion.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }
-tutti-midi-types = { path = "../tutti-midi-types" }
 # The reference VST2 plugin the in-process lifecycle tests load, plus
 # `libloading` to re-open the image the host loaded and read its capture — the
 # linked rlib is a separate image with separate statics, so only the cdylib's

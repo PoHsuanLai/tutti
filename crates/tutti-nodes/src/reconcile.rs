@@ -25,7 +25,7 @@ use tutti_modulation::{
 };
 use tutti_types::ChannelLayout;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{At, AtomicF32, NodeKey, ParamAddr};
+use tutti_types::{At, NodeKey, ParamAddr, ParamCell};
 
 use crate::automation::{ControlLaneNode, LaneControls};
 use crate::signal::{EnvelopeFollowerNode, NoteEnvelopeNode};
@@ -62,7 +62,7 @@ pub enum Target {
         /// The node the param is on.
         node: NodeKey,
         /// The node's cell for the param.
-        knob: Option<Arc<AtomicF32>>,
+        knob: Option<ParamCell>,
     },
     /// A foreign parameter (`TargetKey::param` a `ParamAddr::Id`, a hosted
     /// plugin's): the event input of `node` the lane feeds, and the knob the
@@ -191,7 +191,7 @@ pub struct Applied {
 enum Bind {
     Native {
         at: ParamIn,
-        knob: Option<Arc<AtomicF32>>,
+        knob: Option<ParamCell>,
         /// The node's unit generation: a new unit has new cells.
         generation: u32,
     },
@@ -222,7 +222,7 @@ impl Bind {
                 at == a2
                     && generation == g2
                     && match (knob, k2) {
-                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        (Some(a), Some(b)) => a.ptr_eq(b),
                         (None, None) => true,
                         _ => false,
                     }
@@ -356,7 +356,7 @@ struct SourcePlan {
 /// };
 /// use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
 /// use tutti_types::{
-///     AtomicF32, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, SampleRate, Samples, UnitParam, Q,
+///     Depth, Hz, NodeKey, ParamAddr, ParamCell, PhaseIncrement, SampleRate, Samples, UnitParam, Q,
 /// };
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
@@ -369,7 +369,7 @@ struct SourcePlan {
 /// // A native target's range cell exists once its node is placed.
 /// editor.commit().expect("commits");
 ///
-/// struct Host(NodeKey, Option<Arc<AtomicF32>>);
+/// struct Host(NodeKey, Option<ParamCell>);
 /// impl ModHost for Host {
 ///     fn target(&self, t: TargetKey) -> Option<Target> {
 ///         (t.node == 1).then(|| Target::Native { node: self.0, knob: self.1.clone() })
@@ -489,7 +489,7 @@ enum Resolved {
     None,
     Native {
         node: NodeKey,
-        knob: Option<Arc<AtomicF32>>,
+        knob: Option<ParamCell>,
     },
     Foreign {
         node: NodeKey,
@@ -518,7 +518,7 @@ impl Resolved {
             (Self::Native { node, knob }, Some(Target::Native { node: n2, knob: k2 })) => {
                 node == n2
                     && match (knob, k2) {
-                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        (Some(a), Some(b)) => a.ptr_eq(b),
                         (None, None) => true,
                         _ => false,
                     }

@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::AtomicF32;
 use tutti_types::ChannelLayout;
+use tutti_types::{AtomicF32, AtomicF64};
 
 use crate::ramp::LastGood;
 use tutti_dsp::{
@@ -92,7 +92,7 @@ pub struct LimiterNode {
     /// derivation starts from the same number, so the count is a pure function
     /// of (`lookahead`, `sample_rate`) and rate changes commute.
     ///
-    /// Same reason `release` stays a `Param<Seconds>` and the compressor and gate
+    /// Same reason `release` is a `Param<Seconds>` and the compressor and gate
     /// keep their `AttackRelease` in [`Seconds`]: the derived coefficient is
     /// never the recoverable form.
     lookahead: Seconds,
@@ -186,7 +186,8 @@ impl LimiterNode {
         // the shape report no channels, so clamp to at least mono.
         let layout = ChannelLayout::from_count(layout.count().max(1));
         let n = usize::from(layout.count());
-        let lookahead_secs = Seconds(0.005);
+        // Narrowed, as `with_lookahead` stores it: the ring is sized by a `_ceil`.
+        let lookahead_secs = Seconds(0.005).narrowed();
         // `_ceil`, the allocation form: the ring must hold at *least* the
         // lookahead, and nearest-rounding under-allocates for half of all
         // inputs.
@@ -228,7 +229,7 @@ impl LimiterNode {
         // Keep the request, not just the count it derives: `prepare`
         // re-derives from this, and a count is `_ceil`ed and so cannot round-trip
         // back to the seconds that produced it.
-        self.lookahead = lookahead.into();
+        self.lookahead = lookahead.into().narrowed();
         // Ceil: a lookahead ring must hold at least the requested window.
         let samples = self.lookahead.to_samples_ceil(self.sample_rate);
         self.ring.resize(samples.get().max(1));
@@ -242,8 +243,7 @@ impl LimiterNode {
     /// ones sound transparent and hold reduction through a passage.
     #[must_use]
     pub fn with_release(self, release_secs: impl Into<Seconds>) -> Self {
-        self.release
-            .store(Seconds(Self::clamp_release(release_secs.into().get())));
+        self.release.store(Self::floor_release(release_secs.into()));
         self
     }
 
@@ -267,7 +267,7 @@ impl LimiterNode {
     ///
     /// Read once per block to recompute the envelope coefficients. The attack
     /// is fixed at zero — a limiter must not let a peak through.
-    pub fn release_time(&self) -> Arc<AtomicF32> {
+    pub fn release_time(&self) -> Arc<AtomicF64> {
         self.release.as_atomic()
     }
 
@@ -286,13 +286,18 @@ impl LimiterNode {
 
     /// Sets the release time in [`Seconds`], floored at 1 ms.
     pub fn set_release(&self, secs: impl Into<Seconds>) {
-        self.release
-            .store(Seconds(Self::clamp_release(secs.into().get())));
+        self.release.store(Self::floor_release(secs.into()));
     }
 
     /// A release time as the setters store it: floored at 1 ms. Shared by
     /// the setters and a driven port's value, so a driven negative release
     /// releases at the floor rather than instantly.
+    #[inline]
+    fn floor_release(secs: Seconds) -> Seconds {
+        Seconds(secs.get().max(0.001))
+    }
+
+    /// [`floor_release`](Self::floor_release) for a driven port's `f32`.
     #[inline]
     fn clamp_release(secs: f32) -> f32 {
         secs.max(0.001)
@@ -317,10 +322,10 @@ impl LimiterNode {
         // which needs to see a NaN that `max` would hide.
         let release = Self::clamp_release(
             self.good_release
-                .read(driven.unwrap_or_else(|| self.release.load().get())),
+                .read(driven.unwrap_or_else(|| self.release.load().to_f32())),
         );
         self.follower
-            .update_coefficients(Seconds(0.0), Seconds(release));
+            .update_coefficients(Seconds(0.0), Seconds::from_f32(release));
     }
 }
 
@@ -447,7 +452,7 @@ impl Node for LimiterNode {
         match k {
             0 => Some(self.ceiling_db.load().get()),
             1 => Some(self.threshold_db.load().get()),
-            2 => Some(self.release.load().get()),
+            2 => Some(self.release.load().to_f32()),
             _ => None,
         }
     }
@@ -802,10 +807,13 @@ mod tests {
         let born = lim.ring.lookahead_samples();
         assert_eq!(
             born,
-            LOOKAHEAD.to_samples_ceil(SampleRate::DEFAULT).get(),
+            LOOKAHEAD
+                .narrowed()
+                .to_samples_ceil(SampleRate::DEFAULT)
+                .get(),
             "construction must size the ring at the placeholder rate"
         );
-        let born_secs = born as f32 / device.get() as f32;
+        let born_secs = born as f64 / device.get();
         assert!(
             born_secs < LOOKAHEAD.get() * 0.95,
             "an uncorrected ring must be audibly short at {device:?} — that is \
@@ -819,14 +827,14 @@ mod tests {
         let fixed = lim.ring.lookahead_samples();
         assert_eq!(
             fixed,
-            LOOKAHEAD.to_samples_ceil(device).get(),
+            LOOKAHEAD.narrowed().to_samples_ceil(device).get(),
             "prepare must re-derive the frame count at the new rate"
         );
         assert!(
             fixed > born,
             "a higher rate needs more frames for the same duration ({born} -> {fixed})"
         );
-        let fixed_secs = fixed as f32 / device.get() as f32;
+        let fixed_secs = fixed as f64 / device.get();
         assert!(
             (fixed_secs - LOOKAHEAD.get()).abs() < 1e-4,
             "the wall-clock lookahead must survive the rate change; got {fixed_secs:.5}s"
@@ -1038,7 +1046,7 @@ mod tests {
         assert_eq!(l.param_base(1), Some(-6.0), "the threshold's base");
         assert_eq!(
             l.param_base(2),
-            Some(l.release_time().load(std::sync::atomic::Ordering::Acquire)),
+            Some(l.release_time().load(std::sync::atomic::Ordering::Acquire) as f32),
             "the release's base"
         );
         let b = BrickwallLimiterNode::new(-1.0);

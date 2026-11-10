@@ -64,7 +64,7 @@ forks it instead, with `RenderGraph::fork`.
 
 ```rust
 use tutti_transport::FrozenClock;
-use tutti_types::{Hz, SampleRate};
+use tutti_types::{Hz, SampleRate, Seconds};
 use tutti_export::{
     render_to_buffers, render_to_file, ChannelLayout, EncodeConfig, ExportConfig,
     FlacLevel, Format, IntDepth, RenderConfig, RenderGraph,
@@ -85,8 +85,7 @@ let tone = || {
 let config = ExportConfig {
     render: RenderConfig {
         sample_rate: rate,
-        // `f64`, not `Seconds`: an f32 cannot carry an hour-long render.
-        duration_seconds: 0.5,
+        duration_seconds: Seconds(0.5),
         ..Default::default()
     },
     encode: EncodeConfig {

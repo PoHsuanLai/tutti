@@ -9,7 +9,7 @@
 //! audibly.
 
 use std::sync::Arc;
-use tutti_types::AtomicF32;
+use tutti_types::{AtomicF32, AtomicF64};
 
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
@@ -208,8 +208,9 @@ impl DelayLineNode {
         // A maximum that is not a finite positive span is an empty line, as
         // `Seconds::to_samples_ceil` already reads it (`f32::clamp` panics on
         // a negative or NaN bound); a NaN initial time is zero.
-        let max_delay = Seconds(
-            Some(max_delay_secs.into().get())
+        // The line's kernel works in `f32` seconds, so the times narrow here.
+        let max_delay = Seconds::from_f32(
+            Some(max_delay_secs.into().to_f32())
                 .filter(|s| s.is_finite() && *s > 0.0)
                 .unwrap_or(0.0),
         );
@@ -249,7 +250,7 @@ impl DelayLineNode {
                 LastGood::fixed(0.0),
                 LastGood::fixed(Mix::WET.get()),
             ],
-            good_delay: vec![LastGood::new(delay_secs.get(), 0.0); n],
+            good_delay: vec![LastGood::new(delay_secs.to_f32(), 0.0); n],
         }
     }
 
@@ -316,19 +317,19 @@ impl DelayLineNode {
     /// Read once per block and ramped. A delay time the graph feeds
     /// **overrides** it. Shared across clones, so a write reaches the live
     /// node.
-    pub fn delay_time(&self) -> Arc<AtomicF32> {
+    pub fn delay_time(&self) -> Arc<AtomicF64> {
         self.delay_time[0].as_atomic()
     }
 
     /// The shared [`Seconds`] delay-time cell of channel 1 (right), falling
     /// back to channel 0 on a mono node so the call is safe at any width.
-    pub fn delay_time_r(&self) -> Arc<AtomicF32> {
+    pub fn delay_time_r(&self) -> Arc<AtomicF64> {
         self.delay_time[1.min(self.width() - 1)].as_atomic()
     }
 
     /// The shared [`Seconds`] delay-time cell of `channel`, clamped to the last
     /// channel.
-    pub fn channel_delay_time(&self, channel: usize) -> Arc<AtomicF32> {
+    pub fn channel_delay_time(&self, channel: usize) -> Arc<AtomicF64> {
         self.delay_time[channel.min(self.width() - 1)].as_atomic()
     }
 
@@ -412,8 +413,8 @@ impl DelayLineNode {
         self.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
-    /// Constrain a requested delay into `0..=max_delay`. `Seconds` has no
-    /// `clamp` of its own, so the bound is applied in the scalar space.
+    /// Constrain a requested delay into `0..=max_delay`, narrowed to the `f32`
+    /// the line's kernel works in.
     #[inline]
     fn clamp_delay(&self, secs: Seconds) -> Seconds {
         Seconds(secs.get().clamp(0.0, self.max_delay.get()))
@@ -441,7 +442,7 @@ impl DelayLineNode {
         let width = self.width();
         let interp = self.interpolation;
         let sr = self.sample_rate;
-        let max = self.max_delay.get();
+        let max = self.max_delay.to_f32();
 
         let target = DelayControls {
             fb: self.good[0].read(self.feedback.load().get()),
@@ -469,8 +470,8 @@ impl DelayLineNode {
             && cf_r.is_flat()
             && mix_r.is_flat();
         for c in 0..width {
-            let secs = self.good_delay[c].read(self.delay_time[c].load().get());
-            let d = fractional_samples(Seconds(secs), sr);
+            let secs = self.good_delay[c].read(self.delay_time[c].load().to_f32());
+            let d = fractional_samples(Seconds::from_f32(secs), sr);
             let from = if primed { self.last_delay[c] } else { d };
             self.delay_ramps[c] = Ramp::new(from, d, size);
             steady &= self.delay_ramps[c].is_flat();
@@ -518,7 +519,7 @@ impl DelayLineNode {
             let delay_at = |c: usize, i: usize| -> f32 {
                 match dt_port {
                     Some(s) if s[i].is_finite() => {
-                        fractional_samples(Seconds(s[i].clamp(0.0, max)), sr)
+                        fractional_samples(Seconds::from_f32(s[i].clamp(0.0, max)), sr)
                     }
                     _ => ramps[c].at(i),
                 }
@@ -530,7 +531,7 @@ impl DelayLineNode {
         for c in 0..width {
             self.last_delay[c] = match dt_port {
                 Some(s) if s[size - 1].is_finite() => {
-                    fractional_samples(Seconds(s[size - 1].clamp(0.0, max)), sr)
+                    fractional_samples(Seconds::from_f32(s[size - 1].clamp(0.0, max)), sr)
                 }
                 _ => self.delay_ramps[c].at(size - 1),
             };
@@ -656,7 +657,7 @@ impl Node for DelayLineNode {
         // drives every channel through one shared value.
         match k {
             0 => Some(self.feedback.load().get()),
-            1 => Some(self.delay_time[0].load().get()),
+            1 => Some(self.delay_time[0].load().to_f32()),
             2 => Some(self.mix.load().get()),
             _ => None,
         }
@@ -1006,8 +1007,12 @@ mod tests {
             DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb),
             1_000.0,
         );
-        let (mod_l, mod_r) =
-            stereo_delay_fed(&mut modn, &input_l, &input_r, [Some(fb), Some(delay_secs)]);
+        let (mod_l, mod_r) = stereo_delay_fed(
+            &mut modn,
+            &input_l,
+            &input_r,
+            [Some(fb), Some(delay_secs as f32)],
+        );
 
         for i in 0..n {
             assert!(

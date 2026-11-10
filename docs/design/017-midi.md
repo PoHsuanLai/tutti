@@ -110,9 +110,12 @@ said by the type of the position beside a `Ump`:
 A single message is built as `Ump::from(Message::..)`; tests use
 `tutti_fixtures::midi`, one builder per message over the same encoder.
 
-**Stage 3's `Translator` is not built.** The old `Midi1ToMidi2Translator`
-(`tutti-midi-types/src/translation/rpn.rs:81`) is what `MidiInputNode` runs, and it
-speaks `MidiEvent`.
+**The `Translator` is built (stage 3a).** `tutti_midi_protocol::Translator` runs
+at the two input edges there are: `MidiInputNode`, per polled event, and a clip
+as it is loaded (`MidiClipNode::new` and `MidiClipControls::set_events`, in beat
+order, each result in its source's place). The old `Midi1ToMidi2Translator` is
+deleted. A `MidiSender` queue and a plugin's MIDI output are not translated: a
+host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
 
 **Duplication.**
 
@@ -126,12 +129,10 @@ speaks `MidiEvent`.
   `Message` variants and `Err(Unknown)`) is the same in
   `PolySynth::process_midi_event` (`polysynth.rs:~351-369`) and
   `SoundFontUnit::apply_event` (`tutti-soundfont/src/lib.rs:~344-364`).
-- *RPN and NRPN, four places.* The old translator; the SoundFont's
-  `Channel::{set_rpn_*, data_entry_*}` (`tutti-soundfont/src/channel.rs:149-190`),
-  which ignores NRPN (it notes that the last data type was NRPN and drops the
-  data); `RpnRun` in `tutti-midi-runtime`'s `outbound/mpe_ingest.rs:90`; and
-  `Voicing`'s consumption of the `Voice2` registered-controller form, which is the
-  target.
+- *RPN and NRPN, one place since stage 3a.* The `Translator` assembles; the
+  SoundFont, `MpeIngest` and `Voicing` read the `Voice2` registered-controller
+  form. (Before: the old translator, the SoundFont's own Data Entry machine and
+  `mpe_ingest`'s `RpnRun`.)
 - *MIDI 1.0 byte parsers.* `tutti_ump::Midi1Parser` against `tutti-plugin-types`'
   `Midi1Splitter` and `Midi1Decoder` (about 700 lines), whose one production caller
   is `tutti-au-ffi/src/midi_out.rs`.
@@ -323,10 +324,10 @@ a block (the graph's `Event` already has it) and an absolute frame in storage.
 
 ```rust
 // tutti-midi-protocol
-pub struct Translator { /* per (group, channel): RPN state, MPE zones */ }
+pub struct Translator { /* per (group, channel): RPN, NRPN and Bank Select state */ }
 
 impl Translator {
-    pub fn feed(&mut self, msg: Message, out: impl FnMut(Message));
+    pub fn feed(&mut self, ump: Ump, out: impl FnMut(Ump));
 }
 ```
 
@@ -1056,10 +1057,8 @@ rest is below.
    it), where `to_midi1_messages` drops it. Its only caller, the VST2 host, still
    does until it moves to `Message`; no shipped path changes.
    Residue that belongs to this stage, each a consumer dropping part of a message:
-   - **SoundFont, Program Change bank.** `Player` handles `Voice2::ProgramChange`
-     with `..` and so ignores the bank of a MIDI 2.0 Program Change (the bank-valid
-     flag and its two bytes); only a Bank Select Control Change reaches the channel.
-     Select the bank when the flag is set (`tutti-soundfont/src/player.rs`).
+   - **SoundFont, Program Change bank.** Done in stage 3a: the bank's MSB selects
+     the bank, as CC 0 does.
    - **AU host, Program Change bank.** `tutti-au-host/src/instance.rs` writes a
      Program Change as the program byte alone and drops the bank, so an AU
      instrument never changes bank from a MIDI 2.0 message. Send the bank as Bank
@@ -1103,22 +1102,36 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    gains none: plugin IPC keeps carrying a raw `u32` frame offset and converts
    at the edge, because the types stop at IPC boundaries (CLAUDE.md, "Where the
    types stop"); a comment at the wire type says so.
-- **Stage 3a. The `Translator`** (§4) in `tutti-midi-protocol`, over `Ump`. Deletes
+- **Stage 3a. The `Translator`.** Done. What the stage settled beyond the plan:
+   - It takes and gives `Ump`, not `Message`: an input edge holds packets, and
+     one that does not decode passes through unchanged. It sends at most one
+     packet per packet fed (a select or CC 6 that ends a run is replaced by the
+     run's controller), which lets a clip put each result in its source's place.
+   - D.3.3's triggers, exactly: a CC 6 waits for a CC 38, a later CC 6 or a new
+     select (LSB 0 when none came); a CC 38 before any CC 6 waits for it and goes
+     with it; a new CC 6 never reuses an earlier run's LSB. A sender that ends an
+     RPN with a lone CC 6 and nothing after it is never heard: that is the spec's
+     rule, and the reason senders close a run with the Null Function.
+   - Each half of a parameter number is kept per kind (RPN and NRPN apart) until
+     selected again; Reset All Controllers (CC 121, RP-015) sets both to null,
+     drops what the run had not sent and passes on.
+   - Registered controllers 0 to 31 of bank 0 are zero-extended (M2-115 §4.1);
+     every other controller is scaled Min-Center-Max. The group is kept (the old
+     translator sent everything on group 1).
+   - MPE stays in `tutti-midi-runtime`'s `MpeIngest`, after the translator; it
+     moves with `mpe/` in 5b. Its output is a callback now (`translate(event,
+     out)`), which deleted `Translated` and `RpnRun`, and a MIDI 2.0 Note On at
+     velocity 0 binds its member channel like any Note On.
+   - The SoundFont reads Registered Controllers 0, 1 and 2 (pitch bend
+     sensitivity, fine and coarse tuning) and a Program Change's bank, which is
+     stage 2's SoundFont residue, done here because the translator absorbs the
+     Bank Select the SoundFont followed before.
+   The plan was: Deletes
    the SoundFont's RPN state machine (`Channel::{set_rpn_*, data_entry_*}`, which
    then reads a registered-controller `Voice2`, NRPN included), `mpe_ingest`'s
    `RpnRun` and the old `Midi1ToMidi2Translator`, and `MidiInputNode` runs the new
    one. Behaviour change: §4's remaining spec fixes. Oracle: M2-115 and M2-104
-   App. D, as analytic tests. Residue the old translator
-   (`tutti-midi-types`' `translation/rpn.rs`) has and the new one must not copy:
-   - **Data Entry order.** A CC 6 on a selected parameter emits the Registered or
-     Assignable Controller at once, with the LSB as last sent (0 if never), and a
-     CC 38 emits it again, so a receiver first sees a value built on a stale LSB.
-     App. D.3.3 gives the triggers: a CC 38, a later CC 6, or a new parameter
-     select. Emit on those only, and test CC 6 alone, CC 6 then CC 38, and CC 38
-     then CC 6.
-   - **Parameter number halves.** An NRPN or RPN LSB select alone leaves the
-     MSB at its default of 0 instead of keeping the one last selected on the
-     channel; the test is a select of the LSB only after a full select.
+   App. D, as analytic tests.
 - **Stage 3b. `dispatch`** (§4.1) in `tutti-midi-protocol`. Deletes the four widen
    copies (the two `widened` functions and the two `voice1` functions) and the
    seven-arm match in the polysynth and the SoundFont. Oracle: M2-104 App. D.3.

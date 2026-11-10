@@ -38,7 +38,7 @@ use std::sync::atomic::Ordering;
 
 #[cfg(test)]
 use tutti_types::UnitParam;
-use tutti_types::{AtomicF32, UnitAddr};
+use tutti_types::{ParamCell, UnitAddr};
 
 use crate::fork::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
 use crate::node::{Node, NodeParts};
@@ -46,7 +46,7 @@ use crate::node::{Node, NodeParts};
 /// One param: its address and the cell the node reads.
 struct Slot {
     param: UnitAddr,
-    live: Arc<AtomicF32>,
+    live: ParamCell,
 }
 
 /// A node's params by [`UnitAddr`]: the cells the running node reads, once
@@ -96,8 +96,13 @@ impl ParamSet {
     /// `param`'s live cell, for a reader or writer that holds it directly (a
     /// modulation lane, whose knob it is). Clones the `Arc`: control
     /// thread only.
-    pub fn cell(&self, param: impl Into<UnitAddr>) -> Option<Arc<AtomicF32>> {
-        self.slot(param.into()).map(|s| Arc::clone(&s.live))
+    ///
+    /// A value through the set is an `f32` whatever the param's unit: a
+    /// [`Seconds`](tutti_types::Seconds) param's `f64` cell is widened on a
+    /// write and narrowed on a read ([`ParamCell`]), the modulation path's one
+    /// narrowing.
+    pub fn cell(&self, param: impl Into<UnitAddr>) -> Option<ParamCell> {
+        self.slot(param.into()).map(|s| s.live.clone())
     }
 
     /// The params, in the order they were added.
@@ -139,8 +144,9 @@ impl ParamSetBuilder {
     /// If that address (kind **and** index) was already added: one address,
     /// one cell. The same kind at another index is a different address.
     #[must_use]
-    pub fn param(mut self, param: impl Into<UnitAddr>, cell: Arc<AtomicF32>) -> Self {
+    pub fn param(mut self, param: impl Into<UnitAddr>, cell: impl Into<ParamCell>) -> Self {
         let param = param.into();
+        let cell = cell.into();
         assert!(
             self.slots.iter().all(|s| s.param != param),
             "{param:?} added to a ParamSet twice"

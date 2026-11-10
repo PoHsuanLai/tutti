@@ -23,4 +23,4 @@ pub use jr_timestamp::{
     JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL, JrClock, JrClockEmitter, JrReceiver, JrStamper,
     JrStream,
 };
-pub use mpe_ingest::{MpeIngest, Translated};
+pub use mpe_ingest::MpeIngest;

@@ -247,7 +247,7 @@ mod tests {
             };
             let g = loop_gain * pole;
             Some(Seconds(
-                (-3.0 * longest / (rate.get() * libm::log10(g))) as f32,
+                (-3.0 * longest / (rate.get() * libm::log10(g))) as f32 as f64,
             ))
         }
 
@@ -491,7 +491,7 @@ mod tests {
         }
         // 16 combs and 8 all-passes: 2 * (sum of the tunings) + 8 * 23 + 4 * 23.
         let total: f32 = 2.0 * (left.iter().sum::<f32>() + aps.iter().sum::<f32>()) + 12.0 * 23.0;
-        assert_eq!(n.modal_density().get(), total / 44_100.0);
+        assert_eq!(n.modal_density().to_f32(), total / 44_100.0);
     }
 
     /// The analytic figures of the GM reverb, from the definition: the slowest
@@ -506,12 +506,12 @@ mod tests {
         let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
         let low = -3.0 * 1640.0 / (44_100.0 * libm::log10(0.84));
         assert!(
-            (f64::from(n.rt60(Band::Low).get()) - low).abs() < 1e-5,
+            (n.rt60(Band::Low).get() - low).abs() < 1e-5,
             "{:?}",
             n.rt60(Band::Low)
         );
         let high = -3.0 * 1640.0 / (44_100.0 * libm::log10(0.84 * 0.8 / 1.2));
-        assert!((f64::from(n.rt60(Band::High).get()) - high).abs() < 1e-5);
+        assert!((n.rt60(Band::High).get() - high).abs() < 1e-5);
         assert!(n.rt60(Band::High).get() < n.rt60(Band::Mid).get());
         assert!(n.rt60(Band::Mid).get() < n.rt60(Band::Low).get());
         assert!(n.is_stable() && !n.is_lossless());
@@ -519,7 +519,7 @@ mod tests {
         let Ring::Finite(tail) = n.tail(Db(-60.0)) else {
             panic!("finite")
         };
-        assert!(tail.get() > low as f32, "{tail:?} covers the decay");
+        assert!(tail.to_f32() > low as f32, "{tail:?} covers the decay");
     }
 
     use crate::network::Ring;

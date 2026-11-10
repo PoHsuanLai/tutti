@@ -88,8 +88,7 @@ fn a_presentation_latency_write_arrives_with_its_seconds_intact() {
     let seen = last_presentation_latency(&au, Scope::OUTPUT.raw(), 0)
         .expect("the probe recorded a write at output/0");
     assert_eq!(
-        seen,
-        f64::from(written.0),
+        seen, written.0,
         "the AU received {seen} s, host wrote {} s",
         written.0
     );
@@ -119,16 +118,16 @@ fn presentation_latency_is_recorded_per_bus_not_per_unit() {
 
     assert_eq!(
         last_presentation_latency(&au, Scope::OUTPUT.raw(), 0),
-        Some(f64::from(out0.0)),
+        Some(out0.0),
     );
     assert_eq!(
         last_presentation_latency(&au, Scope::OUTPUT.raw(), 1),
-        Some(f64::from(out1.0)),
+        Some(out1.0),
         "output bus 1 must not receive bus 0's value"
     );
     assert_eq!(
         last_presentation_latency(&au, Scope::INPUT.raw(), 0),
-        Some(f64::from(in0.0)),
+        Some(in0.0),
         "the input scope must not receive the output scope's value"
     );
     // Nothing was written globally, and `None` is how the probe spells that —

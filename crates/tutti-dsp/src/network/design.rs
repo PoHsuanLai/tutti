@@ -240,7 +240,7 @@ mod tests {
         }
         for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, 60.001, 1e9] {
             assert!(
-                Ceiling::new(rate, Seconds(bad), floor).is_none(),
+                Ceiling::new(rate, Seconds::from_f32(bad), floor).is_none(),
                 "decay {bad}"
             );
         }

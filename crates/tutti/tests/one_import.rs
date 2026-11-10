@@ -83,7 +83,7 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
     let cfg = tutti::export::ExportConfig {
         render: tutti::export::RenderConfig {
             sample_rate: rate,
-            duration_seconds: 0.01,
+            duration_seconds: Seconds(0.01),
             ..Default::default()
         },
         ..Default::default()

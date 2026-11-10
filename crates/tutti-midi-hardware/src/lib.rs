@@ -48,12 +48,6 @@ pub use tutti_midi_types::{
 /// (`ci::sysex7_to_ci`) to feed the negotiators.
 pub use tutti_midi_types::ci;
 
-/// Stateful MIDI 1.0 → 2.0 translation (RPN/NRPN reassembly). Feed inbound CV1
-/// events through [`Midi1ToMidi2Translator`] when a hardware source needs
-/// multi-message (N)RPN runs collapsed into single MIDI-2 controller messages;
-/// [`normalize`] alone handles only the stateless per-message quirks.
-pub use tutti_midi_types::Midi1ToMidi2Translator;
-
 /// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,
 /// distinct from project save and from SMF. The MIDI 1.0 equivalent (`smf`) and
 /// the file-level path codec (`clip`) are `tutti-midi-file`'s and are not

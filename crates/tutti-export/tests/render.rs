@@ -20,6 +20,7 @@ use tutti_export::{
 };
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
+use tutti_types::Seconds;
 use tutti_types::{Amplitude, Hz, SampleRate};
 
 /// The rate [`config`] renders at.
@@ -59,7 +60,7 @@ fn config(format: Format, layout: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: 0.2,
+            duration_seconds: Seconds(0.2),
             ..Default::default()
         },
         encode: EncodeConfig {
@@ -454,7 +455,7 @@ fn a_caller_can_compose_normalization() {
     // Longer than R128's 400 ms gating block, or the meter reports nothing
     // passed the gate and there is no loudness to normalize toward.
     let mut long = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
-    long.render.duration_seconds = 2.0;
+    long.render.duration_seconds = Seconds(2.0);
     let mut out = render_to_buffers(dc(RATE), &long, &FrozenClock).unwrap();
 
     let cfg = LoudnessConfig::new(out.sample_rate, ChannelLayout::STEREO);
@@ -501,7 +502,7 @@ fn a_resample_request_reaches_the_file() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("r.wav");
     let mut s = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
-    s.render.duration_seconds = 1.0;
+    s.render.duration_seconds = Seconds(1.0);
     s.resample = Some(Resample::to(SampleRate(48_000.0)));
 
     render_to_file(dc(RATE), &s, &FrozenClock, &p).unwrap();
@@ -528,7 +529,7 @@ fn a_resample_request_reaches_the_file() {
 fn normalized_audio_can_be_written_to_every_format() {
     let d = tempfile::tempdir().unwrap();
     let mut s = config(Format::Wav(Pcm::Int24), ChannelLayout::STEREO);
-    s.render.duration_seconds = 1.0;
+    s.render.duration_seconds = Seconds(1.0);
 
     let mut audio = render_to_buffers(dc(RATE), &s, &FrozenClock).unwrap();
     audio.apply_gain(tutti_types::Db(-6.0));
@@ -570,7 +571,7 @@ fn normalized_audio_can_be_written_to_every_format() {
 fn a_resample_reaches_every_format_not_just_wav() {
     let d = tempfile::tempdir().unwrap();
     let mut s = config(Format::Wav(Pcm::Int24), ChannelLayout::STEREO);
-    s.render.duration_seconds = 1.0; // 44100 frames in, 48000 expected out
+    s.render.duration_seconds = Seconds(1.0); // 44100 frames in, 48000 expected out
     s.resample = Some(Resample::to(tutti_types::SampleRate(48_000.0)));
 
     // WAV is the control: it was already correct.
@@ -621,7 +622,7 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
     // Render at 96k...
     let mut render_cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
     render_cfg.render.sample_rate = tutti_types::SampleRate(96_000.0);
-    render_cfg.render.duration_seconds = 1.0;
+    render_cfg.render.duration_seconds = Seconds(1.0);
     let audio =
         render_to_buffers(dc(render_cfg.render.sample_rate), &render_cfg, &FrozenClock).unwrap();
     assert_eq!(audio.sample_rate.get(), 96_000.0);
@@ -671,7 +672,7 @@ fn normalized_export_lifts_the_level_toward_the_target() {
     let d = tempfile::tempdir().unwrap();
     // Longer than R128's 400 ms gating block, or nothing passes the gate.
     let mut cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
-    cfg.render.duration_seconds = 2.0;
+    cfg.render.duration_seconds = Seconds(2.0);
 
     let plain = d.path().join("plain.wav");
     render_to_file(dc(RATE), &cfg, &FrozenClock, &plain).unwrap();
@@ -711,7 +712,7 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
 
     let d = tempfile::tempdir().unwrap();
     let mut cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
-    cfg.render.duration_seconds = 2.0;
+    cfg.render.duration_seconds = Seconds(2.0);
 
     let path = d.path().join("peak.wav");
     render_normalized_to_file(
@@ -795,7 +796,7 @@ fn a_sub_gating_block_render_cannot_be_loudness_normalized() {
     // 0.2 s — half the 400 ms gating block.
     let cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
     assert!(
-        cfg.render.duration_seconds < 0.4,
+        cfg.render.duration_seconds < Seconds(0.4),
         "this test is only meaningful under the gating block"
     );
 
@@ -862,7 +863,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
     g.pipe_output(id);
 
     let mut cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::from(6u16));
-    cfg.render.duration_seconds = 2.0;
+    cfg.render.duration_seconds = Seconds(2.0);
 
     let path = d.path().join("surround.wav");
     render_normalized_to_file(
@@ -1077,7 +1078,7 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
     // R128 accepts 16 Hz - 2.8 MHz; 4 MHz is outside it.
     let mut cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
     cfg.render.sample_rate = tutti_types::SampleRate(4_000_000.0);
-    cfg.render.duration_seconds = 0.0005;
+    cfg.render.duration_seconds = Seconds(0.0005);
 
     let err = render_normalized_to_file(
         dc(cfg.render.sample_rate),

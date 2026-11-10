@@ -7,13 +7,6 @@
 /// which is 20% of full level at the controller's top.
 const SEND_AMOUNT: f32 = 0.2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DataType {
-    None,
-    Rpn,
-    Nrpn,
-}
-
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub(crate) struct Channel {
@@ -30,14 +23,11 @@ pub(crate) struct Channel {
     reverb_send: u8,
     chorus_send: u8,
 
-    rpn: i16,
     pitch_bend_range: i16,
     coarse_tune: i16,
     fine_tune: i16,
 
     pitch_bend: f32,
-
-    last_data_type: DataType,
 }
 
 impl Channel {
@@ -52,12 +42,10 @@ impl Channel {
             expression: 0,
             reverb_send: 0,
             chorus_send: 0,
-            rpn: 0,
             pitch_bend_range: 0,
             coarse_tune: 0,
             fine_tune: 0,
             pitch_bend: 0_f32,
-            last_data_type: DataType::None,
         };
 
         channel.reset();
@@ -77,7 +65,6 @@ impl Channel {
         self.reverb_send = 40;
         self.chorus_send = 0;
 
-        self.rpn = -1;
         self.pitch_bend_range = 2 << 7;
         self.coarse_tune = 0;
         self.fine_tune = 8192;
@@ -88,8 +75,6 @@ impl Channel {
     pub(crate) fn reset_all_controllers(&mut self) {
         self.modulation = 0;
         self.expression = 127 << 7;
-
-        self.rpn = -1;
 
         self.pitch_bend = 0_f32;
     }
@@ -146,47 +131,17 @@ impl Channel {
         self.chorus_send = value as u8;
     }
 
-    pub(crate) fn set_rpn_coarse(&mut self, value: i32) {
-        self.rpn = (self.rpn & 0x7F) | (value << 7) as i16;
-        self.last_data_type = DataType::Rpn;
-    }
-
-    pub(crate) fn set_rpn_fine(&mut self, value: i32) {
-        self.rpn = (((self.rpn as i32) & 0xFF80) | value) as i16;
-        self.last_data_type = DataType::Rpn;
-    }
-
-    pub(crate) fn set_nrpn_coarse(&mut self, _value: i32) {
-        self.last_data_type = DataType::Nrpn;
-    }
-
-    pub(crate) fn set_nrpn_fine(&mut self, _value: i32) {
-        self.last_data_type = DataType::Nrpn;
-    }
-
-    pub(crate) fn data_entry_coarse(&mut self, value: i32) {
-        if self.last_data_type != DataType::Rpn {
-            return;
-        }
-
-        if self.rpn == 0 {
-            self.pitch_bend_range = (self.pitch_bend_range & 0x7F) | (value << 7) as i16;
-        } else if self.rpn == 1 {
-            self.fine_tune = (self.fine_tune & 0x7F) | (value << 7) as i16;
-        } else if self.rpn == 2 {
-            self.coarse_tune = (value - 64) as i16;
-        }
-    }
-
-    pub(crate) fn data_entry_fine(&mut self, value: i32) {
-        if self.last_data_type != DataType::Rpn {
-            return;
-        }
-
-        if self.rpn == 0 {
-            self.pitch_bend_range = (((self.pitch_bend_range as i32) & 0xFF80) | value) as i16;
-        } else if self.rpn == 1 {
-            self.fine_tune = (((self.fine_tune as i32) & 0xFF80) | value) as i16;
+    /// A Registered Controller of bank 0 (M2-104 7.4.13): pitch bend
+    /// sensitivity (0), fine tuning (1) and coarse tuning (2); any other is
+    /// ignored. The data is the MIDI 1.0 pair zero-extended (M2-115 section
+    /// 4.1, as the translator sends it): `MSB << 7 | LSB` is its top 14 bits.
+    pub(crate) fn set_registered(&mut self, index: u8, value: u32) {
+        let data = (value >> 18) as i16;
+        match index {
+            0 => self.pitch_bend_range = data,
+            1 => self.fine_tune = data,
+            2 => self.coarse_tune = (data >> 7) - 64,
+            _ => {}
         }
     }
 

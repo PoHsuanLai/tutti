@@ -18,7 +18,6 @@
 //! not its first, fails (5 of 7, with `convolution`); the two that address
 //! the SVF's cutoff, its first param, pass, as they must.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use audio_automation::CurveType;
@@ -59,7 +58,7 @@ fn filter_cutoff_write_moves_the_nodes_own_cell() {
     assert_eq!(atomic.load(Ordering::Acquire), 1500.0);
     // The cell a lane takes as its knob is that same cell.
     let cell = node.param_set().cell(UnitParam::Cutoff).expect("addressed");
-    assert!(Arc::ptr_eq(&cell, &atomic));
+    assert!(cell.ptr_eq(&atomic.into()));
 }
 
 #[test]
@@ -655,7 +654,7 @@ fn a_chorus_driven_past_its_depth_and_rate_gets_the_setters_clamps() {
         .collect();
     let chorus = |depth: f32, rate: f32| {
         let n = ModDelayNode::chorus(ChannelLayout::MONO);
-        n.set_depth(depth);
+        n.set_depth(tutti_types::Seconds::from_f32(depth));
         n.set_rate(rate);
         n
     };

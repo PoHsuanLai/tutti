@@ -199,7 +199,7 @@ fn config() -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SAMPLE_RATE),
-            duration_seconds: 0.5,
+            duration_seconds: tutti_types::Seconds(0.5),
             ..Default::default()
         },
         encode: EncodeConfig {

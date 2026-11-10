@@ -42,7 +42,7 @@ fn config(seconds: f64) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate(RATE),
-            duration_seconds: seconds,
+            duration_seconds: tutti_types::Seconds(seconds),
             ..Default::default()
         },
         encode: EncodeConfig {
@@ -394,7 +394,7 @@ fn short() -> ExportRequest {
         ExportConfig {
             render: RenderConfig {
                 sample_rate: SampleRate(44_100.0),
-                duration_seconds: 0.05,
+                duration_seconds: tutti_types::Seconds(0.05),
                 ..Default::default()
             },
             encode: EncodeConfig {

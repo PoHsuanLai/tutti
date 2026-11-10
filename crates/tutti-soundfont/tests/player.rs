@@ -10,7 +10,8 @@ mod support;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use support::rig::{RATE, Rig, timgm6mb};
+use support::rig::{RATE, Rig, timgm6mb, u7};
+use tutti_ump::{Bank, Voice2};
 
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Error, Settings, SoundFontUnit};
@@ -203,8 +204,9 @@ fn crossings(setup: impl FnOnce(&mut Rig), bend: u16) -> usize {
 const BEND_MAX: u16 = 16_383;
 
 // Mutations (all run, each fails the test named for the arm): the arm's call
-// replaced by `()` in `Player::control` for 0x00, 0x01, 0x21, 0x06, 0x26, 0x07,
-// 0x27, 0x0A, 0x2A, 0x0B, 0x2B, 0x5B, 0x5D, 0x63, 0x62, 0x65, 0x64 and 0x79;
+// replaced by `()` in `Player::control` for 0x00, 0x01, 0x21, 0x07, 0x27,
+// 0x0A, 0x2A, 0x0B, 0x2B, 0x5B, 0x5D and 0x79 (the Data Entry and RPN/NRPN
+// select arms are gone: an RPN arrives assembled, tested below);
 // CC 64 and CC 120 swapped with CC 123 in `Controller::effect`; the `_` arm
 // changed to cut the channel. (These ran on the old `Synthesizer`'s match; on
 // this one, the mutations that port are the arms of `Player::control` and of
@@ -293,64 +295,67 @@ fn cc_64_holds_released_notes_until_the_pedal_lifts() {
     assert_eq!(ring(63).0, 0.0, "63 is not down");
 }
 
-// Arms 0x65 and 0x64 (RPN select), 0x06 and 0x26 (data entry): RPN 0 is the
-// pitch-bend range.
+/// A Registered Controller of bank 0 as the translator sends one: the MIDI
+/// 1.0 pair zero-extended (M2-115 section 4.1).
+fn registered(index: u8, msb: u8, lsb: u8) -> Voice2 {
+    Voice2::Registered {
+        bank: u7(0),
+        index: u7(index),
+        value: ((u32::from(msb) << 7) | u32::from(lsb)) << 18,
+    }
+}
+
+// The arm for Registered Controller 0 (RPN 0, pitch bend sensitivity:
+// semitones, then cents). Mutation (run): `set_registered`'s index 0 arm made
+// `()` fails both ratios.
 #[test]
-fn cc_101_100_6_and_38_set_the_pitch_bend_range() {
-    let select = |s: &mut Rig| {
-        cc(s, 101, 0);
-        cc(s, 100, 0);
-    };
+fn registered_controller_0_sets_the_pitch_bend_range() {
     let default = crossings(|_| {}, BEND_MAX) as f64;
-    let wide = crossings(
-        |s| {
-            select(s);
-            cc(s, 6, 12);
-        },
-        BEND_MAX,
-    ) as f64;
+    let wide = crossings(|s| s.voice2(0, registered(0, 12, 0)), BEND_MAX) as f64;
     // Bent fully up: 12 semitones against the default 2.
     let ratio = wide / default;
     assert!((1.6..1.9).contains(&ratio), "2^(10/12) = 1.78, got {ratio}");
 
-    let none = crossings(
-        |s| {
-            select(s);
-            cc(s, 6, 0);
-        },
-        BEND_MAX,
-    ) as f64;
-    let cents = crossings(
-        |s| {
-            select(s);
-            cc(s, 6, 0);
-            cc(s, 38, 127);
-        },
-        BEND_MAX,
-    ) as f64;
+    let none = crossings(|s| s.voice2(0, registered(0, 0, 0)), BEND_MAX) as f64;
+    let cents = crossings(|s| s.voice2(0, registered(0, 0, 127)), BEND_MAX) as f64;
     // 0 semitones, then 1.27 from the fine byte: 2^(1.27/12) = 1.076.
     let ratio = cents / none;
     assert!((1.05..1.1).contains(&ratio), "got {ratio}");
 }
 
-// Arms 0x63 and 0x62 (NRPN select): data entry after an NRPN select is not an
-// RPN, so it must not change the range.
+// Registered Controller 2 (coarse tuning, 64 is none): 76 is +12 semitones,
+// so the note sounds an octave up. Mutation (run): the index 2 arm made `()`
+// fails it; reading the whole 14 bits (no `>> 7`) fails it.
 #[test]
-fn cc_99_and_98_make_data_entry_ignore_the_rpn() {
+fn registered_controller_2_sets_the_coarse_tuning() {
+    let base = crossings(|_| {}, 8192) as f64;
+    let octave = crossings(|s| s.voice2(0, registered(2, 76, 0)), 8192) as f64;
+    let ratio = octave / base;
+    assert!((1.9..2.1).contains(&ratio), "an octave up, got {ratio}");
+}
+
+// An Assignable Controller (NRPN), or a Registered Controller outside bank 0,
+// names nothing the channel follows: the range stays. Mutation (run): the
+// `bank == 0` guard dropped fails the second case.
+#[test]
+fn other_controllers_leave_the_pitch_bend_range() {
     let default = crossings(|_| {}, BEND_MAX) as f64;
-    for nrpn in [99, 98] {
-        let ignored = crossings(
-            |s| {
-                cc(s, 101, 0);
-                cc(s, 100, 0);
-                cc(s, nrpn, 0);
-                cc(s, 6, 12);
-            },
-            BEND_MAX,
-        ) as f64;
+    for voice in [
+        Voice2::Assignable {
+            bank: u7(0),
+            index: u7(0),
+            value: 12 << 25,
+        },
+        Voice2::Registered {
+            bank: u7(1),
+            index: u7(0),
+            value: 12 << 25,
+        },
+    ] {
+        let ignored = crossings(|s| s.voice2(0, voice), BEND_MAX) as f64;
         assert!(
             (ignored / default - 1.0).abs() < 0.01,
-            "NRPN {nrpn}: {ignored} against {default}"
+            "{voice:?}: {ignored} against {default}"
         );
     }
 }
@@ -404,6 +409,32 @@ fn cc_0_selects_the_bank() {
         energy(&mut synthesizer, 4096)
     };
     let loud = level(None);
+    assert!(loud > 20.0, "bank 0 plays the sine: {loud}");
+    assert!(level(Some(1)) < loud * 0.01, "bank 1 is 144 dB down");
+}
+
+// A Program Change's bank (the translator puts a MIDI 1.0 Bank Select there)
+// selects the bank, by its MSB. Mutation (run): the bank ignored, as before
+// this arm, fails the second assertion.
+#[test]
+fn a_program_changes_bank_selects_the_bank() {
+    let font = two_bank_soundfont();
+    let level = |bank: Option<u8>| {
+        let mut synthesizer = Rig::dry(&font);
+        synthesizer.voice2(
+            0,
+            Voice2::ProgramChange {
+                program: u7(0),
+                bank: bank.map(|msb| Bank {
+                    msb: u7(msb),
+                    lsb: u7(0),
+                }),
+            },
+        );
+        synthesizer.note_on(0, 69, 40);
+        energy(&mut synthesizer, 4096)
+    };
+    let loud = level(Some(0));
     assert!(loud > 20.0, "bank 0 plays the sine: {loud}");
     assert!(level(Some(1)) < loud * 0.01, "bank 1 is 144 dB down");
 }

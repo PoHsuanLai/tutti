@@ -554,8 +554,8 @@ impl MemorySource {
 
     /// Length of the loaded wave in seconds at the *file's* own sample rate,
     /// which is not the session's unless [`src_ratio`](Self::src_ratio) is
-    /// unity. `f64` because a long render's duration outruns `Seconds`' f32.
-    pub fn duration_seconds(&self) -> f64 {
+    /// unity.
+    pub fn duration_seconds(&self) -> tutti_types::Seconds {
         self.wave.duration()
     }
 

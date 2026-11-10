@@ -964,7 +964,13 @@ mod golden {
     #[test]
     fn six_channels_convolve_independently() {
         let irs: Vec<Vec<f32>> = (0..6)
-            .map(|c| generate_test_ir(200 + 90 * c, 0.2 + 0.05 * c as f32, 48_000.0))
+            .map(|c| {
+                generate_test_ir(
+                    200 + 90 * c,
+                    tutti_types::Seconds::from_f32(0.2 + 0.05 * c as f32),
+                    48_000.0,
+                )
+            })
             .collect();
         let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
         let wide = ConvolverNode::per_channel(&refs, 64);

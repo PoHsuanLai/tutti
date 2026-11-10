@@ -267,7 +267,7 @@ impl StftGeometry {
     #[inline]
     #[must_use]
     pub fn latency(self) -> Seconds {
-        Seconds(self.window.get() as f32 / self.sample_rate.get() as f32)
+        Seconds::from_f32(self.window.get() as f32 / self.sample_rate.get() as f32)
     }
 
     /// The analysis window's coefficients, `window` points of `window_fn`.

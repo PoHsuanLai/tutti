@@ -196,7 +196,7 @@ pub struct ProgramTime {
     pub beat: Option<Beat>,
     pub rolling: bool,
     /// The play clock (§4.3), its epoch, and its rate. A frame count, not
-    /// `Seconds`: `Seconds` is `f32`, and an hour of play needs `f64` phase.
+    /// `Seconds`: a play position is exact in frames at any rate.
     pub play: Frame,
     pub play_epoch: u32,
     pub rate: SampleRate,
@@ -261,7 +261,7 @@ a NaN anywhere in a layer, so a program is `Eq`. `value_at` and
 
 | | Native param port | Plugin parameter |
 |---|---|---|
-| Knob | **The node's own `Param` cell** (`ParamSet::cell`, `crates/tutti-graph/src/controls.rs:113`), cloned into the lane at creation and loaded once per block. `write_param` writes it; nothing else does. | A lane-owned `AtomicF32`, written by `LaneControls::set_knob` (the API's writes and the plugin's GUI edits, §8.2) |
+| Knob | **The node's own `Param` cell** (`ParamSet::cell`, `crates/tutti-graph/src/controls.rs:113`), cloned into the lane at creation and loaded once per block (a `ParamCell`: an `f32` unit's `AtomicF32`, or an `f64` unit's (`Seconds`) `AtomicF64` read as an `f32`, the one narrowing on the modulation path). `write_param` writes it; nothing else does. | A lane-owned `AtomicF32`, written by `LaneControls::set_knob` (the API's writes and the plugin's GUI edits, §8.2) |
 | Range | **The port's range cell** (`Editor::set_param_range`, already a store with no commit, `editor.rs:904`). The port clamps per frame. The lane holds a read handle to the same cell (`ParamRanges` holds a `PackedAtomic<ParamRange>` per port, with a public accessor) and loads it once per block for the span only. | A lane-owned `PackedAtomic<ParamRange>`, loaded once per block for the span and for the clamp, which splits pieces at crossings (§2) |
 | Program | `ArcLend<ControlProgram>` (`LaneControls::publish`) | same |
 

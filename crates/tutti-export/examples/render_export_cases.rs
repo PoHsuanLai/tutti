@@ -26,6 +26,7 @@ use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Amplitude;
 use tutti_types::Hz;
+use tutti_types::Seconds;
 
 const SR: f64 = 48_000.0;
 const DUR: f64 = 1.0;
@@ -109,7 +110,7 @@ fn base(format: Format, channels: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
-            duration_seconds: DUR,
+            duration_seconds: Seconds(DUR),
             ..Default::default()
         },
         encode: EncodeConfig {

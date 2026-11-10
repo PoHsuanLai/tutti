@@ -27,6 +27,8 @@ tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # has one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`, `tutti-rt` and `tutti-ump`.
 tutti-graph = { path = "../tutti-graph" }
 
+# The voice's low-pass is `tutti-dsp`'s `SvfModel` biquad (doc 024, consolidation 4).
+tutti-dsp = { path = "../tutti-dsp" }
 tutti-sf2 = { path = "../tutti-sf2" }
 tutti-voicing = { path = "../tutti-voicing" }
 

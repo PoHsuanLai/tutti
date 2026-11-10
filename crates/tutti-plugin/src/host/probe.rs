@@ -12,7 +12,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tutti_plugin_ipc::{BridgeError, Result};
+use tutti_plugin_ipc::{BridgeError, Reaped, Result};
 use tutti_plugin_types::{Helper, Locator, PluginDescriptor, ProbeOutcome, read_result};
 
 /// How long a probe may take, spawn and the plugin's load included, unless the
@@ -56,8 +56,8 @@ pub fn probe_metadata_with(
         .stderr(Stdio::null())
         .spawn()
         .map_err(BridgeError::Io)?;
-    let mut child = Reaped(child);
-    let status = wait(&mut child.0, timeout);
+    let mut child = Reaped::new(child);
+    let status = wait(&mut child, timeout);
     // The file is read even after a timeout or a bad exit: it is the only proof
     // of finishing, and a probe that finished at the deadline did.
     let file = read_result(&result).map_err(|e| BridgeError::IpcError(e.to_string()));
@@ -81,18 +81,6 @@ pub fn probe_metadata_with(
         other => Err(BridgeError::IpcError(format!(
             "unknown probe outcome: {other:?}"
         ))),
-    }
-}
-
-/// A probe child that is killed and reaped when it drops, so no path out of
-/// [`probe_metadata_with`], a panic included, leaves a hung probe behind.
-struct Reaped(Child);
-
-impl Drop for Reaped {
-    fn drop(&mut self) {
-        // Both fail harmlessly on a child that has already been reaped.
-        let _ = self.0.kill();
-        let _ = self.0.wait();
     }
 }
 
@@ -259,29 +247,6 @@ mod tests {
     #[test]
     fn the_default_deadline_is_fifteen_seconds() {
         assert_eq!(DEFAULT_PROBE_TIMEOUT, Duration::from_secs(15));
-    }
-
-    /// **A panic between spawn and the end of the wait cannot orphan the probe**:
-    /// the guard kills and reaps on the way out.
-    ///
-    /// Mutation (run): `Reaped::drop` doing nothing leaves the child running and
-    /// fails the assertion.
-    #[test]
-    fn a_probe_is_killed_when_its_guard_unwinds() {
-        let child = Command::new("sleep").arg("30").spawn().unwrap();
-        let pid = child.id();
-        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = Reaped(child);
-            panic!("between spawn and wait");
-        }));
-        assert!(unwound.is_err());
-        let alive = Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success();
-        assert!(!alive, "probe {pid} survived its guard");
     }
 
     /// The result file is in a directory of the probe's own, not a predictable

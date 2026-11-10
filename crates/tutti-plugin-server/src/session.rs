@@ -719,14 +719,7 @@ impl Session {
             Err(e) => {
                 self.stage_in = None;
                 self.staged = None;
-                let error = match e {
-                    ChunkError::TooLarge { bytes, limit } => {
-                        format!("state is {bytes} bytes, over the {limit}-byte limit")
-                    }
-                    ChunkError::OutOfOrder { got, expected } => {
-                        format!("state chunk {got} arrived where {expected} was expected")
-                    }
-                };
+                let error = chunk_refusal(e);
                 BridgeMessage::StateLoaded { error: Some(error) }.into()
             }
         }
@@ -777,14 +770,7 @@ impl Session {
             Ok(done) => done,
             Err(e) => {
                 self.state_in = None;
-                let error = match e {
-                    ChunkError::TooLarge { bytes, limit } => {
-                        format!("state is {bytes} bytes, over the {limit}-byte limit")
-                    }
-                    ChunkError::OutOfOrder { got, expected } => {
-                        format!("state chunk {got} arrived where {expected} was expected")
-                    }
-                };
+                let error = chunk_refusal(e);
                 if last {
                     return BridgeMessage::StateLoaded { error: Some(error) }.into();
                 }
@@ -808,6 +794,19 @@ impl Session {
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
         BridgeMessage::StateLoaded { error }.into()
+    }
+}
+
+/// Why a state chunk sequence was refused, as the reply's text.
+fn chunk_refusal(e: ChunkError) -> String {
+    match e {
+        ChunkError::TooLarge { bytes, limit } => {
+            format!("state is {bytes} bytes, over the {limit}-byte limit")
+        }
+        ChunkError::OutOfOrder { got, expected } => {
+            format!("state chunk {got} arrived where {expected} was expected")
+        }
+        ChunkError::Empty { seq } => format!("state chunk {seq} is empty and not the last"),
     }
 }
 

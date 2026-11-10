@@ -3,9 +3,11 @@
 
 pub mod bundle;
 mod launch;
+mod reaped;
 
 pub use bundle::resolve_bundle;
 pub use launch::{LaunchedServer, launch};
+pub use reaped::Reaped;
 
 // The `*_with` entry points are deliberately NOT re-exported. They exist so a
 // test can name the server binary with a `tutti_plugin_types::Locator` instead

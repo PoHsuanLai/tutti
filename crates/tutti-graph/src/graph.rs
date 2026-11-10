@@ -20,8 +20,9 @@
 //! # Examples
 //!
 //! ```
-//! use tutti_types::graph::{Edge, InPort, NodeSpec, OutPort, Source};
-//! use tutti_types::{ChannelLayout, NodeKey, Topology};
+//! use tutti_graph::{Edge, InPort, NodeSpec, OutPort, Source};
+//! use tutti_types::ChannelLayout;
+//! use tutti_graph::{NodeKey, Topology};
 //!
 //! let (osc, gain) = (NodeKey(1), NodeKey(2));
 //! let mut g = Topology::default();
@@ -39,10 +40,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::ChannelLayout;
 use crate::latency::{Feed, LatencyGraph};
 use crate::tail::TailGraph;
-use crate::value::{Samples, Tail};
+use tutti_types::ChannelLayout;
+use tutti_types::{Samples, Tail};
 
 /// A stable identity for a node, chosen by the **author** of the topology.
 ///
@@ -131,7 +132,7 @@ pub enum Source {
 /// a hang.
 ///
 /// Named `FeedbackFrom` rather than `Feedback` because
-/// [`crate::value::Feedback`] is already the recirculation-coefficient unit; two
+/// [`tutti_types::Feedback`] is already the recirculation-coefficient unit; two
 /// types called `Feedback` in one crate is a collision, not a pun.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FeedbackFrom {
@@ -303,7 +304,7 @@ impl NodeSpec {
 
 /// The audio graph, as a value.
 ///
-/// See the [module docs](self) for what it is for and an example. `Default`
+/// See the module docs (`graph.rs`) for what it is for and an example. `Default`
 /// is the empty graph with no global inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Topology {

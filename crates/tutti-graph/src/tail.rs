@@ -43,9 +43,9 @@
 //! [`latency`]: crate::latency
 
 use crate::latency::{Feed, LatencyGraph};
-use crate::value::{Samples, Tail};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use tutti_types::{Samples, Tail};
 
 /// The upper bound on any single node's reported tail: 60 s at 48 kHz.
 ///
@@ -171,8 +171,9 @@ impl GraphTail {
     /// tail, not an eight-second one.
     ///
     /// ```
-    /// use tutti_types::graph::{NodeSpec, OutPort, Source};
-    /// use tutti_types::{graph_tail, ChannelLayout, NodeKey, Samples, Tail, Topology};
+    /// use tutti_graph::{NodeSpec, OutPort, Source};
+    /// use tutti_types::{ChannelLayout, Samples, Tail};
+    /// use tutti_graph::{graph_tail, NodeKey, Topology};
     ///
     /// let verb = NodeKey(1);
     /// let mut g = Topology::default();

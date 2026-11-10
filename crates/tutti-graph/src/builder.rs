@@ -45,8 +45,9 @@
 //! block) is found by [`build`](GraphBuilder::build) and returned as the
 //! editor's own [`CommitError`].
 
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
-use tutti_types::{ChannelLayout, Frame, NodeKey, Samples};
+use crate::NodeKey;
+use crate::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
+use tutti_types::{ChannelLayout, Frame, Samples};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;

@@ -9,20 +9,21 @@
 use std::sync::Arc;
 
 use audio_automation::{AutomationEnvelope, AutomationPoint};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Node, Offset, PARAM_DECLICK, ParamIn, ParamRange, ParamSegment, Prepare,
     SegmentShape, Shape, Status, Transport, TransportChanges,
 };
+use tutti_graph::{OutPort, Source};
 use tutti_modulation::{
     Amount, Clock, ControlProgram, Curve, CurveType, DepthBy, InputLayer, Layer, LayerId, LfoShape,
     PeriodPoint, Polarity, RateAnchor, SourceId, Wave,
 };
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode, LaneControls};
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
-    AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, NodeKey,
-    ParamKey, Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
+    AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamKey,
+    Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
 };
 
 const RATE: f64 = 48_000.0;

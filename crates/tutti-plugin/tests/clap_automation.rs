@@ -14,17 +14,18 @@ use clap_probe::{ProbeEnv, exclusive, load_probe, render};
 
 use std::sync::Arc;
 
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventKind, EventOut, ForkMode, ForkTarget, ParamRamp, ParamSegment,
     Prepare, SegmentShape,
 };
+use tutti_graph::{OutPort, Source};
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::{
     AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{At, Frame, NodeKey};
+use tutti_types::{At, Frame};
 use tutti_types::{Beat, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;

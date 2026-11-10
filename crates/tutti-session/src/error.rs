@@ -88,7 +88,7 @@ pub enum Error {
     /// `Midi::retarget`.
     #[cfg(feature = "midi")]
     #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
-    NoEventInput(tutti_types::NodeKey),
+    NoEventInput(tutti_graph::NodeKey),
 
     /// [`Session::instrument`](crate::Session::instrument) (or
     /// `add_instrument`, `instrument_plugin`) was given a node that cannot be
@@ -97,7 +97,7 @@ pub enum Error {
     #[error("{node:?} is not an instrument: {why}")]
     NotInstrument {
         /// The node.
-        node: tutti_types::NodeKey,
+        node: tutti_graph::NodeKey,
         /// Why not.
         why: crate::NotInstrument,
     },
@@ -112,7 +112,7 @@ pub enum Error {
     /// the session's.
     #[cfg(feature = "midi")]
     #[error("{0:?} is not a clip or live input of this session's")]
-    NotSessionMidi(tutti_types::NodeKey),
+    NotSessionMidi(tutti_graph::NodeKey),
 
     /// The hardware input's routes have one declarer: the session's own
     /// (`Midi::route`, `Midi::set_route_fallback`) or a host's

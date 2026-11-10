@@ -23,7 +23,7 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::AsyncComputeTaskPool;
 
 use tutti_export::Outcome;
-use tutti_types::NodeKey;
+use tutti_graph::NodeKey;
 
 use crate::export::request::{
     ExportCancelled, ExportDone, ExportError, ExportInFlight, ExportNode, ExportRequest,

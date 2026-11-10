@@ -27,7 +27,8 @@ subprocess against a real `.vst3` / `.clap` on disk.
 use tutti_types::SampleRate;
 use tutti_graph::{Editor, Prepare};
 use tutti_plugin::catalog::Plugin;
-use tutti_types::{NodeKey, Samples};
+use tutti_types::Samples;
+use tutti_graph::NodeKey;
 
 // `sample_rate` takes anything convertible to `SampleRate` — the engine's
 // unit type, not a bare rate that could be a block size.

@@ -629,7 +629,8 @@ pub(crate) fn rescale(f: tutti_types::Frame, ratio: f64) -> tutti_types::Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::{Frame, NodeKey};
+    use crate::NodeKey;
+    use tutti_types::Frame;
     use tutti_ump::Ump;
 
     // Mutation: make `is_transient` return true for `Poisoned` (or false for

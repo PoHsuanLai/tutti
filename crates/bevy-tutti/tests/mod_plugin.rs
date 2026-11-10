@@ -440,7 +440,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
             .expect("a value")
     };
     let mut out = vec![Vec::new(), Vec::new()];
-    let mut check = |app: &mut App, want: &[tutti_types::NodeKey], what: &str| {
+    let mut check = |app: &mut App, want: &[tutti_graph::NodeKey], what: &str| {
         let mut want = want.to_vec();
         want.sort();
         for _ in 0..2 {

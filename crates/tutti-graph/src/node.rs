@@ -47,7 +47,7 @@ pub const MAX_PORTS: usize = 64;
 /// Returned by [`Node::shape`], which takes `&self`, so asking costs nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shape {
-    /// Audio input channels. In a [`Topology`](tutti_types::Topology) each
+    /// Audio input channels. In a [`Topology`](crate::Topology) each
     /// channel is one port.
     pub audio_in: ChannelLayout,
     /// Audio output channels.
@@ -1128,7 +1128,8 @@ pub trait Node: Send + 'static {
 ///
 /// ```compile_fail,E0277
 /// # use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status};
-/// # use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+/// # use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// # use tutti_graph::NodeKey;
 /// struct Silence;
 /// impl Node for Silence {
 ///     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }

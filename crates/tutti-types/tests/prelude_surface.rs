@@ -118,8 +118,8 @@ fn implementing_sink_needs_nothing_beyond_the_prelude() {
 /// exported at the root, and does not follow `as` renames or macro-generated
 /// exports. A `//` inside a string literal in `lib.rs` would cut its line.
 ///
-/// Mutation (run): add `pub use crate::graph::Source;` to the prelude → fails
-/// naming `Source`.
+/// Mutation (run): add a prelude name the root does not export (a `pub use` of
+/// a private-module item that only the prelude names) → fails naming it.
 #[test]
 fn every_prelude_name_is_exported_at_the_root() {
     let lib = include_str!("../src/lib.rs");

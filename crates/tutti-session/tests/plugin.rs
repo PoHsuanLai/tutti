@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use support::{clap_probe, plugin_server};
 use tutti_export::{ExportConfig, RenderConfig};
 use tutti_graph::ForkByClone;
+use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::PluginStatus;
@@ -28,7 +29,6 @@ use tutti_session::{
     ExportClock, ExportRequest, ExportSource, ExportTarget, Phase, PhaseCx, PluginLiveness,
     PluginLoadRequest, Session, SessionEvent,
 };
-use tutti_types::NodeKey;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);

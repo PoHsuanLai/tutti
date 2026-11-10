@@ -189,9 +189,10 @@ pub enum PumpPass {
 /// use tutti_codec::{FileOut, Format, Pcm, Spec};
 /// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 /// use tutti_session::{PumpLoop, PumpPass};
-/// use tutti_types::graph::{OutPort, Source};
-/// use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, Sink};
-/// use tutti_types::{TapAlign, TapId};
+/// use tutti_graph::{OutPort, Source};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, Sink};
+/// use tutti_graph::NodeKey;
+/// use tutti_graph::{TapAlign, TapId};
 ///
 /// /// A stereo source: 0.25 on the left, -0.25 on the right.
 /// struct Tone;

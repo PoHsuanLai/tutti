@@ -54,7 +54,8 @@ use bevy_tutti::plugin_host::{
 use tutti_nodes::ClickState;
 use tutti_plugin::catalog::PluginId;
 use tutti_transport::Transport;
-use tutti_types::{NodeKey, SampleRate, Samples};
+use tutti_types::{SampleRate, Samples};
+use tutti_graph::NodeKey;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The plugin's pipeline chunk here: one device callback when the graph knows
@@ -219,7 +220,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
             .resource::<AudioGraphRes>()
             .graph_ref()
             .node_latency(node),
-        tutti_types::latency::MAX_NODE_LATENCY,
+        tutti_graph::MAX_NODE_LATENCY,
         "clamped to what PDC compensates"
     );
 }
@@ -242,7 +243,7 @@ fn record_dirty(
 #[derive(Debug, PartialEq)]
 struct Observed {
     event_inputs: usize,
-    shadow_node: Option<tutti_types::NodeKey>,
+    shadow_node: Option<tutti_graph::NodeKey>,
     meter_bound: bool,
 }
 

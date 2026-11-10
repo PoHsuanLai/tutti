@@ -739,7 +739,7 @@ mod io_graph_composition {
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
     use tutti_graph::InletNode;
     use tutti_nodes::testing::Through;
-    use tutti_types::NodeKey;
+    use tutti_graph::NodeKey;
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     /// Same shape as `graph_wire.rs`'s harness — deliberately, so a difference in

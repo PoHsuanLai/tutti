@@ -41,9 +41,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::{Kind, Pair, bits, input_signal};
 use proptest::prelude::*;
+use tutti_graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
 use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec, Unforkable};
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey, Samples, TapAlign, TapId, TapSpec, Topology};
+use tutti_graph::{NodeKey, TapAlign, TapId, TapSpec, Topology};
+use tutti_types::{ChannelLayout, Samples};
 
 use tutti_graph::Node;
 
@@ -1122,7 +1123,7 @@ proptest! {
         let rejected = match desc.spec.validate() {
             Err(errs) => errs.iter().any(|e| matches!(
                 e,
-                tutti_graph::GraphInvalid::Topology(tutti_types::graph::Invalid::Cycle { .. })
+                tutti_graph::GraphInvalid::Topology(tutti_graph::Invalid::Cycle { .. })
             )),
             Ok(valid) => matches!(
                 tutti_graph::compile(

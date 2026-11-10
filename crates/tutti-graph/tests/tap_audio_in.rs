@@ -4,10 +4,9 @@
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
 };
-use tutti_types::graph::{OutPort, Source as Origin};
-use tutti_types::{
-    Beat, Bpm, ChannelLayout, NodeKey, Pull, SampleRate, Samples, Source, TapAlign, TapId,
-};
+use tutti_graph::{NodeKey, TapAlign, TapId};
+use tutti_graph::{OutPort, Source as Origin};
+use tutti_types::{Beat, Bpm, ChannelLayout, Pull, SampleRate, Samples, Source};
 
 /// A stereo source that plays `frames` in order, then silence: the graph the
 /// tap copies out of.

@@ -14,11 +14,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference, Shape,
     Shapes, Status, Transport, TransportChanges, ValidGraph, compile,
 };
-use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
+use tutti_types::{ChannelLayout, Frame, Latency, SampleRate, Samples, Tail};
 use tutti_ump::Ump;
 
 pub const RATE: SampleRate = SampleRate(48_000.0);

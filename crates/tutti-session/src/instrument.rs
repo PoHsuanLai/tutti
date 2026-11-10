@@ -25,11 +25,12 @@
 //! `&mut` of anything in the graph.
 //!
 
+use tutti_graph::NodeKey;
 use tutti_graph::{Instrument, ParamSet};
 pub use tutti_midi_runtime::Moment;
 use tutti_midi_runtime::{TimedQueueNode, TimedSendError, TimedSender};
 use tutti_nodes::BusStripNode;
-use tutti_types::{Amplitude, At, NodeKey, UnitParam};
+use tutti_types::{Amplitude, At, UnitParam};
 use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
 use crate::{Feeder, GraphSource, Session, SessionNode};

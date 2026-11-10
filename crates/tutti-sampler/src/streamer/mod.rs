@@ -287,8 +287,8 @@ pub struct DiskStreamerConfig {
     ///
     /// While set, the streamer pre-rolls each stream by its channel's entry so
     /// downstream effects stay sample-aligned. Published by whoever runs
-    /// `tutti_types::latency::compensate` over the audio graph — the table is
-    /// [`Compensation::channels`](tutti_types::Compensation::channels).
+    /// `tutti_graph::compensate` over the audio graph — the table is
+    /// [`Compensation::channels`](tutti_graph::Compensation::channels).
     pub pdc: Option<Arc<PrerollTable>>,
 }
 

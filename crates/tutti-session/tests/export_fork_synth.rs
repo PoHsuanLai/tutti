@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
 use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
 use tutti_midi_runtime::TimedMidiEvent;
@@ -22,7 +23,7 @@ use tutti_session::{
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{Beat, Bpm, SampleRate, Samples, Seconds, UnitParam};
 use tutti_ump::{MidiChannel, MidiGroup, U7, Ump};
 
 const RATE: f64 = 48_000.0;

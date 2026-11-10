@@ -32,24 +32,17 @@ Use it directly when you need only the vocabulary (a crate that implements
 - **`io`** — `Source`, `Sink` and `Pull`: the edge vocabulary, a stream on a clock
   other than the graph's (mic, file, tap, file encoder). A `Pull` says whether an
   empty read is late, finished or broken.
-- **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,
-  `delays`) and how long a graph rings after its input stops (`TailGraph`,
-  `graph_tail`), as pure graph math over any graph representation.
-- **`graph`** — the audio graph *as a value*: `Topology` (nodes, edges, outputs),
-  `validate` → `Valid`, `topo_order`. `Clone + Eq + Hash`, so two graphs compare
-  and one hashes; it implements both traits above, so latency and tail are folds
-  over it. Compiling one into a runtime is a separate crate's job — that half
-  names the units and so cannot live here.
 - **`meter`** — musical meter: `TimeSignature`, the `MeterMap` timeline of
   changes, and the `Meter` trait that turns a `Beat` into a bar and beat. Pure
   musical math, so it layers *over* a transport rather than living inside one.
 
 **The root is the API.** The common names are re-exported there, so
 `tutti_types::Bpm` and `tutti_types::Source` resolve directly — import from the
-root, or from `prelude` for the common subset. Six of the eleven modules are
-public (`value`, `graph`, `io`, `latency`, `meter`, `tail`), because each holds
-items the root does not re-export (`graph::Source`); the other five (`channels`,
-`downmix`, `fold`, `interleaved`, `topology`) are private and fully re-exported.
+root, or from `prelude` for the common subset. Three of the eight modules are
+public (`value`, `io`, `meter`), because each holds items the root does not
+re-export; the others (`channels`, `downmix`, `fold`, `interleaved`, `topology`)
+are private and fully re-exported. The graph as a value (`Topology`), the
+latency pass and the tail fold are `tutti-graph`'s.
 
 ## What this crate does not own
 

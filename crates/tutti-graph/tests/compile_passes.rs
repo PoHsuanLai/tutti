@@ -1,8 +1,8 @@
 //! The compiler's passes, one claim at a time: order, cycles, the latency
-//! solve against `tutti_types::latency`, colouring, coarsening, placement.
+//! solve against `tutti_graph`, colouring, coarsening, placement.
 //!
 //! Thirteen fixed shapes (`shapes()`) cover the latency cases.
-//! `tutti_types::latency` is the pure pass the plan's delays must equal.
+//! `tutti_graph` is the pure pass the plan's delays must equal.
 
 mod common;
 
@@ -13,9 +13,9 @@ use tutti_graph::{
     CompileError, CycleEdge, DelayKey, EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, Op,
     PortKind, Shape, Shapes, Unforkable, compile,
 };
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, Source};
-use tutti_types::latency;
-use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail, Topology};
+use tutti_graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, Source};
+use tutti_graph::{NodeKey, Topology, delays, latency_plan};
+use tutti_types::{ChannelLayout, Latency, Samples, Tail};
 
 /// The `MaxBlock` every plan in this file is compiled for.
 const PREP: usize = 128;
@@ -290,7 +290,7 @@ fn ties_break_by_key_across_edge_kinds() {
 // ---------------------------------------------------------------------------
 
 /// Every per-port delay, every output alignment, the per-channel pre-roll and
-/// the total agree with `tutti_types::delays` on all thirteen shapes.
+/// the total agree with `tutti_graph::delays` on all thirteen shapes.
 ///
 /// Mutation: in `compile`, use `arrival[n]` (not `arrival + latency`) as a
 /// source's departure → `pdc_diamond` loses its 512-frame delay → fails.
@@ -303,7 +303,7 @@ fn pdc_delays_equal_latency_delays() {
     let mut nonzero = 0;
     for (name, t) in shapes() {
         let plan = compiled(&t);
-        let rec = latency::delays(&t);
+        let rec = delays(&t);
         let comp = rec.compensation().clone();
 
         let mut want_in: Vec<(DelayKey, Samples)> = rec
@@ -868,7 +868,7 @@ fn a_global_input_merging_with_a_latent_path_is_delayed() {
     assert_eq!(plan.delay(key), Samples(48));
     // The pure pass agrees.
     assert_eq!(
-        latency::delays(&t).inputs(),
+        delays(&t).inputs(),
         &[(C, 1, Samples(48))],
         "latency::delays aligns the global input as the plan does"
     );
@@ -943,17 +943,17 @@ fn an_event_source_counts_toward_arrival_in_both_solves() {
         Samples(64),
         "the dry port waits for the events"
     );
-    let comp = latency::plan(&g);
+    let comp = latency_plan(&g);
     assert_eq!(comp.total(), Samples(64));
     assert_eq!(plan.total_latency().samples(), comp.total());
     assert_eq!(plan.compensation(), comp.channels());
     assert_eq!(
-        latency::delays(&g).inputs(),
+        delays(&g).inputs(),
         &[(C, 0, Samples(64))],
         "and the pass puts the delay on the same port"
     );
     // Over the topology alone the event path is invisible.
-    assert!(latency::plan(&t).is_empty());
+    assert!(latency_plan(&t).is_empty());
 }
 
 /// N3: a shape whose latency or tail disagrees with its spec is refused, as

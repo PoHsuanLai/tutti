@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_graph::NodeKey;
 use tutti_sampler::{
     Command, DiskStreamer, DiskVoice, MemorySource, Playback, Voice, VoiceNode, VoiceSource,
 };
@@ -23,7 +24,7 @@ use tutti_session::{
     Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, Session,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::{Beat, Bpm, NodeKey, SamplePosition, SampleRate};
+use tutti_types::{Beat, Bpm, SamplePosition, SampleRate};
 
 const RATE: f64 = 48_000.0;
 

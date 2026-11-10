@@ -19,17 +19,17 @@
 use std::sync::Arc;
 
 use audio_automation::{AutomationEnvelope, AutomationPoint, CurveType};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamIn, Prepare, Shape, Status, Transport,
     TransportChanges, Unforkable,
 };
+use tutti_graph::{OutPort, Source};
 use tutti_modulation::ControlProgram;
 use tutti_modulation::Curve;
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
-    Beat, Bpm, ChannelLayout, FrameClock, Hz, LoopRange, NodeKey, ParamKey, SampleRate, Samples,
-    UnitParam,
+    Beat, Bpm, ChannelLayout, FrameClock, Hz, LoopRange, ParamKey, SampleRate, Samples, UnitParam,
 };
 
 const RATE: f64 = 48_000.0;

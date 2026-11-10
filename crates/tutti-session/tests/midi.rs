@@ -9,6 +9,7 @@ use tutti_graph::UmpAt;
 
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
+use tutti_graph::NodeKey;
 use tutti_graph::Offset;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 #[cfg(feature = "midi-hardware")]
@@ -16,9 +17,7 @@ use tutti_midi_hardware::{Direction, EndpointId};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_midi_types::MidiMessage;
 use tutti_transport::MotionEvent;
-use tutti_types::{
-    Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
-};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 

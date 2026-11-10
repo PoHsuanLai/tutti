@@ -896,8 +896,9 @@ mod tests {
     use crate::compile::{Shapes, compile};
     use crate::node::Shape;
     use crate::spec::GraphSpec;
-    use tutti_types::graph::{NodeSpec, OutPort, Source};
-    use tutti_types::{ChannelLayout, NodeKey, Topology};
+    use crate::{NodeKey, Topology};
+    use crate::{NodeSpec, OutPort, Source};
+    use tutti_types::ChannelLayout;
 
     /// Two independent generators, each to its own output: the ops touching
     /// their values are unordered, so they must never share a slot.
@@ -956,11 +957,11 @@ mod tests {
             shapes.insert(NodeKey(k), s);
         }
         t.edges.insert(
-            tutti_types::graph::InPort {
+            crate::InPort {
                 node: NodeKey(2),
                 port: 0,
             },
-            tutti_types::graph::Edge::Direct(Source::Node(OutPort {
+            crate::Edge::Direct(Source::Node(OutPort {
                 node: NodeKey(1),
                 port: 0,
             })),
@@ -1112,11 +1113,11 @@ mod tests {
         }
         let wire = |t: &mut Topology, sink: NodeKey, from: NodeKey| {
             t.edges.insert(
-                tutti_types::graph::InPort {
+                crate::InPort {
                     node: sink,
                     port: 0,
                 },
-                tutti_types::graph::Edge::Direct(Source::Node(OutPort {
+                crate::Edge::Direct(Source::Node(OutPort {
                     node: from,
                     port: 0,
                 })),
@@ -1406,11 +1407,11 @@ mod tests {
         t.nodes
             .insert(thru, NodeSpec::new("thru", st.audio_in, st.audio_out));
         t.edges.insert(
-            tutti_types::graph::InPort {
+            crate::InPort {
                 node: thru,
                 port: 0,
             },
-            tutti_types::graph::Edge::Direct(Source::Node(OutPort {
+            crate::Edge::Direct(Source::Node(OutPort {
                 node: generator,
                 port: 0,
             })),
@@ -1464,8 +1465,8 @@ mod tests {
             .insert(thru, NodeSpec::new("thru", st.audio_in, st.audio_out));
         for port in 0..2 {
             t.edges.insert(
-                tutti_types::graph::InPort { node: thru, port },
-                tutti_types::graph::Edge::Direct(Source::Node(OutPort {
+                crate::InPort { node: thru, port },
+                crate::Edge::Direct(Source::Node(OutPort {
                     node: generator,
                     port,
                 })),

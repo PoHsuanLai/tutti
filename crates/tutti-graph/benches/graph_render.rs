@@ -28,9 +28,10 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples, Tail};
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{ChannelLayout, SampleRate, Samples, Tail};
 
 const SR: f64 = 48_000.0;
 const MAX_BLOCK: usize = 1024;

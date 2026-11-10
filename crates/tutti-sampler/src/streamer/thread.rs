@@ -100,7 +100,7 @@ impl StreamerThread {
     /// Subscribe to a per-channel delay-compensation table, indexed by channel
     /// index and denominated in [`Samples`](tutti_types::Samples).
     ///
-    /// Set by whoever runs `tutti_types::latency::compensate` over the audio
+    /// Set by whoever runs `tutti_graph::compensate` over the audio
     /// graph (a session republishes it with every plan); the streamer reads it
     /// each refill cycle and pre-rolls each stream by its channel's entry.
     /// The subscription is shared, not copied, so later sets are observed.

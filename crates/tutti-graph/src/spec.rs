@@ -1,7 +1,7 @@
 //! The graph value this crate compiles: a [`Topology`] plus event edges and
 //! unit generations.
 //!
-//! # Why a wrapper and not an extension of `tutti_types::graph`
+//! # Why a wrapper and not an extension of `crate`
 //!
 //! Giving `InPort`/`OutPort` a kind in `tutti-types` would break every place
 //! that builds them by literal (`InPort { node, port }`). Event edges also
@@ -16,9 +16,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tutti_types::{Feed, LatencyGraph};
-use tutti_types::{NodeKey, Samples, Topology};
-use tutti_types::{Valid, graph::Invalid};
+use crate::{Feed, LatencyGraph};
+use crate::{Invalid, Valid};
+use crate::{NodeKey, Topology};
+use tutti_types::Samples;
 
 use crate::node::Resolution;
 use crate::param::{ParamIn, ParamMod, ParamRange};
@@ -50,8 +51,8 @@ pub struct EventOut {
 ///
 /// ```compile_fail
 /// use tutti_graph::{EventEdge, EventIn, GraphSpec};
-/// use tutti_types::graph::OutPort;
-/// use tutti_types::NodeKey;
+/// use tutti_graph::OutPort;
+/// use tutti_graph::NodeKey;
 /// let mut g = GraphSpec::default();
 /// let audio = OutPort { node: NodeKey(1), port: 0 };
 /// g.connect_events(EventIn { node: NodeKey(2), port: 0 }, EventEdge::Direct(audio));
@@ -59,7 +60,7 @@ pub struct EventOut {
 ///
 /// ```
 /// use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec};
-/// use tutti_types::NodeKey;
+/// use tutti_graph::NodeKey;
 /// let mut g = GraphSpec::default();
 /// let events = EventOut { node: NodeKey(1), port: 0 };
 /// g.connect_events(EventIn { node: NodeKey(2), port: 0 }, EventEdge::Direct(events));
@@ -69,7 +70,7 @@ pub enum EventEdge {
     /// This block's events from the named port.
     Direct(EventOut),
     /// The named port's events delayed by exactly `delay` frames — a
-    /// declared cycle, exactly as `tutti_types::graph::FeedbackFrom` is for
+    /// declared cycle, exactly as `crate::FeedbackFrom` is for
     /// audio, with the same rule: the delay belongs to the edge, and must be
     /// at least the interpreter's maximum block (see `FeedbackFrom`).
     Feedback {
@@ -519,7 +520,7 @@ impl ValidGraph {
 
 /// The latency folds over the whole spec: the topology's audio ports, plus
 /// each node's event and param sources, which the compiler counts
-/// toward a node's arrival. So `tutti_types::latency::plan(&spec)` is the
+/// toward a node's arrival. So `crate::latency_plan(&spec)` is the
 /// compensation `compile` gives the spec's plan (`tests/compile_passes.rs`
 /// pins it); over `spec.topology` alone, a node fed events by a latent node
 /// would arrive early.

@@ -6,15 +6,14 @@
 use std::sync::{Arc, Mutex};
 
 use tutti_fixtures::midi;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 use tutti_midi_runtime::{MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_session::{MidiRouteRule, Session, SessionNode};
 use tutti_transport::MotionEvent;
-use tutti_types::{
-    Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
-};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const MF: u16 = 0x8000;

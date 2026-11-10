@@ -42,7 +42,7 @@ use bevy_ecs::prelude::*;
 
 use crate::graph::AudioNode;
 use tutti_plugin::handles::{PluginControls, PluginMeter};
-use tutti_types::NodeKey;
+use tutti_graph::NodeKey;
 
 use crate::graph::MetronomeRes;
 use crate::plugin_host::editor::PluginEmitter;

@@ -4,10 +4,11 @@
 use std::sync::Arc;
 
 use tutti_graph::MAX_ROOT_CHANNELS;
+use tutti_graph::NodeKey;
 use tutti_graph::PrerollTable;
 use tutti_nodes::{ClickNode, ClickSettings};
 use tutti_transport::Transport;
-use tutti_types::{ChannelLayout, ChannelTopology, NodeKey, SampleRate, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};
 use crate::{Result, Session};

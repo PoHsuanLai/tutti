@@ -33,13 +33,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tutti_graph::EventOut;
+use tutti_graph::NodeKey;
 use tutti_modulation::{
     Curve, Declarations, Follower, Lfo, Macro, NoteEnvelope, RouteDecl, RouteKey, RouteTarget,
     Source, SourceKey, TargetDecl, TargetKey,
 };
 use tutti_nodes::automation::{LaneControls, RecordMode, Recorder};
 use tutti_nodes::{Feed, ReconcileError};
-use tutti_types::{Depth, NodeKey, ParamAddr, UnitAddr, UnitParam};
+use tutti_types::{Depth, ParamAddr, UnitAddr, UnitParam};
 
 use crate::ModKeys;
 use crate::graph::Graph;

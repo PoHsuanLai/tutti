@@ -85,7 +85,7 @@ pub enum Error {
     )]
     NotForkable {
         /// The node, as the live graph keys it.
-        key: tutti_types::NodeKey,
+        key: tutti_graph::NodeKey,
     },
 
     /// The graph could not be forked for the render for any reason other
@@ -135,7 +135,7 @@ pub enum Error {
     #[error("Export failed: forked node {key:?} {kind:?} during the render: {cause}")]
     ForkFailed {
         /// The node, as the live graph keys it.
-        key: tutti_types::NodeKey,
+        key: tutti_graph::NodeKey,
         /// Crashed or timed out.
         kind: tutti_graph::ForkFaultKind,
         /// The unit's own account (for a plugin, a

@@ -6,11 +6,10 @@
 
 use tutti_engine::Engine;
 use tutti_graph::{Editor, MeterReader, Prepare};
+use tutti_graph::{MeterId, MeterSpec, NodeKey};
+use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{
-    ChannelLayout, InterleavedMut, MeterId, MeterSpec, NodeKey, SampleRate, Samples,
-};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 

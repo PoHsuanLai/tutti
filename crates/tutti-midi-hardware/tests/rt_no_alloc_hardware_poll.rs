@@ -20,10 +20,11 @@ use std::time::Instant;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{noop, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Transport};
 use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
-use tutti_types::{NodeKey, SampleRate, Samples};
+use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 #[global_allocator]

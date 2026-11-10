@@ -75,9 +75,10 @@
 //! so a fork renders the controls as they were at fork time. See
 //! `src/contract/snapshot.rs`.
 
-use tutti_types::graph::OutPort;
+use crate::NodeKey;
+use crate::OutPort;
 use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail, UnitAddr,
+    At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail, UnitAddr,
 };
 use tutti_ump::{Message, NoteNumber, Ump, Voice2, decode};
 
@@ -2102,16 +2103,16 @@ impl BlockRig {
             ChannelLayout::try_from(ins).expect("asserted within RIG_MAX_CHANNELS above");
         for c in 0..ins {
             topology.edges.insert(
-                tutti_types::graph::InPort {
+                crate::InPort {
                     node: key,
                     port: c as u16,
                 },
-                tutti_types::graph::Edge::Direct(tutti_types::graph::Source::Global(c as u16)),
+                crate::Edge::Direct(crate::Source::Global(c as u16)),
             );
         }
         topology.outputs = (0..outs)
             .map(|c| {
-                tutti_types::graph::Source::Node(OutPort {
+                crate::Source::Node(OutPort {
                     node: key,
                     port: c as u16,
                 })

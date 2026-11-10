@@ -9,13 +9,11 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use tutti_types::graph_tail;
-use tutti_types::{ChannelLayout, Samples, Tail, TapAlign, TapId, TapSpec};
-use tutti_types::{Feed, LatencyGraph, latency};
-use tutti_types::{
-    NodeKey, Topology,
-    graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, ParamValue, Source},
+use tutti_graph::{
+    Edge, Feed, FeedbackFrom, InPort, Invalid, LatencyGraph, NodeKey, NodeSpec, OutPort,
+    ParamValue, Source, TapAlign, TapId, TapSpec, Topology, graph_tail, latency_plan,
 };
+use tutti_types::{ChannelLayout, Samples, Tail};
 
 const A: NodeKey = NodeKey(1);
 const B: NodeKey = NodeKey(2);
@@ -92,7 +90,7 @@ fn latency_and_tail_are_folds_over_the_value() {
     let t = unequal_latency_diamond();
     t.validate().expect("well formed");
 
-    let comp = latency::plan(&t);
+    let comp = latency_plan(&t);
     assert_eq!(comp.total(), Samples(512), "graph latency is the slow path");
     // The un-delayed branch is the one that needs pre-roll; the compensation is
     // reported per output channel, and there is one.
@@ -259,7 +257,7 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     let mut lat = broken.clone();
     lat.nodes.get_mut(&A).unwrap().latency = Samples(128);
     let lat = lat.validate().expect("still acyclic");
-    assert_eq!(latency::plan(lat.get()).total(), Samples(128));
+    assert_eq!(latency_plan(lat.get()).total(), Samples(128));
 }
 
 /// An unconnected declared port is reported and does **not** block validity: a
@@ -321,8 +319,8 @@ fn insertion_order_does_not_change_the_value() {
     assert_eq!(hash_of(&forward), hash_of(&backward));
     assert_eq!(forward.topo_order(), backward.topo_order());
     assert_eq!(
-        latency::plan(&forward).total(),
-        latency::plan(&backward).total()
+        latency_plan(&forward).total(),
+        latency_plan(&backward).total()
     );
 }
 

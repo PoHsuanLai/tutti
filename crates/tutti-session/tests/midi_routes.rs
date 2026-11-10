@@ -18,10 +18,11 @@
 
 use std::collections::BTreeSet;
 
+use tutti_graph::NodeKey;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS};
 use tutti_session::{Feeder, MidiRouteRule, Session};
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 use tutti_ump::MidiChannel;
 
 /// A stand-in synth: one MIDI event input.

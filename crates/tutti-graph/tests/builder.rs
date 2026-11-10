@@ -8,12 +8,13 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::{Kind, TestNode, prepare};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventOut, ForkByClone, GraphBuilder, Io, Node, Prepare,
     Renderer, Shape, Status, Transport, Unforkable,
 };
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{Beat, ChannelLayout, Frame, NodeKey, Samples};
+use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
+use tutti_types::{Beat, ChannelLayout, Frame, Samples};
 
 fn signal(n: usize) -> Vec<f32> {
     (0..n)

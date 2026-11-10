@@ -40,12 +40,12 @@ mod support;
 
 use support::{Gain, Sine};
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{Editor, Executor, ForkByClone, Prepare};
 use tutti_transport::Transport;
 use tutti_types::Hz;
 use tutti_types::InterleavedMut;
-use tutti_types::NodeKey;
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);

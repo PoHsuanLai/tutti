@@ -51,8 +51,9 @@ use tutti_export::{
     ConfigError, ExportConfig, Flow, Normalize, Outcome, Progress, RenderClock, RenderGraph,
     Rendered, Written,
 };
+use tutti_graph::NodeKey;
 use tutti_transport::OfflineTransport;
-use tutti_types::{NodeKey, Samples};
+use tutti_types::Samples;
 
 use crate::graph::AudioNodeTarget;
 use crate::graph::PendingExport;

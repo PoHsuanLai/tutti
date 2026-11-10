@@ -30,8 +30,9 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use crate::NodeKey;
 use tutti_rt::{PackedAtomic, RtScope};
-use tutti_types::{NodeKey, ParamAddr, Samples, UnitAddr, UnitParam};
+use tutti_types::{ParamAddr, Samples, UnitAddr, UnitParam};
 
 use crate::event::{Event, EventKind, SegmentShape, segment_progress};
 use crate::spec::EventOut;

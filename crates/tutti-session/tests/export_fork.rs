@@ -24,6 +24,7 @@ use std::time::Duration;
 use tutti_export::{
     ChannelLayout, ConfigError, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig,
 };
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, ForkBuild, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
     NodeParts, ParamNode, ParamSet, Prepare, Shape, Status, param_parts,
@@ -34,7 +35,7 @@ use tutti_session::{
     Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, GraphSource,
     PreparedGraph, Session,
 };
-use tutti_types::{Amplitude, Hz, NodeKey, Param, Q, SampleRate, Samples, Tail, UnitParam};
+use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Tail, UnitParam};
 
 const RATE: f64 = 48_000.0;
 
@@ -316,10 +317,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
             let editor = prepared.graph.editor_mut();
             editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
             for out in editor.spec_mut().topology.outputs.iter_mut() {
-                *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
-                    node: key,
-                    port: 0,
-                });
+                *out = tutti_graph::Source::Node(tutti_graph::OutPort { node: key, port: 0 });
             }
         }));
     let planes = render(&mut session, request);
@@ -428,10 +426,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
         let editor = prepared.graph.editor_mut();
         editor.insert(key, "test:level", Const::mono(level));
         for out in editor.spec_mut().topology.outputs.iter_mut() {
-            *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
-                node: key,
-                port: 0,
-            });
+            *out = tutti_graph::Source::Node(tutti_graph::OutPort { node: key, port: 0 });
         }
     }));
     let planes = render(&mut session, request);

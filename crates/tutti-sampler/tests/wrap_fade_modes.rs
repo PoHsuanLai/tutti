@@ -17,10 +17,11 @@
 
 use std::sync::Arc;
 
+use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Executor, LoopRange, Prepare, Transport, WorkerPool};
+use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource, Wave};
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Beat, Bpm, FrameClock, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, FrameClock, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 const MAX_BLOCK: usize = 64;

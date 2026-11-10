@@ -27,7 +27,8 @@ pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
 /// module docs.
 ///
 /// ```
-/// use tutti_types::{NodeKey, SampleRate, Samples};
+/// use tutti_types::{SampleRate, Samples};
+/// use tutti_graph::NodeKey;
 /// use tutti_ump::{MidiChannel, NoteNumber, U7};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiQueueNode;

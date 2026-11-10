@@ -11,11 +11,12 @@
 //! where the transport, the command queue and PDC all meet.
 
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
 use tutti_graph::contract::{Latent, Pulse};
 use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Unforkable};
 use tutti_transport::{MotionEvent, Transport};
+use tutti_types::Latency;
 use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
-use tutti_types::{Latency, NodeKey};
 use tutti_ump::Ump;
 
 const SR: f64 = 48_000.0;

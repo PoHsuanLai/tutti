@@ -14,18 +14,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
+use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone, ParamIn, ParamRange,
     ScheduleError,
 };
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
     CompileError, Compiled, ControlProgram, Declarations, RouteDecl, RouteKey, RouteTarget,
     SignalKind, Source as ModSource, SourceId, SourceKey, SourceNode, TargetDecl, TargetKey,
     compile,
 };
 use tutti_types::ChannelLayout;
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{At, NodeKey, ParamAddr, ParamCell};
+use tutti_types::{At, ParamAddr, ParamCell};
 
 use crate::automation::{ControlLaneNode, LaneControls};
 use crate::signal::{EnvelopeFollowerNode, NoteEnvelopeNode};
@@ -355,8 +356,9 @@ struct SourcePlan {
 ///     Source, SourceKey, TargetDecl, TargetKey, Wave,
 /// };
 /// use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
+/// use tutti_graph::NodeKey;
 /// use tutti_types::{
-///     Depth, Hz, NodeKey, ParamAddr, ParamCell, PhaseIncrement, SampleRate, Samples, UnitParam, Q,
+///     Depth, Hz, ParamAddr, ParamCell, PhaseIncrement, SampleRate, Samples, UnitParam, Q,
 /// };
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));

@@ -16,8 +16,9 @@ use tutti_graph::{
     CommitError, Cx, Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked,
     IntoNode, Io, Level, MeterReader, Node, NodeParts, Op, Shape, Status, Transport, Unforkable,
 };
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, MeterId, MeterSpec, NodeKey, Samples};
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_graph::{MeterId, MeterSpec, NodeKey};
+use tutti_types::{Beat, Bpm, ChannelLayout, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

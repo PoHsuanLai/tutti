@@ -208,9 +208,8 @@ impl DelayLineNode {
         // A maximum that is not a finite positive span is an empty line, as
         // `Seconds::to_samples_ceil` already reads it (`f32::clamp` panics on
         // a negative or NaN bound); a NaN initial time is zero.
-        // The line's kernel works in `f32` seconds, so the times narrow here.
-        let max_delay = Seconds::from_f32(
-            Some(max_delay_secs.into().to_f32())
+        let max_delay = Seconds(
+            Some(max_delay_secs.into().get())
                 .filter(|s| s.is_finite() && *s > 0.0)
                 .unwrap_or(0.0),
         );

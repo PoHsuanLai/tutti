@@ -27,8 +27,7 @@ impl ExponentialSmoother {
         sample_rate: impl Into<SampleRate>,
         samples_per_step: Samples,
     ) -> Self {
-        // The coefficient is `f32`: the time is read at `f32` precision.
-        let smooth_time = smooth_time.into().narrowed();
+        let smooth_time = smooth_time.into();
         Self {
             value: 0.0,
             coeff: Self::coeff(smooth_time, sample_rate.into(), samples_per_step),

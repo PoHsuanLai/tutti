@@ -152,9 +152,9 @@ impl NoteEnvelopeNode {
     }
 
     fn lengths(&mut self, rate: SampleRate) {
-        self.attack = self.adsr.attack.narrowed().to_samples(rate);
-        self.decay = self.adsr.decay.narrowed().to_samples(rate);
-        self.release = self.adsr.release.narrowed().to_samples(rate);
+        self.attack = self.adsr.attack.to_samples(rate);
+        self.decay = self.adsr.decay.to_samples(rate);
+        self.release = self.adsr.release.to_samples(rate);
         let s = self.adsr.sustain.get();
         // A NaN sustain is 0: the envelope never sends a NaN.
         self.sustain = if s >= 0.0 { s.min(1.0) } else { 0.0 };

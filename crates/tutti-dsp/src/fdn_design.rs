@@ -192,6 +192,11 @@ fn finite(v: f32, default: f32) -> f32 {
     if v.is_finite() { v } else { default }
 }
 
+/// `v` if finite, else `default`, exactly: a time is not narrowed.
+fn finite_secs(v: Seconds, default: Seconds) -> Seconds {
+    if v.get().is_finite() { v } else { default }
+}
+
 impl Design for FdnDesign {
     type Controls = FdnControls;
     type Kernel = FdnKernel;
@@ -216,8 +221,8 @@ impl Design for FdnDesign {
             c.decay[2], // high
         ]
         .map(|s| {
-            let v = finite(s.to_f32(), d.decay[0].to_f32());
-            Seconds::from_f32(v.clamp(MIN_DECAY.to_f32(), self.max_decay.to_f32()))
+            let v = finite_secs(s, d.decay[0]);
+            v.clamp(MIN_DECAY, self.max_decay)
         });
         let rt60 = if freeze {
             [Seconds(f64::INFINITY); 3]
@@ -226,7 +231,7 @@ impl Design for FdnDesign {
         };
         let size = finite(c.size.get(), d.size.get()).clamp(0.0, 1.0);
         let diffusion = finite(c.diffusion.get(), d.diffusion.get()).clamp(0.0, 1.0);
-        let pre = finite(c.pre_delay.to_f32(), 0.0).clamp(0.0, MAX_PRE_DELAY.to_f32());
+        let pre = finite_secs(c.pre_delay, Seconds(0.0)).clamp(Seconds(0.0), MAX_PRE_DELAY);
         let depth = finite(c.modulation.get(), 0.0).abs().min(1.0);
         let mod_rate = finite(c.rate.get(), d.rate.get()).clamp(RATES.0, RATES.1);
         let width = finite(c.width.get(), 1.0).clamp(0.0, MAX_WIDTH);
@@ -310,7 +315,7 @@ impl Design for FdnDesign {
         let _ = rows.push(right);
 
         out.clear(rate);
-        out.pre_delay = pre_delay_frames(Seconds::from_f32(pre), rate);
+        out.pre_delay = pre_delay_frames(pre, rate);
         let _ = out.stages.push(Stage::Fdn(Fdn {
             lines,
             matrix,
@@ -339,9 +344,9 @@ impl Design for FdnDesign {
         let mut b = Bounds::of(&network, ceiling.floor());
         b.tail = match b.tail {
             _ if self.freezable => Ring::Unbounded,
-            Ring::Finite(t) => Ring::Finite(Seconds::from_f32(
-                t.to_f32() * self.rounding_margin(ceiling),
-            )),
+            Ring::Finite(t) => {
+                Ring::Finite(Seconds(t.get() * f64::from(self.rounding_margin(ceiling))))
+            }
             other => other,
         };
         b

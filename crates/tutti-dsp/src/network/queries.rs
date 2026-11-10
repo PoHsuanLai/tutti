@@ -197,7 +197,7 @@ impl Fdn {
                 .map(|(m, l)| decay_seconds(m, l, rate))
                 .fold(0.0, f64::max)
         };
-        Seconds::from_f32(seconds as f32)
+        Seconds(seconds)
     }
 
     /// The slowest line's per-frame figures in `band`: `(log10 ρ, log10 σ,
@@ -263,12 +263,12 @@ impl Fdn {
             return Seconds(f64::INFINITY);
         };
         let per_frame = log_rho + log_sigma;
-        Seconds::from_f32(if per_frame >= 0.0 {
-            f32::INFINITY
+        Seconds(if per_frame >= 0.0 {
+            f64::INFINITY
         } else if per_frame == f64::NEG_INFINITY {
             0.0
         } else {
-            (-3.0 / (rate * per_frame)) as f32
+            -3.0 / (rate * per_frame)
         })
     }
 
@@ -362,16 +362,16 @@ impl Network {
     #[must_use]
     pub fn rt60(&self, band: Band) -> Seconds {
         let rate = self.rate.get();
-        let mut slowest = 0.0f32;
+        let mut slowest = Seconds(0.0);
         for stage in self.stages.iter() {
             let r = match stage {
-                Stage::Fdn(f) => f.rt60(band, rate).to_f32(),
-                Stage::Fir(s) => s.rt60[band.index()].to_f32(),
-                _ => 0.0,
+                Stage::Fdn(f) => f.rt60(band, rate),
+                Stage::Fir(s) => s.rt60[band.index()],
+                _ => Seconds(0.0),
             };
             slowest = slowest.max(r);
         }
-        Seconds::from_f32(slowest)
+        slowest
     }
 
     /// The slowest recirculating stage's [`Fdn::rt60_bound`] in `band`, which
@@ -380,16 +380,16 @@ impl Network {
     #[must_use]
     pub fn rt60_bound(&self, band: Band) -> Seconds {
         let rate = self.rate.get();
-        let mut slowest = 0.0f32;
+        let mut slowest = Seconds(0.0);
         for stage in self.stages.iter() {
             let r = match stage {
-                Stage::Fdn(f) => f.rt60_bound(band, rate).to_f32(),
-                Stage::Fir(s) => s.rt60[band.index()].to_f32(),
-                _ => 0.0,
+                Stage::Fdn(f) => f.rt60_bound(band, rate),
+                Stage::Fir(s) => s.rt60[band.index()],
+                _ => Seconds(0.0),
             };
             slowest = slowest.max(r);
         }
-        Seconds::from_f32(slowest)
+        slowest
     }
 
     /// How long the wet signal rings after the input stops, until it is `floor`
@@ -445,7 +445,7 @@ impl Network {
         if !frames.is_finite() || !decay.is_finite() {
             return Ring::Unbounded;
         }
-        Ring::Finite(Seconds::from_f32((frames / self.rate.get() + decay) as f32))
+        Ring::Finite(Seconds(frames / self.rate.get() + decay))
     }
 
     /// Whether no loop can grow. Every recirculating stage must be stable
@@ -498,7 +498,7 @@ impl Network {
                 Stage::Taps(_) => 0.0,
             })
             .sum();
-        Seconds::from_f32((frames / self.rate.get()) as f32)
+        Seconds(frames / self.rate.get())
     }
 
     /// Echoes per second `at` this long after an impulse, from the loops alone.

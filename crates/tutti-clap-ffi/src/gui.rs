@@ -125,6 +125,138 @@ fn api_uses_logical_pixels(api: *const c_char) -> bool {
     api == CLAP_WINDOW_API_COCOA || api.to_bytes() == b"uikit"
 }
 
+/// One instance's `clap.gui` entries, called with the instance and window API
+/// they were built for.
+///
+/// The one place a `clap.gui` entry is called through: each method calls the
+/// entry if the plugin has it and says so (`None`) if not, so the sequences
+/// below read as the order CLAP gives them.
+struct GuiCall<'a> {
+    gui: &'a clap_plugin_gui,
+    plugin: *const clap_plugin,
+    api: *const c_char,
+}
+
+impl<'a> GuiCall<'a> {
+    /// # Safety
+    /// `plugin` is a live instance `gui` is the `clap.gui` of, called on its
+    /// main thread for as long as the `GuiCall` is used; `api` is a
+    /// nul-terminated window API name valid for that time.
+    unsafe fn new(
+        gui: &'a clap_plugin_gui,
+        plugin: *const clap_plugin,
+        api: *const c_char,
+    ) -> Self {
+        Self { gui, plugin, api }
+    }
+
+    fn is_api_supported(&self, floating: bool) -> Option<bool> {
+        let f = self.gui.is_api_supported?;
+        // SAFETY: the type's invariant: a `[main-thread]` entry of a live instance.
+        Some(unsafe { f(self.plugin, self.api, floating) })
+    }
+
+    fn create(&self, floating: bool) -> Option<bool> {
+        let f = self.gui.create?;
+        // SAFETY: as `is_api_supported`.
+        Some(unsafe { f(self.plugin, self.api, floating) })
+    }
+
+    fn set_scale(&self, scale: f64) -> Option<()> {
+        let f = self.gui.set_scale?;
+        // SAFETY: as `is_api_supported`.
+        unsafe { f(self.plugin, scale) };
+        Some(())
+    }
+
+    fn get_size(&self) -> Option<(u32, u32)> {
+        let f = self.gui.get_size?;
+        let (mut w, mut h) = (0_u32, 0_u32);
+        // SAFETY: as `is_api_supported`; writable out-parameters.
+        unsafe { f(self.plugin, &mut w, &mut h) }.then_some((w, h))
+    }
+
+    fn set_parent(&self, window: clap_window_handle) -> Option<bool> {
+        let f = self.gui.set_parent?;
+        let window = clap_window {
+            api: self.api,
+            specific: window,
+        };
+        // SAFETY: as `is_api_supported`; `window` lives across the call.
+        Some(unsafe { f(self.plugin, &window) })
+    }
+
+    fn set_transient(&self, window: clap_window_handle) -> Option<()> {
+        let f = self.gui.set_transient?;
+        let window = clap_window {
+            api: self.api,
+            specific: window,
+        };
+        // SAFETY: as `set_parent`.
+        unsafe { f(self.plugin, &window) };
+        Some(())
+    }
+
+    fn suggest_title(&self, title: &CStr) -> Option<()> {
+        let f = self.gui.suggest_title?;
+        // SAFETY: as `is_api_supported`; `title` is nul-terminated.
+        unsafe { f(self.plugin, title.as_ptr()) };
+        Some(())
+    }
+
+    fn show(&self) -> Option<()> {
+        let f = self.gui.show?;
+        // SAFETY: as `is_api_supported`.
+        unsafe { f(self.plugin) };
+        Some(())
+    }
+
+    fn can_resize(&self) -> Option<bool> {
+        let f = self.gui.can_resize?;
+        // SAFETY: as `is_api_supported`.
+        Some(unsafe { f(self.plugin) })
+    }
+
+    fn get_resize_hints(&self) -> Option<clap_gui_resize_hints> {
+        let f = self.gui.get_resize_hints?;
+        let mut raw = clap_gui_resize_hints {
+            can_resize_horizontally: false,
+            can_resize_vertically: false,
+            preserve_aspect_ratio: false,
+            aspect_ratio_width: 0,
+            aspect_ratio_height: 0,
+        };
+        // SAFETY: as `is_api_supported`; a writable out-struct.
+        unsafe { f(self.plugin, &mut raw) }.then_some(raw)
+    }
+
+    fn adjust_size(&self, width: &mut u32, height: &mut u32) -> Option<bool> {
+        let f = self.gui.adjust_size?;
+        // SAFETY: as `is_api_supported`; writable in/out sizes.
+        Some(unsafe { f(self.plugin, width, height) })
+    }
+
+    fn set_size(&self, width: u32, height: u32) -> Option<bool> {
+        let f = self.gui.set_size?;
+        // SAFETY: as `is_api_supported`.
+        Some(unsafe { f(self.plugin, width, height) })
+    }
+
+    fn hide(&self) -> Option<()> {
+        let f = self.gui.hide?;
+        // SAFETY: as `is_api_supported`.
+        unsafe { f(self.plugin) };
+        Some(())
+    }
+
+    fn destroy(&self) -> Option<()> {
+        let f = self.gui.destroy?;
+        // SAFETY: as `is_api_supported`.
+        unsafe { f(self.plugin) };
+        Some(())
+    }
+}
+
 /// Creates, scales, sizes, parents and shows an embedded editor.
 ///
 /// # Safety
@@ -137,62 +269,26 @@ unsafe fn embed_editor_sequence(
     window: clap_window_handle,
     scale: f64,
 ) -> Result<EmbedOutcome, GuiError> {
-    // SAFETY (every call below): the plugin's own `clap.gui` entries, with the
-    // instance, `api` and values built here; `[main-thread]` entries (the
-    // contract).
-    if let Some(f) = gui.is_api_supported
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        && !unsafe { f(plugin, api, false) }
-    {
+    // SAFETY: this function's contract.
+    let call = unsafe { GuiCall::new(gui, plugin, api) };
+    if call.is_api_supported(false) == Some(false) {
         return Err(GuiError::EmbeddedUnsupported);
     }
-    let did_create = match gui.create {
-        Some(create) => {
-            // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-            if !unsafe { create(plugin, api, false) } {
-                return Err(GuiError::CreateFailed);
-            }
-            true
-        }
+    let did_create = match call.create(false) {
+        Some(false) => return Err(GuiError::CreateFailed),
+        Some(true) => true,
         None => false,
     };
     // A logical-pixel API (Cocoa, UIKit) scales itself; `set_scale` there
     // would double-scale (`ext/gui.h`).
-    let set_scale = if api_uses_logical_pixels(api) {
-        None
-    } else {
-        gui.set_scale
-    };
-    if let Some(f) = set_scale {
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        unsafe { f(plugin, scale) };
+    if !api_uses_logical_pixels(api) {
+        call.set_scale(scale);
     }
-    let (width, height) = match gui.get_size {
-        Some(f) => {
-            let (mut w, mut h) = (0_u32, 0_u32);
-            // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-            if unsafe { f(plugin, &mut w, &mut h) } {
-                (w, h)
-            } else {
-                (800, 600)
-            }
-        }
-        None => (800, 600),
-    };
-    if let Some(f) = gui.set_parent {
-        let window = clap_window {
-            api,
-            specific: window,
-        };
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        if !unsafe { f(plugin, &window) } {
-            return Err(GuiError::SetParentFailed);
-        }
+    let (width, height) = call.get_size().unwrap_or((800, 600));
+    if call.set_parent(window) == Some(false) {
+        return Err(GuiError::SetParentFailed);
     }
-    if let Some(f) = gui.show {
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        unsafe { f(plugin) };
-    }
+    call.show();
     Ok(EmbedOutcome {
         width,
         height,
@@ -211,39 +307,21 @@ unsafe fn floating_editor_sequence(
     transient: Option<clap_window_handle>,
     title: &CStr,
 ) -> Result<bool, GuiError> {
-    // SAFETY (every call below): as `embed_editor_sequence`.
-    if let Some(f) = gui.is_api_supported
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        && !unsafe { f(plugin, api, true) }
-    {
+    // SAFETY: this function's contract.
+    let call = unsafe { GuiCall::new(gui, plugin, api) };
+    if call.is_api_supported(true) == Some(false) {
         return Err(GuiError::FloatingUnsupported);
     }
-    let did_create = match gui.create {
-        Some(create) => {
-            // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-            if !unsafe { create(plugin, api, true) } {
-                return Err(GuiError::CreateFloatingFailed);
-            }
-            true
-        }
+    let did_create = match call.create(true) {
+        Some(false) => return Err(GuiError::CreateFloatingFailed),
+        Some(true) => true,
         None => false,
     };
-    if let (Some(f), Some(handle)) = (gui.set_transient, transient) {
-        let window = clap_window {
-            api,
-            specific: handle,
-        };
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        unsafe { f(plugin, &window) };
+    if let Some(handle) = transient {
+        call.set_transient(handle);
     }
-    if let Some(f) = gui.suggest_title {
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        unsafe { f(plugin, title.as_ptr()) };
-    }
-    if let Some(f) = gui.show {
-        // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-        unsafe { f(plugin) };
-    }
+    call.suggest_title(title);
+    call.show();
     Ok(did_create)
 }
 
@@ -252,8 +330,9 @@ unsafe fn floating_editor_sequence(
 /// # Safety
 /// As [`embed_editor_sequence`], after the editor was created.
 unsafe fn query_editor_capabilities(gui: &clap_plugin_gui, plugin: *const clap_plugin) -> GuiHints {
-    // SAFETY: the plugin's own entries, as above.
-    let resizable = gui.can_resize.is_some_and(|f| unsafe { f(plugin) });
+    // SAFETY: this function's contract; no entry here takes the window API.
+    let call = unsafe { GuiCall::new(gui, plugin, std::ptr::null()) };
+    let resizable = call.can_resize().unwrap_or(false);
     let mut hints = GuiHints {
         resizable,
         can_resize_horizontally: resizable,
@@ -261,25 +340,12 @@ unsafe fn query_editor_capabilities(gui: &clap_plugin_gui, plugin: *const clap_p
         preserve_aspect_ratio: false,
         aspect_ratio: None,
     };
-    if let Some(f) = gui.get_resize_hints {
-        let mut raw = clap_gui_resize_hints {
-            can_resize_horizontally: false,
-            can_resize_vertically: false,
-            preserve_aspect_ratio: false,
-            aspect_ratio_width: 0,
-            aspect_ratio_height: 0,
-        };
-        // SAFETY: the plugin's own entry with a writable out-struct.
-        if unsafe { f(plugin, &mut raw) } {
-            hints.can_resize_horizontally = raw.can_resize_horizontally;
-            hints.can_resize_vertically = raw.can_resize_vertically;
-            hints.preserve_aspect_ratio = raw.preserve_aspect_ratio;
-            if raw.preserve_aspect_ratio
-                && raw.aspect_ratio_width > 0
-                && raw.aspect_ratio_height > 0
-            {
-                hints.aspect_ratio = Some((raw.aspect_ratio_width, raw.aspect_ratio_height));
-            }
+    if let Some(raw) = call.get_resize_hints() {
+        hints.can_resize_horizontally = raw.can_resize_horizontally;
+        hints.can_resize_vertically = raw.can_resize_vertically;
+        hints.preserve_aspect_ratio = raw.preserve_aspect_ratio;
+        if raw.preserve_aspect_ratio && raw.aspect_ratio_width > 0 && raw.aspect_ratio_height > 0 {
+            hints.aspect_ratio = Some((raw.aspect_ratio_width, raw.aspect_ratio_height));
         }
     }
     hints
@@ -420,19 +486,17 @@ impl Plugin {
         if !self.gui_created {
             return Err(GuiError::NotCreated);
         }
-        let plugin = self.raw();
+        // SAFETY: `&mut self` is the main-thread half of a live instance and
+        // `gui` its `clap.gui`; these entries take no window API.
+        let call = unsafe { GuiCall::new(gui, self.raw(), std::ptr::null()) };
         let (mut w, mut h) = (width, height);
-        // SAFETY: the plugin's own entries with writable in/out sizes.
-        if let Some(adjust) = gui.adjust_size
-            // SAFETY: the plugin's own `clap.gui` entry, with the instance and values built here, under this function's contract (a live instance, main thread).
-            && !unsafe { adjust(plugin, &mut w, &mut h) }
-        {
+        if call.adjust_size(&mut w, &mut h) == Some(false) {
             return Err(GuiError::AdjustRefused);
         }
-        let set_size = gui.set_size.ok_or(GuiError::SetSizeMissing)?;
-        // SAFETY: as above.
-        if !unsafe { set_size(plugin, w, h) } {
-            return Err(GuiError::SetSizeRefused);
+        match call.set_size(w, h) {
+            None => return Err(GuiError::SetSizeMissing),
+            Some(false) => return Err(GuiError::SetSizeRefused),
+            Some(true) => {}
         }
         Ok((w, h))
     }
@@ -451,15 +515,12 @@ impl Plugin {
         }
         self.gui_created = false;
         let Some(gui) = self.gui_ext() else { return };
-        let plugin = self.raw();
-        if let (false, Some(hide)) = (window_destroyed, gui.hide) {
-            // SAFETY: the plugin's own `hide`, as `resize_gui`.
-            unsafe { hide(plugin) };
+        // SAFETY: as `resize_gui`.
+        let call = unsafe { GuiCall::new(gui, self.raw(), std::ptr::null()) };
+        if !window_destroyed {
+            call.hide();
         }
-        if let Some(destroy) = gui.destroy {
-            // SAFETY: the plugin's own `destroy`, as above.
-            unsafe { destroy(plugin) };
-        }
+        call.destroy();
     }
 }
 

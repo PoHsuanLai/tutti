@@ -11,8 +11,7 @@
 //! - **Variable-length text/metadata** — the ~19 UTF-8 messages (project /
 //!   composition / clip name, lyrics, copyright, performer names, …): the free
 //!   function [`push_flex_text`] (a text may span several 128-bit packets, so it
-//!   appends one or more [`Ump`]s to an `&mut Vec`, mirroring
-//!   [`super::endpoint_name`]) plus the [`flex_text`] decoder.
+//!   appends one or more [`Ump`]s to an `&mut Vec`) plus the [`flex_text`] decoder.
 //!
 //! The midi2 field enums (`Tonic`, chord/key `SharpsFlats`, `ChordType`,
 //! `Alteration`) are re-exported here so consumers name them as
@@ -294,8 +293,7 @@ pub enum FlexTextKind {
 
 /// Emits a Flex Data text/metadata message of `kind` carrying `text`, appending
 /// one or more [`Ump`]s (one per 128-bit packet) to `out`. UTF-8 text
-/// longer than one packet is fragmented by midi2's Format field, mirroring
-/// [`super::endpoint_name`]. Inverse: [`flex_text`] on each reassembled message.
+/// longer than one packet is fragmented by midi2's Format field. Inverse: [`flex_text`] on each reassembled message.
 pub fn push_flex_text(kind: FlexTextKind, text: &str, group: MidiGroup, out: &mut Vec<Ump>) {
     use midi2::Data;
 

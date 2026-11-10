@@ -1,22 +1,22 @@
 use super::error::Result;
 use tutti_dsp::VbapGains;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::{Azimuth, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
+use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
 use tutti_types::{ChannelLayout, Fold};
 
 use super::panner::VbapPanner;
+use crate::ramp::LastGood;
 use crate::spatial::SpatialTarget;
 use crate::spatial::fork::{FreshFork, fresh_fork_parts};
 use crate::spatial::layout::speaker_channel_map;
-use crate::spatial::target::hold_finite;
 
-/// The last finite value each control cell held, for [`hold_finite`].
+/// The last finite value each control cell held.
 #[derive(Clone, Copy, Debug)]
-struct LastFinite {
-    azimuth: f32,
-    elevation: f32,
-    spread: f32,
-    width: f32,
+struct Held {
+    azimuth: LastGood,
+    elevation: LastGood,
+    spread: LastGood,
+    width: LastGood,
 }
 
 /// A VBAP loudspeaker panner: stereo in, one output per speaker of a fixed
@@ -113,7 +113,7 @@ pub struct VbapPannerNode {
     /// The last finite azimuth, elevation, spread and width the cells held. The
     /// de-zipper smoother is recursive, so one NaN or ±∞ bearing would leave
     /// it NaN for good; a non-finite write reads as unchanged instead.
-    good: LastFinite,
+    good: Held,
 }
 
 /// The live controls of a [`VbapPannerNode`]: its position, [`Spread`] and
@@ -288,11 +288,11 @@ impl VbapPannerNode {
             ramp_from: None,
             fold: Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO)
                 .expect("stereo folds to mono"),
-            good: LastFinite {
-                azimuth: 0.0,
-                elevation: 0.0,
-                spread: Spread::POINT.get(),
-                width: StereoWidth::NATURAL.get(),
+            good: Held {
+                azimuth: LastGood::fixed(Azimuth::FRONT.get()),
+                elevation: LastGood::fixed(Elevation::LEVEL.get()),
+                spread: LastGood::fixed(Spread::POINT.get()),
+                width: LastGood::fixed(StereoWidth::NATURAL.get()),
             },
         }
     }
@@ -312,14 +312,13 @@ impl VbapPannerNode {
     /// the last finite one, the bearing wrapped and the height and spread
     /// clamped.
     #[inline]
-    fn placement(&mut self) -> (Azimuth, Elevation, Spread) {
-        let (azimuth, elevation) = self.controls.target.load();
-        let azimuth = hold_finite(&mut self.good.azimuth, azimuth.get());
-        let elevation = hold_finite(&mut self.good.elevation, elevation.get());
-        let spread = hold_finite(&mut self.good.spread, self.controls.spread.load().get());
+    fn placement(&mut self) -> (Direction, Spread) {
+        let aim = self.controls.target.load();
+        let azimuth = self.good.azimuth.read(aim.azimuth.get());
+        let elevation = self.good.elevation.read(aim.elevation.get());
+        let spread = self.good.spread.read(self.controls.spread.load().get());
         (
-            Azimuth(azimuth).wrap(),
-            Elevation::new_clamped(elevation),
+            Direction::new(Azimuth(azimuth).wrap(), Elevation::new_clamped(elevation)),
             Spread::new_clamped(spread),
         )
     }
@@ -332,18 +331,13 @@ impl VbapPannerNode {
     /// which is what keeps consecutive blocks continuous: a block boundary is
     /// a point on the ramp, never a step.
     fn block_gains(&mut self, frames: usize) -> (VbapGains, VbapGains) {
-        let (azimuth, elevation, spread) = self.placement();
-        let width = StereoWidth(hold_finite(
-            &mut self.good.width,
-            self.controls.width.load().get(),
-        ));
+        let (aim, spread) = self.placement();
+        let width = StereoWidth(self.good.width.read(self.controls.width.load().get()));
         let from = match self.ramp_from {
             Some(gains) => gains,
             None => self.panner.gains_now(width, spread),
         };
-        let to = self
-            .panner
-            .solve_block((azimuth, elevation), width, spread, frames);
+        let to = self.panner.solve_block(aim, width, spread, frames);
         self.ramp_from = Some(to);
         (from, to)
     }
@@ -435,8 +429,8 @@ impl Node for VbapPannerNode {
         // `set_position` → `reset` with no block between resumes there.
         // Dropping `ramp_from` discards the previous block's gains along with
         // the ramp.
-        let (azimuth, elevation, _) = self.placement();
-        self.panner.reset_state(azimuth, elevation);
+        let (aim, _) = self.placement();
+        self.panner.reset_state(aim);
         self.ramp_from = None;
     }
 }

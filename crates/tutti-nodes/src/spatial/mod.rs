@@ -15,7 +15,6 @@
 mod fork;
 mod hrtf;
 mod layout;
-mod smoothing;
 mod target;
 mod vbap;
 

@@ -92,6 +92,27 @@ unit! {
 // NOT `Additive`: `Elevation + Elevation` is a position sum with no
 // origin, and it would also bypass the pole clamp. `tilt_by` is the addition.
 
+/// Where a source is aimed: a bearing and a height.
+///
+/// The two are different units on purpose (a bearing wraps, a height
+/// saturates), so a pair of them is one named value and not a tuple that can
+/// be written the wrong way round.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Direction {
+    /// The bearing on the horizontal circle.
+    pub azimuth: Azimuth,
+    /// The height above the horizontal plane.
+    pub elevation: Elevation,
+}
+
+impl Direction {
+    /// The direction at `azimuth` and `elevation`.
+    #[must_use]
+    pub const fn new(azimuth: Azimuth, elevation: Elevation) -> Self {
+        Self { azimuth, elevation }
+    }
+}
+
 impl Elevation {
     /// Directly below.
     pub const DOWN: Elevation = Elevation(-90.0);

@@ -1,4 +1,5 @@
 use super::*;
+use tutti_types::{Azimuth, Elevation};
 
 /// A tetrahedron with delta responses: the smallest sphere that parses.
 fn tetrahedron(rate: u32) -> Vec<u8> {
@@ -35,7 +36,7 @@ fn tetrahedron(rate: u32) -> Vec<u8> {
 #[test]
 fn a_clone_shares_the_sphere_and_its_spectra() {
     let rate = SampleRate(48_000.0);
-    let front = (Azimuth::FRONT, Elevation::LEVEL);
+    let front = Direction::new(Azimuth::FRONT, Elevation::LEVEL);
     let mut a = HrtfBinaural::new(&tetrahedron(48_000), rate, front).expect("parses");
     let b = a.fresh(front);
     assert!(Arc::ptr_eq(&a.sphere, &b.sphere));
@@ -56,7 +57,7 @@ fn a_clone_shares_the_sphere_and_its_spectra() {
 /// → the second rate prepares its own set and the `ptr_eq` fails.
 #[test]
 fn a_prepare_above_the_ceiling_keeps_one_set() {
-    let front = (Azimuth::FRONT, Elevation::LEVEL);
+    let front = Direction::new(Azimuth::FRONT, Elevation::LEVEL);
     let mut a =
         HrtfBinaural::new(&tetrahedron(48_000), SampleRate(1_536_000.0), front).expect("parses");
     let set = a.set.clone();
@@ -86,7 +87,7 @@ fn a_degenerate_direction_takes_a_real_vertex_and_renders_finite_audio() {
     let mut p = HrtfBinaural::new(
         &tetrahedron(48_000),
         rate,
-        (Azimuth::FRONT, Elevation::LEVEL),
+        Direction::new(Azimuth::FRONT, Elevation::LEVEL),
     )
     .expect("parses");
     let mut hint = 0;
@@ -103,8 +104,8 @@ fn a_degenerate_direction_takes_a_real_vertex_and_renders_finite_audio() {
     let input = [0.5f32; 64];
     let (mut left, mut right) = ([0.0f32; 64], [0.0f32; 64]);
     for target in [
-        (Azimuth(f32::NAN), Elevation(f32::NAN)),
-        (Azimuth(f32::INFINITY), Elevation(0.0)),
+        Direction::new(Azimuth(f32::NAN), Elevation(f32::NAN)),
+        Direction::new(Azimuth(f32::INFINITY), Elevation(0.0)),
     ] {
         let mut peak = 0.0f32;
         for _ in 0..20 {

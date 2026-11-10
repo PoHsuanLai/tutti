@@ -71,7 +71,7 @@ mod transport;
 use super::samples::Samples;
 
 pub use amounts::{Depth, Drive, Feedback, Mix, Spread, StereoWidth};
-pub use angles::{ArcDegrees, Azimuth, Elevation, Phase, PhaseIncrement, Radians};
+pub use angles::{ArcDegrees, Azimuth, Direction, Elevation, Phase, PhaseIncrement, Radians};
 pub use level::{Amplitude, Db};
 pub use measures::{Confidence, Correlation, Pan, Velocity};
 pub use ratios::{Cents, CompressionRatio, Q, Resonance, Semitones};

@@ -108,7 +108,7 @@ mod tests {
     ///
     /// Mutation (run): `toward` returning `current + coeff * target` fails.
     /// Also carries the height half of the deleted `tutti-nodes` smoother tests
-    /// (the plain step of `ExponentialSmoother::process`): the same mutation
+    /// (the plain step of `AngleSmoother::step`): the same mutation
     /// failed the deleted `linear_smoothing_still_converges_for_elevation`.
     /// (The retention form is not caught here, where `1 - c` is exact; the
     /// nodes' render digests catch it.)

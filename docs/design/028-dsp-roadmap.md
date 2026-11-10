@@ -1078,9 +1078,9 @@ no benefit until `DesignNode` exists); step 3 below then dissolved the crate int
 
 | Moves to `tutti-dsp/src/spatial/` (private module; types exported at the root) | Stays in `tutti-spatial` |
 |---|---|
-| The pure VBAP solve of `vbap/panner.rs`: direction (and spread, width) to gains, over a speaker layout | `AngleSmoother`, `ExponentialSmoother` and `SpatialTarget`: doc 024 row 46 and consolidation 2 (#451) keep the angle variant in spatial over `tutti_dsp::Smoother`, and this document does not reverse that |
+| The pure VBAP solve of `vbap/panner.rs`: direction (and spread, width) to gains, over a speaker layout | `AngleSmoother` and `SpatialTarget`: doc 024 row 46 and consolidation 2 (#451) keep the angle variant in spatial over `tutti_dsp::Smoother`, and this document does not reverse that |
 | `hrtf/panner.rs`'s `HrtfBinaural` convolution core and `ring_out`; the public `HrtfBinauralError`, `MIN_SPHERE_RATE`, `MAX_SPHERE_RATE`, `MAX_PREPARED_RATE` | `VbapPannerNode`, `HrtfBinauralNode` and their controls, `speaker_of_channel` |
-| `hrtf/sphere.rs`: `HrirSphere::parse(&[u8])`, `HrtfSet::build`, `resample_into`/`resample_batched` (on `WindowedSinc`), `Face`, the barycentric lookup | `layout.rs`, `fork.rs`, `hold_finite`, `mix.rs` (graph assembly; its `tutti-nodes` edge keeps the crate at layer 5), `VbapError` |
+| `hrtf/sphere.rs`: `HrirSphere::parse(&[u8])`, `HrtfSet::build`, `resample_into`/`resample_batched` (on `WindowedSinc`), `Face`, the barycentric lookup | `layout.rs`, `fork.rs`, `mix.rs` (graph assembly; its `tutti-nodes` edge keeps the crate at layer 5), `VbapError` |
 
 **The smoothing seam.** `VbapPanner` and `HrtfBinaural` today own an
 `AngleSmoother` as a field. Because the smoother stays, it moves up into the

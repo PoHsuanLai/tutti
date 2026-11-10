@@ -71,7 +71,7 @@ fn make_node() -> HrtfBinauralNode {
 /// Asserted on the de-zipper's aim, the direction each step renders:
 /// the output alone cannot show it, since the sphere's face search
 /// answers some face for a NaN direction and the output stays finite,
-/// at the wrong place. Without `hold_finite` the smoother's state turns
+/// at the wrong place. Without `LastGood` the smoother's state turns
 /// NaN on the first step and stays NaN through every later target.
 ///
 /// Mutation (run): `placement` returning the raw cells
@@ -92,8 +92,8 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
             assert!(out.iter().flatten().all(|s| s.is_finite()));
         }
     };
-    let near = |(az, el): (Azimuth, Elevation), want: (f32, f32)| {
-        (az.get() - want.0).abs() < 0.01 && (el.get() - want.1).abs() < 0.01
+    let near = |aim: Direction, want: (f32, f32)| {
+        (aim.azimuth.get() - want.0).abs() < 0.01 && (aim.elevation.get() - want.1).abs() < 0.01
     };
     node.controls()
         .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
@@ -129,9 +129,9 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
         );
     }
     // `set_position` normalizes, so ±∞ reaches the cell only by a raw
-    // store; `hold_finite` must still refuse it there.
+    // store; `LastGood` must still refuse it there.
     //
-    // Mutation (run): `hold_finite`'s `is_finite` → `!is_nan` → the aim
+    // Mutation (run): `LastGood`'s `is_finite` → `!is_nan` → the aim
     // goes to ∞ and does not recover → fails.
     for (az, el) in [
         (f32::INFINITY, 30.0),
@@ -324,7 +324,7 @@ fn dry_and_wet_leave_together_at_every_blend() {
 /// the blend it replaced, never as NaN output.
 ///
 /// Mutation (run): reading `self.controls.blend.load()` in `process` without
-/// the `hold_finite` makes the NaN case render NaN (it failed that way before the fix).
+/// the `LastGood` makes the NaN case render NaN (it failed that way before the fix).
 #[test]
 fn a_nan_blend_holds_the_last_one() {
     let mut node = make_node();
@@ -444,12 +444,11 @@ fn a_prepare_above_the_ceiling_retunes_the_glide() {
 /// Remaining fraction of a step from 0 to 90 degrees of height after
 /// `steps` rendered steps.
 fn remaining_after(aim: &mut AngleSmoother, steps: usize) -> f32 {
-    aim.reset_to_target(Azimuth::FRONT, Elevation(0.0));
+    aim.reset_to_target(Direction::new(Azimuth::FRONT, Elevation(0.0)));
     for _ in 0..steps {
-        aim.step(Azimuth::FRONT, Elevation(90.0));
+        aim.step(Direction::new(Azimuth::FRONT, Elevation(90.0)));
     }
-    let (_, el) = aim.current();
-    (90.0 - el.get()) / 90.0
+    (90.0 - aim.current().elevation.get()) / 90.0
 }
 
 /// The de-zipper's time constant is 50 ms of audio: after 50 ms of
@@ -461,7 +460,7 @@ fn remaining_after(aim: &mut AngleSmoother, steps: usize) -> f32 {
 /// - build with a stride of one (`AngleSmoother::new(sample_rate,
 ///   Samples(1))`) → after twenty steps almost all of the move is left
 ///   and the assertion fails.
-/// - drop `self.stride` from `ExponentialSmoother::set_sample_rate`
+/// - drop `self.stride` from `AngleSmoother::set_sample_rate`
 ///   (retune with a stride of one) → the 102.4 kHz half fails.
 #[test]
 fn the_glide_has_a_50_ms_time_constant_in_audio_time() {

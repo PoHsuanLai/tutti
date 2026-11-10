@@ -1,5 +1,5 @@
 use super::*;
-use tutti_types::Seconds;
+use tutti_types::{Azimuth, Elevation, Seconds};
 
 /// `solve_block` lands on the exact one-pole response: after `N`
 /// frames the bearing and height are `target - (target - start) *
@@ -10,7 +10,7 @@ use tutti_types::Seconds;
 ///
 /// Mutations (each run, each fails): `gap_closed` returning `coeff`
 /// whatever the step count (one step per block: the response falls
-/// 60 frames behind); `advance_angle` taking the arc as `target -
+/// 60 frames behind); `AngleSmoother::advance` taking the arc as `target -
 /// current` (the sweep goes the long way); `solve_block` solving the
 /// gains at the position it started from, before the advance (the gains
 /// are one block behind the position: the `gains` assertion fails).
@@ -21,36 +21,39 @@ fn solve_block_follows_the_exact_one_pole_response() {
             48_000.0,
             64usize,
             (20.0f32, 0.0f32),
-            (Azimuth(60.0), Elevation(5.0)),
+            Direction::new(Azimuth(60.0), Elevation(5.0)),
         ),
         (
             48_000.0,
             1024,
             (170.0, 0.0),
-            (Azimuth(-170.0), Elevation(-30.0)),
+            Direction::new(Azimuth(-170.0), Elevation(-30.0)),
         ),
         (
             192_000.0,
             64,
             (-170.0, 20.0),
-            (Azimuth(150.0), Elevation(80.0)),
+            Direction::new(Azimuth(150.0), Elevation(80.0)),
         ),
     ] {
         let tol = 0.005 * rate as f32 / 48_000.0;
         let coeff = f64::from(Seconds(0.05).one_pole_coeff(SampleRate(rate)));
-        let arc = f64::from(Azimuth(start.0).shortest_arc_to(target.0).get());
+        let arc = f64::from(Azimuth(start.0).shortest_arc_to(target.azimuth).get());
         let mut panner = VbapPanner::stereo().unwrap();
         panner.set_sample_rate(SampleRate(rate));
         panner
             .smoother
-            .reset_to_target(Azimuth(start.0), Elevation(start.1));
+            .reset_to_target(Direction::new(Azimuth(start.0), Elevation(start.1)));
         for b in 1..=(rate as usize / block) {
             let gains = panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, block);
             let left = (1.0 - coeff).powi((b * block) as i32);
             let want = Azimuth((f64::from(start.0) + arc * (1.0 - left)) as f32);
-            let want_el =
-                f64::from(target.1.get()) - (f64::from(target.1.get()) - f64::from(start.1)) * left;
-            let (az, el) = panner.smoother.current();
+            let want_el = f64::from(target.elevation.get())
+                - (f64::from(target.elevation.get()) - f64::from(start.1)) * left;
+            let Direction {
+                azimuth: az,
+                elevation: el,
+            } = panner.smoother.current();
             // The gains are the solve at the block's *last* frame, the
             // advanced position, not at the one the block started from.
             let at_end = panner
@@ -77,7 +80,7 @@ fn solve_block_follows_the_exact_one_pole_response() {
 #[test]
 fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
     let mut panner = VbapPanner::stereo().unwrap();
-    let target = (Azimuth(40.0), Elevation::LEVEL);
+    let target = Direction::new(Azimuth(40.0), Elevation::LEVEL);
     let mut gains = panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, 64);
     for _ in 0..2_000 {
         gains = panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, 64);
@@ -87,10 +90,13 @@ fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
     let again = panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, 64);
     assert!(same_bits(state, panner.smoother.current()));
     assert_eq!(gains, again);
-    assert!((state.0.get() - 40.0).abs() < 0.001, "{state:?}");
-    let want = panner
-        .kernel
-        .gains(target.0, target.1, StereoWidth::NATURAL, Spread::POINT);
+    assert!((state.azimuth.get() - 40.0).abs() < 0.001, "{state:?}");
+    let want = panner.kernel.gains(
+        target.azimuth,
+        target.elevation,
+        StereoWidth::NATURAL,
+        Spread::POINT,
+    );
     for s in 0..2 {
         let (g, w) = (again.pair(s), want.pair(s));
         assert!(
@@ -107,20 +113,26 @@ fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
 #[test]
 fn a_settled_source_moves_again_when_its_target_does() {
     let mut panner = VbapPanner::stereo().unwrap();
-    let a = (Azimuth(40.0), Elevation::LEVEL);
+    let a = Direction::new(Azimuth(40.0), Elevation::LEVEL);
     for _ in 0..2_000 {
         panner.solve_block(a, StereoWidth::NATURAL, Spread::POINT, 64);
     }
     assert!(panner.settled_at.is_some());
-    let b = (Azimuth(-60.0), Elevation(10.0));
+    let b = Direction::new(Azimuth(-60.0), Elevation(10.0));
     panner.solve_block(b, StereoWidth::NATURAL, Spread::POINT, 64);
-    let (az, el) = panner.smoother.current();
+    let Direction {
+        azimuth: az,
+        elevation: el,
+    } = panner.smoother.current();
     assert!(az.get() < 40.0 - 1.0, "did not leave 40: {az:?}");
     assert!(el.get() > 0.1, "height frozen: {el:?}");
     for _ in 0..4_000 {
         panner.solve_block(b, StereoWidth::NATURAL, Spread::POINT, 1024);
     }
-    let (az, el) = panner.smoother.current();
+    let Direction {
+        azimuth: az,
+        elevation: el,
+    } = panner.smoother.current();
     assert!((az.get() + 60.0).abs() < 0.001 && (el.get() - 10.0).abs() < 0.001);
 }
 
@@ -129,12 +141,12 @@ fn a_settled_source_moves_again_when_its_target_does() {
 /// advance would have moved the state (else a stale skip is invisible).
 fn solve_matches_an_unconditional_advance(
     panner: &mut VbapPanner,
-    target: (Azimuth, Elevation),
+    target: Direction,
     frames: usize,
 ) {
     let mut want = panner.smoother.clone();
     let before = want.current();
-    let want = want.advance(target.0, target.1, frames);
+    let want = want.advance(target, frames);
     assert!(
         !same_bits(want, before),
         "the premise: this advance must move the state"
@@ -148,7 +160,7 @@ fn solve_matches_an_unconditional_advance(
 }
 
 /// Settle `panner` on `target` at `frames`-frame blocks.
-fn settle(panner: &mut VbapPanner, target: (Azimuth, Elevation), frames: usize) {
+fn settle(panner: &mut VbapPanner, target: Direction, frames: usize) {
     for _ in 0..20_000 {
         panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, frames);
         if panner.settled_at.is_some() {
@@ -172,7 +184,7 @@ fn settle(panner: &mut VbapPanner, target: (Azimuth, Elevation), frames: usize) 
 /// the first advance back is skipped).
 #[test]
 fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
-    let target = (Azimuth(40.0), Elevation(10.0));
+    let target = Direction::new(Azimuth(40.0), Elevation(10.0));
 
     // rate: the larger coefficient moves a state the smaller one held.
     let mut panner = VbapPanner::stereo().unwrap();
@@ -184,7 +196,7 @@ fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
     // reset: reseeded away from a target it had settled on.
     let mut panner = VbapPanner::stereo().unwrap();
     settle(&mut panner, target, 64);
-    panner.reset_state(Azimuth(-20.0), Elevation::LEVEL);
+    panner.reset_state(Direction::new(Azimuth(-20.0), Elevation::LEVEL));
     solve_matches_an_unconditional_advance(&mut panner, target, 64);
 
     // frames: stalled at 64-frame blocks, still moving at 1024.
@@ -196,18 +208,18 @@ fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
 /// A bearing across the seam takes the short way, in one big block
 /// too: from 170 to -170 the value passes 180, never near 0.
 ///
-/// Mutation (run): `advance_angle` using the plain difference
+/// Mutation (run): `AngleSmoother::advance` using the plain difference
 /// `target - value` → fails (the value heads to 0).
 #[test]
 fn a_block_across_the_seam_takes_the_short_arc() {
     let mut panner = VbapPanner::stereo().unwrap();
     panner
         .smoother
-        .reset_to_target(Azimuth(170.0), Elevation(0.0));
-    let target = (Azimuth(-170.0), Elevation::LEVEL);
+        .reset_to_target(Direction::new(Azimuth(170.0), Elevation(0.0)));
+    let target = Direction::new(Azimuth(-170.0), Elevation::LEVEL);
     for _ in 0..200 {
         panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, 64);
-        let az = panner.smoother.current().0.get();
+        let az = panner.smoother.current().azimuth.get();
         assert!(az.abs() > 169.0, "left the short arc: {az}");
     }
 }

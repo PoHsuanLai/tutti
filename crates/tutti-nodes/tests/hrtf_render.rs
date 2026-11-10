@@ -18,7 +18,7 @@ use tutti_dsp::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHER
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::HrtfBinauralNode;
-use tutti_types::{Azimuth, Elevation, SampleRate, Samples, Tail};
+use tutti_types::{Azimuth, Direction, Elevation, SampleRate, Samples, Tail};
 
 const RATE: u32 = 48_000;
 /// The convolution step (`tutti_dsp::HRTF_STEP`).
@@ -147,13 +147,13 @@ fn mirrored_response(verts: &[[f32; 3]], len: usize) -> impl Fn(usize, usize) ->
 }
 
 /// The bearing and height that point at `p`: the inverse of the panner's
-/// `direction_from_degrees` (0 = front/-z, +90 = left/-x, +90 up = +y).
-fn bearing_of(p: [f32; 3]) -> (Azimuth, Elevation) {
+/// `unit_vector` (0 = front/-z, +90 = left/-x, +90 up = +y).
+fn bearing_of(p: [f32; 3]) -> Direction {
     let [x, y, z] = p.map(f64::from);
     let r = (x * x + y * y + z * z).sqrt();
     let az = (-x).atan2(-z).to_degrees();
     let el = (y / r).asin().to_degrees();
-    (Azimuth(az as f32), Elevation(el as f32))
+    Direction::new(Azimuth(az as f32), Elevation(el as f32))
 }
 
 fn node(bytes: &[u8], rate: u32) -> HrtfBinauralNode {
@@ -175,11 +175,11 @@ fn node(bytes: &[u8], rate: u32) -> HrtfBinauralNode {
 /// it left even a short history.)
 fn ir_of(
     node: &mut HrtfBinauralNode,
-    (azimuth, elevation): (Azimuth, Elevation),
+    aim: Direction,
     rate: u32,
     len: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    node.controls().set_position(azimuth, elevation);
+    node.controls().set_position(aim.azimuth, aim.elevation);
     Node::reset(node);
     let latency = node.shape().latency.samples().get();
     let lead = STEP + 100;
@@ -260,7 +260,12 @@ fn straight_ahead_is_balanced_and_hard_left_favours_the_left_ear() {
     let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
     let mut node = node(&bytes, RATE);
 
-    let (l, r) = ir_of(&mut node, (Azimuth::FRONT, Elevation::LEVEL), RATE, LEN);
+    let (l, r) = ir_of(
+        &mut node,
+        Direction::new(Azimuth::FRONT, Elevation::LEVEL),
+        RATE,
+        LEN,
+    );
     let (el, er) = (energy(&l), energy(&r));
     assert!(el > 0.1, "straight ahead rendered nothing: {el}");
     assert!(
@@ -268,7 +273,12 @@ fn straight_ahead_is_balanced_and_hard_left_favours_the_left_ear() {
         "straight ahead: left energy {el}, right {er}"
     );
 
-    let (l, r) = ir_of(&mut node, (Azimuth(90.0), Elevation::LEVEL), RATE, LEN);
+    let (l, r) = ir_of(
+        &mut node,
+        Direction::new(Azimuth(90.0), Elevation::LEVEL),
+        RATE,
+        LEN,
+    );
     let (el, er) = (energy(&l), energy(&r));
     assert!(
         el > 2.0 * er,
@@ -303,7 +313,12 @@ fn a_direction_no_face_covers_takes_the_nearest_vertex() {
     let bytes = sphere_bytes(RATE, LEN, &verts, &faces, response);
     let mut node = node(&bytes, RATE);
 
-    let (l, r) = ir_of(&mut node, (Azimuth(180.0), Elevation::LEVEL), RATE, LEN);
+    let (l, r) = ir_of(
+        &mut node,
+        Direction::new(Azimuth(180.0), Elevation::LEVEL),
+        RATE,
+        LEN,
+    );
     for (ear, got) in [(0, &l), (1, &r)] {
         let want = response(3, ear);
         for (i, (g, w)) in got.iter().zip(&want).enumerate() {
@@ -314,7 +329,12 @@ fn a_direction_no_face_covers_takes_the_nearest_vertex() {
         }
     }
 
-    let (l, r) = ir_of(&mut node, (Azimuth(f32::NAN), Elevation::LEVEL), RATE, LEN);
+    let (l, r) = ir_of(
+        &mut node,
+        Direction::new(Azimuth(f32::NAN), Elevation::LEVEL),
+        RATE,
+        LEN,
+    );
     assert!(
         l.iter().chain(&r).all(|s| s.is_finite()),
         "a non-finite bearing rendered a non-finite sample"
@@ -357,7 +377,7 @@ fn resampling_the_sphere_keeps_its_dc_gain() {
     // A vertex's own direction, so the blend is that vertex alone.
     let v = 8;
     node.controls()
-        .set_position(bearing_of(verts[v]).0, bearing_of(verts[v]).1);
+        .set_position(bearing_of(verts[v]).azimuth, bearing_of(verts[v]).elevation);
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
@@ -416,7 +436,7 @@ fn downsampling_low_passes_below_the_new_nyquist() {
     let mut node = node(&bytes, TO);
     let v = 8;
     node.controls()
-        .set_position(bearing_of(verts[v]).0, bearing_of(verts[v]).1);
+        .set_position(bearing_of(verts[v]).azimuth, bearing_of(verts[v]).elevation);
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
@@ -483,7 +503,7 @@ fn the_tail_is_the_ring_out_after_the_latency() {
     });
     for offset in [0, 1, 100, STEP - 1] {
         let mut node = node(&bytes, RATE);
-        let (azimuth, elevation) = bearing_of(verts[0]);
+        let Direction { azimuth, elevation } = bearing_of(verts[0]);
         node.controls().set_position(azimuth, elevation);
         Node::reset(&mut node);
         let shape = node.shape();
@@ -826,17 +846,17 @@ fn render_in_blocks(
     bytes: &[u8],
     input: &[f32],
     block: usize,
-    start: (Azimuth, Elevation),
-    moves: &[(usize, (Azimuth, Elevation))],
+    start: Direction,
+    moves: &[(usize, Direction)],
 ) -> (Vec<f32>, Vec<f32>) {
     let mut node = node(bytes, RATE);
-    node.controls().set_position(start.0, start.1);
+    node.controls().set_position(start.azimuth, start.elevation);
     Node::reset(&mut node);
     let (mut left, mut right) = (Vec::new(), Vec::new());
     for (i, chunk) in input.chunks(block).enumerate() {
-        for &(at, (az, el)) in moves {
+        for &(at, to) in moves {
             if at == i * block {
-                node.controls().set_position(az, el);
+                node.controls().set_position(to.azimuth, to.elevation);
             }
         }
         let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
@@ -862,7 +882,7 @@ fn the_render_is_independent_of_the_block_length() {
     let (verts, faces) = icosahedron();
     let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
     let input = noise(1000);
-    let at = (Azimuth(37.0), Elevation(12.0));
+    let at = Direction::new(Azimuth(37.0), Elevation(12.0));
     let reference = render_in_blocks(&bytes, &input, 64, at, &[]);
     assert!(energy(&reference.0) > 0.0, "the reference is silent");
     for block in [1, 7, 33] {
@@ -893,10 +913,10 @@ fn a_moving_source_is_independent_of_the_block_length() {
     let (verts, faces) = icosahedron();
     let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
     let input = noise(1536);
-    let start = (Azimuth(37.0), Elevation(12.0));
+    let start = Direction::new(Azimuth(37.0), Elevation(12.0));
     let moves = [
-        (320, (Azimuth(-120.0), Elevation(-30.0))),
-        (832, (Azimuth(80.0), Elevation(50.0))),
+        (320, Direction::new(Azimuth(-120.0), Elevation(-30.0))),
+        (832, Direction::new(Azimuth(80.0), Elevation(50.0))),
     ];
     let reference = render_in_blocks(&bytes, &input, 64, start, &moves);
     assert!(energy(&reference.0) > 0.0, "the reference is silent");
@@ -917,7 +937,7 @@ fn a_moving_source_is_independent_of_the_block_length() {
 /// for bit (doc 024 step 0b, consolidation 2): a digest (FNV-1a over the bits
 /// of every output sample) of seeded noise through the mirrored icosahedron
 /// with the position jumping across the seam halfway, recorded before
-/// `ExponentialSmoother` was built over `tutti_dsp::Smoother`. The render
+/// the spatial smoother was built over `tutti_dsp::Smoother`. The render
 /// reaches libm (`sin`, `cos`, `atan2`), so it goes through `assert_golden`.
 ///
 /// Mutation (run): the smoother's step as `value * (1 - coeff) + target * coeff`

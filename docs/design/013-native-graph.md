@@ -6580,7 +6580,7 @@ the four lanes above, the graph's own surface is:
 | Param modulation and automation on a param port | Built (doc 014: the compiler's lane per param) |
 | Transport and tempo | Built (`Env`) |
 
-**Recommended additions, for the owner to confirm before the build:**
+**Two additions, decided by the owner (2026-11-11):**
 
 - **Dry/wet mix per node.** Lane 3 already gives every node a dry path
   delayed by its declared latency, and a crossfade between dry and wet. A
@@ -6588,7 +6588,7 @@ the four lanes above, the graph's own surface is:
   end: `Editor::set_mix(key, Mix)`, `out = wet * m + dry * (1 - m)` per
   channel through the bypass mapping, ramped per block like an edge gain, a
   param target like one (`ModTarget`). `Mix::new(1.0)` is `Active` and skips
-  the dry path, bit for bit. It would be **M4**, after M1. It gives any node,
+  the dry path, bit for bit. It is **M4**, after M1. It gives any node,
   a plugin included, the parallel-processing knob hosts expose per effect,
   with the latency alignment only the graph can do.
 - **Event tap and event inlet.** Audio has a tap and an inlet; events have
@@ -6597,7 +6597,7 @@ the four lanes above, the graph's own surface is:
   in by `MidiInputNode` and `MidiQueueNode`. An event tap (`Op::EventTap`,
   `TapReader`'s event sibling) and an event inlet (`Graph::open_event_inlet`)
   would make those nodes users of the primitive. It is the MIDI lanes' work
-  (doc 017 owns the event side) and needs its own amendment there; this
+  (doc 017 owns the event side) and gets its own amendment there; this
   document records only that it belongs to the graph.
 
 **Kept as nodes, on purpose:**
@@ -6620,7 +6620,7 @@ itself.
 |---|---|---|
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
-| 3 | Bypass and mute | independent of 1 and 2, in any order after the design merges. **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
+| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the dry/wet mix above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state). **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
 | 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses

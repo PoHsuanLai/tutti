@@ -2,15 +2,17 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub mod clip;
+mod clip;
 mod clip_file;
 mod file;
 mod flex;
-pub mod smf;
+mod smf;
 
-pub use clip::MidiFileKind;
+pub use clip::{MidiFileKind, read_clip, write_clip};
 pub use file::{MidiFile, SmfFile};
-pub use smf::{MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfNote, SmfTimedEvent, SmfTrack};
+pub use smf::{
+    MidiWriteConfig, ParsedMidiFile, SmfNote, SmfTimedEvent, SmfTrack, smf_to_bytes, write_smf,
+};
 
 use thiserror::Error;
 
@@ -74,6 +76,3 @@ pub use clip_file::{
     CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
     write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
 };
-
-/// `midly` itself, for a consumer that needs the raw SMF vocabulary.
-pub use midly;

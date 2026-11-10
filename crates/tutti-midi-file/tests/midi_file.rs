@@ -12,12 +12,14 @@ mod support;
 use support::{Division, RawEvent, build_smf};
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_midi_file::{
-    ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage,
-    SmfTimedEvent, smf, write_clip_file_from_beats, write_clip_file_with_header,
+    ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfTimedEvent,
+    smf_to_bytes, write_clip_file_from_beats, write_clip_file_with_header,
 };
 use tutti_midi_protocol::channel_voice;
 use tutti_types::{Beat, Bpm, Seconds};
-use tutti_ump::{Flex, KeyEvent, Message, MidiChannel, MidiGroup, Ump, Voice2};
+use tutti_ump::{
+    Flex, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1, Voice2,
+};
 
 /// The note a packet starts or ends, either protocol.
 fn note_of(ump: Ump) -> Option<u8> {
@@ -51,22 +53,22 @@ fn metrical(tracks: &[Vec<RawEvent>]) -> Vec<u8> {
 
 /// A one-note SMF's bytes, through this crate's own writer.
 fn smf_bytes() -> Vec<u8> {
-    smf::to_bytes(
+    smf_to_bytes(
         &[vec![
             SmfTimedEvent {
                 time_beats: Beat(0.0),
                 channel: MidiChannel::FIRST,
-                msg: SmfMessage::NoteOn {
-                    key: 60.into(),
-                    vel: 100.into(),
+                msg: Voice1::NoteOn {
+                    note: NoteNumber::of(60),
+                    velocity: U7::of(100),
                 },
             },
             SmfTimedEvent {
                 time_beats: Beat(1.0),
                 channel: MidiChannel::FIRST,
-                msg: SmfMessage::NoteOff {
-                    key: 60.into(),
-                    vel: 0.into(),
+                msg: Voice1::NoteOff {
+                    note: NoteNumber::of(60),
+                    velocity: U7::of(0),
                 },
             },
         ]],
@@ -435,9 +437,9 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
 
 /// **A NaN beat is refused by the SMF writer, not a panic.** The sort used
 /// `partial_cmp(..).unwrap()`, which panics the moment a NaN is compared;
-/// a NaN has no tick, so `smf::to_bytes` rejects it at the boundary.
+/// a NaN has no tick, so `smf_to_bytes` rejects it at the boundary.
 ///
-/// Mutation (run): drop the non-finite check in `smf::to_bytes` and
+/// Mutation (run): drop the non-finite check in `smf_to_bytes` and
 /// restore the `partial_cmp(..).unwrap()` sort → the call panics instead
 /// of returning `InvalidConfig`.
 #[test]
@@ -445,13 +447,13 @@ fn a_nan_beat_is_an_smf_encode_error() {
     let note = |beat: f64, key: u8| SmfTimedEvent {
         time_beats: Beat(beat),
         channel: MidiChannel::FIRST,
-        msg: SmfMessage::NoteOn {
-            key: key.into(),
-            vel: 100.into(),
+        msg: Voice1::NoteOn {
+            note: NoteNumber::of(key),
+            velocity: U7::of(100),
         },
     };
     let tracks = [vec![note(1.0, 60), note(f64::NAN, 61), note(0.0, 62)]];
-    let got = smf::to_bytes(&tracks, &MidiWriteConfig::default());
+    let got = smf_to_bytes(&tracks, &MidiWriteConfig::default());
     assert!(
         matches!(got, Err(Error::InvalidConfig(_))),
         "a NaN beat must be refused, got {got:?}"

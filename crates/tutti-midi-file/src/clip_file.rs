@@ -72,7 +72,8 @@ use crate::flex;
 use tutti_midi_protocol::channel_voice;
 use tutti_types::{Beat, BeatDuration, Bpm};
 use tutti_ump::{
-    DeltaTicks, KeyEvent, Message, MidiChannel, MidiGroup, Stream, Ump, Utility, Voice2,
+    DeltaTicks, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Stream, Ump, Utility,
+    Voice2, decode, split_stream,
 };
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
@@ -420,7 +421,8 @@ impl ParsedClipFile {
         use std::collections::BTreeMap;
 
         // `Beat`, so `beat - start` below is a `BeatDuration` by construction.
-        let mut held: BTreeMap<(MidiGroup, MidiChannel, u8), Vec<(Beat, u16)>> = BTreeMap::new();
+        let mut held: BTreeMap<(MidiGroup, MidiChannel, NoteNumber), Vec<(Beat, u16)>> =
+            BTreeMap::new();
         let mut out: Vec<ClipNote> = Vec::new();
 
         for (beat, event) in self.iter() {
@@ -436,7 +438,8 @@ impl ParsedClipFile {
             let lane = key.lane();
             let group = MidiGroup::masked(lane >> 4);
             let channel = MidiChannel::masked(lane & 0x0F);
-            let note = key.note();
+            // A `Key`'s note is 7 bits, framed by the packet.
+            let note = NoteNumber::masked(key.note());
             let map_key = (group, channel, note);
             if matches!(key_event, KeyEvent::Off(_)) {
                 if let Some((start, velocity)) = held.get_mut(&map_key).and_then(Vec::pop) {
@@ -486,19 +489,20 @@ pub struct ClipNote {
     pub group: MidiGroup,
     /// MIDI channel.
     pub channel: MidiChannel,
-    /// Note number, 0..=127.
-    pub note: u8,
+    /// The note.
+    pub note: NoteNumber,
     /// Note On velocity at full MIDI 2.0 width. A MIDI 1.0 note in the clip is
     /// upscaled by Min-Center-Max, so this is lossless in both directions.
+    /// A bare `u16` because 16 bits is the whole raw of a MIDI 2.0 velocity
+    /// (`Voice2::NoteOn::velocity` is one): every value is in range, so there
+    /// is nothing for a range type to refuse.
     pub velocity: u16,
     /// Onset (quarter notes) from the clip start.
     pub start_beats: Beat,
     /// Length (Note Off beat − Note On beat, clamped to ≥ 0).
     ///
     /// A [`BeatDuration`] beside a [`Beat`] — a span and a position, so the
-    /// pair cannot be transposed. The MIDI-wire fields above stay
-    /// integers: a channel nibble and a 16-bit velocity are protocol values,
-    /// not measurements.
+    /// pair cannot be transposed.
     pub duration_beats: BeatDuration,
 }
 
@@ -548,7 +552,7 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     if bytes.len() < 8 || bytes[..8] != CLIP_FILE_MAGIC {
         return Err(ClipFileError::BadMagic);
     }
-    let mut words = WordReader::new(&bytes[8..]).ok_or(ClipFileError::Unaligned)?;
+    let words = words_of(&bytes[8..]).ok_or(ClipFileError::Unaligned)?;
 
     let mut ticks_per_quarter = None;
     let mut events = Vec::new();
@@ -561,60 +565,53 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     let mut saw_start_of_clip = false;
     let mut saw_end_of_clip = false;
 
-    while let Some(word0) = words.peek() {
-        let mt = (word0 >> 28) as u8;
-        // The packet's length is `Ump::words`'s, by its message type.
-        let n = Ump([word0, 0, 0, 0]).words().len();
-        let raw = words.take(n).ok_or(ClipFileError::Truncated)?;
-        let mut packet = [0u32; 4];
-        packet[..n].copy_from_slice(raw);
-        let ev = Ump(packet);
+    // Words consumed so far: `split_stream` ends at a truncated packet without
+    // saying so, and the words it left are what `taken` falls short of.
+    let mut taken = 0;
+    for ev in split_stream(&words) {
+        taken += ev.words().len();
 
-        // Classify by message type + status.
-        if mt == 0x0 {
-            // Utility: Delta Clockstamp (status 0x4) or DCTPQ (status 0x3).
-            let status = ((word0 >> 20) & 0x0F) as u8;
-            match status {
-                0x4 => {
+        // Classify by message. An undefined status of a Utility message
+        // (JR clock and timestamp included) is ignored, as the spec allows a
+        // reader to; any other packet that does not decode is an event, kept
+        // as its words.
+        match decode(ev) {
+            Ok(Message::Utility(utility)) => {
+                match utility {
                     // A DCS is the count since the last event or Null message —
                     // it *replaces* the current count rather than adding to it
                     // (M2-116 §3.2.2). Only `banked_delta`, closed off by a
                     // NOOP below, carries over from earlier restarts.
-                    pending_delta = word0 & DCS_MAX;
-                    continue;
-                }
-                0x3 => {
-                    ticks_per_quarter = Some((word0 & 0xFFFF) as u16);
-                    continue;
-                }
-                0x0 => {
+                    Utility::DeltaClockstamp(ticks) => pending_delta = ticks.get(),
+                    Utility::TicksPerQuarterNote(ticks) => ticks_per_quarter = Some(ticks),
                     // NOOP = the Null message that restarts the delta count
                     // (M2-116 §3.2.2). Bank what the preceding DCS declared;
                     // the next DCS counts from here.
-                    banked_delta = banked_delta.saturating_add(pending_delta);
-                    pending_delta = 0;
-                    continue;
+                    Utility::Noop => {
+                        banked_delta = banked_delta.saturating_add(pending_delta);
+                        pending_delta = 0;
+                    }
+                    // JR clock / timestamp: not part of a clip's sequence.
+                    Utility::JrClock(_) | Utility::JrTimestamp(_) => {}
                 }
-                _ => continue, // JR clock / timestamp / other utility — ignore
+                continue;
             }
-        }
-        if mt == 0xF {
-            // UMP Stream: Start of Clip (0x020) / End of Clip (0x021).
-            let status = (word0 >> 16) & 0x03FF;
-            if status == 0x020 {
+            Err(_) if ev.message_type() == 0x0 => continue,
+            Ok(Message::Stream(Stream::StartOfClip)) => {
                 saw_start_of_clip = true;
                 continue; // structural
             }
-            if status == 0x021 {
+            Ok(Message::Stream(Stream::EndOfClip)) => {
                 saw_end_of_clip = true;
                 // §7.3: "A MIDI Clip File shall not have any data following the
                 // End of Clip message." There is no multi-clip clip file, so
                 // anything after this is corruption rather than a second clip.
-                if words.peek().is_some() {
+                if taken < words.len() {
                     return Err(ClipFileError::TrailingData);
                 }
                 break;
             }
+            _ => {}
         }
         // A real event: its delta is the current count plus everything banked
         // by NOOP restarts since the previous event.
@@ -624,6 +621,9 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
         });
         pending_delta = 0;
         banked_delta = 0;
+    }
+    if taken < words.len() {
+        return Err(ClipFileError::Truncated);
     }
 
     // Order matters: report the *earliest* structural thing that is missing, so
@@ -700,48 +700,14 @@ fn end_of_clip() -> Ump {
     Ump::from(Message::Stream(Stream::EndOfClip))
 }
 
-/// Reads big-endian u32 words from a byte slice.
-struct WordReader<'a> {
-    words: Vec<u32>,
-    pos: usize,
-    _marker: core::marker::PhantomData<&'a ()>,
-}
-
-impl<'a> WordReader<'a> {
-    fn new(bytes: &'a [u8]) -> Option<Self> {
-        if !bytes.len().is_multiple_of(4) {
-            return None;
-        }
-        // `as_chunks` rather than `chunks_exact`: the length is already known to
-        // be a multiple of 4 (checked above), so the remainder is empty and each
-        // chunk arrives as a `[u8; 4]` that `from_be_bytes` takes directly —
-        // no index-by-index rebuild, and no bounds checks to elide.
-        let words = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| u32::from_be_bytes(*c))
-            .collect();
-        Some(Self {
-            words,
-            pos: 0,
-            _marker: core::marker::PhantomData,
-        })
-    }
-
-    fn peek(&self) -> Option<u32> {
-        self.words.get(self.pos).copied()
-    }
-
-    fn take(&mut self, n: usize) -> Option<&[u32]> {
-        let end = self.pos + n;
-        if end > self.words.len() {
-            return None;
-        }
-        let slice = &self.words[self.pos..end];
-        self.pos = end;
-        Some(slice)
-    }
+/// The big-endian 32-bit words of `bytes`, `None` if it is not a whole number
+/// of them.
+fn words_of(bytes: &[u8]) -> Option<Vec<u32>> {
+    // `as_chunks`: the remainder is empty once the length is a multiple of 4,
+    // and each chunk arrives as the `[u8; 4]` `from_be_bytes` takes.
+    let (chunks, rest) = bytes.as_chunks::<4>();
+    rest.is_empty()
+        .then(|| chunks.iter().map(|c| u32::from_be_bytes(*c)).collect())
 }
 
 #[cfg(test)]

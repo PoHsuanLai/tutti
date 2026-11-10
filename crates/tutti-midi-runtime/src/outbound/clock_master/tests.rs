@@ -617,7 +617,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
         }
         let tc = decoder.timecode().expect("a full cycle");
         assert!(
-            u64::from(tc.frames) < tc.frame_rate.labels_per_second(),
+            u64::from(tc.frames()) < tc.frame_rate().labels_per_second(),
             "{rate} Hz {fps:?}: {tc}"
         );
         // Piece 0 sits on an even frame of the timeline, and the label is
@@ -640,7 +640,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
         "{cycles} cycles"
     );
     assert_eq!(
-        decoder.timecode().map(|t| t.minutes),
+        decoder.timecode().map(|t| t.minutes()),
         Some(1),
         "crossed 1:00"
     );

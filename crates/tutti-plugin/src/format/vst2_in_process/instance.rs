@@ -98,8 +98,8 @@ impl Instance {
         match loaded.activate(main, prepare) {
             Ok(halves) => {
                 let declared = Declared {
-                    latency: halves.1.latency_samples(),
-                    tail: halves.1.tail(main),
+                    latency: halves.1.loaded().latency_samples(),
+                    tail: halves.1.loaded().tail(main),
                 };
                 Ok((
                     Self {
@@ -123,8 +123,13 @@ impl Instance {
     /// The Controller. Panics on a lost plugin: the control side asks
     /// [`is_lost`](Self::is_lost) first (it cannot happen unless a rate
     /// rollback fails twice, which `set_sample_rate`'s up-front check rules out).
-    fn controller(&self) -> &Vst2Controller {
+    pub(super) fn controller(&self) -> &Vst2Controller {
         &self.halves.as_ref().expect("the plugin is not lost").1
+    }
+
+    /// [`controller`](Self::controller), mutably.
+    pub(super) fn controller_mut(&mut self) -> &mut Vst2Controller {
+        &mut self.halves.as_mut().expect("the plugin is not lost").1
     }
 
     /// Whether the plugin could not be activated again and renders silence.
@@ -149,7 +154,7 @@ impl Instance {
             RenderMode::Realtime
         });
         if let Some((_, controller)) = &self.halves {
-            controller.set_offline_render(offline);
+            controller.loaded().set_offline_render(offline);
         } else if let Some(plugin) = &self.lost {
             plugin.set_offline_render(offline);
         }
@@ -259,19 +264,19 @@ impl Instance {
     /// swap.
     pub(super) fn poll_changes(&mut self, main: &MainThread) -> Changes {
         let mut asked = Vec::new();
-        self.controller().take_requests(main, &mut asked);
+        self.controller().loaded().take_requests(main, &mut asked);
         let io = asked.contains(&Request::IoChanged);
         let mut changes = Changes {
             io,
             ..Changes::default()
         };
         if io || std::mem::take(&mut self.reread) {
-            let latency = self.controller().latency_samples();
+            let latency = self.controller().loaded().latency_samples();
             if latency != self.declared.latency {
                 self.declared.latency = latency;
                 changes.latency = Some(latency);
             }
-            let tail = self.controller().tail(main);
+            let tail = self.controller().loaded().tail(main);
             if tail != self.declared.tail {
                 self.declared.tail = tail;
                 changes.tail = Some(tail);
@@ -282,31 +287,34 @@ impl Instance {
 
     /// The pin counts the plugin declares now.
     pub(super) fn pins(&self) -> (ChannelLayout, ChannelLayout) {
-        self.controller().pins()
+        self.controller().loaded().pins()
     }
 
     /// The plugin's identity and declared capabilities.
     pub(super) fn metadata(&self) -> &PluginInfo {
-        self.controller().metadata()
+        self.controller().loaded().metadata()
     }
 
     /// The plugin's parameter edits since the last call.
     pub(super) fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        self.controller().drain_param_changes()
+        self.controller().loaded().drain_param_changes()
     }
 }
 
+/// The loaded plugin, for the format's own surface. The Controller (which
+/// `Vst2Controller` no longer derefs from) is [`Instance::controller`] and
+/// [`Instance::controller_mut`], for what is the `Control` trait's.
 impl Deref for Instance {
-    type Target = Vst2Controller;
+    type Target = Vst2Loaded;
 
-    fn deref(&self) -> &Vst2Controller {
-        self.controller()
+    fn deref(&self) -> &Vst2Loaded {
+        self.controller().loaded()
     }
 }
 
 impl DerefMut for Instance {
-    fn deref_mut(&mut self) -> &mut Vst2Controller {
-        &mut self.halves.as_mut().expect("the plugin is not lost").1
+    fn deref_mut(&mut self) -> &mut Vst2Loaded {
+        self.controller_mut().loaded_mut()
     }
 }
 

@@ -107,8 +107,6 @@ struct Setup {
     /// Where the clock starts (the voice is placed at beat 0); the stream is
     /// started there, so the ring holds it before the first block.
     beat: f64,
-    /// The channel's PDC preroll, in frames.
-    preroll: usize,
     /// Other streams on channels 1.., so the streamer refills in parallel.
     neighbours: usize,
 }
@@ -119,7 +117,6 @@ impl Setup {
             loop_,
             speed,
             beat: 0.0,
-            preroll: 0,
             neighbours: 0,
         }
     }
@@ -138,15 +135,10 @@ impl Live {
     }
 
     /// Stream `path` on channel 0 from where the clock starts, with the
-    /// setup's loop and preroll, under the streamer's default config (its seek
+    /// setup's loop, under the streamer's default config (its seek
     /// crossfade included), and take a live voice placed at beat 0.
     fn with(path: &Path, setup: Setup) -> Self {
-        let mut config = DiskStreamerConfig::default();
-        if setup.preroll > 0 {
-            config.pdc = Some(Arc::new(tutti_graph::PrerollTable::new(vec![
-                tutti_types::Samples(setup.preroll),
-            ])));
-        }
+        let config = DiskStreamerConfig::default();
         let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
         for channel in 0..=setup.neighbours {
             streamer
@@ -441,37 +433,32 @@ fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
     }
 }
 
-/// Entering the clip past the loop's end, and with a PDC preroll, plays
-/// the memory tier's frames there, bit for bit: the stream's position counts
-/// the file straight on and the ring places it, so a voice entering at beat 1
-/// (24 000 frames in, well past a loop `[3000, 7001)`) plays what a memory
-/// voice plays there — and with a 12 000-frame preroll on its channel, what
-/// the memory voice plays half a beat earlier.
+/// Entering the clip past the loop's end plays the memory tier's frames there,
+/// bit for bit: the stream's position counts the file straight on and the ring
+/// places it, so a voice entering at beat 1 (24 000 frames in, well past a
+/// loop `[3000, 7001)`) plays what a memory voice plays there.
 ///
 /// Mutation (run): the ring writing the straight position unplaced
-/// (`place_frame` → identity) → fails. Mutation (run): the reader not taking
-/// the preroll off its position → the preroll row plays beat 1's frames →
-/// fails.
+/// (`place_frame` -> identity) -> fails. (The preroll row this test once had
+/// went with the streamer's preroll, doc 025 stage 5 cut 2: the compiler aligns
+/// a graph voice, `tutti-session`'s `tier_alignment` test.)
 #[test]
-fn an_entry_past_the_loop_and_a_preroll_land_where_the_memory_tier_plays() {
+fn an_entry_past_the_loop_lands_where_the_memory_tier_plays() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
     let loop_ = loop_on(3_000.0, 7_001.0, 700);
-    for (preroll, memory_from) in [(0usize, 1.0), (12_000, 0.5)] {
-        let mut live = Live::with(
-            &path,
-            Setup {
-                beat: 1.0,
-                preroll,
-                ..Setup::looped(loop_, 1.0)
-            },
-        );
-        let got = live.render(300);
-        assert_eq!(live.underruns(), 0, "preroll {preroll}: frames went unread");
-        let want = Memory::new(ramp_wave(SR as u32, LEN), loop_, 1.0, memory_from).render(300);
-        assert_same_outside(&format!("preroll {preroll}"), &got, &want, &[]);
-    }
+    let mut live = Live::with(
+        &path,
+        Setup {
+            beat: 1.0,
+            ..Setup::looped(loop_, 1.0)
+        },
+    );
+    let got = live.render(300);
+    assert_eq!(live.underruns(), 0, "frames went unread");
+    let want = Memory::new(ramp_wave(SR as u32, LEN), loop_, 1.0, 1.0).render(300);
+    assert_same_outside("entry past the loop", &got, &want, &[]);
 }
 
 /// Reverse ignores the loop, and mirrors the file as the memory tier's

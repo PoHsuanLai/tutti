@@ -332,10 +332,7 @@ impl SessionBuilder {
         let disk_streamer = if streamer {
             Some(tutti_sampler::DiskStreamer::new(
                 parts.graph.prepared().sample_rate(),
-                tutti_sampler::DiskStreamerConfig {
-                    pdc: Some(Arc::clone(&parts.compensation)),
-                    ..Default::default()
-                },
+                tutti_sampler::DiskStreamerConfig::default(),
             )?)
         } else {
             None

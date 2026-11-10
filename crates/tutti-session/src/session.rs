@@ -1074,12 +1074,12 @@ impl Session {
         &self.transport
     }
 
-    /// The per-channel pre-roll of the plan sent last, for a source outside
-    /// the graph (a disk stream seeks by it). Republished with every plan;
-    /// empty until the first.
+    /// The per-channel compensation of the plan sent last, by output channel:
+    /// what the compiler delays each output by, for a host that displays it.
+    /// Republished with every plan; empty until the first. A node in the graph
+    /// (a disk voice included) is aligned by the compiler, not by this table.
     ///
-    /// Shared, not copied: a clone of the `Arc` (the sampler's streamer takes
-    /// one) reads every later plan's table. Read a channel with
+    /// Shared, not copied: a clone of the `Arc` reads every later plan's table. Read a channel with
     /// [`PrerollTable::preroll`], `None` past the table's end. No audio
     /// thread reads it, so it is a plain lock, not a published cell.
     pub fn compensation(&self) -> &Arc<PrerollTable> {
@@ -1194,8 +1194,7 @@ impl Session {
         self.midi_io.as_ref()
     }
 
-    /// Takes the disk streamer the builder made (subscribed to
-    /// [`compensation`](Self::compensation)), for a host that holds it
+    /// Takes the disk streamer the builder made, for a host that holds it
     /// itself: a restart then re-rates it only through the host's `follow`
     /// hook.
     #[cfg(feature = "sampler")]

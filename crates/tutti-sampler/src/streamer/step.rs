@@ -1,13 +1,13 @@
 //! One streamer cycle, synchronously.
 //!
-//! The streamer's work is a loop over three pure steps — publish PDC preroll
-//! changes, apply direction changes to each ring's mapping, refill the rings
+//! The streamer's work is a loop over two pure steps — apply direction changes
+//! to each ring's mapping, refill the rings
 //! (following each reader to where it plays). None of them is asynchronous:
 //! they read a `DashMap`, decode from a file, and write into a ring. The only async in the streamer is the *pacing* —
 //! the timer the loop parks on when there is nothing urgent to do.
 //!
 //! This module is that work with the pacing removed. [`StreamerCycle::step`]
-//! drains the command queue, runs the three steps, and reports what the pacing
+//! drains the command queue, runs the two steps, and reports what the pacing
 //! layer should do next as a [`StepOutcome`]. The async loop in
 //! [`loop_body`](super::loop_body) is then the pacing layer and nothing else.
 //!
@@ -31,7 +31,6 @@ use super::config::BufferConfig;
 use super::handlers::{Handles, Local, handle_command};
 use super::io::refill::{refill_all, refill_all_parallel};
 use super::loops::{Mapping, apply_mapping};
-use super::preroll::{PdcFeed, apply_pdc_updates};
 
 /// What the pacing layer should do after one streamer cycle.
 ///
@@ -78,31 +77,17 @@ pub(crate) struct StreamerCycle {
 }
 
 impl StreamerCycle {
-    /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill,
-    /// reading delay compensation through `pdc`.
-    pub(crate) fn new(config: BufferConfig, pdc: PdcFeed) -> Self {
+    /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill.
+    pub(crate) fn new(config: BufferConfig) -> Self {
         Self {
-            local: Local::new(config.chunk_size, pdc),
+            local: Local::new(config.chunk_size),
             config,
         }
     }
 
-    /// Read compensation through `pdc` from the next step (a hand-stepped
-    /// controller subscribed after its first step).
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn set_pdc(&mut self, pdc: PdcFeed) {
-        self.local.pdc = pdc;
-    }
-
-    /// The feed this cycle reads compensation through (tests).
-    #[cfg(test)]
-    pub(crate) fn pdc(&self) -> &PdcFeed {
-        &self.local.pdc
-    }
-
     /// Run one cycle: drain every queued command, free every ring's retired
-    /// maps, then — when any channel is streaming — publish PDC preroll
-    /// changes, apply direction changes, and refill the rings.
+    /// maps, then — when any channel is streaming — apply direction changes and
+    /// refill the rings.
     ///
     /// Direction changes are applied *before* refill so the refill writes the
     /// new mapping this cycle.
@@ -134,7 +119,6 @@ impl StreamerCycle {
             return StepOutcome::Idle;
         }
 
-        apply_pdc_updates(&self.local.pdc, &shared.plans);
         self.apply_directions(shared);
 
         // Frames resident across every streaming ring, sampled before the
@@ -280,7 +264,7 @@ mod tests {
             metrics: Arc::new(Metrics::new()),
             session_rate: SessionRate::new(SampleRate(48_000.0)),
         };
-        let mut cycle = StreamerCycle::new(config, PdcFeed::over(None));
+        let mut cycle = StreamerCycle::new(config);
         let id = RegionId(1);
         let (writer, _reader) = RegionBuffer::with_capacity(id, PathBuf::from("t.wav"), 1024, 1u16);
         let ring = Arc::clone(writer.ring());

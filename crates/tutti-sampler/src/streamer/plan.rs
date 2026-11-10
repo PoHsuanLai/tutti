@@ -88,17 +88,11 @@ impl Drop for Link {
 /// `Idle` when no file is streaming, `Streaming` when active. The enum makes
 /// it impossible to have a loop config without an active link.
 ///
-/// `pdc_preroll` and `rt_state` live outside the enum because they persist
+/// `rt_state` lives outside the enum because they persist
 /// across idle/streaming transitions (the audio thread holds an `Arc<RtState>`
 /// clone that must stay alive).
 pub struct ChannelPlan {
     pub(crate) link: Option<Link>,
-    /// How far to pre-roll this channel's read head for plugin delay
-    /// compensation, in frames — subtracted from every target file position,
-    /// so a larger preroll seeks earlier. Sourced from the published
-    /// compensation table, whose entries are [`Samples`](tutti_types::Samples) at
-    /// the session rate.
-    pub(crate) pdc_preroll: u64,
     pub(crate) rt_state: Arc<RtState>,
 }
 
@@ -106,7 +100,6 @@ impl Default for ChannelPlan {
     fn default() -> Self {
         Self {
             link: None,
-            pdc_preroll: 0,
             rt_state: Arc::new(RtState::new()),
         }
     }
@@ -144,12 +137,10 @@ impl ChannelPlan {
         });
     }
 
-    /// Fully reset the channel: drop the link (and its loop config), pdc
-    /// preroll, and reset `rt_state` to defaults. The `rt_state` Arc itself
+    /// Fully reset the channel: drop the link (and its loop config), and reset `rt_state` to defaults. The `rt_state` Arc itself
     /// stays alive because the audio thread may still hold a clone.
     pub fn stop_streaming(&mut self) {
         self.link = None;
-        self.pdc_preroll = 0;
         self.rt_state.set_speed(PlaybackRate::UNITY);
         self.rt_state.set_direction(Direction::Forward);
         self.rt_state.set_src_ratio(SrcRatio::UNITY);
@@ -167,16 +158,12 @@ mod tests {
 
     #[test]
     fn test_stop_streaming_resets_everything() {
-        let mut state = ChannelPlan {
-            pdc_preroll: 1000,
-            ..Default::default()
-        };
+        let mut state = ChannelPlan::default();
         state.rt_state.set_speed(PlaybackRate::new(2.0));
         state.rt_state.set_reverse(true);
 
         state.stop_streaming();
 
-        assert_eq!(state.pdc_preroll, 0);
         assert!(state.link.is_none());
         assert_eq!(state.rt_state.speed(), PlaybackRate::UNITY);
         assert!(!state.rt_state.is_reverse());

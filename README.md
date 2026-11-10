@@ -66,7 +66,6 @@ real time.
 | [`tutti-spatial`](crates/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |
 | [`tutti-dsp`](crates/tutti-dsp) | Waveform summaries, onset detection, pitch, correlation, loudness |
 | [`tutti-modulation`](crates/tutti-modulation) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free and Bevy-free |
-| [`tutti-midi-types`](crates/tutti-midi-types) | MIDI 2.0 / UMP value types, the vocabulary the MIDI stack shares |
 | [`tutti-midi-runtime`](crates/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |
 | [`tutti-midi-file`](crates/tutti-midi-file) | SMF and MIDI 2.0 clip codecs — OS-free, so reading a `.mid` links no CoreMIDI |
 | [`tutti-midi-hardware`](crates/tutti-midi-hardware) | The OS MIDI edge: CoreMIDI and ALSA seq-UMP |

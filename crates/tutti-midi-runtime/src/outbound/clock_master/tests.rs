@@ -3,8 +3,16 @@ use crate::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool as StdAtomicBool;
 use tutti_graph::UmpAt;
-use tutti_midi_types::MidiMessage;
 use tutti_types::Bpm;
+use tutti_ump::{Message, System, decode};
+
+/// The System message a packet carries.
+fn system(ump: Ump) -> Option<System> {
+    match decode(ump) {
+        Ok(Message::System(_, system)) => Some(system),
+        _ => None,
+    }
+}
 
 /// Test transport: tempo + beat + playing under a switch.
 struct TestTransport {
@@ -563,8 +571,8 @@ fn mtc_quarter_frames_round_trip_to_a_timecode() {
             if is_status(&ev, 0xF1) {
                 // The quarter-frame data byte is the 2nd wire byte; decode
                 // via the message view's TimeCode.
-                if let MidiMessage::TimeCode { code, .. } = MidiMessage::from_ump(ev.1) {
-                    decoder.feed(code);
+                if let Some(System::TimeCode(code)) = system(ev.1) {
+                    decoder.feed(code.get());
                     if decoder.timecode().is_some() {
                         got_tc = true;
                     }
@@ -596,9 +604,10 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
     let mut decoder = MtcDecoder::new();
     let (mut piece0_at, mut last_count, mut cycles) = (0.0, None, 0u32);
     for (ev, at) in events.iter().filter(|(e, _)| is_status(e, 0xF1)) {
-        let MidiMessage::TimeCode { code, .. } = MidiMessage::from_ump(ev.1) else {
+        let Some(System::TimeCode(code)) = system(ev.1) else {
             panic!("not a quarter-frame");
         };
+        let code = code.get();
         if code >> 4 == 0 {
             piece0_at = (start + *at as f64) / rate;
         }
@@ -769,8 +778,8 @@ fn the_song_position_lands_on_the_wraps_frame() {
     let events = drain_all(&cons);
     let positions: Vec<_> = events
         .iter()
-        .filter_map(|e| match MidiMessage::from_ump(e.1) {
-            MidiMessage::SongPosition { position, .. } => Some((e.0.get(), position)),
+        .filter_map(|e| match system(e.1) {
+            Some(System::SongPosition(position)) => Some((e.0.get(), position.get())),
             _ => None,
         })
         .collect();
@@ -803,8 +812,8 @@ fn the_mtc_grid_restarts_on_the_wrap() {
     let events = drain_all(&cons);
     let qf: Vec<_> = events
         .iter()
-        .filter_map(|e| match MidiMessage::from_ump(e.1) {
-            MidiMessage::TimeCode { code, .. } => Some((e.0.get(), code >> 4)),
+        .filter_map(|e| match system(e.1) {
+            Some(System::TimeCode(code)) => Some((e.0.get(), code.get() >> 4)),
             _ => None,
         })
         .collect();
@@ -940,8 +949,8 @@ fn a_loop_wrapping_on_every_block_edge_sends_a_song_position_each_time() {
     let events = play_layout(0.0, (0.0, 8.0), false, &fixed(3 * 192_000, 512));
     let positions: Vec<_> = events
         .iter()
-        .filter_map(|(at, e)| match MidiMessage::from_ump(e.1) {
-            MidiMessage::SongPosition { position, .. } => Some((*at, position)),
+        .filter_map(|(at, e)| match system(e.1) {
+            Some(System::SongPosition(position)) => Some((*at, position.get())),
             _ => None,
         })
         .collect();
@@ -965,8 +974,8 @@ fn a_wrap_on_the_block_edge_and_a_locate_are_one_song_position() {
     cm.tick(100);
     let positions: Vec<_> = drain_all(&cons)
         .iter()
-        .filter_map(|e| match MidiMessage::from_ump(e.1) {
-            MidiMessage::SongPosition { position, .. } => Some((e.0.get(), position)),
+        .filter_map(|e| match system(e.1) {
+            Some(System::SongPosition(position)) => Some((e.0.get(), position.get())),
             _ => None,
         })
         .collect();

@@ -15,11 +15,10 @@ use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, 
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{Direction, EndpointId};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_midi_types::MidiMessage;
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::Ump;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{KeyEvent, MidiChannel, MidiGroup};
 
 use tutti_session::{
     Error, EventSource, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, Session,
@@ -117,9 +116,10 @@ fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
     seen.lock()
         .unwrap()
         .iter()
-        .map(|&(f, e)| (f, MidiMessage::from_ump(e)))
-        .filter(|(_, m)| m.is_note_on())
-        .map(|(f, m)| (f, m.note().unwrap()))
+        .filter_map(|&(f, e)| match e.key_event() {
+            Some(KeyEvent::On(key)) => Some((f, key.note())),
+            _ => None,
+        })
         .collect()
 }
 

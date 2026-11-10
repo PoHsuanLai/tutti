@@ -26,10 +26,9 @@
 //! that wants to convert.
 
 use crate::{Error, Result};
-// NOTE: `midly::MidiMessage` is the *MIDI 1.0 7-bit* SMF message — a different
-// type from `tutti_midi_hardware::MidiMessage` (the decoded MIDI-2 view). It is
-// imported under the alias `SmfMessage` so this SMF-1.0 codec never shadows the
-// engine's `MidiMessage` in a `use tutti_midi_hardware::*` context.
+// NOTE: `midly::MidiMessage` is the *MIDI 1.0 7-bit* SMF message, a different
+// thing from `tutti_ump::Message` (the decoded UMP). It is imported under the
+// alias `SmfMessage` so the two are never confused.
 use midly::num::u24;
 use midly::{Format, Header, MetaMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
 use tutti_types::{Beat, BeatDuration, Bpm};
@@ -37,7 +36,7 @@ use tutti_ump::MidiChannel;
 
 /// The MIDI 1.0 7-bit channel-voice message carried by [`SmfTimedEvent`] — a
 /// re-export of `midly::MidiMessage`, aliased so an SMF caller never confuses it
-/// with the engine's MIDI-2 `MidiMessage` in `tutti_midi_hardware`.
+/// with `tutti_ump::Message`.
 pub use midly::MidiMessage as SmfMessage;
 use std::path::Path;
 use tracing::debug;
@@ -50,7 +49,7 @@ pub struct SmfTimedEvent {
     /// The message's channel.
     pub channel: MidiChannel,
     /// The channel-voice message. This is a **MIDI 1.0** `midly` message
-    /// (re-exported as [`SmfMessage`]), not the engine's MIDI-2 `MidiMessage`.
+    /// (re-exported as [`SmfMessage`]), not a `tutti_ump::Message`.
     pub msg: SmfMessage,
 }
 

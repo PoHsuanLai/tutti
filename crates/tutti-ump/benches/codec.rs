@@ -3,8 +3,7 @@
 //! The corpus is a block's worth of the traffic a synth sees: MIDI 2.0 notes,
 //! controllers and bends, MIDI 1.0 notes and a few System Exclusive, Flex and
 //! Stream packets. One iteration is the whole block, so the per-packet figure
-//! is the printed time over the block length. The comparison with the old
-//! `MidiMessage::from_ump` is in `tutti-midi-types`' `message_baseline` bench.
+//! is the printed time over the block length.
 
 use std::hint::black_box;
 

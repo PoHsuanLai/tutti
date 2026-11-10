@@ -7,8 +7,8 @@ use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
-    ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, SampleFormat,
-    Samples, TransportChange, TransportInfo,
+    ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, Reopen,
+    SampleFormat, Samples, TransportChange, TransportInfo,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -455,6 +455,35 @@ pub fn loaded_write_survives_a_save<F: Format>() {
     assert_eq!(read(&other, Param::Level), Some(0.75), "read");
     let out = activate(other, BLOCK).silent(BLOCK);
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
+}
+
+/// A reopen is a fresh instance of the same plugin, from the same file: its
+/// identity, its defaults and nothing of the one it came from, which it leaves
+/// as it was; and it renders.
+// Mutation (run): the blanket `Reopen` loading with a `Load` naming another plugin
+//   -> fails every format (CLAP and VST3 find no such plugin, VST2 refuses a choice).
+//   Not covered: a reopen that carries the original's state over (`reopen` takes
+//   `&self`, and saving a state takes `&mut`, so the impl cannot write one); the
+//   fresh-default read is what would catch it.
+pub fn reopen_is_a_fresh_instance<F: Format>()
+where
+    F::L: Reopen,
+{
+    let mut loaded = F::load();
+    write(&mut loaded, Param::Level, 0.75);
+    let mut fresh = loaded.reopen(&main_thread()).expect("reopens");
+    assert_eq!(fresh.info(), loaded.info(), "the same plugin");
+    let (_, default) = Param::ALL[0];
+    assert_eq!(Param::ALL[0].0, Param::Level);
+    assert_eq!(read(&fresh, Param::Level), Some(default), "the fresh one");
+    assert_eq!(read(&loaded, Param::Level), Some(0.75), "the original");
+    set_mode::<F, _>(&mut fresh, Mode::Level);
+    let out = activate(fresh, BLOCK).silent(BLOCK);
+    assert!(
+        out[0].iter().all(|&v| f64::from(v) == default),
+        "got {:?}",
+        &out[0][..4]
+    );
 }
 
 /// Bytes that are not the plugin's state leave it working, with the level it held.

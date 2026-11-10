@@ -613,7 +613,6 @@ const BENCH: &[&str] = &[
     r#"cargo bench --locked -p tutti-export    --bench offline_render"#,
     r#"cargo bench --locked -p tutti-polysynth --bench polysynth"#,
     r#"cargo bench --locked -p tutti-ump       --bench codec"#,
-    r#"cargo bench --locked -p tutti-midi-types --bench message_baseline"#,
     r#"cargo bench --locked -p tutti-midi-runtime --bench clip_node"#,
     r#"cargo bench --locked -p tutti-sampler   --bench voice_pool"#,
     r#"cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process"#,

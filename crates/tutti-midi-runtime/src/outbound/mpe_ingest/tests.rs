@@ -2,9 +2,8 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::MpeZoneConfig;
-use tutti_midi_types::MidiMessage;
 use tutti_types::Samples;
-use tutti_ump::{Address, CCNumber, Message, Voice2};
+use tutti_ump::{Address, CCNumber, KeyEvent, Message, Voice2};
 
 /// What the ingest sends, collected: the tests read it as a list.
 trait Collected {
@@ -88,7 +87,7 @@ fn member_channel_bend_becomes_per_note_pitch_bend() {
         ingest
             .translated(&note_on(2, 60, 100))
             .next()
-            .map(|(_, ump)| MidiMessage::from_ump(ump).is_note_on())
+            .map(|(_, ump)| matches!(ump.key_event(), Some(KeyEvent::On(_))))
             .unwrap()
     );
     // Channel bend on ch2 → per-note bend on note 60.

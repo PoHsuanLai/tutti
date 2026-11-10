@@ -25,8 +25,7 @@
 # - `tutti-types` depends on no workspace crate, and `tutti-rt` on `arc-lend`
 #   alone;
 # - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
-#   `tutti-midi-types` on `tutti-ump` and `tutti-midi-protocol`, and
-#   `tutti-graph` on `tutti-types`, `tutti-rt` and `tutti-ump`;
+#   and `tutti-graph` on `tutti-types`, `tutti-rt` and `tutti-ump`;
 # - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
 # - `tutti-midi-device` depends on no workspace crate;
@@ -36,9 +35,8 @@
 # - `tutti-tempo` depends on `tutti-types` alone;
 # - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types` only;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
-# - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
-#   `tutti-midi-types` and `tutti-plugin-types` only, and no `tutti-*-host`
-#   depends on it;
+# - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`
+#   and `tutti-plugin-types` only, and no `tutti-*-host` depends on it;
 # - the codec libraries (`symphonia`, `flacenc`, `aifc`, `vorbis_rs`) are normal
 #   dependencies of `tutti-codec` alone, and in its manifest a `decode-*`
 #   feature enables no encoder library and an `encode-*` feature no
@@ -172,7 +170,7 @@ LAYERS = [
     # no workspace dependency at all
     ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump"],
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
-    ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-midi-types", "tutti-metering",
+    ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
     ["tutti-transport", "tutti-plugin-types", "tutti-measure"],
     ["tutti-engine", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
@@ -421,8 +419,7 @@ if "tutti-plugin-db" in pkgs:
 # plugin format, and no format host knows it: a format is served through it,
 # never built on it.
 if "tutti-plugin-ipc" in pkgs:
-    only("tutti-plugin-ipc", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-midi-types",
-                              "tutti-plugin-types"])
+    only("tutti-plugin-ipc", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-plugin-types"])
     for name in pkgs:
         if name.endswith("-host") and name.startswith("tutti-") \
                 and "tutti-plugin-ipc" in deps_of(name):
@@ -445,8 +442,6 @@ if "tutti-measure" in pkgs:
     only("tutti-measure", ["tutti-types", "tutti-dsp"])
 if "tutti-graph" in pkgs:
     only("tutti-graph", ["tutti-types", "tutti-rt", "tutti-ump"])
-if "tutti-midi-types" in pkgs:
-    only("tutti-midi-types", ["tutti-ump", "tutti-midi-protocol"])
 for name in pkgs:
     users = {d for d, _ in internal_deps(pkgs[name])}
     if "tutti-session" in users and name not in ("tutti", "bevy-tutti"):

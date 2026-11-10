@@ -34,13 +34,6 @@ pub use tutti_midi_device::{
 #[cfg(target_os = "macos")]
 pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 
-// --- Re-exports from tutti-midi-types (the decoded view, until stage 5b part (c)) ---
-
-pub use tutti_midi_types::{
-    ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage,
-    normalize,
-};
-
 pub use tutti_midi_runtime::{
     ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
 };
@@ -68,8 +61,8 @@ pub use tutti_midi_runtime::{
 /// The common types for a hardware MIDI app, for
 /// `use tutti_midi_hardware::prelude::*;`.
 ///
-/// It re-exports [`tutti_midi_types::prelude`] (the wire event + decoded view +
-/// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
+/// It holds this crate's I/O and delivery (the packets themselves are
+/// `tutti_ump`'s):
 ///
 /// - **Hardware I/O** — [`MidiSession`] (enumerate / connect / send).
 /// - **Delivery** — [`MidiInputNode`] / [`MidiOutNode`] (the ports as graph
@@ -87,19 +80,14 @@ pub use tutti_midi_runtime::{
 /// use tutti_graph::Offset;
 /// use tutti_ump::{MidiChannel, MidiGroup, Ump};
 ///
-/// // The types prelude comes along: build + decode an event.
+/// // Build an event, and hand it across threads with the delivery types.
 /// let ump = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-/// assert!(MidiMessage::from_ump(ump).is_note_on());
-///
-/// // And the delivery types are here too — hand an event across threads.
 /// let (tx, rx) = MidiMailbox::pair();
 /// tx.queue(&[(Offset::ZERO, ump)]);
 /// let mut buf = [(0u32, Ump::default()); 4];
 /// assert_eq!(rx.poll_into(&mut buf), 1);
 /// ```
 pub mod prelude {
-    pub use tutti_midi_types::prelude::*;
-
     pub use crate::{
         MidiInputNode, MidiMailbox, MidiOutNode, MidiReceiver, MidiSender, TimedMidiEvent,
     };

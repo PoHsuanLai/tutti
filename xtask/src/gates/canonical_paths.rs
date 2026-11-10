@@ -5,8 +5,8 @@
 //! comments in ```text / ```ignore blocks are never compiled, so this scan is
 //! the only enforcement. It searches `*.md` as well as `*.rs` for that reason.
 //!
-//! It matches tutti-to-tutti chains only; `pub use midi2;` / `midly` are
-//! deliberate third-party re-exports and are left alone.
+//! It matches tutti-to-tutti chains only; `midly` is a deliberate third-party
+//! re-export and is left alone.
 //!
 //! Usage (`cargo xtask check-paths [<crate> <module>...]`): with no arguments
 //! the chained-path gate; with a crate and at least one module, also the

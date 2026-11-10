@@ -448,9 +448,8 @@ jobs:
           cargo nextest run --locked -p tutti-codec --features encode-flac
           cargo nextest run --locked -p tutti-codec --features encode-vorbis
           cargo nextest run --locked -p tutti-codec --all-features
-          # tutti-ump/serde is already on in a workspace run (tutti-midi-types' self
-          # dev-dependency turns it on); this step names it so tests/serde.rs still runs
-          # if that edge goes away.
+          # This step names tutti-ump/serde so tests/serde.rs runs whether or not
+          # another member's dependency edge turns it on.
           cargo nextest run --locked -p tutti-ump --features serde
           cargo nextest run --locked -p tutti-midi-protocol --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
@@ -534,7 +533,6 @@ jobs:
           cargo bench --locked -p tutti-export    --bench offline_render -- --test
           cargo bench --locked -p tutti-polysynth --bench polysynth      -- --test
           cargo bench --locked -p tutti-ump       --bench codec          -- --test
-          cargo bench --locked -p tutti-midi-types --bench message_baseline -- --test
           cargo bench --locked -p tutti-midi-runtime --bench clip_node -- --test
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
           cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process -- --test

@@ -25,7 +25,7 @@
 //! # Why 7-bit, in a MIDI 2.0 engine
 //!
 //! MIDI 2.0 widened the CC *value* to 32 bits but left the *index* at 7 —
-//! `MidiMessage::ControlChange { index: u8, value: u32 }` (M2-104 §7.4.6). So
+//! `Voice2::ControlChange { controller, value: u32 }` (M2-104 §7.4.6). So
 //! `0..=127` remains correct here even though nothing else about a Control
 //! Change message is 7-bit any more, and the range is a property of the format
 //! rather than a legacy carry-over.

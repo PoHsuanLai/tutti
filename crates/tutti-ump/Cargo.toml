@@ -33,9 +33,6 @@ serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = "1"
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
-# The oracle in `tests/midi2_oracle.rs`, and nothing else: deleting that file
-# and this line removes every use of it.
-midi2 = { workspace = true }
 proptest = "1.9.0"
 
 [[bench]]

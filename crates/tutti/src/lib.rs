@@ -121,9 +121,10 @@ pub use tutti_modulation as modulation;
 
 // --- midi -------------------------------------------------------------------
 
-/// The decoded MIDI view (`tutti-midi-types`). Feature `midi`.
+/// The Universal MIDI Packet and its decoded messages (`tutti-ump`): `Ump`,
+/// `Message`, `decode`, `Midi1Parser`. Feature `midi`.
 #[cfg(feature = "midi")]
-pub use tutti_midi_types as midi;
+pub use tutti_ump as ump;
 
 /// MIDI 1.0 to MIDI 2.0 translation and the MPE zone types
 /// (`tutti-midi-protocol`). Feature `midi`.

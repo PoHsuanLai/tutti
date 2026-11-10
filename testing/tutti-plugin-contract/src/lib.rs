@@ -62,6 +62,7 @@ macro_rules! contract {
             state_round_trip,
             loaded_write_reaches_the_audio,
             loaded_write_survives_a_save,
+            reopen_is_a_fresh_instance,
             corrupt_state_leaves_plugin_usable,
             halves_of_two_activations_are_stuck,
             f64_carries_same_audio,

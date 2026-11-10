@@ -140,8 +140,7 @@ impl BusStripNode {
     /// `with_channels(ChannelLayout::STEREO)` is identical to [`new`](Self::new).
     ///
     /// A zero-wide strip is meaningless — there would be nothing to fade — so an
-    /// empty layout is clamped to mono, matching
-    /// [`ChannelSumNode::new`](crate::ChannelSumNode::new).
+    /// empty layout is clamped to mono.
     pub fn with_channels(channels: impl Into<ChannelLayout>) -> Self {
         let layout = channels.into();
         Self {

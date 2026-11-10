@@ -2,8 +2,7 @@
 //!
 //! `clip_file.rs` is **1,154 lines of hand-rolled byte handling** written
 //! against spec M2-116 — chunk magic, DCTPQ, delta clockstamps, Start/End of
-//! Clip, Flex Data tempo and time signature, note pairing — using `midi2` only
-//! to build individual UMP words. There is no second implementation of this
+//! Clip, Flex Data tempo and time signature, note pairing. There is no second implementation of this
 //! format anywhere on crates.io, so there is no oracle to check it against,
 //! and there were **zero integration tests**: all 19 tests were inline, and
 //! every one of them checked the writer against the reader. Two halves of the

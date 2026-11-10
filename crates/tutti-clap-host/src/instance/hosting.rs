@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use tutti_plugin_types::bundle::{ModuleKind, native_module_path};
-use tutti_plugin_types::{InProcess, Load, MainThread, OutOfProcess, PluginResult};
+use tutti_plugin_types::{InProcess, Load, MainThread, Origin, OutOfProcess, PluginResult};
 
 use super::ClapLoaded;
 use super::editor_instance::ClapEditor;
@@ -22,6 +22,10 @@ impl InProcess for ClapLoaded {
     fn load_in_process(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
         let module = native_module_path(path, ModuleKind::Clap)?;
         ClapLoaded::load(main, &module, options(load)).map_err(plugin_error)
+    }
+
+    fn origin(&self) -> &Origin {
+        &self.origin
     }
 }
 

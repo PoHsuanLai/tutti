@@ -73,6 +73,7 @@
 //!   restores the FPU control register, on unwind too.
 
 mod cell;
+mod clock;
 mod denormals;
 mod doorbell;
 mod drain_clock;
@@ -92,6 +93,7 @@ mod task_graph;
 mod vec;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
+pub use clock::monotonic_ns;
 pub use denormals::with_no_denormals;
 pub use doorbell::Doorbell;
 pub use drain_clock::{DrainBeat, DrainMark, DrainWatch, drain_clock};

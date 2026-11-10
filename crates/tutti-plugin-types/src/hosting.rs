@@ -11,7 +11,7 @@
 //! opt-in, so a format that writes neither impl is hostable nowhere. Every impl
 //! is listed in the plugin contract's `hostings` (`scripts/check-hosting.sh`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{
     AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, Loaded, MainThread,
@@ -53,6 +53,40 @@ impl Load {
     }
 }
 
+/// Where an instance came from: the file that was opened and the [`Load`]
+/// that chose the plugin in it. What [`Reopen`] loads again.
+///
+/// The path is the file the format opened (a module, or a library a format
+/// was pointed at in place of its bundle), so a reopen opens the same one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    path: PathBuf,
+    load: Load,
+}
+
+impl Origin {
+    /// The file `path`, with the plugin `load` chose in it.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, load: Load) -> Self {
+        Self {
+            path: path.into(),
+            load,
+        }
+    }
+
+    /// The file that was opened.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The choice of plugin in it.
+    #[must_use]
+    pub fn load(&self) -> &Load {
+        &self.load
+    }
+}
+
 /// The format can run in the host's own process.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be hosted in this process",
@@ -67,6 +101,10 @@ pub trait InProcess: Loaded {
     /// The file cannot be opened, the chosen plugin is not in it, or the
     /// plugin refuses to be created.
     fn load_in_process(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self>;
+
+    /// Where this instance came from, however it was loaded: what [`Reopen`]
+    /// loads again.
+    fn origin(&self) -> &Origin;
 }
 
 /// The format can be served from another process, with its editor elsewhere.
@@ -101,13 +139,24 @@ pub trait OutOfProcess: Loaded {
 
 /// A loaded plugin can be loaded again the same way, in the same hosting: what
 /// a fork of the graph needs before it copies the state across.
+///
+/// Every [`InProcess`] format has it, from its [`Origin`]; an out-of-process
+/// hosting implements it by starting a new server.
 pub trait Reopen: Loaded {
-    /// A fresh instance from the same file and [`Load`].
+    /// A fresh instance from the same file and [`Load`], not activated, with
+    /// none of this one's state.
     ///
     /// # Errors
     ///
     /// As [`InProcess::load_in_process`].
     fn reopen(&self, main: &MainThread) -> PluginResult<Self>;
+}
+
+impl<F: InProcess> Reopen for F {
+    fn reopen(&self, main: &MainThread) -> PluginResult<Self> {
+        let origin = self.origin();
+        F::load_in_process(main, origin.path(), origin.load())
+    }
 }
 
 /// The editor-only instance an [`OutOfProcess`] format loads in the host

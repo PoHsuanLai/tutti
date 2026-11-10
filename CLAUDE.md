@@ -730,8 +730,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   umbrella `tutti` offers it as `tutti::sf2`). `tutti-soundfont` is the player over it: the
   note logic is `tutti-voicing`'s (`Voicing::step` and its `Rules`, with a
   `Patch` that starts one voice for each matching preset zone and instrument
-  zone), and the crate keeps what renders a voice (the oscillator, filter,
-  envelopes, LFOs, the generator summing of SF2 section 9.4 and the unit
+  zone), and the crate keeps what renders a voice (the oscillator, the
+  filter's SF2 cutoff and Q mapping (the biquad itself is `tutti-dsp`'s,
+  `SvfModel::biquad` run in `DirectForm1`; the crate depends on `tutti-dsp`), envelopes, LFOs, the generator summing of SF2 section 9.4 and the unit
   conversions of 9.3). That voice render derives from Nobuaki Tanaka's
   rustysynth (the former `tutti-rustysynth`, folded in): every file derived from
   it carries the MIT notice in its header and `LICENSE-RUSTYSYNTH.txt` is the

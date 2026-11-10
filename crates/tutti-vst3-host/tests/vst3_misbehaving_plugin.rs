@@ -178,7 +178,7 @@ const INPUT_LEVEL: f32 = 0.25;
 /// distinction `a_plugin_that_writes_nothing_does_not_leak_previous_audio`
 /// depends on.
 fn drive_block_with(inst: &mut Active, input: f32) -> Vec<Vec<f32>> {
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let in_layout: Vec<usize> = if info.input_bus_channels.is_empty() {
         vec![info.num_inputs.max(1)]
     } else {
@@ -296,7 +296,7 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("a plugin that merely lies about latency still activates");
 
-    let reported = inst.latency_samples(&main_thread());
+    let reported = inst.loaded().latency_samples(&main_thread());
     assert_eq!(
         reported, LIED_LATENCY_SAMPLES,
         "the probe should be reporting its inflated latency; if this is 0 the \
@@ -419,6 +419,7 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
         .expect("a refusal is not an error; the plugin must still activate");
 
     let main_in = inst
+        .loaded()
         .plugin_info()
         .input_bus_channels
         .first()
@@ -434,9 +435,9 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
     // And the reported total agrees, since that is what sizes a caller's
     // buffers. Asserted separately: `total_input_channels` sums the bus list,
     // so updating only the main entry would leave the two disagreeing.
-    let expected_total: usize = inst.plugin_info().input_bus_channels.iter().sum();
+    let expected_total: usize = inst.loaded().plugin_info().input_bus_channels.iter().sum();
     assert_eq!(
-        inst.plugin_info().total_input_channels(),
+        inst.loaded().plugin_info().total_input_channels(),
         expected_total,
         "the reported total must agree with the per-bus list it sums"
     );
@@ -781,11 +782,11 @@ fn a_probe_does_not_ask_an_uninitialized_component_for_its_buses() {
 fn a_latency_that_follows_the_rate_is_valid_after_a_rate_change() {
     let _m = Misbehaviour::set(misbehave::LATENCY_FOLLOWS_RATE);
     let mut inst = Active::<f32>::load(&probe_path(), 44_100.0, BLOCK).expect("load");
-    assert_eq!(inst.latency_samples(&main_thread()), 44);
+    assert_eq!(inst.loaded().latency_samples(&main_thread()), 44);
 
     inst.set_sample_rate(96_000.0).expect("rate change");
 
-    assert_eq!(inst.latency_samples(&main_thread()), 96);
+    assert_eq!(inst.loaded().latency_samples(&main_thread()), 96);
 }
 
 // ── Return codes that are not refusals ───────────────────────────────────────

@@ -623,7 +623,7 @@ fn host_decodes_plugin_emitted_param_values() {
 
     // The probe drains its output queue in `params.flush`, which is where
     // `flush_params` will pick it up.
-    let out = inst.flush_params(&main_thread(), Vec::new());
+    let out = inst.loaded_mut().flush_params(&main_thread(), Vec::new());
 
     assert_eq!(out.len(), 1, "the plugin's one output event must survive");
     let hdr = out[0].header();
@@ -648,7 +648,7 @@ fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
     probe.queue_output(OUT_GESTURE_END, p.id, 0.0);
     probe.queue_output(OUT_PARAM_MOD, p.id, 0.125);
 
-    let out = inst.flush_params(&main_thread(), Vec::new());
+    let out = inst.loaded_mut().flush_params(&main_thread(), Vec::new());
 
     let types: Vec<u16> = out.iter().map(|e| e.header().type_).collect();
     assert_eq!(
@@ -688,14 +688,14 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
 
     // Drain whatever the probe's `process` hook already raised, so the take
     // below reflects only this scenario.
-    let _ = requests(&mut inst);
+    let _ = requests(inst.loaded_mut());
 
     probe.command(PARAM_CMD_RESCAN_VALUES);
     // The probe runs `[main-thread]` host-params calls from `on_main_thread`.
-    inst.on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     assert_eq!(
-        requests(&mut inst),
+        requests(inst.loaded_mut()),
         [Request::RescanParams(RescanScope::Values)],
         "a value-only rescan is applicable live; demanding a restart would \
          stall audio for nothing"
@@ -715,13 +715,13 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
 fn host_records_a_full_rescan_as_needing_deactivation() {
     let probe = Probe::acquire();
     let mut inst = probe.activate();
-    let _ = requests(&mut inst);
+    let _ = requests(inst.loaded_mut());
 
     probe.command(PARAM_CMD_RESCAN_ALL);
-    inst.on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     assert_eq!(
-        requests(&mut inst),
+        requests(inst.loaded_mut()),
         [Request::RescanParams(RescanScope::All)],
         "a full rescan must be reported as its own scope"
     );
@@ -737,13 +737,13 @@ fn host_records_a_full_rescan_as_needing_deactivation() {
 fn taking_a_rescan_consumes_it() {
     let probe = Probe::acquire();
     let mut inst = probe.activate();
-    let _ = requests(&mut inst);
+    let _ = requests(inst.loaded_mut());
 
     probe.command(PARAM_CMD_RESCAN_VALUES);
-    inst.on_main_thread(&main_thread());
-    assert_eq!(requests(&mut inst).len(), 1);
+    inst.loaded_mut().on_main_thread(&main_thread());
+    assert_eq!(requests(inst.loaded_mut()).len(), 1);
 
-    let second = requests(&mut inst);
+    let second = requests(inst.loaded_mut());
     assert!(
         second.is_empty(),
         "the word must clear on take, or every later take sees a phantom rescan: got {second:?}"
@@ -760,17 +760,20 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
     let p = param(1);
 
     probe.command(PARAM_CMD_REQUEST_FLUSH);
-    inst.on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(&main_thread());
 
     assert!(
-        inst.take_params_flush_requested(),
+        inst.loaded().take_params_flush_requested(),
         "the host must record the plugin's request_flush()"
     );
-    assert!(!inst.take_params_flush_requested(), "and clear it on read");
+    assert!(
+        !inst.loaded().take_params_flush_requested(),
+        "and clear it on read"
+    );
 
     // Honour the request: deliver a value with no `process` block in sight.
     let before = probe.capture().flush_calls;
-    inst.set_plain_value(&main_thread(), p.id, 6.5);
+    inst.loaded_mut().set_plain_value(&main_thread(), p.id, 6.5);
     let after = probe.capture();
 
     assert_eq!(

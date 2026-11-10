@@ -232,7 +232,7 @@ pub trait Host {
     /// `audioMasterProcessEvents`, as a view only the callback can make.
     fn process_plugin_events(&self, events: api::PluginEvents<'_>) {}
 
-    /// Send events to the host. This is the plugin's call, on a [`HostCallback`]; the host
+    /// Send events to the host. This is the plugin's call, on a `HostCallback`; the host
     /// side is [`process_plugin_events`](Self::process_plugin_events).
     fn process_events(&self, events: &api::Events) {}
 
@@ -801,7 +801,7 @@ impl PluginInstance {
     /// Re-read the counts and delay [`Info`] snapshots from the
     /// live `AEffect`: `numInputs`, `numOutputs`, `numParams`, `numPrograms`
     /// and `initialDelay`. The snapshot is taken before `effOpen`, so
-    /// [`init`](Plugin::init) calls this once it returns; a host calls it again
+    /// [`init`](Self::init) calls this once it returns; a host calls it again
     /// after `audioMasterIOChanged`, which is the plugin saying the pin counts
     /// moved.
     pub fn refresh_effect_fields(&mut self) {
@@ -817,7 +817,7 @@ impl PluginInstance {
 
     /// Read `AEffect::numPrograms` as it stands *now*.
     ///
-    /// [`get_info`](Plugin::get_info) returns the snapshot taken in
+    /// [`get_info`](Self::get_info) returns the snapshot taken in
     /// `new`, before `effOpen`. A **shell** plugin — one bundle
     /// exposing many effects — picks which effect it is during init, and its
     /// program count is that effect's, not the shell's. Reading the snapshot
@@ -870,7 +870,7 @@ impl PluginInstance {
     /// A caller that discards it leaves the plugin audibly processing while the
     /// UI shows it bypassed.
     ///
-    /// Check [`can_do(CanDo::Bypass)`](Plugin::can_do) first. A plugin that
+    /// Check [`can_do(CanDo::Bypass)`](Self::can_do) first. A plugin that
     /// does not advertise `"bypass"` may still return non-zero here, and the
     /// advertisement is the documented contract.
     pub fn set_bypass(&mut self, _main: &MainThread, bypass: bool) -> bool {
@@ -885,7 +885,7 @@ impl PluginInstance {
 
     /// Read `AEffect::initialDelay` as it stands *now*.
     ///
-    /// [`get_info`](Plugin::get_info) returns a clone of the snapshot taken in
+    /// [`get_info`](Self::get_info) returns a clone of the snapshot taken in
     /// `new`, which runs before `effOpen`, `effSetSampleRate` and
     /// `effMainsChanged`. Plugins routinely set their latency during those —
     /// a linear-phase EQ does not know its filter length until it knows the

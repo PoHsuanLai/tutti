@@ -24,7 +24,7 @@ use crate::scratch::RenderScratch;
 /// does not keep it open. Dropping the Controller (on the thread the plugin was loaded on)
 /// closes the plugin; a Processor that outlives it renders silence, and a Processor dropped
 /// last does nothing. The main-thread entries take a [`MainThread`] (see
-/// [`PluginInstance`](vst::host::PluginInstance)); a parameter write is a direct
+/// [`PluginInstance`](tutti_vst2_ffi::host::PluginInstance)); a parameter write is a direct
 /// `setParameter`, which the SDK allows from either thread, so no write is queued and a
 /// rejoin has none to carry.
 ///

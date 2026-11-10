@@ -104,14 +104,14 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 ///
 /// Dropping it closes the editor, stops processing if it is on, suspends the plugin if it
 /// is resumed and dispatches `effClose`, all in the drop of its
-/// [`PluginInstance`](vst::host::PluginInstance), **on the thread it was loaded on**. A
+/// [`PluginInstance`], **on the thread it was loaded on**. A
 /// drop has no token, so the instance records that thread and, dropped on any other, leaks
 /// the plugin rather than closing it (see the instance's docs). The plugin's shared
 /// library is never unloaded, because unloading runs static destructors that
 /// crash many JUCE-based plugins.
 ///
 /// Not `Sync`: the instance behind it is not, and an entry the format puts on the main
-/// thread takes a [`MainThread`] (see [`PluginInstance`](vst::host::PluginInstance)).
+/// thread takes a [`MainThread`] (see [`PluginInstance`]).
 ///
 /// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
 /// type makes it compile, and the test fails):

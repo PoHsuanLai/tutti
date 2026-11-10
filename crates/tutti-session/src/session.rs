@@ -827,6 +827,13 @@ impl Session {
                 }
                 let repreparing = self.graph.is_repreparing();
                 self.graph.collect();
+                // Closes a plugin that was dropped off its own thread (a pool thread at an
+                // export's end, say): its owner handed the close to the main thread, which is
+                // this tick. `MainThread::current` is `Some` only on the claiming thread.
+                #[cfg(feature = "plugin")]
+                if let Some(main) = tutti_plugin_types::MainThread::current() {
+                    tutti_plugin_types::run_deferred(&main);
+                }
                 self.report_event_losses(out);
                 // A re-prepare resumed in that collect: it sent the resumed
                 // plan, whose shapes are new (a lookahead is a time, so a

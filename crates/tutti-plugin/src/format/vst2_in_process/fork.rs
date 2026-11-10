@@ -33,7 +33,7 @@
 //!    `Vst2Loaded::load`, as the live one was. The second `dlopen` of the
 //!    path maps the image already loaded (one more reference to it), and the
 //!    plugin's entry point builds a second `AEffect`. The image is never
-//!    unloaded (`tutti-vst2-host`'s `Vst2Handle` leaks the module on purpose),
+//!    unloaded (`tutti-vst2-ffi`'s `PluginInstance` leaks the module on purpose),
 //!    so the library outlives both instances whatever order they drop in.
 //! 3. **Check it is the same plugin** (its id), then **restore the state**:
 //!    the program first (`effProgramChange`, bracketed), then the blob

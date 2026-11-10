@@ -1692,9 +1692,12 @@ nothing in release and nothing while no thread was marked. It is now a type.
 - AU keeps its OS check (`pthread_main_np`) in `tutti-au-ffi` as well: the
   claimed thread need not be AppKit's.
 - A `Drop` has no token. The editor of a dropped `PluginBridge` closes only when
-  `MainThread::current()` says so; `ClapLoaded` and `Vst2Handle` check with a
+  `MainThread::current()` says so; `ClapLoaded` checks with a
   `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
-  claims); the VST3 `Plugin` tears down on the dropping thread. The per-format
+  claims); the VST2 `PluginInstance` records the thread it was made on and, dropped
+  elsewhere, hands its close to the main thread (`tutti_plugin_types::defer_to_main`, run
+  by the session's `Phase::Collect`) instead of closing there or skipping it; the VST3
+  `Plugin` tears down on the dropping thread. The per-format
   lanes' main-thread handles make that the main thread by construction.
 - CLAP, below the host crate: every `Plugin` entry that calls into the plugin
   takes `&MainThread` (`tutti-clap-ffi`), and `ThreadRoles::new(&MainThread)` is
@@ -2214,8 +2217,14 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
   `Loaded` / `Controller`, which a server builds on one thread and runs on another, and
   `Vst2Loaded` is `Send`; the token is what the other FFI crates already do. A **drop has
   no token**, so the instance records the thread it was made on (under the token it was
-  made with) and closes the plugin only there; dropped anywhere else it leaks the plugin
-  and its core instead (as the CLAP `Plugin` does), so a live render handle stays valid.
+  made with) and closes the plugin only there; dropped anywhere else it hands the close to
+  the main thread (`defer_to_main`; the session's `Phase::Collect` runs it with
+  `run_deferred`, on the claimed thread) and counts it (`off_thread_drops`, plus a `warn!`),
+  so a live render handle stays valid until the tick and the plugin is never left open.
+  Nothing in the engine's paths drops one off the claimed thread today (an export's fork is
+  sent back to the session and dropped by its collect, `poll_exports` is pinned to the main
+  thread); the exception is an export still in flight when the world is dropped, which has no
+  session left to tick.
 - **The gate.** The core holds a mutex the audio entries `try_lock` (never wait) and the
   instance's close `lock`s. After the close every audio entry is refused, to silence for
   `process`, without touching the freed `AEffect`: this replaces S1's "the last handle
@@ -2227,11 +2236,19 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
   one that starts is refused. The host crate also keeps them to the activation and the
   rejoin. The quirk itself (`Vst2Quirks`, the `EditRing`, the shadow instance) is the next
   change and is not started here.
-- **The parameter surface that is any-thread by contract** takes no token:
-  `getParameter`, `setParameter`, a parameter's name, label and display,
-  `effGetParameterProperties`, `effCanBeAutomated`, `effString2Parameter`. The in-process
-  backend of `tutti-plugin` reads them off the main thread behind its own lock, so narrowing
-  them waits for the session to give it a main-thread route.
+- **Only `getParameter` and `setParameter` are any-thread in VST2.** They take no token and
+  no gate. The dispatcher-based parameter calls (a parameter's name, label and display,
+  `effGetParameterProperties`, `effCanBeAutomated`, `effString2Parameter`) must never run
+  beside `process`; the in-process backend of `tutti-plugin` calls them off the main thread
+  behind its own lock, so they stay token-free as **named exceptions** (with
+  `chunk_off_main_thread`) and each holds the audio gate for the call, as the exclusive calls
+  do. Narrowing them to the main thread waits for the session to give the backend a route.
+- **Poison and the last holder.** A panic under the gate poisons it and marks the core dead:
+  later audio entries render silence and never call the plugin again (the instance still
+  closes it). A `RenderHandle` that is the last holder of the core (the instance closed first)
+  hands the core to the main thread to be freed when dropped off it, so the host box and host
+  state never free on an audio thread, whether or not the graph's retire path already keeps a
+  unit off it.
 - **`HostState::save_state` stays deferred, again with the reason.** `effGetChunk` is a
   main-thread opcode (`PluginInstance::try_get_preset_data` takes the token), but the
   session calls `save_state` from a task-pool job on purpose (a subprocess save is a blocking

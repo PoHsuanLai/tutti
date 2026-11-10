@@ -450,7 +450,7 @@ fn can_do_answers_reach_the_plugin() {
 /// `editor_idle` dispatches `effEditIdle` to an open editor, once per call, and
 /// to none that is closed.
 ///
-/// Mutation (run): `EditorInstance::idle` back to the empty default -> no
+/// Mutation (run): `PluginInstance::idle_editor` back to an empty body -> no
 /// `EDIT_IDLE` in the trace -> fails.
 #[test]
 fn editor_idle_reaches_an_open_editor() {

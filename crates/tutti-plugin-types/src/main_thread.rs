@@ -136,6 +136,42 @@ impl MainThread {
     }
 }
 
+/// Work a thread that is not the main thread hands to it: what a `Drop` off the claimed
+/// thread cannot do itself (a plugin's `effClose`, say) and must not skip.
+type Deferred = Box<dyn FnOnce(&MainThread) + Send>;
+
+static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::new());
+
+/// Hands `work` to the main thread, to run at its next [`run_deferred`].
+///
+/// For a `Drop` that finds itself off the claimed thread and owns something that must be
+/// released there: it cannot be handed a token, so it hands over the release. Callable from
+/// any thread but **not from the audio thread** (it takes a lock and allocates); the owners
+/// of plugin instances are dropped on the control side (a unit leaves the graph through the
+/// control-side collect), so this is the rare path, not the steady state.
+pub fn defer_to_main(work: impl FnOnce(&MainThread) + Send + 'static) {
+    DEFERRED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(Box::new(work));
+}
+
+/// Runs the work other threads handed over by [`defer_to_main`], on the calling (main) thread,
+/// and says how many ran. A main-thread tick the host already has calls this: the session's
+/// `Phase::Collect`. Work that defers more work leaves it for the next call.
+pub fn run_deferred(main: &MainThread) -> usize {
+    let work = std::mem::take(
+        &mut *DEFERRED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    let ran = work.len();
+    for work in work {
+        work(main);
+    }
+    ran
+}
+
 /// A [`MainThread::claim`] on a thread other than the one that claimed first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the process's main thread was claimed by another thread")]
@@ -175,5 +211,31 @@ mod tests {
             .join()
             .unwrap();
         assert!(off, "another thread is elsewhere once a thread has claimed");
+    }
+
+    // Mutation (run): `run_deferred` returning without draining (or `defer_to_main` dropping
+    // the work) leaves the flag unset on the main thread and the count at 0: both fail.
+    #[test]
+    fn work_deferred_off_the_main_thread_runs_on_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let main = MainThread::claim().unwrap();
+        let ran_on_main = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ran_on_main);
+        let main_id = std::thread::current().id();
+        std::thread::spawn(move || {
+            defer_to_main(move |_main| {
+                flag.store(std::thread::current().id() == main_id, Ordering::SeqCst);
+            });
+        })
+        .join()
+        .unwrap();
+        assert!(
+            !ran_on_main.load(Ordering::SeqCst),
+            "not run by the deferring thread"
+        );
+        assert_eq!(run_deferred(&main), 1);
+        assert!(ran_on_main.load(Ordering::SeqCst), "run on the main thread");
+        assert_eq!(run_deferred(&main), 0, "and once");
     }
 }

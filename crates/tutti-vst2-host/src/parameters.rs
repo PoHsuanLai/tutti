@@ -57,8 +57,10 @@ impl Vst2Loaded {
     }
 
     /// The plugin's display text for `value`, only when `value` is the one the
-    /// plugin currently holds (see [`Control::parameter_text`]). Any thread, as
-    /// [`parameter_value`](Self::parameter_value).
+    /// plugin currently holds (see [`Control::parameter_text`]). Takes no token, but is not a
+    /// `getParameter`: it dispatches `effGetParamDisplay`, which VST2 does not allow beside
+    /// `process`, so the instance serialises it with the audio entries (a named exception, see
+    /// `PluginInstance`'s thread rules).
     ///
     /// [`Control::parameter_text`]: tutti_plugin_types::Control::parameter_text
     pub fn display_if_current(&self, id: ParamId, value: Normalized) -> Option<String> {

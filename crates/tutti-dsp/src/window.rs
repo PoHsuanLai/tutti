@@ -413,8 +413,6 @@ mod tests {
         }
     }
 
-    /// `RECTANGULAR` is exactly the identity, so a caller holding pre-windowed
-    /// samples can say so rather than passing a window that almost does nothing.
     /// `centred` is `at` shifted half a period, in `f64`: the same window,
     /// peak at 0, zero at `±0.5` for the zero-ended ones.
     ///
@@ -438,6 +436,8 @@ mod tests {
         assert!((CosineWindow::BLACKMAN.centred(0.0) - 1.0).abs() < 1e-7);
     }
 
+    /// `RECTANGULAR` is exactly the identity, so a caller holding pre-windowed
+    /// samples can say so rather than passing a window that almost does nothing.
     #[test]
     fn rectangular_is_the_identity() {
         assert_eq!(CosineWindow::RECTANGULAR.coefficients(5), vec![1.0; 5]);

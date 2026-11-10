@@ -1,14 +1,17 @@
 //! One-pole exponential smoother that de-zippers the panners' position
 //! changes.
 
+use tutti_dsp::Smoother;
 use tutti_types::{Azimuth, Elevation, SampleRate, Samples, Seconds};
 
 pub const DEFAULT_POSITION_SMOOTH_TIME: Seconds = Seconds(0.05);
 
 #[derive(Clone, Debug)]
 pub struct ExponentialSmoother {
-    value: f32,
-    coeff: f32,
+    /// The recurrence and its running value; this type derives its
+    /// coefficient from the time constant and the stride, and wraps the
+    /// bearing's arc around it.
+    smoother: Smoother,
     /// The time constant this smoother was built with, kept so
     /// [`set_sample_rate`](Self::set_sample_rate) can re-derive `coeff` without
     /// the caller re-supplying it.
@@ -29,8 +32,11 @@ impl ExponentialSmoother {
     ) -> Self {
         let smooth_time = smooth_time.into();
         Self {
-            value: 0.0,
-            coeff: Self::coeff(smooth_time, sample_rate.into(), samples_per_step),
+            smoother: Smoother::new(Self::coeff(
+                smooth_time,
+                sample_rate.into(),
+                samples_per_step,
+            )),
             smooth_time,
             stride: samples_per_step,
         }
@@ -47,7 +53,11 @@ impl ExponentialSmoother {
     /// original smoothing time constant and stride. Without this the
     /// de-zipper ramp runs at whatever rate the smoother was built with.
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
-        self.coeff = Self::coeff(self.smooth_time, sample_rate.into(), self.stride);
+        self.smoother.set_coeff(Self::coeff(
+            self.smooth_time,
+            sample_rate.into(),
+            self.stride,
+        ));
     }
 
     /// Step toward a target *height* along the number line.
@@ -59,13 +69,12 @@ impl ExponentialSmoother {
     #[cfg(any(feature = "hrtf", test))]
     #[inline]
     pub fn process(&mut self, target: Elevation) -> Elevation {
-        self.value += self.coeff * (target.get() - self.value);
-        Elevation(self.value)
+        Elevation(self.smoother.step(target.get()))
     }
 
     /// Step toward a target *bearing*, taking the short way around.
     ///
-    /// `process` computes `target - self.value`, which on a circle can be the
+    /// `process` computes `target - value`, which on a circle can be the
     /// long way: moving from 170 degrees to -170 degrees is 20 degrees to the
     /// right, but the plain subtraction reports -340 and the smoother sweeps
     /// almost the whole circle to get there. That is audible — the source
@@ -76,41 +85,23 @@ impl ExponentialSmoother {
     #[cfg(any(feature = "hrtf", test))]
     #[inline]
     pub fn process_angle(&mut self, target: Azimuth) -> Azimuth {
-        let current = Azimuth(self.value).wrap();
+        let current = Azimuth(self.smoother.value()).wrap();
         let arc = current.shortest_arc_to(target.wrap());
-        let next = current.rotate_by(arc * self.coeff);
-        self.value = next.get();
+        let next = current.rotate_by(arc * self.smoother.coeff());
+        self.smoother.seed(next.get());
         next
     }
 
-    /// The fraction of the gap `steps` consecutive steps close:
-    /// `1 - (1 - coeff)^steps`, in f64 so the power does not lose the small
-    /// coefficient. `steps == 0` closes none and an instant smoother
-    /// (`coeff == 1`) all of it.
-    #[inline]
-    fn gap_closed(&self, steps: usize) -> f32 {
-        let retained = 1.0 - f64::from(self.coeff);
-        let steps = i32::try_from(steps).unwrap_or(i32::MAX);
-        (1.0 - retained.powi(steps)) as f32
-    }
-
     /// `process` `steps` times toward the same target, in
-    /// one move: the analytic `v + (target - v)(1 - (1 - coeff)^steps)`
-    /// instead of the loop.
+    /// one move: [`Smoother::advance`], the analytic
+    /// `v + (target - v)(1 - (1 - coeff)^steps)` instead of the loop.
     ///
-    /// The loop injects an f32 rounding error of about 1.5 ulp of the range
-    /// per step that the next steps then shrink by `1 - coeff`, so it sits
-    /// within `1.5 * 2^-24 * R * min(steps, 1/coeff)` of the exact recurrence
-    /// (`R` the range of the quantity: 0.04 degrees of bearing at 48 kHz and
-    /// a 50 ms time constant, where `1/coeff` is 2400 steps). This form
-    /// carries one rounding of its own, so it is the closer of the two to the
-    /// exact answer; the two differ by at most that bound.
+    /// Its error bound is [`Smoother::advance`]'s, `1.5 * 2^-24 * R *
+    /// min(steps, 1/coeff)` for a range `R` (0.04 degrees of bearing at
+    /// 48 kHz and a 50 ms time constant, where `1/coeff` is 2400 steps).
     #[inline]
     pub fn advance(&mut self, target: Elevation, steps: usize) -> Elevation {
-        if steps > 0 {
-            self.value += self.gap_closed(steps) * (target.get() - self.value);
-        }
-        Elevation(self.value)
+        Elevation(self.smoother.advance(target.get(), steps))
     }
 
     /// `process_angle` `steps` times toward the same
@@ -121,12 +112,12 @@ impl ExponentialSmoother {
     #[inline]
     pub fn advance_angle(&mut self, target: Azimuth, steps: usize) -> Azimuth {
         if steps == 0 {
-            return Azimuth(self.value);
+            return Azimuth(self.smoother.value());
         }
-        let current = Azimuth(self.value).wrap();
+        let current = Azimuth(self.smoother.value()).wrap();
         let arc = current.shortest_arc_to(target.wrap());
-        let next = current.rotate_by(arc * self.gap_closed(steps));
-        self.value = next.get();
+        let next = current.rotate_by(arc * self.smoother.gap_closed(steps));
+        self.smoother.seed(next.get());
         next
     }
 
@@ -135,7 +126,7 @@ impl ExponentialSmoother {
     /// wrapped when stepped with `process_angle`.
     #[inline]
     pub fn value(&self) -> f32 {
-        self.value
+        self.smoother.value()
     }
 
     /// Seeds the running value directly, discarding whatever ramp was in
@@ -152,7 +143,7 @@ impl ExponentialSmoother {
     /// of height under `process` — so no single unit describes
     /// it. Callers seed it in whichever space they then step in.
     pub fn seed_at(&mut self, value: f32) {
-        self.value = value;
+        self.smoother.seed(value);
     }
 }
 

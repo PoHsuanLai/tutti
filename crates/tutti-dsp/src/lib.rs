@@ -67,6 +67,7 @@ mod network;
 mod resample;
 mod reverb;
 mod reverb_design;
+mod smoother;
 #[cfg(test)]
 mod test_support;
 
@@ -80,7 +81,7 @@ pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
     GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
     compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain, db_to_amplitude,
-    fold_peak, gate_gain_at, ramp_db, ramp_is_at_end, smooth_envelope,
+    fold_peak, gate_gain_at, ramp_db, ramp_is_at_end,
 };
 pub use error::{Error, Result};
 pub use fdn::FdnKernel;
@@ -102,6 +103,7 @@ pub use network::{
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler};
 pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
+pub use smoother::Smoother;
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

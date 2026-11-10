@@ -5,7 +5,7 @@
 //! `GateEnvelopeFollower` adds the hold stage a gate needs between opening and
 //! releasing.
 
-use super::curves::smooth_envelope;
+use crate::smoother::Smoother;
 use tutti_types::{SampleRate, Seconds};
 
 /// A time that moved by less than this (seconds) keeps its coefficient.
@@ -68,14 +68,14 @@ impl EnvelopeFollower {
         } else {
             self.release_coeff
         };
-        self.value = smooth_envelope(self.value, target, coeff);
+        self.value = Smoother::toward(self.value, target, coeff);
         self.value
     }
 
     /// Smooths with explicit attack coeff (for cases where direction logic differs).
     #[inline]
     pub fn smooth_with_coeff(&mut self, target: f32, coeff: f32) -> f32 {
-        self.value = smooth_envelope(self.value, target, coeff);
+        self.value = Smoother::toward(self.value, target, coeff);
         self.value
     }
 
@@ -296,7 +296,7 @@ mod tests {
     /// retention, 1 at zero time, so a zero-attack compressor never
     /// reduced.)
     ///
-    /// Mutation (run): `smooth_envelope` with the retention form
+    /// Mutation (run): `Smoother::toward` with the retention form
     /// `coeff * current + (1 - coeff) * target` (the old convention, under
     /// which a coefficient of 1 holds) → fails.
     #[test]

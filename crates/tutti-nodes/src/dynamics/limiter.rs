@@ -14,8 +14,8 @@ use tutti_types::{AtomicF32, AtomicF64};
 
 use crate::ramp::LastGood;
 use tutti_dsp::{
-    EnvelopeFollower, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
-    compute_limiter_gain, db_to_amplitude, fold_peak, smooth_envelope,
+    EnvelopeFollower, LimiterCurve, LookaheadRing, Smoother, amplitude_to_db, brickwall_clip,
+    compute_limiter_gain, db_to_amplitude, fold_peak,
 };
 use tutti_types::Latency;
 use tutti_types::UnitParam;
@@ -409,7 +409,7 @@ impl Node for LimiterNode {
                 if target_gain < envelope {
                     envelope = target_gain;
                 } else {
-                    envelope = smooth_envelope(envelope, target_gain, release_coeff);
+                    envelope = Smoother::toward(envelope, target_gain, release_coeff);
                 }
                 *p = self.ring.push_gain(envelope);
             }

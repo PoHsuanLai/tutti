@@ -1,23 +1,14 @@
 //! Deinterleaved channel buffers and the C-FFI pointer marshalling that hands
 //! them to a plugin's process call.
 //!
-//! # The plugin boundary in the engine's I/O vocabulary
+//! # A plugin is a node, not an edge
 //!
-//! In [`tutti_types::io`] terms a plugin is an [`AudioOut`](tutti_types::AudioOut)
-//! back-to-back with an [`AudioIn`](tutti_types::AudioIn): its **input** side
-//! is written (the host pushes a block in), its **output** side is polled (the
-//! host pulls the processed block out), and the format-native `process` is the
-//! private in→out step wedged between. [`AudioBuffer<T>`] is that back-to-back
-//! carrier for one block — `inputs` is the AudioOut side, `outputs` the AudioIn
-//! side. It does *not* implement the two traits literally: those speak flat
-//! *interleaved* samples on a cold/block path, whereas the plugin ABI is
-//! *deinterleaved* (one buffer per channel) on the RT audio thread, so the two
-//! shapes deliberately don't unify — forcing an interleave transpose here would
-//! add work to the hot path. The vocabulary names the *roles*; this module owns
-//! the RT-planar realisation.
-//!
-//! The reason is **layout, not width**: interleaved-versus-planar is what keeps
-//! the two apart, and a plugin bus's runtime width is no obstacle to either.
+//! In the graph a plugin is a `tutti_graph::Node`: the graph's clock calls it one
+//! block at a time, planar. The engine's edge vocabulary (`tutti_types`'
+//! `Source` and `Sink`, interleaved frames on a clock the graph does not keep)
+//! does not describe it, and [`AudioBuffer`] is not an edge: it is the borrowed,
+//! deinterleaved view of one process block on the RT audio thread, the shape the
+//! plugin ABIs take.
 //!
 //! Audio crosses the plugin boundary one buffer *per channel* (deinterleaved),
 //! and the C plugin ABIs (VST3, AU) take those channel buffers as a `void**` —
@@ -42,10 +33,8 @@ use std::ffi::c_void;
 ///
 /// Generic process code such as `Vst3Instance::process` / `ClapProcessor::process`
 /// is written `<T: Sample>`, so the compiler monomorphizes one specialization
-/// per concrete width. This is the element type `S` of the engine's
-/// [`AudioIn`](tutti_types::AudioIn) / [`AudioOut`](tutti_types::AudioOut)
-/// vocabulary, narrowed to the two widths a plugin bus can negotiate: `f32`
-/// (the whole edge world) and `f64` (a 64-bit plugin bus).
+/// per concrete width: the two a plugin bus can negotiate, `f32` and `f64` (a
+/// 64-bit plugin bus).
 pub trait Sample: Copy + Default + Send + 'static {}
 
 impl Sample for f32 {}

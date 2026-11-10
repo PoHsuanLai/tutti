@@ -3,10 +3,8 @@
 //!
 //! Layout is **mono-planar** — one contiguous region per channel, addressed by
 //! index — not interleaved, because the plugin ABIs it feeds are deinterleaved
-//! and the memcpy must stay a straight per-channel copy with no transpose. That
-//! is why it does not `impl` [`tutti_types::io`]'s `AudioIn`/`AudioOut`, which
-//! move flat *interleaved* samples. The mismatch is layout, not width — those
-//! traits carry a runtime `ChannelLayout`, not a const frame width.
+//! and the memcpy must stay a straight per-channel copy with no transpose. It is
+//! a transport, not an edge (`tutti_types`' `Source`/`Sink`).
 //!
 //! # Why shared memory
 //!

@@ -80,7 +80,7 @@ assert!(driver.engine().is_running());
   error callback cannot return anywhere else.
 - [`ManualStreamDriver`] — runs the same lifecycle with no device, the caller
   rendering each callback; for tests.
-- `MicIn` (feature `capture`) — a microphone as a `tutti_types::AudioIn`,
+- `MicIn` (feature `capture`) — a microphone as a `tutti_types::Source`,
   optionally with a live-monitor graph node. It delivers the inputs it was
   opened with, as discrete channels: `open` the first two, `open_inputs` any
   list (`&[2, 3]` is inputs 3 and 4 of 16).

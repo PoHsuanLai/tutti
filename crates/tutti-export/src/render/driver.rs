@@ -227,11 +227,10 @@ impl FrameSource for GraphSource<'_> {
     /// A render never starves: the graph produces a full block on demand, so
     /// the only `0` this returns is for a zero-length request.
     ///
-    /// That is the offline/live split in one line. An `AudioIn`'s zero-frame
-    /// poll is ambiguous — "not yet" for a live source, "never again" for a
-    /// finite one — which is why that trait carries `ON_EMPTY`. An offline
-    /// render is driven to a known frame count rather than polled until dry, so
-    /// the ambiguity never arises and this is not an `AudioIn`.
+    /// That is the offline/live split in one line. A `Source`'s pull answers
+    /// starved, ended or failed, because it is polled until dry on a clock of
+    /// its own. An offline render is driven to a known frame count, so no
+    /// verdict is asked for and this is not a `Source` (doc 025, §5.4).
     fn fill(&mut self, mut out: InterleavedMut<'_>) -> usize {
         let ch = out.stride();
         let block_size = out.len().min(self.max_block);

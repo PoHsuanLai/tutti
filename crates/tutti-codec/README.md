@@ -17,17 +17,17 @@ or a streaming `FileIn`.
   `Encoder::create_file` writes beside the path and moves the file into place
   on `finish`; dropping the encoder first removes it, and so does `finish` after a
   failed `write`.
-- `FileOut` is the file sink, `FileIn`'s mirror: an `AudioOut` over an
+- `FileOut` is the file sink, `FileIn`'s mirror: a `Sink` over an
   `Encoder`, created from a path and a `Spec`, for any `Format` the build can
   write. It keeps whole frames only, latches the first write error (later
-  writes are skipped, `is_failed` reports it) and `finalize` returns that
+  writes are skipped and return `SinkFailed`) and `finalize` returns that
   error, else the result of `finish`. It writes in place rather than staged,
   because a recording cut short is worth keeping.
 - Decoding is plain functions and types of our own, no trait: `Wave::read`
   decodes a file into a `Wave` (a resident, planar sample buffer),
   `Wave::topology` and `FileIn::topology` say which speaker each channel feeds,
   `Wave::read_metadata` reads a header, `Wave::from_bytes` decodes a file held
-  in memory, and `FileIn` streams a file as an `AudioIn` with a
+  in memory, and `FileIn` streams a file as a `Source` with a
   sample-accurate `seek`. A failure is a `DecodeError`. `symphonia` does the
   work behind them, in `src/decode/` alone, and none of its types is in a
   signature or an error. `can_decode` and `decodable_extensions` say what this

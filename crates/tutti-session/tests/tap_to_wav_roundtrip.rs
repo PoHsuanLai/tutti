@@ -37,9 +37,9 @@ use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
 };
 use tutti_session::{PumpLoop, PumpPass};
-use tutti_types::graph::{OutPort, Source};
+use tutti_types::graph::{OutPort, Source as Origin};
 use tutti_types::{
-    AudioIn, Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId,
+    Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, Sink, Source, TapAlign, TapId,
 };
 
 /// Frames rendered into the tap, as the audio callback would.
@@ -102,10 +102,7 @@ impl Graph {
 
 /// Runs passes until one writes nothing, or `budget` passes have run, and
 /// returns the total frames written.
-fn pump_until_dry<I: AudioIn, O: tutti_types::AudioOut>(
-    pump: &mut PumpLoop<I, O>,
-    budget: usize,
-) -> Samples {
+fn pump_until_dry<I: Source, O: Sink>(pump: &mut PumpLoop<I, O>, budget: usize) -> Samples {
     let mut total = Samples::ZERO;
     for _ in 0..budget {
         match pump.pump_once() {
@@ -121,7 +118,7 @@ fn graph_tap(capacity: usize) -> (Graph, TapReader) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
     ed.insert(NodeKey(1), "ramp", Unforkable(Ramp { at: 0 }));
     let port = |port| {
-        Source::Node(OutPort {
+        Origin::Node(OutPort {
             node: NodeKey(1),
             port,
         })
@@ -155,7 +152,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
     let (mut graph, reader) = graph_tap(FRAMES);
     let src = reader;
     assert_eq!(
-        AudioIn::layout(&src),
+        Source::layout(&src),
         ChannelLayout::STEREO,
         "the tap has two lanes; the sink below is built to match"
     );
@@ -186,8 +183,9 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
         FRAMES * 2
     );
     // The tap is empty now, so the next pass must report a live source waiting
-    // rather than a finished one. `TapReader`'s `ON_EMPTY` is `Starved`, and this is
-    // what that const buys.
+    // rather than a finished one. `TapReader::pull` answers `Starved` for an empty
+    // tap, and this is what that answer buys. Mutation (run): answering `Ended`
+    // there makes this pass report `Ended` and fails the assertion.
     assert_eq!(
         pump.pump_once(),
         PumpPass::Starved,
@@ -284,7 +282,7 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
 /// counts them; the file holds the 512 and is shorter than the take by the
 /// lost frames, with nothing in the audio to mark where.
 ///
-/// Mutation (run, recorded here): delete `impl AudioIn for TapReader`'s `take_lost` (the trait's
+/// Mutation (run, recorded here): delete `impl Source for TapReader`'s `take_lost` (the trait's
 /// zero default) -> `lost()` reads 0 and the first assertion fails. Delete the
 /// `fetch_add` in `PumpLoop::pump_once` -> the same.
 #[test]

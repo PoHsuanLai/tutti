@@ -1,19 +1,19 @@
 //! Recording: a source pumped into a sink on a thread of its own.
 //!
-//! [`tutti_types::pump`] is the whole of "recording" minus the loop and the
-//! stop condition. [`PumpLoop`] is one pass of that loop with no thread and no
-//! clock, and [`Recorder`] is a thread that runs it until it is told to stop
-//! or the source ends. Together they join any [`AudioIn`] to any [`AudioOut`]:
+//! Recording is a source pulled into a sink: pull a block, write it. [`PumpLoop`]
+//! is one pass of that with no thread and no clock, and [`Recorder`] is a
+//! thread that runs it until it is told to stop or the source ends. Together
+//! they join any [`Source`] to any [`Sink`]:
 //! a `tutti_codec::FileIn` to a file, a graph tap's
 //! [`TapReader`](tutti_graph::TapReader) to a `tutti_codec::FileOut`, a
 //! capture device to either.
 //!
 //! - [`PumpLoop::new`] and [`Recorder::start`] refuse a source and sink whose
 //!   channel widths disagree, before any frame moves. The same check is a
-//!   `debug_assert` in [`tutti_types::pump`].
+//!   `debug_assert` in the pass itself (`pump`, private: nothing else calls it).
 //! - The scratch buffer is allocated once, so the loop never allocates.
-//! - A zero-frame poll means "back off" or "finished" according to the
-//!   source's [`ON_EMPTY`](AudioIn::ON_EMPTY). `Starved` sources (every
+//! - An empty pull means "back off", "finished" or "broken" according to the
+//!   source's own [`Pull`] verdict. `Starved` sources (every
 //!   microphone, every tap) never end on their own; [`finish`](Recorder::finish)
 //!   stops them and [`wait`](Recorder::wait) would block forever.
 //! - Dropping a live recorder stops, joins and finalizes it, so a file's header
@@ -25,9 +25,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use thiserror::Error;
-use tutti_types::{AudioIn, AudioOut, ChannelLayout, OnEmpty, Samples, pump};
+use tutti_types::{ChannelLayout, Pull, Samples, Sink, SinkFailed, Source};
 
-/// How long a [`Recorder`] parks when a [`Starved`](OnEmpty::Starved) source
+/// How long a [`Recorder`] parks when a [`Starved`](Pull::Starved) source
 /// yields nothing, unless the caller names another
 /// ([`Recorder::start_with_capacity`]). A live source has nothing ready
 /// between pushes; sleeping avoids busy-spinning a core while still draining
@@ -46,20 +46,20 @@ pub enum RecorderError {
     /// Returned by [`PumpLoop::new`] and [`Recorder::start`] before any frame
     /// moves: recording a mismatched pair would rotate the file's channels
     /// every frame. It is the release-build half of the width-agreement
-    /// invariant (the debug half is [`pump`]'s `debug_assert_eq!`), and it
+    /// invariant (the debug half is `pump`'s `debug_assert_eq!`), and it
     /// carries both layouts as values, not prose.
     #[error(
         "recorder source is {src:?} but the sink is {sink:?}; \
          recording a mismatched pair rotates the file's channels every frame"
     )]
     ChannelWidthMismatch {
-        /// What the [`AudioIn`] source reports.
+        /// What the [`Source`] reports.
         src: ChannelLayout,
-        /// What the [`AudioOut`] sink was opened with.
+        /// What the [`Sink`] was opened with.
         sink: ChannelLayout,
     },
 
-    /// The source broke mid-take ([`AudioIn::is_failed`]), for a microphone
+    /// The source broke mid-take ([`Pull::Failed`]), for a microphone
     /// because its device went away.
     ///
     /// The frames delivered before the failure are in the sink, which was
@@ -68,13 +68,13 @@ pub enum RecorderError {
     SourceFailed,
 
     /// File I/O failed: writing frames, or closing the sink in
-    /// [`finalize`](AudioOut::finalize).
+    /// [`finalize`](Sink::finalize).
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
 /// [`RecorderError`] as the `io::Error` a sink's
-/// [`finalize`](AudioOut::finalize) speaks, for a host that reports every way
+/// [`finalize`](Sink::finalize) speaks, for a host that reports every way
 /// a take can end through one channel (`bevy-tutti`'s `PumpFinished`).
 ///
 /// [`Io`](RecorderError::Io) unwraps to the error it carries. The others
@@ -104,27 +104,66 @@ impl RecorderError {
     }
 }
 
+/// Moves one block from a [`Source`] to a [`Sink`]: the source's verdict, or
+/// the sink's refusal.
+///
+/// Pulls as many frames as `buf` holds from `src` and writes exactly what it
+/// produced to `dst`. The loop and the stop condition are the caller's policy
+/// ([`PumpLoop`], [`Recorder`]). `buf` is flat interleaved and therefore
+/// *sized* in samples ([`Samples::interleaved_len`]); everything returned is in
+/// frames.
+///
+/// Not `tutti-types`' (doc 025, decision 12 in §10): it is behaviour, and its one
+/// caller is [`PumpLoop::pump_once`].
+///
+/// # Panics
+///
+/// In debug builds, if `src` and `dst` report different widths: the inner
+/// half of the width check, whose outer half is [`PumpLoop::new`]'s error
+/// (which a shipped binary relies on, so panicking a pump thread mid-take is
+/// the wrong response here). In any build, if `src` claims more frames than
+/// `buf` holds, which breaks the [`Source::pull`] contract.
+fn pump<I, O>(src: &mut I, dst: &mut O, buf: &mut [f32]) -> Result<Pull, SinkFailed>
+where
+    I: Source + ?Sized,
+    O: Sink + ?Sized,
+{
+    debug_assert_eq!(
+        src.layout(),
+        dst.layout(),
+        "pump source and sink must agree on channel width; \
+         a mismatch rotates the sink's channels every frame"
+    );
+    let pull = src.pull(buf);
+    if let Pull::Frames(n) = pull {
+        // The one frames -> samples crossing on this path, and it is named: an
+        // `n * ch` written by hand here is where a count in the wrong unit
+        // would slip through.
+        dst.write(&buf[..n.interleaved_len(src.layout())])?;
+    }
+    Ok(pull)
+}
+
 /// What one [`PumpLoop::pump_once`] pass achieved.
 ///
-/// The two "nothing moved" cases are separate because a driver must act
-/// differently on each (park and re-poll, or stop), and the source's
-/// [`ON_EMPTY`](AudioIn::ON_EMPTY) is what tells them apart.
+/// The "nothing moved" cases are separate because a driver must act
+/// differently on each (park and re-pull, or stop), and the source's [`Pull`]
+/// verdict is what tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PumpPass {
     /// Frames moved from the source into the sink. Never zero, since a
     /// zero-frame pass is one of the other variants.
     Wrote(Samples),
-    /// The source had nothing ready *yet* ([`OnEmpty::Starved`]). Park and come
+    /// The source had nothing ready *yet* ([`Pull::Starved`]). Park and come
     /// back; there is more coming.
     Starved,
-    /// The source has nothing more, ever ([`OnEmpty::EndOfStream`]). Stop.
+    /// The source has nothing more, ever ([`Pull::Ended`]). Stop.
     Ended,
-    /// The source broke ([`AudioIn::is_failed`]) after its buffered frames were
-    /// drained, or the sink failed ([`AudioOut::is_failed`]). Stop and
-    /// finalize what was written.
+    /// The source broke ([`Pull::Failed`], which comes only after its buffered
+    /// frames were drained), or a write to the sink failed ([`SinkFailed`]).
+    /// Stop and finalize what was written.
     ///
-    /// Outranks [`Ended`](Self::Ended): a finite source that failed and is
-    /// drained is a failure, not a clean end.
+    /// A finite source that failed is this, not [`Ended`](Self::Ended).
     Failed,
 }
 
@@ -135,14 +174,13 @@ pub enum PumpPass {
 /// by hand to count frames exactly, or hand it to a [`Recorder`] to run on a
 /// thread.
 ///
-/// `S` is the sample element both endpoints speak. The channel width is not a
-/// type parameter: the endpoints carry it as a runtime
-/// [`ChannelLayout`].
+/// The channel width is not a type parameter: the endpoints carry it as a
+/// runtime [`ChannelLayout`].
 ///
 /// # Examples
 ///
 /// Recording what the graph is playing needs no device: a tap on the graph's
-/// two outputs fills as the graph renders, the tap's reader is an [`AudioIn`]
+/// two outputs fills as the graph renders, the tap's reader is a [`Source`]
 /// as it is, and one pass moves a block into a file. Swap the reader for
 /// `tutti_cpal::MicIn` and the same lines record a microphone: that
 /// interchangeability is the reason the traits exist.
@@ -152,7 +190,7 @@ pub enum PumpPass {
 /// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 /// use tutti_session::{PumpLoop, PumpPass};
 /// use tutti_types::graph::{OutPort, Source};
-/// use tutti_types::{AudioOut, Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, Sink};
 /// use tutti_types::{TapAlign, TapId};
 ///
 /// /// A stereo source: 0.25 on the left, -0.25 on the right.
@@ -204,27 +242,32 @@ pub enum PumpPass {
 ///
 /// # Two things worth knowing
 ///
-/// - **`AudioIn::ON_EMPTY` is not optional bookkeeping.** A zero-frame poll
-///   means "not yet" for a mic and "never again" for a decoded file, and
-///   nothing in the count distinguishes them. Getting it wrong ends a take
-///   milliseconds in with no error anywhere.
+/// - **The source's verdict is not optional bookkeeping.** An empty pull
+///   means "not yet" for a mic and "never again" for a decoded file, and only
+///   the source's [`Pull`] distinguishes them. A source that answers
+///   [`Ended`](Pull::Ended) where it means [`Starved`](Pull::Starved) ends a
+///   take milliseconds in with no error anywhere (the recorder tests pin each
+///   source's answer).
 /// - **The width check is mandatory.** [`new`](Self::new) is the one place both
 ///   endpoints are in scope before a frame moves, so a width mismatch is an
 ///   error there rather than a file whose channels rotate every frame.
-pub struct PumpLoop<I, O, S = f32> {
+pub struct PumpLoop<I, O> {
     src: I,
     sink: O,
     /// Allocated once at construction; `pump_once` never grows it.
-    scratch: Vec<S>,
+    scratch: Vec<f32>,
+    /// Set when the source answered [`Pull::Failed`], so
+    /// [`finalize`](Self::finalize) can say so after the sink closed.
+    source_failed: bool,
     /// Set by the first [`PumpPass::Failed`]; a [`Recorder`] holds the other
     /// end.
     failed: Arc<AtomicBool>,
-    /// Frames the source discarded, summed ([`AudioIn::take_lost`]); a
+    /// Frames the source discarded, summed ([`Source::take_lost`]); a
     /// [`Recorder`] holds the other end.
     lost: Arc<AtomicU64>,
 }
 
-impl<I, O, S> std::fmt::Debug for PumpLoop<I, O, S> {
+impl<I, O> std::fmt::Debug for PumpLoop<I, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PumpLoop")
             .field("scratch_len", &self.scratch.len())
@@ -232,11 +275,10 @@ impl<I, O, S> std::fmt::Debug for PumpLoop<I, O, S> {
     }
 }
 
-impl<I, O, S> PumpLoop<I, O, S>
+impl<I, O> PumpLoop<I, O>
 where
-    S: Copy + Default,
-    I: AudioIn<S>,
-    O: AudioOut<S>,
+    I: Source,
+    O: Sink,
 {
     /// A loop over `src` and `sink` moving at most `capacity` frames a pass.
     ///
@@ -248,7 +290,7 @@ where
     /// an empty scratch would make every poll return zero, ending a finite
     /// take before its first frame and parking a live one forever.
     ///
-    /// The **sample rate** is the caller's to match: [`AudioIn`] carries none,
+    /// The **sample rate** is the caller's to match: [`Source`] carries none,
     /// so nothing here can compare them.
     ///
     /// # Errors
@@ -271,45 +313,37 @@ where
         Ok(Self {
             src,
             sink,
-            scratch: vec![S::default(); frames.interleaved_len(layout)],
+            scratch: vec![0.0; frames.interleaved_len(layout)],
+            source_failed: false,
             failed: Arc::new(AtomicBool::new(false)),
             lost: Arc::new(AtomicU64::new(0)),
         })
     }
 
-    /// Runs one pass: polls a block of frames from the source and writes them
+    /// Runs one pass: pulls a block of frames from the source and writes them
     /// to the sink.
     ///
-    /// A zero-frame poll is reported as [`Starved`](PumpPass::Starved) or
-    /// [`Ended`](PumpPass::Ended) according to the source's own
-    /// [`ON_EMPTY`](AudioIn::ON_EMPTY), unless the sink has failed or the
-    /// source has failed and is drained, which is [`Failed`](PumpPass::Failed).
+    /// An empty pull is reported as [`Starved`](PumpPass::Starved),
+    /// [`Ended`](PumpPass::Ended) or [`Failed`](PumpPass::Failed) as the source's
+    /// own [`Pull`] says. A write the sink refused is
+    /// [`Failed`](PumpPass::Failed) too.
     pub fn pump_once(&mut self) -> PumpPass {
-        let mut n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        let pass = match pump(&mut self.src, &mut self.sink, &mut self.scratch) {
+            Err(SinkFailed) => PumpPass::Failed,
+            Ok(Pull::Frames(n)) => PumpPass::Wrote(n),
+            Ok(Pull::Starved) => PumpPass::Starved,
+            Ok(Pull::Ended) => PumpPass::Ended,
+            Ok(Pull::Failed) => {
+                self.source_failed = true;
+                PumpPass::Failed
+            }
+        };
         self.lost
             .fetch_add(self.src.take_lost().get() as u64, Ordering::Relaxed);
-        // A source can push its last frames and then fail between the poll that
-        // came back empty and this check. The failure flag is read after the
-        // empty poll, so every frame pushed before it is visible to a second
-        // poll; only an empty second poll is a drained, failed source.
-        if n.is_zero() && self.src.is_failed() {
-            n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
-            if n.is_zero() {
-                self.failed.store(true, Ordering::Release);
-                return PumpPass::Failed;
-            }
-        }
-        if self.sink.is_failed() {
+        if pass == PumpPass::Failed {
             self.failed.store(true, Ordering::Release);
-            return PumpPass::Failed;
         }
-        if !n.is_zero() {
-            return PumpPass::Wrote(n);
-        }
-        match I::ON_EMPTY {
-            OnEmpty::Starved => PumpPass::Starved,
-            OnEmpty::EndOfStream => PumpPass::Ended,
-        }
+        pass
     }
 
     /// Whether a pass has failed: the source broke or the sink did.
@@ -318,7 +352,7 @@ where
         self.failed.load(Ordering::Acquire)
     }
 
-    /// The frames the source discarded so far ([`AudioIn::take_lost`]), summed
+    /// The frames the source discarded so far ([`Source::take_lost`]), summed
     /// over the passes run. A recording closes up over each gap.
     #[must_use]
     pub fn lost(&self) -> Samples {
@@ -333,12 +367,12 @@ where
     ///
     /// # Errors
     ///
-    /// The sink's [`finalize`](AudioOut::finalize) error; for a WAV, the file
+    /// The sink's [`finalize`](Sink::finalize) error; for a WAV, the file
     /// is then unreadable. If the sink closed cleanly but the source had
     /// failed, [`RecorderError::SourceFailed`] as an `io::Error`: the file is
     /// valid and holds the frames delivered before the failure.
     pub fn finalize(self) -> std::io::Result<()> {
-        let source_failed = self.src.is_failed();
+        let source_failed = self.source_failed;
         self.sink.finalize()?;
         if source_failed {
             return Err(RecorderError::SourceFailed.into());
@@ -347,7 +381,7 @@ where
     }
 }
 
-/// Pumps any [`AudioIn`] source into any [`AudioOut`] sink on a background
+/// Pumps any [`Source`] into any [`Sink`] on a background
 /// thread.
 ///
 /// [`start`](Self::start) checks that source and sink have the same channel
@@ -368,7 +402,7 @@ where
 ///   [`is_finished`](Self::is_finished) to end a take without blocking.
 /// - dropping the recorder, which does what `finish` does and logs a failure.
 ///
-/// The sample rate is not checked, since [`AudioIn`] carries none: build the
+/// The sample rate is not checked, since [`Source`] carries none: build the
 /// sink at the source's rate.
 ///
 /// # Examples
@@ -379,7 +413,7 @@ where
 /// use tutti_types::{ChannelLayout, SampleRate};
 ///
 /// # fn go(reader: tutti_graph::TapReader) -> Result<(), Box<dyn std::error::Error>> {
-/// // A stereo tap and a stereo sink pair: a tap is an `AudioIn` as it is.
+/// // A stereo tap and a stereo sink pair: a tap is a `Source` as it is.
 /// let spec = Spec::new(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate(48_000.0));
 /// let rec = Recorder::start(reader, FileOut::create("master.wav", &spec)?)?;
 /// // ... later ...
@@ -409,45 +443,41 @@ impl Recorder {
     ///
     /// [`RecorderError::ChannelWidthMismatch`] when `src` and `sink` disagree
     /// on channel width, before any frame is written.
-    pub fn start<I, O, S>(src: I, sink: O) -> Result<Self, RecorderError>
+    pub fn start<I, O>(src: I, sink: O) -> Result<Self, RecorderError>
     where
-        I: AudioIn<S> + Send + 'static,
-        O: AudioOut<S> + Send + 'static,
-        S: Default + Copy + Send + 'static,
+        I: Source + Send + 'static,
+        O: Sink + Send + 'static,
     {
         Self::start_with_capacity(src, sink, SCRATCH_FRAMES, IDLE_PARK)
     }
 
     /// Starts like [`start`](Self::start), moving at most `capacity` frames a
-    /// pass and parking `park` when a [`Starved`](OnEmpty::Starved) source is
-    /// empty (an [`EndOfStream`](OnEmpty::EndOfStream) one never parks: it
-    /// exits). How long to wait is the host's tuning; *whether* to wait is the
+    /// pass and parking `park` when a [`Starved`](Pull::Starved) source is
+    /// empty (an [`Ended`](Pull::Ended) one never parks: it exits). How long to wait is the host's tuning; *whether* to wait is the
     /// source's nature, which is why only this half is an argument.
     ///
     /// # Errors
     ///
     /// As [`PumpLoop::new`].
-    pub fn start_with_capacity<I, O, S>(
+    pub fn start_with_capacity<I, O>(
         src: I,
         sink: O,
         capacity: Samples,
         park: Duration,
     ) -> Result<Self, RecorderError>
     where
-        I: AudioIn<S> + Send + 'static,
-        O: AudioOut<S> + Send + 'static,
-        S: Default + Copy + Send + 'static,
+        I: Source + Send + 'static,
+        O: Sink + Send + 'static,
     {
         Ok(Self::run(PumpLoop::new(src, sink, capacity)?, park))
     }
 
     /// Runs an already built loop on a thread of its own, parking `park` on a
     /// starved pass.
-    pub fn run<I, O, S>(mut pump_loop: PumpLoop<I, O, S>, park: Duration) -> Self
+    pub fn run<I, O>(mut pump_loop: PumpLoop<I, O>, park: Duration) -> Self
     where
-        I: AudioIn<S> + Send + 'static,
-        O: AudioOut<S> + Send + 'static,
-        S: Default + Copy + Send + 'static,
+        I: Source + Send + 'static,
+        O: Sink + Send + 'static,
     {
         let running = Arc::new(AtomicBool::new(true));
         let failed = Arc::clone(&pump_loop.failed);
@@ -500,11 +530,11 @@ impl Recorder {
     ///
     /// [`finish`](Self::finish) cuts a source off wherever the pump happens to
     /// be, which silently truncates a finite one. This instead lets the loop
-    /// run until the source reports
-    /// [`OnEmpty::EndOfStream`], then returns the finalize result as `finish`
+    /// run until the source answers
+    /// [`Pull::Ended`], then returns the finalize result as `finish`
     /// does.
     ///
-    /// **On a [`Starved`](OnEmpty::Starved) source this blocks until the source
+    /// **On a [`Starved`](Pull::Starved) source this blocks until the source
     /// fails**, and every microphone and tap is one: the pump parks and
     /// re-polls rather than ending, and only a failure ([`failed`](Self::failed))
     /// or a stop ends it. After [`finish_in_place`](Self::finish_in_place) has
@@ -541,9 +571,9 @@ impl Recorder {
         self.running.load(Ordering::Acquire)
     }
 
-    /// Whether the take failed: the source broke ([`AudioIn::is_failed`], for a
+    /// Whether the take failed: the source broke ([`Pull::Failed`], for a
     /// microphone its device went away) or the sink did
-    /// ([`AudioOut::is_failed`], for a file a write error such as a full disk).
+    /// ([`SinkFailed`], for a file a write error such as a full disk).
     ///
     /// The pump stops and finalizes the frames already written, so the file
     /// stays readable up to the failure and [`is_finished`](Self::is_finished)
@@ -554,7 +584,7 @@ impl Recorder {
         self.failed.load(Ordering::Acquire)
     }
 
-    /// The frames the source discarded so far ([`AudioIn::take_lost`]): a
+    /// The frames the source discarded so far ([`Source::take_lost`]): a
     /// tap's ring that the pump did not drain in time, a capture ring that
     /// overflowed. A live take's health beside [`failed`](Self::failed).
     ///

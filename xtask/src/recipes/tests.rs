@@ -8,6 +8,8 @@
 //! - the `-E` filter dropped from `test`: `test_builds_the_plugins_then_runs_nextest`;
 //! - `deny` without its probe: `deny_probes_cargo_deny_first`.
 //! - `check-hosting` dropped from `ci`: `check_hosting_runs_its_script_and_ci_runs_it`.
+//! - `loom`'s filter matching a name as a prefix (`--test {a}` alone):
+//!   `loom_runs_only_the_models_it_is_named`.
 
 use super::*;
 
@@ -155,6 +157,24 @@ fn loom_recipes_carry_their_environment() {
             "RUSTFLAGS='--cfg loom' cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"
         ]
     );
+}
+
+/// Named models run alone, with their own environment; a name that is no
+/// model, or only a prefix of one, is refused.
+#[test]
+fn loom_runs_only_the_models_it_is_named() {
+    assert_eq!(
+        dry("loom", &["handoff_loom", "pos_ring_loom"]),
+        [
+            "LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS='--cfg loom' cargo test --locked -p tutti-rt --release --test pos_ring_loom",
+            "RUSTFLAGS='--cfg loom' cargo test --locked -p tutti-rt --release --test handoff_loom -- --nocapture",
+        ]
+    );
+    assert_eq!(dry("loom", &["loom"]).len(), 2, "arc-lend's two runs");
+    for bad in ["handoff", "nothing_loom"] {
+        let args = [bad.to_owned()];
+        assert!(plan("loom", &args, &ctx()).is_err(), "{bad}");
+    }
 }
 
 #[test]

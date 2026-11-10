@@ -643,8 +643,6 @@ fn a_preset_units_first_note_on_renders_that_preset() {
     // and the dry pair equals what that code rendered with its effects off.
     // Doc 024 consolidation 4 (owner-approved, 2026-11-11): the voice's low-pass
     // is `tutti-dsp`'s biquad, so this digest moves in the last bits. It was
-    // 0xfbb4_4b59_223f_1840 on the rustysynth biquad; the figure on glibc 2.43
-    // after the move is 0x9bbb_c7d3_8add_15d0. The constant below awaits the
-    // glibc 2.39 recording.
-    assert_golden("the soundfont voice", got, 0xfbb4_4b59_223f_1840);
+    // 0xfbb4_4b59_223f_1840 on the rustysynth biquad.
+    assert_golden("the soundfont voice", got, 0x9bbb_c7d3_8add_15d0);
 }

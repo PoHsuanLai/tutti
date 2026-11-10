@@ -66,9 +66,7 @@ pub(super) fn wants_activation(bus_type: i32, flags: u32) -> bool {
 
 const K_MAIN: i32 = sdk_enum_i32(kMain);
 
-/// `BusFlags` is `DefaultEnumType`, which is `u32` on unix and `c_int` on
-/// Windows — so the cast is a no-op here and load-bearing there. Same reason
-/// [`crate::physical_ui_type`] carries this allow.
+/// `kDefaultActive` as the `u32` bus-flags word.
 const BUS_DEFAULT_ACTIVE: u32 = sdk_enum_u32(BusFlags_::kDefaultActive);
 
 #[cfg(test)]

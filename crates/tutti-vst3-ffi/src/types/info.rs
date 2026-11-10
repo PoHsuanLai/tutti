@@ -129,17 +129,17 @@ impl Vst3ParameterInfo {
         self.flags
     }
 
-    /// Decoded [`title`](Self::title) as a Rust `String`.
+    /// The title as a Rust `String`.
     pub fn title_string(&self) -> String {
         utf16_to_string(&self.title)
     }
 
-    /// Decoded [`short_title`](Self::short_title) as a Rust `String`.
+    /// The short title as a Rust `String`.
     pub fn short_title_string(&self) -> String {
         utf16_to_string(&self.short_title)
     }
 
-    /// Decoded [`units`](Self::units) as a Rust `String`.
+    /// The units as a Rust `String`.
     pub fn units_string(&self) -> String {
         utf16_to_string(&self.units)
     }

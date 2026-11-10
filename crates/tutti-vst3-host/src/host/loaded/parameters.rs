@@ -230,8 +230,8 @@ impl Vst3Loaded {
 
     /// Maps the plugin's physical UI controls to the note-expression dimensions
     /// they drive, on the given event `bus_index` / MIDI `channel`. Returns one
-    /// `(physical_ui_type, note_expression_type)` pair per physical control
-    /// (X/Y movement, pressure — see [`physical_ui_type`](crate::physical_ui_type)),
+    /// `(PhysicalUiType, note_expression_type)` pair per physical control
+    /// (X/Y movement, pressure — see [`PhysicalUiType`](crate::PhysicalUiType)),
     /// or an empty vec if the plugin doesn't implement
     /// `INoteExpressionPhysicalUIMapping`.
     ///

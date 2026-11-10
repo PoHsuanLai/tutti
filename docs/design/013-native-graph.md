@@ -95,6 +95,7 @@ Four layers, each a function of the one before it. The arrows only point down.
 
 ```text
  Topology (value)        tutti-types::graph      pure, Eq+Hash, BTreeMap, author keys
+                         (until the move, below; then tutti-graph)
      │ validate()
  Valid                   proof in the type
      │ compile(&Valid, &Shapes, &Plan_prev) -> (Plan, Delta)      pure, control thread
@@ -4950,6 +4951,67 @@ request and a plugin that parallelises its own voices ran them serially.
   A closure cannot leave FTZ/DAZ set on the thread: the restore is not
   something a caller can forget or reorder. Its soundness argument (the FP-environment rule it departs from,
   and the audit of what runs inside it) is its `# Soundness` docs.
+
+### Move `graph`, `latency` and `tail` into `tutti-graph` (planned)
+
+Until this move, `tutti-types/src/{graph,latency,tail}.rs` hold `Topology` and
+its parts, the latency pass and the tail fold (768, 674 and 639 lines). The
+owner decided on 2026-11-07, and confirmed on 2026-11-10, that they move into
+`tutti-graph`. Nothing has moved yet.
+
+- **What moves:** `Topology`, `Valid`/`Invalid`, `OutPort`, `InPort`, `Source`,
+  `Edge`, `FeedbackFrom`, `ParamValue`, `NodeSpec`, the meter and tap specs
+  (`MeterId`, `MeterSpec`, `TapId`, `TapAlign`, `TapSpec`), `latency` (`Feed`,
+  `Compensation`, `Delays`, `plan`, `delays`, `MAX_NODE_LATENCY`) and `tail`
+  (`GraphTail`, `graph_tail`, `MAX_NODE_TAIL`), with their unit tests and
+  `tutti-types/tests/graph_value.rs`.
+- **What stays:** `NodeKey` (about 30 lines of `graph.rs`, which becomes a file
+  of its own), because `bevy-tutti`'s `AudioNode(pub NodeKey)` and the engine
+  and `tutti-session` key nodes by it and a `NodeKey` in `tutti-graph` would
+  make the core-split plan a cycle. `LatencyGraph` and `TailGraph` stay as
+  traits and move with their files; whether they are dead abstraction
+  (two implementors: `Topology` and `GraphSpec`) is a separate decision, not
+  made during the move.
+- **Why:** these are algorithms (`Topology::validate`, `latency::plan` and
+  `delays`, `graph_tail`), not vocabulary, and `tutti-types` is "no new
+  algorithms"; they are the compiler's own domain; `delays` is an oracle for
+  the compiler with no production caller; every user already has the
+  `tutti-graph` edge; and fewer crates rebuild per touch (28 down to 18).
+  The names do not collide in the `tutti-graph` root. The grounds, and the
+  arguments against (churn, 1.4k production lines into `tutti-graph`, the edge
+  rule in `CLAUDE.md`), are in the types-boundary review, section 5.
+- **Blockers:** none found (checked against `scripts/check-layout.sh` and a
+  grep of every workspace crate for these items, 2026-11-10). Every crate that
+  names an item already depends on `tutti-graph` (as a normal edge, or as a
+  dev edge in tests): `tutti-graph` itself, `tutti-nodes`, `tutti-engine`,
+  `tutti-sampler`, `bevy-tutti`, `tutti-io`, `tutti-plugin`, `tutti-cpal`,
+  `tutti-polysynth`, `tutti-midi-runtime`, `tutti-export`, `tutti-soundfont`,
+  `tutti-session`, `tutti-spatial`, `tutti-clap-host`, `tutti-clap-ffi`
+  and `tutti`. The crates below `tutti-graph` (layer 1 and the layer-2
+  siblings: `tutti-dsp`, `tutti-metering`, `tutti-codec`, `tutti-tempo`,
+  `tutti-voicing`, `tutti-modulation`, `tutti-midi-types`) use none of them,
+  and the VST2 and VST3 hosts only mention `LatencyGraph` or `Compensation` in
+  prose. What does need care, none of it a layering break:
+  - `tutti-types` itself: its `lib.rs` re-exports, the doc links in
+    `meter.rs` and `value/{latency,tail}.rs`, `tests/graph_value.rs` and
+    `tests/prelude_surface.rs`;
+  - the `tutti` umbrella re-exports `TapAlign` and `TapId` in its prelude, so
+    `tutti::types::` stops resolving them (an external break; `dawai` uses none
+    of the graph, latency or tail names);
+  - the six crate READMEs that import `tutti_types::graph::{OutPort, Source}`,
+    `scripts/check-layout.sh` (the `tutti-graph` dependency comment) and
+    `CLAUDE.md`, which changes with the code and not before;
+  - about 105 files: 84 name `tutti_types::graph` (68 of them in
+    `tutti-graph`), about 19 name `latency` and 2 name `tail`.
+- **Order:** after the core-split PR 3 and the `AudioNode` decision (done:
+  `bevy-tutti` owns `AudioNode`, the engine and `tutti-session` use `NodeKey`),
+  so no prerequisite is open. Do it after the "one PDC latency solve" item
+  (the compiler at `compile/mod.rs` re-implements `latency::plan`, kept equal
+  only by `tests/compile_passes.rs`): either the compiler calls the solve, or
+  `latency.rs` becomes the test oracle only. Moving first would move two
+  copies, and the second item decides which file keeps the code. This follows
+  "And the two latency solves are one" above, which unified the figures, not
+  the code.
 
 ## Per-node rewrite plan
 

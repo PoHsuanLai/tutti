@@ -3,7 +3,6 @@
 
 use std::cell::Cell;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tutti_plugin_types::MainThread;
 
@@ -18,14 +17,24 @@ use super::config::RangeTable;
 use super::processor::ClapProcessor;
 use super::thread_pool::PoolCell;
 
-/// The main-thread half of an activation: the whole control surface of a
-/// [`ClapLoaded`], reached through `Deref`, with parameter writes redirected
-/// to the Processor.
+/// The main-thread half of an activation: the control surface of a
+/// [`ClapLoaded`] (the [`Control`] trait and the methods
+/// below), with parameter writes redirected to the Processor. It does not
+/// `Deref` to the loaded plugin; a caller that needs the format's own surface
+/// (the editor, ports, the `clap-extras` extensions) asks for
+/// [`loaded`](Self::loaded) or [`loaded_mut`](Self::loaded_mut).
 ///
 /// `Send` so a server can build it on one thread and run it on another, not
 /// `Sync`, and never used from two threads at once. Dropping it ends the
 /// activation: it stops processing, deactivates and destroys the plugin, so a
 /// Processor that outlives it renders nothing.
+///
+/// ```compile_fail
+/// // No `Deref`: a `&ClapController` is not a `&ClapLoaded`.
+/// fn loaded(c: &tutti_clap_host::ClapController) -> &tutti_clap_host::ClapLoaded {
+///     c
+/// }
+/// ```
 pub struct ClapController {
     /// The plugin. `None` only once `deactivate` has taken it.
     loaded: Option<ClapLoaded>,
@@ -70,16 +79,37 @@ impl ClapController {
         }
     }
 
-    fn loaded(&self) -> &ClapLoaded {
+    /// The loaded plugin, for the surface the [`Control`] impl
+    /// and this type's own methods do not cover. The Controller does not
+    /// `Deref` to it (doc 016 section 2.2): a call that must also tell the
+    /// Processor is a method here, not one reached through the loaded type.
+    ///
+    /// # Panics
+    ///
+    /// Never in use: the plugin is taken only when the Controller is consumed.
+    #[must_use]
+    pub fn loaded(&self) -> &ClapLoaded {
         self.loaded
             .as_ref()
             .expect("a Controller holds its plugin until it is consumed")
     }
 
+    /// [`loaded`](Self::loaded), mutably. Prefer a method of the Controller
+    /// where one exists (`set_thread_pool`).
+    ///
+    /// # Panics
+    ///
+    /// Never in use: the plugin is taken only when the Controller is consumed.
+    pub fn loaded_mut(&mut self) -> &mut ClapLoaded {
+        self.loaded
+            .as_mut()
+            .expect("a Controller holds its plugin until it is consumed")
+    }
+
     /// Serves the plugin's `clap.thread-pool` requests on `pool` from the next
     /// block, or refuses them (`None`), and returns the pool it replaces. See
-    /// [`ClapLoaded::set_thread_pool`], which a controller would otherwise reach
-    /// through `Deref`: this one tells the Processor too.
+    /// [`ClapLoaded::set_thread_pool`], which the controller no longer
+    /// reaches through `Deref`: this one tells the Processor too.
     ///
     /// Control thread. The Processor lets go of a replaced pool at its next block
     /// boundary and the controller frees it on a later tick, so dropping the
@@ -98,8 +128,8 @@ impl ClapController {
         &mut self,
         pool: Option<Arc<tutti_clap_ffi::GraphPool>>,
     ) -> Option<Arc<tutti_clap_ffi::GraphPool>> {
-        let old = ClapLoaded::set_task_pool(self, pool);
-        let snapshot = self.pool_snapshot();
+        let old = self.loaded_mut().set_task_pool(pool);
+        let snapshot = self.loaded().pool_snapshot();
         self.pools.publish(PoolCell(snapshot));
         old
     }
@@ -110,22 +140,6 @@ impl ClapController {
     #[must_use]
     pub fn refused_edits(&self) -> u32 {
         self.edits.refused()
-    }
-}
-
-impl Deref for ClapController {
-    type Target = ClapLoaded;
-
-    fn deref(&self) -> &ClapLoaded {
-        self.loaded()
-    }
-}
-
-impl DerefMut for ClapController {
-    fn deref_mut(&mut self) -> &mut ClapLoaded {
-        self.loaded
-            .as_mut()
-            .expect("a Controller holds its plugin until it is consumed")
     }
 }
 
@@ -149,11 +163,12 @@ impl Controller for ClapController {
     type Processor = ClapProcessor;
 
     fn latency(&self, main: &MainThread) -> Samples {
-        Samples(self.latency_samples(main) as usize)
+        Samples(self.loaded().latency_samples(main) as usize)
     }
 
     fn tail(&self, main: &MainThread) -> PluginTail {
-        self.tail_samples(main)
+        self.loaded()
+            .tail_samples(main)
             .map_or(PluginTail::Unknown, PluginTail::from_clap_samples)
     }
 }
@@ -204,7 +219,7 @@ impl ClapController {
     /// Reads the parameters again and republishes the ranges the Processor
     /// denormalizes against. Allocates; main thread.
     pub(crate) fn republish_ranges(&mut self, main: &MainThread) {
-        let table = self.read_param_ranges(main);
+        let table = self.loaded_mut().read_param_ranges(main);
         self.ranges.publish(table);
     }
 }

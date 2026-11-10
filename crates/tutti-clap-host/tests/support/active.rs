@@ -221,16 +221,35 @@ impl<T: Width> Active<T> {
     }
 }
 
-impl<T: Width> Deref for Active<T> {
-    type Target = ClapController;
+impl<T: Width> Active<T> {
+    /// The Controller's `set_thread_pool`, which tells the Processor too; the
+    /// loaded plugin's own (reached through `Deref`) does not.
+    pub fn set_thread_pool(
+        &mut self,
+        pool: Option<std::sync::Arc<tutti_graph::WorkerPool>>,
+    ) -> Option<std::sync::Arc<tutti_clap_ffi::GraphPool>> {
+        self.pair_mut().1.set_thread_pool(pool)
+    }
 
-    fn deref(&self) -> &ClapController {
-        &self.pair().1
+    /// The Controller's `set_task_pool`, as [`set_thread_pool`](Self::set_thread_pool).
+    pub fn set_task_pool(
+        &mut self,
+        pool: Option<std::sync::Arc<tutti_clap_ffi::GraphPool>>,
+    ) -> Option<std::sync::Arc<tutti_clap_ffi::GraphPool>> {
+        self.pair_mut().1.set_task_pool(pool)
+    }
+}
+
+impl<T: Width> Deref for Active<T> {
+    type Target = ClapLoaded;
+
+    fn deref(&self) -> &ClapLoaded {
+        self.pair().1.loaded()
     }
 }
 
 impl<T: Width> DerefMut for Active<T> {
-    fn deref_mut(&mut self) -> &mut ClapController {
-        &mut self.pair_mut().1
+    fn deref_mut(&mut self) -> &mut ClapLoaded {
+        self.pair_mut().1.loaded_mut()
     }
 }

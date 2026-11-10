@@ -118,7 +118,17 @@ mod tests {
     use super::*;
     use crate::test_support::{RATE, tick};
     use tutti_graph::contract::drive;
-    use tutti_types::{M3DB, fold_frame_to_mono, fold_frame_to_stereo};
+    use tutti_types::M3DB;
+
+    /// The ITU-R BS.775 / Dolby 5.1 stereo downmix of a frame, written out
+    /// (`FL FR C LFE SL SR`, the LFE omitted), in the order of operations the
+    /// matrix is defined in.
+    fn itu_5_1_to_stereo(f: &[f32]) -> (f32, f32) {
+        (
+            f[0] + M3DB * f[2] + M3DB * f[4],
+            f[1] + M3DB * f[2] + M3DB * f[5],
+        )
+    }
 
     /// A node between two SMPTE widths.
     fn node(src: ChannelLayout, dst: ChannelLayout) -> DownmixNode {
@@ -153,7 +163,7 @@ mod tests {
         let mut out = [0.0f32; 2];
         tick(&mut u, &frame, &mut out);
 
-        let (l, r) = fold_frame_to_stereo(&frame);
+        let (l, r) = itu_5_1_to_stereo(&frame);
         assert_eq!(
             (out[0], out[1]),
             (l, r),
@@ -167,7 +177,8 @@ mod tests {
         let frame = [0.9, -0.4, 0.5, 0.7, 0.2, -0.3];
         let mut out = [0.0f32; 1];
         tick(&mut u, &frame, &mut out);
-        assert_eq!(out[0], fold_frame_to_mono(&frame));
+        let (lo, ro) = itu_5_1_to_stereo(&frame);
+        assert_eq!(out[0], (lo + ro) * M3DB);
     }
 
     /// The only bug this node can really have is a gather/scatter index error.
@@ -194,7 +205,7 @@ mod tests {
 
         for i in 0..N {
             let frame: Vec<f32> = input.iter().map(|c| c[i]).collect();
-            let (l, r) = fold_frame_to_stereo(&frame);
+            let (l, r) = itu_5_1_to_stereo(&frame);
             for (c, e) in [l, r].iter().enumerate() {
                 let got = out[c][i];
                 assert!(

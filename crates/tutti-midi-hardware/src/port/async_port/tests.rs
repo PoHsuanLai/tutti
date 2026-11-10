@@ -1,6 +1,6 @@
 use super::*;
-use tutti_midi_types::MidiMessage;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_midi_protocol::channel_voice;
+use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, Voice2};
 
 fn note_on(note: u8, vel: u8) -> Ump {
     tutti_fixtures::midi::note_on(
@@ -61,15 +61,14 @@ fn test_input_flow() {
 
     let events = read_input(&port);
     assert_eq!(events.len(), 1);
-    let message = MidiMessage::from_ump(events[0]);
-    assert!(message.is_note_on());
-    assert_eq!(message.note(), Some(0x3C));
-    assert_eq!(
-        message
-            .velocity()
-            .map(|v| tutti_midi_protocol::narrow_velocity(v).get()),
-        Some(0x7F)
-    );
+    let Some(KeyEvent::On(key)) = events[0].key_event() else {
+        panic!("a note-on, got {:?}", events[0]);
+    };
+    assert_eq!(key.note(), 0x3C);
+    let Some((_, Voice2::NoteOn { velocity, .. })) = channel_voice(events[0]) else {
+        panic!("a MIDI 2.0 note-on");
+    };
+    assert_eq!(tutti_midi_protocol::narrow_velocity(velocity).get(), 0x7F);
 }
 
 #[test]

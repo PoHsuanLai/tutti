@@ -85,10 +85,11 @@ impl Vst3Loaded {
         // initialized (`reconcile_bus_counts`).
         let info = build_plugin_info_raw(&library, &class);
 
-        let origin = LoadOrigin {
-            path: path.to_path_buf(),
-            class: options.class,
+        let load = match options.class {
+            Some(class) => tutti_plugin_types::Load::new().plugin(class),
+            None => tutti_plugin_types::Load::new(),
         };
+        let origin = tutti_plugin_types::Origin::new(path, load);
         let mut loaded = Self::assemble(library, plugin, info, origin);
         loaded.initialize(main)?;
         // Whether there is an editor is asked of the plugin here, on the main
@@ -103,7 +104,7 @@ impl Vst3Loaded {
         library: Arc<Library>,
         plugin: Plugin,
         info: PluginInfo,
-        origin: LoadOrigin,
+        origin: tutti_plugin_types::Origin,
     ) -> Self {
         Self {
             _library: library,

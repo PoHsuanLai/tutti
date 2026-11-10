@@ -1640,7 +1640,11 @@ mod tests {
     /// Mutation (run): in the peak fold, `*p = if x.is_nan() { x } else {
     /// p.max(x.abs()) }`, and in `LimiterCurve::gain`, `if !(peak <=
     /// self.threshold)` -> a NaN gain enters the envelope and the minimum, and
-    /// every later frame is NaN -> fails.
+    /// every later frame is NaN -> fails. The settled-output loop is also what
+    /// asserts the envelope stayed finite (the kernel's accessor is gone):
+    /// `if i == 10 { self.envelope = f32::NAN; }` at the top of
+    /// `LimiterKernel::gain` -> every later frame is NaN, the loop's
+    /// `(y - limit).abs() <= ..` is false -> fails (run).
     #[test]
     fn a_nan_input_does_not_poison_the_gain() {
         let ceiling = Db(-6.0);
@@ -1665,7 +1669,6 @@ mod tests {
                 "frame {i}: {y} against {limit}"
             );
         }
-        assert!(lim.kernel.envelope().is_finite());
     }
 
     /// A NaN fed to the peak fold yields a non-NaN peak. Separate from the

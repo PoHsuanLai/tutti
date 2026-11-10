@@ -27,7 +27,7 @@ use crate::network::{
     Absorption, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network,
     OutputMap, Stage, pre_delay_frames,
 };
-use crate::{Ceiling, Channels, Design, MaxDecay, Ring};
+use crate::{Ceiling, Channels, Design, MaxDecay, Ring, Sizes};
 
 /// The line lengths at 44.1 kHz for a room size of 0.5 (the scale is
 /// `0.5 + size`), values near primes, so the delays share few factors.
@@ -372,7 +372,7 @@ impl Design for FdnDesign {
         };
         let mut network = Box::new(Network::new(ceiling.rate()));
         self.design_into(&worst, ceiling.rate(), &mut network);
-        let mut b = self.measure(&network, ceiling.floor());
+        let mut b = Bounds::measure(&network, ceiling.floor());
         b.tail = match b.tail {
             _ if self.freezable => Ring::Unbounded,
             Ring::Finite(t) => {
@@ -381,10 +381,6 @@ impl Design for FdnDesign {
             other => other,
         };
         b
-    }
-
-    fn measure(&self, model: &Network, floor: Db) -> Bounds {
-        Bounds::of(model, floor)
     }
 }
 
@@ -982,8 +978,6 @@ mod tests {
             &Setup {
                 rate,
                 max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
-                input: ChannelLayout::MONO,
-                output: ChannelLayout::STEREO,
             },
         );
         let net = d.design(
@@ -1047,8 +1041,6 @@ mod tests {
             &Setup {
                 rate,
                 max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
-                input: ChannelLayout::MONO,
-                output: ChannelLayout::STEREO,
             },
         );
         let at = |diffusion: f32, freeze: bool| {

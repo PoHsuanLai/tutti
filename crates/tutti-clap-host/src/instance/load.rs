@@ -10,8 +10,8 @@ use crate::types::PluginInfo;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tutti_clap_ffi::{AudioPortInfo, Bundle, DescriptorInfo, LoadError, PortKind, Stage};
-use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{BusChannels, ChannelLayout, EditorPresence};
+use tutti_plugin_types::{Load, MainThread, Origin};
 use tutti_types::ChannelCountOutOfRange;
 
 /// A placeholder rate for the plugin until its first activation, whose
@@ -146,6 +146,12 @@ impl ClapLoaded {
             .select(options.plugin_id.as_deref())
             .map_err(|e| load_failed(bundle_path, e))?;
         let mut plugin_info = info_of(&bundle.descriptors()[index]);
+        // The file opened and the plugin chosen in it, by id even when the
+        // load named none, so a reopen takes the same one.
+        let origin = Origin::new(
+            options.library.as_deref().unwrap_or(bundle_path),
+            Load::new().plugin(bundle.descriptors()[index].id.clone()),
+        );
 
         let host_state = Arc::new(HostState::new(main));
         let host = ClapHost::new(host_state.clone()).into_inner();
@@ -172,6 +178,7 @@ impl ClapLoaded {
             flags: LifecycleFlags::default(),
             work: Default::default(),
             thread_pool: None,
+            origin,
         };
         Ok(loaded)
     }

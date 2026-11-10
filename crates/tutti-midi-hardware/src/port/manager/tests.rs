@@ -1,8 +1,8 @@
 use super::*;
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::UmpAt;
-use tutti_midi_types::MidiMessage;
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_midi_protocol::channel_voice;
+use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, Ump, Voice2};
 
 /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
 /// below can index and count without threading a closure through each.
@@ -117,15 +117,14 @@ fn manager_tags_drained_events_with_their_port_id() {
     let events = drain_cycle(&manager, 512);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0, input_id);
-    let message = MidiMessage::from_ump(events[0].1.1);
-    assert!(message.is_note_on());
-    assert_eq!(message.note(), Some(0x3C));
-    assert_eq!(
-        message
-            .velocity()
-            .map(|v| tutti_midi_protocol::narrow_velocity(v).get()),
-        Some(0x7F)
-    );
+    let Some(KeyEvent::On(key)) = events[0].1.1.key_event() else {
+        panic!("a note-on, got {:?}", events[0].1.1);
+    };
+    assert_eq!(key.note(), 0x3C);
+    let Some((_, Voice2::NoteOn { velocity, .. })) = channel_voice(events[0].1.1) else {
+        panic!("a MIDI 2.0 note-on");
+    };
+    assert_eq!(tutti_midi_protocol::narrow_velocity(velocity).get(), 0x7F);
 }
 
 #[test]

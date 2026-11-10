@@ -18,7 +18,6 @@ workspace = true
 thiserror = "2"
 tracing = "0.1"
 
-tutti-midi-types = { path = "../tutti-midi-types" }
 # `channel_voice`, the Clip File's note-on width read.
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 

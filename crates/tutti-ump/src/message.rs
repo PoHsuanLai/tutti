@@ -574,6 +574,34 @@ pub enum Voice2 {
     },
 }
 
+impl Voice2 {
+    /// The note a message addresses: the one in byte 3 of a Note On or Off,
+    /// Polyphonic Pressure, Per-Note Pitch Bend, a Registered or Assignable
+    /// Per-Note Controller or Per-Note Management (M2-104 section 7.4). `None`
+    /// for a channel-wide message.
+    #[inline]
+    #[must_use]
+    pub const fn note(&self) -> Option<NoteNumber> {
+        match *self {
+            Self::RegisteredPerNote { note, .. }
+            | Self::AssignablePerNote { note, .. }
+            | Self::PerNotePitchBend { note, .. }
+            | Self::NoteOff { note, .. }
+            | Self::NoteOn { note, .. }
+            | Self::PolyPressure { note, .. }
+            | Self::PerNoteManagement { note, .. } => Some(note),
+            Self::Registered { .. }
+            | Self::Assignable { .. }
+            | Self::RelativeRegistered { .. }
+            | Self::RelativeAssignable { .. }
+            | Self::ControlChange { .. }
+            | Self::ProgramChange { .. }
+            | Self::ChannelPressure(_)
+            | Self::PitchBend(_) => None,
+        }
+    }
+}
+
 // ---- Flex Data -------------------------------------------------------------
 
 /// Where a Flex Data message goes (Table 10): one Channel, or the whole Group.

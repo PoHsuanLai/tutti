@@ -1,7 +1,5 @@
 //! The float scaling: native UMP integers as unit floats.
 //!
-//! Moved from `tutti-midi-types`' `convert`, assertions unchanged.
-//!
 //! Mutation (run once each, restored): `unit_f32_to_u16` truncating instead of
 //! rounding fails `unit_f32_inverses_are_exact_enough`; dropping the
 //! `0x8000_0000 +` centre in `signed_f32_to_bend_u32` fails

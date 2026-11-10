@@ -25,8 +25,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
-    BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DistortionNode,
-    DownmixNode, FdnControls, GateNode, LimiterNode, ReverbNode, ShapeKind,
+    BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DesignNode,
+    DistortionNode, DownmixNode, FdnControls, FreeverbNode, GateNode, LimiterNode, ShapeKind,
 };
 use tutti_types::{ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds};
 
@@ -363,12 +363,12 @@ fn dynamics(c: &mut Criterion) {
 
 /// The reverb: one input, two outputs, so the throughput counts two channels.
 fn reverb(c: &mut Criterion) {
-    run(c, "reverb", "freeverb", ReverbNode::general_midi, None);
+    run(c, "reverb", "freeverb", FreeverbNode::general_midi, None);
     run(
         c,
         "reverb",
         "fdn",
-        || ReverbNode::new(tutti_nodes::FdnDesign::default(), FdnControls::DEFAULT),
+        || DesignNode::new(tutti_nodes::FdnDesign::default(), FdnControls::DEFAULT),
         None,
     );
 }

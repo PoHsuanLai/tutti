@@ -8,20 +8,20 @@
 //!
 //! [`Freeverb`] starts with the figures of the General MIDI reverb the SoundFont
 //! unit used to carry inside itself (room size 0.5, damping 0.5, width 1, wet 1).
-//! It is also the [`Kernel`] of [`FreeverbDesign`](crate::FreeverbDesign): the
+//! It is also the [`Realization`] of [`FreeverbDesign`](crate::FreeverbDesign): the
 //! two coefficients a network carries (the comb feedback and damping) are the
-//! only figures [`retarget`](Kernel::retarget) moves, and the lines and the
+//! only figures [`retarget`](Realization::retarget) moves, and the lines and the
 //! processing loops are untouched by it. It allocates in [`new`](Freeverb::new)
-//! and in [`prepare`](Kernel::prepare) at another rate, and nowhere after.
+//! and in [`prepare`](Realization::prepare) at another rate, and nowhere after.
 
 use std::cmp;
 
 use tutti_types::{Db, SampleRate, Seconds};
 
-use crate::network::{Absorption, Bounds, Effort, Kernel, Network, Setup, Stage};
+use crate::network::{Absorption, Bounds, Effort, Network, Realization, Setup, Stage};
 
 /// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
-/// damping the only figures that move ([`Kernel::retarget`]).
+/// damping the only figures that move ([`Realization::retarget`]).
 ///
 /// Its comb and all-pass lengths are Freeverb's, tuned at 44.1 kHz and scaled
 /// to the rate. The input is scaled by a fixed gain inside
@@ -190,8 +190,8 @@ impl Freeverb {
         }
     }
 
-    /// Makes the last right comb `len` frames long (empty), for the kernel
-    /// contract's defective kernel.
+    /// Makes the last right comb `len` frames long (empty), for the realization
+    /// contract's defective realization.
     #[cfg(test)]
     pub(crate) fn lengthen_last_comb(&mut self, len: usize) {
         if let Some(c) = self.cfs_r.last_mut() {
@@ -255,19 +255,19 @@ impl Freeverb {
     }
 }
 
-/// The kernel of [`FreeverbDesign`](crate::FreeverbDesign): `process` is the
+/// The realization of [`FreeverbDesign`](crate::FreeverbDesign): `process` is the
 /// comb and all-pass loops of [`Freeverb::process`], untouched.
 ///
-/// [`retarget`](Kernel::retarget) copies the comb loop gain and the damping off
+/// [`retarget`](Realization::retarget) copies the comb loop gain and the damping off
 /// the network's first recirculating stage (a one-pole absorption on its first
 /// line) into every comb, whole and at once: a step in the loop gain is a step
 /// in what the next trip carries, not in the output, which is read from the
-/// past, so it needs no ramp to be free of a click (the kernel contract holds
+/// past, so it needs no ramp to be free of a click (the realization contract holds
 /// it to that). A network without a one-pole absorption, or with figures that
 /// are not finite or not a stable loop, is ignored. The network's pre-delay,
 /// width and wet gain are not read: [`FreeverbDesign`](crate::FreeverbDesign)
 /// never sets them.
-impl Kernel for Freeverb {
+impl Realization for Freeverb {
     /// Re-tunes the lines when the graph runs at another rate than they were
     /// built for, to the rounded hertz [`Freeverb::new`] uses. The coefficients
     /// are kept.

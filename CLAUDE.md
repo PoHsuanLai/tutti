@@ -361,9 +361,12 @@ crates/          everything shipped; directory name = package name; no nesting
                  allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and
                  `tutti-types`; `publish = false`
   tutti-midi-device  MIDI device core (design 017 §5): `DeviceId`, `OsChange`, the pure
-                 `DeviceTable`, and the MIDI-CI codec (`CiMessage`: Discovery, Invalidate
-                 MUID, NAK, over SysEx payload bytes); no OS, no thread, and no
-                 dependency but `bitflags` and optional `serde`
+                 `DeviceTable`, the UMP `Endpoint` (what one endpoint declares, and its
+                 `reply` to Discovery, Function Block Discovery and a Stream
+                 Configuration Request) and `Connection` (the discoverer's steps, time
+                 as an `Instant` value), and the MIDI-CI codec (`CiMessage`: Discovery,
+                 Invalidate MUID, NAK, over SysEx payload bytes); no OS, no thread, and
+                 no dependency but `tutti-ump`, `bitflags` and optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits;
                  no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
@@ -504,7 +507,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   and nothing is pinned against another implementation. Mono and legato follow
   tutti's named rule (last-note priority over a per-channel stack of held keys),
   which MIDI 1.0 does not specify.
-- `tutti-midi-device` depends on no workspace crate, keeps every module private
+- `tutti-midi-device` depends on `tutti-ump` alone, keeps every module private
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
   feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
@@ -513,8 +516,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti_ump::frame` and reassembles with `tutti_ump::SysexAssembler`; `Muid::new`
   refuses the reserved range and broadcast, which is a `Destination`). It has no
   state machine and no inbound path; design 017 §5, "MIDI-CI", is the rebuild.
-  Doc 017 §6 gives it `tutti-ump` for the Endpoint and Connection of stage 4b; the
-  codec needs no `tutti-ump` type, so the edge is not there yet. A consumer that persists a `DeviceInfo` depends on it with
+  Its `tutti-ump` edge is for the UMP Endpoint and Connection (doc 017 stage 4b):
+  `Endpoint::reply` answers a received Stream message into a caller's
+  `Extend<Ump>` and allocates nothing, `Connection` is Table 4 steps 2 to 4 as a
+  state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
+  `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
+  CI codec needs no `tutti-ump` type. No backend feeds either yet. A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with
@@ -605,17 +612,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
   (`DitherNoise`), the Freeverb reverb (`Freeverb`, which is also the
-  `Kernel` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
+  `Realization` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
   `FdnKernel`: its kernel ramps between `retarget`s, in 32-frame chunks counted
   from the last reset, so the output does not depend on the block length), the
-  reverb model of doc 022 (`Network`, `Design`, `Kernel`, `Setup`, `Bounds`,
+  reverb model of doc 022 (`Network`, `Design`, `Realization`, `Setup`, `Bounds`,
   `FreeverbDesign`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
-  a kernel must follow, and the kernel that runs it, moved to each network by
+  a realization must follow, and the realization that runs it, moved to each network by
   `retarget`; a `Design` writes its network in place, `design_into`, because a
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
-  them (shape, prepare, process, params, fork; `ReverbNode<D: ReverbDesign>` is
+  them (shape, prepare, process, params, fork; `DesignNode<D: NodeDesign>` is
   the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
   its two instances and `ReverbKind` the choice between them), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
@@ -632,7 +639,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   stream is a `Config`/`State`/`step` triple. It reuses `tutti-dsp`'s
   `RealFft`/`FftScratch`, `Complex`, `StftGeometry`, `Grid`, `Error` and
   `CosineWindow` and does not copy them: those serve the processors too (the
-  sampler's vocoder builds on `StftGeometry`).
+  sampler's vocoder builds on `StftGeometry`). `tutti_dsp::Error` is only what
+  the geometry and the grid refuse; the analysers' own `tutti_measure::Error`
+  carries it as `Dsp` and raises its own variant for its own validation.
   A processor goes in `tutti-dsp`, a measurement in `tutti-measure`.
 - **A pure algorithm over slices goes in `tutti-dsp` (or, if it only reads audio and
   returns a measurement, `tutti-measure`); a node file holds only

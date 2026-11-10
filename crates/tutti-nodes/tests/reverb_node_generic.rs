@@ -1,23 +1,23 @@
-//! `ReverbNode<D>` over a design that is not Freeverb: a test-only echo with a
-//! kernel latency and a tail the test can make lie. What Freeverb cannot show
+//! `DesignNode<D>` over a design that is not Freeverb: a test-only echo with a
+//! realization latency and a tail the test can make lie. What Freeverb cannot show
 //! (it has no latency and a tail longer than a block): the dry path aligned to
-//! the kernel's latency, the cut at `tail + latency` inside a block, and a
+//! the realization's latency, the cut at `tail + latency` inside a block, and a
 //! block-aligned park. Every figure is the definition of a delay.
 
 use tutti_dsp::{
-    Bounds, Ceiling, Channels, Design, Effort, FirSummary, Kernel, Network, Setup, Stage,
+    Bounds, Ceiling, Channels, Design, Effort, FirSummary, Network, Realization, Setup, Stage,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode};
-use tutti_nodes::{ReverbDesign, ReverbNode, ReverbParams};
+use tutti_nodes::{ControlParams, DesignNode, NodeDesign};
 use tutti_types::{ChannelLayout, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
 
 /// A mono echo. The **network** says an echo `claimed` frames after the input
-/// (a FIR of that length and onset, with the kernel's `latency`). The kernel
+/// (a FIR of that length and onset, with the realization's `latency`). The realization
 /// plays that echo, and when `actual` differs a second one `actual` frames after
 /// the input, past the claim: an honest echo has `actual == claimed`, a lying one
 /// rings past its tail, which the node must cut.
@@ -35,7 +35,7 @@ struct EchoKernel {
     echo: Echo,
 }
 
-impl Kernel for EchoKernel {
+impl Realization for EchoKernel {
     fn prepare(&mut self, _: &Bounds, _: &Setup) {}
     fn retarget(&mut self, _: &Network) {}
     fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
@@ -77,7 +77,7 @@ impl EchoKernel {
 
 impl Design for Echo {
     type Controls = ();
-    type Kernel = EchoKernel;
+    type Realization = EchoKernel;
 
     fn channels(&self) -> Channels {
         Channels {
@@ -101,7 +101,7 @@ impl Design for Echo {
         Bounds::of(&self.design(&(), ceiling.rate()), ceiling.floor())
     }
 
-    fn kernel(&self) -> EchoKernel {
+    fn realization(&self) -> EchoKernel {
         EchoKernel::new(*self)
     }
 }
@@ -110,7 +110,7 @@ impl Design for Echo {
 #[derive(Clone, Debug)]
 struct NoParams;
 
-impl ReverbParams for NoParams {
+impl ControlParams for NoParams {
     type Controls = ();
     fn addrs(&self) -> &'static [UnitAddr] {
         &[]
@@ -125,7 +125,7 @@ impl ReverbParams for NoParams {
     fn detach(&mut self) {}
 }
 
-impl ReverbDesign for Echo {
+impl NodeDesign for Echo {
     type Params = NoParams;
 
     fn params(&self, _: ()) -> NoParams {
@@ -133,12 +133,12 @@ impl ReverbDesign for Echo {
     }
 }
 
-fn node(echo: Echo) -> ReverbNode<Echo> {
-    prepared(ReverbNode::new(echo, ()), SR, BLOCK)
+fn node(echo: Echo) -> DesignNode<Echo> {
+    prepared(DesignNode::new(echo, ()), SR, BLOCK)
 }
 
 struct Rig {
-    node: ReverbNode<Echo>,
+    node: DesignNode<Echo>,
     frame: u64,
 }
 
@@ -163,7 +163,7 @@ fn impulse_block() -> Vec<f32> {
     x
 }
 
-/// The kernel's latency and the network's tail are declared apart (a tail
+/// The realization's latency and the network's tail are declared apart (a tail
 /// excludes latency), the harness's honesty check holds for an honest echo, and
 /// the node's shape says so.
 ///
@@ -187,7 +187,7 @@ fn latency_and_tail_are_declared_apart() {
     assert_honest_tail(&mut n, SR);
 }
 
-/// A kernel that rings past its tail is cut at `tail + latency` after the last
+/// A realization that rings past its tail is cut at `tail + latency` after the last
 /// input frame, to the frame, inside the block that holds it: dense noise in,
 /// and the last frame to sound is the last input frame plus the reported tail
 /// plus the latency.
@@ -222,7 +222,7 @@ fn a_cut_inside_a_block_is_at_tail_plus_latency() {
     assert_eq!(last, Some(19 + ring.get() + latency));
     assert!(19 + ring.get() + latency < BLOCK);
 
-    // The cut reset the kernel: what it held when cut (the second echo, still in
+    // The cut reset the realization: what it held when cut (the second echo, still in
     // flight) never sounds. Faint input keeps the node running; a node that never
     // heard the noise answers it identically.
     let mut fresh = Rig {
@@ -240,7 +240,7 @@ fn a_cut_inside_a_block_is_at_tail_plus_latency() {
 }
 
 /// A cut that falls on a block edge parks the node in the next block, and the
-/// park resets the kernel: the node that woke answers as a fresh one. The echo
+/// park resets the realization: the node that woke answers as a fresh one. The echo
 /// rings far past its claim, so its line still holds the impulse when the cut
 /// lands, and a node that parked without resetting would play it back.
 ///
@@ -292,7 +292,7 @@ fn a_block_aligned_cut_parks_and_resets() {
     let mut new = Vec::new();
     for b in 0..12 {
         // Silence, then input that is faint but never exactly silent (so the node
-        // stays awake and the kernel runs on): an impulse, then a whisper.
+        // stays awake and the realization runs on): an impulse, then a whisper.
         let x = match b {
             0..=2 => vec![0.0; BLOCK],
             3 => impulse_block(),
@@ -304,7 +304,7 @@ fn a_block_aligned_cut_parks_and_resets() {
     assert_eq!(woken, new);
 }
 
-/// The dry path is aligned to the kernel's latency, never to the tail or the
+/// The dry path is aligned to the realization's latency, never to the tail or the
 /// echo: at a mix of 0.5 an impulse comes out half-strength at `latency` (the
 /// dry, delayed to line up) and half-strength at `latency + echo` (the wet).
 ///

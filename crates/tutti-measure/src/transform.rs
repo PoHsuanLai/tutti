@@ -15,12 +15,12 @@
 
 use tutti_types::{Amplitude, SampleRate, Samples};
 
+use crate::{Error, Result};
 use tutti_dsp::Complex;
 use tutti_dsp::CosineWindow;
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
 use tutti_dsp::{BinIndex, FrameCount, FrameIndex, Grid};
-use tutti_dsp::{Error, Result};
 
 /// Linear magnitudes, in the units the transform produced. **The invertible
 /// form.**
@@ -492,12 +492,17 @@ impl StftRequest {
     ///
     /// # Errors
     /// Everything [`resolve`](Self::resolve) rejects, plus
-    /// [`Error::NotColaCompliant`] when the hop does not divide the
+    /// [`tutti_dsp::Error::NotColaCompliant`] (as [`Error::Dsp`]) when the hop does not divide the
     /// window at the overlap this geometry's window shape requires — 4x for
     /// Hann and Hamming, 8x for Blackman.
     pub fn resolve_cola(&self, len: Samples) -> Result<StftGeometry> {
         let hop = self.effective_hop(len.get());
-        StftGeometry::cola_with(self.sample_rate, self.window, hop, self.window_fn)
+        Ok(StftGeometry::cola_with(
+            self.sample_rate,
+            self.window,
+            hop,
+            self.window_fn,
+        )?)
     }
 
     fn effective_hop(&self, len: usize) -> Samples {
@@ -732,7 +737,8 @@ mod tests {
         // The hop this resolves to is far wider than the window.
         assert!(matches!(
             stft(&samples, request, &mut fft),
-            Err(Error::HopExceedsWindow { .. }) | Err(Error::NotColaCompliant { .. })
+            Err(Error::Dsp(tutti_dsp::Error::HopExceedsWindow { .. }))
+                | Err(Error::Dsp(tutti_dsp::Error::NotColaCompliant { .. }))
         ));
 
         // The display path accepts it and yields a type with no inverse.
@@ -784,10 +790,10 @@ mod tests {
 
         assert!(matches!(
             stft(&samples, request, &mut fft),
-            Err(Error::NotColaCompliant {
+            Err(Error::Dsp(tutti_dsp::Error::NotColaCompliant {
                 window_fn: CosineWindow::BLACKMAN,
                 ..
-            })
+            }))
         ));
 
         // Analysable, just not invertible.

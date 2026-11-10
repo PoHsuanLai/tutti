@@ -95,7 +95,7 @@ pub fn split_ump_stream(words: &[u32]) -> impl Iterator<Item = Ump> + '_ {
 mod channel_voice;
 mod controllers;
 mod flex_data;
-mod stream;
+mod protocol;
 mod sysex;
 mod sysex8;
 mod system;
@@ -113,13 +113,7 @@ pub use flex_data::{
     flex_set_tempo, flex_set_time_signature, flex_tempo_bpm, flex_text, flex_time_signature,
     push_flex_text, ten_ns_per_quarter_to_bpm,
 };
-pub use stream::{
-    ALL_FUNCTION_BLOCKS, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
-    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, Protocol, UmpVersion,
-    device_identity, endpoint_discovery, endpoint_info, endpoint_name, function_block_discovery,
-    function_block_info, function_block_name, product_instance_id,
-    stream_configuration_notification, stream_configuration_request,
-};
+pub use protocol::Protocol;
 pub use sysex::SYSEX7_MAX_PAYLOAD;
 pub use sysex8::{
     SYSEX8_BYTES_ABORT, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,

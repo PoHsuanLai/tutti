@@ -24,12 +24,12 @@
 //!   line and the sampler's readers share.
 //! - Reverb: [`Freeverb`], mono in and stereo out, a damped comb bank and
 //!   all-pass chain whose comb feedback and damping are set through its
-//!   [`Kernel`] impl.
+//!   [`Realization`] impl.
 //! - Reverb model (design 022): a [`Network`] of [`Stage`]s, a feedback delay
 //!   network as a plain fixed-capacity value, with analytic queries
 //!   ([`Network::rt60`], [`tail`](Network::tail), [`is_stable`](Network::is_stable),
 //!   the densities) and a [`Bounds`] worst case; a [`Design`] maps its controls
-//!   to one ([`FreeverbDesign`] for [`Freeverb`]) and names the [`Kernel`] that runs
+//!   to one ([`FreeverbDesign`] for [`Freeverb`]) and names the [`Realization`] that runs
 //!   it, prepared from a [`Setup`] and moved to each network by `retarget`; [`loop_gain`] and
 //!   [`rt60_from_gain`] are the RT60 formula both ways.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
@@ -47,6 +47,8 @@
 mod allpass;
 mod balance;
 mod buffer;
+#[cfg(test)]
+mod contract;
 mod control;
 mod convolver;
 mod delay;
@@ -68,6 +70,7 @@ mod network;
 mod resample;
 mod reverb;
 mod reverb_design;
+mod smoother;
 #[cfg(test)]
 mod test_support;
 
@@ -82,7 +85,7 @@ pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
     GateKernel, LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
     brickwall_clip, compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain,
-    db_to_amplitude, fold_peak, gate_gain_at, ramp_db, ramp_is_at_end, smooth_envelope,
+    db_to_amplitude, fold_peak, gate_gain_at, ramp_db, ramp_is_at_end,
 };
 pub use error::{Error, Result};
 pub use fdn::FdnKernel;
@@ -97,13 +100,14 @@ pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
 pub use network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Channels, Design, Effort, Fdn,
-    FirSummary, Full, Gains, Inline, Kernel, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES,
-    MAX_TAPS, Matrix, Modulation, Network, OutputMap, Ring, Setup, Stage, Tap, Taps, loop_gain,
-    pre_delay_frames, rt60_from_gain,
+    FirSummary, Full, Gains, Inline, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES,
+    MAX_TAPS, Matrix, Modulation, Network, OutputMap, Realization, Ring, Setup, Stage, Tap, Taps,
+    loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
+pub use smoother::Smoother;
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

@@ -1,47 +1,49 @@
-//! The kernel contract (design 022 section 8.2): cases every [`Kernel`] must
+//! The realization contract (design 022 section 8.2): cases every [`Realization`] must
 //! pass against the [`Network`] of its [`Design`], measured on its output.
 //!
-//! The design contract ([`super::contract`]) holds a network to the analytic
-//! figures its controls ask for; this one holds the kernel to the network. A
-//! kernel implements [`KernelCase`] (its tolerance, the controls to probe and
-//! the bound on its output) and runs [`kernel_contract!`], which makes one
+//! The design contract ([`super::design`]) holds a network to the analytic
+//! figures its controls ask for; this one holds the realization to the network. A
+//! realization implements [`RealizationCase`] (its tolerance, the controls to probe and
+//! the bound on its output) and runs [`realization_contract!`], which makes one
 //! `#[test]` per case. Every figure is the network's own query (`rt60`, `tail`,
 //! `min_delay`, `latency`, `has_direct_path`) or a property of the render
 //! (finite, bounded, silent before the first arrival, bit-identical after
 //! `reset`), never another implementation's output.
 //!
-//! **Each case runs against a deliberately broken kernel it must fail**: a
-//! [`Defective`] design hands out a [`Flawed`] kernel, a real kernel with one
+//! **Each case runs against a deliberately broken realization it must fail**: a
+//! [`Defective`] design hands out a [`Flawed`] realization, a real realization with one
 //! [`Defect`] added around it, and the test beside the suite asserts the case
 //! reports the failure (a case that cannot fail proves nothing).
 //!
-//! What the suite leaves to the design it runs over: a kernel with no freeze,
+//! What the suite leaves to the design it runs over: a realization with no freeze,
 //! pre-delay, width or wet control has nothing to say in those directions.
 //! Freeverb's network never sets a pre-delay, a width or a wet gain, so those
 //! directions are vacuous for it (the arrival case still places its pre-delay,
 //! zero, and the lossless case is the design contract's). Allocation-freedom of
 //! `retarget` and `process` needs a counting allocator, which `unsafe` forbids
-//! in this crate's lib tests: `tests/kernel_alloc.rs` runs it.
+//! in this crate's lib tests: `tests/network_alloc.rs` runs it.
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tutti_types::{Db, MaxBlock, SampleRate, Samples};
 
-use super::contract::{DesignCase, map_absorption, map_fdn};
-use super::{Absorption, Band, Bounds, Ceiling, Channels, Design, Kernel, Network, Ring, Setup};
+use super::design::{DesignCase, map_absorption, map_fdn};
+use crate::network::{
+    Absorption, Band, Bounds, Ceiling, Channels, Design, Network, Realization, Ring, Setup,
+};
 
 /// The longest block the cases prepare for.
 const MAX_BLOCK: usize = 512;
 /// The window the energy of a decay is measured in, in frames.
 const WINDOW: usize = 1024;
 
-/// A design plus what the kernel contract needs to know about its kernel.
-pub(crate) trait KernelCase: DesignCase
+/// A design plus what the realization contract needs to know about its realization.
+pub(crate) trait RealizationCase: DesignCase
 where
-    Self::Kernel: Clone,
+    Self::Realization: Clone,
 {
-    /// The relative error the kernel's measured RT60 may have against the
-    /// network's `rt60` (the kernel declares it: design 022 section 8.2).
+    /// The relative error the realization's measured RT60 may have against the
+    /// network's `rt60` (the realization declares it: design 022 section 8.2).
     fn tolerance(&self) -> f32;
 
     /// The controls the measured cases (RT60, tail, bands) run over: a few,
@@ -74,7 +76,7 @@ where
         [0.0, 0.25, 0.5][band.index()]
     }
 
-    /// The controls whose first echoes the kernel must place to the frame:
+    /// The controls whose first echoes the realization must place to the frame:
     /// `probes` without the modulation of the line lengths, which moves an echo
     /// off the network's centre figure. All of `probes` by default.
     fn static_probes(&self) -> Vec<Self::Controls> {
@@ -111,10 +113,10 @@ fn setup<D: Design>(d: &D, rate: SampleRate) -> Setup {
     }
 }
 
-/// A prepared kernel retargeted to `controls`, and its network.
-fn built<D: Design>(d: &D, c: &D::Controls, rate: SampleRate) -> (D::Kernel, Network) {
+/// A prepared realization retargeted to `controls`, and its network.
+fn built<D: Design>(d: &D, c: &D::Controls, rate: SampleRate) -> (D::Realization, Network) {
     let ceiling = Ceiling::at(rate).expect("a positive finite rate");
-    let mut k = d.kernel();
+    let mut k = d.realization();
     k.prepare(&d.bounds(&ceiling), &setup(d, rate));
     let network = d.design(c, rate);
     k.retarget(&network);
@@ -129,7 +131,7 @@ fn widths<D: Design>(d: &D) -> (usize, usize) {
 
 /// Renders `input` (the same signal on every input channel) through `k` in
 /// blocks of `block`, one `Vec` per output channel.
-fn render<K: Kernel>(
+fn render<K: Realization>(
     k: &mut K,
     (inputs, outputs): (usize, usize),
     input: &[f32],
@@ -213,7 +215,7 @@ fn rms(out: &[Vec<f32>], from: usize, len: usize) -> f64 {
 /// The RT60 of the decay after the burst: a least squares line through the
 /// energy of the windows between 40 and 65 dB below the plateau's, `60 / -slope`.
 /// Deep, because a bank of lines of different length decays at the slowest
-/// line's rate in the end, and not deeper, because a kernel flushes values
+/// line's rate in the end, and not deeper, because a realization flushes values
 /// under 1e-6 (Freeverb's does, which the network does not model) and a deeper
 /// fit measures the flush.
 fn measured_rt60(
@@ -265,7 +267,7 @@ fn rate_of<D: DesignCase>(d: &D) -> SampleRate {
 }
 
 /// Frames of silence after a burst that reach 65 dB down at the slowest rate
-/// the network gives in any band, with room (a kernel whose bands decay slower
+/// the network gives in any band, with room (a realization whose bands decay slower
 /// than its network says is measured, not cut short).
 fn rt60_frames(network: &Network, rate: SampleRate, depth: f64) -> Result<usize, String> {
     let r = Band::ALL
@@ -285,14 +287,14 @@ pub(crate) mod cases {
     use super::*;
 
     /// A tone burst in each band, stopped; the energy decay after it has the RT60
-    /// the network's `rt60(band)` says, within the kernel's tolerance (measured
+    /// the network's `rt60(band)` says, within the realization's tolerance (measured
     /// from 40 to 65 dB down, where the slowest line governs).
     ///
-    /// Mutation (a `Defective` test): the kernel retargets every loop gain
+    /// Mutation (a `Defective` test): the realization retargets every loop gain
     /// scaled by 1.05, 39% longer to fall 60 dB.
-    pub(crate) fn rt60<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn rt60<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let tol = d.tolerance();
@@ -329,11 +331,11 @@ pub(crate) mod cases {
     /// of bands whose network RT60s differ by more than twice the tolerance, the
     /// measured ones are ordered alike (and differ by more than the tolerance).
     ///
-    /// Mutation: the kernel ignores the damping (every band decays like the
+    /// Mutation: the realization ignores the damping (every band decays like the
     /// lowest).
-    pub(crate) fn band_order<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn band_order<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let tol = d.tolerance();
@@ -378,13 +380,13 @@ pub(crate) mod cases {
     /// loudest windowed RMS level it reached; a short burst has not
     /// yet filled the lines, so the level after the input stops can exceed the
     /// level at the stop) is within the network's `tail(floor)`: what the node
-    /// reports to the graph covers what the kernel rings.
+    /// reports to the graph covers what the realization rings.
     ///
-    /// Mutation: the kernel retargets every loop gain scaled by 1.03, which rings
+    /// Mutation: the realization retargets every loop gain scaled by 1.03, which rings
     /// 2.4 times as long at the largest room and so past the network's tail.
-    pub(crate) fn tail_covers<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn tail_covers<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let mut checked = 0;
@@ -438,15 +440,15 @@ pub(crate) mod cases {
 
     /// A unit impulse arrives first exactly `min_delay + latency`
     /// frames in (the network's own shortest path, pre-delay included, and the
-    /// kernel's declared latency),
+    /// realization's declared latency),
     /// on the earliest channel, and on no channel before.
     ///
-    /// Mutations: the kernel's output delayed by one frame (its `latency` still
-    /// says the same); a `latency` that claims one frame more than the kernel
+    /// Mutations: the realization's output delayed by one frame (its `latency` still
+    /// says the same); a `latency` that claims one frame more than the realization
     /// delays.
-    pub(crate) fn arrival<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn arrival<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         for rate in d.rates() {
             for c in d.static_probes() {
@@ -469,13 +471,13 @@ pub(crate) mod cases {
         Ok(())
     }
 
-    /// The kernel declares the network's own latency (zero for a time-domain
+    /// The realization declares the network's own latency (zero for a time-domain
     /// network, a partition for a FIR), never a pre-delay or a tap spacing.
     ///
-    /// Mutation: a kernel that declares one frame more than it has.
-    pub(crate) fn latency<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: a realization that declares one frame more than it has.
+    pub(crate) fn latency<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         for rate in d.rates() {
             for c in d.static_probes() {
@@ -492,14 +494,14 @@ pub(crate) mod cases {
         Ok(())
     }
 
-    /// The kernel is wet only: with noise in from the first frame, every output
+    /// The realization is wet only: with noise in from the first frame, every output
     /// channel is exactly zero until the network's shortest path has been
     /// travelled, so none of the input reaches the output.
     ///
-    /// Mutation: the kernel adds its input to its first output.
-    pub(crate) fn wet_only<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: the realization adds its input to its first output.
+    pub(crate) fn wet_only<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         if !d.wet_only() {
             return Ok(());
@@ -528,10 +530,10 @@ pub(crate) mod cases {
     /// channels' response to noise stays under 0.3. A design with one output
     /// channel has nothing to say.
     ///
-    /// Mutation: the kernel copies its first output channel onto its second.
-    pub(crate) fn decorrelated<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: the realization copies its first output channel onto its second.
+    pub(crate) fn decorrelated<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let (_, outputs) = widths(d);
         if outputs < 2 {
@@ -565,9 +567,9 @@ pub(crate) mod cases {
     /// above unity (a `LoopGain` mutant would not do: Freeverb's `retarget`
     /// refuses a loop gain of 1 or more, so scaling the network's cannot
     /// destabilise it).
-    pub(crate) fn stability<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn stability<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let frames = (60.0 * rate.get()) as usize;
@@ -594,19 +596,19 @@ pub(crate) mod cases {
         Ok(())
     }
 
-    /// A retarget mid-tail does not click: a 150 Hz tone through the kernel, the
+    /// A retarget mid-tail does not click: a 150 Hz tone through the realization, the
     /// controls stepped from `a` to `b` at a block edge, and the largest
     /// sample-to-sample jump after the step is within 1.5 times the larger of the
-    /// two steady states' (each measured on a kernel left at its controls). A
+    /// two steady states' (each measured on a realization left at its controls). A
     /// tone, not noise: its steady jumps are small, so a step in a gain or a
     /// jump in a delay is a jump many times them, where noise hides it.
     ///
-    /// Mutations: the kernel scales its output by 4 from its second retarget on,
+    /// Mutations: the realization scales its output by 4 from its second retarget on,
     /// a gain applied unslewed (a `Defective` test); an FDN that takes its new
     /// gains, or its new line lengths, whole (run by hand on `fdn.rs`).
-    pub(crate) fn click_free<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn click_free<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let second = rate.get() as usize;
@@ -658,9 +660,9 @@ pub(crate) mod cases {
     ///
     /// Mutation: the last right comb (1640 frames, the longest) 5% long, which is
     /// inside the RT60 tolerance.
-    pub(crate) fn line_lengths<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn line_lengths<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         use crate::network::Stage;
         let rate = rate_of(d);
@@ -724,13 +726,13 @@ pub(crate) mod cases {
         Ok(())
     }
 
-    /// After `reset` the kernel renders bit for bit what a freshly built one
+    /// After `reset` the realization renders bit for bit what a freshly built one
     /// does, at the same controls.
     ///
     /// Mutation: a `reset` that does nothing.
-    pub(crate) fn reset<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn reset<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         for c in d.probes() {
@@ -741,19 +743,19 @@ pub(crate) mod cases {
             let (mut fresh, _) = built(d, &c, rate);
             if render(&mut used, widths(d), &probe, 64) != render(&mut fresh, widths(d), &probe, 64)
             {
-                return Err("a reset kernel renders differently from a fresh one".into());
+                return Err("a reset realization renders differently from a fresh one".into());
             }
         }
         Ok(())
     }
 
-    /// `fresh()` of a used kernel renders bit for bit what a freshly built one
+    /// `fresh()` of a used realization renders bit for bit what a freshly built one
     /// does, at the same controls: state gone, coefficients kept.
     ///
     /// Mutation: a `fresh` that keeps the state (a plain clone).
-    pub(crate) fn fresh<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn fresh<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         for c in d.probes() {
@@ -765,7 +767,7 @@ pub(crate) mod cases {
             if render(&mut forked, widths(d), &probe, 64)
                 != render(&mut fresh, widths(d), &probe, 64)
             {
-                return Err("fresh() renders differently from a freshly built kernel".into());
+                return Err("fresh() renders differently from a freshly built realization".into());
             }
         }
         Ok(())
@@ -773,12 +775,12 @@ pub(crate) mod cases {
 
     /// The output does not depend on how the input is cut into blocks: blocks of
     /// 1, 17 and 64 frames render bit for bit what blocks of 512 do (a
-    /// time-domain kernel; a convolver would declare its own tolerance).
+    /// time-domain realization; a convolver would declare its own tolerance).
     ///
     /// Mutation: a gain that depends on the block's length.
-    pub(crate) fn block_independent<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn block_independent<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         for c in d.probes() {
@@ -799,9 +801,9 @@ pub(crate) mod cases {
 
     /// The first frame any channel sounds for a unit impulse at frame 0 of the
     /// network `c` designs, in `frames`.
-    fn first_sound<D: KernelCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize>
+    fn first_sound<D: RealizationCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let (mut k, network) = built(d, c, rate);
         let frames = network.min_delay() as usize + 4000;
@@ -817,10 +819,10 @@ pub(crate) mod cases {
     /// stays what it was: pre-delay is part of the wet sound, never latency.
     /// Vacuous for a design with no pre-delay control.
     ///
-    /// Mutation: the kernel drops the pre-delay (a `Defective` test).
-    pub(crate) fn pre_delay<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: the realization drops the pre-delay (a `Defective` test).
+    pub(crate) fn pre_delay<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         for (without, with, by) in d.pre_delay_pairs() {
@@ -841,10 +843,10 @@ pub(crate) mod cases {
     /// A larger room sounds later: the first sound of `b` is after `a`'s.
     /// Vacuous for a design with no size control.
     ///
-    /// Mutation: the kernel keeps every line at one length.
-    pub(crate) fn size<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: the realization keeps every line at one length.
+    pub(crate) fn size<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         for (a, b) in d.size_pairs() {
@@ -871,10 +873,10 @@ pub(crate) mod cases {
     /// impulse's response the denser controls fill at least 0.15 more of the
     /// frames. Vacuous for a design with no diffusion control.
     ///
-    /// Mutation: the kernel mixes no line into another.
-    pub(crate) fn diffusion<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: the realization mixes no line into another.
+    pub(crate) fn diffusion<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let (from, to) = ((0.15 * rate.get()) as usize, (0.3 * rate.get()) as usize);
@@ -902,9 +904,9 @@ pub(crate) mod cases {
     ///
     /// Mutations: a loop gain of 0.998 in the frozen network loses 4 dB; an input
     /// left open raises the level.
-    pub(crate) fn freeze<D: KernelCase>(d: &D) -> Result<(), String>
+    pub(crate) fn freeze<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let second = rate.get() as usize;
@@ -939,10 +941,10 @@ pub(crate) mod cases {
     /// they are one (correlation over 0.999). Vacuous for a design with no width
     /// control.
     ///
-    /// Mutation: the kernel ignores the width.
-    pub(crate) fn width<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: the realization ignores the width.
+    pub(crate) fn width<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let corr = |c: &D::Controls| -> f64 {
@@ -974,10 +976,10 @@ pub(crate) mod cases {
     /// 2%, and exactly silent when the ratio is 0. Vacuous for a design with no
     /// wet gain.
     ///
-    /// Mutation: the kernel ignores the wet gain.
-    pub(crate) fn wet_gain<D: KernelCase>(d: &D) -> Result<(), String>
+    /// Mutation: the realization ignores the wet gain.
+    pub(crate) fn wet_gain<D: RealizationCase>(d: &D) -> Result<(), String>
     where
-        D::Kernel: Clone,
+        D::Realization: Clone,
     {
         let rate = rate_of(d);
         let x = noise(12, 1 << 14, 1.0);
@@ -1001,93 +1003,93 @@ pub(crate) mod cases {
     }
 }
 
-/// Makes one `#[test]` per case of the kernel contract for `$design`, an
-/// expression of a [`KernelCase`] type.
-macro_rules! kernel_contract {
+/// Makes one `#[test]` per case of the realization contract for `$design`, an
+/// expression of a [`RealizationCase`] type.
+macro_rules! realization_contract {
     ($design:expr) => {
         #[test]
-        fn kernel_contract_rt60() {
-            $crate::network::kernel_contract::cases::rt60(&$design).unwrap();
+        fn realization_contract_rt60() {
+            $crate::contract::realization::cases::rt60(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_band_order() {
-            $crate::network::kernel_contract::cases::band_order(&$design).unwrap();
+        fn realization_contract_band_order() {
+            $crate::contract::realization::cases::band_order(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_tail_covers() {
-            $crate::network::kernel_contract::cases::tail_covers(&$design).unwrap();
+        fn realization_contract_tail_covers() {
+            $crate::contract::realization::cases::tail_covers(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_arrival() {
-            $crate::network::kernel_contract::cases::arrival(&$design).unwrap();
+        fn realization_contract_arrival() {
+            $crate::contract::realization::cases::arrival(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_latency() {
-            $crate::network::kernel_contract::cases::latency(&$design).unwrap();
+        fn realization_contract_latency() {
+            $crate::contract::realization::cases::latency(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_wet_only() {
-            $crate::network::kernel_contract::cases::wet_only(&$design).unwrap();
+        fn realization_contract_wet_only() {
+            $crate::contract::realization::cases::wet_only(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_decorrelated() {
-            $crate::network::kernel_contract::cases::decorrelated(&$design).unwrap();
+        fn realization_contract_decorrelated() {
+            $crate::contract::realization::cases::decorrelated(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_stability() {
-            $crate::network::kernel_contract::cases::stability(&$design).unwrap();
+        fn realization_contract_stability() {
+            $crate::contract::realization::cases::stability(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_click_free() {
-            $crate::network::kernel_contract::cases::click_free(&$design).unwrap();
+        fn realization_contract_click_free() {
+            $crate::contract::realization::cases::click_free(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_line_lengths() {
-            $crate::network::kernel_contract::cases::line_lengths(&$design).unwrap();
+        fn realization_contract_line_lengths() {
+            $crate::contract::realization::cases::line_lengths(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_pre_delay() {
-            $crate::network::kernel_contract::cases::pre_delay(&$design).unwrap();
+        fn realization_contract_pre_delay() {
+            $crate::contract::realization::cases::pre_delay(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_size() {
-            $crate::network::kernel_contract::cases::size(&$design).unwrap();
+        fn realization_contract_size() {
+            $crate::contract::realization::cases::size(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_diffusion() {
-            $crate::network::kernel_contract::cases::diffusion(&$design).unwrap();
+        fn realization_contract_diffusion() {
+            $crate::contract::realization::cases::diffusion(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_freeze() {
-            $crate::network::kernel_contract::cases::freeze(&$design).unwrap();
+        fn realization_contract_freeze() {
+            $crate::contract::realization::cases::freeze(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_width() {
-            $crate::network::kernel_contract::cases::width(&$design).unwrap();
+        fn realization_contract_width() {
+            $crate::contract::realization::cases::width(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_wet_gain() {
-            $crate::network::kernel_contract::cases::wet_gain(&$design).unwrap();
+        fn realization_contract_wet_gain() {
+            $crate::contract::realization::cases::wet_gain(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_reset() {
-            $crate::network::kernel_contract::cases::reset(&$design).unwrap();
+        fn realization_contract_reset() {
+            $crate::contract::realization::cases::reset(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_fresh() {
-            $crate::network::kernel_contract::cases::fresh(&$design).unwrap();
+        fn realization_contract_fresh() {
+            $crate::contract::realization::cases::fresh(&$design).unwrap();
         }
         #[test]
-        fn kernel_contract_block_independent() {
-            $crate::network::kernel_contract::cases::block_independent(&$design).unwrap();
+        fn realization_contract_block_independent() {
+            $crate::contract::realization::cases::block_independent(&$design).unwrap();
         }
     };
 }
-pub(crate) use kernel_contract;
+pub(crate) use realization_contract;
 
-// ---- the defective kernels the cases must fail ------------------------------------
+// ---- the defective realizations the cases must fail ------------------------------------
 
-/// One thing wrong with a kernel, added around a real one.
+/// One thing wrong with a realization, added around a real one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Defect {
     /// `retarget` scales every loop gain by this factor.
@@ -1096,7 +1098,7 @@ pub(crate) enum Defect {
     NoDamping,
     /// The output is one frame late and `latency` does not say so.
     LateByOne,
-    /// `latency` claims one frame more than the kernel delays.
+    /// `latency` claims one frame more than the realization delays.
     FalseLatency,
     /// The input is added to the first output channel.
     DryLeak,
@@ -1110,7 +1112,7 @@ pub(crate) enum Defect {
     FreshKeepsState,
     /// The output is scaled by `1 + 1e-6 * block length`.
     BlockDependent,
-    /// Nothing wrong in the wrapper (the kernel itself may be tweaked).
+    /// Nothing wrong in the wrapper (the realization itself may be tweaked).
     None,
     /// The output is scaled by a gain that grows 0.01% a frame, for ever.
     Runaway,
@@ -1130,7 +1132,7 @@ pub(crate) enum Defect {
     WetIgnored,
 }
 
-/// A real kernel with one [`Defect`].
+/// A real realization with one [`Defect`].
 #[derive(Clone, Debug)]
 pub(crate) struct Flawed<K> {
     inner: K,
@@ -1142,8 +1144,8 @@ pub(crate) struct Flawed<K> {
     runaway: f32,
 }
 
-impl<K: Kernel + Clone> Flawed<K> {
-    /// Retargets the inner kernel to `network` as `edit` leaves it.
+impl<K: Realization + Clone> Flawed<K> {
+    /// Retargets the inner realization to `network` as `edit` leaves it.
     fn edited(&mut self, network: &Network, edit: impl FnOnce(&mut Network)) {
         let mut n = Box::new(network.clone());
         edit(&mut n);
@@ -1151,7 +1153,7 @@ impl<K: Kernel + Clone> Flawed<K> {
     }
 }
 
-impl<K: Kernel + Clone> Kernel for Flawed<K> {
+impl<K: Realization + Clone> Realization for Flawed<K> {
     fn prepare(&mut self, bounds: &Bounds, setup: &Setup) {
         self.inner.prepare(bounds, setup);
     }
@@ -1213,7 +1215,7 @@ impl<K: Kernel + Clone> Kernel for Flawed<K> {
                 })
             }),
             Defect::NoMixing => self.edited(network, |n| {
-                map_fdn(n, |f| f.matrix = super::Matrix::Diagonal)
+                map_fdn(n, |f| f.matrix = crate::network::Matrix::Diagonal)
             }),
             Defect::OpenInput => self.edited(network, |n| {
                 map_fdn(n, |f| f.input.as_mut_slice().fill(0.35))
@@ -1285,7 +1287,7 @@ impl<K: Kernel + Clone> Kernel for Flawed<K> {
         }
     }
 
-    fn effort(&self) -> super::Effort {
+    fn effort(&self) -> crate::network::Effort {
         self.inner.effort()
     }
 
@@ -1303,21 +1305,21 @@ impl<K: Kernel + Clone> Kernel for Flawed<K> {
     }
 }
 
-/// A design whose kernel has one [`Defect`].
+/// A design whose realization has one [`Defect`].
 #[derive(Clone)]
 pub(crate) struct Defective<D: Design> {
     pub(crate) inner: D,
     pub(crate) defect: Defect,
-    /// Applied to the kernel as it is built: a defect in the kernel's own state.
-    pub(crate) tweak: fn(&mut D::Kernel),
+    /// Applied to the realization as it is built: a defect in the realization's own state.
+    pub(crate) tweak: fn(&mut D::Realization),
 }
 
 impl<D: Design> Design for Defective<D>
 where
-    D::Kernel: Clone,
+    D::Realization: Clone,
 {
     type Controls = D::Controls;
-    type Kernel = Flawed<D::Kernel>;
+    type Realization = Flawed<D::Realization>;
 
     fn channels(&self) -> Channels {
         self.inner.channels()
@@ -1331,8 +1333,8 @@ where
         self.inner.bounds(ceiling)
     }
 
-    fn kernel(&self) -> Flawed<D::Kernel> {
-        let mut inner = self.inner.kernel();
+    fn realization(&self) -> Flawed<D::Realization> {
+        let mut inner = self.inner.realization();
         (self.tweak)(&mut inner);
         Flawed {
             inner,
@@ -1346,7 +1348,7 @@ where
 
 impl<D: DesignCase> DesignCase for Defective<D>
 where
-    D::Kernel: Clone,
+    D::Realization: Clone,
 {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
@@ -1371,9 +1373,9 @@ where
     }
 }
 
-impl<D: KernelCase> KernelCase for Defective<D>
+impl<D: RealizationCase> RealizationCase for Defective<D>
 where
-    D::Kernel: Clone,
+    D::Realization: Clone,
 {
     fn tolerance(&self) -> f32 {
         self.inner.tolerance()

@@ -51,10 +51,12 @@ pub(crate) struct Control {
 }
 
 impl Control {
-    /// Read the live inputs, and take the loop region from the engine.
-    pub fn read(settings: &super::TransportSettings, loop_region: LoopRegion) -> Self {
+    /// Read the live inputs, and take the loop region from the engine and the
+    /// tempo from the caller, which follows the published map
+    /// ([`TransportAudio`](super::TransportAudio)).
+    pub fn read(settings: &super::TransportSettings, loop_region: LoopRegion, tempo: Bpm) -> Self {
         Self {
-            tempo: settings.tempo(),
+            tempo,
             paused: settings.is_paused(),
             loop_region,
             recording: settings.is_recording(),

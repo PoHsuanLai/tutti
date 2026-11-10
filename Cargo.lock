@@ -4906,6 +4906,7 @@ dependencies = [
  "crossbeam-queue",
  "tutti-graph",
  "tutti-rt",
+ "tutti-tempo",
  "tutti-types",
 ]
 

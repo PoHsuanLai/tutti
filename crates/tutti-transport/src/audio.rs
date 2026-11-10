@@ -13,7 +13,10 @@ use super::handle::Transport;
 use super::motion::{MotionAudio, is_declicking};
 use super::settings::TransportSettings;
 use super::timed::{ScheduleAudio, Scheduled, TransportCommand};
-use tutti_types::{Beat, SampleRate};
+use std::sync::atomic::Ordering;
+use tutti_rt::Reader;
+use tutti_tempo::TempoMap;
+use tutti_types::{Beat, Bpm, SampleRate};
 
 /// [`Transport::audio`] refused: another [`TransportAudio`] over this
 /// transport (or a clone of it) is alive. Drop it (the engine that holds it)
@@ -74,6 +77,11 @@ pub struct TransportAudio {
     control: Control,
     schedule: ScheduleAudio,
     settings: TransportSettings,
+    /// The published tempo map, lent once per block and only when
+    /// [`seen`](Self::seen) is behind the publisher's count.
+    tempo_map: Reader<TempoMap>,
+    /// The publisher's count at the last block that took the map.
+    seen: u64,
 }
 
 impl std::fmt::Debug for TransportAudio {
@@ -97,9 +105,15 @@ impl TransportAudio {
         let motion = transport.motion.audio().ok_or(AudioTaken)?;
         let settings = transport.settings.clone();
         let loop_region = motion.loop_region();
+        // The count first, then the tempo: a publish between the two is taken
+        // at the first block, never missed.
+        let seen = settings.map_generation.load(Ordering::Acquire);
+        let tempo = settings.tempo();
         Ok(Self {
             clock: TransportClock::new(transport.links(), rate),
-            control: Control::read(&settings, loop_region),
+            control: Control::read(&settings, loop_region, tempo),
+            tempo_map: settings.tempo_reader(),
+            seen,
             schedule: ScheduleAudio::new(transport.motion.timed().clone()),
             motion,
             settings,
@@ -125,8 +139,24 @@ impl TransportAudio {
     /// first frame. Once per block: a store from the control thread lands at
     /// the next block, never at a cut in this one.
     pub fn begin_block(&mut self) -> tutti_graph::Transport {
-        self.control = Control::read(&self.settings, self.motion.loop_region());
+        let tempo = self.tempo_for_block();
+        self.control = Control::read(&self.settings, self.motion.loop_region(), tempo);
         self.clock.begin(&self.control, true)
+    }
+
+    /// The tempo this block renders at: the published map's when a publish
+    /// landed since the last block, else the one in force (which a timed
+    /// `Tempo` command may have moved). The map is lent only then, once, and
+    /// the loan ends here.
+    fn tempo_for_block(&mut self) -> Bpm {
+        let published = self.settings.map_generation.load(Ordering::Acquire);
+        if published != self.seen {
+            self.seen = published;
+            if let Some(tempo) = self.tempo_map.lend().constant_tempo() {
+                return tempo;
+            }
+        }
+        self.control.tempo
     }
 
     /// Applies pending command `i` (late or not: counted when late), then
@@ -202,6 +232,10 @@ mod tests {
     use crate::{MotionEvent, Timeline};
     use tutti_types::{At, Frame};
 
+    fn constant(bpm: f64) -> std::sync::Arc<TempoMap> {
+        std::sync::Arc::new(TempoMap::constant(Bpm::of(bpm)).expect("a tempo"))
+    }
+
     /// One audio side per transport, through any clone, and it comes back
     /// with the machine when it drops.
     ///
@@ -269,5 +303,45 @@ mod tests {
         assert_eq!(t.motion.scheduled_outstanding(), 0);
         assert_eq!(t.motion.late_command_count(), 1);
         assert!(!t.is_rolling(), "play then stop");
+    }
+
+    /// The block renders at the published map's tempo, from the first block
+    /// after the publish, and stays there.
+    ///
+    /// Mutation (run): `tempo_for_block` returning `self.control.tempo`
+    /// without lending -> the block keeps 120 -> fails.
+    #[test]
+    fn a_published_constant_map_is_the_next_blocks_tempo() {
+        let t = Transport::new(48_000.0);
+        let mut a = t.audio(48_000.0).expect("first");
+        assert_eq!(a.begin_block().tempo, Bpm::of(120.0));
+        t.settings.set_tempo_map(constant(97.25)).expect("constant");
+        assert_eq!(a.begin_block().tempo, Bpm::of(97.25));
+        assert_eq!(a.begin_block().tempo, Bpm::of(97.25), "and stays");
+        t.settings.set_tempo(Bpm::of(143.5));
+        assert_eq!(a.begin_block().tempo, Bpm::of(143.5), "set_tempo is a map");
+    }
+
+    /// A timed `Tempo` command is applied on the audio thread, which cannot
+    /// publish: its tempo holds across blocks until the next publish, which
+    /// wins.
+    ///
+    /// Mutation (run): `tempo_for_block` lending the map every block -> the
+    /// command's 90 reverts to the map's 120 at the next block -> fails.
+    #[test]
+    fn a_timed_tempo_holds_until_the_next_publish() {
+        let t = Transport::new(48_000.0);
+        let mut a = t.audio(48_000.0).expect("first");
+        t.motion
+            .schedule(At::NextBlock, TransportCommand::Tempo(Bpm::of(90.0)))
+            .expect("room");
+        a.gather();
+        let _ = a.begin_block();
+        let (_, after) = a.fire(0, false);
+        assert_eq!(after.tempo, Bpm::of(90.0));
+        assert_eq!(a.begin_block().tempo, Bpm::of(90.0), "held");
+        assert_eq!(t.settings.tempo(), Bpm::of(90.0), "readers see it");
+        t.settings.set_tempo(Bpm::of(100.0));
+        assert_eq!(a.begin_block().tempo, Bpm::of(100.0), "a publish wins");
     }
 }

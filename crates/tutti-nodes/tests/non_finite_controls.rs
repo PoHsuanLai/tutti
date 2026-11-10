@@ -225,3 +225,45 @@ fn the_convolver_holds_off_non_finite_controls() {
         |n| vec![("mix", n.mix(), 0.8), ("gain", n.gain(), 2.0)],
     );
 }
+
+/// The waveshaper's drive cell holds a non-finite write off: an infinite drive
+/// built an infinitely hard shaper and NaN output (0 * inf) before.
+///
+/// Mutation (run): in `maybe_update`, `self.drive.load().get()` without the
+/// `LastGood` read makes the `inf` case fail for every curve. (The NaN case
+/// passes either way: a NaN never exceeds the change threshold.)
+#[test]
+fn the_distortion_holds_off_non_finite_controls() {
+    use tutti_nodes::{DistortionNode, ShapeKind};
+    for kind in [
+        ShapeKind::Tanh,
+        ShapeKind::Atan,
+        ShapeKind::Softsign,
+        ShapeKind::HardClip,
+        ShapeKind::Crush,
+        ShapeKind::SoftCrush,
+    ] {
+        survives_node(
+            "distortion",
+            || DistortionNode::new(kind, 2.0),
+            |n| vec![("drive", n.drive(), 5.0)],
+        );
+    }
+}
+
+/// A waveshaper built with a drive that is NaN or infinite renders finite.
+///
+/// No mutation is claimed: the first block's `LastGood` read rebuilds the
+/// shaper from 0 whatever the constructor built, so this pins the behaviour.
+#[test]
+fn a_distortion_built_with_a_non_finite_drive_renders_finite() {
+    use tutti_nodes::{DistortionNode, ShapeKind};
+    for bad in BAD {
+        let mut node = DistortionNode::new(ShapeKind::Tanh, bad);
+        node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
+        assert!(
+            render_node_finite(&mut node, SampleRate(48_000.0), 4, 1),
+            "drive {bad}"
+        );
+    }
+}

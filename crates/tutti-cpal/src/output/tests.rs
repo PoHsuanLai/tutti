@@ -202,7 +202,9 @@ fn starting_a_running_engine_is_an_error() {
         cpal::SampleFormat::F32,
     ));
     let (first, first_stream) = crate::ManualStreamDriver::new();
-    engine.start_with(Arc::clone(&state), first).expect("starts");
+    engine
+        .start_with(Arc::clone(&state), first)
+        .expect("starts");
     assert!(engine.is_running() && first_stream.is_open());
 
     let (second, second_stream) = crate::ManualStreamDriver::new();

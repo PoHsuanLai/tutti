@@ -934,7 +934,8 @@ VST2 is, with `ParamAddress` collapsing to `ParamId`. What differs from the sket
 and from CLAP and VST3:
 
 - `Vst2Loaded` implements `Loaded` and `Control`; activating it gives a `Vst2Processor`
-  and a `Vst2Controller`, which derefs to `Vst2Loaded`. `Vst2Instance`, `Precision`,
+  and a `Vst2Controller`, which does not deref to `Vst2Loaded` (`loaded()` and
+  `loaded_mut()` reach it). `Vst2Instance`, `Precision`,
   `Vst2Changes` and the public `RenderScratch` are gone. `Vst2Loaded::load(path)` takes
   no rate or block size, and `Vst2Quirks` is step 9's. `RESTARTS` is
   `RestartRules::NONE`: the core reads a changed pin count, latency or tail again.

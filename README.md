@@ -63,7 +63,6 @@ real time.
 | [`tutti-sampler`](crates/tutti-sampler) | Clip playback — in-memory and disk-streamed voices, time-stretch, the prefetch streamer |
 | [`tutti-polysynth`](crates/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
 | [`tutti-soundfont`](crates/tutti-soundfont) | SoundFont (`.sf2`) playback |
-| [`tutti-spatial`](crates/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |
 | [`tutti-dsp`](crates/tutti-dsp) | Waveform summaries, onset detection, pitch, correlation, loudness |
 | [`tutti-modulation`](crates/tutti-modulation) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free and Bevy-free |
 | [`tutti-midi-runtime`](crates/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |

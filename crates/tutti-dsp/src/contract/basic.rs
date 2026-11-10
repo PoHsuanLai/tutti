@@ -241,6 +241,30 @@ pub(super) mod realization {
         Ok(())
     }
 
+    /// The design's [`Cadence`](crate::Cadence) and the `BlockIndependent` group
+    /// agree (design 024 section 4.5): the group (`block_independent` and
+    /// `stream_clock`) is named iff `CADENCE.block_independent()`, so a
+    /// block-anchored design skips the two cases by saying so, and a stream
+    /// grid cannot leave them out. `listed` is whether the macro was given the
+    /// group.
+    ///
+    /// Mutations (run, in `fdn_design.rs`): the FDN's `CADENCE` set to `BLOCK`
+    /// fails (the group is listed, the cadence is not stream-anchored); the
+    /// FDN's contract line without `BlockIndependent` fails (the cadence is).
+    pub fn cadence<D: RealizationCase>(_: &D, listed: bool) -> Result<(), String> {
+        match (D::CADENCE.block_independent(), listed) {
+            (true, false) => Err(
+                "CADENCE is stream-anchored but the contract does not name BlockIndependent: \
+                 the block-independence cases would not run"
+                    .into(),
+            ),
+            (false, true) => Err(
+                "the contract names BlockIndependent but CADENCE is not block independent".into(),
+            ),
+            _ => Ok(()),
+        }
+    }
+
     /// The output does not depend on how the input is cut into blocks: blocks of
     /// 1, 17 and 64 frames render bit for bit what blocks of 512 do (a
     /// time-domain realization; a convolver would declare its own tolerance).

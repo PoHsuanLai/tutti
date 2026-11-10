@@ -45,7 +45,7 @@ use crate::network::{Absorption, Band, Bounds, Matrix, Network, Stage};
 use crate::{Effect, Effort, Realization, Setup};
 
 /// The frames between control updates: every ramp advances once a chunk.
-const CHUNK: usize = 32;
+pub(crate) const CHUNK: usize = 32;
 /// The longest ramp of a gain, in seconds.
 const RAMP: f64 = 0.020;
 /// How far a line's length moves in a chunk, in frames.

@@ -130,8 +130,8 @@ pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
 pub use model::{
-    Cadence, Ceiling, Channels, Design, Effect, Effort, Lti, MaxDecay, MaxDecayError, Range,
-    Realization, Ring, Setup, Sizes, System,
+    Anchor, Cadence, Ceiling, Channels, Design, Effect, Effort, Lti, MaxDecay, MaxDecayError,
+    Period, Range, Realization, Ring, Setup, Sizes, System,
 };
 pub use network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Full, Gains, Inline, Line,

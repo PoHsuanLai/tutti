@@ -272,6 +272,47 @@ a given `H(z)`; a *kernel* is an impulse response or a convolution kernel.
 | **`Fidelity`** | the distance of a model from the ideal it approximates | `Fidelity` |
 | **`Bounds`, `Ceiling`, `Effort`, `Quality`** | engineering: size, limits, cost and tier of a realization | kept |
 
+### 2.6 Naming
+
+Four rules decide which word a name uses (the owner's decision of 2026-11-11).
+
+1. **Algorithms and models use the theory name.** `tutti-dsp`, `tutti-curve`,
+   `tutti-measure`, this document's model and any pure algorithm say what the object is
+   mathematically, because the theory name is the one that states its contract and
+   survives a change of product.
+2. **A spec's names stay the spec's.** SF2 (`VolumeEnvelope`, `ModulationEnvelope`, the
+   generators), MIDI and UMP, VST2, VST3, CLAP and AU (buses, speaker arrangements), IAMF
+   and WAVE keep theirs, because the spec is the oracle and a renamed term cannot be
+   checked against it.
+3. **`frame` and `sample` mean one thing each** (the glossary below). The two words were
+   used for both a time step and a block, and a recording and a value; one meaning each
+   removes the reading that depends on the neighbouring word.
+4. **A user-facing node or session API keeps the established control word** (attack,
+   release, cutoff, mix, pan, gain, send, bus, and `tail` as a node's declared ceiling),
+   and its doc comment names the theory term once, because a person turning an "attack"
+   knob should not have to think "detector time constant".
+
+| Engineering term | Theory term | Where it is used in tutti |
+|---|---|---|
+| automation envelope | **trajectory** (`Trajectory`, `Breakpoint`), a signal `theta(t)` with a law | section 4.5a; `tutti-nodes` `automation` keeps "automation" as the user's word |
+| ADSR envelope | **piecewise gain trajectory** | `tutti-polysynth` voices; the SF2 envelopes keep the spec's names (rule 2) |
+| envelope follower | **envelope detector** (rectifier plus one-pole low-pass) | `tutti-dsp` `dynamics` (`EnvelopeFollower`, `GateEnvelopeFollower`), the stereo and spectrum ballistics in `tutti-measure` |
+| attack, release | **time constants** (rise and fall) of a detector | kernels: `tutti-dsp` `dynamics`; nodes keep `attack` and `release` (rule 4) |
+| smoothing, slew, de-zipper | **one-pole low-pass of a control signal** (time constant `tau`, `Seconds::one_pole_coeff`) | `tutti-dsp` `Smoother`, the FDN's `Slew`, `tutti-nodes` `spatial::smoothing`, `tutti-measure` `Smoothing` |
+| pan law, downmix, upmix | **gain vector**; **linear map** or **change of basis** (`Fold`, a matrix `M` with the metric of section 2.1) | `tutti_types::Fold`, `balance_gains` (`tutti-dsp`), `DownmixNode` (`tutti-nodes`) |
+| dry-wet | **convex combination** `(1 - m) x + m y` | `Blend`, `DryAlign`, the `mix` control of every insert; `wet`, `dry` inside a kernel are the two operands |
+| tail, ring-out | **decay time**, **impulse-response length** (`Ring`, `System::tail(floor)`) | model code and `tutti-dsp` kernels; `Shape::tail` is the node's declared ceiling (rule 4) |
+| latency | **pure delay** of the processing (not **group delay**, which varies with frequency and is a property of `H(e^jw)`; musical delay is neither) | `System::latency`, `Shape` latency, PDC |
+| freeze | **lossless network** (a feedback matrix with no loss: spectral radius 1, no input) | `FdnControls::freeze`, `Network` (the model), the reverb contract |
+| sidechain | **external control input** to a detector | `tutti-dsp` dynamics kernels; nodes keep "sidechain" (rule 4) |
+| knee | **transition region** of a static curve (the width over which `f` bends from one slope to the next) | `tutti-dsp` `dynamics::curves`; the compressor node's `knee` control (rule 4) |
+| resonance | **Q** or **pole damping** (`Resonance` is a control, `Q = 1 / (2 zeta)`) | `tutti-dsp` `filter`, the SVF and ladder models; nodes keep `resonance` |
+| **frame** | **one value per channel at one instant** (what `Samples` counts). A block of an analysis is a **window** and the step between windows a **hop**, never a "frame" | the engine, `Source`, `Sink`, codecs; `StftGeometry` (`window`, `hop`) |
+| **sample** | **one value** of one channel. A recording is a **wave**, **sample data** or a **clip** | `tutti_codec::Wave`, `tutti_codec::Sample` (one quantized value); the SF2 `sample` stays the spec's (rule 2) |
+
+A name that disagrees with this table is a rename to schedule, not a reason to read the
+table loosely.
+
 ## 3. The inventory
 
 One row per algorithm, sorted by **class** (section 2.2); the **Class** column is

@@ -12,4 +12,3 @@
 mod node;
 
 pub use node::{HrtfBinauralControls, HrtfBinauralNode};
-pub use tutti_dsp::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE};

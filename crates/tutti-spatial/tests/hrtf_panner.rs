@@ -10,7 +10,7 @@
 //! # The sphere
 //!
 //! An octagonal bipyramid (8 equatorial vertices every 45°, plus the poles)
-//! whose vertex positions match `direction_from_degrees` in `panner.rs`:
+//! whose vertex positions match `direction_from_degrees` in `tutti-dsp`'s `spatial/hrtf.rs`:
 //! azimuth 0 = front (−z), +90 = left (−x), −90 = right (+x). Each equatorial
 //! vertex stores:
 //!
@@ -39,7 +39,7 @@ use tutti_types::{Azimuth, Elevation, Radians, SampleRate, Samples};
 
 const SAMPLE_RATE: u32 = 44_100;
 const IR_LEN: usize = 64;
-/// The panner's convolution step (`STEP` in `panner.rs`): silence fed
+/// The panner's convolution step (`tutti_dsp::HRTF_STEP`): silence fed
 /// before the impulse, so it lands mid-stream rather than on frame 0.
 const STEP: usize = 128;
 /// Max |ITD| in samples, at azimuth ±90°.
@@ -55,7 +55,7 @@ fn push_f32(b: &mut Vec<u8>, v: f32) {
     b.extend_from_slice(&v.to_le_bytes());
 }
 
-/// Match `direction_from_degrees` in `panner.rs`: 0 = front/−z, +90 = left/−x.
+/// Match `direction_from_degrees` in `tutti-dsp`'s `spatial/hrtf.rs`: 0 = front/−z, +90 = left/−x.
 fn cartesian(azimuth: Azimuth, elevation: Elevation) -> [f32; 3] {
     let az = Radians::from(azimuth);
     let el = Radians::from(elevation);

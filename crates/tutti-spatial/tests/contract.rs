@@ -22,7 +22,7 @@ use tutti_types::Azimuth;
 use tutti_types::Elevation;
 use tutti_types::Samples;
 
-/// The panner's convolution step (`STEP` in `panner.rs`).
+/// The panner's convolution step (`tutti_dsp::HRTF_STEP`).
 const LATENCY: usize = 128;
 
 /// A minimal, format-valid HRIR sphere: a tetrahedron of 4 vertices with

@@ -141,7 +141,7 @@ impl HrtfBinauralNode {
     /// The sphere is parsed once and resampled to `sample_rate`. The graph
     /// prepares the node at the device rate before its first block,
     /// resampling again if that differs. Either rate is held to at most
-    /// [`MAX_PREPARED_RATE`](crate::MAX_PREPARED_RATE) for the sphere.
+    /// [`MAX_PREPARED_RATE`](tutti_dsp::MAX_PREPARED_RATE) for the sphere.
     /// Clones and forks share the parsed sphere. Allocates; call it on the
     /// control thread.
     ///

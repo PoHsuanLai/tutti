@@ -14,8 +14,8 @@
 //! render thread, and each was *measured* rather than assumed:
 //!
 //! - **instrument render driven by MIDI**, because `AuInstance::send_midi`
-//!   decodes every event through `MidiMessage::from_ump` (a UMP `normalize()`
-//!   plus a `MidiMessage` construction) on what a host calls from the RT path.
+//!   decodes every event (`tutti_ump::decode`, then `midi1` to MIDI 1.0
+//!   bytes) on what a host calls from the RT path.
 //!   That decode is the suspicious part, and it is why this file does not stop
 //!   at effects.
 //! - **render after a preset load**, **bypass toggling**, **per-element
@@ -240,9 +240,8 @@ fn instrument_render_with_midi_does_not_allocate() {
 /// Decoding MIDI events for delivery must not allocate.
 ///
 /// This is the case that motivated widening the file. `send_midi` runs every
-/// event through `MidiMessage::from_ump`, which calls `normalize()` and builds a
-/// `MidiMessage` — a decode the host performs per event, per block, on the RT
-/// path. It measured allocation-free, so this guards the property rather than
+/// event through `tutti_ump::decode` and `midi1`, a decode the host performs per
+/// event, per block, on the RT path. It measured allocation-free, so this guards the property rather than
 /// reporting a bug: the day that decode grows a heap-backed variant (a SysEx
 /// payload `Vec`, say), every note a user plays allocates on the audio thread.
 ///

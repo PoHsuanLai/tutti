@@ -7065,15 +7065,14 @@ fourth.
   arena at `addEvent` or the pool at `fill_midi_events` refused it; VST2 in
   `dropped_midi_out`), since a `START` without its `END` would corrupt the
   stream after it. VST2's check assumes one producer, as
-  `audioMasterProcessEvents` being an audio-thread callback gives it. AU's MIDI-output callback delivers it too: `tutti_plugin_types::Midi1Decoder`
-  reassembles the bytes (a message may span packets and calls) in a buffer
-  reserved at `install` and hands the sink UMP SysEx7 packets contiguous in
-  one batch, at the frame offset of the packet holding its `0xF0`; a message
-  past `SYSEX_OUT_CAPACITY` (1538 bytes, 256 packets: one batch) or ended by
-  another status byte is dropped whole and counted
-  (`AuMidiOutput::sysex_dropped`). The decoder is platform independent and
-  unit-tested; the macOS code only walks the `MIDIPacketList`. Nothing wires
-  that callback into the server today. The AU input side reassembles
+  `audioMasterProcessEvents` being an audio-thread callback gives it. AU's MIDI-output callback reads the bytes with
+  `tutti_ump::Midi1Parser` (a message may span packets and calls) and hands
+  the sink UMP SysEx7 packets as the parser completes them, each at the frame
+  offset of the packet holding its `0xF0`, in batches that may split a
+  message: the receiver's intake (`MidiIntake`) skips the rest of a message
+  that lost a packet. A SysEx ended by another status byte gets no `END`, and
+  the receiver drops the open message. Nothing wires that callback into the
+  server today. The AU input side reassembles
   with the `SysExAssembler`, reserved by `AuInstance::initialize`, so
   `send_midi` allocates nothing and counts what it drops
   (`AuInstance::sysex_dropped`); it hands `MusicDeviceSysEx` the complete

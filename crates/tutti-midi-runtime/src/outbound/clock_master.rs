@@ -12,6 +12,15 @@
 //! them out of an event port; wire it to a [`MidiOutNode`](crate::MidiOutNode)
 //! for a hardware pump to drain.
 //!
+//! **The tempo is the published map's** (doc 020, stage 5): the engine hands
+//! the node a segment for every cell where the chord tempo changes, seated on
+//! the map's exact beat, and `tick` reads `transport.tempo` of each. A
+//! segment that starts where the previous ended (within `SEEK_EPSILON_BEATS`)
+//! is a continuation, so a ramp's cell edge or a step is no locate; the
+//! ticks are the first frames at or after beat `k / 24` on the playhead, which
+//! is on the map's frame at every cell start and within a frame of it inside
+//! one (`tests/clock_tempo_map.rs`).
+//!
 //! Emitted (all MIDI 2.0 UMP System messages, M2-104 §7.6):
 //! - **Timing Clock** (0xF8) at every 1/24-beat while playing.
 //! - **Start** (0xFA) / **Continue** (0xFB) / **Stop** (0xFC) on transport

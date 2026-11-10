@@ -64,6 +64,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_int, c_longlong, c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use tutti_plugin_types::ParamId;
@@ -714,8 +715,4 @@ pub fn sample_path(name: &str) -> Option<PathBuf> {
         .filter(|d| !d.is_empty())
         .map(|d| resolve_bundle(&Path::new(d).join(name)))
         .find(|p| p.is_file())
-}
-
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

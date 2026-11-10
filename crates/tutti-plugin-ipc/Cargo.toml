@@ -62,7 +62,7 @@ windows = { version = "0.52", features = [
 
 [dev-dependencies]
 tempfile = "3"
-tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 tutti-midi-types = { path = "../tutti-midi-types" }
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the launch tests serve: a dev-dependency for the

@@ -17,7 +17,7 @@
 //! share one image and one capture.
 //!
 //! If the reference plugin isn't there, every test **fails** — see
-//! [`support::probe_path`] for why skipping is not an option.
+//! `tutti_fixtures::cdylib` for why skipping is not an option.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -25,7 +25,6 @@ use std::sync::Mutex;
 mod support;
 use support::active::{Activate, Active};
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::{
     AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, ParameterChanges, TransportInfo,
@@ -83,9 +82,9 @@ const PROBE_ID: &str = "tutti.conformance-probe";
 
 /// Load + activate the reference plugin.
 ///
-/// Panics if it wasn't built — [`probe_path`] resolves it or fails loudly.
+/// Panics if it wasn't built: `tutti_fixtures::clap_probe` resolves it or fails loudly.
 fn load_plugin() -> Active<f32> {
-    let path = Path::new(probe_path());
+    let path = Path::new(tutti_fixtures::clap_probe());
     // The artifact is a bare dylib — pass it as both bundle and library so
     // the host dlopens it directly (no .clap bundle structure needed).
     let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
@@ -103,7 +102,8 @@ fn read_capture() -> ProcessCapture {
     type CaptureFn = unsafe extern "C" fn(*mut ProcessCapture) -> bool;
     let mut cap = ProcessCapture::default();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<CaptureFn> = lib
             .get(b"tutti_test_plugin_capture\0")
             .expect("capture symbol present");

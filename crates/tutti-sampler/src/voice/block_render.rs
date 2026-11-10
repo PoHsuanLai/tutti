@@ -196,8 +196,8 @@ fn the_block_read_is_the_same_at_any_block_length() {
     };
 
     let mut build = |first_disk: usize| {
-        let mut pool = VoicePool::with_channels(None, ChannelLayout::STEREO)
-            .expect("a width the sampler reads");
+        let mut pool =
+            VoicePool::with_channels(ChannelLayout::STEREO).expect("a width the sampler reads");
         pool.prepare(&Prepare::new(SampleRate(SR), Samples(256)));
         let mut forked = disk(first_disk + 3).fork_copy();
         forked.set_render_rate(SampleRate(SR));

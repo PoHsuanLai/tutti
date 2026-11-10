@@ -11,18 +11,30 @@
 //! detection live everywhere a codec is on.
 #![cfg_attr(not(any(codec, test)), allow(dead_code))]
 
-use dashmap::DashMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tutti_codec::Wave;
 
 /// Bounded LRU cache with entry count and byte limits.
+///
+/// Two threads touch it: the streamer's (a lookup when it opens a stream, a pin
+/// while the stream lives) and the decode lane's (a lookup, then an insert of
+/// the wave it decoded). Neither is the audio thread, and neither holds the
+/// lock for more than a map operation: a wave an insert evicts is dropped after
+/// the lock is released. The control side never reads it (a stream's file is
+/// its own [`StreamFile`](super::control::StreamFile)), so a plain map behind
+/// one lock is all it takes.
 pub struct LruCache {
-    cache: DashMap<PathBuf, CacheEntry>,
+    inner: Mutex<Inner>,
     max_entries: usize,
     max_bytes: u64,
-    current_bytes: AtomicU64,
+}
+
+struct Inner {
+    entries: HashMap<PathBuf, CacheEntry>,
+    current_bytes: u64,
     /// Monotonic access counter — the source of every `last_access` stamp.
     ///
     /// "Least recently used" is a statement about access *order*, so the stamp
@@ -31,9 +43,9 @@ pub struct LruCache {
     ///
     /// - Resolution. Cache accesses are memory-speed; several land in the
     ///   same millisecond routinely, and every one of those would be a *tie*.
-    ///   `min_by_key` breaks a tie by iteration order, which for a `DashMap` is
-    ///   shard order — so the victim would be effectively arbitrary, and change
-    ///   between runs. A tick increments per touch, so no two accesses can tie.
+    ///   `min_by_key` breaks a tie by iteration order, which for a hash map is
+    ///   arbitrary, so the victim would change between runs. A tick increments
+    ///   per touch, so no two accesses can tie.
     /// - Monotonicity. `SystemTime` is a wall clock: NTP correction, a
     ///   manual set, or a DST-adjacent jump moves it *backwards*, which makes a
     ///   just-touched entry look like the oldest one in the cache and evicts it
@@ -41,15 +53,24 @@ pub struct LruCache {
     ///
     /// `u64` cannot realistically wrap: at one touch per nanosecond it takes
     /// ~584 years.
-    access_tick: AtomicU64,
+    access_tick: u64,
+}
+
+impl Inner {
+    /// The next access stamp, consuming a tick.
+    fn next_tick(&mut self) -> u64 {
+        let tick = self.access_tick;
+        self.access_tick += 1;
+        tick
+    }
 }
 
 struct CacheEntry {
     wave: Arc<Wave>,
-    /// The value of [`LruCache::access_tick`] at this entry's last touch.
+    /// The value of [`Inner::access_tick`] at this entry's last touch.
     /// Ordering-only — the number has no meaning beyond comparing against
     /// another entry's.
-    last_access: AtomicU64,
+    last_access: u64,
     size_bytes: u64,
     /// Active stream count. Non-zero while a stream is reading this wave; the
     /// LRU refuses to evict a pinned entry (a fully-buffered stream would go
@@ -84,22 +105,20 @@ impl LruCache {
     /// live stream is still reading.
     pub fn new(max_entries: usize, max_bytes: u64) -> Self {
         Self {
-            cache: DashMap::new(),
+            inner: Mutex::new(Inner {
+                entries: HashMap::new(),
+                current_bytes: 0,
+                access_tick: 0,
+            }),
             max_entries,
             max_bytes,
-            current_bytes: AtomicU64::new(0),
-            access_tick: AtomicU64::new(0),
         }
     }
 
-    /// The next access stamp, consuming a tick.
-    ///
-    /// `Relaxed` is enough: the counter is only ever compared against other
-    /// stamps from this same counter, and `fetch_add` is atomic regardless of
-    /// ordering, so two concurrent touches get two distinct values. Nothing
-    /// reads a tick to synchronize access to other memory.
-    fn next_tick(&self) -> u64 {
-        self.access_tick.fetch_add(1, Ordering::Relaxed)
+    /// The map, locked. Poisoning is ignored: nothing runs under the lock that
+    /// can leave the map half-changed.
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The resident wave for `path`, if any, marking it most-recently-used.
@@ -107,9 +126,11 @@ impl LruCache {
     /// `None` is a plain miss — every caller treats it as "skip this region",
     /// never as an error.
     pub fn get(&self, path: &Path) -> Option<Arc<Wave>> {
-        self.cache.get(path).map(|entry| {
-            entry.last_access.store(self.next_tick(), Ordering::Relaxed);
-            entry.wave.clone()
+        let mut inner = self.lock();
+        let tick = inner.next_tick();
+        inner.entries.get_mut(path).map(|entry| {
+            entry.last_access = tick;
+            Arc::clone(&entry.wave)
         })
     }
 
@@ -132,29 +153,36 @@ impl LruCache {
             return;
         }
 
-        if let Some(existing) = self.cache.get(&path) {
-            existing
-                .last_access
-                .store(self.next_tick(), Ordering::Relaxed);
-            return;
-        }
-
-        while self.over_budget(size) {
-            if !self.evict_lru() {
-                break;
+        // Dropped after the lock: a wave can be the last holder of a large
+        // buffer.
+        let mut evicted = Vec::new();
+        {
+            let mut inner = self.lock();
+            let tick = inner.next_tick();
+            if let Some(existing) = inner.entries.get_mut(&path) {
+                existing.last_access = tick;
+                return;
             }
-        }
 
-        self.cache.insert(
-            path,
-            CacheEntry {
-                wave,
-                last_access: AtomicU64::new(self.next_tick()),
-                size_bytes: size,
-                pins: Arc::new(AtomicU32::new(0)),
-            },
-        );
-        self.current_bytes.fetch_add(size, Ordering::Relaxed);
+            while self.over_budget(&inner, size) {
+                match Self::evict_lru(&mut inner) {
+                    Some(entry) => evicted.push(entry),
+                    None => break,
+                }
+            }
+
+            inner.entries.insert(
+                path,
+                CacheEntry {
+                    wave,
+                    last_access: tick,
+                    size_bytes: size,
+                    pins: Arc::new(AtomicU32::new(0)),
+                },
+            );
+            inner.current_bytes += size;
+        }
+        drop(evicted);
     }
 
     /// Pin the entry at `path` so the LRU will not evict it while the returned
@@ -165,7 +193,7 @@ impl LruCache {
     /// guard is inert. The guard holds the entry's own counter, so its drop
     /// releases exactly what it took, whatever is under the path by then.
     pub fn pin(&self, path: &Path) -> StreamPin {
-        let pins = self.cache.get(path).map(|entry| {
+        let pins = self.lock().entries.get(path).map(|entry| {
             entry.pins.fetch_add(1, Ordering::Relaxed);
             Arc::clone(&entry.pins)
         });
@@ -175,44 +203,38 @@ impl LruCache {
     /// Whether inserting `incoming` bytes would exceed the entry-count or
     /// byte budget (byte check ignores an empty cache so a single oversized
     /// wave can still be admitted).
-    fn over_budget(&self, incoming: u64) -> bool {
-        self.cache.len() >= self.max_entries
-            || (self.current_bytes.load(Ordering::Relaxed) + incoming > self.max_bytes
-                && !self.cache.is_empty())
+    fn over_budget(&self, inner: &Inner, incoming: u64) -> bool {
+        inner.entries.len() >= self.max_entries
+            || (inner.current_bytes + incoming > self.max_bytes && !inner.entries.is_empty())
     }
 
-    fn evict_lru(&self) -> bool {
+    /// Removes the least recently used unpinned entry and hands it back.
+    fn evict_lru(inner: &mut Inner) -> Option<CacheEntry> {
         // Only unpinned entries are eviction candidates; a pinned entry backs an
         // active stream and must stay resident. If every remaining entry is
         // pinned this returns `None`, `insert`'s loop breaks, and the wave is
         // admitted over-budget — the same escape the empty-cache case uses.
-        let oldest_path = self
-            .cache
+        let oldest = inner
+            .entries
             .iter()
-            .filter(|entry| entry.value().pins.load(Ordering::Relaxed) == 0)
-            .min_by_key(|entry| entry.value().last_access.load(Ordering::Relaxed))
-            .map(|entry| entry.key().clone());
-
-        if let Some(path) = oldest_path
-            && let Some((_, entry)) = self.cache.remove(&path)
-        {
-            self.current_bytes
-                .fetch_sub(entry.size_bytes, Ordering::Relaxed);
-            return true;
-        }
-        false
+            .filter(|(_, entry)| entry.pins.load(Ordering::Relaxed) == 0)
+            .min_by_key(|(_, entry)| entry.last_access)
+            .map(|(path, _)| path.clone())?;
+        let entry = inner.entries.remove(&oldest)?;
+        inner.current_bytes -= entry.size_bytes;
+        Some(entry)
     }
 
     /// Number of cached entries. Test observability for eviction behavior.
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.cache.len()
+        self.lock().entries.len()
     }
 
     /// Total cached bytes. Test observability for byte-budget eviction.
     #[cfg(test)]
     pub fn byte_len(&self) -> u64 {
-        self.current_bytes.load(Ordering::Relaxed)
+        self.lock().current_bytes
     }
 }
 
@@ -285,8 +307,8 @@ mod tests {
     ///
     /// Both inserts land in the same millisecond (they are memory writes), so
     /// under `SystemTime::now().as_millis()` they would carry the *identical*
-    /// stamp, and `min_by_key` would break the tie by `DashMap` iteration
-    /// order, i.e. shard order: an arbitrary eviction that could differ run to
+    /// stamp, and `min_by_key` would break the tie by hash map iteration
+    /// order, i.e. arbitrary order: an arbitrary eviction that could differ run to
     /// run. No sleep here on purpose: a sleep would paper over
     /// exactly the defect being asserted.
     #[test]
@@ -308,8 +330,8 @@ mod tests {
         assert_eq!(cache.len(), 2);
 
         // And it is not luck: the same sequence gives the same verdict on
-        // every repetition. A tie broken by shard order would vary across
-        // these, since each cache is a fresh `DashMap`.
+        // every repetition. A tie broken by hash order would vary across
+        // these, since each cache is a fresh map.
         for _ in 0..64 {
             let cache = LruCache::new(2, u64::MAX);
             cache.insert(a.clone(), make_wave(10));

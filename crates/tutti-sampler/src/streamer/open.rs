@@ -15,14 +15,14 @@
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, TryRecvError};
-use tutti_rt::{PosReader, Reader};
+use tutti_rt::{ArcLend, PosReader, Reader};
 use tutti_types::{ChannelLayout, SamplePosition, SampleRate};
 
+use super::cells::Cells;
 use super::command::StreamId;
-use super::control::StreamOrigin;
-use super::loops::RingMap;
+use super::control::StreamFile;
+use super::loops::RingControl;
 use super::prefetch::SharedReader;
-use super::rt_state::RtState;
 use super::status::StatusCell;
 use super::stream::{Stream, StreamerPort};
 use crate::PlaceError;
@@ -111,17 +111,19 @@ pub enum OpenError {
 }
 
 /// What the streamer answers an open with: everything the audio side's
-/// [`StreamReader`] is built from but the registered map reader, which the
+/// [`StreamReader`] is built from but the registered control reader, which the
 /// control thread registers ([`Opening::poll`]).
 pub(crate) struct Opened {
     pub(crate) id: StreamId,
     pub(crate) ring: SharedReader,
     pub(crate) pos: PosReader,
-    pub(crate) rt_state: Arc<RtState>,
+    pub(crate) cells: Arc<Cells>,
     /// What the stream's handle reads of it ([`Stream::status`]).
     pub(crate) status: Arc<StatusCell>,
-    pub(crate) file_rate: SampleRate,
-    pub(crate) origin: StreamOrigin,
+    /// What the stream plays, immutable.
+    pub(crate) file: Arc<StreamFile>,
+    /// The ring's control cell, which the handle reads the applied loop from.
+    pub(crate) control: Arc<ArcLend<RingControl>>,
     pub(crate) place: Place,
     pub(crate) width: ChannelLayout,
 }
@@ -195,7 +197,9 @@ impl Opening {
                     opened.id,
                     self.port,
                     Arc::clone(&opened.status),
-                    Arc::clone(&opened.rt_state),
+                    Arc::clone(&opened.cells),
+                    Arc::clone(&opened.file),
+                    Arc::clone(&opened.control),
                 ),
                 StreamReader::new(opened),
             ),
@@ -248,10 +252,11 @@ pub struct StreamReader {
     pub(crate) pos: PosReader,
     /// Registered on the control side ([`Opening::poll`]): registering
     /// allocates.
-    pub(crate) map: Reader<RingMap>,
-    pub(crate) rt_state: Arc<RtState>,
-    pub(crate) file_rate: SampleRate,
-    pub(crate) origin: StreamOrigin,
+    pub(crate) control: Reader<RingControl>,
+    pub(crate) cells: Arc<Cells>,
+    /// What a fork of the voice plays, and whether its stream is still served.
+    pub(crate) file: Arc<StreamFile>,
+    pub(crate) status: Arc<StatusCell>,
     pub(crate) place: Place,
     pub(crate) width: ChannelLayout,
 }
@@ -269,12 +274,12 @@ impl StreamReader {
     fn new(opened: Opened) -> Self {
         Self {
             id: opened.id,
-            map: opened.ring.map_reader(),
+            control: opened.ring.control_reader(),
             ring: opened.ring,
             pos: opened.pos,
-            rt_state: opened.rt_state,
-            file_rate: opened.file_rate,
-            origin: opened.origin,
+            cells: opened.cells,
+            file: opened.file,
+            status: opened.status,
             place: opened.place,
             width: opened.width,
         }
@@ -287,7 +292,12 @@ impl StreamReader {
 
     /// The file's own sample rate, from its header.
     pub fn file_rate(&self) -> SampleRate {
-        self.file_rate
+        self.file.file_rate()
+    }
+
+    /// The file the stream plays: what a fork of the voice reads.
+    pub fn file(&self) -> &StreamFile {
+        &self.file
     }
 
     /// The width of the voice this reader feeds.

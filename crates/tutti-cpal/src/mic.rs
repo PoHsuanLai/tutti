@@ -247,9 +247,9 @@ impl MicIn {
 
         let faults = Arc::new(StreamFaults::new());
         let (reader, rec) =
-            TapReader::standalone(TapId(0), usize::from(width.count()), Samples(RING_FRAMES));
+            TapReader::pair(TapId(0), usize::from(width.count()), Samples(RING_FRAMES));
         let (ring, mon) = if monitor {
-            let (ring, writer) = TapReader::standalone(
+            let (ring, writer) = TapReader::pair(
                 TapId(0),
                 usize::from(width.count()),
                 Samples(MONITOR_RING_FRAMES),

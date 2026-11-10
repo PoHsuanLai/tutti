@@ -34,6 +34,8 @@ use super::prefetch::RegionOut;
 use tutti_types::{ChannelLayout, SampleRate};
 
 use crate::nonempty;
+use crate::voice::Direction;
+use crate::voice::LoopSetting;
 use crate::voice::interp::{split_position, tap_indices};
 use crate::voice::loop_span::{LoopSpan, blend};
 
@@ -70,6 +72,11 @@ pub(crate) struct Arrangement {
 }
 
 impl Arrangement {
+    /// Whether the file is read backwards.
+    pub(crate) fn reverse(&self) -> bool {
+        self.reverse
+    }
+
     /// An unlooped forward stream of a file `len` frames long. `usize::MAX`
     /// for a length not known (a test's bare ring), which never falls silent.
     pub(crate) fn plain(len: usize) -> Self {
@@ -135,7 +142,7 @@ impl Arrangement {
 
 /// A switch the reader crosses: the old mapping's frames around it, so the
 /// reader can fade from what it would have played to what the ring now holds.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FadeRecord {
     /// The straight position of `data`'s first frame.
     pub(crate) start: u64,
@@ -148,10 +155,12 @@ pub(crate) struct FadeRecord {
     pub(crate) fade_frames: usize,
 }
 
-/// What the reader needs to read the ring, published by the streamer
-/// (`ArcLend`, read once per block): the arrangement before and from a
-/// switch point, and the fade across it.
-#[derive(Debug)]
+/// How to read the ring: the arrangement before and from a switch point, and
+/// the fade across it.
+///
+/// What [`RingControl`] carries for the reader's taps; the streamer changes it
+/// only by publishing a new [`RingControl`].
+#[derive(Clone, Debug)]
 pub(crate) struct RingMap {
     pub(crate) before: Arrangement,
     pub(crate) after: Arrangement,
@@ -181,6 +190,44 @@ impl RingMap {
             self.after
         } else {
             self.before
+        }
+    }
+}
+
+/// Everything the streamer publishes about a stream's ring, in one value: how to
+/// read it ([`RingMap`]), the direction it is read in, and the loop as the
+/// streamer applied it (doc 025 §2.7).
+///
+/// Published through the ring's one `ArcLend` by the streamer, which is its
+/// only publisher, and lent once per block to the audio thread (the voice
+/// reads the map from it) and read by an export fork on the control side
+/// (`ArcLend::current`). One cell for all three, so a reader never sees a map
+/// of one edit with the direction or the loop of another.
+///
+/// The direction is the newest arrangement's own ([`RingMap::after`]'s
+/// `reverse`), set when the control is built, so it cannot disagree with what
+/// the reader reads the slots by. The loop is as *applied*: it can differ from
+/// the one asked for (a lead-in that cannot be read downgrades it to a hard
+/// loop), and that is what a fork plays.
+#[derive(Clone, Debug)]
+pub(crate) struct RingControl {
+    /// How to read the slots.
+    pub(crate) map: RingMap,
+    /// The direction the stream plays in.
+    pub(crate) direction: Direction,
+    /// The loop the stream runs, as applied.
+    pub(crate) loop_: LoopSetting,
+}
+
+impl RingControl {
+    /// A control reading by `map`, running `loop_`; its direction is the
+    /// map's newest arrangement's.
+    pub(crate) fn new(map: RingMap, loop_: LoopSetting) -> Self {
+        let direction = Direction::from(map.after.reverse());
+        Self {
+            map,
+            direction,
+            loop_,
         }
     }
 }
@@ -330,7 +377,7 @@ impl Mapping {
     }
 
     /// The loop, where it applies (forward only).
-    fn forward_loop(&self) -> Option<&RingLoop> {
+    fn active_loop(&self) -> Option<&RingLoop> {
         self.ring_loop.as_ref().filter(|_| !self.reverse)
     }
 
@@ -339,21 +386,21 @@ impl Mapping {
         Arrangement {
             reverse: self.reverse,
             len: self.len,
-            span: self.forward_loop().map(|l| l.span),
+            span: self.active_loop().map(|l| l.span),
         }
     }
 
     /// One past the last straight position worth writing: the file's length,
     /// or `None` for a forward loop, which never ends.
     pub(crate) fn end(&self) -> Option<u64> {
-        match self.forward_loop() {
+        match self.active_loop() {
             Some(_) => None,
             None => Some(self.len as u64),
         }
     }
 
     fn key(&self, s: u64) -> Key {
-        if let Some(ring_loop) = self.forward_loop() {
+        if let Some(ring_loop) = self.active_loop() {
             let f = ring_loop.span.place_frame(s as usize);
             return Key::Frame(f, ring_loop.span.fade_at(f).map(|(l, w)| (l, w.to_bits())));
         }
@@ -369,7 +416,7 @@ impl Mapping {
     /// reversed, 0 past the end (nothing read). A key equal at `s` stays equal
     /// for the shorter of two runs that step alike.
     fn run(&self, s: u64) -> (u64, i8) {
-        if let Some(ring_loop) = self.forward_loop() {
+        if let Some(ring_loop) = self.active_loop() {
             let f = ring_loop.span.place_frame(s as usize);
             let fade_start = ring_loop.span.end() - ring_loop.span.fade();
             return ((fade_start.saturating_sub(f) as u64).max(1), 1);
@@ -428,7 +475,7 @@ impl Mapping {
             }
             return;
         }
-        let Some(ring_loop) = self.forward_loop() else {
+        let Some(ring_loop) = self.active_loop() else {
             read(pos as usize, out);
             return;
         };
@@ -1006,6 +1053,7 @@ mod tests {
             LEN,
             tutti_types::ChannelTopology::new([tutti_types::Speaker::FrontCenter]),
             LEN,
+            0,
         );
         writer.set_resident(Arc::clone(&wave));
         let mut held = vec![0.0f32; 10_000];

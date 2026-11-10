@@ -1470,14 +1470,12 @@ the realization's whole response, but the RT60 cases read the model's `rt60` and
 
 **Findings, for the record.**
 
-- `FdnKernel` realizes `Matrix::Diagonal` as the reflection along line 0 (`I - 2 e0 e0^T`, a sign on line 0's
-  loop, so that `v` stays a unit vector through a ramp). That changes no decay and moves line 0's comb teeth
-  half a spacing, so at diffusion 0 the realization's response is not the model's (relative error 0.8). The
-  `response` case leaves the diffusion-0 probe out (`LtiCase::response_probes`) and says why. The model
-  cannot describe it: `Matrix::Diagonal` is the identity (doc 022; Freeverb's realization is that identity
-  too), `Reflection(e0)` would make `rt60` a mixing estimate and break the pinned
-  `diffusion_is_the_reflection_vector`. Against doc 022's stated semantics the kernel's behaviour is a
-  deviation; changing it is a sound change, left to the owner.
+- `FdnKernel` realized `Matrix::Diagonal` as the reflection along line 0 (`I - 2 e0 e0^T`, a sign on line 0's
+  loop), which changes no decay and moved line 0's comb teeth half a spacing (relative response error 0.8 at
+  diffusion 0). Fixed after step 1b (owner-approved, 2026-11-11): the kernel's `Diagonal` is now the identity, as
+  the model and doc 022 say, so the `response` case runs every probe and the renders at diffusion 0 changed.
+  The identity and a reflection have determinants +1 and -1, so no ramp between them is orthogonal throughout; the
+  kernel switches `m` of `I - 2 m v v^T` between 0 and 1 at the start or end of the ramp instead (see `fdn.rs`).
 - The kernel rescales a set of band gains whose response exceeds 1 anywhere (to peak at 0.9999), and
   **reachable controls do ask for it** (a mid band that rings far longer than both neighbours: peak 1.015
   at corners of the grid, so the kernel lowered the loop gains by 1.5%, a large share of the decay at 8 s).

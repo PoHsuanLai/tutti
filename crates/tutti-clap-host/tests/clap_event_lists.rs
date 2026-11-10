@@ -23,10 +23,10 @@ use tutti_clap_ffi::{
 use tutti_clap_host::{ClapEvent, EventList, InputEventList, NoteExpressionType, OutputEventList};
 use tutti_graph::Offset;
 use tutti_plugin_types::{
-    ParameterChanges, ParameterQueue, RtMidiEvents, SysExAssembler, SysExStep, WireMidi, unframed,
+    ParameterChanges, ParameterQueue, RtMidiEvents, WireMidi, sysex_assembler,
 };
 use tutti_types::Samples;
-use tutti_ump::Ump;
+use tutti_ump::{SysexStep, Ump};
 
 /// The packet of `words`, zero-padded to four, `k` frames into a 100-frame block.
 fn packet(k: u32, words: &[u32]) -> UmpAt {
@@ -541,12 +541,12 @@ fn a_long_sysex_from_the_plugin_drains_whole() {
         ));
     }
     let reassemble = |events: &[WireMidi]| {
-        let mut asm = SysExAssembler::reserved();
+        let mut asm = sysex_assembler();
         let mut done = Vec::new();
         for e in events {
             assert_eq!(e.offset, 7);
-            if let SysExStep::Complete(r) = asm.push(&e.ump) {
-                done.push(asm.message(r).to_vec());
+            if let SysexStep::Complete(r) = asm.push(e.ump) {
+                done.push(asm.message(r).bytes().to_vec());
             }
         }
         done
@@ -556,7 +556,6 @@ fn a_long_sysex_from_the_plugin_drains_whole() {
     output.fill_midi_events(&mut pool);
     assert!(!pool.is_overflowed());
     assert_eq!(reassemble(pool.as_slice()), vec![message]);
-    assert_eq!(unframed(&[0xF0, 1, 0xF7]), &[1]);
 }
 
 #[test]

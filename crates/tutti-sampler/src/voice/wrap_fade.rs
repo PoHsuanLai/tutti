@@ -101,8 +101,7 @@ impl Rig {
     fn new(host: Host, looping: Option<LoopRange>, max_block: usize) -> Self {
         let host = match host {
             Host::Pool => {
-                let mut pool =
-                    VoicePool::with_channels(None, ChannelLayout::STEREO).expect("stereo");
+                let mut pool = VoicePool::with_channels(ChannelLayout::STEREO).expect("stereo");
                 pool.prepare(&Prepare::new(SampleRate(SR), Samples(max_block)));
                 Hosted::Pool(pool)
             }

@@ -24,7 +24,8 @@
 //! ([`Opening::poll`](crate::Opening::poll)), so one live reader per ring is the
 //! type's rule, not a flag's. This module
 //! adds what a disk stream needs on top: the region, the file, the map the
-//! reader reads the slots by.
+//! reader reads the slots by (and the direction and applied loop beside it: the
+//! ring's one published `RingControl`).
 //!
 //! A position-indexed ring rather than an SPSC FIFO the reader pops: a FIFO
 //! has to be flushed to move, which drops what was refilled since, leaves the
@@ -46,7 +47,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_codec::Wave;
 use tutti_rt::{ArcLend, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader};
@@ -56,8 +56,9 @@ use tutti_types::{ChannelLayout, ChannelTopology, Samples};
 use tutti_codec::FileIn;
 
 use super::command::StreamId;
-use super::loops::{Arrangement, Content, Mapping, RingMap};
+use super::loops::{Arrangement, Content, Mapping, RingControl, RingMap};
 use crate::nonempty;
+use crate::voice::LoopSetting;
 
 /// Frames a ring keeps behind where its reader plays: the taps a position
 /// reads behind itself, and a little slack.
@@ -77,11 +78,14 @@ pub(crate) struct Ring {
     /// Glances at the window and where the reader plays (the writer's
     /// `watch`): no sample is read through it.
     core: Arc<PosRing>,
-    /// Streamer → reader: output frames a reader's crossfade lasts.
-    fade_frames: AtomicU64,
-    /// Streamer → reader: how to read the slots, lent through the reader the
-    /// voice registers ([`map_reader`](Self::map_reader)).
-    map: Arc<ArcLend<RingMap>>,
+    /// Output frames a reader's crossfade lasts: the config's seek crossfade,
+    /// fixed when the ring is placed.
+    fade_frames: usize,
+    /// Streamer → reader: how to read the slots, the direction and the
+    /// applied loop, in one value, lent through the reader the voice registers
+    /// ([`control_reader`](Self::control_reader)). The streamer is its only
+    /// publisher.
+    control: Arc<ArcLend<RingControl>>,
 }
 
 impl std::fmt::Debug for Ring {
@@ -122,17 +126,31 @@ impl Ring {
         (w.from, w.to)
     }
 
-    /// A reader of how to read the slots, registered for the voice that
-    /// reads this ring: it lends once per block, never per sample, never
-    /// parked across blocks. Control thread: registering may allocate.
-    pub(crate) fn map_reader(&self) -> Reader<RingMap> {
-        self.map.reader()
+    /// A reader of the ring's control, registered for the voice that reads
+    /// this ring: it lends once per block, never per sample, never parked
+    /// across blocks. Control thread: registering may allocate.
+    pub(crate) fn control_reader(&self) -> Reader<RingControl> {
+        self.control.reader()
+    }
+
+    /// The ring's control cell, for the stream's handle to read the applied
+    /// loop from. Control side.
+    pub(crate) fn control_cell(&self) -> Arc<ArcLend<RingControl>> {
+        Arc::clone(&self.control)
+    }
+
+    /// The control as the streamer last published it: what an export fork of
+    /// the voice reads (the loop as applied, the direction). Control thread: it
+    /// takes the cell's lock and holds an owning `Arc`, which frees wherever it
+    /// drops last.
+    pub(crate) fn applied(&self) -> Arc<RingControl> {
+        self.control.current()
     }
 
     /// Output frames a reader's crossfade lasts.
     #[inline]
     pub(crate) fn fade_frames(&self) -> usize {
-        self.fade_frames.load(Ordering::Relaxed) as usize
+        self.fade_frames
     }
 
     /// Where the reader plays: a glance (tests).
@@ -141,30 +159,45 @@ impl Ring {
         self.core.play()
     }
 
-    /// Streamer: publish how to read the slots.
+    /// Streamer: publish how to read the slots, with the direction that map
+    /// implies and the loop as last applied.
     pub(crate) fn publish_map(&self, map: RingMap) {
-        self.map.publish(Arc::new(map));
+        let loop_ = self.control.current().loop_;
+        self.control.publish(RingControl::new(map, loop_));
     }
 
-    /// Streamer: free the maps the reader has let go of since the last
-    /// [`publish_map`](Self::publish_map), without publishing. A ring whose
-    /// map stops changing would otherwise keep one a block held across its
-    /// last publish for as long as the ring lives.
-    pub(crate) fn reclaim_maps(&self) -> usize {
-        self.map.reclaim()
+    /// Streamer: publish `loop_` as the loop the stream runs, beside the map
+    /// and direction already published. Nothing is published when it is the
+    /// loop already there.
+    pub(crate) fn publish_loop(&self, loop_: LoopSetting) {
+        let now = self.control.current();
+        if now.loop_ == loop_ {
+            return;
+        }
+        self.control
+            .publish(RingControl::new(now.map.clone(), loop_));
     }
 
-    /// Readers registered on the ring's map (tests): the cell's holders but
-    /// the ring itself.
+    /// Streamer: free the controls the reader has let go of since the last
+    /// publish, without publishing. A ring whose control stops changing would
+    /// otherwise keep one a block held across its last publish for as long as
+    /// the ring lives.
+    pub(crate) fn reclaim_control(&self) -> usize {
+        self.control.reclaim()
+    }
+
+    /// Holders of the ring's control cell but the ring itself (tests): the
+    /// stream's handle (it reads the applied loop) and each registered
+    /// reader.
     #[cfg(test)]
-    pub(crate) fn map_readers(&self) -> usize {
-        Arc::strong_count(&self.map) - 1
+    pub(crate) fn control_holders(&self) -> usize {
+        Arc::strong_count(&self.control) - 1
     }
 
-    /// Maps retired and not yet freed (tests).
+    /// Controls retired and not yet freed (tests).
     #[cfg(test)]
-    pub(crate) fn retired_maps(&self) -> usize {
-        self.map.retired_len()
+    pub(crate) fn retired_controls(&self) -> usize {
+        self.control.retired_len()
     }
 
     /// Window shrinks and moves so far (the ring's generation).
@@ -381,19 +414,41 @@ impl RegionBuffer {
         capacity: usize,
         channels: impl Into<ChannelLayout>,
     ) -> (RegionOut, SharedReader, PosReader) {
+        Self::with_fade(region_id, file_path, capacity, channels, 0)
+    }
+
+    /// [`with_capacity`](Self::with_capacity), whose readers crossfade over
+    /// `fade_frames` output frames at a jump.
+    #[cfg(test)]
+    pub(crate) fn with_fade(
+        region_id: StreamId,
+        file_path: PathBuf,
+        capacity: usize,
+        channels: impl Into<ChannelLayout>,
+        fade_frames: usize,
+    ) -> (RegionOut, SharedReader, PosReader) {
         let layout = nonempty(channels.into());
         let topology =
             ChannelTopology::assumed(layout).unwrap_or_else(|| ChannelTopology::discrete(layout));
-        Self::for_file(region_id, file_path, capacity, topology, usize::MAX)
+        Self::for_file(
+            region_id,
+            file_path,
+            capacity,
+            topology,
+            usize::MAX,
+            fade_frames,
+        )
     }
 
-    /// `RegionBuffer::with_capacity` for a file `len` frames long.
+    /// `RegionBuffer::with_capacity` for a file `len` frames long, whose
+    /// readers crossfade over `fade_frames` output frames at a jump.
     pub(crate) fn for_file(
         region_id: StreamId,
         file_path: PathBuf,
         capacity: usize,
         topology: ChannelTopology,
         len: usize,
+        fade_frames: usize,
     ) -> (RegionOut, SharedReader, PosReader) {
         let channels = nonempty(topology.layout());
         let stride = channels.count() as usize;
@@ -407,8 +462,11 @@ impl RegionBuffer {
             #[cfg(test)]
             topology,
             core: writer.watch(),
-            fade_frames: AtomicU64::new(0),
-            map: Arc::new(ArcLend::new(RingMap::plain(Arrangement::plain(len), 0))),
+            fade_frames,
+            control: Arc::new(ArcLend::new(RingControl::new(
+                RingMap::plain(Arrangement::plain(len), 0),
+                LoopSetting::Off,
+            ))),
         });
         let writer = RegionOut {
             ring: Arc::clone(&ring),
@@ -426,14 +484,10 @@ impl RegionBuffer {
     }
 
     /// Point a fresh ring at `start`: the reader there and the window from
-    /// just behind it (the taps a position reads one frame back) and the seek
-    /// fade set.
-    pub(crate) fn place(writer: &mut RegionOut, start: u64, fade_frames: usize) {
+    /// just behind it (the taps a position reads one frame back).
+    pub(crate) fn place(writer: &mut RegionOut, start: u64) {
         writer.reset(start.saturating_sub(HISTORY_FRAMES));
         writer.set_play(start);
-        let ring = &writer.ring;
-        ring.fade_frames
-            .store(fade_frames as u64, Ordering::Relaxed);
     }
 }
 

@@ -465,7 +465,7 @@ fn an_entry_past_the_loop_lands_where_the_memory_tier_plays() {
 /// (a switch just past the block the voice was in, crossfaded) is done. A loop
 /// changed while it plays reversed is only stored: the ring does not move.
 ///
-/// Mutation (run): the reverse mapping honouring the loop (`forward_loop` not
+/// Mutation (run): the reverse mapping honouring the loop (`active_loop` not
 /// filtering reverse) → the looped run parts at the loop → fails. Mutation
 /// (run): the reverse fill read from `len - pos` (one frame off) → parts from
 /// the mirror → fails. Mutation (run): `apply_mapping` switching even where
@@ -484,7 +484,9 @@ fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
                 ..Setup::looped(loop_, 1.0)
             },
         );
-        live.voice.set_direction(crate::Direction::Reverse);
+        live.stream
+            .set_direction(crate::Direction::Reverse)
+            .expect("the streamer is alive");
         let _ = live.streamer.step_until_settled(1_000);
         live
     };
@@ -702,7 +704,7 @@ fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
     moved.loop_(far);
     memory.source.set_loop_setting(far);
     got.extend(moved.render(1));
-    let at = moved.voice.inner.read.ring().map_reader().lend().at;
+    let at = moved.voice.inner.read.ring().applied().map.at;
     assert_eq!(at, 30_000, "the ring switched where the loops still agreed");
     got.extend(moved.render(599));
     want.extend(memory.render(600));
@@ -993,24 +995,25 @@ fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     assert_same_outside("across a seek inside a block", &got, &want, &[fade]);
 }
 
-/// A pool on `streamer`'s streamer, prepared, holding `voice` (a streaming
-/// voice) at `id`; and its handle.
+/// A pool, prepared, holding `voice` (a streaming voice) at `id` with its
+/// `stream`; and its handle.
 fn pool_with(
-    streamer: &DiskStreamer<ByHand>,
     id: crate::SlotId,
     voice: DiskVoice,
+    stream: Stream,
 ) -> (crate::VoicePool, crate::VoicePoolHandle) {
-    let (mut pool, handle) = crate::VoicePool::with_streamer(streamer.port()).with_handle();
+    let (mut pool, handle) = crate::VoicePool::new().with_handle();
     pool.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     handle
-        .send(crate::VoiceCommand::AddVoice {
+        .add_streaming(
             id,
-            voice: Box::new(crate::Voice {
+            crate::Voice {
                 source: crate::VoiceSource::Disk(voice),
                 play: crate::Playback::default(),
-            }),
-            stretch: None,
-        })
+            },
+            stream,
+            None,
+        )
         .expect("the command queue has room in a test");
     (pool, handle)
 }
@@ -1044,10 +1047,10 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
-    let (mut streamer, _stream, reader) = streaming(&path);
+    let (mut streamer, stream, reader) = streaming(&path);
     let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
     let id = crate::SlotId(1);
-    let (mut pool, handle) = pool_with(&streamer, id, voice);
+    let (mut pool, handle) = pool_with(id, voice, stream);
     handle
         .send(crate::VoiceCommand::UpdateLoop {
             id,
@@ -1080,53 +1083,178 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     );
 }
 
-/// A loop set on a voice whose stream has since been stopped leaves the
-/// streams that are open alone. The handle forwards the loop naming the
-/// voice's stream; the streamer, no longer holding it, ignores it. The other
-/// stream's own handle still loops that one.
+/// A loop set through a pool on one voice reaches that voice's stream and no
+/// other: two streaming voices in one pool, each with its own stream, and a
+/// loop for the first leaves the second's stream as it was (and the reverse).
+/// The loop is the stream's, applied by the streamer, which the ring's
+/// published control says.
 ///
-/// Mutation (run): `handle_loop` applying a loop for a stream it does not
-/// hold to every open stream -> the other stream loops -> fails.
+/// Mutation (run): `VoicePoolHandle::stream_of` answering the table's first
+/// stream whatever slot it is asked for -> the second voice's loop is set on
+/// the first's stream -> fails.
 #[test]
-fn a_loop_for_a_stopped_stream_leaves_the_others_alone() {
+fn a_loop_set_on_one_pool_voice_leaves_the_other_voices_stream_alone() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let (first, second) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
     write_ramp(&first, SR as u32, 10_000);
     write_ramp(&second, SR as u32, 12_000);
-    let (mut streamer, first_stream, reader) = streaming(&first);
-    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
-    let id = crate::SlotId(1);
-    let (_pool, handle) = pool_with(&streamer, id, voice);
-
-    // The host stops the voice's stream and opens another file; the pool still
-    // holds the voice on the old stream.
-    drop(first_stream);
-    let opening = streamer.open(&second, crate::Placement::HEAD);
-    let (mut other, other_reader) =
-        crate::testing::settle(&mut streamer, opening).expect("the file opens");
-    let applied = || other_reader.origin.describe().map(|file| file.loop_);
-
-    handle
-        .send(crate::VoiceCommand::UpdateLoop {
-            id,
-            setting: LoopSetting::On {
-                start: SamplePosition(1_000.0),
-                end: SamplePosition(3_001.0),
-                crossfade_frames: 0,
-            },
-        })
-        .expect("the command queue has room in a test");
-    assert!(streamer.step_until_settled(1_000) < 1_000);
-    assert_eq!(
-        applied(),
-        Some(LoopSetting::Off),
-        "a loop meant for the stopped stream was applied to another"
+    let mut streamer =
+        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
+    let mut open = |path: &Path| {
+        let opening = streamer.open(path, crate::Placement::HEAD);
+        crate::testing::settle(&mut streamer, opening).expect("the file opens")
+    };
+    let (stream_a, reader_a) = open(&first);
+    let (stream_b, reader_b) = open(&second);
+    let (ring_a, ring_b) = (Arc::clone(&reader_a.ring), Arc::clone(&reader_b.ring));
+    let (ids, mut pool_handle) = (
+        [crate::SlotId(1), crate::SlotId(2)],
+        crate::VoicePool::new().with_handle(),
     );
+    for (id, reader, stream) in [(ids[0], reader_a, stream_a), (ids[1], reader_b, stream_b)] {
+        pool_handle
+            .1
+            .add_streaming(
+                id,
+                crate::Voice {
+                    source: crate::VoiceSource::Disk(DiskVoice::from_reader(
+                        reader,
+                        Beat(0.0),
+                        None,
+                    )),
+                    play: crate::Playback::default(),
+                },
+                stream,
+                None,
+            )
+            .expect("the command queue has room in a test");
+    }
+    let handle = &mut pool_handle.1;
+    let applied = |ring: &crate::streamer::SharedReader| ring.applied().loop_;
+    let send = |id, setting| {
+        handle
+            .send(crate::VoiceCommand::UpdateLoop { id, setting })
+            .expect("the command queue has room in a test");
+    };
 
-    // The other stream's own handle still reaches it.
-    other
-        .set_loop(loop_on(1_000.0, 3_001.0, 0))
+    send(ids[0], loop_on(1_000.0, 3_001.0, 0));
+    assert!(streamer.step_until_settled(1_000) < 1_000);
+    assert_eq!(applied(&ring_a), loop_on(1_000.0, 3_001.0, 0));
+    assert_eq!(applied(&ring_b), LoopSetting::Off, "B was not asked");
+
+    send(ids[1], loop_on(500.0, 900.0, 0));
+    assert!(streamer.step_until_settled(1_000) < 1_000);
+    assert_eq!(applied(&ring_b), loop_on(500.0, 900.0, 0));
+    assert_eq!(
+        applied(&ring_a),
+        loop_on(1_000.0, 3_001.0, 0),
+        "A is as it was"
+    );
+}
+
+/// **Per knob, one writer: two voices opened in sequence on one file share no
+/// cell** (doc 025 §2.7, review S3). Before a stream's cells were its own, a
+/// restart handed the old voice's cell to the new one, so a host write of gain,
+/// speed, direction or stretch to the new voice also reached the old voice
+/// that was still fading out. Here the second voice is opened after the first
+/// and the first is written, knob by knob; the second reads nothing of it, and
+/// the first does hold the write (so the test is not vacuous). The direction
+/// is the stream's, published with its ring's control: the first stream's
+/// direction turns, the second's does not.
+///
+/// Mutation (run): `build_stream` handing every stream one shared
+/// `Arc<Cells>` (a streamer-wide cell made once, cloned per stream) → the
+/// second voice reads the first's gain, speed and stretch → fails. Mutation
+/// (run): `handle_direction` applying the turn to every live record (the id
+/// check removed) → the second stream's control reads `Reverse` → fails.
+#[test]
+fn two_voices_opened_in_sequence_on_one_file_share_no_cell() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, 10_000);
+    let mut streamer =
+        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
+    let open = |streamer: &mut DiskStreamer<ByHand>| {
+        let opening = streamer.open(&path, crate::Placement::HEAD);
+        let (stream, reader) = crate::testing::settle(streamer, opening).expect("the file opens");
+        (stream, DiskVoice::from_reader(reader, Beat(0.0), None))
+    };
+    let (mut stream_a, mut a) = open(&mut streamer);
+    let (_stream_b, mut b) = open(&mut streamer);
+
+    a.set_gain(tutti_types::Amplitude::new(0.5));
+    a.set_speed(PlaybackRate::new(2.0));
+    a.set_stretch_rate(tutti_types::ReadRate::new(0.5));
+    stream_a
+        .set_direction(crate::Direction::Reverse)
         .expect("the streamer is alive");
     assert!(streamer.step_until_settled(1_000) < 1_000);
-    assert_eq!(applied(), Some(loop_on(1_000.0, 3_001.0, 0)));
+
+    // What was written, on the voice it was written to.
+    assert_eq!(a.gain(), tutti_types::Amplitude::new(0.5));
+    assert_eq!(a.shared_state.speed(), PlaybackRate::new(2.0));
+    assert_eq!(
+        a.shared_state.stretch_rate(),
+        tutti_types::ReadRate::new(0.5)
+    );
+    let direction = |voice: &mut DiskVoice| voice.inner.read.lent_control().map(|c| c.direction);
+    assert_eq!(direction(&mut a), Some(crate::Direction::Reverse));
+
+    // And nothing of it on the other.
+    assert_eq!(b.gain(), tutti_types::Amplitude::new(1.0));
+    assert_eq!(b.shared_state.speed(), PlaybackRate::UNITY);
+    assert_eq!(b.shared_state.stretch_rate(), tutti_types::ReadRate::UNITY);
+    assert_eq!(direction(&mut b), Some(crate::Direction::Forward));
+    assert!(
+        !Arc::ptr_eq(&a.shared_state, &b.shared_state),
+        "the two voices hold one cell"
+    );
+}
+
+/// **Direction is published once, with the map, and read from the lent
+/// control.** `Stream::set_direction` is a command: the streamer turns the
+/// ring's mapping and publishes one `RingControl` whose direction is the
+/// map's newest arrangement's, so the voice's lend (the value its block reads
+/// the map from) says `Reverse` in the same value that carries the reversed
+/// arrangement, one epoch on from the forward one; and nothing polls a flag,
+/// since the stream's one step after the command is all it takes. Turning back
+/// is one more publish.
+///
+/// Mutation (run): `RingControl::new` taking its direction as `Forward`
+/// whatever the map → the lend reads `Forward` beside a reversed map → fails.
+/// Mutation (run): `handle_direction` returning before `apply_mapping` → no
+/// publish, the lend reads `Forward` → fails. Mutation (run): the `SetDirection`
+/// arm of `handle_command` removed → the same.
+#[test]
+fn direction_is_published_once_and_read_from_the_lent_control() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
+    let lent = |live: &mut Live| live.voice.inner.read.lent_control().expect("a live voice");
+
+    let forward = lent(&mut live);
+    assert_eq!(forward.direction, crate::Direction::Forward);
+    assert!(!forward.map.after.reverse());
+
+    live.stream
+        .set_direction(crate::Direction::Reverse)
+        .expect("the streamer is alive");
+    let _ = live.streamer.step_once();
+    let reversed = lent(&mut live);
+    assert_eq!(reversed.direction, crate::Direction::Reverse);
+    assert!(
+        reversed.map.after.reverse(),
+        "the direction and the map it was published with agree"
+    );
+    assert_eq!(reversed.map.epoch, forward.map.epoch + 1, "published once");
+    assert_eq!(live.stream.direction(), crate::Direction::Reverse);
+
+    live.stream
+        .set_direction(crate::Direction::Forward)
+        .expect("the streamer is alive");
+    let _ = live.streamer.step_once();
+    let back = lent(&mut live);
+    assert_eq!(back.direction, crate::Direction::Forward);
+    assert_eq!(back.map.epoch, reversed.map.epoch + 1);
 }

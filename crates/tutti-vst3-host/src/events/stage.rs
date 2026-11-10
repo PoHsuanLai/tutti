@@ -2,9 +2,8 @@
 //! back what the plugin wrote.
 
 use tutti_graph::UmpAt;
-use tutti_plugin_types::{
-    NoteExpressionIntValue, NoteExpressionValue, RtMidiEvents, SysExStep, push_sysex,
-};
+use tutti_plugin_types::{NoteExpressionIntValue, NoteExpressionValue, RtMidiEvents, push_sysex};
+use tutti_ump::SysexStep;
 use tutti_vst3_ffi::{EventList, NOTE_EXPRESSION_ROOM, Staging};
 
 use super::midi::{bank_program, midi1_data};
@@ -114,7 +113,7 @@ impl Stager {
     fn stage_midi(&mut self, stage: &mut Staging<'_>, event: &UmpAt) {
         let (at, ump) = event;
         match stage.reassemble(ump) {
-            SysExStep::NotSysEx => {
+            SysexStep::NotSysex => {
                 // A Program Change with a bank is three MIDI-1 messages (CC 0, CC 32,
                 // PC), each its own event at the same offset.
                 if let Some(messages) = bank_program(ump) {
@@ -131,8 +130,8 @@ impl Stager {
                     stage.push(event);
                 }
             }
-            SysExStep::Held => {}
-            SysExStep::Complete(bytes) => {
+            SysexStep::Held => {}
+            SysexStep::Complete(bytes) => {
                 stage.push(Event::at(sample_offset(at.get()), Payload::SysEx(bytes)));
             }
         }

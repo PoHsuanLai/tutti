@@ -34,18 +34,12 @@ pub use tutti_midi_device::{
 #[cfg(target_os = "macos")]
 pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 
-// --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
-
-pub use tutti_midi_types::Protocol;
+// --- Re-exports from tutti-midi-types (the decoded view, until stage 5b part (c)) ---
 
 pub use tutti_midi_types::{
-    ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage, midi2,
-    midly, normalize,
+    ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage,
+    normalize,
 };
-
-pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
-
-pub use tutti_midi_types::cc::mapping::{CCMapping, CCTarget, MappingId};
 
 pub use tutti_midi_runtime::{
     ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,

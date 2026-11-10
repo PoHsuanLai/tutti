@@ -1,8 +1,8 @@
 use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
+use tutti_midi_protocol::MpeZoneConfig;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::mpe::MpeZoneConfig;
 use tutti_types::Samples;
 use tutti_ump::{Address, CCNumber, Message, Voice2};
 
@@ -82,7 +82,7 @@ macro_rules! assert_cv2 {
 
 #[test]
 fn member_channel_bend_becomes_per_note_pitch_bend() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     // Note held on member channel 2.
     assert!(
         ingest
@@ -106,7 +106,7 @@ fn member_channel_bend_becomes_per_note_pitch_bend() {
 
 #[test]
 fn master_channel_bend_passes_through_as_channel_bend() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     // Master channel of a lower zone is channel 0.
     let out = ingest
         .translated(&pitch_bend14(0, 12288))
@@ -117,7 +117,7 @@ fn master_channel_bend_passes_through_as_channel_bend() {
 
 #[test]
 fn member_channel_cc74_becomes_per_note_controller() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     ingest.translated(&note_on(3, 64, 100));
     let out = ingest
         .translated(&cc(3, CCNumber::BRIGHTNESS, 127))
@@ -133,7 +133,7 @@ fn member_channel_cc74_becomes_per_note_controller() {
 
 #[test]
 fn member_channel_pressure_becomes_per_note_pressure() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     ingest.translated(&note_on(2, 60, 100));
     let out = ingest
         .translated(&at(
@@ -147,14 +147,14 @@ fn member_channel_pressure_becomes_per_note_pressure() {
 
 #[test]
 fn bend_with_no_held_note_is_dropped() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     // No note on ch2 yet → member-channel bend has nothing to address.
     assert!(ingest.translated(&pitch_bend14(2, 16383)).next().is_none());
 }
 
 #[test]
 fn native_per_note_passes_through() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     let native = at(
         0,
         midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF),
@@ -175,7 +175,9 @@ fn disabled_mode_passes_everything_through() {
 
 #[test]
 fn rotation_ignores_off_channel() {
-    let mut ingest = MpeIngest::new(MpeMode::SingleChannelRotation { channel: 5 });
+    let mut ingest = MpeIngest::new(MpeMode::SingleChannelRotation {
+        channel: MidiChannel::of(5),
+    });
     // On-channel note passes.
     assert!(ingest.translated(&note_on(5, 60, 100)).next().is_some());
     // Off-channel note is ignored (this mode owns channel 5).
@@ -187,7 +189,7 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     // Start disabled; an MCM on the master channel (0) declaring 7 members
     // must enable the lower zone from the wire (M2-104 §7.4.7).
     let mut ingest = MpeIngest::new(MpeMode::Disabled);
-    let mcm = at(0, MpeZoneConfig::lower(7).to_mcm());
+    let mcm = at(0, MpeZoneConfig::lower(7).unwrap().to_mcm());
 
     // The MCM itself is absorbed (configuration, not a musical event);
     // what goes on is the zone's reset ranges, all registered controllers
@@ -195,7 +197,9 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
     assert_eq!(reset.len(), 8, "master and seven members");
     assert!(!reset.contains(&mcm));
-    assert!(matches!(ingest.mode(), MpeMode::LowerZone(_)));
+    assert!(
+        matches!(ingest.mode(), MpeMode::Zones(z) if z.lower().is_some() && z.upper().is_none())
+    );
 
     // Now a member-channel bend folds to per-note, proving the zone is live.
     ingest.translated(&note_on(1, 60, 100));
@@ -206,12 +210,36 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     assert_cv2!(out, _, Voice2::PerNotePitchBend { note, .. } if note.get() == 60);
 }
 
+/// **An MCM that would put both zones on one member channel is ignored**
+/// (RP-053 makes the sender keep the zones apart; here the arrangement type
+/// refuses the pair): absorbed, nothing sent, the zones as they were.
+///
+/// Mutation (run): the refusal arm of `reconfigure_from_mcm` returning `true`
+/// with the zones rebuilt as `Disabled` -> the mode changes, and the zone's
+/// ranges are sent, fails.
+#[test]
+fn an_mcm_that_would_overlap_the_zones_is_ignored() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(10));
+    // 10 members up from channel 1 leave 4: an upper zone of 5 would share channel 10.
+    let overlapping = at(0, MpeZoneConfig::upper(5).unwrap().to_mcm());
+    assert_eq!(
+        ingest.translated(&overlapping).count(),
+        0,
+        "absorbed, nothing sent"
+    );
+    assert_eq!(*ingest.mode(), tutti_fixtures::midi::lower_zone(10));
+    // One that fits is taken.
+    let fits = at(0, MpeZoneConfig::upper(4).unwrap().to_mcm());
+    assert!(ingest.translated(&fits).count() > 0);
+    assert_eq!(*ingest.mode(), tutti_fixtures::midi::dual_zones(10, 4));
+}
+
 #[test]
 fn mcm_with_zero_members_disables_the_zone() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(7));
     // A raw MCM on master channel 0 with member_count == 0 disables the lower
-    // zone. (`MpeZoneConfig::lower` clamps to >= 1, so the disabling value can
-    // only come off the wire — build it directly.)
+    // zone. (`MpeZoneConfig::lower` refuses 0, so the disabling value can
+    // only come off the wire: build it directly.)
     let disable = at(
         0,
         midi::registered_rpn(
@@ -263,14 +291,14 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
 #[test]
 fn an_mcm_resets_its_zones_bend_ranges() {
     use tutti_plugin_types::PerNoteBendRanges;
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(3)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
     let mut receiver = PerNoteBendRanges::default();
     for ev in ingest.translated(&bend_sensitivity(1, 12)) {
         receiver.observe(&ev.1);
     }
-    let mcm = at(9, MpeZoneConfig::upper(3).to_mcm());
+    let mcm = at(9, MpeZoneConfig::upper(3).unwrap().to_mcm());
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
-    assert!(matches!(ingest.mode(), MpeMode::DualZone { .. }));
+    assert!(matches!(ingest.mode(), MpeMode::Zones(_)));
     assert!(reset.iter().all(|ev| ev.0.get() == 9));
     assert_eq!(
         ranges_after(reset.iter().copied()),
@@ -278,7 +306,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     );
     // An upper member set to ±12, then the upper MCM again: the upper
     // members are back at ±48, the lower zone's ±12 stands.
-    let mcm = at(0, MpeZoneConfig::upper(3).to_mcm());
+    let mcm = at(0, MpeZoneConfig::upper(3).unwrap().to_mcm());
     for ev in ingest.translated(&bend_sensitivity(13, 12)) {
         receiver.observe(&ev.1);
     }
@@ -307,10 +335,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     assert_eq!(ingest.translated(&disable).len(), 0);
 
     // A host-set dual-zone mode: each zone's ranges, lower first.
-    ingest.set_mode(MpeMode::DualZone {
-        lower: MpeZoneConfig::lower(2),
-        upper: MpeZoneConfig::upper(1),
-    });
+    ingest.set_mode(tutti_fixtures::midi::dual_zones(2, 1));
     let defaults = ingest.defaults(MidiGroup::FIRST, Offset::ZERO);
     assert_eq!(defaults.len(), 5);
     assert_eq!(
@@ -357,10 +382,7 @@ fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
 #[test]
 fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
     use tutti_plugin_types::PerNoteBendRanges;
-    let mut ingest = MpeIngest::new(MpeMode::DualZone {
-        lower: MpeZoneConfig::lower(3),
-        upper: MpeZoneConfig::upper(3),
-    });
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::dual_zones(3, 3));
     let mut receiver = PerNoteBendRanges::default();
 
     let master = bend_sensitivity(0, 2);
@@ -397,7 +419,7 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
 /// translator moved) → the bend is dropped → fails.
 #[test]
 fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
-    let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     let on0 = at(
         0,
         midi::note_on(MidiGroup::FIRST, MidiChannel::of(2), 60, 0),

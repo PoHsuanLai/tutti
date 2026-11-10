@@ -118,13 +118,12 @@ impl MidiIn for BendRange {
 /// gate panics.
 #[test]
 fn the_mpe_bend_range_fan_out_processes_without_allocating() {
-    use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     ed.insert(
         NodeKey(1),
         "in",
         MidiInputNode::new(Some(Box::new(BendRange)))
-            .with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(15))),
+            .with_mpe(tutti_fixtures::midi::lower_zone(15)),
     );
     let out = ed.insert(NodeKey(4), "out", MidiOutNode::new());
     ed.spec_mut().connect_events(
@@ -159,14 +158,14 @@ struct Mcms(bool);
 
 impl MidiIn for Mcms {
     fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
-        use tutti_midi_types::mpe::MpeZoneConfig;
+        use tutti_midi_protocol::MpeZoneConfig;
         self.0 = !self.0;
         buffer[0] = (
             Offset::ZERO,
             if self.0 {
-                MpeZoneConfig::upper(3).to_mcm()
+                MpeZoneConfig::upper(3).unwrap().to_mcm()
             } else {
-                MpeZoneConfig::lower(3).to_mcm()
+                MpeZoneConfig::lower(3).unwrap().to_mcm()
             },
         );
         1
@@ -183,7 +182,6 @@ impl MidiIn for Mcms {
 /// `adopt_mpe_request` → the gate panics.
 #[test]
 fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
-    use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     let controls = ed.insert(
         NodeKey(1),
@@ -208,14 +206,8 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
     let _ = out.poll_into(&mut drain);
 
     let modes = [
-        MpeMode::DualZone {
-            lower: MpeZoneConfig::lower(3),
-            upper: MpeZoneConfig::upper(3),
-        },
-        MpeMode::DualZone {
-            lower: MpeZoneConfig::lower(5),
-            upper: MpeZoneConfig::upper(4),
-        },
+        tutti_fixtures::midi::dual_zones(3, 3),
+        tutti_fixtures::midi::dual_zones(5, 4),
     ];
     let mut reached = 0;
     for i in 0..50 {

@@ -14,7 +14,7 @@ use crate::endpoints::InputConnection;
 use crate::error::Result;
 use tutti_alsa_ump_sys as sys;
 use tutti_midi_device::EndpointId;
-use tutti_midi_types::ump::split_ump_stream;
+use tutti_ump::split_stream;
 
 /// `-EAGAIN`. Not an error — "nothing queued yet".
 const EAGAIN: i32 = -11;
@@ -185,11 +185,11 @@ fn pump(
 
         // A `snd_seq_ump_event_t` carries one UMP message in a fixed 4-word
         // field, so the trailing words are padding whenever the message is
-        // shorter. `split_ump_stream` reads the length from the type nibble and
+        // shorter. `split_stream` reads the length from the type nibble and
         // yields exactly that one message — using it rather than passing all
         // four words into one packet is what keeps a 1-word message from
         // swallowing three words of zeros.
-        let decoded = split_ump_stream(&words).next();
+        let decoded = split_stream(&words).next();
         if let Some(event) = decoded
             && !producer.push(event, now)
         {

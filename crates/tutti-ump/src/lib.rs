@@ -14,7 +14,8 @@
 //! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
 //! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
 //! reassembler, over a buffer the caller owns; [`sysex7_packets`] is its inverse,
-//! the one writer of a payload as SysEx7 packets.
+//! the one writer of a payload as SysEx7 packets. [`split_stream`] cuts a buffer
+//! of concatenated packets (a native-UMP transport's) into [`Ump`]s.
 //!
 //! ```
 //! use tutti_ump::{Message, Ump, Voice2, decode};
@@ -79,4 +80,4 @@ pub use sysex::{
     NotSysex, SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep,
     sysex7_packets,
 };
-pub use ump::{Key, KeyEvent, Ump};
+pub use ump::{Key, KeyEvent, Ump, split_stream};

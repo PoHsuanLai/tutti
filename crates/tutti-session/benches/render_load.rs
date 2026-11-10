@@ -20,11 +20,11 @@
 //! - 4 sampler tracks, each a `VoicePool` of 8 memory voices on a 20 s
 //!   tone, each voice transposed by its own interval (-347 to +428 cents),
 //!   each into a `BusStripNode`;
-//! - one send per track (a second `BusStripNode` at -12 dB), summed into a
-//!   stereo `ConvolverNode` reverb (2 s noise-tail IRs, a 512-frame
-//!   partition) and its return strip;
-//! - the 12 track strips and the return summed (`ChannelSumNode`) into a
-//!   master strip and a `LimiterNode`.
+//! - one send per track (a second `BusStripNode` at -12 dB), summed by the
+//!   graph (a fan-in on the reverb's inputs) into a stereo `ConvolverNode`
+//!   reverb (2 s noise-tail IRs, a 512-frame partition) and its return strip;
+//! - the 12 track strips and the return summed by the graph (a fan-in on the
+//!   master strip's inputs) into a master strip and a `LimiterNode`.
 //!
 //! Four variants, each measured on its own:
 //!
@@ -123,7 +123,7 @@ impl Variant {
 
 use tutti_fixtures::midi;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
-use tutti_nodes::{BusStripNode, ChannelSumNode, ConvolverNode, LimiterNode};
+use tutti_nodes::{BusStripNode, ConvolverNode, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_session::{EventSource, GraphSource, Session};
@@ -167,7 +167,7 @@ impl Node for Hold {
                 0xC000,
             );
             let at = Offset::new(0, Samples(io.frames())).expect("a non-empty block");
-            if io.event_out(0).push(Event::midi(at, note.0)).is_ok() {
+            if io.event_out(0).push(Event::midi(at, note)).is_ok() {
                 self.sent += 1;
             }
         }
@@ -203,6 +203,14 @@ fn connect_stereo(
     for c in 0..2 {
         s.graph()
             .set_source(to, first_port + c, GraphSource::Node(from, c));
+    }
+}
+
+/// Adds `from`'s stereo pair to the sources of `to`'s first two ports: the
+/// graph sums what several calls add.
+fn add_stereo(s: &mut Session, to: tutti_graph::NodeKey, from: tutti_graph::NodeKey) {
+    for c in 0..2 {
+        s.graph().add_source(to, c, GraphSource::Node(from, c));
     }
 }
 
@@ -309,28 +317,20 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
 
     let mut sums = tracks;
     if reverb {
-        let (send_bus, _) = s
-            .graph()
-            .add(ChannelSumNode::new(sends.len(), ChannelLayout::STEREO));
-        for (k, send) in sends.iter().enumerate() {
-            connect_stereo(&mut s, send_bus, 2 * k, *send);
-        }
         let (l, r) = (ir(1), ir(2));
         let (conv, _) = s.graph().add(ConvolverNode::stereo(&l, &r, PARTITION));
-        connect_stereo(&mut s, conv, 0, send_bus);
+        for send in &sends {
+            add_stereo(&mut s, conv, *send);
+        }
         let (ret, _) = s.graph().add(BusStripNode::new());
         connect_stereo(&mut s, ret, 0, conv);
         sums.push(ret);
     }
 
-    let (master_bus, _) = s
-        .graph()
-        .add(ChannelSumNode::new(sums.len(), ChannelLayout::STEREO));
-    for (k, strip) in sums.iter().enumerate() {
-        connect_stereo(&mut s, master_bus, 2 * k, *strip);
-    }
     let (master, _) = s.graph().add(BusStripNode::new());
-    connect_stereo(&mut s, master, 0, master_bus);
+    for strip in &sums {
+        add_stereo(&mut s, master, *strip);
+    }
     let (limiter, _) = s.graph().add(LimiterNode::with_channels(
         ChannelLayout::STEREO,
         Db(-1.0),

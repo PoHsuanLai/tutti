@@ -296,7 +296,7 @@ impl Node for Script {
         if let Some(block) = self.blocks.get(self.k) {
             let out = io.event_out(0);
             for u in block {
-                let _ = out.push(Event::midi(Offset::ZERO, u.0));
+                let _ = out.push(Event::midi(Offset::ZERO, *u));
             }
         }
         self.k += 1;

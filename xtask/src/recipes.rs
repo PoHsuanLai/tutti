@@ -110,7 +110,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "miri over tutti-rt and arc-lend (needs nightly + miri)",
     ),
-    ("loom", "", "the loom models, as CI runs them"),
+    (
+        "loom",
+        "[<model>...]",
+        "the loom models, as CI runs them (or only those named, e.g. handoff_loom)",
+    ),
     (
         "loom-full",
         "",
@@ -285,6 +289,7 @@ impl Planner<'_> {
                 | "bench"
                 | "bench-compare"
                 | "check-paths"
+                | "loom"
                 | "bench-save"
                 | "bench-cmp"
                 | "profile-bench"
@@ -334,7 +339,22 @@ impl Planner<'_> {
             "check-features" => self.lines(CHECK_FEATURES),
             "test-features" => self.lines(TEST_FEATURES),
             "miri" => self.lines(MIRI),
-            "loom" => self.lines(LOOM),
+            "loom" if args.is_empty() => self.lines(LOOM),
+            "loom" => {
+                // The whole name: `--test pos_ring_loom` names no `pos_ring`.
+                let runs = |l: &str, a: &str| {
+                    l.contains(&format!("--test {a} ")) || l.ends_with(&format!("--test {a}"))
+                };
+                if let Some(unknown) = args.iter().find(|a| !LOOM.iter().any(|l| runs(l, a))) {
+                    return Err(format!("`loom` runs no model `{unknown}`"));
+                }
+                let chosen: Vec<&str> = LOOM
+                    .iter()
+                    .copied()
+                    .filter(|l| args.iter().any(|a| runs(l, a)))
+                    .collect();
+                self.lines(&chosen);
+            }
             "loom-full" => self.lines(LOOM_FULL),
             "check-jack" => self.lines(&[
                 "cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings",
@@ -588,6 +608,7 @@ const LOOM: &[&str] = &[
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test packed_atomic_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test seq_cell_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test cell_loom"#,
+    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test handoff_loom -- --nocapture"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-shm-model --release"#,
     r#"LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test split_loom"#,
     r#"LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test job_gate_loom"#,

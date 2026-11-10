@@ -6,7 +6,7 @@
 //!
 //! - `wide/<lanes>x<depth>` — `lanes` independent chains of `depth`
 //!   `SvfFilterNode`s, each off its own oscillator, summed by one
-//!   `ChannelSumNode`: the shape that parallelises (every chain is one
+//!   fan-in on the output (the graph's `Op::Sum`): the shape that parallelises (every chain is one
 //!   fused task, and `lanes` of them are ready at once).
 //! - `deep/<depth>` — one chain of `depth` filters: nothing to spread (one
 //!   task), so a pool must cost nothing here. The executor falls back to the
@@ -18,7 +18,8 @@
 //!   gains that declare nothing: every gain its own task, spread over the
 //!   pool — where a pool loses.
 //! - `mixed/<lanes>x<depth>x<fan>` — `lanes` chains of `depth` filters,
-//!   each fanned out to `fan` light gains and summed back: heavy work with
+//!   each fanned out to `fan` light gains, every gain a source of the one
+//!   output's fan-in (the graph sums `lanes * fan` addends): heavy work with
 //!   cheap siblings, where packing the siblings (and not dispatching each)
 //!   matters. `-undeclared` again for the gains declaring nothing.
 //!
@@ -45,12 +46,23 @@ use tutti_graph::WorkerPool;
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{Editor, Executor, Prepare, Transport, Unforkable};
 use tutti_nodes::testing::Osc;
-use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};
+use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_types::{ChannelLayout, Hz, Q, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 const FRAMES: usize = 256;
 const WORKERS: [usize; 4] = [1, 2, 4, 8];
+
+/// Adds `from`'s port 0 to the sources of global output 0: the graph sums them.
+fn out(ed: &mut Editor, from: NodeKey) {
+    ed.spec_mut().topology.connect_output(
+        0,
+        Source::Node(OutPort {
+            node: from,
+            port: 0,
+        }),
+    );
+}
 
 fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey) {
     ed.spec_mut().topology.edges.insert(
@@ -74,8 +86,9 @@ fn wide(lanes: usize, depth: usize, workers: usize) -> Executor {
                 .expect("a worker pool"),
         )));
     }
-    let sum = NodeKey(1_000_000);
-    ed.insert(sum, "sum", ChannelSumNode::new(lanes, ChannelLayout::MONO));
+    // One silent global output, which each lane's end joins as a source: the
+    // graph's fan-in sums them.
+    ed.spec_mut().topology.set_outputs([Source::Zero]);
     for lane in 0..lanes {
         let base = 1_000 * (lane as u64 + 1);
         let osc = NodeKey(base);
@@ -95,11 +108,8 @@ fn wide(lanes: usize, depth: usize, workers: usize) -> Executor {
             wire(&mut ed, k, 0, last);
             last = k;
         }
-        wire(&mut ed, sum, lane as u16, last);
+        out(&mut ed, last);
     }
-    ed.spec_mut()
-        .topology
-        .set_outputs(vec![Source::Node(OutPort { node: sum, port: 0 })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -163,8 +173,9 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
         )));
     }
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
-    let sum = NodeKey(1_000_000);
-    ed.insert(sum, "sum", ChannelSumNode::new(lanes, ChannelLayout::MONO));
+    // One silent global output, which each lane's end joins as a source: the
+    // graph's fan-in sums them.
+    ed.spec_mut().topology.set_outputs([Source::Zero]);
     for lane in 0..lanes {
         let k = NodeKey(lane as u64 + 1);
         gain(&mut ed, k, lane, light);
@@ -172,11 +183,8 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
             InPort { node: k, port: 0 },
             vec![Edge::Direct(Source::Global(0))],
         );
-        wire(&mut ed, sum, lane as u16, k);
+        out(&mut ed, k);
     }
-    ed.spec_mut()
-        .topology
-        .set_outputs(vec![Source::Node(OutPort { node: sum, port: 0 })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -188,7 +196,7 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
 }
 
 /// `lanes` chains of `depth` filters, each fanned out to `fan` gains that
-/// a per-lane sum gathers, the lane sums summed: heavy chains with cheap
+/// all join the output's fan-in: heavy chains with cheap
 /// siblings hanging off them. Declared light, the cost model packs each
 /// lane's gains; undeclared, each gain is a task.
 fn mixed(lanes: usize, depth: usize, fan: usize, light: bool, workers: usize) -> Executor {
@@ -201,8 +209,9 @@ fn mixed(lanes: usize, depth: usize, fan: usize, light: bool, workers: usize) ->
                 .expect("a worker pool"),
         )));
     }
-    let sum = NodeKey(1_000_000);
-    ed.insert(sum, "sum", ChannelSumNode::new(lanes, ChannelLayout::MONO));
+    // One silent global output, which each lane's end joins as a source: the
+    // graph's fan-in sums them.
+    ed.spec_mut().topology.set_outputs([Source::Zero]);
     for lane in 0..lanes {
         let base = 1_000 * (lane as u64 + 1);
         let osc = NodeKey(base);
@@ -222,23 +231,13 @@ fn mixed(lanes: usize, depth: usize, fan: usize, light: bool, workers: usize) ->
             wire(&mut ed, k, 0, last);
             last = k;
         }
-        let lane_sum = NodeKey(base + 999);
-        ed.insert(
-            lane_sum,
-            "lane sum",
-            ChannelSumNode::new(fan, ChannelLayout::MONO),
-        );
         for j in 0..fan {
             let k = NodeKey(base + 500 + j as u64);
             gain(&mut ed, k, j, light);
             wire(&mut ed, k, 0, last);
-            wire(&mut ed, lane_sum, j as u16, k);
+            out(&mut ed, k);
         }
-        wire(&mut ed, sum, lane as u16, lane_sum);
     }
-    ed.spec_mut()
-        .topology
-        .set_outputs(vec![Source::Node(OutPort { node: sum, port: 0 })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

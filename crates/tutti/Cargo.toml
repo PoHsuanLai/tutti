@@ -36,7 +36,6 @@ tutti-sampler = { path = "../tutti-sampler", default-features = false, optional 
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-sf2 = { path = "../tutti-sf2", optional = true }
-tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
 tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
 tutti-measure = { path = "../tutti-measure", optional = true }
 tutti-midi-protocol = { path = "../tutti-midi-protocol", optional = true }
@@ -92,7 +91,6 @@ full = [
     "export-flac",
     "export-aiff",
     "export-ogg",
-    "spatial",
     "dsp",
     "modulation",
     "convolution",
@@ -158,7 +156,6 @@ export-wav = ["export"]
 export-flac = ["export", "tutti-export/flac", "tutti-session?/export-flac"]
 export-aiff = ["export", "tutti-export/aiff", "tutti-session?/export-aiff"]
 export-ogg = ["export", "tutti-export/ogg", "tutti-session?/export-ogg"]
-spatial = ["dep:tutti-spatial", "tutti-session?/spatial"]
 modulation = ["dep:tutti-modulation", "tutti-session?/modulation"]
 convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 

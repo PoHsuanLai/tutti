@@ -57,7 +57,7 @@ impl Hand {
     /// Allocation-free up to `HAND_EVENT_CAPACITY` a block.
     pub fn queue_midi(&mut self, events: &[Ump]) {
         for e in events {
-            self.queued.push(Event::midi(Offset::ZERO, e.0));
+            self.queued.push(Event::midi(Offset::ZERO, *e));
         }
     }
 
@@ -65,7 +65,7 @@ impl Hand {
     /// Allocation-free up to `HAND_EVENT_CAPACITY` a block.
     pub fn queue_midi_at(&mut self, events: &[UmpAt]) {
         for (at, ump) in events {
-            self.queued.push(Event::midi(*at, ump.0));
+            self.queued.push(Event::midi(*at, *ump));
         }
     }
 

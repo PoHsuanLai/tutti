@@ -192,14 +192,12 @@ impl SessionNode for tutti_soundfont::SoundFontUnit {}
 /// The VBAP panner as a graph node. Its position, spread and width are typed
 /// cells no `UnitParam` addresses, so it has no [`ParamSet`]: its controls
 /// are its `VbapPannerControls`.
-#[cfg(feature = "spatial")]
-impl SessionNode for tutti_spatial::VbapPannerNode {}
+impl SessionNode for tutti_nodes::VbapPannerNode {}
 
 /// The binaural panner as a graph node, its controls its
 /// `HrtfBinauralControls` (see the VBAP panner's impl for why not a
 /// [`ParamSet`]).
-#[cfg(feature = "hrtf")]
-impl SessionNode for tutti_spatial::HrtfBinauralNode {}
+impl SessionNode for tutti_nodes::HrtfBinauralNode {}
 
 // The synth as a graph node: one MIDI event input, and its live params
 // (master volume, unison detune and spread) as a `ParamSet`, so a param

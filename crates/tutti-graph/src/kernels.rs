@@ -352,6 +352,7 @@ impl EventFifo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_ump::Ump;
 
     /// A ring of `n` outputs its input `n` samples later, across blocks.
     ///
@@ -394,10 +395,14 @@ mod tests {
     fn fifo_delays_events_across_blocks() {
         let mut f = EventFifo::sized(Samples(6), 8, 8);
         let mut out = Vec::with_capacity(8);
-        f.run(&[Event::midi(Offset::raw(2), [7, 0, 0, 0])], &mut out, 8);
+        f.run(
+            &[Event::midi(Offset::raw(2), Ump([7, 0, 0, 0]))],
+            &mut out,
+            8,
+        );
         assert!(out.is_empty(), "due at 8, which is the next block");
         f.run(&[], &mut out, 8);
-        assert_eq!(out, vec![Event::midi(Offset::ZERO, [7, 0, 0, 0])]);
+        assert_eq!(out, vec![Event::midi(Offset::ZERO, Ump([7, 0, 0, 0]))]);
     }
 
     /// A backlog due this block frees its room before the block's input is
@@ -426,7 +431,7 @@ mod tests {
         let tags: Vec<u32> = out
             .iter()
             .map(|e| match e.kind {
-                crate::event::EventKind::Midi(tutti_ump::Ump(w)) => (w[0] >> 8) & 0x7f,
+                crate::event::EventKind::Midi(Ump(w)) => (w[0] >> 8) & 0x7f,
                 _ => unreachable!("notes only"),
             })
             .collect();
@@ -467,12 +472,12 @@ mod tests {
         let status = if off { 0x80 } else { 0x90 };
         Event::midi(
             Offset::raw(offset),
-            [
+            Ump([
                 0x2000_0000 | (status << 16) | ((tag & 0x7f) << 8) | 100,
                 0,
                 0,
                 0,
-            ],
+            ]),
         )
     }
 
@@ -526,7 +531,7 @@ mod tests {
     fn a_full_output_slot_delays_events_rather_than_dropping_them() {
         let mut f = EventFifo::sized(Samples(1), 16, 8);
         let burst: Vec<Event> = (0..5)
-            .map(|i| Event::midi(Offset::ZERO, [i, 0, 0, 0]))
+            .map(|i| Event::midi(Offset::ZERO, Ump([i, 0, 0, 0])))
             .collect();
         f.push(&burst);
         let mut out = Vec::with_capacity(2);
@@ -547,7 +552,7 @@ mod tests {
         let tags: Vec<u32> = got
             .iter()
             .map(|e| match e.kind {
-                crate::event::EventKind::Midi(tutti_ump::Ump(w)) => w[0],
+                crate::event::EventKind::Midi(Ump(w)) => w[0],
                 _ => unreachable!(),
             })
             .collect();

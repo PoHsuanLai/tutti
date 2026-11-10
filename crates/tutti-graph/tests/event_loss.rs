@@ -60,7 +60,7 @@ impl Node for Writer {
                     note_off(i % 100)
                 };
                 let at = cx.env.offset(i as usize).expect("inside the block");
-                let _ = out.push(Event::midi(at, words));
+                let _ = out.push(Event::midi(at, Ump(words)));
             }
         }
         Status::Silent

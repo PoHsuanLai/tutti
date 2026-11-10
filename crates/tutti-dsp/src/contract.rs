@@ -13,10 +13,14 @@
 //! - **core**, for every family: the bounds dominate every design, a design is
 //!   pure, the realization declares the model's latency and places its first
 //!   sound where the model says, a reset or a fresh realization renders as a
-//!   freshly built one, the output does not depend on the block length, a
+//!   freshly built one, a
 //!   retarget does not click, the first retarget lands at once
-//!   (`landed`), the ramp's clock is the stream's (`stream_clock`) and no hook
+//!   (`landed`) and no hook
 //!   is left empty without saying why (`vacuity`);
+//! - **`BlockIndependent`**, for a design whose `CADENCE` is
+//!   `block_independent()` (and only for one: `cadence` fails both ways): blocks
+//!   of any length render alike (`block_independent`), also while the controls
+//!   move (`stream_clock`);
 //! - **`Lti`** ([`LtiCase`]), for a model that is [`Lti`](crate::Lti): the
 //!   spectral radius is under 1, the response meets the family's closed-form
 //!   anchors, the norms bound the measured peak and are not far above it, and

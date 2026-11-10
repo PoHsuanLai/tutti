@@ -1,16 +1,15 @@
 //! End-to-end surround export, in pure tutti — no ECS, no Bevy.
 //!
 //! Builds a surround producer graph entirely from engine primitives
-//! (`VbapPannerNode` places each source, `ChannelSumNode` folds them into an
-//! N-wide master), renders it through the offline export pipeline, and asserts
+//! (`VbapPannerNode` places each source, and the graph sums the panners onto
+//! the N-wide master by fan-in), renders it through the offline export pipeline, and asserts
 //! the resulting file is a genuine multi-channel WAV whose channels carry the
 //! placed energy — i.e. the surround producer and the multi-channel export path
 //! work together without any DAW/ECS layer.
 //!
 //! The graphs are `tutti_graph`'s (`GraphBuilder`, rendered as a
-//! `RenderGraph`), and the mix is
-//! `tutti_spatial::build_vbap_mix` on the builder (`tutti-spatial`'s
-//! `tests/vbap_mix_parts.rs` pins it against the parts wired by hand).
+//! `RenderGraph`), and the mix is [`vbap_mix`]: a panner per source, wired to
+//! the output channels.
 
 #![cfg(feature = "wav")]
 
@@ -50,16 +49,59 @@ fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::P
     .expect("export");
 }
 use tutti_nodes::testing::Const;
-use tutti_spatial::VbapSource;
+use tutti_nodes::{SvfFilterNode, SvfType, VbapError, VbapPannerNode};
+use tutti_types::{Hz, Q};
 
-/// Assemble a VBAP mix of `sources` into `g` and return the summed mix node
-/// (`build_vbap_mix`, which builds into a `GraphBuilder`).
+/// One source of a VBAP mix: the node whose ports 0 and 1 feed its panner, and
+/// the bearing it is placed at.
+struct VbapSource {
+    node: NodeKey,
+    azimuth: Azimuth,
+}
+
+impl VbapSource {
+    fn at(node: NodeKey, azimuth: Azimuth) -> Self {
+        Self { node, azimuth }
+    }
+}
+
+/// Wire a VBAP mix of `sources` into `g`'s outputs: a panner per source, each
+/// output channel the graph's sum of the panners' (fan-in). A layout with an
+/// LFE channel (6, 8 and 12 wide: channel 3) gets a bass-managed send, because
+/// the panners leave it silent: every source's channel 0, summed by fan-in
+/// onto a 120 Hz low-pass, into that channel.
 fn vbap_mix(
     g: &mut GraphBuilder,
     layout: ChannelLayout,
-    sources: &[VbapSource<NodeKey>],
-) -> Result<NodeKey, tutti_spatial::VbapError> {
-    tutti_spatial::build_vbap_mix(g, layout, sources)
+    sources: &[VbapSource],
+) -> Result<(), VbapError> {
+    let channels = layout.count() as usize;
+    let lfe = matches!(channels, 6 | 8 | 12).then(|| {
+        g.add_with_controls(SvfFilterNode::<f32>::new(
+            SvfType::LowPass,
+            Hz(120.0),
+            Q(0.707),
+        ))
+        .0
+    });
+    for src in sources {
+        let panner = VbapPannerNode::for_layout(layout)?;
+        panner
+            .controls()
+            .set_position(src.azimuth, tutti_types::Elevation::LEVEL);
+        let (pan, _) = g.add_with_controls(panner);
+        g.connect(src.node, 0, pan, 0).connect(src.node, 1, pan, 1);
+        for c in 0..channels {
+            g.connect_output(pan, c, c);
+        }
+        if let Some(lp) = lfe {
+            g.connect(src.node, 0, lp, 0);
+        }
+    }
+    if let Some(lp) = lfe {
+        g.connect_output(lp, 0, 3);
+    }
+    Ok(())
 }
 
 /// Build a quad surround graph via the engine's VBAP mix: one source at the
@@ -71,7 +113,7 @@ fn quad_surround_graph() -> GraphBuilder {
     let src_front = g.add(Const::frame(&[1.0, 1.0]));
     let src_rear = g.add(Const::frame(&[1.0, 1.0]));
 
-    let mix = vbap_mix(
+    vbap_mix(
         &mut g,
         ChannelLayout::QUAD,
         &[
@@ -80,7 +122,6 @@ fn quad_surround_graph() -> GraphBuilder {
         ],
     )
     .expect("build quad surround mix");
-    g.pipe_output(mix);
     g
 }
 
@@ -127,14 +168,14 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
 
 /// The widened export path: a graph that starts at the **device (stereo)
 /// output** width — exactly what the live engine produces — is widened offline
-/// and re-piped to a surround master before export. This mirrors what a host
+/// and wired to a surround master before export. This mirrors what a host
 /// does to the graph it exports (on `tutti_graph`, the topology's global
 /// outputs grown), and proves widening a stereo graph does NOT lose the
 /// surround channels.
 ///
-/// Mutation (run): widen *after* `pipe_output` → only the first two global
-/// outputs are wired, the file is 4-wide with silent rears, and the rear-left
-/// assertion fails.
+/// Mutation (run): the widen left out → `connect_output` panics on the
+/// missing output 2; wiring only outputs 0 and 1 → the file is 4-wide with
+/// silent rears, and the rear-left assertion fails.
 #[test]
 fn stereo_net_widened_then_exports_four_channels() {
     // Build the surround producer inside a STEREO-output graph (like the live one).
@@ -142,7 +183,12 @@ fn stereo_net_widened_then_exports_four_channels() {
     assert_eq!(g.outputs(), 2, "starts at device stereo width");
     let src_front = g.add(Const::frame(&[1.0, 1.0]));
     let src_rear = g.add(Const::frame(&[1.0, 1.0]));
-    let mix = vbap_mix(
+    // Widen the graph to quad (the new outputs silent until wired), then wire
+    // the surround master onto them. An output channel the graph does not have
+    // cannot be wired, so the widen comes first.
+    g.spec_mut().topology.outputs.resize(4, Vec::new());
+    assert_eq!(g.outputs(), 4, "graph widened to quad");
+    vbap_mix(
         &mut g,
         ChannelLayout::QUAD,
         &[
@@ -151,13 +197,6 @@ fn stereo_net_widened_then_exports_four_channels() {
         ],
     )
     .expect("build quad mix");
-
-    // Widen the graph to quad (the new outputs silent until wired), then re-pipe
-    // the master. Without the widen, `pipe_output` would only wire 2 global
-    // outputs and the rears drop.
-    g.spec_mut().topology.outputs.resize(4, Vec::new());
-    assert_eq!(g.outputs(), 4, "graph widened to quad");
-    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("widened.wav");
@@ -204,13 +243,12 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
     let src = g.add(Const::frame(&[1.0, 1.0]));
     // A single dead-center source.
-    let mix = vbap_mix(
+    vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
         &[VbapSource::at(src, Azimuth::new(0.0))],
     )
     .expect("build 5.1 mix");
-    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("surround51.wav");
@@ -274,13 +312,12 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
 fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
     let src = g.add(Const::frame(&[1.0, 1.0]));
-    let mix = vbap_mix(
+    vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
         &[VbapSource::at(src, Azimuth::new(0.0))], // dead center → C channel
     )
     .expect("build 5.1 mix");
-    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("downmix.wav");
@@ -356,13 +393,12 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 fn surround_5_1_exports_folded_mono_keeps_center() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
     let src = g.add(Const::frame(&[1.0, 1.0]));
-    let mix = vbap_mix(
+    vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
         &[VbapSource::at(src, Azimuth::new(0.0))], // dead center → C channel (2)
     )
     .expect("build 5.1 mix");
-    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("surround_mono.wav");
@@ -396,13 +432,12 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
     let src = g.add(Const::frame(&[1.0, 1.0]));
-    let mix = vbap_mix(
+    vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),
         &[VbapSource::at(src, Azimuth::new(150.0))], // hard rear-left
     )
     .expect("build 7.1.4 mix");
-    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("atmos.wav");
@@ -439,13 +474,12 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
 fn atmos_7_1_4_downmixes_surround_into_front() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
     let src = g.add(Const::frame(&[1.0, 1.0]));
-    let mix = vbap_mix(
+    vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),
         &[VbapSource::at(src, Azimuth::new(150.0))], // hard rear-left → Lrs (discrete ch 6)
     )
     .expect("build 7.1.4 mix");
-    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("atmos_stereo.wav");

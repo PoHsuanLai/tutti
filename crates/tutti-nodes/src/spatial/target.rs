@@ -1,0 +1,176 @@
+//! Where a source is aimed, and how it gets there without zippering.
+//! Algorithm-neutral: [`SpatialTarget`] is the control→RT storage,
+//! [`AngleSmoother`] the de-zipper both panners step per frame.
+
+use tutti_types::{Azimuth, Elevation, Param, SampleRate, Samples};
+
+use crate::spatial::smoothing::{DEFAULT_POSITION_SMOOTH_TIME, ExponentialSmoother};
+
+/// A source's bearing and height as a pair of lock-free [`Param`] cells.
+///
+/// Both panners hold one and read it once per block on the audio thread; the
+/// control thread writes it through [`store`](Self::store) (usually via a
+/// panner's controls). Clones share the same cells, so a write through any
+/// clone reaches the node.
+///
+/// The two fields are different types on purpose: a bearing wraps (190° is
+/// 170° to the right), a height saturates (past straight up, you stop).
+#[derive(Clone, Debug)]
+pub struct SpatialTarget {
+    /// Bearing in [`Azimuth`] degrees, wrapped onto the circle: 0 is front,
+    /// 90 left, -90 right. Written lock-free from the control thread and read
+    /// once per block by the panner.
+    pub azimuth: Param<Azimuth>,
+    /// Height in [`Elevation`] degrees, clamped to -90..90: 0 is ear level,
+    /// positive is up. Saturates at the poles rather than wrapping.
+    pub elevation: Param<Elevation>,
+}
+
+impl SpatialTarget {
+    /// Creates a target aimed straight ahead at ear level
+    /// ([`Azimuth::FRONT`] / [`Elevation::LEVEL`]).
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            azimuth: Param::new(Azimuth::FRONT),
+            elevation: Param::new(Elevation::LEVEL),
+        }
+    }
+
+    /// Returns the current bearing and height. Lock-free; safe on the audio
+    /// thread.
+    #[inline]
+    pub fn load(&self) -> (Azimuth, Elevation) {
+        (self.azimuth.load(), self.elevation.load())
+    }
+
+    /// Stores a bearing and height, normalized on the way in: the bearing
+    /// wraps onto -180..180, the height clamps to -90..90. Lock-free.
+    pub fn store(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
+        self.azimuth.store(azimuth.into().wrap());
+        self.elevation
+            .store(Elevation::new_clamped(elevation.into().get()));
+    }
+
+    /// Stops sharing both cells with other clones, keeping the current values
+    /// (see [`Param::detach`]).
+    ///
+    /// A panner's fork calls this so it renders the position it was taken at,
+    /// unaffected by later moves of the live node.
+    pub fn detach(&mut self) {
+        self.azimuth.detach();
+        self.elevation.detach();
+    }
+}
+
+impl Default for SpatialTarget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `value` if finite (and remembered in `slot`), else what `slot` last held.
+///
+/// A panner reads its position cells through this: its de-zipper smoother is
+/// recursive, so one NaN or ±∞ coordinate would leave it NaN for good.
+#[inline]
+pub(crate) fn hold_finite(slot: &mut f32, value: f32) -> f32 {
+    if value.is_finite() {
+        *slot = value;
+    }
+    *slot
+}
+
+/// One smoother per coordinate, each with its own arithmetic: the bearing takes
+/// the short arc, the height is a plain ramp.
+///
+/// Shared because that asymmetry is easy to get wrong twice. Give the bearing
+/// the linear form and a source crossing behind the listener (170° → -170°, a
+/// 20° move) sweeps 340° the wrong way around the head.
+#[derive(Clone, Debug)]
+pub(crate) struct AngleSmoother {
+    azimuth: ExponentialSmoother,
+    elevation: ExponentialSmoother,
+}
+
+impl AngleSmoother {
+    /// A smoother with a 50 ms time constant of audio at `sample_rate`, for
+    /// a caller that `step`s once per `samples_per_step`
+    /// samples: one for a panner that steps every frame (VBAP), the
+    /// convolution frame length for one that steps once per frame (HRTF).
+    pub(crate) fn new(sample_rate: impl Into<SampleRate>, samples_per_step: Samples) -> Self {
+        let sample_rate = sample_rate.into();
+        let smoother = || {
+            ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate, samples_per_step)
+        };
+        Self {
+            azimuth: smoother(),
+            elevation: smoother(),
+        }
+    }
+
+    /// Retune for a new sample rate, keeping the stride
+    /// [`new`](Self::new) was given, so the 50 ms ramp holds at any rate.
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
+        let sample_rate = sample_rate.into();
+        self.azimuth.set_sample_rate(sample_rate);
+        self.elevation.set_sample_rate(sample_rate);
+    }
+
+    /// Discard the in-flight ramp, seating both coordinates *on* the commanded
+    /// position.
+    ///
+    /// This is what a panner's [`Node::reset`] clears here: the interpolation
+    /// position is the smoother's only runtime state, and the commanded bearing
+    /// and height are caller-set configuration a reset must leave alone. Seating
+    /// on the target rather than at zero is the difference between resuming
+    /// silently and sweeping the source in from front-centre over the ramp.
+    ///
+    /// [`Node::reset`]: tutti_graph::Node::reset
+    pub(crate) fn reset_to_target(&mut self, azimuth: Azimuth, elevation: Elevation) {
+        self.azimuth.seed_at(azimuth.wrap().get());
+        self.elevation
+            .seed_at(Elevation::new_clamped(elevation.get()).get());
+    }
+
+    /// Where the ramp currently is — the pair the last `step`
+    /// returned (or the seeded position), without advancing.
+    ///
+    /// A block-rate consumer needs this as the *start* of a block: the VBAP
+    /// panner solves once per block and ramps from the gains here to the gains
+    /// at the block's last frame.
+    #[inline]
+    pub(crate) fn current(&self) -> (Azimuth, Elevation) {
+        (
+            Azimuth(self.azimuth.value()),
+            Elevation(self.elevation.value()),
+        )
+    }
+
+    /// Advance `steps` steps toward the target in one move (see
+    /// [`ExponentialSmoother::advance`]) and return the smoothed pair.
+    #[inline]
+    pub(crate) fn advance(
+        &mut self,
+        azimuth: Azimuth,
+        elevation: Elevation,
+        steps: usize,
+    ) -> (Azimuth, Elevation) {
+        (
+            self.azimuth.advance_angle(azimuth, steps),
+            self.elevation.advance(elevation, steps),
+        )
+    }
+
+    /// Advance one step toward the target and return the smoothed pair.
+    #[inline]
+    pub(crate) fn step(&mut self, azimuth: Azimuth, elevation: Elevation) -> (Azimuth, Elevation) {
+        (
+            self.azimuth.process_angle(azimuth),
+            self.elevation.process(elevation),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests;

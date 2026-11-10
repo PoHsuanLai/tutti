@@ -54,7 +54,7 @@ pub fn machine_lock() -> MachineLock {
     acquire_at(&path())
 }
 
-/// [`acquire`] on a given path, so a test can exercise the protocol on a
+/// [`machine_lock`] on a given path, so a test can exercise the protocol on a
 /// private directory instead of racing every other process for the real one.
 fn acquire_at(p: &std::path::Path) -> MachineLock {
     let p = p.to_path_buf();

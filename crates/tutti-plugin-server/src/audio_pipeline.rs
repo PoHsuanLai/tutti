@@ -657,7 +657,6 @@ fn with_audio_buffer_f64<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_fixtures::main_thread;
 
     use tutti_plugin::server::{
         Normalized, ParamId, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
@@ -1394,7 +1393,7 @@ mod tests {
 
         let _lock = crate::test_utils::plugin_load_lock();
         let mut plugin = Vst3Instance::load(
-            &main_thread(),
+            &tutti_fixtures::main_thread(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
             SR,
             N,

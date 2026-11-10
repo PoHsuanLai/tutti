@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 
 use tutti_plugin::BridgeError;
 use tutti_plugin::catalog::{
-    DEFAULT_PROBE_TIMEOUT, PluginDescriptor, ProbeLocator, probe_record_with,
+    DEFAULT_PROBE_TIMEOUT, PluginDescriptor, ProbeLocator, probe_failure, probe_record_with,
 };
 use tutti_plugin_contract::{bundle_of, clap_path, library, vst3_cpp_module, vst3_module};
-use tutti_plugin_db::{PluginDb, ProbeFailure};
+use tutti_plugin_db::PluginDb;
 
 /// The one descriptor `probe_record` found at `path`.
 fn probe(path: &Path) -> Result<PluginDescriptor, BridgeError> {
@@ -95,7 +95,7 @@ fn a_plugin_that_crashes_in_init_is_a_crash() {
     let dir = tempfile::tempdir().unwrap();
     let err = probe(&clap_named(&dir, "init-crash")).expect_err("must not probe");
     assert!(matches!(err, BridgeError::ProcessCrashed), "{err:?}");
-    let failure = ProbeFailure::from(err);
+    let failure = probe_failure(err);
     assert!(failure.blacklistable, "{failure:?}");
     assert!(failure.reason.contains("crashed"), "{failure:?}");
 }
@@ -119,7 +119,7 @@ fn a_plugin_that_hangs_in_init_times_out() {
         "{:?}",
         started.elapsed()
     );
-    let failure = ProbeFailure::from(err);
+    let failure = probe_failure(err);
     assert!(failure.blacklistable, "{failure:?}");
     assert!(failure.reason.contains("timed out"), "{failure:?}");
 }
@@ -139,7 +139,7 @@ fn a_plugin_that_refuses_to_load_is_a_typed_failure() {
         if reason.contains("Entry init failed")),
         "{err:?}"
     );
-    assert!(ProbeFailure::from(err).blacklistable);
+    assert!(probe_failure(err).blacklistable);
 }
 
 /// **A plugin that prints from its init still probes**: stdout and stderr carry

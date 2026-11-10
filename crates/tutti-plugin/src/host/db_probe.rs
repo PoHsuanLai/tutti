@@ -11,13 +11,16 @@ use tutti_plugin_ipc::{DEFAULT_PROBE_TIMEOUT, ProbeLocator, probe_metadata_with}
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::PluginDescriptor;
 
-/// The blacklist decision for a failed probe, kept as one function so tests
-/// exercise this code rather than a copy of it.
+/// The blacklist decision for a failed probe: whether the scan may blacklist
+/// the plugin, and why. One function, so the tests exercise this code rather
+/// than a copy of it. (It was `From<BridgeError> for ProbeFailure`; the two
+/// types are in different crates from this one since design 021 step 3.)
 ///
 /// The split is "did we learn something about the plugin, or about our own
 /// environment?" — not severity. A crash and a broken library are equally
 /// informative; a missing `plugin-probe` tells us nothing.
-fn probe_failure(e: BridgeError) -> ProbeFailure {
+#[must_use]
+pub fn probe_failure(e: BridgeError) -> ProbeFailure {
     match e {
         BridgeError::ProcessCrashed => ProbeFailure {
             reason: format!("crashed during probe: {e}"),

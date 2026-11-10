@@ -89,7 +89,7 @@ pub use format::vst2_in_process::{
 /// table in a versioned JSON file. Without it, build the `PluginDb` from your
 /// own store and pass it to `Plugins::with_db`.
 pub mod catalog {
-    pub use crate::host::db_probe::{probe_record, probe_record_with};
+    pub use crate::host::db_probe::{probe_failure, probe_record, probe_record_with};
     pub use tutti_plugin_ipc::{DEFAULT_PROBE_TIMEOUT, ProbeLocator};
     // Named in `Plugin::role` and `Plugins::iter`.
     pub use crate::host::plugin::Plugin;

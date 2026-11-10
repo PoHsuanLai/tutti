@@ -334,7 +334,7 @@ fn process_f32_with_midi_does_not_allocate() {
 /// silently resumed on the way out; now a suspended plugin is a `Vst2Loaded`
 /// with no halves to reconfigure.
 ///
-/// Mutation (run): `Vst2Handle::drop` suspending without checking `resumed` ->
+/// Mutation (run): `PluginInstance::close` suspending without checking `resumed` ->
 /// the dropped plugin suspends a second time -> fails. Mutation (run):
 /// `activate` not setting `resumed` -> the rejoin does not suspend -> fails.
 #[test]

@@ -178,13 +178,16 @@ fn real_world_plugins_decline_these_opcodes() {
     assert!(all.iter().all(Option::is_none));
 
     // The whole MIDI family declines too.
-    assert_eq!(instance.midi_program(0, 0), None);
-    assert_eq!(instance.current_midi_program(0), None);
-    assert_eq!(instance.midi_program_category(0, 0), None);
-    assert!(!instance.midi_programs_changed(0));
-    assert_eq!(instance.midi_key_name(0, 0, PROBE_NAMED_KEY), None);
-    assert!(instance.midi_programs(0).is_empty());
-    assert!(instance.midi_key_names(0, 0).is_empty());
+    assert_eq!(instance.midi_program(&main_thread(), 0, 0), None);
+    assert_eq!(instance.current_midi_program(&main_thread(), 0), None);
+    assert_eq!(instance.midi_program_category(&main_thread(), 0, 0), None);
+    assert!(!instance.midi_programs_changed(&main_thread(), 0));
+    assert_eq!(
+        instance.midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY),
+        None
+    );
+    assert!(instance.midi_programs(&main_thread(), 0).is_empty());
+    assert!(instance.midi_key_names(&main_thread(), 0, 0).is_empty());
 }
 
 /// When a plugin *does* answer, every field arrives at the right offset with
@@ -314,7 +317,7 @@ fn midi_program_metadata_round_trips() {
     set_answer_midi_metadata(&path, true, 2);
 
     let (program, serviced) = instance
-        .midi_program(0, 0)
+        .midi_program(&main_thread(), 0, 0)
         .expect("probe answers once the switch is on");
     assert_eq!(serviced, 2);
 
@@ -332,7 +335,9 @@ fn midi_program_metadata_round_trips() {
     // Program 1 is the drum kit, and its program-change number advances —
     // proving the host wrote `this_program_index` before dispatching rather
     // than describing program 0 every time.
-    let (drum_kit, _) = instance.midi_program(0, 1).expect("program 1 is serviced");
+    let (drum_kit, _) = instance
+        .midi_program(&main_thread(), 0, 1)
+        .expect("program 1 is serviced");
     assert_eq!(drum_kit.name, "Probe Program 1");
     assert_eq!(drum_kit.midi_program, base_program + 1);
     assert!(drum_kit.is_drum_kit);
@@ -358,7 +363,7 @@ fn current_midi_program_zero_is_a_valid_answer_not_a_failure() {
     set_answer_midi_metadata(&path, true, 2);
 
     let current = instance
-        .current_midi_program(0)
+        .current_midi_program(&main_thread(), 0)
         .expect("program index 0 is a successful answer, not a refusal");
     assert_eq!(current.index, 0);
     assert_eq!(current.name, "Probe Program 0");
@@ -391,7 +396,7 @@ fn a_declining_plugin_is_not_reported_as_sitting_on_program_zero() {
     // The declining probe answers this opcode with 0 — indistinguishable, by
     // return value alone, from "currently on program 0".
     assert_eq!(
-        instance.current_midi_program(0),
+        instance.current_midi_program(&main_thread(), 0),
         None,
         "a plugin that services no MIDI programs has no current program; \
          reporting one invents a nameless entry and a bogus (0, 0) bank"
@@ -401,7 +406,7 @@ fn a_declining_plugin_is_not_reported_as_sitting_on_program_zero() {
     // gate rejects refusals without also rejecting genuine zeros.
     set_answer_midi_metadata(&path, true, 2);
     let current = instance
-        .current_midi_program(0)
+        .current_midi_program(&main_thread(), 0)
         .expect("an answering plugin's program 0 is real");
     assert_eq!(current.index, 0);
     assert!(!current.name.is_empty());
@@ -426,10 +431,12 @@ fn an_advertised_program_count_above_the_serviced_one_does_not_produce_blanks() 
     // Advertise 5, name 2.
     set_answer_midi_metadata(&path, true, 5);
 
-    let (_, serviced) = instance.midi_program(0, 0).expect("program 0 is named");
+    let (_, serviced) = instance
+        .midi_program(&main_thread(), 0, 0)
+        .expect("program 0 is named");
     assert_eq!(serviced, 5, "the plugin advertises five");
 
-    let programs = instance.midi_programs(0);
+    let programs = instance.midi_programs(&main_thread(), 0);
     assert_eq!(
         programs.len(),
         2,
@@ -456,15 +463,18 @@ fn only_named_keys_are_reported() {
     set_answer_midi_metadata(&path, true, 2);
 
     let named = instance
-        .midi_key_name(0, 0, PROBE_NAMED_KEY)
+        .midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY)
         .expect("the probe names this key");
     assert_eq!(named.name, PROBE_KEY_NAME);
     assert_eq!(named.key_number, PROBE_NAMED_KEY);
 
     // A key the plugin does not name is absent, not empty-named.
-    assert_eq!(instance.midi_key_name(0, 0, PROBE_NAMED_KEY + 1), None);
+    assert_eq!(
+        instance.midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY + 1),
+        None
+    );
 
-    let all = instance.midi_key_names(0, 0);
+    let all = instance.midi_key_names(&main_thread(), 0, 0);
     assert_eq!(
         all.len(),
         1,
@@ -492,19 +502,32 @@ fn out_of_range_midi_coordinates_are_refused() {
 
     // Channel 0 works, so the refusals below are about the range, not the
     // switch being off.
-    assert!(instance.midi_key_name(0, 0, PROBE_NAMED_KEY).is_some());
+    assert!(
+        instance
+            .midi_key_name(&main_thread(), 0, 0, PROBE_NAMED_KEY)
+            .is_some()
+    );
 
-    assert_eq!(instance.midi_key_name(16, 0, PROBE_NAMED_KEY), None);
-    assert_eq!(instance.midi_key_name(-1, 0, PROBE_NAMED_KEY), None);
-    assert_eq!(instance.midi_key_name(0, -1, PROBE_NAMED_KEY), None);
-    assert_eq!(instance.midi_key_name(0, 0, 128), None);
-    assert_eq!(instance.midi_key_name(0, 0, -1), None);
+    assert_eq!(
+        instance.midi_key_name(&main_thread(), 16, 0, PROBE_NAMED_KEY),
+        None
+    );
+    assert_eq!(
+        instance.midi_key_name(&main_thread(), -1, 0, PROBE_NAMED_KEY),
+        None
+    );
+    assert_eq!(
+        instance.midi_key_name(&main_thread(), 0, -1, PROBE_NAMED_KEY),
+        None
+    );
+    assert_eq!(instance.midi_key_name(&main_thread(), 0, 0, 128), None);
+    assert_eq!(instance.midi_key_name(&main_thread(), 0, 0, -1), None);
 
-    assert_eq!(instance.midi_program(16, 0), None);
-    assert_eq!(instance.midi_program(0, -1), None);
-    assert_eq!(instance.current_midi_program(16), None);
-    assert_eq!(instance.midi_program_category(16, 0), None);
-    assert!(!instance.midi_programs_changed(16));
+    assert_eq!(instance.midi_program(&main_thread(), 16, 0), None);
+    assert_eq!(instance.midi_program(&main_thread(), 0, -1), None);
+    assert_eq!(instance.current_midi_program(&main_thread(), 16), None);
+    assert_eq!(instance.midi_program_category(&main_thread(), 16, 0), None);
+    assert!(!instance.midi_programs_changed(&main_thread(), 16));
 
     reset_switches(&path);
 }
@@ -521,24 +544,24 @@ fn the_change_flag_and_category_query_reach_the_plugin() {
     let (instance, path) = load_probe();
 
     // Default (declining) probe: no change signalled, no category.
-    assert!(!instance.midi_programs_changed(0));
-    assert_eq!(instance.midi_program_category(0, 0), None);
+    assert!(!instance.midi_programs_changed(&main_thread(), 0));
+    assert_eq!(instance.midi_program_category(&main_thread(), 0, 0), None);
 
     set_answer_midi_metadata(&path, true, 2);
     assert!(
-        instance.midi_programs_changed(0),
+        instance.midi_programs_changed(&main_thread(), 0),
         "the answering probe returns 1"
     );
 
     let (category, serviced) = instance
-        .midi_program_category(0, 0)
+        .midi_program_category(&main_thread(), 0, 0)
         .expect("the answering probe describes category 0");
     assert_eq!(serviced, 1);
     assert_eq!(category.name, "Probe Category");
     assert_eq!(category.parent_category, None);
 
     // A category the probe does not describe is absent.
-    assert_eq!(instance.midi_program_category(0, 1), None);
+    assert_eq!(instance.midi_program_category(&main_thread(), 0, 1), None);
 
     reset_switches(&path);
 }

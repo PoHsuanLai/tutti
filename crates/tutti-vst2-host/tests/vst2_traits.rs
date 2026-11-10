@@ -300,9 +300,8 @@ fn no_prepare_holds_a_rate_or_block_that_is_none() {
 
 /// **Halves of two activations are stuck and returned whole.**
 ///
-/// Mutation (run): the `Arc::ptr_eq` check removed from `deactivate` -> the
-/// strong count of each shell is 2, so the rejoin proceeds and `try_unwrap`
-/// fails on a shell another Processor still holds -> the test panics.
+/// Mutation (run): the `RenderHandle::is_of` check removed from `deactivate` -> the
+/// halves of two activations rejoin and the `Stuck` the test expects never comes.
 #[test]
 fn halves_of_two_activations_are_stuck_and_returned() {
     let probe = Probe::acquire();
@@ -448,7 +447,7 @@ fn a_block_does_not_allocate_and_a_short_channel_is_an_error() {
 /// `effMainsChanged` crosses the seam while the Controller saves and loads
 /// state, switches programs, writes and reads parameters and reads the wiring.
 ///
-/// Mutation (run): `Vst2Controller::load_state` clearing the shell's
+/// Mutation (run): `Vst2Controller::load_state` clearing the core's
 /// processing flag (a gate) -> the Processor sends `effStartProcess` again ->
 /// the trace gains a start -> fails.
 #[test]
@@ -507,36 +506,43 @@ fn the_controller_serves_the_surface_while_the_processor_renders() {
     drop(rejoin(processor, controller));
 }
 
-/// **A Processor that outlives its Controller destroys nothing on its thread**:
-/// the plugin is queued, and the next control-side call (an activation here)
-/// destroys it, stopping and suspending first, once each.
+/// **A Processor that outlives its Controller is not the plugin's owner**: the
+/// Controller's drop (the control side) stops, suspends and closes the plugin, once each; the
+/// Processor then renders silence without calling the closed plugin, and its own drop, on
+/// the audio thread, calls nothing and closes nothing. (The retirement queue this replaces
+/// existed because the Processor could be the last holder; it holds only an audio handle
+/// now, which shares the plugin's core and never owns it.)
 ///
-/// Mutation (run): `Hold::drop` dropping the `Arc` (the shell goes with the
-/// last holder) -> the plugin closes when the Processor's thread drops it ->
-/// `close_count` is 1 before the control-side call -> fails.
+/// Mutation (run): `RenderHandle::gated` ignoring the closed flag -> the render after the
+/// close calls the freed plugin and the silence assertion fails (the probe's `process`
+/// writes its tags). Mutation (run): `Drop for PluginInstance` not closing -> `close_count`
+/// stays 0 after the Controller's drop -> fails.
 #[test]
-fn a_processor_that_outlives_its_controller_is_reaped_on_the_control_side() {
+fn a_processor_that_outlives_its_controller_renders_silence_and_destroys_nothing() {
     let probe = Probe::acquire();
     let (mut processor, controller) = probe.activate();
-    drop(controller);
-    render_f32(&mut processor, &ProcessContext::new());
     clear_trace();
+    drop(controller);
+    assert_eq!(close_count(), 1, "the control side closed the plugin");
+    assert_eq!(count_of(STOP_PROCESS), 1, "stopped once");
+    assert_eq!(count_of(MAINS_CHANGED), 1, "suspended once");
+    let stop = trace().iter().position(|(op, _)| *op == STOP_PROCESS);
+    let suspend = trace().iter().position(|(op, _)| *op == MAINS_CHANGED);
+    assert!(stop < suspend, "in the SDK's order");
+
+    clear_trace();
+    let rendered = render_f32(&mut processor, &ProcessContext::new());
+    assert!(
+        rendered.iter().flatten().all(|s| *s == 0.0),
+        "a closed plugin renders silence, not the probe's tags"
+    );
+    assert_eq!(trace(), [], "and a closed plugin is called by nothing");
+
     std::thread::spawn(move || drop(processor))
         .join()
         .expect("the drop did not panic");
-    assert_eq!(close_count(), 0, "the audio thread destroyed the plugin");
+    assert_eq!(close_count(), 1, "the audio thread closed nothing more");
     assert_eq!(trace(), [], "and called nothing in it");
-
-    // A control-side call: the next activation empties the queue.
-    let (second, second_controller) = probe.activate();
-    assert_eq!(close_count(), 1, "the control side destroyed it");
-    assert_eq!(count_of(STOP_PROCESS), 1, "stopped once");
-    assert_eq!(
-        count_of(MAINS_CHANGED),
-        2,
-        "suspended once, then the second resumed"
-    );
-    drop(rejoin(second, second_controller));
 }
 
 /// **No duplicate stop or suspend**, whichever way the plugin goes: a stop is
@@ -544,7 +550,8 @@ fn a_processor_that_outlives_its_controller_is_reaped_on_the_control_side() {
 /// stops and suspends once.
 ///
 /// Mutation (run): `Vst2Processor::stop` sending `effStopProcess` without
-/// consulting the shell's flag -> two stops -> fails.
+/// consulting the core's processing flag (the swap in `RenderHandle::stop_process`) -> two
+/// stops -> fails.
 #[test]
 fn stopping_twice_and_rejoining_sends_one_stop_and_one_suspend() {
     let probe = Probe::acquire();

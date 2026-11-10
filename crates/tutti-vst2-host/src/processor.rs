@@ -22,21 +22,19 @@ use tutti_plugin_types::{
 use crate::host::HostState;
 use crate::loaded::AudioSide;
 use crate::midi::MidiIo;
-use crate::parameters::SendParams;
 use crate::scratch::RenderScratch;
-use crate::shell::{Hold, Shell};
 use crate::time_info::build_vst2_time_info;
 use crate::transport_cell::TransportWriter;
 use crate::types::{MidiEvent, MidiEventVec, Vst2ProcessContext};
 
 /// The realtime half of an activation: renders blocks.
 ///
-/// `Send` to move to the realtime thread, not `Sync`. It holds its own copy of
-/// the plugin's render entries and never reaches the
-/// [`Vst2Loaded`](crate::Vst2Loaded) the Controller holds (see the invariant on
-/// `Shell`). Dropping it releases its share of the activation; the plugin is
-/// destroyed when the Controller's goes too, or on the control side if this was
-/// the last.
+/// `Send` to move to the realtime thread, not `Sync`. It holds the audio handle on the
+/// plugin (a [`RenderHandle`]: the render entries, `setParameter`, `effStartProcess` and
+/// `effStopProcess`, and nothing else) and never reaches the
+/// [`Vst2Loaded`](crate::Vst2Loaded) the Controller owns. Dropping it releases the handle
+/// and nothing more: the plugin is closed by the Controller's `Vst2Loaded`, on its thread,
+/// and a Processor that outlives it renders silence.
 ///
 /// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
 /// type makes it compile, and the test fails):
@@ -47,9 +45,6 @@ use crate::types::{MidiEvent, MidiEventVec, Vst2ProcessContext};
 /// ```
 pub struct Vst2Processor {
     render: RenderHandle,
-    /// The plugin's parameter object, for the block's automation. `setParameter`
-    /// may be called from the audio thread (VST 2.4), through this clone.
-    params: SendParams,
     /// How many parameters the plugin declared: the bound an automation point's
     /// id is checked against.
     param_count: usize,
@@ -64,8 +59,6 @@ pub struct Vst2Processor {
     double_precision: bool,
     /// The host's end of the plugin's callbacks, for its drop counters.
     host: Arc<HostState>,
-    /// The last field: released after everything above.
-    shell: Hold,
 }
 
 impl std::fmt::Debug for Vst2Processor {
@@ -73,16 +66,14 @@ impl std::fmt::Debug for Vst2Processor {
         f.debug_struct("Vst2Processor")
             .field("block_size", &self.block_size)
             .field("double_precision", &self.double_precision)
-            .field("processing", &self.shell().is_processing())
+            .field("processing", &self.render.is_processing())
             .finish_non_exhaustive()
     }
 }
 
 /// Everything a Processor is built from.
 pub(crate) struct ProcessorParts {
-    pub shell: Arc<Shell>,
     pub render: RenderHandle,
-    pub params: SendParams,
     pub param_count: usize,
     pub scratch: RenderScratch,
     pub audio: AudioSide,
@@ -94,9 +85,7 @@ pub(crate) struct ProcessorParts {
 impl Vst2Processor {
     pub(crate) fn new(parts: ProcessorParts) -> Self {
         let ProcessorParts {
-            shell,
             render,
-            params,
             param_count,
             scratch,
             audio,
@@ -106,7 +95,6 @@ impl Vst2Processor {
         } = parts;
         Self {
             render,
-            params,
             param_count,
             scratch,
             time_info: audio.time_info,
@@ -114,35 +102,30 @@ impl Vst2Processor {
             block_size,
             double_precision,
             host,
-            shell: Hold::new(shell),
         }
     }
 
-    /// The shell both halves of this activation hold; `deactivate` compares it.
-    pub(crate) fn shell(&self) -> &Arc<Shell> {
-        self.shell.shell()
+    /// The audio handle: `deactivate` compares it with the Controller's instance.
+    pub(crate) fn audio_handle(&self) -> &RenderHandle {
+        &self.render
     }
 
     /// Whether `effStartProcess` is the plugin's last word: true from
     /// activation, false after [`stop`](Self::stop) until the next block.
     #[must_use]
     pub fn is_processing(&self) -> bool {
-        self.shell().is_processing()
+        self.render.is_processing()
     }
 
     /// Ends processing (`effStopProcess`) if it is on. The next block starts it
     /// again. Realtime-safe; it is also what a rejoin sends first, once.
     pub fn stop(&mut self) {
-        if self.shell().set_processing(false) {
-            self.render.stop_process();
-        }
+        self.render.stop_process();
     }
 
     /// Starts processing (`effStartProcess`) if a stop left it off.
     fn ensure_processing(&mut self) {
-        if !self.shell().set_processing(true) {
-            self.render.start_process();
-        }
+        self.render.start_process();
     }
 
     /// What the rejoin keeps of the audio side, and drops the rest of.
@@ -395,7 +378,7 @@ impl Vst2Processor {
     /// (`host_write`). Returns how many queues were
     /// refused, because they name a parameter the plugin does not have or one it
     /// exposes no `setParameter` for. Realtime-safe.
-    pub fn write_automation(&self, changes: &ParameterChanges) -> u32 {
+    pub fn write_automation(&mut self, changes: &ParameterChanges) -> u32 {
         let mut refused = 0;
         for queue in &changes.queues {
             let Some(point) = queue.points.last() else {
@@ -408,7 +391,7 @@ impl Vst2Processor {
             // `Normalized` is already on the unit interval, so the cast cannot
             // hand the plugin a NaN or an out-of-range value.
             let value: Normalized = point.value;
-            if !crate::host::host_write(|| self.params.set_parameter(index, value.get() as f32)) {
+            if !crate::host::host_write(|| self.render.set_parameter(index, value.get() as f32)) {
                 refused += 1;
             }
         }
@@ -416,7 +399,7 @@ impl Vst2Processor {
     }
 
     /// The automation of a block that carries any.
-    fn apply_automation(&self, changes: Option<&ParameterChanges>) {
+    fn apply_automation(&mut self, changes: Option<&ParameterChanges>) {
         if let Some(changes) = changes {
             let _ = self.write_automation(changes);
         }

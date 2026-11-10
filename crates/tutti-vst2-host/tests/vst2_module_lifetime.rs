@@ -93,7 +93,7 @@ fn reset_close_count(path: &PathBuf) {
     });
 }
 
-/// Pins the ordering in `Vst2Handle`'s `Drop`. Dropping an `Active` must
+/// Pins the ordering in `PluginInstance`'s `Drop`. Dropping an `Active` must
 /// dispatch `effClose`, and must do so while the module is still mapped.
 ///
 /// The two halves are one assertion, because the count is *read out of the
@@ -147,7 +147,7 @@ fn dropping_an_instance_dispatches_eff_close_while_the_module_stays_mapped() {
 /// image, still carrying its counter.
 ///
 /// This is the half `dropping_an_instance_...` cannot see on its own. If
-/// `Vst2Handle::drop` unloaded the module, the count above would be 0 for a
+/// `PluginInstance::drop` unloaded the module, the count above would be 0 for a
 /// reason indistinguishable from "effClose was skipped"; here the first close
 /// is already banked, so a second load that finds 1 proves the image persisted
 /// across a full instance lifetime and a fresh load.

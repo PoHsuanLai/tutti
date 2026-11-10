@@ -494,7 +494,7 @@ fn an_out_of_range_midi_count_is_not_an_answer() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let counts = instance.midi_channel_counts();
+    let counts = instance.midi_channel_counts(&main_thread());
     assert_eq!(
         counts.inputs, None,
         "0 is what an unimplemented opcode returns, so it must read as \
@@ -527,7 +527,7 @@ fn an_in_range_midi_count_is_reported_verbatim() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let counts = instance.midi_channel_counts();
+    let counts = instance.midi_channel_counts(&main_thread());
     assert_eq!(counts.inputs, Some(1), "the boundary value 1 must be kept");
     assert_eq!(
         counts.outputs,
@@ -915,7 +915,7 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
-        instance.set_bypass(true),
+        instance.set_bypass(&main_thread(), true),
         "the probe accepts effSetBypass but the host reported a refusal"
     );
     assert_eq!(
@@ -925,7 +925,10 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
          dispatched at all"
     );
 
-    assert!(instance.set_bypass(false), "leaving bypass was refused");
+    assert!(
+        instance.set_bypass(&main_thread(), false),
+        "leaving bypass was refused"
+    );
     assert_eq!(
         last_bypass(&path),
         0,
@@ -952,7 +955,7 @@ fn a_refused_soft_bypass_is_reported() {
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
-        !instance.set_bypass(true),
+        !instance.set_bypass(&main_thread(), true),
         "the probe refuses effSetBypass; reporting success would leave the \
          host believing a bypass took effect when the plugin is still \
          processing"
@@ -983,7 +986,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
     set_can_do(&path, can_do::YES, 0);
     let advertising = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        advertising.supports_soft_bypass(),
+        advertising.supports_soft_bypass(&main_thread()),
         "the probe answered effCanDo(bypass) = 1 and the host ignored it"
     );
     drop(advertising);
@@ -992,7 +995,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
     set_can_do(&path, can_do::MAYBE, 0);
     let silent = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        !silent.supports_soft_bypass(),
+        !silent.supports_soft_bypass(&main_thread()),
         "effCanDo = 0 is 'don't know', not a yes; a host that treats it as one \
          relies on a bypass the plugin never promised"
     );

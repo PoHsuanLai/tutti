@@ -67,7 +67,7 @@ impl Control for Vst2Loaded {
 
     /// The wiring read from the plugin now: its pin counts, latency and tail are
     /// asked of the `AEffect` and the dispatcher, not remembered from load.
-    fn wiring(&self, __main: &MainThread) -> LoadedPlugin {
+    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
         let (inputs, outputs) = self.pins();
         LoadedPlugin {
             // VST2 is single-bus: one main input bus, one main output bus.
@@ -78,7 +78,7 @@ impl Control for Vst2Loaded {
             // information" where every other format means "no tail" (see
             // `PluginInfo`). `Unknown` remains the answer for a plugin that
             // declines the opcode.
-            tail: self.tail(),
+            tail: self.tail(main),
             features: self.features(),
             probed: probed::VST2,
             // VST2 reports no speaker placement. `effSetSpeakerArrangement`
@@ -151,12 +151,12 @@ impl Control for Vst2Loaded {
         self.set_parameter_from_string(id, text)
     }
 
-    fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.read_state().map_err(plugin_error)
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        self.read_state(main).map_err(plugin_error)
     }
 
-    fn load_state(&mut self, _main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        self.write_state(bytes).map_err(plugin_error)
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+        self.write_state(main, bytes).map_err(plugin_error)
     }
 
     /// VST2 programs. The index **is** the identifier — `effProgramChange` takes

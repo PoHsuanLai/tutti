@@ -32,13 +32,13 @@ fn source(session: &Session, node: NodeKey, port: usize) -> GraphSource {
 }
 
 /// The setup's nodes are the nodes it names, with the shapes the wiring needs:
-/// the chorus stereo in and out, the reverb mono in and stereo out, the sum six
-/// in (three stereo sources) and two out.
+/// the chorus stereo in and out, the reverb mono in and stereo out, the fader
+/// stereo in and out (its sum is the graph's, so it is two inputs, not six).
 ///
-/// Mutation (run): `ChannelSumNode::new(2, ..)` for the sum fails the sum's
-/// input count.
+/// Mutation (run): the fader built mono (`BusStripNode` on one channel) fails
+/// the fader row.
 #[test]
-fn the_setup_adds_a_chorus_a_reverb_and_a_sum_of_the_right_widths() {
+fn the_setup_adds_a_chorus_a_reverb_and_a_fader_of_the_right_widths() {
     let mut session = offline_session();
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
     let graph = session.graph_ref();
@@ -58,25 +58,23 @@ fn the_setup_adds_a_chorus_a_reverb_and_a_sum_of_the_right_widths() {
         (1, 2)
     );
     assert_eq!(
-        (graph.node_inputs(gm.sum()), graph.node_outputs(gm.sum())),
-        (6, 2)
-    );
-    assert_eq!(
         (graph.node_inputs(gm.out()), graph.node_outputs(gm.out())),
         (2, 2),
         "the fader"
     );
 }
 
-/// Each send goes to its effect, and each effect and the dry pair to its own
-/// source of the sum, left before right: the unit's outputs 2 and 3 are the
-/// chorus's two inputs, 4 the reverb's one, and the sum reads the dry strip,
-/// the chorus and the reverb in that order.
+/// Each send goes to its effect, and each effect and the dry pair to the
+/// fader's left and right inputs: the unit's outputs 2 and 3 are the chorus's
+/// two inputs, 4 the reverb's one, and the fader's port 0 sums the dry strip's,
+/// the chorus's and the reverb's left, port 1 their right (a set: the graph
+/// sums it, in no order the test relies on).
 ///
 /// Mutations (run): the chorus fed from outputs 0 and 1 (the dry pair) fails the
-/// first two rows; the sum's sources 1 and 2 swapped fails the later rows.
+/// first two rows; the reverb's right left out of the fader's port 1 fails the
+/// set row.
 #[test]
-fn the_sends_feed_the_effects_and_the_effects_feed_the_sum() {
+fn the_sends_feed_the_effects_and_the_effects_feed_the_fader() {
     let mut session = offline_session();
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
     let unit = gm.instrument().node();
@@ -84,26 +82,18 @@ fn the_sends_feed_the_effects_and_the_effects_feed_the_sum() {
     assert_eq!(source(&session, gm.chorus(), 0), GraphSource::node(unit, 2));
     assert_eq!(source(&session, gm.chorus(), 1), GraphSource::node(unit, 3));
     assert_eq!(source(&session, gm.reverb(), 0), GraphSource::node(unit, 4));
-    let expected = [
-        GraphSource::node(strip, 0),
-        GraphSource::node(strip, 1),
-        GraphSource::node(gm.chorus(), 0),
-        GraphSource::node(gm.chorus(), 1),
-        GraphSource::node(gm.reverb(), 0),
-        GraphSource::node(gm.reverb(), 1),
-    ];
-    for (port, want) in expected.into_iter().enumerate() {
-        assert_eq!(source(&session, gm.sum(), port), want, "sum input {port}");
+    for (port, channel) in [(0, 0), (1, 1)] {
+        let mut held = session.graph_ref().sources(gm.out(), port);
+        let mut want = vec![
+            GraphSource::node(strip, channel),
+            GraphSource::node(gm.chorus(), channel),
+            GraphSource::node(gm.reverb(), channel),
+        ];
+        let key = |s: &GraphSource| format!("{s:?}");
+        held.sort_by_key(key);
+        want.sort_by_key(key);
+        assert_eq!(held, want, "fader input {port}");
     }
-    // The fader reads the sum, which is `out()`.
-    assert_eq!(
-        source(&session, gm.out(), 0),
-        GraphSource::node(gm.sum(), 0)
-    );
-    assert_eq!(
-        source(&session, gm.out(), 1),
-        GraphSource::node(gm.sum(), 1)
-    );
     // The strip carries the dry pair: outputs 0 and 1 of the unit.
     assert_eq!(source(&session, strip, 0), GraphSource::node(unit, 0));
     assert_eq!(source(&session, strip, 1), GraphSource::node(unit, 1));
@@ -125,7 +115,7 @@ fn the_setup_does_not_take_the_graphs_outputs() {
 /// Every stage declares its own tail, so an export keeps the release and then
 /// the room: the unit's is the release alone, the chorus's the 5 ms of its
 /// line, the reverb's a bound over its ring-out (about 1.5 s at 48 kHz), and
-/// the sum's none.
+/// the fader's none (the graph's sum has no tail of its own).
 ///
 /// Mutation (run): the reverb's tail quartered fails the reverb row.
 #[test]
@@ -145,12 +135,11 @@ fn every_stage_declares_its_own_tail() {
     );
     assert_eq!(frames(gm.chorus()), 240);
     assert!((1.0..2.0).contains(&seconds(gm.reverb())));
-    assert_eq!(graph.node_tail(gm.sum()), Tail::None);
     assert_eq!(graph.node_tail(gm.out()), Tail::None);
 }
 
 /// The ring-out of 3a holds against the per-node tails: a note let go through
-/// the whole setup (unit, chorus, reverb, sum) is heard no later than the sum
+/// the whole setup (unit, chorus, reverb, the fader's sum) is heard no later than the sum
 /// of the tails along the path says, the unit's release, the longest of the
 /// chorus's and reverb's, and no sooner than the release alone could end it (the
 /// reverb rings on past the voice, so the room is in the figure).
@@ -299,7 +288,7 @@ fn peak_of_block(session: &mut Session) -> f32 {
 /// back. The instrument's own gain is the dry level and does not touch the
 /// effects.
 ///
-/// Mutations (run): `out()` returning the sum (the fader bypassed) fails the
+/// Mutations (run): `out()` returning the instrument's strip (the fader bypassed) fails the
 /// silence; the mute written to the volume param instead fails it too.
 #[test]
 fn muting_the_setup_silences_the_wet_path_too() {
@@ -362,7 +351,7 @@ fn muting_the_setup_silences_the_wet_path_too() {
 }
 
 /// Removing the setup takes every node it added, and the graph is as an empty
-/// session's: none of the unit, queue, strip, chorus, reverb, sum or fader is
+/// session's: none of the unit, queue, strip, chorus, reverb or fader is
 /// left, and the node count is back to what it was.
 ///
 /// Mutations (run): leaving the fader out of `GeneralMidi::remove` fails the
@@ -378,7 +367,6 @@ fn removing_the_setup_leaves_nothing() {
         gm.instrument().out(),
         gm.chorus(),
         gm.reverb(),
-        gm.sum(),
         gm.out(),
     ];
     assert!(session.graph_ref().node_count() > before);

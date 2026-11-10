@@ -47,7 +47,6 @@ use tutti_fixtures::machine_lock;
 use tutti_graph::NodeKey;
 use tutti_graph::{GraphBuilder, Prepare, Renderer};
 use tutti_graph::{OutPort, Source};
-use tutti_nodes::ChannelSumNode;
 use tutti_nodes::testing::Through;
 use tutti_plugin::handles::{Bound, PluginClient, PluginControls};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -209,19 +208,22 @@ fn two_paths(plugin: PluginClient<Bound>) -> Rig {
     // The dry twin. A pass-through rather than wiring the global input straight
     // to the sum, so each path is a node the compiler aligns.
     let dry = g.add(Through::mono());
-    // Summing is a node's job — a port holds one source, so a fan-in has to be
-    // an explicit adder. `ChannelSumNode`, which sums rather than averages: two
-    // aligned arrivals of `IMPULSE` must come out as `2 · IMPULSE`, which one
-    // arrival alone cannot produce.
-    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::MONO));
+    // The sum is the graph's: output channel 0 holds both paths as sources
+    // (`connect_output` adds), and the compiler aligns each. Two aligned
+    // arrivals of `IMPULSE` must come out as `2 · IMPULSE`, which one arrival
+    // alone cannot produce.
+    //
+    // Mutation (run): in `compile`'s summed-output branch `dep.gap_to(total)` →
+    // `dep.gap_to(dep)` (no source of a sum aligned) fails
+    // `with_compensation_both_paths_land_on_the_same_sample` (two arrivals) and
+    // `a_latency_change_reaches_pdc_at_the_next_commit`.
 
     for port in 0..plugin_inputs {
         g.set_source(key, port, Source::Global(0));
     }
     g.set_source(dry, 0, Source::Global(0));
-    g.set_source(sum, 0, Source::Node(OutPort { node: key, port: 0 }));
-    g.set_source(sum, 1, Source::Node(OutPort { node: dry, port: 0 }));
-    g.set_output(0, Source::Node(OutPort { node: sum, port: 0 }));
+    g.add_output(0, Source::Node(OutPort { node: key, port: 0 }));
+    g.add_output(0, Source::Node(OutPort { node: dry, port: 0 }));
     finish(g, key, controls)
 }
 

@@ -231,19 +231,23 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
 
 /// A summing bus does not hide the latency of what feeds it.
 ///
-/// `ChannelSumNode` is the engine's fan-in. Were it to hide its inputs'
-/// latency, a lookahead limiter summed with a dry path would read as a
-/// zero-latency graph, and an export would pre-roll by nothing. The
-/// compiler's PDC owns the fold: the graph reports the limiter's lookahead,
-/// and the dry path is delayed to meet it, so the impulse leaves **once**, at
+/// The graph's fan-in is the engine's sum: output channel 0 holds two sources,
+/// the limiter and the dry input. Were the sum to hide its sources' latency, a
+/// lookahead limiter summed with a dry path would read as a zero-latency
+/// graph, and an export would pre-roll by nothing. The compiler's PDC aligns
+/// each source of the sum: the graph reports the limiter's lookahead, and the
+/// dry source is delayed to meet it, so the impulse leaves **once**, at
 /// exactly that frame.
 ///
-/// Mutation (run): declare no latency in `LimiterNode::shape` → the total
-/// reads 0 and the dry impulse leaves at frame 0 → fails.
+/// Mutations (run): declare no latency in `LimiterNode::shape` → the total
+/// reads 0 and the dry impulse leaves at frame 0 → fails; in `compile`'s
+/// summed-output branch, `dep.gap_to(total)` → `dep.gap_to(dep)` (no source of a
+/// sum aligned) → the impulse leaves at frame 0, not at the lookahead → fails.
 #[test]
 fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
+    use tutti_graph::Source;
     use tutti_graph::{GraphBuilder, Prepare};
-    use tutti_nodes::{ChannelSumNode, LimiterNode};
+    use tutti_nodes::LimiterNode;
     use tutti_types::Latency;
     use tutti_types::{ChannelLayout, Db, Samples, Seconds};
 
@@ -253,11 +257,9 @@ fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
         Db(-1.0),
         Db(-0.3),
     ));
-    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::MONO));
     g.connect_input(0, lim, 0);
-    g.connect(lim, 0, sum, 0);
-    g.connect_input(0, sum, 1);
-    g.connect_output(sum, 0, 0);
+    g.connect_output(lim, 0, 0);
+    g.add_output(0, Source::Global(0));
     let mut r = g
         .renderer(Prepare::new(SR, Samples(BLOCK)))
         .expect("builds");

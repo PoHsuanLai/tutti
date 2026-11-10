@@ -199,6 +199,16 @@ const fn meter_work(lanes: u64) -> Work {
     }
 }
 
+/// A sum of `addends`: a copy's fixed cost, and one unit per addend per
+/// frame (doc 013, "Audio fan-in sums", point 6). An estimate; `graph_render`
+/// measures it.
+const fn sum_work(addends: u64) -> Work {
+    Work {
+        fixed: COPY.fixed,
+        per_frame: COPY.per_frame * addends,
+    }
+}
+
 /// An event op (a merge, an event delay, an event capture, an event tap).
 const EVENTS: Work = Work {
     fixed: 100,
@@ -215,6 +225,7 @@ pub(crate) fn op_work(op: &Op, shapes: &[Shape]) -> Work {
         | Op::Capture { .. }
         | Op::Tap { .. } => COPY,
         Op::Meter { srcs, .. } => meter_work(u64::from(srcs.len)),
+        Op::Sum { srcs, .. } => sum_work(u64::from(srcs.len)),
         Op::EventDelay { .. }
         | Op::EventMerge { .. }
         | Op::EventCapture { .. }

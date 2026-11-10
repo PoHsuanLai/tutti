@@ -63,8 +63,8 @@ What is typed, what is a string, and what stops at a format host.
 | Concern | Today | Where |
 |---|---|---|
 | Capability flags | One `Features` bitset plus a `probed` mask (`FeatureReport`); a clear bit with a clear `probed` bit means "not asked" | `tutti-plugin-types` `features.rs`, `LoadedPlugin` |
-| Parameter unit | `ParameterInfo.unit: String`. VST3 passes the `units` string, VST2 passes the label, AU prints its own `ParameterUnit` (9 of the 27 codes decoded; the rest become the text `unit(N)`), CLAP has no unit and passes `""` | `tutti-vst3-host` `loaded/parameters.rs`, `tutti-vst2-host` `parameters.rs`, `tutti-plugin-server` `loaders/au.rs` |
-| Parameter kind | None. `UnitParam` is the vocabulary of tutti's own nodes; no hosted parameter is ever one | `tutti-types` `unit_param.rs` |
+| Parameter unit | `ParameterInfo.unit: String` stays as the display text (VST3 the `units` string, VST2 the label, AU its own `ParameterUnit` print with 9 of the 27 codes decoded, CLAP `""`), and `ParameterInfo.measures: Option<ParamUnit>` types it where the format declared it exactly and the range fits (step 1, built) | `tutti-plugin-types` `param_unit.rs`, `tutti-vst3-host` `loaded/parameters.rs`, `tutti-vst2-host` `parameters.rs`, `tutti-clap-host` `instance/params.rs`, `tutti-au-host` `unit_code.rs` |
+| Parameter kind | `ParameterInfo.role: Option<UnitParam>`: `Bypass` from the CLAP and VST3 flag, `Wet` from VST3's `DryWetMix`, `Pan` from AU's pan code; never from a name (step 1, built) | same |
 | Tail | `PluginTail` (an alias of `tutti_types::Tail`) stored in `PluginControls` and handed to `Shape::with_tail` in `declared_shape`. The figure is the **plugin's claim**, and the executor parks the node on it; nothing measures it, and nothing calls `Io::report_tail` | `tutti-plugin` `host/node/graph_node.rs` |
 | Latency | `LoadedPlugin.latency_samples`; the node declares it plus the IPC chunk. Also a claim, unmeasured | same |
 | Voices | `VoiceInfo { voice_count, voice_capacity, supports_overlapping_notes }` in `tutti-clap-host`; no other format has a counterpart; `tutti-voicing` is not involved | `tutti-clap-host` `types.rs` |
@@ -164,7 +164,7 @@ Header citations are by file name.
 | C9 | audio buffers: constant mask, steady time | which channels are one value; a monotonic counter | Covered: `ConstantMask`, `SilenceMask`; steady time has no reader | host |
 | C10 | `clap.params`: info, value, text conversion | id, name, module path, min, max, default, value-to-text and text-to-value | Covered: `ParameterInfo`, `ParamRange`; text conversion is `host` only | types |
 | C11 | params flags: stepped, periodic, hidden, readonly, bypass, automatable | what the host may do | Covered: `ParamSteps`, `ParamFlags` (`WRAP`, `HIDDEN`, `READ_ONLY`, `BYPASS`, `AUTOMATABLE`) | types |
-| C12 | params flag: is-enum | the stepped values are named choices | Partial: `ParamSteps` knows the count, not the labels; a choice parameter is a typed kind (§5.2) | types (flag only) |
+| C12 | params flag: is-enum | the stepped values are named choices | Partial: `ParamSteps` knows the count, not the labels; the flag types the parameter `ParamUnit::Choice` (step 1, built) | types |
 | C13 | params flags: automatable per note id, key, channel, port; modulatable per the same | a parameter value may target one voice | Partial: `ParamFlags::PER_NOTE_ID/KEY/CHANNEL/PORT`; no modulation destination carries a voice (G2) | types |
 | C14 | params flag: modulatable and the param-mod event | a modulation offset kept apart from the value | Partial: `ParamFlags::MODULATABLE`; `tutti-modulation` lanes drive the plugin's own knob, one value per block, never per voice | types |
 | C15 | params flag: requires-process | a value change is only heard through `process`, not a flush | Host-only: `tutti-clap-host` `param_requires_process` picks flush or process | host |
@@ -258,7 +258,7 @@ Interfaces are in `vendor/vst3-sdk/pluginterfaces/vst` and `.../base`.
 | V35 | `IMidiMapping2`, `IMidiLearn2` (MIDI 2.0 controllers) | the same for registered and assignable controllers, per note | Gap G6: `MidiMap` | no |
 | V36 | `IMidiLearn` | host forwards live MIDI so the plugin can learn | Partial: `tutti-vst3-host` `midi_learn.rs`; part of G6 | host |
 | V37 | MIDI CC as parameters: the extra controller numbers for pitch bend, aftertouch, program change (`ivstmidicontrollers.h`) | which pseudo-CCs exist | Covered: `Ump` voice messages | types |
-| V38 | `IParameterFunctionName` | well-known roles a parameter plays: compressor gain reduction (and max, peak hold, reset), low-latency mode, dry-wet mix, randomize, pan position x, y, z | Partial: the source of an exact kind (`DryWetMix` is `UnitParam::Wet`) and of G9 (§5.2) | host |
+| V38 | `IParameterFunctionName` | well-known roles a parameter plays: compressor gain reduction (and max, peak hold, reset), low-latency mode, dry-wet mix, randomize, pan position x, y, z | Partial: `DryWetMix` is read once per unit in `Vst3Loaded::parameter_list` and gives `role = Wet` (step 1, built); the rest is G9 (§5.2) | host |
 | V39 | `IRemapParamID` | old parameter ids that map to new ones | Host-only: automation and state compatibility; `tutti-vst3-host` reads it | host |
 | V40 | `IXmlRepresentationController` | an XML layout of parameters, including remote-control pages | Gap G7: `ParamPages` | host |
 | V41 | `IChannelContextInfo` via `IInfoListener` | channel name, color, index and namespace, plugin location | Gap G10: `TrackContext` | no |
@@ -279,7 +279,7 @@ Interfaces are in `vendor/vst3-sdk/pluginterfaces/vst` and `.../base`.
 | V56 | `ITestPlugProvider` | test harness | Host-only | no |
 | V57 | speaker arrangements (`vstspeaker.h`): named sets, ambisonic orders 1 to 7 in ACN, 3D formats | channel placement | Partial: `ChannelTopology` for speakers; ambisonic is G11 | types |
 | V58 | `.vstpreset` keys (`vstpresetkeys.h`): media type, plugin name and category, name, comment, musical category, instrument, style, character, state type | preset file metadata | Gap G3: `PresetCatalog` | no |
-| V59 | `ParameterInfo::units` (the units string) | a display unit such as Hz or dB, free text | Partial: passed through as `ParameterInfo.unit`; typed in §5.2 | types |
+| V59 | `ParameterInfo::units` (the units string) | a display unit such as Hz or dB, free text | Partial: passed through as `ParameterInfo.unit` and, for the closed list of eight strings over a plain range that fits, typed as `ParameterInfo.measures` (step 1, built); VST3 declares normalized values only, so most are `None` | types |
 
 ### 3.4 AU (v2)
 
@@ -290,7 +290,7 @@ types, `tutti-au-host` reads them.
 |---|---|---|---|---|
 | A1 | `AudioComponentDescription` (type aumu, aumf, aufx, aumi, ...; subtype; manufacturer) and version | identity and what the unit does | Covered: `AuComponentType`, `PluginClass::Au`, `PluginRole` | types |
 | A2 | `ParameterList`, `ParameterInfo` (name, unit, min, max, default, flags, clump) | every parameter, per scope and element | Covered: `ParameterInfo` | types |
-| A3 | parameter units, `kAudioUnitParameterUnit_*` (generic, indexed, boolean, percent, seconds, sample frames, phase, rate, hertz, cents, relative semitones, MIDI note, MIDI controller, decibels, linear gain, degrees, equal-power crossfade, mixer fader curve, pan, meters, absolute cents, octaves, BPM, beats, milliseconds, ratio, custom) | what the number measures | Partial: 9 decoded in `ParameterUnit` and flattened to text; the rest become `unit(N)`. This is the model for §5.2 | host |
+| A3 | parameter units, `kAudioUnitParameterUnit_*` (generic, indexed, boolean, percent, seconds, sample frames, phase, rate, hertz, cents, relative semitones, MIDI note, MIDI controller, decibels, linear gain, degrees, equal-power crossfade, mixer fader curve, pan, meters, absolute cents, octaves, BPM, beats, milliseconds, ratio, custom) | what the number measures | Partial: all 27 codes map in `tutti_au_host::unit_measures` (18 typed, `Pan` also a role; step 1, built); `ParameterUnit` still prints 9 as text and the rest as `unit(N)` | host |
 | A4 | parameter flags: writable, readable, can-ramp, meter read-only, non-realtime, expert, omit from presets, plot history, has name string, values have strings, has clump, global or element meta | what the host may do | Partial: writable, ramp, values-have-strings are used; meter read-only is G9; non-realtime and expert have no flag | host |
 | A5 | parameter display curve flags: logarithmic, exponential, squared, cubed, square root, cube root | how a slider should map the range | Partial: `ParamRange` carries no skew; the flag is read and dropped | host |
 | A6 | `ParameterClumpName` and the clump id | grouping | Covered: `ParameterInfo.group` | types |
@@ -338,7 +338,7 @@ most of the optional ones.
 |---|---|---|---|---|
 | S1 | `AEffect` flags: has-editor, can-replacing, can-double-replacing, program chunks, is-synth, no-sound-in-stop | basic abilities | Covered: `Features::EDITOR`, `F64_AUDIO`, state, `PluginRole`; no-sound-in-stop is a tail of none that nothing reads | types |
 | S2 | `AEffect` fields: program count, parameter count, input and output counts, initial delay, unique id, version | sizes and latency | Covered: `LoadedPlugin`, `Latency` | types |
-| S3 | `effGetParamName`, `effGetParamLabel`, `effGetParamDisplay`, `effString2Parameter`, `effCanBeAutomated` | name, a unit-like label, display text, text input | Partial: the label becomes `ParameterInfo.unit` verbatim (§5.2) | types |
+| S3 | `effGetParamName`, `effGetParamLabel`, `effGetParamDisplay`, `effString2Parameter`, `effCanBeAutomated` | name, a unit-like label, display text, text input | Partial: the label becomes `ParameterInfo.unit` verbatim, and is typed only over a plain range from `effGetParameterProperties` (step 1, built) | types |
 | S4 | `effGetParameterProperties` (`VstParameterProperties`: step sizes, switch, integer or float steps, integer min and max, short label, display index, category and its label) | range, steps, grouping | Covered: `ParamSteps`, `ParamRange`, `group`; real plugins decline | host |
 | S5 | `effGetProgram`, `effSetProgram`, program names, `effBeginSetProgram`, `effEndSetProgram` | programs | Covered: `PresetId::Number`, `Features::PRESET_LIST` | types |
 | S6 | `effGetChunk`, `effSetChunk` (bank or program) | state | Covered: required state save and restore | types |
@@ -561,7 +561,7 @@ mapping is a table a test can hold:
 
 | Source | Rule | Result |
 |---|---|---|
-| AU unit code | The code is a closed enumeration. Hertz, decibels, seconds, milliseconds, percent, cents, relative semitones, octaves, BPM, beats, degrees, pan, linear gain, rate, MIDI note, MIDI controller, indexed and boolean map to the same-named `ParamUnit` (`Indexed` is `Choice`, `Boolean` is `Toggle`). Generic, custom, equal-power crossfade, mixer fader curve, absolute cents, meters, phase, ratio and sample frames map to `None`: their algebra is not one of ours, or the code does not say enough | `Some` for 18 of the 27 codes (from memory: the AudioToolbox header is not on this machine) |
+| AU unit code | The code is a closed enumeration. Hertz, decibels, seconds, milliseconds, percent, cents, relative semitones, octaves, BPM, beats, degrees, pan, linear gain, rate, MIDI note, MIDI controller, indexed and boolean map to the same-named `ParamUnit` (`Indexed` is `Choice`, `Boolean` is `Toggle`). Generic, custom, equal-power crossfade, mixer fader curve, absolute cents, meters, phase, ratio and sample frames map to `None`: their algebra is not one of ours, or the code does not say enough | `Some` for 18 of the 27 codes (checked against Apple's header on 2026-11-11, see "As built, step 1") |
 | AU pan code | also `role = UnitParam::Pan` | |
 | VST3 `units` | A **closed list of exact, case-sensitive matches** after trimming ASCII space: `Hz`, `dB`, `s`, `ms`, `%`, `ct`, `st`, `BPM`. Anything else (`kHz`, `Db`, `dB(A)`, `semitones`, the empty string) is `None`. The list grows only by a corpus run (section 6) | `Some` for eight strings |
 | VST3 flags | the list flag with a step count gives `Choice`; a step count of 1 gives `Toggle` | |
@@ -584,6 +584,54 @@ Rules that keep it honest.
   and are not inferred from a title.
 - **It is the `known` mask's shape one level up**: `ParamFlags` pairs flags with
   a `known` mask, and `measures` is an `Option` for the same reason.
+
+**As built, step 1 (parameter unit and kind).**
+
+- **The API** is in `tutti-plugin-types`: `ParamUnit` (`#[non_exhaustive]`, the
+  eighteen variants above), `ParamUnit::from_label` (the closed VST3/VST2 list,
+  one copy), `ParamUnit::fits` (the plausibility rule), the trait `FromPlain`
+  ("reads a tutti unit out of a plain value measured in a declared `ParamUnit`"),
+  `ParameterInfo::{measures, role, with_measures, with_role, typed}`. `with_measures`
+  applies `fits`, so a host cannot set a unit its range does not fit. `FromPlain`
+  is implemented for `Hz`, `Db`, `Seconds` (seconds and milliseconds), `Mix`
+  (percent, `0..=100` only), `Pan`, `Cents`, `Semitones`, `Bpm`, `BeatDuration`,
+  `ArcDegrees`, `Amplitude` and `PlaybackRate`; octaves and the MIDI numbers have
+  no tutti unit, so `typed` is `None` for them.
+- **Range rules chosen** (`ParamUnit::fits`; every unit but `Choice` and `Toggle`
+  needs a plain range with finite bounds, `min <= max`): `Hertz`, `Seconds`,
+  `Milliseconds`, `Beats`, `LinearGain` and `PlaybackRate` need `min >= 0`; `Bpm`
+  `min > 0` (a `Bpm` is positive); `Percent` inside `-100..=100`; `Pan` inside
+  `-1..=1`; `MidiNote` and `MidiController` inside `0..=127`; `Decibels`, `Cents`,
+  `Semitones`, `Octaves` and `Degrees` any finite range. `Choice` and `Toggle`
+  fit any range, a normalized one included, because VST3 declares nothing else.
+- **VST3 flags**: a list flag with a step count of at least 1 is `Choice` (a
+  two-entry list names its options, so it beats `Toggle`); otherwise a step count
+  of 1 is `Toggle`; otherwise the `units` string. `IParameterFunctionName` was
+  already read by `Vst3Loaded::param_id_for_function_name`, so `DryWetMix` gives
+  `role = Wet`: `parameter_list` asks the root unit and each published unit and
+  takes the first answer.
+- **Bypass** is a role only where a flag exists: CLAP and VST3. VST2 has no
+  parameter flag and AU's `BypassEffect` is a unit property, so neither sets it.
+- **AU table, verified.** Source: Apple's `AudioUnitProperties.h`, enum
+  `AudioUnitParameterUnit` (27 entries, explicit values 0 to 26), read from a
+  public copy of the macOS 10.15 SDK (`phracker/MacOSX-SDKs`) on 2026-11-11;
+  Apple's documentation page itself is a JavaScript shell and returned no
+  content. The numbers in the "from memory" table were right. Two readings are
+  corrected: *Meters* (19) is a **distance** in meters, not a level meter, and
+  *Phase* (6) is degrees (-180 to 180), which is why it stays `None` beside
+  `Degrees`. Codes: 0 Generic, 1 Indexed, 2 Boolean, 3 Percent, 4 Seconds,
+  5 SampleFrames, 6 Phase, 7 Rate, 8 Hertz, 9 Cents, 10 RelativeSemiTones,
+  11 MIDINoteNumber, 12 MIDIController, 13 Decibels, 14 LinearGain, 15 Degrees,
+  16 EqualPowerCrossfade, 17 MixerFaderCurve1, 18 Pan, 19 Meters, 20 AbsoluteCents,
+  21 Octaves, 22 BPM, 23 Beats, 24 Milliseconds, 25 Ratio, 26 CustomUnit.
+  `tutti-au-host`'s `unit_code.rs` is not macOS-gated, so the table is tested
+  everywhere; a macOS-only test cross-checks every number against
+  `coreaudio-sys`.
+- **Wire**: `ParameterInfo` crosses the IPC (`ParameterList`,
+  `ParameterInfoResponse`), so `PROTOCOL_VERSION` went from 23 to 24 (doc 020
+  stage 5b took 23). No recorded golden holds a `ParameterInfo`. `role` serializes as the `UnitParam`'s `u16`
+  discriminant (`UnitParam` has no serde of its own); both fields are
+  `serde(default)`, so saved JSON without them still reads.
 
 ### 5.3 The tail, flowing into `Io::report_tail`
 

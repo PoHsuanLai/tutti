@@ -50,6 +50,7 @@
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
+use tutti_types::Seconds;
 
 use tutti_codec::Wave;
 use tutti_export::{
@@ -141,7 +142,7 @@ fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate(SR),
-            duration_seconds: DUR_S,
+            duration_seconds: Seconds(DUR_S),
             ..Default::default()
         },
         encode: EncodeConfig {

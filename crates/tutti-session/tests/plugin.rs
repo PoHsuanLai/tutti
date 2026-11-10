@@ -136,7 +136,7 @@ fn request(source: ExportSource) -> ExportRequest {
     let config = ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: 0.05,
+            duration_seconds: tutti_types::Seconds(0.05),
             ..Default::default()
         },
         ..Default::default()
@@ -1308,7 +1308,7 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
     let live = servers();
 
     let mut long = request(ExportSource::Mix);
-    long.config.render.duration_seconds = 5.0;
+    long.config.render.duration_seconds = tutti_types::Seconds(5.0);
     let job = s.export(long).expect("starts");
     handle.set(job.handle()).ok();
     let rendered = job.run();

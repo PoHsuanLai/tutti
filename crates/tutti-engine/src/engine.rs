@@ -522,7 +522,7 @@ impl Engine {
             load.record_silenced();
         }
         load.record_dropped_events(g.take_dropped_events());
-        load.record(Seconds(start.elapsed().as_secs_f32()), budget);
+        load.record(Seconds(start.elapsed().as_secs_f64()), budget);
     }
 
     /// Renders one block into `output`, an interleaved device buffer.
@@ -608,7 +608,7 @@ impl Engine {
             load.record_silenced();
         }
         load.record_dropped_events(g.take_dropped_events());
-        load.record(Seconds(start.elapsed().as_secs_f32()), budget);
+        load.record(Seconds(start.elapsed().as_secs_f64()), budget);
     }
 
     /// Walks one block's scheduled transport commands in time order, running

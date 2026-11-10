@@ -153,21 +153,17 @@ impl Samples {
     /// value reaches a readout or a scheduler, where zero is recoverable and
     /// `inf` is not.
     ///
-    /// Divided in `f64` before narrowing, because a frame count leaves `f32`'s
-    /// exact-integer range (2^24) after about six minutes at 48 kHz.
+    /// Divided in `f64`: a frame count leaves `f32`'s exact-integer range (2^24)
+    /// after about six minutes at 48 kHz.
     ///
-    /// That buys less than the forward direction's `f64`, and the difference is
-    /// worth stating: the *result* here is `f32` `Seconds`, so past a few
-    /// minutes the return type is coarser than the error the division avoids —
-    /// at an hour, an `f32` second cannot resolve 20 frames and both orderings
-    /// give the same answer. Dividing first is still right, and free, but a
-    /// caller who needs a long span to the frame wants `f64` end to end, per
-    /// the carve-out on [`Seconds`](super::units::Seconds) itself.
+    /// The result is an `f64` [`Seconds`](super::units::Seconds), so a long
+    /// span keeps its frame: an hour at 48 kHz is resolved to well under a
+    /// nanosecond.
     #[inline]
     pub fn to_seconds(self, rate: impl Into<super::units::SampleRate>) -> super::units::Seconds {
         let rate = rate.into().get();
         if rate > 0.0 {
-            super::units::Seconds((self.0 as f64 / rate) as f32)
+            super::units::Seconds(self.0 as f64 / rate)
         } else {
             super::units::Seconds(0.0)
         }
@@ -279,35 +275,21 @@ mod tests {
         assert_eq!(Samples(48_000).to_seconds(SampleRate(-1.0)), Seconds(0.0));
     }
 
-    /// Dividing in `f64` changes the answer, but only in a narrow band.
+    /// A long frame count keeps its frame through `Seconds` and back.
     ///
-    /// The count must exceed `f32`'s exact-integer range (2^24) for narrowing
-    /// *first* to lose anything — and not by so much that the `f32` result is
-    /// coarser than the error. `2^24 + 1` frames is inside that band; one hour
-    /// is not, because at 3600 s an `f32` second only resolves ~20 frames and
-    /// both paths round to the same value. So this pins a real property with a
-    /// genuinely small reach, rather than the "long renders need it" claim the
-    /// forward direction can make and this one cannot.
+    /// `2^24 + 1` frames is past `f32`'s exact-integer range, and an hour
+    /// plus one frame is past where an `f32` second could tell neighbouring
+    /// frames apart; both come back as the same count.
+    ///
+    /// Mutation (run): `to_seconds` dividing in `f32` (`(self.0 as f32 / rate as
+    /// f32) as f64`) -> the `2^24 + 1` count comes back off by a frame -> fails.
     #[test]
-    fn dividing_before_narrowing_keeps_a_frame_f32_would_lose() {
+    fn a_long_frame_count_round_trips_through_seconds() {
         use super::super::units::SampleRate;
         let rate = SampleRate(48_000.0);
-        let frames = Samples((1 << 24) + 1);
-        let exact = frames.to_seconds(rate).get();
-        let narrowed = (frames.get() as f32) / 48_000.0;
-        assert_ne!(
-            exact.to_bits(),
-            narrowed.to_bits(),
-            "dividing in f32 must lose the odd frame this keeps"
-        );
-
-        // And the honest limit of that: an hour is past where `f32` `Seconds`
-        // can tell the two apart at all.
-        let hour = Samples(48_000 * 3600 + 1);
-        assert_eq!(
-            hour.to_seconds(rate).get().to_bits(),
-            ((hour.get() as f32) / 48_000.0).to_bits()
-        );
+        for frames in [Samples((1 << 24) + 1), Samples(48_000 * 3600 + 1)] {
+            assert_eq!(frames.to_seconds(rate).to_samples(rate), frames);
+        }
     }
 
     /// What is deliberately *absent* is as load-bearing as what is present.

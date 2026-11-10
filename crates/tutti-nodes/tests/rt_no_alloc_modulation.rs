@@ -89,14 +89,14 @@ fn beat_synced_lfo_process_is_allocation_free() {
 #[test]
 fn delay_line_node_process_is_allocation_free() {
     // Half dry, so the warm-up (shorter than the 250 ms tap) is audible.
-    let node = DelayLineNode::new(2.0_f32, 0.25_f32, 0.4_f32);
+    let node = DelayLineNode::new(2.0_f64, 0.25_f64, 0.4_f32);
     node.set_mix(0.5_f32);
     gate(node, 0.5, 2_000, |_| {});
 }
 
 #[test]
 fn stereo_delay_line_node_process_is_allocation_free() {
-    let node = DelayLineNode::stereo(2.0_f32, 0.30_f32, 0.31_f32, 0.4_f32);
+    let node = DelayLineNode::stereo(2.0_f64, 0.30_f64, 0.31_f64, 0.4_f32);
     node.set_mix(0.5_f32);
     gate(node, 0.5, 2_000, |_| {});
 }
@@ -105,7 +105,7 @@ fn stereo_delay_line_node_process_is_allocation_free() {
 fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
     // The per-channel delay-line Vec must be built at construction; the wide
     // path must not allocate per buffer.
-    let node = DelayLineNode::with_channels(6u16, 2.0_f32, 0.30_f32, 0.4_f32);
+    let node = DelayLineNode::with_channels(6u16, 2.0_f64, 0.30_f64, 0.4_f32);
     node.set_mix(0.5_f32);
     gate(node, 0.5, 2_000, |_| {});
 }
@@ -146,19 +146,19 @@ fn phaser_node_process_is_allocation_free() {
 /// `render` fails.
 #[test]
 fn delay_and_modulation_with_moving_controls_are_allocation_free() {
-    let delay = DelayLineNode::stereo(1.0_f32, 0.2_f32, 0.3_f32, 0.4_f32);
+    let delay = DelayLineNode::stereo(1.0_f64, 0.2_f64, 0.3_f64, 0.4_f32);
     delay.set_cross_feedback(0.3);
     let d = delay.clone();
     gate(delay, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        d.set_delay_time(0.05 + 0.4 * t);
+        d.set_delay_time(tutti_types::Seconds::from_f32(0.05 + 0.4 * t));
         d.set_mix(t);
     });
     let chorus = ModDelayNode::chorus(6u16);
     let c = chorus.clone();
     gate(chorus, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        c.set_depth(0.002 + 0.01 * t);
+        c.set_depth(tutti_types::Seconds::from_f32(0.002 + 0.01 * t));
         c.set_mix(1.0 - t);
     });
     let phaser = PhaserNode::with_channels(6u16, 8);
@@ -536,7 +536,7 @@ fn lane_for(
     use tutti_nodes::automation::ControlLaneNode as L;
     use tutti_types::{AtomicF32, Db, Depth, Feedback, Hz, Mix, ParamKey, Q};
     let p = lane_program(k, 0);
-    let knob = Some(Arc::new(AtomicF32::new(400.0 + k as f32)));
+    let knob = Some(Arc::new(AtomicF32::new(400.0 + k as f32)).into());
     let r = Some(range);
     match k % 8 {
         0 => L::for_param(ParamKey::<Hz>::CUTOFF, p, knob, r),
@@ -875,7 +875,7 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
             );
             let follower = EnvelopeFollowerNode::new(
                 id,
-                Seconds(0.001 + 0.0005 * k as f32),
+                Seconds::from_f32(0.001 + 0.0005 * k as f32),
                 Seconds(0.03),
                 ChannelLayout::STEREO,
             );
@@ -922,7 +922,7 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
         let lane = ControlLaneNode::for_param(
             ParamKey::<Hz>::CUTOFF,
             ControlProgram::new(None, vec![], vec![input]).expect("valid"),
-            Some(Arc::new(AtomicF32::new(0.5))),
+            Some(Arc::new(AtomicF32::new(0.5)).into()),
             Some(ed.param_range_cell(cutoff(k)).expect("committed")),
         );
         let lane_key = NodeKey(6000 + k as u64);
@@ -1120,7 +1120,6 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 /// republish) → aborts.
 #[test]
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
-    use std::sync::Arc;
     use tutti_graph::{Editor, ForkByClone, Prepare, Transport};
     use tutti_modulation::{
         Clock, CurveType, Declarations, Polarity, RouteDecl, RouteKey, RouteTarget,
@@ -1130,14 +1129,13 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
     use tutti_types::graph::{Edge, InPort, OutPort, Source};
     use tutti_types::{
-        AtomicF32, Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Q, Samples, Seconds,
-        UnitParam,
+        Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Q, Samples, Seconds, UnitParam,
     };
 
     struct Host {
         filter: NodeKey,
         saw: NodeKey,
-        knobs: [Option<Arc<AtomicF32>>; 2],
+        knobs: [Option<tutti_types::ParamCell>; 2],
     }
     impl ModHost for Host {
         fn target(&self, t: TargetKey) -> Option<Target> {

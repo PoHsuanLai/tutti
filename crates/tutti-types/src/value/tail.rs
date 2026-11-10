@@ -305,7 +305,7 @@ mod tests {
     fn from_seconds_reads_only_plus_infinity_as_unbounded() {
         let rate = SampleRate(48_000.0);
         assert_eq!(
-            Tail::from_seconds(Seconds(f32::INFINITY), rate),
+            Tail::from_seconds(Seconds(f64::INFINITY), rate),
             Tail::Unbounded
         );
         assert_eq!(Tail::from_seconds(Seconds(0.0), rate), Tail::None);
@@ -318,7 +318,7 @@ mod tests {
             Tail::from_seconds(Seconds(1.0 / 96_000.0), rate),
             Tail::Finite(Samples(1))
         );
-        for junk in [f32::NAN, f32::NEG_INFINITY, -1.0] {
+        for junk in [f64::NAN, f64::NEG_INFINITY, -1.0] {
             assert_eq!(
                 Tail::from_seconds(Seconds(junk), rate),
                 Tail::Unknown,

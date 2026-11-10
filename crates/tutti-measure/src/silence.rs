@@ -228,7 +228,7 @@ mod tests {
     const RATE: f64 = 1000.0; // 1 sample = 1 ms keeps the arithmetic readable
 
     fn cfg(threshold: Db, min_silence_ms: f32) -> SilenceConfig {
-        SilenceConfig::new(RATE, threshold, Seconds(min_silence_ms / 1000.0)).unwrap()
+        SilenceConfig::new(RATE, threshold, Seconds::from_f32(min_silence_ms / 1000.0)).unwrap()
     }
 
     fn r(start: usize, end: usize) -> Region {

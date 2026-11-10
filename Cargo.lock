@@ -3818,6 +3818,7 @@ dependencies = [
  "crossbeam-queue",
  "tutti-fixtures",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-rt",
  "tutti-types",

@@ -178,9 +178,10 @@ because allocation, measurement and counting want different answers),
 and returns the *wrong unit's* value.
 
 **Where the types stop** (do not migrate these): C ABI / IPC / WIT boundaries,
-and any site whose precision the unit cannot carry — `Seconds` is f32, so SMPTE
-timecode and hour-long render durations stay f64. When you stop, say why in a
-comment.
+and any site whose precision the unit cannot carry. `Seconds` is f64, so SMPTE
+timecode and hour-long render durations are `Seconds` too; a kernel that runs
+in f32 narrows once at its edge (`Seconds::to_f32`, `narrowed`). When you stop,
+say why in a comment.
 
 If no existing type fits a quantity, add one rather than falling back to a float
 — but only if it has a distinct range *or* a distinct algebra. Two names for the

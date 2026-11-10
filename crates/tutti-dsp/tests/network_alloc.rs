@@ -180,13 +180,13 @@ fn the_fdn_retargets_and_renders_without_allocating() {
         let k = (block % 7) as f32 / 6.0;
         let c = FdnControls {
             decay: [
-                Seconds(0.2 + 7.0 * k),
-                Seconds(1.0 + k),
-                Seconds(0.5 + 3.0 * k),
+                Seconds::from_f32(0.2 + 7.0 * k),
+                Seconds::from_f32(1.0 + k),
+                Seconds::from_f32(0.5 + 3.0 * k),
             ],
             size: Mix(k),
             diffusion: Mix(1.0 - k),
-            pre_delay: Seconds(0.05 * k),
+            pre_delay: Seconds::from_f32(0.05 * k),
             modulation: Depth(k),
             rate: Hz(0.1 + k),
             width: StereoWidth(2.0 * k),

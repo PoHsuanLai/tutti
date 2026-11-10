@@ -103,7 +103,7 @@ fn crossover_and_multiband_report_zero_latency_and_respond_at_frame_0() {
 /// really *is* late) fails the frame-0 assertion.
 #[test]
 fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
-    let node = DelayLineNode::new(1.0_f32, 0.5_f32, 0.0_f32);
+    let node = DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32);
     node.set_mix(0.5_f32);
 
     assert_eq!(
@@ -129,7 +129,7 @@ fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 /// channel's delay as latency fails the declared-latency assertion.
 #[test]
 fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
-    let node = DelayLineNode::stereo(1.0_f32, 0.25_f32, 0.5_f32, 0.0_f32);
+    let node = DelayLineNode::stereo(1.0_f64, 0.25_f64, 0.5_f64, 0.0_f32);
     node.set_mix(0.5_f32);
 
     assert_eq!(
@@ -196,7 +196,7 @@ fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
 #[test]
 fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
-    let echo = DelayLineNode::new(1.0_f32, 0.5_f32, 0.3_f32);
+    let echo = DelayLineNode::new(1.0_f64, 0.5_f64, 0.3_f32);
     echo.set_mix(0.5_f32);
     let (echo, _) = g.add_with_controls(echo);
     let (chorus, _) = g.add_with_controls(ModDelayNode::chorus(ChannelLayout::STEREO));
@@ -395,8 +395,8 @@ mod convolver {
         let latency = conv.latency_samples();
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
         let (conv, _) = g.add_with_controls(conv);
-        let (echo_a, _) = g.add_with_controls(DelayLineNode::new(1.0_f32, 0.5_f32, 0.0_f32));
-        let (echo_b, _) = g.add_with_controls(DelayLineNode::new(1.0_f32, 0.5_f32, 0.0_f32));
+        let (echo_a, _) = g.add_with_controls(DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32));
+        let (echo_b, _) = g.add_with_controls(DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32));
         let dry = g.add(Through::mono());
         g.connect_input(0, conv, 0)
             .connect(conv, 0, echo_a, 0)

@@ -73,7 +73,9 @@ fn config() -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: (BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get(),
+            duration_seconds: tutti_types::Seconds(
+                (BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get(),
+            ),
             ..Default::default()
         },
         encode: EncodeConfig {

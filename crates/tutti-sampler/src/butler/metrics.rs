@@ -67,7 +67,7 @@ impl ThroughputTracker {
     }
 
     fn update_rate(&mut self, now: Instant) {
-        let cutoff = now - std::time::Duration::from_secs_f32(self.window.get());
+        let cutoff = now - std::time::Duration::from_secs_f64(self.window.get());
         self.recent_reads.retain(|(_, ts)| *ts > cutoff);
 
         let Some((first, last)) = self.recent_reads.first().zip(self.recent_reads.last()) else {
@@ -80,7 +80,7 @@ impl ThroughputTracker {
         let denom = if duration > 0.01 {
             duration
         } else {
-            f64::from(self.window.get())
+            self.window.get()
         };
         self.cached_read_rate = total_bytes as f64 / denom;
     }

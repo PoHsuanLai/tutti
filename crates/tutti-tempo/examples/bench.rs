@@ -7,7 +7,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 use tutti_tempo::{CellGrid, Cursor, Shape, TempoMap, TempoPoint, chord_cell};
-use tutti_types::{Beat, Bpm, Frame, SampleRate};
+use tutti_types::{Beat, Bpm, Frame, SampleRate, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const ITERS: u64 = 2_000_000;
@@ -39,7 +39,7 @@ fn main() {
             let mut cursor = Cursor::default();
             let random = per_call(|i| map.beat_at_frame(Frame(i * 977 % total), RATE).get());
             let hinted = per_call(|i| {
-                map.beat_at_seconds_with((i * 3 % total) as f64 / RATE.get(), &mut cursor)
+                map.beat_at_seconds_with(Seconds((i * 3 % total) as f64 / RATE.get()), &mut cursor)
                     .get()
             });
             let inverse = per_call(|i| {

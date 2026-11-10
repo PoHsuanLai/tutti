@@ -465,7 +465,7 @@ mod tests {
             Samples::ZERO
         );
         assert_eq!(pre_delay_frames(Seconds(-1.0), rate), Samples::ZERO);
-        assert_eq!(pre_delay_frames(Seconds(f32::NAN), rate), Samples::ZERO);
+        assert_eq!(pre_delay_frames(Seconds(f64::NAN), rate), Samples::ZERO);
     }
 
     /// A `Network` lives on the stack of the audio thread: the whole value stays

@@ -184,7 +184,7 @@ impl Onset {
     /// [`position`](Self::position).
     #[inline]
     pub fn time(&self, sample_rate: impl Into<SampleRate>) -> Seconds {
-        Seconds((self.position.get() as f64 / sample_rate.into().get()) as f32)
+        Seconds(self.position.get() as f64 / sample_rate.into().get())
     }
 }
 
@@ -712,7 +712,7 @@ mod tests {
             // frame the spike falls.
             let tolerance = cfg.geometry().window().get() as f64 / SAMPLE_RATE;
             for (found, &expected) in onsets.iter().zip(&truth) {
-                let t = found.time(SAMPLE_RATE).get() as f64;
+                let t = found.time(SAMPLE_RATE).get();
                 assert!(
                     (t - expected).abs() <= tolerance,
                     "{function:?}: onset at {t} is not within one window of {expected}"

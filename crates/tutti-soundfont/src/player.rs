@@ -263,7 +263,9 @@ impl Player {
 
     /// Reads one channel voice message.
     ///
-    /// Followed: Note On and Off, program change, pitch bend, and the
+    /// Followed: Note On and Off, program change (with its bank), pitch
+    /// bend, the registered controllers of
+    /// [`Channel::set_registered`](crate::channel::Channel::set_registered), and the
     /// controllers named at [`control`](Self::control). Everything else is
     /// dropped.
     pub(crate) fn apply(&mut self, channel: MidiChannel, message: Voice2) {
@@ -291,12 +293,21 @@ impl Player {
                 self.channels[usize::from(channel.get())]
                     .set_pitch_bend(i32::from(bend.lsb().get()), i32::from(bend.msb().get()));
             }
-            // The program only: a bank is Bank Select's (CC 0), which the
-            // channel latches.
-            Voice2::ProgramChange { program, .. } => self.program_change(channel, program),
+            // A bank, when it rides along (the translator puts a MIDI 1.0
+            // Bank Select there), is selected first; the bank number is its
+            // MSB, as CC 0 sets it.
+            Voice2::ProgramChange { program, bank } => {
+                if let Some(bank) = bank {
+                    self.channels[usize::from(channel.get())].set_bank(i32::from(bank.msb.get()));
+                }
+                self.program_change(channel, program);
+            }
+            Voice2::Registered { bank, index, value } if bank.get() == 0 => {
+                self.channels[usize::from(channel.get())].set_registered(index.get(), value);
+            }
             // No setter for pressure; no per-note control (a SoundFont voice
-            // is a channel's); and a native RPN or NRPN is not assembled into
-            // the Control Change run the channel follows.
+            // is a channel's); an Assignable Controller (NRPN) names nothing
+            // here.
             _ => {}
         }
     }
@@ -322,9 +333,10 @@ impl Player {
 
     /// What a Control Change sets in the channel.
     ///
-    /// Followed: bank select, modulation, data entry, volume, pan,
-    /// expression, reverb and chorus send, the RPN and NRPN selectors, and
-    /// reset all controllers. The pedals (64, 66), all sound off (120), all
+    /// Followed: bank select, modulation, volume, pan, expression, reverb
+    /// and chorus send, and reset all controllers. RPN and NRPN arrive
+    /// assembled, as Registered and Assignable Controllers (the input edge's
+    /// translator, design 017 §4), not as Data Entry. The pedals (64, 66), all sound off (120), all
     /// notes off (123) and the mode messages are the core's
     /// (`Voicing::step`), not the channel's. Any other controller is ignored.
     fn control(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {
@@ -334,8 +346,6 @@ impl Player {
             0x00 => info.set_bank(data),
             0x01 => info.set_modulation_coarse(data),
             0x21 => info.set_modulation_fine(data),
-            0x06 => info.data_entry_coarse(data),
-            0x26 => info.data_entry_fine(data),
             0x07 => info.set_volume_coarse(data),
             0x27 => info.set_volume_fine(data),
             0x0A => info.set_pan_coarse(data),
@@ -344,10 +354,6 @@ impl Player {
             0x2B => info.set_expression_fine(data),
             0x5B => info.set_reverb_send(data),
             0x5D => info.set_chorus_send(data),
-            0x63 => info.set_nrpn_coarse(data),
-            0x62 => info.set_nrpn_fine(data),
-            0x65 => info.set_rpn_coarse(data),
-            0x64 => info.set_rpn_fine(data),
             0x79 => info.reset_all_controllers(),
             _ => (),
         }

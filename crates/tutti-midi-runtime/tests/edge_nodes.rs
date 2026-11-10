@@ -170,8 +170,9 @@ fn each_event_leaves_on_its_channels_port() {
 }
 
 /// **An (N)RPN run split across blocks assembles into one controller.**
-/// The parameter select arrives in one block, its Data Entry in the next:
-/// one Registered Controller arrives, on channel 3's port.
+/// The parameter select arrives in one block, its Data Entry (CC 6, then the
+/// CC 38 that sends it, M2-104 D.3.3) in the next: one Registered Controller
+/// arrives, on channel 3's port.
 ///
 /// Mutation: a fresh translator each block → the Data Entry passes as a
 /// plain CC → fails.
@@ -179,7 +180,10 @@ fn each_event_leaves_on_its_channels_port() {
 fn an_rpn_run_split_across_blocks_is_assembled() {
     let wire = Wire::new(vec![
         vec![cc_ev(3, cc::RPN_MSB, 0), cc_ev(3, cc::RPN_LSB, 6)],
-        vec![cc_ev(3, cc::DATA_ENTRY, 10)],
+        vec![
+            cc_ev(3, cc::DATA_ENTRY, 10),
+            cc_ev(3, cc::DATA_ENTRY_LSB, 0),
+        ],
     ]);
     let (_ed, mut exec, _c, seen) =
         rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
@@ -299,6 +303,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
         cc_ev(2, cc::DATA_ENTRY, 12),
+        cc_ev(2, cc::DATA_ENTRY_LSB, 0),
         note(1, 60, 5),
     ]]);
     let node = MidiInputNode::new(Some(wire)).with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
@@ -326,11 +331,12 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 }
 
 /// **A translation with no room is dropped whole, and counted.** With a
-/// lower zone of seven members, a block polls 508 notes on the master, a
-/// MIDI 1.0 RPN 0 run (12 semitones) on member 2, and a note on member 1:
-/// 512 polled events. The run fans out to seven, which do not fit after the
-/// 508 notes (512 slots), so all seven are dropped and counted, and the
-/// note after them still goes out: 509 events, no per-note range.
+/// lower zone of seven members, a block polls 507 notes on the master, a
+/// MIDI 1.0 RPN 0 run (12 semitones, sent at its CC 38) on member 2, and a
+/// note on member 1: 512 polled events. The run fans out to seven, which do
+/// not fit after the 507 notes (512 slots), so all seven are dropped and
+/// counted, and the note after them still goes out: 508 events, no per-note
+/// range.
 ///
 /// Mutation (run): stage each translated event while a slot is free (the
 /// fan-out cut partway, as before) → four ranges go out and the note is
@@ -338,11 +344,12 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 #[test]
 fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     use tutti_midi_types::PerNoteBendRanges;
-    let mut batch: Vec<UmpAt> = (0..508).map(|i| note(0, 60, i)).collect();
+    let mut batch: Vec<UmpAt> = (0..507).map(|i| note(0, 60, i)).collect();
     batch.extend([
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
         cc_ev(2, cc::DATA_ENTRY, 12),
+        cc_ev(2, cc::DATA_ENTRY_LSB, 0),
         note(1, 61, 509),
     ]);
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
@@ -356,7 +363,7 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
         !seen.iter().any(|s| ranges.observe(&s.2)),
         "no range went out"
     );
-    assert_eq!(seen.len(), 509);
+    assert_eq!(seen.len(), 508);
     assert!(
         seen.iter()
             .any(|s| s.0 == 1 && MidiMessage::from_ump(s.2).note() == Some(61))
@@ -364,21 +371,23 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     assert_eq!(controls.dropped_events(), 7);
 }
 
-/// **A note-off has room when a block is full of other messages.** 505
-/// notes on the master, a bend-range run on member 2 that fans out to seven
-/// (505 + 7 fill the 512 the other messages may use) and four note-offs on
+/// **A note-off has room when a block is full of other messages.** 504
+/// notes on the master, a bend-range run on member 2 (sent at its CC 38)
+/// that fans out to seven (504 + 7 leave one of the 512 the other messages
+/// may use) and four note-offs on
 /// member 1: all four go out, in the room past the capacity, and nothing is
 /// dropped or counted. A note-on in their place would be dropped.
 ///
 /// Mutation (run): limit a note-off to the capacity like the others (`limit`
-/// in `stage`) → the four note-offs are dropped and counted → fails.
+/// in `Staging::whole`) → the four note-offs are dropped and counted → fails.
 #[test]
 fn a_note_off_has_room_past_the_capacity() {
-    let mut batch: Vec<UmpAt> = (0..505).map(|i| note(0, 60, i)).collect();
+    let mut batch: Vec<UmpAt> = (0..504).map(|i| note(0, 60, i)).collect();
     batch.extend([
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
         cc_ev(2, cc::DATA_ENTRY, 12),
+        cc_ev(2, cc::DATA_ENTRY_LSB, 0),
     ]);
     batch.extend((0..4).map(|k| {
         at(
@@ -393,6 +402,8 @@ fn a_note_off_has_room_past_the_capacity() {
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
     assert_eq!(seen.iter().filter(|s| s.2.is_note_off()).count(), 4);
+    // The run went out too: the block is full of other messages.
+    assert_eq!(seen.len(), 504 + 7 + 4);
     assert_eq!(controls.dropped_events(), 0);
 }
 

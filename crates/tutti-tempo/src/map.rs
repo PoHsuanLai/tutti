@@ -1,7 +1,7 @@
 use crate::error::TempoError;
 use crate::point::{Shape, TempoPoint};
 use crate::segment::Seg;
-use tutti_types::{Beat, Bpm, Frame, SampleRate, first_frame_at_or_after};
+use tutti_types::{Beat, Bpm, Frame, SampleRate, Seconds, first_frame_at_or_after};
 
 /// An immutable tempo map.
 ///
@@ -172,32 +172,33 @@ impl TempoMap {
         )
     }
 
-    /// Seconds from beat 0 to `beat`, in `f64` (negative before beat 0, at the
-    /// first tempo).
+    /// Time from beat 0 to `beat` (negative before beat 0, at the first
+    /// tempo).
     #[must_use]
-    pub fn seconds_at(&self, beat: Beat) -> f64 {
+    pub fn seconds_at(&self, beat: Beat) -> Seconds {
         self.seconds_at_with(beat, &mut Cursor::default())
     }
 
     /// [`seconds_at`](Self::seconds_at) with a hint.
     #[must_use]
     #[inline]
-    pub fn seconds_at_with(&self, beat: Beat, hint: &mut Cursor) -> f64 {
+    pub fn seconds_at_with(&self, beat: Beat, hint: &mut Cursor) -> Seconds {
         let b = beat.get();
         let s = self.by_beat(b, hint);
-        s.sec0 + s.sec_in(b - s.beat0)
+        Seconds(s.sec0 + s.sec_in(b - s.beat0))
     }
 
     /// The beat `seconds` from beat 0.
     #[must_use]
-    pub fn beat_at_seconds(&self, seconds: f64) -> Beat {
+    pub fn beat_at_seconds(&self, seconds: Seconds) -> Beat {
         self.beat_at_seconds_with(seconds, &mut Cursor::default())
     }
 
     /// [`beat_at_seconds`](Self::beat_at_seconds) with a hint.
     #[must_use]
     #[inline]
-    pub fn beat_at_seconds_with(&self, seconds: f64, hint: &mut Cursor) -> Beat {
+    pub fn beat_at_seconds_with(&self, seconds: Seconds, hint: &mut Cursor) -> Beat {
+        let seconds = seconds.get();
         let s = self.by_sec(seconds, hint);
         Beat(s.beat0 + s.beat_in(seconds - s.sec0))
     }
@@ -219,14 +220,15 @@ impl TempoMap {
 
     /// The tempo `seconds` from beat 0.
     #[must_use]
-    pub fn tempo_at_seconds(&self, seconds: f64) -> Bpm {
+    pub fn tempo_at_seconds(&self, seconds: Seconds) -> Bpm {
         self.tempo_at_seconds_with(seconds, &mut Cursor::default())
     }
 
     /// [`tempo_at_seconds`](Self::tempo_at_seconds) with a hint.
     #[must_use]
     #[inline]
-    pub fn tempo_at_seconds_with(&self, seconds: f64, hint: &mut Cursor) -> Bpm {
+    pub fn tempo_at_seconds_with(&self, seconds: Seconds, hint: &mut Cursor) -> Bpm {
+        let seconds = seconds.get();
         let s = self.by_sec(seconds, hint);
         s.bpm_at_sec(seconds - s.sec0)
     }
@@ -241,7 +243,7 @@ impl TempoMap {
     #[must_use]
     #[inline]
     pub fn beat_at_frame_with(&self, frame: Frame, rate: SampleRate, hint: &mut Cursor) -> Beat {
-        self.beat_at_seconds_with(frame.get() as f64 / rate.get(), hint)
+        self.beat_at_seconds_with(Seconds(frame.get() as f64 / rate.get()), hint)
     }
 
     /// The first frame at or after `beat`, by the engine's one placement rule
@@ -262,7 +264,7 @@ impl TempoMap {
     #[must_use]
     #[inline]
     pub fn frame_at_or_after_with(&self, beat: Beat, rate: SampleRate, hint: &mut Cursor) -> Frame {
-        let frames = self.seconds_at_with(beat, hint) * rate.get();
+        let frames = self.seconds_at_with(beat, hint).get() * rate.get();
         Frame(first_frame_at_or_after(frames).max(0) as u64)
     }
 

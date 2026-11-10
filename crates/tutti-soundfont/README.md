@@ -94,15 +94,19 @@ every MIDI 2.0 value is narrowed with `tutti_midi_protocol::narrow_*`, which
 keeps the top bits (a plain right shift, M2-115 section 3.4).
 
 - Applied: note-on, note-off, control change, channel pitch bend, program
-  change (the program only). A note-on of velocity 0 is a note-off, and a
+  change and its bank (the bank's MSB, as CC 0 sets it), and the registered
+  controllers pitch bend sensitivity, fine tuning and coarse tuning (RPN 0, 1
+  and 2). A note-on of velocity 0 is a note-off, and a
   nonzero velocity that narrows to 0 sounds at 1.
 - Not used: a note-off's release velocity, which a SoundFont does not read.
 - Dropped: anything MIDI 1.0 cannot express (per-note pitch bend, per-note
   controllers, per-note management), channel and key pressure, which no generator
-  reads, native RPN and NRPN messages, and a program change's bank. A MIDI 1.0
-  control change run for an RPN or NRPN still reaches the channel as plain
-  control changes (bank select and RPN 0, 1 and 2 are followed). Every other message type, and a packet that does not
-  decode, is not used.
+  reads, and the assignable controllers (NRPN). An RPN or NRPN arrives
+  assembled: the input edge's `tutti_midi_protocol::Translator` turns a MIDI
+  1.0 Data Entry run into one Registered or Assignable Controller, so Data
+  Entry and the RPN and NRPN selects (CC 6, 38 and 98 to 101) reaching the unit
+  as plain control changes change nothing. Every other message type, and a
+  packet that does not decode, is not used.
 
 ## How a note is decided
 

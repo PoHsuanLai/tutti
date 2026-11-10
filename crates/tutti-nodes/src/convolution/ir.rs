@@ -14,7 +14,7 @@ pub fn generate_test_ir_into(
     decay_time: impl Into<Seconds>,
     sample_rate: impl Into<SampleRate>,
 ) {
-    let decay_time = decay_time.into().get();
+    let decay_time = decay_time.into().to_f32();
     let sample_rate = sample_rate.into().get();
     let decay_rate = -1.0 / (decay_time * sample_rate as f32);
     for (i, slot) in out.iter_mut().enumerate() {
@@ -45,7 +45,7 @@ pub fn generate_room_ir_into(
     decay_time: impl Into<Seconds>,
     sample_rate: impl Into<SampleRate>,
 ) {
-    let decay_time = decay_time.into().get();
+    let decay_time = decay_time.into().to_f32();
     let sample_rate = sample_rate.into().get();
     out.fill(0.0);
     if out.is_empty() {
@@ -94,7 +94,7 @@ pub fn generate_room_ir(
 ) -> Vec<f32> {
     let decay_time = decay_time.into();
     let sample_rate = sample_rate.into();
-    let length = (decay_time.get() as f64 * sample_rate.get() * 1.5) as usize;
+    let length = (decay_time.get() * sample_rate.get() * 1.5) as usize;
     let mut out = vec![0.0f32; length];
     generate_room_ir_into(&mut out, room_size, decay_time, sample_rate);
     out

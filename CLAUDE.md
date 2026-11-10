@@ -367,8 +367,8 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-types    vocabulary only: units, channel layouts, io edge traits;
                  no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
-                 The width folds (`fold_frame`, `fold_frame_to_*`) and sample
-                 conversion stay until the edges move off them
+                 The width folds are gone (every caller builds a `Fold`); sample
+                 conversion stays until the edges move off it
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink, and `FileOut` (the file sink: the

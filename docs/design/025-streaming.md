@@ -10,7 +10,7 @@ This design gives each its own shape, removes the runtime rules a type can
 carry, and orders the work as PRs that each stay green.
 
 Status: design, stages 0 to 4 landed (§8); stage 5 is specified as seven cuts,
-cuts 1 to 4 built. The sections that describe a defect (§1) describe the tree
+cuts 1 to 5 built. The sections that describe a defect (§1) describe the tree
 before stage 3. The decisions of 2026-11-07 and the stage 5 decisions of
 2026-11-10, which fold in a read-only review of the disk streamer
 (`streamer/`), are the owner's, taken as recommended, and are recorded with
@@ -128,7 +128,7 @@ where each stands:
 | B2 | `StreamPin` decremented an entry it never incremented | **Fixed, #420** (a pin releases its own count) |
 | B3 | A `take_disk_voice` after a re-`Stream` is sent but before the streamer applies it succeeds on the *old* link: the new voice binds to a ring that is no longer fed, and the record says the stream ended | **Confirmed real by reading** (`control.rs`: `take_streaming_unit` reads whatever `plan.link` is now; `NotStreaming` cannot tell "never opened" from "reopening"). **Fixed, cut 3** (§8): the reader is the reply of one open, so there is no lookup to read the old stream's ring; its test is `two_opens_each_yield_the_reader_of_their_own_stream` |
 | B4 | `SetVarispeed` and `Seek` carry only a channel, so one queued for the old stream applies to the next file, or to an idle plan and is inherited by the next stream | **Fixed, cut 4** (§8): every command names a stream, the streamer ignores an id it does not hold, and a stream's commands go through its `Stream` |
-| B5 | No panic containment on the streamer thread: a decoder panic freezes every ring and the only symptom is `StreamerGone` on the next send | Open. Cut 5 |
+| B5 | No panic containment on the streamer thread: a decoder panic freezes every ring and the only symptom is `StreamerGone` on the next send | **Fixed, cut 5** (§8): a refill, a direction change, a loop capture and an open run under `catch_unwind` per stream; a panic faults that stream (`Faulted(Panicked)`) and the others keep filling, hand-stepped and threaded (`a_panicking_decode_faults_only_its_stream_hand_stepped`, `..._threaded`). A panic that escapes drops the table, and each record's drop publishes `Faulted(StreamerGone)` |
 | B6 | Two seeks inside one block replay a stale target (the epoch and target pair) | Dies with the free-running reader, cut 1 |
 
 The structural findings are the decisions of §2.5 to §2.9 and the cuts of §8.
@@ -1145,6 +1145,126 @@ Each stage is one PR that stays green. Line figures are estimates.
    `a_stream_on_a_gone_streamer_reports_it`), and
    `a_hand_stepped_streamer_refuses_to_also_start_a_thread` (unrepresentable).
 
+   *As built, cut 5.* What the control side can observe of a stream is one
+   level read, `Stream::status(&self) -> StreamStatus { phase: StreamPhase,
+   underruns: u64 }`, with `StreamPhase` `Opening`, `Live`, `Ended` or
+   `Faulted(StreamFault)` and `StreamFault` `Decode`, `Panicked` or
+   `StreamerGone` (all `Copy`, the enums `non_exhaustive`, exported from the
+   crate root). The cell is one `AtomicU8` the streamer alone writes (its
+   thread, or the hand-stepper's, and a record's drop): phase and fault are
+   one word, so they cannot disagree, and a fault is **sticky** (a later phase
+   or a later fault does not replace it, so `StreamerGone` never hides the
+   `Panicked` that ended the stream first). A scalar atomic is not a new
+   cross-thread structure, so nothing went to `tutti-rt` and there is no loom
+   model. The streamer writes it where it already knows: the refill publishes
+   the level and a failed read (`Record::settle`), the record's drop publishes
+   `StreamerGone`, and `contained` publishes `Panicked`. `DiskStreamer::new`
+   returns `Err(Error::Spawn(io::Error))` where it `expect`ed;
+   `tutti-session`'s builder already forwards the crate `Error`. Every unit
+   of per-stream work on the streamer is `Record::contained(|record| ..)`: the
+   serial and the rayon refill, the direction change and the loop capture. A
+   panic publishes `Faulted(Panicked)`, marks the record dead and `Streams::reap`
+   drops it at the end of the cycle (its region frees in that step, as a
+   close's does). An open's probe and build run under `catch_unwind` too, and
+   a panic there is `OpenError::Format`. A whole-file decode of a file that
+   cannot seek is `decode.rs`'s `DecodeLane`: one thread, `tutti-decode`,
+   started on the first job and fed one at a time over an unbounded queue; its
+   result is `StreamerCommand::Decoded` on the streamer's own queue (so the
+   streamer wakes for it as for any command), and the open waits in
+   `Local.pending` meanwhile. A file that is not there fails at once, and a
+   wave the cache holds is not queued; a decode that panics fails that open
+   (`Format`) and the lane takes the next job. The thread is not joined: it
+   ends after its job when the lane drops, or when a send to the streamer fails.
+   A spawn failure is `OpenError::Io`.
+
+   Departures from the row and §2.5 and §2.6, each because the code made the
+   sketch impossible or worse at this cut:
+   - **`Opening` is "not yet primed", not "reader not delivered".** The
+     record's `Phase::Opening` is still the build-to-answer gap (now inside one
+     handler call: the stream is live before its reply is sent). The
+     status's `Opening` lasts until the first refill that finds the ring at its
+     refill threshold (or holding all it can be given), and never returns.
+     Readiness is what a caller waits for: a voice started before it
+     underruns, and `tier_alignment`'s two-second sleep was exactly a guess
+     at it. A file wholly in its ring is not the signal (the refill stops at
+     7/8 of a ring ahead of the reader, so a short file is `Live` and `Ended`
+     only once the reader is near the end).
+   - **`Ended` is a level.** The whole file, to its end, is in the ring; a
+     looped stream has no end; a reader that jumps out of the window makes the
+     stream `Live` again. A decode fault does not stop the refill (the
+     stream plays on, silence from the fault, as it did), so every render is
+     as before; the status only says so.
+   - **Underruns are read by the handle, not written by the streamer.**
+     `Stream::status` drains the voice's `RtState::take_underruns` into a total
+     it keeps (an atomic in the `Stream`, which now holds the `Arc<RtState>`
+     until cut 6 replaces the health cell), so the status cell is written by
+     the streamer alone and is not touched by the audio side, and the
+     streamer's thread does not poll a count. It is the first reader of
+     `take_underruns`; the total is since the stream opened.
+   - **The applied loop is not in `StreamStatus`.** §2.6 puts `loop_` there;
+     it is `RingControl`'s (cut 6). The downgrade of an unreadable lead-in is
+     still a log line and the loop in the fork's `StreamRecord`.
+   - **`SpawnError` is `Error::Spawn`**, a variant of the crate's one
+     `non_exhaustive` error, not a type of its own: `new` already returned
+     the crate `Result`, and the session maps it.
+   - **`Metrics`' `Mutex` is gone, and the reason changed.** The data was
+     thread-confined; with the decode lane it is not (the decode thread times
+     the reads, the streamer reads the rate). It is now one `AtomicF64`, the
+     sliding-window tracker owned by the decode thread (`ReadMeter`), so a
+     refill neither waits nor drops a sample.
+   - **The test seams are a `Seams` value in `Handles`:** the spawn (a function
+     pointer, so a refused thread is a test) and, under `cfg(test)`, a hook where
+     a `RegionOut` reads its file and one where the decode thread decodes. The
+     hook on `RegionOut` is installed when the open builds the region, not
+     through the table, so one test body runs on the hand-stepped and the
+     threaded driver. `testing::settle` waits up to ten seconds for an open
+     (a millisecond between steps): a non-seekable open is answered by a thread
+     no step runs.
+   - **A whole wave can be evicted between its decode and its pin.** The decode
+     thread inserts into the cache, and another insert before the streamer
+     pins can evict it; the stream is unaffected (its writer holds the `Arc`),
+     a fork then decodes the file itself, as it would for any wave the cache
+     lacks.
+
+   Tests (in `streamer/contained.rs` unless named), each with the mutation run
+   and its result. `a_decode_fault_is_faulted_and_the_voice_reads_silence` (a
+   FLAC cut at 90%: `Faulted(Decode)`, the frames before the cut sound and
+   none after): the `fault(Decode)` call removed fails it.
+   `the_end_of_the_file_is_ended_and_a_loop_has_none` (`Live` primed, `Ended`
+   with the reader near the end, `Live` again with a loop): `Ended` never
+   published fails it; `Ended` decided without the mapping fails it.
+   `underruns_are_read_from_the_status`: the field answering 0 fails it; the
+   drained count not added to the total fails it.
+   `a_dropped_streamer_publishes_streamer_gone` (both drivers): `Drop for Record`
+   without the fault fails it. B5: `a_panicking_decode_faults_only_its_stream_hand_stepped`
+   and `..._threaded` (two streams, the serial refill, and three, the rayon
+   one; a hook on `RegionOut` panics where stream 1 reads; the others' windows
+   grow, the faulted one is not refilled): `contained` without its
+   `catch_unwind` fails both (the threaded one at the bound: the thread dies).
+   `a_panic_while_a_loop_is_captured_faults_that_stream`: the capture called
+   outside `contained` fails it. `a_refused_spawn_is_an_error`: the `expect`
+   put back fails it. The decode lane:
+   `a_file_that_cannot_seek_opens_through_the_decode_lane` (a patched mp3 that
+   reports no length, both drivers; the ring holds the decoded file's frames):
+   a silent wave from the lane fails it; `a_decode_held_open_does_not_stop_another_stream`
+   (the decode held at a gate on the decode thread, a stream on the shared
+   thread still refills, the open completes when the gate does): the decode
+   run inline on the streamer's thread fails it at the bound;
+   `a_refused_decode_thread_fails_the_open` (`Io`): the start error swallowed
+   fails it at the bound; `a_panicking_decode_fails_that_open_only`: the lane's
+   `catch_unwind` removed fails it at the bound. `status.rs`'s
+   `the_first_fault_stays`: `fault` and `set` overwriting each fail it. Every
+   test that waits for a primed stream (`Driver::open`, `a_dropped_streamer_..`,
+   `tier_alignment`) fails at its bound when the `Live` write is removed.
+   `tutti-session`'s `tier_alignment` changes only its wait: the two-second
+   sleep is a wait, bounded at ten seconds, for the stream's status to leave
+   `Opening` (it now takes milliseconds). Ported without an assertion changed:
+   `Stream::new`'s extra arguments in `stream.rs`, `open/tests.rs` and the
+   step table's `Record::new`; `thread.rs`'s `built` and `start` (the spawn is
+   fallible), `step.rs`'s `Handles` and `StreamerCycle::new` (the queue the
+   decode lane answers on). No escaping panic is tested end to end: it is the
+   same drop as a dropped streamer.
+
    Cuts 1 and 2 are independent of the rest and of each other and may land in
    either order, or after 3. Cut 3 is the smallest useful cut and is the first
    that changes the public surface (every voice-build call site in the sampler
@@ -1350,9 +1470,13 @@ push `Resample` and `Dither` together and accept the Ogg change.
 7. **Does any test or consumer pin Ogg bytes?** Not searched. It decides whether
    the block-size change in §5.3 matters.
 8. **`Opening` for a file that cannot seek.** The file is decoded whole
-   (`load_wave`), on a decode thread after stage 5 (decision 21), not the shared
-   streamer's. Whether `poll` reports progress or only readiness is
-   unsettled; settle with the first caller that wants a progress bar.
+   (`load_wave`), on a decode thread (decision 21, built at cut 5), not the
+   shared streamer's. Whether `poll` reports progress or only readiness:
+   **settled at cut 5: readiness only.** `Opening::poll` answers `Pending`
+   until the open is built, and `Stream::status` is the readiness of the ring
+   after it (`Opening` until primed, §8 cut 5's note); no caller has asked for
+   a progress figure, and none is built. The first one that wants a progress bar
+   adds it to the decode job, which owns the only number there is.
 9. **Other platforms.** The measurements here ran on Linux x86_64. Windows,
    macOS and the golden digests are unchecked; stage 3's loom model and stage 5's
    gates run in CI.

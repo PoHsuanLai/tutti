@@ -3,7 +3,7 @@
 //! Bounded cache with least-recently-used eviction.
 //!
 //! The *read* half (`get`, `pin`) is unconditional, but the sole writer is the
-//! decode arm of `io::refill::load_wave`, which needs `Wave::read` and so is
+//! decode arm of `decode::load_wave`, which needs `Wave::read` and so is
 //! gated on the codec features. A build with none of them on therefore reaches
 //! `insert` from nowhere, and `over_budget` / `evict_lru` / the budget fields
 //! die with it — a feature-matrix artifact, not rot. CI builds that config, so

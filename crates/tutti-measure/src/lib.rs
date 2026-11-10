@@ -120,10 +120,3 @@ pub use yin::{Pitch, PitchEstimate, YinConfig, median_filter, penalize_jumps, yi
 /// Notes and pitch classes, re-exported from the engine vocabulary: a
 /// [`Pitch`] names one, and callers should not need a second import to read it.
 pub use tutti_types::{Note, PitchClass};
-
-/// Buffer-level mono folding, re-exported from the engine's downmix module.
-///
-/// Every STFT and pitch entry point takes mono, so this is the step callers
-/// usually need first. Folding keeps every channel, rather than dropping
-/// channels past the second.
-pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};

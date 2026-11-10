@@ -6,9 +6,14 @@
 //! another stream (doc 025, B4). Nothing outside this crate names a command:
 //! the control side is the [`Stream`] methods.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::StreamerSender;
 use super::command::{StreamId, StreamerCommand};
 use super::control::StreamerGone;
+use super::rt_state::RtState;
+use super::status::{StatusCell, StreamStatus};
 use crate::voice::LoopSetting;
 
 /// The way onto one streamer's command queue, cloned into every [`Stream`] and
@@ -100,6 +105,13 @@ fn loop_command(stream: StreamId, setting: LoopSetting) -> StreamerCommand {
 pub struct Stream {
     id: StreamId,
     port: StreamerPort,
+    /// What the streamer publishes of the stream ([`status`](Self::status)).
+    status: Arc<StatusCell>,
+    /// The cell the voice counts its underruns in; this handle is its one
+    /// reader.
+    rt_state: Arc<RtState>,
+    /// Underruns read out of `rt_state` so far.
+    underruns: AtomicU64,
 }
 
 impl std::fmt::Debug for Stream {
@@ -109,8 +121,42 @@ impl std::fmt::Debug for Stream {
 }
 
 impl Stream {
-    pub(crate) fn new(id: StreamId, port: StreamerPort) -> Self {
-        Self { id, port }
+    pub(crate) fn new(
+        id: StreamId,
+        port: StreamerPort,
+        status: Arc<StatusCell>,
+        rt_state: Arc<RtState>,
+    ) -> Self {
+        Self {
+            id,
+            port,
+            status,
+            rt_state,
+            underruns: AtomicU64::new(0),
+        }
+    }
+
+    /// The stream's status, as it is now: a level read, never blocking.
+    ///
+    /// [`StreamStatus::phase`] is what the streamer last published: `Opening`
+    /// until the ring is primed (wait for it to be anything else before
+    /// starting a voice that must not underrun), `Live` while it serves the
+    /// stream, `Ended` once the whole file is in the ring,
+    /// `Faulted` for a decode fault (the voice reads silence from it), a panic
+    /// the streamer contained to this stream, or a streamer that is gone.
+    /// [`StreamStatus::underruns`] counts the frames the voice found missing
+    /// in the ring, since the stream opened: the audio side counts them
+    /// (the voice's underrun report) and this is the one place they are read.
+    ///
+    /// Control thread; no allocation.
+    #[must_use]
+    pub fn status(&self) -> StreamStatus {
+        let drained = self.rt_state.take_underruns();
+        let underruns = self.underruns.fetch_add(drained, Ordering::Relaxed) + drained;
+        StreamStatus {
+            phase: self.status.phase(),
+            underruns,
+        }
     }
 
     /// The stream this handle steers: the identity every command it sends
@@ -156,6 +202,16 @@ mod tests {
     use super::*;
     use tutti_types::SamplePosition;
 
+    /// A handle on no streamer's stream: only its sends are in question.
+    fn detached(id: StreamId, port: StreamerPort) -> Stream {
+        Stream::new(
+            id,
+            port,
+            Arc::new(StatusCell::new()),
+            Arc::new(RtState::new()),
+        )
+    }
+
     fn on(start: f64, end: f64) -> LoopSetting {
         LoopSetting::On {
             start: SamplePosition(start),
@@ -176,7 +232,7 @@ mod tests {
     #[test]
     fn a_stream_on_a_gone_streamer_reports_it() {
         let (tx, queue) = crossbeam_channel::bounded(8);
-        let mut stream = Stream::new(StreamId(0), StreamerPort::new(tx));
+        let mut stream = detached(StreamId(0), StreamerPort::new(tx));
         drop(queue);
         assert_eq!(stream.set_loop(LoopSetting::Off), Err(StreamerGone));
         assert_eq!(stream.set_loop(on(0.0, 100.0)), Err(StreamerGone));
@@ -196,8 +252,8 @@ mod tests {
         let (tx, queue) = crossbeam_channel::bounded(16);
         let port = StreamerPort::new(tx);
         let (mut a, mut b) = (
-            Stream::new(StreamId(1), port.clone()),
-            Stream::new(StreamId(2), port),
+            detached(StreamId(1), port.clone()),
+            detached(StreamId(2), port),
         );
         a.set_loop(on(-5.0, 100.0)).unwrap();
         b.set_loop(LoopSetting::Off).unwrap();

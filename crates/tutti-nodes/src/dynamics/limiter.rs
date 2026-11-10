@@ -14,8 +14,8 @@ use tutti_types::{Amplitude, AtomicF32, AtomicF64};
 
 use crate::ramp::LastGood;
 use tutti_dsp::{
-    EnvelopeFollower, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
-    compute_limiter_gain, db_to_amplitude, fold_peak, smooth_envelope,
+    LimiterBlock, LimiterKernel, LookaheadRing, amplitude_to_db, brickwall_clip, db_to_amplitude,
+    fold_peak,
 };
 use tutti_types::Latency;
 use tutti_types::UnitParam;
@@ -110,10 +110,9 @@ pub struct LimiterNode {
     /// gain), sized to the prepared `MaxBlock`; a longer block runs in
     /// lane-sized chunks.
     lane: Vec<f32>,
-    envelope: f32,
     gain_reduction_db: Db,
     sample_rate: SampleRate,
-    follower: EnvelopeFollower,
+    kernel: LimiterKernel,
 }
 
 impl std::fmt::Debug for LimiterNode {
@@ -127,10 +126,9 @@ impl std::fmt::Debug for LimiterNode {
             .field("lookahead", &self.lookahead)
             .field("layout", &self.layout)
             .field("channels", &self.channels)
-            .field("envelope", &self.envelope)
             .field("gain_reduction_db", &self.gain_reduction_db)
             .field("sample_rate", &self.sample_rate)
-            .field("follower", &self.follower)
+            .field("kernel", &self.kernel)
             .finish_non_exhaustive()
     }
 }
@@ -202,14 +200,9 @@ impl LimiterNode {
             layout,
             channels: n,
             lane: vec![0.0; DEFAULT_LANE],
-            envelope: 0.0,
             gain_reduction_db: Db::UNITY,
             sample_rate: SampleRate::DEFAULT,
-            follower: EnvelopeFollower::new(
-                Seconds::new(0.0),
-                Seconds::new(0.1),
-                SampleRate::DEFAULT,
-            ),
+            kernel: LimiterKernel::new(Seconds(0.1), SampleRate::DEFAULT),
         }
     }
 
@@ -327,8 +320,7 @@ impl LimiterNode {
             self.good_release
                 .read(driven.unwrap_or_else(|| self.release.load().to_f32())),
         );
-        self.follower
-            .update_coefficients(Seconds(0.0), Seconds::from_f32(release));
+        self.kernel.update_coefficients(Seconds::from_f32(release));
     }
 }
 
@@ -357,8 +349,8 @@ impl Node for LimiterNode {
         // ratchet the window up on every call — see the `lookahead` field.
         let sample_rate = p.sample_rate();
         self.sample_rate = sample_rate;
-        self.follower
-            .set_sample_rate(sample_rate, Seconds(0.0), self.release.load());
+        self.kernel
+            .set_sample_rate(sample_rate, self.release.load());
         let new_samples = self.lookahead.to_samples_ceil(sample_rate).get();
         self.ring.resize(new_samples.max(1));
         let lane_len = p.max_block().get().max(1);
@@ -374,15 +366,10 @@ impl Node for LimiterNode {
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
         let (inputs, mut outputs) = io.split();
-        let release_coeff = self.follower.release_coeff();
-        // Unfed, the curve is constant across the block: its constants are a
-        // few `powf`s here, and a frame is a compare and a divide.
-        let curve = (threshold_fed.is_none() && ceiling_fed.is_none())
-            .then(|| LimiterCurve::new(base_threshold, base_ceiling));
+        let block = LimiterBlock::new(base_threshold, base_ceiling, threshold_fed, ceiling_fed);
 
         // Borrowed in place, so a panic caught outside leaves the lane intact.
         let lane = &mut self.lane;
-        let mut envelope = self.envelope;
         let mut last_gain = None;
         let mut start = 0;
         while start < size {
@@ -401,20 +388,7 @@ impl Node for LimiterNode {
             // The recursive half: the envelope and the sliding minimum, one
             // frame at a time; each frame's peak becomes its window-min gain.
             for (k, p) in gains.iter_mut().enumerate() {
-                let target_gain = match &curve {
-                    Some(curve) => curve.gain(*p),
-                    None => {
-                        let peak_db = amplitude_to_db(Amplitude::new(*p));
-                        let threshold = threshold_fed.map_or(base_threshold, |v| Db(v[start + k]));
-                        let ceiling = ceiling_fed.map_or(base_ceiling, |v| Db(v[start + k]));
-                        compute_limiter_gain(peak_db, threshold, ceiling).get()
-                    }
-                };
-                if target_gain < envelope {
-                    envelope = target_gain;
-                } else {
-                    envelope = smooth_envelope(envelope, target_gain, release_coeff);
-                }
+                let envelope = self.kernel.gain(&block, start + k, *p);
                 *p = self.ring.push_gain(envelope);
             }
             last_gain = gains.last().copied();
@@ -429,7 +403,6 @@ impl Node for LimiterNode {
             }
             start = end;
         }
-        self.envelope = envelope;
 
         // Metering only, read after the block, so the block's last frame is
         // the only one that is converted. Reported as a positive magnitude,
@@ -447,7 +420,7 @@ impl Node for LimiterNode {
 
     fn reset(&mut self) {
         self.ring.clear();
-        self.envelope = 0.0;
+        self.kernel.reset();
         self.gain_reduction_db = Db::UNITY;
     }
 
@@ -510,10 +483,9 @@ impl Clone for LimiterNode {
             layout: self.layout,
             channels: self.channels,
             lane: self.lane.clone(),
-            envelope: self.envelope,
             gain_reduction_db: self.gain_reduction_db,
             sample_rate: self.sample_rate,
-            follower: self.follower.clone(),
+            kernel: self.kernel.clone(),
         }
     }
 }
@@ -746,6 +718,7 @@ impl Clone for BrickwallLimiterNode {
 mod tests {
     use super::*;
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
+    use tutti_dsp::compute_limiter_gain;
     use tutti_graph::contract::{assert_param_fork, drive};
 
     /// A fork starts from the values last set through the node's
@@ -1692,7 +1665,7 @@ mod tests {
                 "frame {i}: {y} against {limit}"
             );
         }
-        assert!(lim.envelope.is_finite());
+        assert!(lim.kernel.envelope().is_finite());
     }
 
     /// A NaN fed to the peak fold yields a non-NaN peak. Separate from the

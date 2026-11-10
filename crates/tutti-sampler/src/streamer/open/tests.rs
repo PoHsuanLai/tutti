@@ -4,6 +4,8 @@ use std::sync::Arc;
 use tutti_types::{Beat, Bpm, SamplePosition};
 
 use crate::LoopSetting;
+use crate::streamer::rt_state::RtState;
+use crate::streamer::status::StatusCell;
 
 use super::*;
 use crate::testing::{MockTransport, play, prepared, settle};
@@ -418,7 +420,12 @@ fn a_stopped_streams_handle_commands_nothing() {
 
     // The handle of the stream that is gone: what a late command still
     // reaching the queue looks like.
-    let mut ghost = Stream::new(id_a, streamer.port());
+    let mut ghost = Stream::new(
+        id_a,
+        streamer.port(),
+        Arc::new(StatusCell::new()),
+        Arc::new(RtState::new()),
+    );
     ghost
         .set_loop(LoopSetting::On {
             start: SamplePosition(1_000.0),

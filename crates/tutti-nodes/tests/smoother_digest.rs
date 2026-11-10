@@ -13,7 +13,7 @@
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::testing::assert_golden;
 use tutti_nodes::{CompressorNode, GateNode, LimiterNode};
-use tutti_types::{Db, SampleRate, Seconds};
+use tutti_types::{CompressionRatio, Db, SampleRate, Seconds};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -80,7 +80,12 @@ fn the_limiter_release_renders_what_it_always_did() {
 
 #[test]
 fn the_compressor_follower_renders_what_it_always_did() {
-    let node = CompressorNode::stereo(Db(-20.0), 4.0, Seconds(0.005), Seconds(0.15));
+    let node = CompressorNode::stereo(
+        Db(-20.0),
+        CompressionRatio::new(4.0),
+        Seconds(0.005),
+        Seconds(0.15),
+    );
     let set = node.clone();
     let mut node = prepared(node, SR, BLOCK);
     let digest = render(&mut node, 4, || {

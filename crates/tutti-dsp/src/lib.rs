@@ -37,7 +37,7 @@
 //!   together), and [`Grid`] with its typed indices; [`enum@Error`] and [`Result`].
 //! - Windows: [`CosineWindow`] (Hann, Hamming, Blackman) and the [`Window`] trait,
 //!   shared by the analyzers' STFT geometry and the sampler's vocoder.
-//! - Resampling: [`FftResampler`], a fixed-input FFT block resampler on the
+//! - Resampling: [`WindowedSinc`] (the band-limited interpolation kernel) and [`FftResampler`], a fixed-input FFT block resampler on the
 //!   same scalar FFT, failing with a [`ResampleError`]; and
 //!   [`StreamingResampler`], which feeds it a block of any size at a time and
 //!   compensates its delay and tail, sized by a [`ChunkSize`].
@@ -101,7 +101,7 @@ pub use network::{
     MAX_TAPS, Matrix, Modulation, Network, OutputMap, Ring, Setup, Stage, Tap, Taps, loop_gain,
     pre_delay_frames, rt60_from_gain,
 };
-pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler};
+pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::Freeverb;
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use swept_delay::SweptLines;

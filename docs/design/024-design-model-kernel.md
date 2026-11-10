@@ -2,99 +2,117 @@
 
 [Doc 022](022-reverb.md) gave the reverb a three-part shape: a **design** (a pure
 function from typed controls to a model value), a **model** (a value with
-analytic queries: ring time, stability, latency, bounds) and a **kernel** (the
+analytic queries: ring time, stability, latency) and a **kernel** (the
 hand-written runtime that realises the model), with a contract suite that holds
 each design to the model's invariants and each kernel to the model. PR #367
-(branch `feat/reverb-kernel`) adds the generic node around it, `ReverbNode<D>`:
-redesign in place on the audio thread, the tail report, `longest()`, parking and
-fork.
+(merged) added the generic node around it, `ReverbNode<D>`: redesign in place
+on the audio thread, the tail report, `longest()`, parking and fork.
 
-Nothing in that shape is about reverb. A filter has a response that its poles and
-zeros give exactly; a compressor has a static curve; a resampler has a kernel
-whose latency and stopband are known before it runs; a waveshaper has a transfer
-curve whose harmonics follow from it. Each is a pure function of controls to a
-description, run by a kernel that is held to the description. This design says
-which of tutti's algorithms the shape covers, which traits are shared when it is
-generalised, what the generic node and the contract machinery become, and in what
-order. It is also the producer side of two gaps in
+Nothing in that shape is about reverb, and the reason is mathematical, not
+engineering. Each of those three parts is a standard object:
+
+- a **design** is a *parameter map*, `theta = D(controls, rate)`;
+- a **model** is a *system* `S_theta`, taken up to equivalence: the class of all
+  realisations that have the same input-output map, queried by that map's
+  invariants (its transfer function, its static curve, its spectrum) and never by
+  its internal form;
+- a **kernel** is *one realisation* of that class: a state-space structure
+  (transposed direct form II, a trapezoidal state-variable filter, a lattice, a
+  64-line feedback delay network) that happens to compute the map.
+
+So the queries belong to the **mathematical class** of the system, not to the
+algorithm. Every linear time-invariant (LTI) system has a response, a spectral
+radius, a slowest decay and a latency, whether it is a reverb, a biquad or a
+convolver. Every memoryless nonlinearity has a curve, a DC value and harmonics.
+Every autonomous generator has a period or a duration and a spectrum. This design
+sorts tutti's algorithms by that class, derives which of them the shape fits from
+the class, and makes the class the unit the traits and the contract are written
+for. It is also the producer side of two gaps in
 [doc 023](023-plugin-capabilities.md): G8 (a curve response) and G9 (a readout),
-with G5 (quality) as a design input.
+with G5 (quality) as an engineering input.
 
-**The owner's constraint, which shapes everything below** (2026-11-09, on
-generalising the reverb traits): the abstraction must not force a runtime
-mechanism that makes algorithms hard to optimise or gives them a suboptimal
-fixed shape to write; tutti hit that once in older versions of the modulation
-crate (doc 022 section 4.1, doc 014 section 1). So **the traits, the node and the
-contract machinery are shared; the model is not.** Each family keeps its own
-model type with its own fields and its own queries. There is no universal model,
-no generic interpreter, and no per-sample dispatch.
+**The owner's constraint, which shapes everything below** (2026-11-09): the
+abstraction must not force a runtime mechanism that makes algorithms hard to
+optimise or gives them a suboptimal fixed shape to write; tutti hit that once in
+older versions of the modulation crate (doc 022 section 4.1, doc 014 section 1).
+So **a class is a trait over structured representations, never one forced data
+type.** A 64-line FDN answers as an LTI system *through its own structure* (its
+delay lines, its matrix, its gains), not by being expanded into poles and zeros; a
+biquad answers through its five coefficients. There is no universal model, no
+generic interpreter, and no per-sample dispatch.
 
-How to read this against the code: everything on `main` is cited by path; the
-reverb node, `Kernel`, `Setup`, `Effort` and the kernel contract are on branch
-`feat/reverb-kernel` (head `474d7621c`, PR #367, not merged) and are cited as
-"on #367". Types this document proposes are marked **(proposal)**. The traits in
-section 4 were type-checked in a scratch crate (the three families of section
-4.8 implement them, and a case bounded on `Response` refuses a model without it);
+How to read this against the code: everything is on `main`, which now includes
+PRs 365, 366 and 367 (the reverb kernel and node), and is cited by path. Types
+this document proposes are marked **(proposal)**. The traits in section 4 were
+type-checked in a scratch crate outside the repo (two realisations of one biquad
+run the same class case; a case bounded on `Lti` refuses a model without it; a
+`Series` and a `Parallel` of `Lti` models are `Lti`; a `Wiener` is a `StaticMap`);
 nothing else here has been built, and no figure is measured except those doc 022
 already measured.
 
 ## Summary
 
-- **Inventory (section 3): 45 rows. 20 fit, 11 fit in part, 14 do not.** The
-  filters, the dynamics, the delay, the convolver, the waveshaper, the panners
-  (VBAP, HRTF), the envelopes and oscillators, and the channel folds fit. Analysers,
-  the FFT, the buffers, the click, the automation lanes and the mix bus do not,
-  and section 3 says why for each.
-- **Share twelve small traits and no model** (section 4): `Design` (with an
-  associated `Model`), `Model`, `Kernel<M>`, `Effect<M>` (the planar block shape),
-  and capability traits for the queries: `Latent` and `Ringing` (every model
-  answers these; every node declares both in its `Shape`), then `Stable`,
-  `Response`, `StaticCurve`, `Readout` (on the kernel, not the model), `Fidelity`
-  and `Graded` (quality) where a family has the answer.
-  A contract case is a function bounded on its capability, so a case exists
-  exactly where the query does (checked in the scratch crate).
-- **`ReverbNode<D>` becomes `DesignNode<D>`** (section 5), with the family
-  differences as associated types of a `NodeDesign` trait, not runtime flags:
-  `Blend` (dry/wet or none), `Readouts` (none or a kernel's readout) and a
-  `CADENCE` constant (how often a design is solved inside a block).
-- **The first finding against the reverb-only node: the cadence.** `retarget`
-  once per block is right for a reverb and wrong for the filters, which solve
-  coefficients every `COEFF_INTERVAL` = 16 frames inside a block
-  (`tutti-dsp/src/control.rs`), and for the three dynamics nodes, which accept a
-  per-frame threshold lane. Forcing a per-block redesign on them would regress
-  them. Section 4.5 makes the cadence a constant of the design, and section 11
-  (Q3) says where it stops: a per-frame lane is a second, optional kernel shape,
-  and a node that needs it keeps its hand-written `process` and adopts only the
-  model and the contract.
-- **The contract machinery** (section 6) moves to a public `contract` module of
-  `tutti-dsp` behind a `contract` feature (the pattern of
-  `tutti-graph/src/lib.rs`), so families in `tutti-polysynth`, `tutti-soundfont`
-  and `tutti-spatial` run it. Cases are per capability, each with a mutant.
-- **G8 and G9 fall out as queries** (section 7): a filter's `Response` and a
-  compressor's `StaticCurve` are the curve; its `Readout` is the gain reduction. A
-  native node and a hosted plugin meet in doc 023's `Display` and one
-  `CurveResponse`.
-- **Plan (section 10): six steps after #367, each a PR.** Generalise on reverb; filters
-  (delivers G8); dynamics (delivers G9); then delay and modulation effects, the
-  waveshaper, and convolution; then the resampler, the panners and the
-  instruments' envelopes and oscillators.
+- **Six processor classes and two non-processor ones** (section 2.2), by four
+  axes (linear or not, memoryless or stateful, time-invariant / slowly varying /
+  multirate, driven or autonomous): (1) LTI, with order 0 a gain matrix; (2)
+  slowly varying LTI, `H_theta` with `theta(t)` slow; (3) memoryless nonlinear, a
+  static map; (4) stateful nonlinear, a composition of (3) with (1)/(2); (5)
+  autonomous generators; (6) multirate or time-scale. Plus measurements
+  (functionals) and event or discrete logic.
+- **Inventory (section 3): 45 rows, sorted by class. 21 fit, 12 fit in part, 12
+  do not.** The verdicts follow from the class: a row fits when its whole
+  behaviour is one class (or a composition of them) whose queries are exact for
+  it; in part when a piece (a hold timer, a windowed minimum, a `tanh`, a
+  variable-rate kernel) is outside the class; not at all when it is a measurement,
+  event logic or a primitive.
+- **Three levels, each a different mathematical object** (section 2.1):
+  `Design` is a parameter map; the **model** is a system up to equivalence, held
+  by a *class trait* (`Lti`, `StaticMap`, `Generator`, ...); a `Kernel<M>` is one
+  realisation, and "kernel realises model" is the realisation check. TDF-II, the
+  state-variable filter and a lattice are three kernels of one `Lti` model.
+- **Queries hang off the class** (section 4.2): `Causal` (latency, tail; every
+  processor), `Lti` (response, spectral radius, gain bound, dc gain, stability),
+  `StaticMap` (curve, DC, harmonics, gain bound), `Generator` with `Periodic`,
+  `Segmented` and `Noise` (frequency, spectrum, durations). `Readout` is on the
+  kernel (it observes state, `y = C s`).
+- **A composition algebra** (section 4.9): `Series`, `Parallel`, `SeriesN`,
+  `Wiener`, `Hammerstein`, `Gained`, each a type-level combinator over models that
+  answers its class's queries from its parts with a stated bound; no runtime
+  graph. It resolves doc 022's step 3b blocker (early reflections in parallel
+  with the FDN tail) and the old Q4 (a series EQ chain's curve).
+- **The engineering layer is labelled and kept apart** (section 4.4): `Bounds`,
+  `Ceiling`, `Effort`, `Cadence` and `Quality` size and schedule a realisation;
+  they are not properties of the math object. `Cadence` is the sampling of
+  `theta(t)`: the slowly-varying assumption made explicit.
+- **The contract is written once per class** (section 6): every LTI realisation
+  inherits the impulse-response-against-response, ring-time-against-decay,
+  linearity and shift-invariance checks; every static map inherits the level
+  sweep. Composites inherit their class's cases for free.
+- **`ReverbNode<D>` becomes `DesignNode<D>`** (section 5), with `Blend`,
+  `Readouts` and `CADENCE` as associated types, not runtime flags. The first
+  finding against the reverb-only node is the cadence: filters solve every 16
+  frames inside a block, and the dynamics nodes take per-frame lanes.
+- **Plan (section 10): seven steps after the merged #367, each a PR.**
+  Generalise on the reverb (answering as `Lti`); filters (several realisations of
+  one H(z); G8); composition (the parametric EQ, then reverb 3b); dynamics (G9);
+  delay, modulation effects and the waveshaper; convolver and HRTF; the rest.
 
 ## 1. Current state
 
 What 022 built, and which of it is reverb in name only. Paths on `main` unless
-marked "on #367".
+marked "on `main` (#367)".
 
 | Piece | Where | Reverb-specific? |
 |---|---|---|
 | `Network`, `Stage`, `Inline`, the queries (`rt60`, `rt60_bound`, `tail`, `is_stable`, `is_lossless`, densities, `min_delay`, `latency`) | `tutti-dsp/src/network.rs`, `network/queries.rs` | The model: yes. `tail`, `is_stable` and `latency` are what every family has |
 | `Ring { Finite(Seconds), Unbounded }` | `network/queries.rs` | No: every family's tail |
-| `Design { Controls, design_into, design, bounds, channels }`; on #367 also `type Kernel`, `fn kernel` | `network/design.rs` | Names `Network` and `Bounds` (the reverb's) in its signatures |
+| `Design { Controls, design_into, design, bounds, channels }`; on `main` (#367) also `type Kernel`, `fn kernel` | `network/design.rs` | Names `Network` and `Bounds` (the reverb's) in its signatures |
 | `Ceiling { rate, max_decay, floor }` | `network/design.rs` | `max_decay` is; `rate` and `floor` are not |
 | `Bounds { lines, stages, taps, outputs, line, delay, ir, pre_delay, tail }`, `Bounds::of`, `dominates` | `network/design.rs` | Every field but `tail` |
-| On #367: `Kernel`, `Setup { rate, max_block, input, output }`, `Effort` | `network/kernel.rs` | `Kernel` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
-| `design_contract!`, `DesignCase`, `Mutant`; on #367 `kernel_contract!`, `KernelCase`, `Defect` | `network/contract.rs`, `network/kernel_contract.rs` | Crate-private and `cfg(test)`; the cases mix generic ones (pure, bounds dominate, reset, fresh, block independence, click-free, latency, no allocation) with reverb ones (`rt60`, `band_order`, `decorrelated`, `line_lengths`, freeze) |
-| On #367: `ReverbNode<D>`, `ReverbDesign`, `ReverbParams`, `DryAlign` | `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The control path, tail report, `longest`, parking, cut-to-frame, fork and dry alignment are generic; the names are not |
-| On #367: node tests | `tutti-nodes/tests/reverb_node.rs`, `reverb_node_generic.rs` | Generic cases through a lying design |
+| On `main`: `Kernel`, `Setup { rate, max_block, input, output }`, `Effort` | `network/kernel.rs` | `Kernel` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
+| `design_contract!`, `DesignCase`, `Mutant`; on `main` (#367) `kernel_contract!`, `KernelCase`, `Defect` | `network/contract.rs`, `network/kernel_contract.rs` | Crate-private and `cfg(test)`; the cases mix generic ones (pure, bounds dominate, reset, fresh, block independence, click-free, latency, no allocation) with reverb ones (`rt60`, `band_order`, `decorrelated`, `line_lengths`, freeze) |
+| On `main`: `ReverbNode<D>`, `ReverbDesign`, `ReverbParams`, `DryAlign` | `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The control path, tail report, `longest`, parking, cut-to-frame, fork and dry alignment are generic; the names are not |
+| On `main`: node tests | `tutti-nodes/tests/reverb_node.rs`, `reverb_node_generic.rs` | Generic cases through a lying design |
 
 Two things the code already does that this design builds on rather than adds.
 `SvfCoeffs::new` (`tutti-dsp/src/filter/svf.rs`) and
@@ -107,28 +125,86 @@ reachable only through that one node's own handle.
 ## 2. The pattern, and what must not be forced
 
 ```
-controls (typed units) --design--> model (a value, queries) <--held to-- kernel (runs)
-        pure, total, allocation-free      reads no audio          hand-written, per family
+controls (typed units) --design--> model (a system, up to equivalence) <--realised by-- kernel (runs)
+  a parameter map: pure, total        invariants of its class: H(z), f, spectrum      one state-space structure
 ```
+
+### 2.1 What each level is, mathematically
+
+| Tutti term | Mathematical object | What it means here |
+|---|---|---|
+| `Design` | a **parameter map** `theta = D(c, fs)` | A pure, total function from typed controls and the rate to the parameters that fix one system. It has no signal and no state |
+| the **model** (`Causal`, `Lti`, ...) | a **system** `S_theta` up to equivalence: the class of realisations with one input-output map | Queried through that map's invariants. Two models are the same model if no query tells them apart |
+| a **class trait** | the **kind** of system, with the invariants that kind defines | `Lti` has `H(z)`, a spectral radius, a slowest decay; `StaticMap` has `f`; `Generator` has a period or a duration |
+| `Kernel<M>` | **one realisation**: a state-space structure `(A, B, C, D)` with a particular form | TDF-II, a trapezoidal SVF and a lattice are three kernels of one `H(z)`. A kernel has state, a model does not |
+| "kernel realises model" (the contract) | the **realisation check**: the realisation's input-output map equals `S_theta` within a stated tolerance | Measured through the class's invariants (impulse response against `H`, level sweep against `f`), never against another render |
+| `retarget` and `Cadence` | **sampling `theta(t)`** | The model is a family `S_theta` and `theta` moves slowly; `Cadence` states how slowly as a number (solve at least every `n` frames) and `retarget` takes one sample of it. The kernel interpolates between samples |
+| `Readout` | an **observation of the state**, `y = C s` | What a running kernel reports about itself (the deepest gain reduction since the last read). State, so it cannot be a query of the model |
+| `Bounds`, `Ceiling`, `Effort`, `Cadence`, `Quality` | **engineering**: the size and the schedule of a realisation | Not properties of `S_theta`. Section 4.4 keeps them apart from the class traits |
+| `Fidelity` | the **distance from an ideal system** | The error floor of a realisable model against the ideal it approximates (aliasing of a shaper, the stopband of a resampler). A property of the model relative to its ideal |
+
+### 2.2 The classes
+
+Four axes sort every algorithm in tutti: **linear or not**, **memoryless or
+stateful**, **time-invariant, slowly varying or multirate**, and **driven or
+autonomous**. They give six processor classes and two that are not processors.
+
+| Class | Axes | Representation | What the class answers (exactly) | In tutti |
+|---|---|---|---|---|
+| **1. LTI** | linear, stateful (order 0: memoryless), time-invariant, driven | rational `H(z)` (IIR) or `h[n]` (FIR); in state space `(A, B, C, D)`. Order 0 is a **gain matrix** | the response `H(e^jw)` per input/output pair, the spectral radius of `A` (stable iff below 1), the slowest decay (ring time), a gain bound (the l1 norm of `h`), DC gain, latency, group delay | filters at a frozen setting, delay, comb, convolver, the reverb `Network`, HRTF; at order 0 `Fold`, VBAP, pan, the bus strip, the channel sum |
+| **2. Slowly varying LTI** | linear, stateful, **slowly varying**, driven | a family `H_theta` with `theta(t)` slow | the class-1 queries at each frozen `theta`, plus the variation `theta` declares (its rate and range) | every filter under modulation; chorus, flanger, phaser; the FDN with modulated lines |
+| **3. Memoryless nonlinear** | nonlinear, memoryless, time-invariant, driven | a static map `y = f(x)` | the curve, DC `f(0)`, odd symmetry, the harmonics of a sine through it, a gain bound, the aliasing bound | the waveshaper, the brickwall clip, a dynamics gain curve on its own |
+| **4. Stateful nonlinear** | nonlinear, stateful, time-invariant, driven | a **composition of 3 with 1 or 2**: Wiener (LTI then map), Hammerstein (map then LTI), or a detector path controlling a gain | the settled curve (the map at the LTI part's DC gain), the time constants and latency of the LTI part, a gain bound; **no frequency response** | compressor, gate, limiter, followers; the ladder (class 1 only once linearised for small signals) |
+| **5. Autonomous generators** | any, driven by a phase or an event, then autonomous | `f(phi(t))`, a segment list, or a stochastic process | the period or frequency, the harmonic spectrum, the segment durations, the range, a noise variance or spectrum | oscillators, LFOs, envelopes, noise, dither's noise, the click's waveform |
+| **6. Multirate or time-scale** | linear (resampler) or not (stretch), stateful, **periodically time-varying** with an LTI prototype | a ratio, an LTI prototype (the resampler's windowed-sinc low-pass), a time-varying read | the ratio, the prototype's response, the latency, the duration ratio | the FFT resampler, the stretch unit, the sampler's playback read |
+| **M. Measurements** | a functional of a signal, not a processor | a config and an analyser | a resolution (`fs/N`), a latency | `analysis/` |
+| **E. Event or discrete logic** | not a signal map | a state machine over events | transitions | voice allocation, the gate's hold timer, the click's trigger, lanes as data |
+
+Two consequences used throughout.
+
+1. **Modulation is not a class; it is sampling `theta`.** Every class can be
+   driven by a control that moves. Class 1 at a frozen setting is class 2 as soon
+   as a lane moves a cutoff; the table says "1 (2 under modulation)" for the
+   filters. The class-2 queries are the class-1 queries at the sampled `theta`,
+   and `Cadence` (section 4.5) is how often it is sampled.
+2. **A class is a trait, and a model may implement several.** A resampler is
+   class 6 and its prototype is class 1. A compressor is class 4 and its detector
+   is class 1 and its gain map class 3. The composition algebra (section 4.9) is
+   how a model states that.
+
+### 2.3 The engineering layer is not the math
+
+`Bounds` (the sizes a kernel allocates), `Ceiling` (the limits a node builds to:
+rate, tail floor, a control's maximum), `Effort` (what the realisation costs),
+`Cadence` (how often `theta` is sampled) and `Quality` (which realisation tier) are
+properties of a **realisation and of the node that schedules it**. Two kernels of
+one `H(z)` have different `Bounds` and `Effort` and the same model. They sit on
+`Design` and `Kernel` as associated items, never on a class trait, so a class
+trait states only what the mathematical object is. `Cadence` is the one that
+touches the math: it is the explicit statement of the slowly-varying
+assumption, and a contract case checks that a model which declares a variation
+(an LFO rate) is slow against its cadence.
+
+### 2.4 What must not be forced
 
 The constraints, each of which is a test the design must pass in section 4.8:
 
 1. **No universal model.** `Network`, a biquad, a compressor curve and a gain
-   matrix have nothing in common but the capability traits they implement. A
+   matrix have nothing in common but the class traits they implement. A
    shared `enum AnyModel` or a bag of optional fields is the settings bag doc 022
    section 5.1 refused, in a new place.
 2. **No generic interpreter.** No kernel runs "any model". Doc 022 section 4.2's
    opt-in `Generic` kernel stays a reverb-only idea and is not generalised here.
 3. **No per-sample virtual call.** Every trait is used statically. `Design` is not
    object-safe (`type Controls`, `type Model`, `type Kernel`), and none of the
-   capability traits is called from the audio thread through `dyn`. The node
+   class traits is called from the audio thread through `dyn`. The node
    calls `Kernel::process` once per block (or per segment, section 4.5), the same
    dispatch frequency as `Node::process`.
 4. **No fixed buffer shape.** `Kernel<M>` has no `process`: the block shape is a
    second trait (`Effect<M>`: planar slices in, planar slices out, equal length).
    A generator, a resampler that consumes and produces different counts, or an
    instrument that takes events has its own shape trait and its own node, and
-   still uses `Design`, `Model`, `Kernel<M>` and the contract.
+   still uses `Design`, a class trait, `Kernel<M>` and the contract.
 5. **The kernel reads what it wants of the model.** A model may carry more than a
    kernel uses (Freeverb ignores `width` and `wet`, doc 022 "Step 1b as built"),
    and two kernels may realise one model (a plain reference and a SIMD one).
@@ -136,82 +212,100 @@ The constraints, each of which is a test the design must pass in section 4.8:
    convolver's partition schedule, the polysynth's eight-lane SIMD bank
    (`tutti-polysynth/src/kernel.rs`) are the kernels. Each step's bit-identity
    test is the proof that moving to the shape did not touch them (section 10).
-7. **A family's own cases are its own.** `rt60` and `decorrelated` are reverb
+7. **A class is a trait over structure.** An FDN answers `Lti` through its lines and its matrix, never by expanding to poles and zeros; a biquad through its five coefficients. No class trait names a data layout.
+8. **A family's own cases are its own.** `rt60` and `decorrelated` are reverb
    cases and stay in the reverb's module; the generic contract does not grow a
    union of every family's checks.
 
+
 ## 3. The inventory
 
-One row per algorithm. **Kernel today** says what runs now and whether its
-controls are already typed units (`Param<Hz>` and the like, per CLAUDE.md "Unit
-types"). **Fits** names the design (controls to model), the model and its exact
-queries; **Partly** says what fits; **No** says why the shape is wrong. Counts
-are in section 3.1.
+One row per algorithm, sorted by **class** (section 2.2); the **Class** column is
+the primary class of the algorithm's own behaviour at a frozen setting, with "(2)"
+where a moving control makes it class 2, "(1 lin.)" for class 1 only once
+linearised, "(comp.)" for a composite, "P" for a primitive or infrastructure, "M"
+for a measurement and "E" for event or discrete logic. **Kernel today** says what
+runs now and whether its controls are already typed units (`Param<Hz>` and the
+like, per CLAUDE.md "Unit types").
+
+**The verdict is derived from the class.**
+
+- **Fits** when the algorithm's whole behaviour is one class (or a composition of
+  classes, section 4.9) and the class's queries are exact for it. The row names the
+  design, the model and those queries.
+- **Partly** when the class fits but something in the algorithm is outside it: an
+  operator that is not in the class (a hold timer, a windowed minimum, an
+  attack/release switch, a `tanh` in a feedback loop), a kernel shape that is not
+  `Effect<M>`, a model that is data, or a layering that blocks the trait. The row
+  says which piece.
+- **No** when the algorithm is not a processor of a signal by a class: a
+  measurement (M), event or discrete logic (E), or a primitive below the shape
+  (P).
 
 ### 3.1 Tutti-dsp: filters, dynamics, time-based
 
-| # | Algorithm (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
-|---|---|---|---|---|
-| 1 | **State-variable filter**, eight responses (`tutti-dsp/src/filter/svf.rs`; nodes `SvfFilterNode`, `EqBandNode` in `tutti-nodes/src/filter/`) | `svf_step` over `SvfCoefficients<F>`; coefficients solved every 16 frames and `lerp`ed (`control.rs`, `svf.rs` `segments`). Typed: `Param<Hz>`, `Param<Q>`, `Param<Db>` | **Fits** | Design: `(SvfType, Hz, Q, Db, rate)` to the model, which is `SvfCoeffs` (`a1..a3`, `m0..m2`, already pure) plus the rate. Queries: `Response` exactly (the trapezoidal SVF is the bilinear map of the analogue prototype with `g = tan(pi fc / fs)`, `k = 1/Q`; the contract proves the claim against the kernel's impulse response), poles and `Stable` (`k > 0`), `Ringing` from the pole radius (the slowest pole of `s^2 + k s + 1`), `Latent` zero. Bell and shelf gains are in the response. A series stack of `EqBandNode`s has the product response (Q4) |
-| 2 | **Moog ladder**, LP12/LP24/HP12/HP24 (`filter/ladder.rs`, `LadderFilterNode`) | `ladder_step`, four stages with a `tanh` at the input (`ladder_step`), `LadderCoefficients`. Typed: `Hz`, `Resonance`, `Drive` | **Partly** | The small-signal model fits: design `(Hz, Resonance, rate)` to `(g1, k)`; `Response` of the linearised ladder (`(s/(1+s))^n` forms are in the type docs), `Stable` (resonance below the self-oscillation gain), `Ringing` (`Unbounded` at maximum resonance: it self-oscillates). The `tanh` makes the large-signal response drive-dependent, which `Response` does not claim: it is stated "small signal" and the contract measures it at an input level far below the `tanh` knee |
-| 3 | **Linkwitz-Riley crossover**, 2 to 6 bands (`filter/crossover.rs`, `CrossoverNode`) | `Crossover::split_block`; design and state fused in one struct (`set_frequency` re-solves). Typed: `Hz` | **Fits** | Design: `(frequencies, rate)` to per-split `Split` coefficients (already a private type). Multi-output `Response` (`outputs() = bands`): LP/HP at `fc` are -6.02 dB and in phase, the bands sum to unity magnitude (the file's own header states it), and the sum is the Butterworth all-pass. `Stable`, `Ringing`, `Latent` zero. Needs design and state separated, which is the one real refactor |
-| 4 | `Real` float trait (`filter/real.rs`) | `f32`/`f64` | **No** | A numeric abstraction below the shape. A kernel generic over `F: Real` is still one kernel |
-| 5 | **Compressor** (`dynamics/compressor.rs`, `curves.rs`; `CompressorNode`) | `CompressorKernel` (envelope + `EnvelopeFollower`), `CompressorBlock { threshold, knee, ratio, makeup_from, makeup_to }`. Typed: `Db`, `CompressionRatio`, `Seconds` | **Fits** | Design: `(threshold, knee, ratio, makeup, attack, release, rate)` to a model holding the curve and the two one-pole coefficients. Queries: `StaticCurve` (`compute_compressor_gain_reduction`, `In = Db`, `Out = Db`: zero below `threshold - knee/2`, the quadratic over the knee, slope `1 - 1/ratio` above), time constants (step response reaches 63% in `attack`), `Ringing` zero (silent in, silent out; the node declares no tail, `compressor.rs` line 443), `Latent` zero. `Readout`: `CompressorKernel::gain_reduction_db` exists |
-| 6 | **Gate** (`dynamics/gate.rs`; `GateNode`) | `GateKernel`, `GateEnvelopeFollower`, `GateBlock`. Typed: `Db`, `Seconds` | **Fits** | The settled curve is a step (range below the threshold, unity above: `gate_gain_at`), so `StaticCurve` is a degenerate one and the timing matters more: attack, hold and release as step-response queries. `Readout`: `is_open`/`gate_level` exist |
-| 7 | **Lookahead limiter** (`dynamics/limiter.rs`, `curves.rs`; `LimiterNode`) | `LookaheadRing`, `MonotonicMinDeque` for the window minimum, `LimiterCurve`. Typed: `Db`, `Seconds` | **Fits** | `StaticCurve` (`LimiterCurve::gain`: gain `ceiling - threshold` up to the threshold, `ceiling/peak` past it, so output `<= ceiling`), `Latent` = the lookahead (the node declares it, `limiter.rs` line 340), `Ringing` zero, `Readout` gain reduction. The lookahead is a build parameter of the design |
-| 8 | **Brickwall clip** (`limiter.rs` `brickwall_clip`; `BrickwallLimiterNode`) | one `clamp` | **Fits** | A memoryless `StaticCurve` over amplitude (`In = Out = f32`), `Latent` and `Ringing` zero. Trivial, and the same trait as the waveshaper (row 17) |
-| 9 | **Multiband compressor** (`MultibandCompressorNode`) | crossover plus a `CompressorKernel` per band | **Partly** | A composite: the crossover model (row 3) and one compressor model per band. Per-band `StaticCurve` and `Readout` (`gain_reduction_db(band)` exists). The summed `Response` is not a single model query (it is signal dependent). Fits as a model that holds sub-models |
-| 10 | **Envelope followers** (`dynamics/envelope.rs`; `EnvelopeFollowerNode` in `signal/follower.rs`) | `EnvelopeFollower`, `GateEnvelopeFollower`; the node outputs a control signal | **Partly** | A building block of rows 5 to 7, whose attack and release are their time-constant queries. The node is a measurement with a control output: its model is the two coefficients and a step response, with no response or curve to query |
-| 11 | **Delay line** (`delay.rs`, `buffer.rs` `CircularBuffer`; `DelayLineNode`) | `DelayLine::read_sample` with `InterpolationMode`, a per-channel `Ramp` of the time. Typed: `Seconds`, `Feedback`, `Mix` | **Fits** | Design: `(time, feedback, mix, interpolation, rate)` to a model of delay in fractional frames and loop gain. Queries: `Bounds` (the maximum delay, a build parameter, `delay.rs`), `Ringing` (`time x trips to the floor`, as the all-pass term of doc 022 section 3.1), `Stable` (`|feedback| < 1`, `Feedback::MAX_STABLE`), `Response` (the comb `1/(1 - g z^-D)` for the frozen setting), `Latent` zero (musical delay is not latency). The interpolation's droop is a term of `Fidelity` |
-| 12 | **Chorus and flanger** (`swept_delay.rs` `SweptLines`; `ModDelayNode` in `modulation/mod_delay.rs`) | `SweptLines::run`, LFO solved at control points and interpolated. Typed: `Seconds`, `Hz`, `Feedback`, `Mix`, `PhaseIncrement` | **Partly** | Fits: `Bounds` (`max_delay`), `Ringing` (`feedback_max` makes the tail exactly `max_delay` at none, per the type docs), `Stable`, the frozen comb `Response` at a sweep position, the LFO's period. Does not: a time-varying response has no single curve; the sidebands of a sinusoidal delay modulation (Bessel `J_n(beta)`) are a query only a chorus has |
-| 13 | **Phaser** (`allpass.rs` `allpass_coeff`, `allpass_chain`; `PhaserNode`) | the swept first-order all-pass chain. Typed: `Hz` range, `Depth`, `Feedback`, `Mix` | **Partly** | Fits: the all-pass phase at a sweep position is exact, so the notch frequencies and depths for a mix are a `Response` of the frozen chain; `Stable` (feedback), `Ringing`. Does not: the sweep is time-varying, as row 12 |
-| 14 | `interp.rs` `cubic_hermite`, `InterpolationMode` | four-point interpolation | **No** | A primitive below the shape. Its response is a term in rows 11 and 12 |
-| 15 | **Reverb**, Freeverb and the `Network` (`reverb.rs`, `reverb_design.rs`, `network/`) | on #367: `Freeverb` is the kernel; `FreeverbControls { room, damp }` | **Fits** | The first family: this is doc 022 |
-| 16 | **Partitioned convolver** (`convolver.rs`; `ConvolverNode`) | `Convolver`, `IrSpectra` behind an `Arc`, non-uniform levels from a cost model. Typed: `Mix`, `Amplitude` (`convolution/params.rs`) | **Fits** | Design: `(IR, block size B, quality)` to a model that carries what analysis needs: `Response` is the IR's FFT magnitude, `Ringing` the IR length, `Latent` = `B` (the file header: output at frame `n` is the convolution at `n - B`), `Bounds` the IR length and level plan. The IR is data, so the control path is a **published** model, not param cells (`ArcLend`, section 5.3). Doc 022's `FirSummary` is this model's reverb face |
+| # | Class | Algorithm (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
+|---|---|---|---|---|---|
+| 1 | 1 (2) | **State-variable filter**, eight responses (`tutti-dsp/src/filter/svf.rs`; nodes `SvfFilterNode`, `EqBandNode` in `tutti-nodes/src/filter/`) | `svf_step` over `SvfCoefficients<F>`; coefficients solved every 16 frames and `lerp`ed (`control.rs`, `svf.rs` `segments`). Typed: `Param<Hz>`, `Param<Q>`, `Param<Db>` | **Fits** | Design: `(SvfType, Hz, Q, Db, rate)` to the model, which is `SvfCoeffs` (`a1..a3`, `m0..m2`, already pure) plus the rate. Queries: `response` exactly (the trapezoidal SVF is the bilinear map of the analogue prototype with `g = tan(pi fc / fs)`, `k = 1/Q`; the contract proves the claim against the kernel's impulse response), poles and stability (`k > 0` gives radius below 1), `tail` from the pole radius (the slowest pole of `s^2 + k s + 1`), `latency` zero. Bell and shelf gains are in the response. A series stack of bands is `SeriesN` of this model (section 4.9) |
+| 2 | 4 (1 lin.) | **Moog ladder**, LP12/LP24/HP12/HP24 (`filter/ladder.rs`, `LadderFilterNode`) | `ladder_step`, four stages with a `tanh` at the input (`ladder_step`), `LadderCoefficients`. Typed: `Hz`, `Resonance`, `Drive` | **Partly** | The small-signal model fits: design `(Hz, Resonance, rate)` to `(g1, k)`; `response` of the linearised ladder (`(s/(1+s))^n` forms are in the type docs), stability (resonance below the self-oscillation gain), `tail` (`Unbounded` at maximum resonance: it self-oscillates). The `tanh` makes the large-signal response drive-dependent, which `response` does not claim: it is stated "small signal" and the contract measures it at an input level far below the `tanh` knee |
+| 3 | 1 (2) | **Linkwitz-Riley crossover**, 2 to 6 bands (`filter/crossover.rs`, `CrossoverNode`) | `Crossover::split_block`; design and state fused in one struct (`set_frequency` re-solves). Typed: `Hz` | **Fits** | Design: `(frequencies, rate)` to per-split `Split` coefficients (already a private type). Multi-output `response` (`outputs() = bands`): LP/HP at `fc` are -6.02 dB and in phase, the bands sum to unity magnitude (the file's own header states it), and the sum is the Butterworth all-pass. Stability, `tail`, `latency` zero. Needs design and state separated, which is the one real refactor |
+| 4 | P | `Real` float trait (`filter/real.rs`) | `f32`/`f64` | **No** | A numeric abstraction below the shape. A kernel generic over `F: Real` is still one kernel |
+| 5 | 4 | **Compressor** (`dynamics/compressor.rs`, `curves.rs`; `CompressorNode`) | `CompressorKernel` (envelope + `EnvelopeFollower`), `CompressorBlock { threshold, knee, ratio, makeup_from, makeup_to }`. Typed: `Db`, `CompressionRatio`, `Seconds` | **Fits** | Design: `(threshold, knee, ratio, makeup, attack, release, rate)` to `Gained<Wiener<Follower, GainMap>>` (section 4.9): a follower (`Lti`, one pole per direction) then the gain map (`StaticMap`) multiplying the input. Queries: `StaticMap` (`compute_compressor_gain_reduction`, `In = Db`, `Out = Db`: zero below `threshold - knee/2`, the quadratic over the knee, slope `1 - 1/ratio` above), time constants (step response reaches 63% in `attack`), `tail` zero (silent in, silent out; the node declares no tail, `compressor.rs` line 443), `latency` zero. `Readout`: `CompressorKernel::gain_reduction_db` exists |
+| 6 | 4 + E | **Gate** (`dynamics/gate.rs`; `GateNode`) | `GateKernel`, `GateEnvelopeFollower`, `GateBlock`. Typed: `Db`, `Seconds` | **Partly** | Class 4 plus event logic. Fits: the settled curve is a step (`gate_gain_at`: range below the threshold, unity above), so `StaticMap` is degenerate; attack and release are the smoother's time constants; `Readout`: `is_open`/`gate_level` exist. Does not: the **hold** is a timer (`GateEnvelopeFollower::step(gate_open: bool)`), a discrete state machine (class E) that no `Lti` or `StaticMap` query describes; it is an inherent query |
+| 7 | 4 | **Lookahead limiter** (`dynamics/limiter.rs`, `curves.rs`; `LimiterNode`) | `LookaheadRing`, `MonotonicMinDeque` for the window minimum, `LimiterCurve`. Typed: `Db`, `Seconds` | **Partly** | Class 4 with a delay and a windowed minimum. Fits: `StaticMap` (`LimiterCurve::gain`: gain `ceiling - threshold` up to the threshold, `ceiling/peak` past it, so output `<= ceiling`), `latency` = the lookahead (the node declares it, `limiter.rs` line 340), `tail` zero, `Readout` gain reduction. Does not: the detector is a sliding-window minimum (`MonotonicMinDeque`), a nonlinear operator that is not an LTI smoother, so the Wiener decomposition holds for steady input only and the attack is the lookahead by construction |
+| 8 | 3 | **Brickwall clip** (`limiter.rs` `brickwall_clip`; `BrickwallLimiterNode`) | one `clamp` | **Fits** | A memoryless `StaticMap` over amplitude (`In = Out = f32`), `latency` and `tail` zero. Trivial, and the same trait as the waveshaper (row 17) |
+| 9 | 4 (comp.) | **Multiband compressor** (`MultibandCompressorNode`) | crossover plus a `CompressorKernel` per band | **Partly** | A composite: `Series<Crossover, bands>` of the crossover model (row 3) and one compressor model per band (section 4.9). Per-band `StaticMap` and `Readout` (`gain_reduction_db(band)` exists). The summed `response` is not a single model query (it is signal dependent). Fits as a model that holds sub-models |
+| 10 | 4 | **Envelope followers** (`dynamics/envelope.rs`; `EnvelopeFollowerNode` in `signal/follower.rs`) | `EnvelopeFollower`, `GateEnvelopeFollower`; the node outputs a control signal | **Partly** | A building block of rows 5 to 7, whose attack and release are their time-constant queries. The node is a measurement with a control output: its model is the two coefficients and a step response, with no response or curve to query |
+| 11 | 1 (2) | **Delay line** (`delay.rs`, `buffer.rs` `CircularBuffer`; `DelayLineNode`) | `DelayLine::read_sample` with `InterpolationMode`, a per-channel `Ramp` of the time. Typed: `Seconds`, `Feedback`, `Mix` | **Fits** | Design: `(time, feedback, mix, interpolation, rate)` to a model of delay in fractional frames and loop gain. Queries: `Bounds` (the maximum delay, a build parameter, `delay.rs`), `tail` (`time x trips to the floor`, as the all-pass term of doc 022 section 3.1), stability (`|feedback| < 1`, `Feedback::MAX_STABLE`), `response` (the comb `1/(1 - g z^-D)` for the frozen setting), `latency` zero (musical delay is not latency). The interpolation's droop is a term of `Fidelity` |
+| 12 | 2 | **Chorus and flanger** (`swept_delay.rs` `SweptLines`; `ModDelayNode` in `modulation/mod_delay.rs`) | `SweptLines::run`, LFO solved at control points and interpolated. Typed: `Seconds`, `Hz`, `Feedback`, `Mix`, `PhaseIncrement` | **Fits** | Class 2. Design: `(base delay, depth, rate, feedback, mix, rate)` to a delay-line `Lti` with an internal LFO (`Varying`). Queries: the frozen comb `response`; `tail` (`feedback_max` makes it exactly `max_delay` at none, per the type docs); `spectral_radius` = `|feedback|`; `variation` = the LFO's rate and excursion. Family-only: the sidebands of a sinusoidal delay modulation (Bessel `J_n(beta)`) |
+| 13 | 2 | **Phaser** (`allpass.rs` `allpass_coeff`, `allpass_chain`; `PhaserNode`) | the swept first-order all-pass chain. Typed: `Hz` range, `Depth`, `Feedback`, `Mix` | **Fits** | Class 2. The all-pass chain at a sweep position is an exact `Lti` (first-order all-pass phase), so the notch frequencies and depths for a mix are its `response`; `Varying` declares the sweep; `spectral_radius` from the feedback; `tail` from it |
+| 14 | P | `interp.rs` `cubic_hermite`, `InterpolationMode` | four-point interpolation | **No** | A primitive below the shape. Its response is a term in rows 11 and 12 |
+| 15 | 1 (2) | **Reverb**, Freeverb and the `Network` (`reverb.rs`, `reverb_design.rs`, `network/`) | on `main`: `Freeverb` is the kernel; `FreeverbControls { room, damp }` | **Fits** | The first family: this is doc 022 |
+| 16 | 1 | **Partitioned convolver** (`convolver.rs`; `ConvolverNode`) | `Convolver`, `IrSpectra` behind an `Arc`, non-uniform levels from a cost model. Typed: `Mix`, `Amplitude` (`convolution/params.rs`) | **Fits** | Design: `(IR, block size B, quality)` to a model that carries what analysis needs: `response` is the IR's FFT magnitude, `tail` the IR length, `latency` = `B` (the file header: output at frame `n` is the convolution at `n - B`), `Bounds` the IR length and level plan. The IR is data, so the control path is a **published** model, not param cells (`ArcLend`, section 5.3). Doc 022's `FirSummary` is this model's reverb face |
 
 ### 3.2 Tutti-dsp: nonlinear, rate and format, infrastructure, analysis
 
-| # | Algorithm (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
-|---|---|---|---|---|
-| 17 | **Waveshaper** (`waveshape.rs` `ShapeKind`, `Shaper`; `DistortionNode`) | `Shaper::shape`, `shape_block*`; memoryless. Typed: `Drive` | **Fits** | Design: `(ShapeKind, drive)` to `Shaper` (already a value). `StaticCurve` with `In = Out = f32`. Exact queries from the curve: DC offset `eval(0)`, odd symmetry (`eval(-x) = -eval(x)`, hence no even harmonics for a sine), the harmonic amplitudes of a sine of amplitude `A` (the DFT of `eval(A sin t)` over one cycle, computed on the control side), and `Fidelity` as the aliasing bound (the highest harmonic above the floor against Nyquist; `Crush` is a quantiser and has none that decays). `Latent` and `Ringing` zero |
-| 18 | **FFT resampler** (`resample/fft.rs`, `streaming.rs`; `tutti-export` `process/resample.rs`) | `FftResampler::process_into_buffer`, `StreamingResampler`, `ChunkSize`. Plain `SampleRate` pair | **Partly** | Design, model and queries fit: `(source, target, chunk size)` to the ratio (exact, from `gcd`), `Latent` (`output_delay()` frames, a figure the file header already computes), `Response` of the windowed-sinc low-pass (passband ripple, stopband attenuation, cutoff), `Fidelity`. The kernel shape does not: input and output counts differ (`input_frames_next`, `output_frames_max`), so it is not an `Effect<M>`; it gets its own shape trait and no `DesignNode` |
-| 19 | **Dither** (`dither.rs`; `tutti-export` `process/dither.rs`) | `DitherNoise::apply` in place, xorshift32. Typed: `Amplitude` (the LSB) | **Partly** | The model is the noise's density: `Rectangular` has variance `lsb^2/12`, `Triangular` `lsb^2/6`, and the error power of a quantiser with it; these are the exact queries. It adds noise to silence, so `Ringing` is `Unbounded` and it never parks. In place, not planar in/out. One query (`noise power`) is not in the vocabulary; it is an inherent method, not a trait |
-| 20 | `control.rs` (`Ramp`, `segments`, `COEFF_INTERVAL`, `lane_group`) | helpers | **No** | The cadence machinery the node uses (section 4.5), not an algorithm |
-| 21 | `buffer.rs` (`CircularBuffer`, `MonotonicMinDeque`) | containers | **No** | Containers below the shape |
-| 22 | `fft/` (`RealFft`, `StagedRealFft`, `FftScratch`) | transforms | **No** | A primitive below the shape; the contract uses `RealFft` to measure responses |
-| 23 | `analysis/` (spectrum, loudness, pitch, tempo, onset, chroma, chord, key, notes, peaks, silence, stereo, vectorscope, align, beat, window, xcorr, yin, ...) | streaming config/state/step | **No** | Measurements, not processors. They have a design (a window length fixes the frequency resolution `fs/N` and the latency) but no sound to realise; the pattern that fits them is a config, an analyser, and a `Readout`-like result, which this design does not cover |
-| 24 | `tutti-export` `pump_blocks` pipeline | driver | **No** | A pipeline that uses rows 18 and 19, not an algorithm |
+| # | Class | Algorithm (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
+|---|---|---|---|---|---|
+| 17 | 3 | **Waveshaper** (`waveshape.rs` `ShapeKind`, `Shaper`; `DistortionNode`) | `Shaper::shape`, `shape_block*`; memoryless. Typed: `Drive` | **Fits** | Design: `(ShapeKind, drive)` to `Shaper` (already a value). `StaticMap` with `In = Out = f32`. Exact queries from the curve: DC offset `eval(0)`, odd symmetry (`eval(-x) = -eval(x)`, hence no even harmonics for a sine), the harmonic amplitudes of a sine of amplitude `A` (the DFT of `eval(A sin t)` over one cycle, computed on the control side), and `Fidelity` as the aliasing bound (the highest harmonic above the floor against Nyquist; `Crush` is a quantiser and has none that decays). `latency` and `tail` zero |
+| 18 | 6 | **FFT resampler** (`resample/fft.rs`, `streaming.rs`; `tutti-export` `process/resample.rs`) | `FftResampler::process_into_buffer`, `StreamingResampler`, `ChunkSize`. Plain `SampleRate` pair | **Partly** | Design, model and queries fit: `(source, target, chunk size)` to the ratio (exact, from `gcd`), `latency` (`output_delay()` frames, a figure the file header already computes), `response` of the windowed-sinc low-pass (passband ripple, stopband attenuation, cutoff), `Fidelity`. The kernel shape does not: input and output counts differ (`input_frames_next`, `output_frames_max`), so it is not an `Effect<M>`; it gets its own shape trait and no `DesignNode` |
+| 19 | 5 | **Dither** (`dither.rs`; `tutti-export` `process/dither.rs`) | `DitherNoise::apply` in place, xorshift32. Typed: `Amplitude` (the LSB) | **Partly** | The model is the noise's density: `Rectangular` has variance `lsb^2/12`, `Triangular` `lsb^2/6`, and the error power of a quantiser with it; these are the exact queries. It adds noise to silence, so `tail` is `Unbounded` and it never parks. In place, not planar in/out. One query (`noise power`) is not in the vocabulary; it is an inherent method, not a trait |
+| 20 | P | `control.rs` (`Ramp`, `segments`, `COEFF_INTERVAL`, `lane_group`) | helpers | **No** | The cadence machinery the node uses (section 4.5), not an algorithm |
+| 21 | P | `buffer.rs` (`CircularBuffer`, `MonotonicMinDeque`) | containers | **No** | Containers below the shape |
+| 22 | P | `fft/` (`RealFft`, `StagedRealFft`, `FftScratch`) | transforms | **No** | A primitive below the shape; the contract uses `RealFft` to measure responses |
+| 23 | M | `analysis/` (spectrum, loudness, pitch, tempo, onset, chroma, chord, key, notes, peaks, silence, stereo, vectorscope, align, beat, window, xcorr, yin, ...) | streaming config/state/step | **No** | Measurements, not processors. They have a design (a window length fixes the frequency resolution `fs/N` and the latency) but no sound to realise; the pattern that fits them is a config, an analyser, and a `Readout`-like result, which this design does not cover |
+| 24 | P | `tutti-export` `pump_blocks` pipeline | driver | **No** | A pipeline that uses rows 18 and 19, not an algorithm |
 
 ### 3.3 Tutti-nodes: the rest
 
-| # | Node (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
-|---|---|---|---|---|
-| 25 | **LFO and modulators** (`lfo.rs`, `modulator.rs`; `ModulatorNode<Wave>`) | `Wave` (in `tutti-modulation`) is already a pure `cycles -> value` function. Typed: `Hz`, `Depth`, `PhaseIncrement` | **Partly** | The model is the kernel: there is no second thing to hold it to. The exact queries (period, range, Fourier series of a saw, triangle, square) are inherent methods on `Wave`. `Wave` is in `tutti-modulation`, which depends on `tutti-types` alone, so it cannot implement `tutti-dsp`'s traits (layering, section 9) |
-| 26 | **Note envelope** (`signal/note_envelope.rs`; `NoteEnvelopeNode`), `Adsr` in `tutti-types/src/value/adsr.rs` | segments sent to control lanes | **Fits** | A generator. Design: `(Adsr, curve, rate)` to the segment list; queries: segment durations, total time to a level, `Ringing` = release time to the floor |
-| 27 | **Click** (`click.rs`; `ClickNode`) | transport-driven source reading `Env` per frame | **No** | A function of the transport, not of controls; its sound is a table. Nothing to analyse that is not the table |
-| 28 | `ramp.rs` (`LastGood`, `block_driven`, `clamp_finite`) | helpers | **No** | The control reads every node shares; the generic node uses them (section 5) |
-| 29 | **Automation and control lanes** (`automation/lane.rs`, `control_lane.rs`, `recording.rs`) | a curve evaluated at the beat | **No** | The model is user data (a curve) and already a pure function of position |
-| 30 | **Channel sum** (`mix_bus.rs`; `ChannelSumNode`) | summing | **No** | Plain summing: no controls, no design |
-| 31 | **Bus strip** (`strip.rs`; `BusStripNode`) | gain, balance, mute: `balance_gains` | **Fits** | Design: `(Amplitude, Pan, mute)` to a 2x2 gain matrix. Queries: the matrix, unity at centre, flat `Response`. Small, and the same kind of model as `Fold` (row 32): a gain matrix |
-| 32 | **Downmix and `Fold`** (`downmix_unit.rs`; `tutti-types/src/fold.rs`) | `Fold` is built on the control side and applied without allocating | **Fits** | Already the split: `Fold` is the model (a gain matrix), `Fold::frame` the kernel. Queries: the matrix, power preservation, `FoldError`. `Fold` is in `tutti-types` and cannot implement `tutti-dsp` traits, so a wrapper in `tutti-nodes` would |
-| 33 | `reconcile.rs` | graph editing | **No** | Modulation reconciliation (doc 014), not an algorithm |
+| # | Class | Node (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
+|---|---|---|---|---|---|
+| 25 | 5 | **LFO and modulators** (`lfo.rs`, `modulator.rs`; `ModulatorNode<Wave>`) | `Wave` (in `tutti-modulation`) is already a pure `cycles -> value` function. Typed: `Hz`, `Depth`, `PhaseIncrement` | **Partly** | The model is the kernel: there is no second thing to hold it to. The exact queries (period, range, Fourier series of a saw, triangle, square) are inherent methods on `Wave`. `Wave` is in `tutti-modulation`, which depends on `tutti-types` alone, so it cannot implement `tutti-dsp`'s traits (layering, section 9) |
+| 26 | 5 (+E) | **Note envelope** (`signal/note_envelope.rs`; `NoteEnvelopeNode`), `Adsr` in `tutti-types/src/value/adsr.rs` | segments sent to control lanes | **Fits** | A generator. Design: `(Adsr, curve, rate)` to the segment list; queries: segment durations, total time to a level, `tail` = release time to the floor |
+| 27 | 5 + E | **Click** (`click.rs`; `ClickNode`) | transport-driven source reading `Env` per frame | **Partly** | Class 5 triggered by class E. Fits: the click's waveform is a table, a generator with a known spectrum and duration. Does not: *when* it sounds is a function of the transport (`Env::for_each_beat`), event logic outside any signal class |
+| 28 | P | `ramp.rs` (`LastGood`, `block_driven`, `clamp_finite`) | helpers | **No** | The control reads every node shares; the generic node uses them (section 5) |
+| 29 | E | **Automation and control lanes** (`automation/lane.rs`, `control_lane.rs`, `recording.rs`) | a curve evaluated at the beat | **No** | The model is user data (a curve) and already a pure function of position |
+| 30 | 1, order 0 | **Channel sum** (`mix_bus.rs`; `ChannelSumNode`) | summing | **Partly** | Class 1 at order 0: a gain matrix of ones, so `response` is flat and `spectral_radius` is 0. It fits trivially and has nothing to design: no controls, so no `Design` and nothing for `Describe` |
+| 31 | 1, order 0 (2) | **Bus strip** (`strip.rs`; `BusStripNode`) | gain, balance, mute: `balance_gains` | **Fits** | Design: `(Amplitude, Pan, mute)` to a 2x2 gain matrix. Queries: the matrix, unity at centre, flat `response`. Small, and the same kind of model as `Fold` (row 32): a gain matrix |
+| 32 | 1, order 0 | **Downmix and `Fold`** (`downmix_unit.rs`; `tutti-types/src/fold.rs`) | `Fold` is built on the control side and applied without allocating | **Fits** | Already the split: `Fold` is the model (a gain matrix), `Fold::frame` the kernel. Queries: the matrix, power preservation, `FoldError`. `Fold` is in `tutti-types` and cannot implement `tutti-dsp` traits, so a wrapper in `tutti-nodes` would |
+| 33 | E | `reconcile.rs` | graph editing | **No** | Modulation reconciliation (doc 014), not an algorithm |
 
 ### 3.4 Instruments and the other crates
 
-| # | Algorithm (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
-|---|---|---|---|---|
-| 34 | **Polysynth oscillators** (`tutti-polysynth/src/kernel.rs`: `sine`, `saw` and `pulse` with PolyBLEP/PolyBLAMP, `triangle`, `white`, `pink`) | `f32x8` lanes, no state, called from `bank.rs` | **Fits** | A generator. Design: `(OscillatorType, frequency, pulse width, rate)` to a model; queries: harmonic amplitudes (saw `1/n`, square odd `1/n`), the aliasing bound after PolyBLEP (`Fidelity`). The SIMD kernel is exactly the thing that must not be reshaped (section 2, constraint 6) |
-| 35 | **Polysynth envelope** (`bank.rs`, `Adsr`) | straight-line stages converted to per-sample slopes | **Fits** | The ADSR model of row 26, with `Ringing` = release |
-| 36 | **Unison and portamento** (`unison.rs`, `portamento.rs`) | `UnisonEngine`, `Portamento` | **Fits** | Small pure designs: unison to a table of detune, pan and gain per voice (`UnisonVoiceParams`); portamento to a glide curve and time |
-| 37 | **Voice allocation** (`voice.rs`) | stateful allocator | **No** | Already `tutti-voicing`'s `Voicing::step`, a pure step over state; a different pattern with its own contract |
-| 38 | **SoundFont envelopes** (`tutti-soundfont/src/volume_envelope.rs`, `modulation_envelope.rs`) | dB-linear stages from SF2 timecents | **Fits** | Segment durations are exact (the file's tests assert a stage falls 100 dB in its time); `Ringing` = release to the floor |
-| 39 | **SoundFont LFO** (`lfo.rs`) | delay then a triangle at a frequency | **Partly** | Period and delay are exact; row 25's remarks apply |
-| 40 | **SoundFont low-pass biquad** (`bi_quad_filter.rs`) | `set_low_pass_filter(cutoff, resonance)` then `process` | **Fits** | A biquad: the same `Response`, `Stable`, `Ringing` as row 1, with its model a coefficient set. `tutti-soundfont` does not depend on `tutti-dsp` yet; it would |
-| 41 | **SoundFont voice render** (`render.rs`, `voice.rs`, `region_ex.rs`; the generator sum of SF2 9.4) | sample playback with interpolation, oscillator | **Partly** | The design half is pure and fits: SF2 generators (cents, timecents, centibels) to voice parameters through the 9.3 conversions. The sample-playback oscillator is a resampling read whose model is a pitch ratio and a loop; no response to speak of |
-| 42 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `Latent` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `Response`; the kernel consumes at a variable rate (`input_rate`), so not an `Effect<M>` |
-| 43 | **Sampler butler and voices** (`tutti-sampler/src/butler/`, `voice/`) | streaming I/O | **No** | I/O and scheduling, not an algorithm |
-| 44 | **VBAP** (`tutti-spatial/src/vbap/`) | `VbapPanner::solve_block` with angle smoothing | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the kernel's |
-| 45 | **HRTF binaural** (`tutti-spatial/src/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `Response` is the HRIR's FFT, `Ringing` is `ir_len - 1` (`ring_out`), `Latent` the delay compensation. Published like row 16 |
+| # | Class | Algorithm (where) | Kernel today and controls | Verdict | Design, model, queries, or why not |
+|---|---|---|---|---|---|
+| 34 | 5 | **Polysynth oscillators** (`tutti-polysynth/src/kernel.rs`: `sine`, `saw` and `pulse` with PolyBLEP/PolyBLAMP, `triangle`, `white`, `pink`) | `f32x8` lanes, no state, called from `bank.rs` | **Fits** | A generator. Design: `(OscillatorType, frequency, pulse width, rate)` to a model; queries: harmonic amplitudes (saw `1/n`, square odd `1/n`), the aliasing bound after PolyBLEP (`Fidelity`). The SIMD kernel is exactly the thing that must not be reshaped (section 2, constraint 6) |
+| 35 | 5 | **Polysynth envelope** (`bank.rs`, `Adsr`) | straight-line stages converted to per-sample slopes | **Fits** | The ADSR model of row 26, with `tail` = release |
+| 36 | 1 / table | **Unison and portamento** (`unison.rs`, `portamento.rs`) | `UnisonEngine`, `Portamento` | **Fits** | Small pure designs: unison to a table of detune, pan and gain per voice (`UnisonVoiceParams`); portamento to a glide curve and time |
+| 37 | E | **Voice allocation** (`voice.rs`) | stateful allocator | **No** | Already `tutti-voicing`'s `Voicing::step`, a pure step over state; a different pattern with its own contract |
+| 38 | 5 | **SoundFont envelopes** (`tutti-soundfont/src/volume_envelope.rs`, `modulation_envelope.rs`) | dB-linear stages from SF2 timecents | **Fits** | Segment durations are exact (the file's tests assert a stage falls 100 dB in its time); `tail` = release to the floor |
+| 39 | 5 | **SoundFont LFO** (`lfo.rs`) | delay then a triangle at a frequency | **Fits** | Class 5, `Periodic`: a delay, then a triangle at a frequency; period and delay are exact. (Row 25's layering problem does not apply: `tutti-soundfont` owns its LFO and may take a `tutti-dsp` edge, as row 40 notes) |
+| 40 | 1 (2) | **SoundFont low-pass biquad** (`bi_quad_filter.rs`) | `set_low_pass_filter(cutoff, resonance)` then `process` | **Fits** | A biquad: the same `response`, stability and `tail` as row 1, with its model a coefficient set. `tutti-soundfont` does not depend on `tutti-dsp` yet; it would |
+| 41 | 6 | **SoundFont voice render** (`render.rs`, `voice.rs`, `region_ex.rs`; the generator sum of SF2 9.4) | sample playback with interpolation, oscillator | **Partly** | The design half is pure and fits: SF2 generators (cents, timecents, centibels) to voice parameters through the 9.3 conversions. The sample-playback oscillator is a resampling read whose model is a pitch ratio and a loop; no response to speak of |
+| 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `response`; the kernel consumes at a variable rate (`input_rate`), so not an `Effect<M>` |
+| 43 | E | **Sampler butler and voices** (`tutti-sampler/src/butler/`, `voice/`) | streaming I/O | **No** | I/O and scheduling, not an algorithm |
+| 44 | 1, order 0 | **VBAP** (`tutti-spatial/src/vbap/`) | `VbapPanner::solve_block` with angle smoothing | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the kernel's |
+| 45 | 1 (2) | **HRTF binaural** (`tutti-spatial/src/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `response` is the HRIR's FFT, `tail` is `ir_len - 1` (`ring_out`), `latency` the delay compensation. Published like row 16 |
 
 Whether the instruments' controls are typed units was not audited row by row.
 What the code shows: `Adsr` is `Seconds` and `Amplitude`
@@ -225,204 +319,258 @@ justify (CLAUDE.md "Unit types").
 
 | Verdict | Rows | Count |
 |---|---|---|
-| Fits | 1, 3, 5, 6, 7, 8, 11, 15, 16, 17, 26, 31, 32, 34, 35, 36, 38, 40, 44, 45 | **20** |
-| Partly | 2, 9, 10, 12, 13, 18, 19, 25, 39, 41, 42 | **11** |
-| No | 4, 14, 20, 21, 22, 23, 24, 27, 28, 29, 30, 33, 37, 43 | **14** |
+| Fits | 1, 3, 5, 8, 11, 12, 13, 15, 16, 17, 26, 31, 32, 34, 35, 36, 38, 39, 40, 44, 45 | **21** |
+| Partly | 2, 6, 7, 9, 10, 18, 19, 25, 27, 30, 41, 42 | **12** |
+| No | 4, 14, 20, 21, 22, 23, 24, 28, 29, 33, 37, 43 | **12** |
 
-The 14 "no" rows are of three kinds, and the kind says what to do with them. Eight
-are **infrastructure or primitives** (4, 14, 20, 21, 22, 24, 28, 33): they sit
-below or beside the shape and need nothing. Four are **not processors of
-controls** (23 analysis, 27 click, 29 lanes, 30 sum): their sound is data or
-a measurement. Two are **a different pattern that exists already** (37, a pure
-step over state, in `tutti-voicing`; 43, I/O). None is "no" because the shape
+Changes against the algorithm-first reading, each forced by the class: the gate
+(6) and limiter (7) move from Fits to Partly, because a hold timer and a
+sliding-window minimum are not in class 4's LTI-plus-map; chorus and flanger (12)
+and the phaser (13) move to Fits, because slowly varying LTI is a class with exact
+frozen queries, not a leftover; the SoundFont LFO (39) moves to Fits as a
+`Periodic` generator; the click (27) and the channel sum (30) move from No to
+Partly, because the click's waveform is a generator and the sum is an order-0 LTI
+with nothing to design.
+
+### 3.6 Counts by class, and what each needs
+
+| Class | Rows | Count | Traits it needs | Notes |
+|---|---|---|---|---|
+| 1. LTI, order 1 or more | 1, 3, 11, 15, 16, 40, 45, 36 (portamento) | 8 | `Causal`, `Lti` | the filters, delay, reverb, convolver, HRTF; all become class 2 when a lane moves a control |
+| 1. LTI, order 0 (gain matrix) | 30, 31, 32, 44 | 4 | `Causal`, `Lti` | `Fold`, VBAP, strip, sum |
+| 2. Slowly varying LTI | 12, 13 | 2 | `Lti`, `Varying` | chorus, flanger, phaser; the FDN's modulated lines are the reverb's (row 15) |
+| 3. Memoryless nonlinear | 8, 17 | 2 | `Causal`, `StaticMap` | waveshaper, brickwall |
+| 4. Stateful nonlinear | 2, 5, 6, 7, 9, 10 | 6 | `Wiener`, `Hammerstein`, `Gained`, `StaticMap`, `Readout` | the ladder only linearises to class 1 |
+| 5. Autonomous generators | 19, 25, 26, 27, 34, 35, 38, 39 | 8 | `Generator`, `Periodic`, `Segmented`, `Noise` | oscillators, LFOs, envelopes, noise, click waveform |
+| 6. Multirate, time-scale | 18, 41, 42 | 3 | per-family; the prototype is an `Lti` | own kernel shape |
+| M. Measurements | 23 | 1 | none | `Readout`-like results |
+| E. Event or discrete logic | 29, 33, 37, 43 | 4 | none | the gate's hold and the click's trigger are class E inside rows 6 and 27 |
+| P. Primitives and infrastructure | 4, 14, 20, 21, 22, 24, 28 | 7 | none | below or beside the shape |
+
+(Row 36 is counted in class 1 for its portamento, a first-order slew; its unison
+half is a parameter table with no signal. Rows total 45.)
+
+The 12 "no" rows are of three kinds, and the kind says what to do with them. Seven
+are **primitives or infrastructure** (4, 14, 20, 21, 22, 24, 28): they sit below or
+beside the shape and need nothing. One is a **measurement** (23). Four are **event
+or discrete logic** (29, 33, 37, 43): a state machine or user data, with a pure
+step of its own where one exists (`tutti-voicing`). None is "no" because the shape
 bends to it.
 
-### 3.6 Which capability each family answers
-
-`L` = `Latent` and `R` = `Ringing` (every model answers both). A dash is "not
-claimed", and the reason is in section 3.1 to 3.4.
-
-| Family (row) | Stable | Response | StaticCurve | Readout | Fidelity | Graded | Family-only queries |
-|---|---|---|---|---|---|---|---|
-| Reverb (15) | yes | none | none | none | none | no | `rt60`, bands, densities, freeze, `min_delay` |
-| SVF, biquad (1, 40) | yes | yes | none | none | none | no | poles, Q |
-| Ladder (2) | yes | small signal | none | none | none | no | self-oscillation |
-| Crossover (3) | yes | multi-output | none | none | none | no | sum is all-pass |
-| Compressor (5) | yes | none | yes | gain reduction | none | no | step response |
-| Gate (6) | yes | none | step | open/level | none | no | hold, attack, release |
-| Limiter (7) | yes | none | yes | gain reduction | none | no | lookahead |
-| Brickwall, waveshaper (8, 17) | yes | none | yes | none | aliasing | would (oversampling) | DC, harmonics |
-| Delay (11) | yes | comb | none | none | interpolation droop | no | max delay |
-| Chorus, flanger, phaser (12, 13) | yes | frozen | none | none | none | no | sidebands, notches |
-| Convolver (16) | yes | IR spectrum | none | none | none | yes (partition) | IR length |
-| Resampler (18) | yes | low-pass | none | none | stopband | yes (kernel length) | ratio |
-| Dither (19) | yes | none | none | none | noise floor | no | noise power |
-| Stretch (42) | no | none | none | none | none | yes (FFT size) | duration ratio |
-| VBAP, fold, strip (31, 32, 44) | yes | flat | none | none | none | no | gain matrix |
-| HRTF (45) | yes | HRIR spectrum | none | none | none | no | ITD |
-| Envelope, oscillator (26, 34, 35, 38) | n/a | none | none | none | aliasing (osc) | no | segments, spectrum |
 
 ## 4. The traits
 
 All in `tutti-dsp`, in a new neutral module (section 9). Sketches are Rust against
-the real code: `Setup`, `Effort`, `Channels` and `Ring` are on #367 and `main`
-and move unchanged.
+the real code (`Setup`, `Effort`, `Channels`, `Ring`, `Design`, `Kernel`, `Ceiling`
+and `Bounds` are on `main` since #367 and move as described). They were
+type-checked in a scratch crate outside the repo.
 
-### 4.1 `Design`, `Model`, `Bounds`
+### 4.1 `Design`: the parameter map
 
 ```rust
-/// A description of what one setting of an algorithm does, readable without
-/// running it.
-pub trait Model: Latent + Ringing + Sized {
-    type Bounds: Bounds;
-    /// A model for `rate` with nothing in it: what `design_into` overwrites.
-    fn empty(rate: SampleRate) -> Self;                   // Network::new(rate)
-    /// This model's size, or its tail measured to `floor`.
-    fn bounds(&self, floor: Db) -> Self::Bounds;          // Bounds::of
-}
-pub trait Bounds: Copy + PartialEq {
-    /// Whether this bound holds `other` in every figure.
-    fn dominates(&self, other: &Self) -> bool;            // today's Bounds::dominates
-}
-
-/// The pure function from a family's controls to its model.
+/// The pure function from a family's controls to the parameters of a system.
 pub trait Design: Clone + Send {
     type Controls: Copy + PartialEq + Send;               // as today
-    type Model: Model;                                    // new
-    type Range: Copy;                                     // new: Ceiling's family part
-    type Kernel: Kernel<Self::Model>;                     // generalised
-    const CADENCE: Cadence = Cadence::Block;              // new, section 4.5
+    type Model: Causal;                                   // new: a class trait, section 4.2
+    type Kernel: Kernel<Self::Model>;                     // generalised, section 4.3
+    // engineering (section 4.4), not math:
+    type Bounds: Bounds;  type Range: Copy;
+    const CADENCE: Cadence = Cadence::Block;
 
     fn channels(&self) -> Channels;
+    fn blank(&self, rate: SampleRate) -> Self::Model;     // Network::new(rate)
     fn design_into(&self, c: &Self::Controls, rate: SampleRate, out: &mut Self::Model);
-    fn design(&self, c: &Self::Controls, rate: SampleRate) -> Self::Model { /* empty + design_into */ }
-    fn bounds(&self, ceiling: &Ceiling<Self::Range>) -> <Self::Model as Model>::Bounds;
+    fn design(&self, c: &Self::Controls, rate: SampleRate) -> Self::Model { /* blank + design_into */ }
+    fn bounds(&self, ceiling: &Ceiling<Self::Range>) -> Self::Bounds;   // worst case over the controls
+    fn measure(&self, model: &Self::Model, floor: Db) -> Self::Bounds;  // today's Bounds::of
     fn kernel(&self) -> Self::Kernel;
 }
 ```
 
-Why `design_into` stays the required method: a `Network` is 56 KB and cannot be
-built by value on an audio thread (doc 022 "Step 1a as built"). The other models
-are a few dozen bytes, where in-place is merely harmless; one signature serves
-both. Why `Model::empty`: the provided `design` needs to build a value for the
-control side, a test and a UI, and `Network::new(rate)` is exactly that.
+Differences from `main`: `type Model` is any class trait, not `Network`; `Bounds`
+is the design's (engineering) and no longer part of the model, so the model trait
+states only mathematics; `blank` and `measure` are the two things the old
+`Network::new` and `Bounds::of` did, now on the design that owns the sizes.
+`design_into` stays the required method: a `Network` is 56 KB and cannot be built
+by value on an audio thread (doc 022 "Step 1a as built"); a biquad is a few dozen
+bytes and in place is merely harmless.
 
-**`Bounds` and `Ceiling`, generalised.** Today's `Bounds` is a struct of the
-reverb's sizes; here it is the model's associated type (`Network` keeps its
-struct as it is). `Ceiling` is the node's declared limits: the rate, the
-level a tail is measured to, and the family's own range of a control.
+### 4.2 The model: one trait per class
+
+A class trait states the invariants of its mathematical kind. Each is a trait over
+**structured representations**: it names the question and leaves the answer to the
+model's own structure.
 
 ```rust
-pub struct Ceiling<R> { rate: SampleRate, floor: Db, range: R }   // validated as today
-// Reverb: R = MaxDecay(Seconds), capped at 60 s as Ceiling::MAX_DECAY_CAP is.
-// SVF, compressor, VBAP: R = ().
-// Delay: R = MaxDelay(Seconds). Limiter: R = MaxLookahead(Seconds) if lookahead is a range.
+/// A causal map from input signals to output signals: every processor's latency and tail.
+pub trait Causal {
+    /// Processing latency, in frames: never a pre-delay, a delay time or a tap spacing.
+    fn latency(&self) -> Samples;
+    /// How long the output lasts after the input ends, to `floor`. `Finite(0)` if memoryless.
+    fn tail(&self, floor: Db) -> Ring;
+}
+
+/// Class 1. A linear time-invariant system (order 0: a gain matrix).
+pub trait Lti: Causal {
+    fn inputs(&self) -> usize { 1 }
+    fn outputs(&self) -> usize { 1 }
+    /// H(e^jw) from every input to `output` at each frequency. Control side; may allocate.
+    fn response(&self, output: usize, freqs: &[Hz], gain: &mut [Complex64]);
+    /// An upper bound on the spectral radius of the state map; stable iff below 1.
+    fn spectral_radius(&self) -> f64;
+    /// An upper bound on the l1 norm of the impulse response (the peak for |x| <= 1).
+    fn gain_bound(&self) -> f64;
+    fn is_stable(&self) -> bool { self.spectral_radius() < 1.0 }
+    fn dc_gain(&self) -> f64 { /* |response at 0 Hz| */ }
+    // provided: magnitude, phase, group_delay, from `response`
+}
+
+/// Class 3. A memoryless nonlinearity.
+pub trait StaticMap: Causal {
+    type In: Copy;  type Out: Copy;
+    fn eval(&self, x: Self::In) -> Self::Out;
+    fn max_gain(&self) -> f64;                            // sup |f(x)/x|, for boundedness
+    // provided for f32 -> f32: dc(), is_odd(), harmonics(amplitude, &mut [Complex64])
+}
+
+/// Class 5. An autonomous generator. Not `Causal`: it has no input to end.
+pub trait Generator { fn range(&self) -> (f32, f32); }
+pub trait Periodic:  Generator { fn frequency(&self) -> Hz; fn harmonic(&self, k: usize) -> Complex64; }
+pub trait Segmented: Generator { fn durations(&self, out: &mut [Seconds]) -> usize; }   // an envelope
+pub trait Noise:     Generator { fn variance(&self) -> f64; fn psd(&self, f: Hz) -> f64; }
+
+/// The worst-case departure of a model from the ideal it approximates (the aliasing floor of a
+/// shaper, the stopband of a resampler, an interpolator's droop). Lower is better. A property of
+/// the model relative to an ideal, so it hangs off the model, not the kernel.
+pub trait Fidelity { fn error_floor(&self) -> Db; }
 ```
 
-`Ceiling::new` keeps the rate and floor checks and takes `R`'s own validation from
-`R`'s constructor, so `Ceiling<()>` has the checks and nothing else. A bound that
-a design cannot make dominate its own designs fails `bounds_dominate` in the
-contract, as it does for the reverb today.
+How each class answers through its own structure, and what it is **not**:
 
-### 4.2 `Kernel<M>` and the block shape
+- **`Lti` through structure, not poles.** A biquad answers `response` from its five
+  coefficients and `spectral_radius` from its two poles. A reverb `Network` answers
+  from its stages: a diagonal comb bank sums the comb responses; an FDN evaluates
+  `c^T (I - A D(w) G)^-1 b` over its own lines and orthogonal matrix, never forming
+  a pole-zero list of order `sum of lengths`; its `spectral_radius` is the bound it
+  already has (`rt60_bound`'s slowest per-frame decay times `max(||A||, 1)`,
+  doc 022 "Step 1a as built") and its `gain_bound` is the L1 bound its kernel
+  contract already computes (`KernelCase::peak_bound`). Both are *sufficient*
+  bounds, stated as such, and the contract measures that the truth is under them.
+  A convolver answers from its IR. `tail` defaults, for a model that gives only its
+  spectral radius, to the transit plus `ln(10^(floor/20)) / ln r` frames; a model
+  with a tighter structured answer overrides it (the reverb does).
+- **Latency is declared, not derived.** `Causal::latency` is the *processing* delay
+  (a lookahead, a partition); `group_delay` is a response-derived query and a
+  different thing (an IIR has group delay and no latency). The contract measures
+  the first non-zero output against `latency`.
+- **`StaticMap` is the only class whose answers are exact and cheap.** DC, odd
+  symmetry and the harmonics of a sine of amplitude `A` come from `eval` alone (the
+  DFT of `eval(A sin t)` over one cycle, on the control side).
+- **`Generator` is not `Causal`.** An oscillator has no input whose end starts a
+  tail. An envelope driven by a note has a release, which is a `Segmented` duration
+  (the release segment), and a tail is reported by the node only when it has an audio input (a
+  `Causal` wrapper, not the generator).
+- **Class 2 is `Lti` plus `Cadence`**, with one extra declaration for a model that
+  moves `theta` itself (chorus, phaser, a modulated FDN):
+
+  ```rust
+  /// A model whose own parameters move (an LFO inside it). (proposal)
+  pub trait Varying: Lti { fn variation(&self) -> Variation; }   // { rate: Hz, excursion } 
+  ```
+
+  The contract checks the slow assumption against it (section 6): the variation's
+  rate must be small against `rate / CADENCE`.
+- **Class 4 and 6 have no trait of their own in this document.** Class 4 is a
+  composition (section 4.9); class 6 gets its model traits with the resampler in
+  step 7 (a `Ratio` query, the prototype as an `Lti`), because the resampler's
+  kernel shape is not `Effect<M>` and its queries are small.
+
+**Why a trait per class, with queries hanging from it.** A fat `Queries` trait
+needs a default for every query a family lacks, so a contract cannot tell "no
+answer" from "wrong answer", and a UI cannot tell a flat response from an absent
+one. With a trait per class the question "does this model have a response" is a
+bound, answered at compile time (the scratch crate refuses `lti_realises` for a
+model that is only `Causal`). The class also makes the contract **once per class**
+(section 6): a case needs a model and a realisation, and the class says what to
+measure. The cost is one `impl` per class and no run-time discovery of "what can
+this model do", which a UI that holds a `dyn` would want; the node builds its
+`Describe` surface at construction, where the type is known (section 7).
+
+A query that only one family answers stays an inherent method of its model
+(`Network::rt60`, `echo_density`, `is_lossless`; a chorus's sidebands). It becomes
+a trait when a second family answers it and one contract case covers both.
+
+### 4.3 `Kernel<M>`: a realisation
 
 ```rust
-/// The runtime that realises a model.
-pub trait Kernel<M: Model>: Send + Sized {
-    fn prepare(&mut self, bounds: &M::Bounds, setup: &Setup);   // control side; allocates
-    fn retarget(&mut self, model: &M);                          // audio thread; no allocation
+/// One realisation of a model: a state-space structure that computes its input-output map.
+pub trait Kernel<M>: Send + Sized {
+    fn prepare(&mut self, setup: &Setup);                 // control side; allocates
+    fn retarget(&mut self, model: &M);                    // audio thread; samples theta; no allocation
     fn reset(&mut self);
     fn latency(&self) -> Samples { Samples::ZERO }
-    fn effort(&self) -> Effort { Effort::Heavy }
+    fn effort(&self) -> Effort { Effort::Heavy }          // engineering
     #[must_use] fn fresh(&self) -> Self;
 }
-
 /// The planar block shape a graph node drives.
-pub trait Effect<M: Model>: Kernel<M> {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]);
-}
-```
-
-Why the kernel is generic over the model and not an associated type of the
-design: **one kernel, several designs.** The SVF design and an RBJ-cookbook
-design both produce a coefficient model; the SoundFont's biquad (row 40) and the
-SVF's `Biquad`-shaped queries can share a kernel type; a second reverb design with
-the same stages shares Freeverb's kernel. The kernel is tied to the model it
-realises, not to who produced it. A kernel for two models is two impls.
-
-Why `process` is not in `Kernel<M>`: constraint 4. `Effect<M>` is the shape a
-`DesignNode` drives. A resampler, a stretcher and an oscillator bank implement
-`Kernel<M>` for the lifecycle and the contract, and a different shape trait for
-their block. The contract's measuring helpers render through a small harness
-trait (`Render`, **(proposal)**) that each shape implements, so the same
-measurement (an impulse, a tone burst, a noise run) works for any of them.
-
-Everything else is the reverb's `Kernel` unchanged: `prepare` sizes from bounds
-and never inspects a model, `retarget` allocates nothing, `process` overwrites
-`output` with the processed signal (for an effect with a dry path, the **wet**
-signal; mixing is the node's), and `fresh` is the fork rule of doc 022.
-
-### 4.3 Capability traits
-
-One small trait per query. The reasons not to use one fat `Queries` trait:
-
-- A fat trait needs a default for every query a family lacks (`None`, `Unknown`,
-  `NaN`), so a contract cannot tell "no answer" from "wrong answer", and a UI
-  cannot tell a flat response from an absent one. With separate traits the
-  question "does this model have a response" is a bound, answered at compile time.
-- Every family would pay for the union in its docs and in its impl.
-- Bounds compose: `where D::Model: Response + Stable`. A contract case that needs
-  a capability states it in its signature, and the scratch crate confirms that
-  `response_case(&CompDesign, ..)` fails to compile with "`CompModel: Response`
-  is not satisfied".
-
-The cost: one `impl` line per capability, and no run-time discovery of "what can
-this model do", which a UI that holds a `dyn` would want. That is answered where
-the type is still known: the node builds its `Describe` surface at construction
-(section 7). The names `Latent` and `Ringing` avoid `tutti_types::Latency` and
-`tutti_types::Tail`, which are the graph's wrappers of the same facts.
-
-| Trait | One-sentence boundary | Signature (sketch) |
-|---|---|---|
-| `Latent` | Processing latency, in frames, that a model declares | `fn latency(&self) -> Samples` (`Network::latency` today). Never a pre-delay or a delay time |
-| `Ringing` | How long a model's output lasts after its input ends | `fn tail(&self, floor: Db) -> Ring` (`Network::tail` today); `Finite(0)` for a memoryless model |
-| `Stable` | Whether a model's recursion is bounded | `fn is_stable(&self) -> bool` (`Network::is_stable` today). A sufficient test, as the reverb's |
-| `Response` | The complex gain from an input to an output of a linear model at given frequencies | `fn outputs(&self) -> usize { 1 }`; `fn response(&self, output: usize, freqs: &[Hz], gain: &mut [Complex64])`; provided `magnitude`, `phase`, `group_delay`. Linear and time-invariant at the frozen setting; a model with a nonlinearity says "small signal" in its docs |
-| `StaticCurve` | A memoryless map from a level to a level that a model settles to | `type In; type Out; fn eval(&self, x: Self::In) -> Self::Out`. Compressor: `Db -> Db` (reduction); waveshaper: `f32 -> f32` |
-| `Fidelity` | The worst-case departure of a model from its ideal | `fn error_floor(&self) -> Db`: aliasing, stopband, interpolation droop, quantisation. Lower is better |
-
-Two are on the **kernel**, not the model, because they are about what runs:
-
-```rust
-/// A value a running kernel reports about itself, the deepest since last taken.
+pub trait Effect<M>: Kernel<M> { fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]); }
+/// What a running kernel reports about itself, the deepest since last taken: y = C s.
 pub trait Readout { type Value: Copy; fn take(&mut self) -> Self::Value; }
 ```
 
-`Readout` is state (gain reduction is not a function of the controls), so it
-cannot be a model query. `Graded` is on the design:
+`Kernel<M>` no longer takes `bounds` in `prepare`: the sizes are the design's
+(`Design::bounds`), and a kernel that needs them takes them in its constructor
+(`Design::kernel` has the design), so the kernel trait names no engineering type.
+(On `main` `prepare(&Bounds, &Setup)` does; moving it is a one-line change per
+kernel, and step 1 may instead keep an associated `type Bounds` on `Kernel`.
+Q16.)
 
-```rust
-/// A design with a quality tier (doc 023 G5); section 4.7.
-pub trait Graded: Design { fn quality(&self) -> Quality; #[must_use] fn with_quality(self, q: Quality) -> Self; }
-```
+**The model is the equivalence class and the kernel is one realisation.** The
+trait says so by being generic over the model rather than an associated type of
+the design: *one model, several kernels*. The SVF, a transposed-direct-form-II
+biquad and a lattice all implement `Kernel<Biquad>`; the scratch crate holds the
+three with one `realise!` line each, and the class case runs over all of them. A
+second reverb design with Freeverb's stages shares Freeverb's kernel. A kernel is
+tied to the model it realises, not to who produced it. Which realisation is best
+is the kernel's concern and an engineering one: the SVF stays stable under fast
+modulation, a lattice under coefficient quantisation, TDF-II is cheapest at fixed
+coefficients, and none of that is visible in `H(z)`.
 
-Queries a single family has stay inherent methods of its model (`Network::rt60`,
-`echo_density`, `is_lossless`; a shaper's `harmonics`). A query graduates to a
-trait when a second family answers it and a contract case is written once for both.
-The test: two implementers and one case.
+`process` is not in `Kernel<M>`: constraint 4. A resampler, a stretcher and an
+oscillator bank implement `Kernel<M>` for the lifecycle and the contract and a
+different shape trait for their block. The contract's measuring helpers render
+through a small harness trait (`Render`, **(proposal)**) that each shape
+implements, so the same measurement (an impulse, a tone burst, a noise run) works
+for any of them.
 
-### 4.4 What a model must answer, and what it may
+### 4.4 The engineering layer
 
-`Latent` and `Ringing` are supertraits of `Model`, because every node declares
-both in its `Shape` (`Shape::with_latency`, `with_tail`) and the park/cut logic of
-the node needs only these two. A memoryless model answers `Finite(0)`; the
-compressor and limiter answer zero too (the nodes declare `Tail::None`: a tail
-excludes latency, and the gain follower multiplies the input, so silence in is
-silence out). Dither's
-`Unbounded` is the honest answer for a kernel that makes sound from silence.
-Everything else is opt-in.
+Everything in this subsection sizes or schedules a realisation. None of it is a
+property of the mathematical object, and none is on a class trait.
 
-### 4.5 Cadence: how often the design is solved
+| Item | What it is | Where |
+|---|---|---|
+| `Bounds` | the sizes a kernel allocates for the worst case of a design (lines, taps, IR length, max delay); `dominates` | `Design::Bounds`, `Design::bounds`, `Design::measure` |
+| `Ceiling<R>` | the limits a node builds to: the rate, the level a tail is measured to, the family's range `R` of a control (`MaxDecay` for the reverb, `MaxDelay` for a delay, `()` for a filter) | argument of `Design::bounds` |
+| `Effort` | `Light`, `Moderate` or `Heavy`: what scheduling class the realisation merits | `Kernel::effort` |
+| `Cadence` | how often `theta` is sampled inside a block (section 4.5) | `Design::CADENCE` |
+| `Quality` | which realisation tier is built (section 4.7) | `Graded`, a field of the design |
+
+`Ceiling<R>` keeps today's validation (a positive finite rate, a decay in
+`(0, 60]` s, a floor below 0 dB); `R`'s own constructor validates `R`. A bound
+that a design cannot make dominate its own designs fails `bounds_dominate` in the
+contract, as it does for the reverb today. The reverb's `Bounds` struct is
+unchanged and becomes `FreeverbDesign::Bounds`.
+
+
+### 4.5 Cadence: sampling `theta(t)`
+
+A model is a system `S_theta`; in operation `theta` moves with the controls, so
+the node runs a *family*. `Cadence` is the **sampling of `theta(t)`**: the
+slowly-varying assumption made explicit as a number. It is engineering in the
+sense of section 4.4 (it schedules a realisation) and mathematics in one respect:
+the family is only a good model of the running system if `theta` is slow against
+the sampling, and `Varying::variation` lets a contract check it.
 
 ```rust
 pub enum Cadence {
@@ -452,16 +600,18 @@ the owner warned against. So per-frame lanes are not a `Cadence`; they are a
 second, optional kernel shape (**(proposal)** `Driven<M>`: `process_driven(input,
 output, lane)`, chosen by the node on a block whose port is `Frames`), or the node
 keeps its own `process` and adopts the model and the contract only. Section 11 Q3
-recommends deciding that against the code in step 3, and states the fallback,
+recommends deciding that against the code in step 4, and states the fallback,
 which loses nothing: the dynamics get their curves, readouts and contract either way.
+
 
 ### 4.6 The control side of a node
 
-`ReverbParams` (on #367) is the `Param` cells of an algorithm and how a block
+`ReverbParams` (on `main`) is the `Param` cells of an algorithm and how a block
 reads them. It is generic already and gets a neutral name (`ControlParams`) and two
 changes: `read` takes the frame to read at (the segment's last frame, for
 `Every(n)`; the block's last frame, as today, for `Block`), and the `longest` hook
 becomes declarative where it can (section 8.2). `tutti-dsp` still holds no `Param`.
+
 
 ### 4.7 Quality (doc 023 G5) as a design input
 
@@ -478,11 +628,20 @@ pub enum Quality { Draft, Standard, High, Best }
 impl Quality { pub fn from_au(render_quality: u32) -> Self { /* 4 bands of 0..=127 */ } }
 ```
 
+```rust
+/// A design with a quality tier (proposal). Engineering: it selects a realisation tier.
+pub trait Graded: Design { fn quality(&self) -> Quality; #[must_use] fn with_quality(self, q: Quality) -> Self; }
+```
+
+`Quality` is engineering (section 4.4): it chooses which realisation is built. Its
+*consequences* are the model's queries (`Causal::latency`, `tail`, `Fidelity`), so
+the math object a tier describes is still honest about what the tier does.
+
 It enters **as part of the design value (`&self`), not `Controls`**, because it
-changes `Bounds` (what is allocated) and often `Latent`. A control is retargeted
+changes `Bounds` (what is allocated) and often `Causal::latency`. A control is retargeted
 per block; a quality change is a rebuild through the graph's `crossfade`, as
 doc 022 section 5.1 already says of any structural change. `Graded` is the
-capability a design implements to say so. The model records the consequence in its
+trait a design implements to say so. The model records the consequence in its
 queries, so nothing about quality is invisible: latency changes, the tail changes,
 `Fidelity::error_floor` improves.
 
@@ -491,51 +650,124 @@ the model's `Fidelity` is non-increasing in dB, `Kernel::effort` is non-decreasi
 and `Bounds` of a lower tier is dominated by a higher one. Doc 023 says G5 is read
 only from AU on the plugin side; a native node reads it as a field.
 
-### 4.8 Three families against the traits
+### 4.8 Families against the traits
 
-The test the owner's caution sets: the sketch must not bend to one family. Each of
-these three was written out and compiled in the scratch crate.
+The test the owner's caution sets: the sketch must not bend to one family. Four
+families were written out and compiled in the scratch crate; none needed another's
+field, and none carries a method it does not answer.
 
-**Filter (SVF).** The model is a coefficient set; no state; the kernel is today's
-`svf_step`.
+**Filter (SVF), class 1 (2 under modulation).** The model is a coefficient set;
+the kernel is today's `svf_step`.
 
 ```rust
 #[derive(Clone, Copy)] pub struct SvfModel { /* SvfCoeffs + rate + type */ }
-impl Latent  for SvfModel { /* 0 */ }
-impl Ringing for SvfModel { /* pole radius r = |z|: tail = ln(10^(floor/20)) / ln r frames */ }
-impl Stable  for SvfModel { /* k > 0 */ }
-impl Response for SvfModel { /* H(z) from g, k, m0..m2 */ }
+impl Causal for SvfModel { /* latency 0; tail from the pole radius */ }
+impl Lti    for SvfModel { /* H(z) from g, k, m0..m2; spectral_radius from the poles; gain_bound */ }
 impl Design for SvfDesign {
     type Controls = SvfControls;          // { ty: SvfType, freq: Hz, q: Q, gain: Db }
-    type Model = SvfModel; type Range = (); type Kernel = SvfKernel;
-    const CADENCE: Cadence = Cadence::Every(NonZeroUsize::new(COEFF_INTERVAL).unwrap());
-    /* design_into = SvfCoeffs::new + rate; bounds = a trivial () */
+    type Model = SvfModel; type Kernel = SvfKernel; type Bounds = (); type Range = ();
+    const CADENCE: Cadence = Cadence::Every(COEFF_INTERVAL);       // 16
 }
 impl Kernel<SvfModel> for SvfKernel { /* retarget stores `next`; process lerps across the segment */ }
 impl Effect<SvfModel> for SvfKernel { /* svf_step over lane groups (control.rs LANES) */ }
+// More realisations of the same model, none changing the model:
+impl Kernel<SvfModel> for Tdf2Kernel { .. }   impl Kernel<SvfModel> for LatticeKernel { .. }
 ```
 
-**Dynamics (compressor).** No `Response`; a `StaticCurve`; a readout on the kernel.
+**Dynamics (compressor), class 4 as a composition.** No frequency response: it is not
+linear. The settled curve is the gain map seen through the detector's DC gain.
 
 ```rust
-impl StaticCurve for CompressorModel { type In = Db; type Out = Db;
-    fn eval(&self, x: Db) -> Db { compute_compressor_gain_reduction(x, self.threshold, self.ratio, self.knee) } }
-impl Latent for CompressorModel { /* 0 */ }  impl Ringing for CompressorModel { /* Finite(0) */ }
-impl Readout for CompressorKernel { type Value = Db; fn take(&mut self) -> Db { /* deepest since last take */ } }
+type CompressorModel = Gained<Wiener<Follower, GainMap>>;      // section 4.9
+impl StaticMap for GainMap { type In = Db; type Out = Db; fn eval(&self, x: Db) -> Db { /* compute_compressor_gain_reduction */ } }
+impl Lti       for Follower { /* one pole per direction: attack, release */ }
+impl Readout   for CompressorKernel { type Value = Db; fn take(&mut self) -> Db { /* deepest since last take */ } }
 ```
 
-**Reverb.** No `Response`; the family's own queries stay inherent.
+**Reverb, class 1 (2 with modulated lines), structured.** No dense pole list.
 
 ```rust
-impl Model for Network { type Bounds = reverb::Bounds; /* empty = Network::new, bounds = Bounds::of */ }
-impl Latent for Network {} impl Ringing for Network {} impl Stable for Network {}
-impl Design for FreeverbDesign { type Model = Network; type Range = MaxDecay; type Kernel = Freeverb; /* Cadence::Block */ }
+impl Causal for Network {}                // latency, tail (rt60_bound), as today
+impl Lti    for Network {}                // response: comb sums / FDN solve over its own structure
+impl Design for FreeverbDesign { type Model = Network; type Bounds = reverb::Bounds; type Range = MaxDecay; type Kernel = Freeverb; }
 ```
 
-None of the three needed another's field, and none carries a method it does not
-answer. The reverb's `Bounds` struct, the filter's `()` and the compressor's `()`
-are three different `Bounds`. The filter is the only `Every(n)`; the compressor
-alone has a `Readout`.
+**A gain matrix, class 1 at order 0.** `Fold`, VBAP, the strip: `Lti` with
+`spectral_radius() == 0.0`, `latency() == 0`, `tail() == Finite(0)`, `response`
+the matrix at every frequency. The same trait answers the smallest family and the
+largest, which is the check that the class is the right unit.
+
+### 4.9 Composition
+
+The classes compose, and the queries compose with them, so a model can say what it
+is made of. Composition is a **type-level combinator over models**, each
+answering its class's queries from its parts with a stated bound. It is not a
+runtime graph: `Series<A, B>` is a type with two fields and no interpreter, and a
+kernel for it is either two kernels run in order or one hand-fused kernel that
+realises the same model (the model does not care).
+
+| Combinator | Class of the result | Response | Latency | Tail | Stability | Gain bound |
+|---|---|---|---|---|---|---|
+| `Series<A, B>` (A then B) | `Lti` if both | `H_B H_A` (a matrix product when multi-channel; exact) | `l_A + l_B` (exact) | `tail_A(f - g_B) + tail_B(f - g_A)`, where `g_X = 20 log10 max(1, gain_bound_X)`: a bound, so that the residue of each part passed through the other stays under the floor (the proof is a step-3 obligation, with the contract's measured tail as the safety net) | preserved: radius `max(r_A, r_B)` | product |
+| `Parallel<A, B>` (A + B, aligned) | `Lti` if both | `H_A z^-(L - l_A) + H_B z^-(L - l_B)`, `L = max(l_A, l_B)` | `max(l_A, l_B)` (the shorter branch is delayed to align) | `max(t_A, t_B)` (tail excludes latency, so the alignment delays cancel) | preserved: `max(r_A, r_B)` | sum |
+| `SeriesN<M, N>` (N of one model, a runtime count up to `N`) | `Lti` if `M` is | product over the bands | sum | as `Series` | preserved | product |
+| `Wiener<L, S>` (LTI then static map) | class 4: `StaticMap` for the settled curve | no response (nonlinear); the settled curve is `S(L.dc_gain * x)` | `L`'s | `L`'s | bounded if `L` is stable and `S` has a finite `max_gain`: `gain_bound(L) * max_gain(S)` | |
+| `Hammerstein<S, L>` (map then LTI) | class 4 | no response; settled curve `L.dc_gain * S(x)` | `L`'s | `L`'s | as `Wiener` | |
+| `Gained<W>` (a gain computed from a detector path multiplies the input) | class 4 | none; the settled gain curve is `W`'s | `W`'s | zero (silence in, silence out) | bounded by `max_gain` of the gain curve | |
+
+```rust
+pub struct Series<A, B>(pub A, pub B);       // sketched and compiled in the scratch crate
+pub struct Parallel<A, B>(pub A, pub B);
+impl<A: Lti, B: Lti> Lti for Series<A, B>   { /* response multiplies; radius max; gain_bound multiplies */ }
+impl<A: Lti, B: Lti> Lti for Parallel<A, B> { /* response adds (with alignment); radius max; gain_bound adds */ }
+impl<L: Lti, S: StaticMap<In = f32, Out = f32>> StaticMap for Wiener<L, S> { /* eval = S(L.dc_gain * x) */ }
+```
+
+What composition does **not** include, deliberately: **feedback.** Closing a loop
+around a composite does not preserve stability (it needs a small-gain argument and
+a bound that depends on the loop), so the FDN's recirculation stays inside its
+model as structure, and a user-level feedback composition is not offered (Q17).
+Series and parallel of LTI models preserve stability exactly; that is the property
+the algebra is built on.
+
+**Kernels compose by the same rule, optionally.** A `Series` kernel runs its parts'
+kernels in order over a scratch plane and a `Parallel` kernel runs both and sums,
+each part keeping its own hand-optimised loop. Nothing forces it: a fused kernel
+may realise `Parallel<Taps, Network>` as one loop, and it is held to the same
+`Lti` contract as the composition of the parts. A composite's contract is the
+class's contract (section 6): the composite inherits the impulse-response,
+ring-time and stability cases without a new line.
+
+**The reverb `Network` relates to this as a structured model.** `Network` is
+class 1 (class 2 when its lines are modulated) whose internal stage chain
+(`Stage::{Taps, AllPass, Fdn, Fir}` in `network.rs`) is *already a series
+composition*, held as a runtime list because a design chooses how many stages
+there are. Its `response` is the product of its stages' responses, its `latency`
+the sum, its `tail` the series bound, in the same algebra: the rules above are
+written once as free functions over `Lti` parts and used both by the type-level
+`Series` and by `Network`'s fold over its list. Two carriers, one algebra. The
+runtime list stays for the stage chain and the type-level combinators are for
+compositions a design fixes in its type.
+
+**It resolves two open problems.**
+
+1. **Reverb step 3b** (early reflections in parallel with the late tail), which
+   doc 022 "Step 1a as built" marks a BLOCKER because the series chain "cannot
+   express a parallel branch". The model for a reverb with an early stage is
+   `Parallel<Taps, Network>`: the early reflections are a FIR `Lti` (latency 0),
+   the late tail is the FDN `Network`; the sum aligns their latencies and takes
+   the longer tail. `Network` is not changed (no `Stage::Parallel`, and its series
+   queries `tail`, `min_delay` and the densities stay valid inside each branch);
+   `min_delay` and `has_direct_path` of the sum are the minimum over the
+   branches. The kernel is `Parallel<TapsKernel, Freeverb or FdnKernel>` or a
+   fused one.
+2. **Doc 024's old Q4** (the curve of a series EQ chain). A parametric EQ is one
+   design whose model is `SeriesN<SvfModel, N>`: its `response` is the product of
+   the bands, exactly, its stability is the radius of the worst band, its ring time
+   the slowest. A chain of *separate graph nodes* is the application's product of
+   each node's `Describe::curve` (they are different nodes; no model spans them).
+   There is no `Chain` model to invent.
+
 
 ## 5. The generic node
 
@@ -556,15 +788,15 @@ pub struct DesignNode<D: NodeDesign> { /* design, kernel, params, mode, blend, r
 
 ### 5.1 What it carries, and what is optional
 
-| Part | Source today (on #367) | Per family |
+| Part | Source today (on `main`) | Per family |
 |---|---|---|
 | The control path: cells, modulated ports read per block, audio-thread redesign in place when the controls changed | `ReverbNode::process`, `ReverbParams::read`, `apply` | **Always.** Doc 022's finding holds for every family: a lane writes the node's *port*, never its cell, so only the audio thread sees a modulated value |
 | `Fixed` vs `Live` mode (a send with no cells declares the exact tail of its one model) | `Mode::{Fixed, Live}`, `fixed()` | Always; a family with no `Fixed` use never calls `fixed` |
-| The tail report and the `ring` high-water rule | `io.report_tail(tail_of(self.ring))` | **Always**, from `Model: Ringing` (a mandatory supertrait) |
+| The tail report and the `ring` high-water rule | `io.report_tail(tail_of(self.ring))` | **Always**, from `Model: Causal::tail` |
 | `longest()` for the tail over a block | `ReverbParams::longest` | Only for a family whose model has a controllable tail: `Params::longest` returns `None` by default; section 8.2 makes it a declared direction |
-| Parking: scan for the last non-zero input frame, owe `ring + latency` frames, cut to the frame, `reset`, `Status::Idle` | the body of `process` | **Always**, and uniformly from `Ringing`: a memoryless model owes zero frames; dither's `Unbounded` never parks; a kernel that lies about its tail is caught by `assert_honest_tail` (doc 013 step 0b) and the node contract |
+| Parking: scan for the last non-zero input frame, owe `ring + latency` frames, cut to the frame, `reset`, `Status::Idle` | the body of `process` | **Always**, and uniformly from `Causal::tail`: a memoryless model owes zero frames; dither's `Unbounded` never parks; a kernel that lies about its tail is caught by `assert_honest_tail` (doc 013 step 0b) and the node contract |
 | Dry/wet | `mix: Param<Mix>`, `DryAlign`, the blend loop | **Optional through `D::Blend`**: a reverb, delay or chorus has a wet; a filter, a compressor or a panner has none |
-| A readout | not on #367 | **Optional through `D::Readouts`** |
+| A readout | not on `main` | **Optional through `D::Readouts`** |
 | Fork | `fork_fresh`: design clone, `Kernel::fresh`, cells detached, `ParamNode` | Always; export forks with preroll (doc 013) |
 | Shape | `Shape::audio(..).with_cost(effort).with_latency(kernel.latency()).with_tail(ceiling).with_param_addrs(..)` | Always; `Cost` is a `match` over `Effort` |
 
@@ -610,77 +842,90 @@ largest piece of the convolution step (section 10) and is not needed by steps 1 
 `param_graph_node!(DesignNode<D>)` is one line per `D`, as for the reverb today;
 `bevy-tutti` composes nothing new (`scripts/check-adapter.sh` holds). The old node
 names stay as type aliases where they are public API: `FreeverbNode =
-DesignNode<FreeverbDesign>` already is one on #367, and `SvfFilterNode<F>`,
+DesignNode<FreeverbDesign>` already is one on `main`, and `SvfFilterNode<F>`,
 `CompressorNode` and the others would become aliases of `DesignNode` over their
 designs (Q9 covers the inherent methods those nodes expose today, such as
 `SvfFilterNode::frequency()` returning an `Arc<AtomicF32>`).
 
+
 ## 6. The contract machinery
 
-Parameterised by capability, in `tutti-dsp::contract` (section 9). Doc 022's
-`design_contract!` and `kernel_contract!` split into a **core** that every family
-runs and **capability groups** a family opts into. Every figure is analytic or
-from the spec, never another implementation's render (CLAUDE.md, "Do not compare
-a render against another reference render in a new test").
+Written **once per class**, in `tutti-dsp::contract` (section 9). A realisation of
+a model inherits every case of the model's class; a composite inherits the cases of
+its result class; a family adds only the cases that are its own. Doc 022's
+`design_contract!` and `kernel_contract!` become a **core** every family runs and
+**class groups** a family opts into by naming its class. Every figure is analytic
+or from the spec, never another implementation's render (CLAUDE.md, "Do not
+compare a render against another reference render in a new test"). The cases are
+the *realisation check* of section 2.1: they measure the kernel's input-output map
+and compare it to the model's invariant.
 
-### 6.1 Core cases (every family)
+### 6.1 Core cases (every class)
 
-These are the generic cases already on #367, with the reverb's figure replaced
-where it was one:
+The generic cases already in the kernel contract (on `main`), with the reverb's
+figure replaced where it was one:
 
 | Case | Figure | Mutant |
 |---|---|---|
 | Pure | same controls give the same model; non-finite controls leave the last good ones; `design_into` under `assert_no_alloc` | read a clock |
-| Bounds dominate | `bounds()` holds `design()` for every reachable control | undersize by one |
-| Latency | `Kernel::latency()` equals `Model::latency()` equals the measured shift of the first output sample | return 0 |
+| Bounds dominate | `bounds()` holds `measure(design())` for every reachable control | undersize by one |
+| Latency | `Kernel::latency()` equals `Causal::latency()` equals the measured shift of the first output sample | return 0 |
 | Reset, fresh | bit-identical to a freshly built kernel at the same controls | `reset` does nothing; `fresh` shares state |
 | Block independence | blocks of 1, 17, 64, 512 bit-identical (time-domain kernels; a convolver within a declared round-off) | a block-dependent ramp |
 | Click-free retarget | a step of the controls mid-signal: the largest jump within a small factor of the steady-state bound | apply a coefficient unslewed |
 | No allocation | `retarget` and `process` under `assert_no_alloc` with changing models | n/a (it is the gate) |
 
 The no-allocation case needs a counting allocator, which needs `unsafe` that a
-`forbid(unsafe_code)` library cannot hold; today it is `tests/network_alloc.rs`.
-The machinery ships it as a macro (`no_alloc_contract!`) that a family expands in
-its own `tests/` file, where the crate may define the allocator.
+`forbid(unsafe_code)` library cannot hold (today `tests/network_alloc.rs`). The
+machinery ships it as a macro (`no_alloc_contract!`) that a family expands in its
+own `tests/` file.
 
-### 6.2 Capability groups
+### 6.2 Class groups
 
-Each group is a set of functions bounded on its capability, plus a case trait that
-supplies what only the family knows (probes and tolerances). The reverb's present
-`DesignCase`/`KernelCase` split by capability.
-
-| Capability | Design case (no kernel) | Kernel-realises-model case | Mutant pattern |
+| Class | Design case (no kernel) | Realisation case (kernel against model) | Mutant pattern |
 |---|---|---|---|
-| `Ringing` | `tail` is non-decreasing along the family's slower-pair list (`decay_pairs`, `q_pairs`); `Unbounded` exactly when the family says lossless | measured time from input end to each of -40, -60, -90 dB (the loudest windowed RMS the render reached is the reference, as 022's `tail_covers`) is **within** `tail(floor)`, and `tail` is **not more than a declared slack above it** (tightness: a lazily huge tail fails) | halve `tail` (covers fails); double it (tightness fails); scale a loop gain by 1.03 |
-| `Stable` | `is_stable` for the whole reachable grid; refuses hostile controls (design clamps) | 60 s of noise at the extreme controls is finite and under the family's peak bound | a loop gain above 1; a pole outside the unit circle |
-| `Response` | the model's magnitude at the family's **anchors** equals the spec: LP at `fc` is -3.01 dB at Butterworth Q, a bell's centre is its gain exactly, a shelf is half its gain at `fc`, LR4 is -6.02 dB at `fc` and the bands sum flat | the FFT (`RealFft`) of the kernel's impulse response against `Response::magnitude` over a log grid, within the family's dB tolerance, and the phase where declared | detune the cutoff 2% (the skirt moves 0.2 dB or more); swap Q; drop a zero |
-| `StaticCurve` | monotone where the family says (compressor reduction is non-decreasing in level; slope at most `1 - 1/ratio`); zero below the knee; the limiter's output never above the ceiling; a waveshaper's symmetry and bound | a **level sweep**: a steady tone (or DC) at each level, the envelope settled (at least five release constants), the measured gain against `eval(level)` within the tolerance. A memoryless curve is exact to the ulp | threshold +1 dB; ratio off by 10%; ignore the knee |
-| `Readout` | (kernel only) | after the sweep, `take()` equals the curve at the level, and also equals the gain measured on the output (two kernel facts that must agree); `take()` is zero when idle and clears what it took | flip the sign; report the gain before makeup |
-| `Fidelity` | `error_floor` is non-increasing across `Graded` tiers | a measured aliasing/ripple/quantisation floor (a tone near Nyquist through a shaper; a swept tone through a resampler) is not above `error_floor` | drop the anti-alias; shorten the kernel |
-| `Graded` | `Bounds` of a lower tier dominated by a higher; `Effort` non-decreasing | the tier's `Latent` equals its measured latency | a tier that changes nothing |
-| Core with family cases | the family's own (`rt60`, `band_order`, `line_lengths`, freeze for the reverb; `ring_from_poles` for a filter; `sum_flat` for the crossover; attack/release constants for dynamics) | same | each its own |
+| **`Lti`** (1; also 2 at frozen `theta`) | `spectral_radius` below 1 on the whole reachable grid and the radius is a true bound on the poles where they are cheap; `response` at the family's **anchors** equals the spec (LP at `fc` is -3.01 dB at Butterworth Q; a bell's centre is its gain; a shelf is half its gain at `fc`; LR4 is -6.02 dB at `fc` and the bands sum flat); `tail` non-decreasing along the family's slower pairs; order 0: `spectral_radius == 0`, `tail == 0` | **Membership:** the kernel is linear (`f(a+b) = f(a)+f(b)`, `f(ka) = k f(a)`) and shift-invariant (a delayed input gives the delayed output) at the frozen setting, within rounding. **Response:** the `RealFft` of the impulse response against `response`, magnitude (and phase where declared) on a log grid. **Ring time:** the measured decay rate against `spectral_radius`, the measured time to -40, -60, -90 dB within `tail(floor)` (covers) and `tail` not above a declared slack over it (tight). **Stability:** 60 s of noise at the extreme controls finite and under `gain_bound`. **DC:** the measured DC gain against `dc_gain` | add a `tanh` (membership fails); detune the cutoff 2% (response fails); halve `tail` (covers); double it (tight); a pole outside the unit circle (stability) |
+| **`Varying`** (2) | the declared `variation` rate is slow against `rate / CADENCE` | at a segment's end the kernel's frozen response **is** the model's (a response check after the segment) | a kernel that never reaches the target |
+| **`StaticMap`** (3) | monotone where the family says; `max_gain` bounds `eval`; the limiter's output never above the ceiling; a shaper's symmetry and bound | **Memoryless:** shuffling the input samples shuffles the output (no state). **Level sweep:** a steady tone or DC at each level against `eval(level)`, exact to the ulp for a memoryless kernel. **Harmonics:** the DFT of a sine through the kernel against `harmonics`; DC against `dc` | threshold +1 dB; ignore the knee; make it stateful |
+| **Class 4 composites** (`Wiener`, `Hammerstein`, `Gained`) | the settled curve of the composite equals the map at the LTI part's DC gain; `max_gain` bounds it | **Level sweep with the envelope settled** (at least five of the slowest constant) against the settled curve; **step response** reaches 63% in the LTI part's time constant; `Readout::take` equals the curve at the level and equals the gain measured on the output (two kernel facts that must agree); `take` clears what it took | threshold +1 dB; flip the readout's sign; report the gain before makeup |
+| **`Periodic`** (5) | `harmonic(k)` decays as the family says (saw `1/k`) | the measured fundamental (autocorrelation) against `frequency`; the DFT lines against `harmonic(k)`; the aliasing floor against `Fidelity` | detune the phase increment; drop the band-limiting |
+| **`Segmented`** (5) | `durations` non-negative and sum to the total | the measured time to each threshold crossing against the segment durations (the SoundFont tests already assert that a stage falls 100 dB in its time) | a decay stage one constant short |
+| **`Noise`** (5) | `variance` is the closed form of the shape | the measured variance and spectrum over a long run | triangular treated as rectangular |
+| **Multirate** (6) | ratio exact; latency a whole number of frames | output frames equal `ratio x input`; a swept tone's stopband against the prototype's `Lti` response | a kernel one frame short |
+| **`Graded`** (any) | `Fidelity::error_floor` non-increasing across tiers; `Bounds` of a lower tier dominated by a higher; `Effort` non-decreasing | the tier's `Causal::latency` equals its measured latency | a tier that changes nothing |
+
+Because the cases are bounded on the class, a kernel for a *different* realisation
+of the same model costs one line: the scratch crate's `Tdf2`, `SvfTpt` and
+`Lattice` all pass the same `Lti` group, and a defective one (a `tanh` in the
+loop, a detuned coefficient) fails it. That is the realisation check doing its
+job: it does not know or care which structure it was handed.
 
 ### 6.3 Opting in
 
 ```rust
 // In the family's test module (or tutti-dsp tests for the families in tutti-dsp):
-design_contract!(SvfDesign: [Ringing, Stable, Response]);
-kernel_contract!(SvfDesign: [Ringing, Stable, Response], tolerance = ...);
+design_contract!(SvfDesign: Lti);
+kernel_contract!(SvfDesign: Lti, tolerance = ..);        // runs the Lti group over SvfDesign::Kernel
+kernel_contract!(Tdf2Design: Lti, tolerance = ..);       // another realisation of the same model
 ```
 
-1. The family implements its capabilities. A listed capability the model lacks is
-   a compile error (the case is bounded on it).
-2. The family implements `DesignCase` and one small probe trait per listed
-   capability (`ResponseCase::anchors`, `StaticCurveCase::sweep`, ...).
-3. **A capability implemented but not listed is not a compile error** (a macro
-   cannot see every `impl`). `scripts/check-contract-coverage.sh` **(proposal)**
-   greps every `impl <Capability> for` in the workspace and fails unless the
-   implementing type appears in a `*_contract!` list, as `check-range-types.sh`
-   does for its rule. The plugin contract's `gaps = N` ratchet is the precedent
-   for a count that a reviewer must raise.
-4. Each case has a `Defect`/`Flawed` mutant run by a self-test in `tutti-dsp`
-   (`a_defective_kernel_fails_its_case` on #367) so that a case that cannot fail
+1. The family names its **class**. The class is a trait bound on `D::Model`, so
+   naming a class the model is not is a compile error (the case is bounded on it).
+2. The family implements `DesignCase` and the class's probe trait (`LtiCase`:
+   the anchors, the slower pairs, the extreme controls; `StaticMapCase`: the
+   sweep).
+3. A class implemented but **not listed** is not a compile error (a macro cannot
+   see every `impl`). `scripts/check-contract-coverage.sh` **(proposal)** greps
+   every `impl Lti|StaticMap|Periodic|Segmented|Noise for` in the workspace and
+   fails unless the type appears in a `*_contract!` list, as
+   `check-range-types.sh` does for its rule. The plugin contract's `gaps = N`
+   ratchet is the precedent for a count a reviewer must raise.
+4. Each case has a `Defect`/`Flawed` mutant run by a self-test in `tutti-dsp` (the
+   `a_defective_kernel_fails_its_case` pattern of #367), so a case that cannot fail
    cannot ship.
+5. A family's own cases (`rt60`, `band_order`, `line_lengths`, freeze for the
+   reverb; `sum_flat` for the crossover; the knee's quadratic for the compressor)
+   are listed beside the class, not inside it.
 
 ### 6.4 The node contract
 
@@ -692,13 +937,15 @@ is honest after the cut (`assert_honest_tail`), park and wake equal a fresh node
 a port-driven block equals a cell-driven one, the dry path is aligned to the
 kernel's latency and not its delay (`Blend` families only), a fork renders from
 silence, and a serial/pooled render is bit-identical (`tests/parallel.rs`). The
-"lying design" fixture (an echo that rings past its claim, with a latency) becomes a
-shared test double.
+"lying design" fixture (an echo that rings past its claim, with a latency) becomes
+a shared test double.
 
 The measuring helpers (Schroeder integration, band energy, tone bursts, first
-non-zero sample, level sweep, impulse-response magnitude by `RealFft`) go in
-`tutti_dsp::contract`, public under the feature, so the plugin probe of doc 023
-section 6 can use the same ones on a hosted plugin (Q13).
+non-zero sample, level sweep, impulse-response magnitude by `RealFft`,
+superposition and shift tests) go in `tutti_dsp::contract`, public under the
+feature, so the plugin probe of doc 023 section 6 can use the same ones on a
+hosted plugin (Q13).
+
 
 ## 7. Doc 023's gaps, and one read surface
 
@@ -706,7 +953,7 @@ section 6 can use the same ones on a hosted plugin (Q13).
 
 Doc 023 sketches `trait CurveResponse { fn magnitude(&self, freqs: &[Hz], out: &mut [Db]); }`
 and says "a native node can compute the answer exactly". Here it is exact because
-`Response` is a query of the model:
+`Lti::response` is a query of the model (and `StaticMap::eval` of a static one):
 
 ```rust
 /// What a curve display asks. (proposal; doc 023 section 5.8 has the magnitude half)
@@ -716,12 +963,12 @@ pub enum Curve<'a> {
 }
 ```
 
-A `DesignNode<D>` where `D::Model: Response` returns a `Curve::Magnitude` built
+A `DesignNode<D>` where `D::Model: Lti` returns a `Curve::Magnitude` built
 on the control side from the cells' base values (`ControlParams::snapshot`,
-**(proposal)**, the cells without a port) by `design` then `Response::magnitude`.
-Where `D::Model: StaticCurve` it returns `Curve::Transfer` the same way. It is
-**available only where the capability exists**, by an inherent `impl` with a
-`where D::Model: Response` bound (`DesignNode::curve()`); no run-time "does this
+**(proposal)**, the cells without a port) by `design` then `Lti::magnitude`.
+Where `D::Model: StaticMap` (or a class-4 composite's settled curve, section 4.9) it returns `Curve::Transfer` the same way. It is
+**available only where the class exists**, by an inherent `impl` with a
+`where D::Model: Lti` bound (`DesignNode::curve()`); no run-time "does this
 node have a curve" flag is stored. The design is cheap (0.2 us for the reverb; one
 `tan` for an SVF), so a drag handle can call it per UI frame.
 
@@ -765,7 +1012,7 @@ pub trait Describe {
 
 | Question | Native `DesignNode<D>` | Hosted plugin (doc 023) |
 |---|---|---|
-| Curve | `Response`/`StaticCurve` of `design(controls)`: exact, at any controls | CLAP mini-curve-display, AU `FrequencyResponse`: a main-thread call through the `Controller` (016), only at the plugin's current parameters |
+| Curve | `Lti::response` or the `StaticMap`/settled curve of `design(controls)`: exact, at any controls | CLAP mini-curve-display, AU `FrequencyResponse`: a main-thread call through the `Controller` (016), only at the plugin's current parameters |
 | Readout | the node's `level_cell` reader | the plugin's meter parameter or function name, polled and folded into the same cell shape |
 | Latency and tail | `Is(model.latency())`, `Is(model.tail())`: analytic, and held by the contract | `Is(plugin claim)`, with `measured: Some(..)` from the probe (doc 023 section 6) |
 | Quality | `Graded::quality()` | `Reported<QualityRange>` from AU, `Unasked` elsewhere |
@@ -775,11 +1022,12 @@ named in the type: `Processing::measured` is `None` for a native node because it
 claims are contract-checked, not probed. The same measurement code runs in both
 places (Q13): the probe measures a plugin's latency and tail as the kernel contract
 measures a kernel's. Doc 023's `CurveResponse` gains the `Transfer` variant (a
-one-line change to its section 5.8, made when step 3 lands).
+one-line change to its section 5.8, made when step 4 lands).
+
 
 ## 8. Modulation: what the reverb found, applied generally
 
-Doc 022 sections 10 and 11 and "what the reverb found" on #367. Each finding, for
+Doc 022 sections 10 and 11 and "what the reverb found" on `main` (#367). Each finding, for
 every family.
 
 ### 8.1 Cost of a design per block, per family
@@ -832,11 +1080,11 @@ interpolate the coefficients. The SVF already measured it (`control.rs`,
 64-frame block's `tan`s, with 3e-5 worst error on a 200 Hz to 8 kHz sweep in 85 ms
 (4.6e-4 at 64 frames, exactly 0 at 1). So **interpolate**, at `Every(16)`. The
 guarantee the contract holds is the one that matters for correctness: at a
-segment's end the kernel's frozen response **is** the model's (a `Response` check
+segment's end the kernel's frozen response **is** the model's (an `Lti::response` check
 after the segment), so the interpolation can never leave the filter at a setting
 the design did not ask for. Coefficient `lerp` does not by itself guarantee
 stability between two stable sets; the existing SVF relies on the segment being
-short and the error being the measured one, and the `Stable` case runs the filter
+short and the error being the measured one, and the `Lti` stability case runs the filter
 under a worst-case sweep so that this is a measured fact, not an assumption.
 
 The other policies, for the record: a step (Freeverb: the output is read from the
@@ -857,6 +1105,7 @@ crossfade through the graph (any structural change).
   need none: `Cutoff`, `Q`, `Gain` exist; the compressor's exist) appends it with
   its pinned id (doc 022 section 10.4).
 
+
 ## 9. Where things live
 
 Layering per CLAUDE.md and `scripts/check-layout.sh` (lines 381 to 383:
@@ -864,9 +1113,9 @@ Layering per CLAUDE.md and `scripts/check-layout.sh` (lines 381 to 383:
 
 | Item | Crate | Layer | Check |
 |---|---|---|---|
-| `Model`, `Bounds`, `Design`, `Kernel<M>`, `Effect<M>`, `Setup`, `Effort`, `Channels`, `Ceiling<R>`, `Cadence`, `Ring`, the capability traits (`Latent`, `Ringing`, `Stable`, `Response`, `StaticCurve`, `Fidelity`, `Readout`, `Graded`), `Complex64` use | `tutti-dsp`, a neutral module (`model`), exported at the crate root | 2 | no new tutti edge; `forbid(unsafe_code)`; no atomics or `Arc`-published state; every control arrives per call |
+| `Design`, `Kernel<M>`, `Effect<M>`, `Setup`, `Channels`, `Ring`; the class traits (`Causal`, `Lti`, `Varying`, `StaticMap`, `Generator`, `Periodic`, `Segmented`, `Noise`), `Fidelity`, `Readout`, `Graded`; the combinators (`Series`, `Parallel`, `SeriesN`, `Wiener`, `Hammerstein`, `Gained`); the engineering items (`Bounds`, `Ceiling<R>`, `Effort`, `Cadence`); `Complex64` use | `tutti-dsp`, a neutral module (`model`), exported at the crate root | 2 | no new tutti edge; `forbid(unsafe_code)`; no atomics or `Arc`-published state; every control arrives per call |
 | The families' models and designs | `tutti-dsp` (`filter/`, `dynamics/`, `delay`, `waveshape`, `convolver`, `reverb`, `resample/`, `dither`) | 2 | pure algorithm over slices; a node file holds only the adapter (CLAUDE.md) |
-| `contract` module: core cases, capability groups, `design_contract!`, `kernel_contract!`, `no_alloc_contract!`, the measuring helpers, `Defect` and `Flawed` | `tutti-dsp`, behind a `contract` feature (off by default; `rand` becomes an optional dependency of it) | 2 | the precedent is `tutti-graph`'s `contract` feature (`lib.rs` lines 201 to 222; `tutti-nodes` turns it on in its dev-dependencies) |
+| `contract` module: core cases, class groups, `design_contract!`, `kernel_contract!`, `no_alloc_contract!`, the measuring helpers, `Defect` and `Flawed` | `tutti-dsp`, behind a `contract` feature (off by default; `rand` becomes an optional dependency of it) | 2 | the precedent is `tutti-graph`'s `contract` feature (`lib.rs` lines 201 to 222; `tutti-nodes` turns it on in its dev-dependencies) |
 | `Quality` | `tutti-types`, beside `RenderMode` | 1 | vocabulary only |
 | `DesignNode<D>`, `NodeDesign`, `ControlParams`, `Blend`, `DryWet`, `NoBlend`, `Readouts`, `DryAlign`, `node_contract!` | `tutti-nodes` (`node_contract!` behind `testing`) | 4 | the node holds the adapter only |
 | `Describe`, `Curve`, `ReadoutReader`, the session read | `tutti-session` (with doc 023's `Display`) | 7 | Bevy-free, re-exports no crate whole |
@@ -888,7 +1137,7 @@ into the vocabulary crate (CLAUDE.md: "vocabulary only"), and is not recommended
 
 ### What gets renamed
 
-| Today (on #367 or `main`) | Becomes |
+| Today (on `main`) | Becomes |
 |---|---|
 | `ReverbNode<D>` | `DesignNode<D>` (`FreeverbNode` stays, an alias) |
 | `ReverbDesign` | `NodeDesign` |
@@ -897,10 +1146,11 @@ into the vocabulary crate (CLAUDE.md: "vocabulary only"), and is not recommended
 | `network::kernel_contract::{KernelCase, Defect, Flawed}` | `contract::` the same |
 | `Network` (the model) | unchanged; `Network: Model` |
 | `Ceiling` | `Ceiling<R>`; the reverb's is `Ceiling<MaxDecay>` |
-| `Bounds` (the struct) | stays the reverb's, as `Network`'s `Model::Bounds` |
+| `Bounds` (the struct) | stays the reverb's, as `FreeverbDesign::Bounds`; no longer part of the model |
 | `Kernel` (non-generic) | `Kernel<M>` and `Effect<M>` |
-| `Network::{tail, latency, is_stable}` | `impl Ringing`, `Latent`, `Stable for Network`; method names unchanged |
+| `Network::{tail, latency, is_stable}` | `impl Causal for Network` (`latency`, `tail`) and `impl Lti` (`spectral_radius`, `gain_bound`, `response`); `is_stable` becomes the provided `Lti::is_stable`; `tail` and `latency` names unchanged |
 | CLAUDE.md "the `tutti-dsp` paragraph names `Design`, `Kernel` and `Network`" | names the traits of this module (doc 022 already promised it for 1a) |
+
 
 ## 10. Staged plan
 
@@ -914,24 +1164,27 @@ test compares a render against another reference render.
 | Step | Content | Moves | Proves it | After |
 |---|---|---|---|---|
 | 0 | This document | | | |
-| 1 | **Generalise on the reverb.** The `model` module and `Design`'s `type Model`/`Range`, `Kernel<M>`, `Effect<M>`, `Ceiling<R>`, `Cadence` (only `Block` used), the capability traits for `Latent`, `Ringing`, `Stable`; the `contract` feature split into core, `Ringing`, `Stable` and reverb-only groups; `ReverbNode` to `DesignNode` with `DryWet`, `NoBlend` and `()` as `Readouts`; renames of section 9 | `network/{design,kernel,contract,kernel_contract}.rs`, `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The GM digest `the_general_midi_send_renders_what_it_always_did` and `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged; every 022 case passes under its new name and still fails its `Defect`; `tests/reverb_node*.rs` pass; port order pinned | #367 merges, ideally 1c (the FDN) so **two reverb kernels** run the generalised traits; if 1c is not in, the test-only `ToyFdn` is the second |
-| 2 | **Filters: SVF, ladder, LR crossover.** `SvfModel`, `LadderModel`, `CrossoverModel` with `Response`, `Stable`, `Ringing`; `Cadence::Every(16)` in the node; separate the crossover's design from its state; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | `Response` case: the FFT of the kernel's impulse response against the model's magnitude (mutant: a 2% cutoff error); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `Every(16)` is the old schedule; the segment-end case | 1 |
-| 3 | **Dynamics: compressor, gate, limiter, brickwall.** `StaticCurve`, `Readout`, `Readouts` publishing through `level_cell`, `Describe::readout`, `Curve::Transfer`. Decide `Driven<M>` against the code (Q3). **Delivers G9** | `dynamics/*.rs`; the dynamics nodes | The level-sweep case (mutants: threshold +1 dB, ratio off, knee ignored); the readout equals the measured gain; node digests; a `multiband` readout test unchanged | 2 (the plumbing for `Describe`) |
-| 4 | **Delay, chorus, flanger, phaser; the waveshaper.** `Response` of the frozen comb and all-pass chain; the waveshaper's `StaticCurve`, its harmonics and `Fidelity`; `Graded` for oversampling if the kernel gains it | `delay.rs`, `swept_delay.rs`, `allpass.rs`, `waveshape.rs` and their nodes | Comb response against the FFT; notch frequencies; DC and odd-symmetry cases; the aliasing case; digests | 2 |
-| 5 | **Convolver, HRTF.** The published control path (5.3), `FirSummary` unified with the convolver's model, `Graded` for the partition; `ReverbKind` gains the convolution variant (doc 022 step 2) | `convolver.rs`, `ConvolverNode`, `tutti-spatial` hrtf | `Response` against the IR FFT; `Latent` = `B`; a Loan is never parked; the export-fork test | 1 and doc 022 step 2 |
-| 6 | **The rest, each in the PR that needs it, in this order:** resampler (own shape trait; `Fidelity`, `Graded`, `Latent`; used by export); panners (VBAP matrix); envelopes and oscillators (a generator shape, in `tutti-polysynth` and `tutti-soundfont`, gated on a `tutti-dsp` edge for the latter); stretch; dither; strip and fold wrappers | per family | per family, with a mutation record | the step 1 shape |
+| 1 | **Generalise on the reverb, which answers as `Lti`.** The neutral `model` module: `Design`'s `type Model`, `blank`, `measure`, engineering `Bounds`/`Range`; the class traits `Causal` and `Lti` (`StaticMap` and `Generator` are not added until they have an implementer); `Kernel<M>`, `Effect<M>`, `Ceiling<R>`, `Cadence` (only `Block` used); `Network: Causal + Lti` (`response` from the comb sums and the FDN solve over its own lines, `spectral_radius` from `rt60_bound`, `gain_bound` from the L1 bound `peak_bound` already computes); the `contract` feature with core and `Lti` groups and the reverb-only cases split out; `ReverbNode` to `DesignNode` with `DryWet`, `NoBlend` and `()` as `Readouts`; the renames of section 9 | `network/{design,kernel,contract,kernel_contract,queries}.rs`, `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The GM digest `the_general_midi_send_renders_what_it_always_did` and `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged; every 022 case passes under its new name and still fails its `Defect`; the new `Lti` group passes on Freeverb (response at the comb frequencies, measured decay against `spectral_radius`, linearity and shift invariance) and fails a defective kernel; `tests/reverb_node*.rs` pass; port order pinned. Risk named: `Network::response` for a mixing FDN is a control-side solve per frequency (64x64 at most). If it proves too large, `response` splits into a sub-trait `Spectral: Lti` and the reverb implements it in 1c | #367 (merged); ideally 1c (the FDN) so **two reverb kernels** run the traits; if 1c is not in, the test-only `ToyFdn` is the second |
+| 2 | **Filters (SVF, ladder, LR crossover), with several realisations of one H(z).** `SvfModel`, `LadderModel` (small signal, class 1 by `Linearised`), `CrossoverModel`; `Cadence::Every(16)` in the node; separate the crossover's design from its state; **a transposed-direct-form-II biquad kernel and a lattice kernel as second and third realisations of `SvfModel`'s response** (test-support kernels in `tutti-dsp`), so the `Lti` group is run on three kernels of one H(z) and the model is shown to be the equivalence class; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | The `Lti` group on all three realisations (mutants: a 2% cutoff error, a `tanh` in the loop); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `Every(16)` is the old schedule; the segment-end case | 1 |
+| 3 | **Composition, first consumer the parametric EQ.** `Series`, `Parallel`, `SeriesN` and their kernels (two kernels in order; two summed), with the algebra as free functions over `Lti` parts that `Network`'s stage fold also uses; a parametric EQ design whose model is `SeriesN<SvfModel, N>`; the `Series` tail bound proof. Reverb step 3b (early reflections as `Parallel<Taps, Network>`) is then unblocked and is doc 022's own PR | `tutti-dsp` `model` module, a new EQ design in `filter/` | The algebra laws as unit tests (response of `Series` is the product of the parts' responses at random points; `Parallel` aligns latency; stability preserved); the composite passes the unchanged `Lti` group; the tail bound against the measured tail on random pairs; mutants: sum the latencies in `Parallel`, drop the alignment | 2 (and the reverb's 1b for the 3b consumer) |
+| 4 | **Dynamics: compressor, gate, limiter, brickwall (class 3 and 4).** `StaticMap`, `Wiener`, `Hammerstein`, `Gained`, `Readout`, `Readouts` publishing through `level_cell`, `Describe::readout`, `Curve::Transfer`. Decide `Driven<M>` against the code (Q3). Gate hold and the limiter's windowed minimum stay inherent (they are class E and a nonlinear operator). **Delivers G9** | `dynamics/*.rs`; the dynamics nodes | The class-4 level sweep (mutants: threshold +1 dB, ratio off, knee ignored); the readout equals the measured gain; node digests; the `multiband` readout test unchanged | 3 (`Wiener`), 2 (the `Describe` plumbing) |
+| 5 | **Delay, chorus, flanger, phaser (class 1 and 2); the waveshaper (class 3).** `Varying`; the frozen comb and all-pass `response`; the waveshaper's `StaticMap` with its harmonics and `Fidelity`; `Graded` for oversampling if the kernel gains it | `delay.rs`, `swept_delay.rs`, `allpass.rs`, `waveshape.rs` and their nodes | Comb response against the FFT; notch frequencies; the slow-variation case; DC and odd-symmetry cases; the aliasing case; digests | 2 |
+| 6 | **Convolver, HRTF (class 1, published model).** The published control path (5.3), `FirSummary` unified with the convolver's model, `Graded` for the partition; `ReverbKind` gains the convolution variant (doc 022 step 2) | `convolver.rs`, `ConvolverNode`, `tutti-spatial` hrtf | `response` against the IR FFT; `latency` = `B`; a `Loan` is never parked; the export-fork test | 1 and doc 022 step 2 |
+| 7 | **The rest, each in the PR that needs it, in this order:** resampler (class 6, own shape trait; `Fidelity`, `Graded`, latency; used by export); panners and fold (class 1 at order 0); envelopes, oscillators, LFOs and noise (class 5: `Generator`, `Periodic`, `Segmented`, `Noise`, in `tutti-polysynth` and `tutti-soundfont`, the latter gated on a `tutti-dsp` edge); stretch; dither | per family | per family, with a mutation record | the step 1 shape |
 
 **Why this order.** Step 1 is the only step that changes a shipped API, so it goes
-first and on the family whose behaviour is pinned by a digest. Step 2 is next
-because filters are the family that **disagrees with the reverb's cadence**: if the
-traits survive the SVF's `Every(16)` and a coefficient `lerp`, they are not
-reverb-shaped, and it delivers G8, whose native side (`Response`) is the
-strongest use doc 023 found. Step 3 is the family that most tests the
-"don't force a runtime mechanism" line (per-frame lanes), so it should come once the
-node and contract are stable, and it delivers G9. Steps 4 to 6 are independent;
-step 5 waits on doc 022's own step 2; the instruments are last because they are
-the families where the generic node is **not** the destination, only the model and
-the contract.
+first and on the family whose behaviour is pinned by a digest; the reverb answers
+as `Lti` so the first class trait is proved on the structured, largest model, the
+one most likely to bend a trait made for biquads. Step 2 is next because filters
+disagree with the reverb's cadence and are the textbook case for the realisation
+split: three kernels of one H(z) under one contract is the clearest evidence the
+model is the equivalence class, and it delivers G8. Composition (step 3) lands
+where it is first *needed*: the parametric EQ is its smallest consumer and it
+unblocks reverb 3b, which doc 022 had marked a blocker. Dynamics (step 4) is the
+family that most tests "don't force a runtime mechanism" (per-frame lanes), so it
+comes once the node and contract are stable, and `Wiener` lands with it. Steps 5 to 7 are independent; step 6 waits on doc 022's own step 2; the
+instruments are last because they are the families where the generic node is
+**not** the destination, only the model and the contract.
 
 Doc 013's change note is updated when step 1 lands (the tail and park logic is now
 the node's, not the reverb's); doc 022 gains a pointer here, and its section 4/5
@@ -941,18 +1194,23 @@ text is not rewritten.
 
 | # | Question | Recommendation |
 |---|---|---|
-| Q1 | `Latent` and `Ringing` as supertraits of `Model`, or opt-in like the rest? | Supertraits. Every node declares both in `Shape`, the park logic needs both, and a memoryless model's answer is one line |
-| Q2 | Name the shared concept `Model`? | Yes. It is doc 022's word and the owner's. `Description` is no clearer |
-| Q3 | Per-frame control lanes (the dynamics' threshold and ceiling): `Cadence::Frame`, a second kernel shape `Driven<M>`, or leave those nodes hand-written? | Decide in step 3 against the code. Recommended order of preference: `Driven<M>` (the node picks per block, `Frames` vs `Base`, a branch per block); else the three nodes keep their `process` and adopt `Design`, `Model` and the contract only. Not `Cadence::Frame`: it is the fixed shape the owner warned against |
-| Q4 | A series stack of EQ bands has the product response; where does a chain model live? | The application multiplies each band's `Response`. No `Chain` model until a second consumer (a multiband summed response) needs it |
-| Q5 | Capability-coverage gate: a script or a macro? | A script (`check-contract-coverage.sh`), as `check-range-types.sh`. A macro cannot see every `impl` |
+| Q1 | Is `Causal` (latency and tail) the base of every processor class, with `Generator` outside it? | Yes. Every node declares both in `Shape`; the park logic needs only these. A generator has no input to end, so it is not `Causal` and its node reports a tail only when it has an audio input |
+| Q2 | Name the shared concept `Model`? | Keep the word in prose (doc 022's and the owner's); in code the class traits are the names (`Lti`, `StaticMap`), and `Design::Model` is the associated type |
+| Q3 | Per-frame control lanes (the dynamics' threshold and ceiling): `Cadence::Frame`, a second kernel shape `Driven<M>`, or leave those nodes hand-written? | Decide in step 4 against the code. Order of preference: `Driven<M>` (the node picks per block, `Frames` vs `Base`); else the three nodes keep their `process` and adopt `Design`, the class traits and the contract only. Not `Cadence::Frame`: it is the fixed shape the owner warned against |
+| Q4 | **Resolved by the composition algebra.** The curve of a series EQ chain | A parametric EQ is one design whose model is `SeriesN<SvfModel, N>`, with an exact product `response`. A chain of separate graph nodes is the application's product of each node's `Describe::curve`. No `Chain` model (section 4.9) |
+| Q5 | Class-coverage gate: a script or a macro? | A script (`check-contract-coverage.sh`), as `check-range-types.sh`. A macro cannot see every `impl` |
 | Q6 | Contract as a `tutti-dsp` feature or a `testing/` crate? | The feature (the owner's direction, and the dev-cycle argument of section 9) |
 | Q7 | `Quality`: four tiers or AU's 0 to 127? | Four tiers with `from_au`. A native algorithm has few real tiers, and 128 steps would be false precision |
-| Q8 | May an export render at a different `Quality` from the live graph? | Not yet. It changes `Latent`, so PDC and the fork's plan differ from the live one. Revisit with `RenderMode::Offline` once a family has a tier where it pays |
+| Q8 | May an export render at a different `Quality` from the live graph? | Not yet. It changes `Causal::latency`, so PDC and the fork's plan differ from the live one. Revisit with `RenderMode::Offline` once a family has a tier where it pays |
 | Q9 | The nodes' public inherent API (`SvfFilterNode::frequency()` returning an `Arc<AtomicF32>`, `ModDelayNode::set_depth`, ...) | Keep it by having each family's `ControlParams` expose the same handles; make the old node names aliases; fix callers in the same PR (the project's rule against shims) |
 | Q10 | Publish the applied `Controls` back for a live curve at the modulated value? | Yes, as a `seq_cell` written once per changed block, in step 2, if the application wants a live curve; the base curve works without it |
 | Q11 | Filters generic over `F: Real` (f64 by default): is the design generic too? | No: the model is always `f64` (analysis) and only the kernel is generic over `F` |
-| Q12 | Instruments: a node of their own? | A separate design. They share `Design`, `Model`, `Kernel<M>` and the contract; the event-driven shape and `tutti-voicing` are their node's concern |
+| Q12 | Instruments: a node of their own? | A separate design. They share `Design`, the class traits (`Generator`) and the contract; the event-driven shape and `tutti-voicing` are their node's concern |
 | Q13 | Share the contract's measuring helpers with doc 023's plugin probe? | Yes: `tutti-plugin` (layer 6) may depend on `tutti-dsp` with the `contract` feature, so a hosted plugin's latency and tail are measured by the code that measures a native kernel's |
-| Q14 | Is `Response` single-input? A sidechained compressor has two inputs | Yes. `Response` is input 0 to `output`; the sidechain has its own curve only if a family wants it, as a second `StaticCurve` |
-| Q15 | Does an analyser (row 23) deserve its own pattern? | Not here. Record that `Readout` is the likely surface and revisit when a result is wanted in the application |
+| Q14 | Is `Lti::response` single-input? A sidechained compressor has two inputs | `response` takes `output` and is defined from every input (`inputs()`); a sidechain's curve is a second `StaticMap` only if a family wants it |
+| Q15 | Does an analyser (row 23, class M) deserve its own pattern? | Not here. `Readout` is the likely surface; revisit when a result is wanted in the application |
+| Q16 | `Kernel::prepare` takes `&Bounds` on `main`; with `Bounds` moved off the model, does `Kernel<M>` keep it? | Drop it from the trait and give the kernel its sizes at `Design::kernel()` (the design has the bounds), so `Kernel<M>` names no engineering type. If a kernel must be sized after construction, an associated `type Bounds` on the kernel is the fallback; decide in step 1 |
+| Q17 | Offer feedback composition (`Feedback<A, B>`)? | No. Series and parallel of LTI models preserve stability exactly; closing a loop needs a small-gain bound that depends on the loop. The FDN's recirculation stays structure inside its model |
+| Q18 | `spectral_radius` and `gain_bound` as upper bounds, or exact? | Upper bounds, documented as sufficient (the reverb's `rt60_bound` and `peak_bound` already are). A model with an exact value says so in its docs, and the contract measures that the true radius and norm are under the stated ones |
+| Q19 | `Parallel`'s latency alignment: in the model or in the kernel? | In the model: it states the aligned latency (`max`) and its `response` includes the compensating delays, so a fused or composed kernel are both held to one answer |
+| Q20 | A moving `theta` inside a model (an LFO in a chorus): `Varying`, or just a note in the docs? | `Varying`, because the slow assumption is then a checkable number against `Cadence` rather than a sentence |

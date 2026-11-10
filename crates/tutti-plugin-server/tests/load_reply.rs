@@ -79,10 +79,9 @@ fn fixtures() -> (PathBuf, PathBuf) {
 /// the first read fails with the server gone (end of file).
 #[test]
 fn a_failed_load_is_answered_and_the_server_still_loads_a_good_plugin() {
-    let dir = std::env::temp_dir().join(format!("tutti-load-reply-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("a scratch directory");
     let (not_a_plugin, good) = fixtures();
-    let socket = dir.join("s.sock");
+    // The default config makes a fresh socket path that fits a socket address.
+    let socket = tutti_plugin::BridgeConfig::default().socket_path;
 
     let mut server = Server(
         Command::new(env!("CARGO_BIN_EXE_plugin-server"))
@@ -124,5 +123,4 @@ fn a_failed_load_is_answered_and_the_server_still_loads_a_good_plugin() {
 
     write_frame(&mut stream, &HostMessage::Shutdown).expect("send Shutdown");
     drop(server);
-    let _ = std::fs::remove_dir_all(&dir);
 }

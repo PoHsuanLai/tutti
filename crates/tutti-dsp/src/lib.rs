@@ -45,6 +45,7 @@
 //!   noise that decorrelates quantization, continuous across blocks.
 
 mod allpass;
+mod balance;
 mod buffer;
 mod control;
 mod convolver;
@@ -70,7 +71,8 @@ mod reverb_design;
 #[cfg(test)]
 mod test_support;
 
-pub use allpass::{allpass_chain, allpass_coeff};
+pub use allpass::{allpass_chain, allpass_coeff, sweep_hz};
+pub use balance::balance_gains;
 pub use buffer::{CircularBuffer, MonotonicMinDeque};
 pub use control::{COEFF_INTERVAL, LANES, Ramp, lane_group, segments};
 pub use convolver::{Convolver, IrSpectra};

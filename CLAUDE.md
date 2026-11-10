@@ -136,18 +136,22 @@ run. `cargo xtask ci` runs what CI runs.
 cargo build
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt
-scripts/check-canonical-paths.sh   # the import-path gate (also searches *.md)
-scripts/check-submodule-pins.sh    # VST3 SDK pins, asserted by SHA
+cargo xtask check-paths [<crate> <module>...]  # the import-path gate (also searches *.md)
+cargo xtask check-submodule-pins   # VST3 SDK pins, asserted by SHA
 scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no bevy feature
 scripts/check-adapter.sh           # tutti-session re-exports no crate whole (bevy-tutti's composition/policy scans are skipped while it is parked)
-scripts/check-doc-features.sh      # rustdoc per feature for tutti-session, tutti
+cargo xtask check-doc-features     # rustdoc per feature for tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
-scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
+cargo xtask check-range-types      # no plain derived Deserialize on a private tuple field
 scripts/check-hosting.sh           # every InProcess/OutOfProcess impl is in the contract's hostings
 cargo xtask deny                   # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
+
+`check-paths`, `check-submodule-pins`, `check-doc-features` and `check-range-types` are
+Rust gates in `xtask/src/gates/` (a pure function from the files, read through `Tree`,
+to a `Report`, with tests over in-memory trees); the `scripts/` ones are still scripts.
 
 `cargo xtask deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
 the same version) and fails with that command when it is missing.
@@ -248,7 +252,7 @@ cargo xtask test-all              # both
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
 - **Import paths:** import engine types from a crate's root or prelude, never
-  through its modules. Only `check-canonical-paths.sh` enforces this.
+  through its modules. Only `cargo xtask check-paths` enforces this.
 
 ### Check Windows before you push
 
@@ -754,7 +758,7 @@ shape (`MidiChannel` is the reference). No macro.
   `NoteValue` has no saturating constructor until a lenient importer needs one.
 - **A new type is checked by `tutti_fixtures::check_range_contract`** in a
   test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
-  `scripts/check-range-types.sh` fails a private tuple field with a derived
+  `cargo xtask check-range-types` fails a private tuple field with a derived
   `Deserialize` that is not `serde(try_from)` (`transparent` and `from` are
   flagged too). Its exception list names what removes each entry.
 - `tutti-ump` does not dev-depend on `tutti-fixtures` (`check-layout.sh`: it

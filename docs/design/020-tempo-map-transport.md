@@ -7,8 +7,8 @@ three functions convert beats to seconds. A project with a tempo change plays
 one way and exports another. This design makes the map the transport's tempo,
 live and offline, through one pure function, so the two agree by construction.
 
-Status: the open questions are decided (§10). Stage 2 (publishing a constant map) is built; see
-the as-built notes at §9. Doc 019 (bounce) depends on §6.
+Status: the open questions are decided (§10). Stages 0 to 3 (guards, publishing a map, steps) are
+built; see the as-built notes at §9. Doc 019 (bounce) depends on §6.
 
 ## Summary
 
@@ -341,9 +341,9 @@ published. What landed:
   `Reader` when it is built (control side) and lends the cell once per block,
   and only when the count moved. `Session::reclaim` (the `Reclaim` phase) calls
   `TransportSettings::reclaim_tempo`.
-- **A map that changes is refused** (`NotConstant`) until the walker lands
-  (stage 3): the clock follows one tempo, and following a map wrongly in silence
-  is worse than refusing it.
+- **A map that changes was refused** (`NotConstant`) until the walker landed
+  (stage 3, below): the clock followed one tempo, and following a map wrongly
+  in silence is worse than refusing it.
 - **`TransportCommand::Tempo` is applied on the audio thread, which cannot
   publish.** Until stage 6 retires it, it stores the scalar mirror
   (`TransportSettings::tempo`) and the clock keeps it until the next publish,
@@ -352,16 +352,53 @@ published. What landed:
 - **`set_tempo` stays infallible.** A denormal tempo is no map (a beat's rate
   underflows): it reaches `tempo()` readers and not the clock, which keeps the
   map it had.
-- **The clock's hysteresis is unchanged** (§3 removes it for the map path, which
-  needs the walker; today every tempo still arrives as one scalar).
+- **The clock's hysteresis is unchanged** for a constant map (every tempo of one
+  arrives as one scalar); stage 3 removes it for a map with steps.
 - `TempoMap::constant_tempo()` is the one new `tutti-tempo` query.
 - Golden digests: none moved. Not independently testable: that the session's
   `Reclaim` phase calls `reclaim_tempo` (a loan is held only inside a block);
   `the_tempo_map_is_swept_by_reclaim_tempo` pins the cell's sweep.
 
+**As built, stage 3 (steps).**
+
+- `TempoWalk` (`tutti-transport/src/walk.rs`, crate-private) is the one walker:
+  a map frame beside a `FrameClock`, rolled in cells of `CELL_GRID` = 128 frames
+  (one constant, never a block's length). At a cell's end it asks `chord_cell`
+  and, when the tempo differs from the clock's, starts a segment on the map's
+  beat. A step interior never restarts (the cell carries `bpm0` to the bit);
+  there is no hysteresis. `TransportClock` and `OfflineTimeline` both call it.
+- **A constant map never reaches it.** The clocks run their own closed form,
+  with `map: None`, and a constant-tempo render is the one of stages 0 to 2 to
+  the bit. A map of more than one point is *stepped*: `TransportAudio` lends it
+  per step that needs it (the loan ends with the call) and passes it down.
+- **Changes.** `TransportAudio::tempo_ahead` walks a copy of the clock over the
+  rest of the block and returns the tempo changes (`TransportChanges`, at most
+  the block's free entries) and, when one more would not fit, where the block
+  ends. The engine's walk takes them as cuts beside the commands (a command on
+  a step's frame takes the step with it); a block that needs more than
+  `MAX_TRANSPORT_CHANGES` ends before the one that does not fit, and the rest
+  is the next block (the same loop that splits at `MaxBlock`). `OfflineTimeline`
+  cuts the same way in its `RenderClock::render_graph`.
+- **Seek, wrap, rate change and swap** place the clock on the map with
+  `TempoWalk::place`: the map frame is `frame_at_or_after` of the exact beat
+  (the clock keeps the beat), a loop wrap is a seek to its start (the tempo
+  there is a change on the wrap frame), a rate change re-seats at the current
+  beat at the new rate, and a published map is taken at the next block start
+  at the current beat. An engine taken after a map was published follows it
+  from its first block. Before beat 0 (a count-in) the first point's tempo holds.
+- **A timed `TransportCommand::Tempo` does not move the clock under a map with
+  steps** (the map is the tempo; stage 6 retires the command).
+- `OfflineTimeline::with_tempo_map(&config, map)` is how a timeline takes a map;
+  the config's `tempo` field stays until stage 6 swaps it for the map (a new
+  field would break every literal of the config). `TransportSettings::set_tempo_map`
+  takes steps and refuses a ramp (`HasRamp`); `tempo()` reads the first point.
+  A fork keeps the map it was built with (the timeline holds an `Arc`).
+- Not done here, as designed: ramps (stage 4), `Timeline::tempo()` as a tempo
+  at a beat (stage 6; it reads the first point's), the readers of §5 (stage 5).
+
 Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's
-tutti-tempo paragraph gets one sentence when stage 3 lands.
+tutti-tempo paragraph got its sentence at stage 3.
 
 ## 10. Decisions
 

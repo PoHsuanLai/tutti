@@ -216,6 +216,94 @@ fn a_published_tempo_map_is_taken_without_allocating() {
     }
 }
 
+/// A tempo map of steps followed on the audio thread: the walk lends the cell
+/// per step (never held across a call), the look ahead and the cut blocks
+/// (41 steps 24 frames apart, so a 512-frame graph block carries more than the
+/// 8 changes it holds), loop wraps that re-seat on a step, a seek back across
+/// the steps and a map swap all run inside the gate. The publishes run outside
+/// it; the clock really takes the steps (`tempo_in_force` reaches the last
+/// step's tempo), so a walk that never ran would not pass.
+///
+/// Mutation (run): a `Vec::with_capacity(1)` in `TempoWalk::roll` -> the gate
+/// panics -> fails; a `Vec::with_capacity(1)` in `TransportAudio::tempo_ahead`
+/// -> fails; the walk not running (`stepped` left false in `tempo_for_block`) -> the tempo stays
+/// 120 -> the assertion fails.
+#[test]
+fn a_step_map_is_followed_without_allocating() {
+    use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_transport::MotionEvent;
+    use tutti_types::graph::{OutPort, Source};
+    use tutti_types::{At, Beat, Bpm, NodeKey};
+
+    let dense = |last: f64| {
+        let mut points: Vec<TempoPoint> = (0..41)
+            .map(|i| TempoPoint {
+                beat: Beat(f64::from(i) * 0.001),
+                tempo: Bpm::of(120.0 + f64::from(i)),
+                shape: Shape::Step,
+            })
+            .collect();
+        points.push(TempoPoint {
+            beat: Beat(1.0),
+            tempo: Bpm::of(last),
+            shape: Shape::Step,
+        });
+        Arc::new(TempoMap::new(points).expect("a map"))
+    };
+    let transport = Transport::new(48_000.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        tutti_types::Samples(512),
+    ));
+    ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
+    ed.spec_mut().topology.outputs = (0..2)
+        .map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    transport
+        .settings
+        .set_tempo_map(dense(90.0))
+        .expect("steps");
+    transport
+        .motion
+        .try_send(MotionEvent::play_from(Beat(0.0)))
+        .expect("room");
+    let mut output = vec![0.0f32; 1024 * 2];
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    // 1 024 frames: past all 41 steps (the last at frame 960).
+    assert_eq!(transport.settings.tempo_in_force(), Bpm::of(160.0));
+    for round in 0..10u32 {
+        // Control side: a new map, a loop over the steps, a seek back.
+        transport
+            .settings
+            .set_tempo_map(dense(80.0 + f64::from(round)))
+            .expect("steps");
+        let m = &transport.motion;
+        m.schedule(
+            At::NextBlock,
+            LoopEdit::over(LoopRange::new(0.0, 0.02).expect("ordered")),
+        )
+        .expect("room");
+        m.try_send(MotionEvent::play_from(Beat(0.0))).expect("room");
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..4 {
+                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            }
+        });
+        // Looping over beats 0 to 0.02 keeps the tempo among the first 21.
+        let tempo = transport.settings.tempo_in_force().get();
+        assert!((120.0..=140.0).contains(&tempo), "round {round}: {tempo}");
+        transport.settings.reclaim_tempo();
+    }
+}
+
 /// The master meter on the audio thread: the meter op over a stereo and a
 /// wide root never allocates, and the meter really reads (a gated-off meter
 /// would pass by measuring nothing).

@@ -20,9 +20,9 @@ use crate::streamer::{
     ChannelPlan, RegionId, SessionRate, StreamerCommand, StreamerGone, StreamerSender,
     TakeVoiceError,
 };
-use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
+use crate::voice::{DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_codec::Wave;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, PlaybackRate, SamplePosition, SampleRate};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, SamplePosition, SampleRate};
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`).
@@ -92,29 +92,6 @@ pub enum Command {
         /// Start position, in frames from the head of the file.
         offset: SamplePosition,
     },
-    /// Reposition a stream's free-running reader (a bare `DiskSource`). Maps to
-    /// `SeekStream`. A placed voice (`take_disk_voice`) follows its clock and
-    /// ignores this: seek the clock.
-    Seek {
-        /// Streamer channel carrying the stream to move.
-        channel_index: usize,
-        /// Absolute target, in frames from the head of the file.
-        file_position: SamplePosition,
-    },
-    /// Set varispeed: playback speed magnitude plus direction. Maps to
-    /// `SetVarispeed`.
-    ///
-    /// [`PlaybackRate`] is the pitch-coupled kind of speed change — reading
-    /// faster transposes up. The pitch-independent kind is `StretchFactor`, and
-    /// it does not travel this port; it lives on the voice's stretch filter.
-    SetSpeed {
-        /// Streamer channel carrying the stream to respeed.
-        channel_index: usize,
-        /// Magnitude only; the sign is carried by `direction`.
-        speed: PlaybackRate,
-        /// Forward or reverse.
-        direction: Direction,
-    },
     /// Enable, replace or disable looping. `LoopSetting::On { .. }` maps to
     /// `SetStreamLoop`; `LoopSetting::Off` maps to `ClearStreamLoop`.
     ///
@@ -149,22 +126,6 @@ impl Command {
                 channel_index,
                 file_path,
                 offset_samples: offset.get().max(0.0) as usize,
-            },
-            Command::Seek {
-                channel_index,
-                file_position,
-            } => StreamerCommand::SeekStream {
-                channel_index,
-                file_position: file_position.get().max(0.0) as u64,
-            },
-            Command::SetSpeed {
-                channel_index,
-                speed,
-                direction,
-            } => StreamerCommand::SetVarispeed {
-                channel_index,
-                direction,
-                speed,
             },
             Command::Loop {
                 channel_index,
@@ -231,7 +192,7 @@ impl Commands {
     /// so a caller should stop rather than retry.
     ///
     /// Ignoring that error is the failure this port is shaped to prevent — a
-    /// dead streamer silently accepting `Stream`, `Seek`, `Loop` and `Stop`
+    /// dead streamer silently accepting `Stream`, `Loop` and `Stop`
     /// forever is indistinguishable from working playback.
     #[must_use = "a discarded command is a stream that never starts, seeks, or stops"]
     pub fn send(&self, cmd: Command) -> Result<(), StreamerGone> {
@@ -384,7 +345,7 @@ impl Status {
         duration: Option<BeatDuration>,
     ) -> Result<DiskVoice, TakeVoiceError> {
         let (inner, rt_state, file_sample_rate, origin) =
-            crate::streamer::control::take_streaming_unit(&self.plans, channel_index, width, true)?;
+            crate::streamer::control::take_streaming_unit(&self.plans, channel_index, width)?;
 
         Ok(DiskVoice::new(
             inner,
@@ -406,24 +367,6 @@ impl Status {
     pub(crate) fn stream_loop(&self, channel_index: usize) -> Option<LoopSetting> {
         crate::streamer::control::stream_loop(&self.plans, channel_index)
     }
-
-    /// The stream's live reader as a bare free-running source (tests: no
-    /// public caller takes one), and its shared state.
-    #[cfg(test)]
-    pub(crate) fn take_free_running(
-        &self,
-        channel_index: usize,
-    ) -> Result<
-        (
-            crate::voice::disk_voice::DiskSource,
-            Arc<crate::streamer::RtState>,
-        ),
-        TakeVoiceError,
-    > {
-        let (unit, rt_state, _, _) =
-            crate::streamer::control::take_streaming_unit(&self.plans, channel_index, None, false)?;
-        Ok((unit, rt_state))
-    }
 }
 
 #[cfg(test)]
@@ -441,7 +384,7 @@ mod tests {
     ///
     /// Covering every variant, not one representative: the arms send
     /// independently, so a variant whose `Result` went unpropagated would accept
-    /// `Stream`, `Seek`, `Loop` or `Stop` indefinitely and do nothing —
+    /// `Stream`, `Loop` or `Stop` indefinitely and do nothing —
     /// indistinguishable from working playback, and invisible to a test that
     /// only exercised its neighbours.
     #[test]
@@ -453,21 +396,6 @@ mod tests {
                 channel_index: 0,
                 file_path: "/nonexistent.wav".into(),
                 offset: SamplePosition(0.0),
-            }),
-            Err(StreamerGone)
-        );
-        assert_eq!(
-            cmds.send(Command::Seek {
-                channel_index: 0,
-                file_position: SamplePosition(0.0),
-            }),
-            Err(StreamerGone)
-        );
-        assert_eq!(
-            cmds.send(Command::SetSpeed {
-                channel_index: 0,
-                speed: PlaybackRate::new(1.0),
-                direction: Direction::Forward,
             }),
             Err(StreamerGone)
         );

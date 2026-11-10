@@ -918,6 +918,28 @@ Each stage is one PR that stays green. Line figures are estimates.
    | **6** | `RingControl`, per-stream cells, `StreamFile`, `Stream::set_loop` (§2.7) | `RtState`, `StreamRecord`, `StreamOrigin`, `StreamFile`'s old shape, `forward_loop`, `roll_back`, the pool's `StreamTable` and `forwarding` mutex, `SetDirection` polling in `apply_directions` (a command now), `fade_frames` as a cell (an immutable field), `buffer_margin`; every voice-build call site in the sampler changes (`bevy-tutti` stays parked and is not touched) | Per knob, one writer: a test that two voices opened in sequence on one file share no cell (set gain, speed, direction, stretch on one, read the other: the S3 test); direction published once and read from the lent control; the fork reads the applied loop (a downgraded loop is the downgrade in the fork, not the request); `set_loop` leaves the stream unchanged when the send fails. A loom model only if a new lock-free structure appears: `RingControl` rides the existing `ArcLend`, which has its model, and a test that the cycle's reclaim frees a retired `RingControl` held across a replacement (as today's map test does) |
    | **7** | `Block`; sentinels and units | the separate claim and lend in `LiveRead::render`, `Content.switch_at == 0` (an `Option`), `usize::MAX` for an unknown length, bare `u64`/`usize` frame counts on the streamer's fields (`Samples`), the per-cycle `Vec` in `apply_directions` | Settles §10 Q2 by porting `LiveRead::render` on the cut's own branch. `compile_fail`: a second `block` while the first is alive; a `Block` sent to another thread (`!Send`); a `Loan` held past its `Block`. Mutations: remove the borrow, the `PhantomData`, the `#[must_use]`. The existing differential and loop tests pass unchanged (the render is bit-identical) |
 
+   *As built, cut 1.* The free-running reader is gone, with the names the
+   table lists: `Command::Seek` and `Command::SetSpeed` (and their
+   `StreamerCommand`s, `SeekStream` and `SetVarispeed`), `handle_seek_stream`,
+   `Ring::request_seek` and `seek_request`, the seek epoch and target,
+   `Ring.origin` and the `origin` argument of `RegionBuffer::place`,
+   `Ring.placed` and `take_reader`'s argument (it takes none now),
+   `take_free_running`, and from `DiskSource` the `position`, `applied_seek`,
+   `playing`, `play`, `stop` and `is_playing`. Without them `DiskSource` had
+   nothing left to render by itself, so its `render`, its `Node` and
+   `IntoNode` impls, its `sample_rate` and `LiveRead::idle` (reached only
+   from the stopped source) went too: it is the ring's reader inside a
+   `DiskVoice` and not a graph node. B6 dies with the pair it was about.
+   Tests that pinned only the feature went with it (a relayed seek, play and
+   stop, a seek that must not move a placed voice's window, a seek while
+   paused, the streamer's backward-seek test); the ones that also pin what
+   survives (unity step, gain and its clone, the width-six stride, reset,
+   `sever`) were ported to a placed `DiskVoice`, and `tier_parity.rs` lost
+   only the two redundant sends. Removing `DiskSource`'s fields shrank
+   `DiskVoice` under clippy's `large_enum_variant` bound for `VoiceSource`;
+   that enum carries an `allow` with its reason (boxing the memory tier
+   would put a pointer in front of every read).
+
    Cuts 1 and 2 are independent of the rest and of each other and may land in
    either order, or after 3. Cut 3 is the smallest useful cut and is the first
    that changes the public surface (every voice-build call site in the sampler

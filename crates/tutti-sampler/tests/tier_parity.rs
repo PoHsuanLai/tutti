@@ -581,9 +581,9 @@ fn streaming_from_an_offset_delivers_that_part_of_the_file() {
 /// follows the clock, and the read head chased its own tail — so the target moved
 /// while the test waited for it.
 ///
-/// Stepping ends that. `step_once` applies the queued `Seek` and refills from the
-/// new position before returning, with the clock held still, so the very next
-/// render is the post-seek material. There is nothing left to poll for.
+/// Stepping ends that. `step_once` refills from the new position before
+/// returning, with the clock held still, so the very next render is the
+/// post-seek material. There is nothing left to poll for.
 #[test]
 fn seeking_a_live_stream_repositions_it_in_both_directions() {
     let d = tempfile::tempdir().unwrap();
@@ -614,18 +614,9 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
              -- the seek assertion below would prove nothing"
         );
 
-        clock.seek_seconds(target);
-        streamer
-            .commands()
-            .send(Command::Seek {
-                channel_index: i,
-                file_position: SamplePosition(target * SR),
-            })
-            .expect("the streamer is alive in this test");
-
         // Render *with* the streamer cycling. The placed voice reads where the
-        // clock now is (the `Command::Seek` moves the streamer's window there
-        // too); the streamer fills it on the cycle after the first block, which
+        // clock now is, and is the one that tells the streamer; the streamer
+        // fills it on the cycle after the first block, which
         // plays the old continuation and then crossfades to the target.
         // `a_seek_transition_does_not_clip` is the test that looks at that
         // transition; this one is about where the stream *settles*: the first
@@ -670,15 +661,6 @@ fn a_seek_transition_does_not_clip() {
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
     let (mut voice, clock) = stream_at(&mut streamer, &path, 10.0, 0);
-
-    clock.seek_seconds(30.0);
-    streamer
-        .commands()
-        .send(Command::Seek {
-            channel_index: 0,
-            file_position: SamplePosition(30.0 * SR),
-        })
-        .expect("the streamer is alive in this test");
 
     // Capture the whole transition, including the crossfade. One streamer cycle
     // per block puts the reposition inside the captured span rather than before

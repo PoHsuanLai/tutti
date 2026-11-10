@@ -439,7 +439,7 @@ mod tests {
 
         let (mut writer, ring) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::from("t.wav"), 4096, 1u16);
-        let mut reader = ring.take_reader(true).expect("the reader");
+        let mut reader = ring.take_reader().expect("the reader");
         let rt_state = RtState::new();
         let mut buffer = Vec::new();
         for _ in 0..3 {

@@ -10,8 +10,7 @@
 //! # A change moves the reader, and the streamer follows
 //!
 //! The preroll is published on the stream's ring (`Ring::preroll`); the reader
-//! plays straight position `clock - preroll` (a free-running reader, its own
-//! position less it). A change is therefore a jump of the *reader's* position
+//! plays straight position `clock - preroll`. A change is therefore a jump of the *reader's* position
 //! by the delta, from where it plays: the reader crossfades across it, and the
 //! refill follows it (`io::refill`), as it follows any jump. The frames the
 //! ring already holds stay valid for their positions, so a change inside the

@@ -1,6 +1,6 @@
 use super::*;
 use crate::streamer::{RegionBuffer, RegionId};
-use crate::testing::{MockTransport, block};
+use crate::testing::{MockTransport, block, play};
 use std::path::PathBuf;
 use tutti_graph::contract::Direct;
 use tutti_types::{Bpm, SamplePosition, Samples};
@@ -8,14 +8,20 @@ use tutti_types::{Bpm, SamplePosition, Samples};
 /// The rate the tests' blocks run at.
 const SR: f64 = 44_100.0;
 
-/// A stopped transport: a free-running source reads none.
-fn stopped() -> Arc<MockTransport> {
-    MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0))
+/// A voice placed at beat 0 over `samples` (at straight positions `0..`) and
+/// a transport rolling from beat 0, which `play` moves after each block: at
+/// 44.1 kHz and 120 bpm the voice reads one file frame per output frame.
+fn rolling_voice(samples: &[(f32, f32)]) -> (DiskVoice, Arc<MockTransport>) {
+    let voice = make_clip_reader(samples, Beat::new(0.0), None);
+    (
+        voice,
+        MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
+    )
 }
 
-/// One block of `n` frames of a free-running `unit`.
-fn free(unit: &mut DiskSource, n: usize) -> Vec<Vec<f32>> {
-    block(unit, &stopped(), SR, n)
+/// `n` frames of `voice` as one block, then the transport moved past them.
+fn run_block(voice: &mut DiskVoice, t: &MockTransport, n: usize) -> Vec<Vec<f32>> {
+    play(voice, t, SR, n, n)
 }
 
 /// One block of `n` frames of `voice` under `t`, at `rate`.
@@ -25,7 +31,7 @@ fn under(voice: &mut DiskVoice, t: &MockTransport, rate: f64, n: usize) -> Vec<V
 
 /// Tests still author stereo pairs for readability; flatten them at the one
 /// boundary rather than rewriting every fixture. The frames land at
-/// straight positions `0..`, where a free-running source starts.
+/// straight positions `0..`.
 fn make_reader_with_samples(samples: &[(f32, f32)]) -> SharedReader {
     make_reader_at(samples, 0)
 }
@@ -49,7 +55,7 @@ fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<RtState>) {
     (unit, state)
 }
 
-/// At unity rate a free-running source reads one file frame per output
+/// At unity rate a placed voice reads one file frame per output
 /// frame, exactly: output frame `i` is the ring's frame `i`, and after 8
 /// blocks of 64 it stands on frame 511.
 ///
@@ -59,8 +65,8 @@ fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<RtState>) {
 /// position has no fetch step to get wrong, but the step is still the one
 /// quantity that decides pitch, so it stays pinned.
 ///
-/// Mutation (run): the position stepped by `n + 4` frames a block → frame
-/// 64 reads 68 → fails.
+/// Mutation (run, on the free-running read this test was written for): the
+/// position stepped by `n + 4` frames a block -> frame 64 reads 68 -> fails.
 #[test]
 fn process_reads_one_file_frame_per_output_frame_at_unity_rate() {
     const BLOCK: usize = 64;
@@ -68,17 +74,16 @@ fn process_reads_one_file_frame_per_output_frame_at_unity_rate() {
     let samples: Vec<(f32, f32)> = (0..2048)
         .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
         .collect();
-    let (mut unit, _state) = make_unit(&samples);
-    unit.play();
+    let (mut voice, t) = rolling_voice(&samples);
 
     for block in 0..BLOCKS {
-        let out = free(&mut unit, BLOCK);
+        let out = run_block(&mut voice, &t, BLOCK);
         for (i, &got) in out[0].iter().enumerate() {
             let frame = block * BLOCK + i;
             assert_eq!(got, samples[frame].0, "output frame {frame}");
         }
     }
-    assert_eq!(unit.read.read_to(), (BLOCK * BLOCKS - 1) as f64);
+    assert_eq!(voice.inner.read.read_to(), (BLOCK * BLOCKS - 1) as f64);
 }
 
 // --- DiskVoice: placement gate ---
@@ -350,31 +355,39 @@ fn a_stopped_clock_silences_a_fork() {
 /// it (the reader is the live source's alone), so the one
 /// way a severed copy could still speak for the live ring is a source
 /// severed in place (what a disk voice's fork does to its copy's source).
-/// Here the live source claims a block, is severed, and, stopped, renders
+/// Here the live voice claims a block, its source is severed, and it renders
 /// again: the ranges the live block claimed must still stand, and a clone
 /// of it renders nothing into them either.
 ///
-/// Mutation (run): `sever` not letting go of the reader (`read.sever()`
-/// removed) → the severed source's stopped block idles the reader and
-/// clears its ranges → fails.
+/// Mutation (run, on the free-running source this test was written for):
+/// `sever` not letting go of the reader (`read.sever()` removed) -> the
+/// severed source's next block claims a new range -> fails.
 #[test]
 fn a_severed_copy_holds_no_live_reader() {
     let (mut writer, ring) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4_096, 2u16);
     writer.push_interleaved(&[0.5; 2 * 1_000]);
-    let mut live = DiskSource::new(ring, Arc::new(RtState::new()));
-    free(&mut live, 64);
+    let state = Arc::new(RtState::new());
+    let mut live = DiskVoice::new(
+        DiskSource::new(ring, Arc::clone(&state)),
+        state,
+        DiskVoiceConfig {
+            window: VoiceWindow::default(),
+            file_sample_rate: SampleRate(SR),
+        },
+    );
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
+    run_block(&mut live, &t, 64);
     let claimed = writer.in_flight_end();
     assert!(claimed > 0, "the live block claimed nothing");
     let mut clone = live.clone();
-    clone.play();
-    free(&mut clone, 64);
+    run_block(&mut clone, &t, 64);
     assert_eq!(
         writer.in_flight_end(),
         claimed,
         "a clone spoke for the live reader"
     );
-    live.sever();
-    free(&mut live, 64);
+    live.inner.sever();
+    run_block(&mut live, &t, 64);
     assert_eq!(
         writer.in_flight_end(),
         claimed,
@@ -464,11 +477,10 @@ fn clip_reader_silent_outside_window_audible_inside() {
 }
 
 /// A NaN or infinite gain is silence on a disk voice, in a window it plays
-/// (a placed read, inside and outside it) and free-running: never NaN.
+/// (a placed read, inside and outside it): never NaN.
 ///
 /// Mutation (run): `audible` returning its gain unguarded -> the placed read
-/// is NaN inside the window and inf * 0.0 = NaN outside it, and the
-/// free-running source is NaN -> fails.
+/// is NaN inside the window and inf * 0.0 = NaN outside it -> fails.
 #[test]
 fn a_non_finite_gain_is_silence_on_a_disk_voice() {
     let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
@@ -489,16 +501,6 @@ fn a_non_finite_gain_is_silence_on_a_disk_voice() {
                 "placed, beat {beat}, gain {gain}"
             );
         }
-
-        let samples: Vec<_> = (0..20).map(|_| (1.0f32, -1.0f32)).collect();
-        let mut source =
-            DiskSource::new(make_reader_with_samples(&samples), Arc::new(RtState::new()));
-        source.set_gain(Amplitude(gain));
-        let out = free(&mut source, 8);
-        assert!(
-            out.iter().flatten().all(|&s| s == 0.0),
-            "free-running, gain {gain}"
-        );
     }
 }
 
@@ -965,33 +967,7 @@ fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
     }
 }
 
-// --- Existing tests ---
-
-// --- New: play/stop state ---
-
-#[test]
-fn play_stop_controls_output() {
-    let samples: Vec<_> = (0..100).map(|i| (i as f32, -(i as f32))).collect();
-    let (mut unit, _state) = make_unit(&samples);
-
-    assert!(unit.is_playing());
-
-    // Play while playing — should produce non-zero after history primes.
-    free(&mut unit, 5);
-
-    unit.stop();
-    assert!(!unit.is_playing());
-    let out = free(&mut unit, 1);
-    assert_eq!(out[0][0], 0.0, "stopped unit must output silence");
-    assert_eq!(out[1][0], 0.0);
-
-    unit.play();
-    assert!(unit.is_playing());
-    let out = free(&mut unit, 1);
-    assert_ne!(out[0][0], 0.0, "resumed unit should produce audio");
-}
-
-// --- New: one-frame blocks read interpolated output from the ring ---
+// --- One-frame and block reads of a placed ring ---
 
 #[test]
 fn single_frames_read_from_ring_buffer_and_interpolate() {
@@ -999,11 +975,11 @@ fn single_frames_read_from_ring_buffer_and_interpolate() {
     // frames to prime the 4-sample history, output should be
     // non-zero and monotonically increasing (speed=1, src_ratio=1).
     let samples: Vec<_> = (0..20).map(|i| (i as f32, i as f32)).collect();
-    let (mut unit, _state) = make_unit(&samples);
+    let (mut voice, t) = rolling_voice(&samples);
 
     let mut prev = f32::NEG_INFINITY;
     for i in 0..16 {
-        let out = free(&mut unit, 1)[0][0];
+        let out = run_block(&mut voice, &t, 1)[0][0];
         if i >= 4 {
             assert!(
                 out >= prev,
@@ -1015,16 +991,14 @@ fn single_frames_read_from_ring_buffer_and_interpolate() {
     assert!(prev > 0.0, "should have produced non-zero audio");
 }
 
-// --- New: process block reads from ring buffer ---
-
 #[test]
 fn process_block_produces_output() {
     let samples: Vec<_> = (0..256)
         .map(|i| (i as f32 * 0.01, -(i as f32) * 0.01))
         .collect();
-    let (mut unit, _state) = make_unit(&samples);
+    let (mut voice, t) = rolling_voice(&samples);
 
-    let output = free(&mut unit, 64);
+    let output = run_block(&mut voice, &t, 64);
 
     // After 64 frames at speed=1, output should contain interpolated
     // samples from the ramp. Check last few are non-zero.
@@ -1032,38 +1006,22 @@ fn process_block_produces_output() {
     assert!(last > 0.0, "process() should produce audio, got {last}");
 }
 
-#[test]
-fn process_block_silence_when_stopped() {
-    let samples: Vec<_> = (0..256).map(|i| (i as f32, 0.0)).collect();
-    let (mut unit, _state) = make_unit(&samples);
-    unit.stop();
-
-    let output = free(&mut unit, 16);
-
-    for ch in &output[..2] {
-        assert_eq!(ch.len(), 16);
-        assert!(ch.iter().all(|&s| s == 0.0));
-    }
-}
-
 // --- New: gain application ---
 
 #[test]
 fn gain_scales_the_output() {
     let samples: Vec<_> = (0..20).map(|_| (1.0f32, -1.0f32)).collect();
-
-    let reader1 = make_reader_with_samples(&samples);
-    let reader2 = make_reader_with_samples(&samples);
-    let state1 = Arc::new(RtState::new());
-    let state2 = Arc::new(RtState::new());
-
-    let mut full = DiskSource::new(reader1, state1);
-    let mut half = DiskSource::new(reader2, state2);
+    let (mut full, _) = rolling_voice(&samples);
+    let (mut half, _) = rolling_voice(&samples);
     half.set_gain(Amplitude::new(0.5));
+    let (t_full, t_half) = (
+        MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
+        MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
+    );
 
     // Prime history then compare
-    let out_full = free(&mut full, 6)[0][5];
-    let out_half = free(&mut half, 6)[0][5];
+    let out_full = run_block(&mut full, &t_full, 6)[0][5];
+    let out_half = run_block(&mut half, &t_half, 6)[0][5];
 
     assert!(out_full.abs() > 1e-6, "the full-gain source sounds");
     let ratio = out_half / out_full;
@@ -1078,45 +1036,19 @@ fn gain_scales_the_output() {
 #[test]
 fn reset_clears_state() {
     let samples: Vec<_> = (0..100).map(|i| (i as f32, 0.0)).collect();
-    let (mut unit, _state) = make_unit(&samples);
+    let (mut voice, t) = rolling_voice(&samples);
 
-    free(&mut unit, 10);
-
-    unit.reset();
-    assert!(!unit.is_playing());
+    run_block(&mut voice, &t, 10);
     assert!(
-        unit.read.forgot(),
+        !voice.inner.read.forgot(),
+        "the reader holds its last position"
+    );
+
+    voice.reset();
+    assert!(
+        voice.inner.read.forgot(),
         "the reader still holds its last position"
     );
-}
-
-/// A free-running source follows a relayed seek, from its next block
-/// (`Command::Seek` reaches it as `Ring::request_seek`), and a source taken
-/// after a seek starts there, not at the stream's origin.
-///
-/// Mutation (run): the seek epoch not compared (`applied_seek` never set)
-/// → the source re-seeks every block and repeats frame 100 → fails.
-/// Mutation (run): `applied_seek` starting at the current epoch → the late
-/// source starts at 0 → fails.
-#[test]
-fn a_free_running_source_follows_a_relayed_seek() {
-    let samples: Vec<_> = (0..512).map(|i| (i as f32, 0.0)).collect();
-    let (mut unit, _state) = make_unit(&samples);
-    let ring = Arc::clone(unit.read.ring());
-    free(&mut unit, 8);
-    ring.request_seek(100);
-    // No fade on this bare ring (its fade length is 0): the next block
-    // reads the target at once, and the one after reads on from it.
-    for want in [100.0, 108.0] {
-        assert_eq!(free(&mut unit, 8)[0][0], want);
-    }
-    // A source taken after a seek: on a stream of its own, since a ring
-    // serves one live reader (this test took a second off the same ring
-    // before that rule).
-    let seeked = make_reader_with_samples(&samples);
-    seeked.request_seek(100);
-    let mut late = DiskSource::new(seeked, Arc::new(RtState::new()));
-    assert_eq!(free(&mut late, 1)[0][0], 100.0, "starts at the seek");
 }
 
 /// Build a `channels`-wide ring pre-filled with `frames` interleaved frames.
@@ -1228,21 +1160,29 @@ fn cached_stride_reads_every_channel_at_width_six() {
         .collect();
     let ring = make_wide_reader(&frames, width);
     let state = Arc::new(RtState::new());
-    let mut unit = DiskSource::new(ring, state.clone());
+    let mut voice = DiskVoice::new(
+        DiskSource::new(ring, state.clone()),
+        state,
+        DiskVoiceConfig {
+            window: VoiceWindow::default(),
+            file_sample_rate: SampleRate(SR),
+        },
+    );
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
 
     assert_eq!(
-        unit.channels(),
+        voice.inner.channels(),
         ChannelLayout::from(6u16),
         "the ring's declared width must reach the unit as a layout"
     );
     assert_eq!(
-        unit.shape().audio_out.count() as usize,
+        voice.shape().audio_out.count() as usize,
         width,
         "the cached stride must agree with the declared layout"
     );
 
     // The block reads frames 0..64, the ring's own.
-    let buf = free(&mut unit, 64);
+    let buf = run_block(&mut voice, &t, 64);
     // The last quarter of the block is well past priming.
     for i in 48..64 {
         for (c, ch) in buf.iter().enumerate().take(width) {
@@ -1258,9 +1198,9 @@ fn cached_stride_reads_every_channel_at_width_six() {
 
     // One-frame blocks read through the same path, so they must land on
     // the same frame.
-    let mut frame = free(&mut unit, 1);
+    let mut frame = run_block(&mut voice, &t, 1);
     for _ in 0..7 {
-        frame = free(&mut unit, 1);
+        frame = run_block(&mut voice, &t, 1);
     }
     for (c, ch) in frame.iter().enumerate() {
         let want = (c + 1) as f32;
@@ -1290,36 +1230,39 @@ fn cached_stride_reads_every_channel_at_width_six() {
 ///
 /// Mutation (run): `LiveRead::clone` keeping the reader (a shared
 /// `Arc<Mutex<PosReader>>` again) → the clone renders the stream → fails.
-/// Mutation (run): `DiskSource::set_gain` writing a by-value field instead
-/// of the shared cell → the original renders at unity → fails.
+/// Mutation (run): `DiskVoice::set_gain` dropping the write instead
+/// of reaching the shared cell → the original renders at unity → fails.
 #[test]
 fn a_gain_change_reaches_a_cloned_voice() {
-    let (mut unit, _state) = make_unit(&[(1.0, 1.0); 256]);
+    let (mut unit, _) = rolling_voice(&[(1.0, 1.0); 256]);
     unit.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
-    unit.play();
+    let (t_unit, t_copy) = (
+        MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
+        MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
+    );
 
     // The clone stands in for a copy the host writes through; the
     // original is what the graph renders.
     let mut copy = unit.clone();
     copy.set_gain(Amplitude::new(0.25));
 
-    let peak = |u: &mut DiskSource| {
+    let peak = |u: &mut DiskVoice, t: &MockTransport| {
         let mut peak = 0.0f32;
         for _ in 0..4 {
-            for s in &free(u, 8)[0] {
+            for s in &run_block(u, t, 8)[0] {
                 peak = peak.max(s.abs());
             }
         }
         peak
     };
-    let rendered = peak(&mut unit);
+    let rendered = peak(&mut unit, &t_unit);
     assert!(
         (rendered - 0.25).abs() < 1e-4,
         "a gain written on one copy of the voice must be seen by the copy \
          that renders; expected ~0.25, got {rendered}. A value near 1.0 \
          means `gain` is stored by value and the write went nowhere."
     );
-    let cloned = peak(&mut copy);
+    let cloned = peak(&mut copy, &t_copy);
     assert_eq!(
         cloned, 0.0,
         "a clone must hold no reader of the live ring, so it renders \
@@ -1504,7 +1447,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
     let (mut writer, reader) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1u16);
-    RegionBuffer::place(&mut writer, AT, 0, 0, 256);
+    RegionBuffer::place(&mut writer, AT, 0, 256);
     let from = writer.window().0;
     let flat: Vec<f32> = (from..from + 2_000).map(|k| k as f32).collect();
     writer.push_interleaved(&flat);

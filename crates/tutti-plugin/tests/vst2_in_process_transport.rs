@@ -23,7 +23,7 @@ use tutti_graph::{
     Unforkable,
 };
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
 use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
 use tutti_types::{
@@ -95,10 +95,41 @@ fn read_capture() -> ProcessCapture {
     cap
 }
 
-fn load() -> (InProcessVst2Client, PluginHandle) {
+fn load() -> (BoundInProcessVst2Client, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
-        .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
+    let (client, handle) =
+        in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
+            .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
+    (client.bind(scene_tempo()), handle)
+}
+
+/// The project's tempo map behind [`scene`]: 120 BPM, 90 around the tempo
+/// scenes' change and 100 around the stopped scenes' beat, so the tempo the
+/// plugin is told from the map is the one the scene's transport carries at
+/// each frame. (A tempo point is the map's way to say what a transport's
+/// own tempo change says.)
+fn scene_map(blocks: usize) -> tutti_tempo::TempoMap {
+    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    let point = |beat: f64, bpm: f64| TempoPoint {
+        beat: Beat(beat),
+        tempo: Bpm::of(bpm),
+        shape: Shape::Step,
+    };
+    let mut points = vec![point(0.0, 120.0)];
+    for b in 0..blocks {
+        let base = 4.0 + b as f64;
+        match b % 6 {
+            2 => points.extend([point(base + 0.4, 90.0), point(base + 0.6, 120.0)]),
+            5 => points.extend([point(base - 0.1, 100.0), point(base + 0.1, 120.0)]),
+            _ => {}
+        }
+    }
+    TempoMap::new(points).expect("a map")
+}
+
+/// A reader of [`scene_map`], for the nodes under test.
+fn scene_tempo() -> tutti_transport::TempoReader {
+    tutti_transport::TempoReader::fixed(std::sync::Arc::new(scene_map(64)))
 }
 
 /// The live node fed by a silent source of `arrival` frames' latency on both
@@ -352,7 +383,7 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     .expect("the probe opens");
     let handle = plugin.handle().clone();
     assert!(plugin.set_meter(seven_eight()), "a VST2 takes the meter");
-    let (mut r, _) = rig(plugin, 0);
+    let (mut r, _) = rig(plugin.bind(scene_tempo()), 0);
     let seen = render_scenes(&mut r, 1);
     assert_eq!(seen[0].1.numerator, 7);
     drop(handle);

@@ -240,7 +240,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
         strips.push(synth);
     }
 
-    let mut tone = tutti_codec::Wave::new(1, RATE);
+    let mut tone = tutti_codec::Wave::new(1, SampleRate(RATE));
     let mut seed = 0x1234_5678;
     let frames = Seconds(20.0).to_samples(SampleRate(RATE)).get();
     for i in 0..frames {

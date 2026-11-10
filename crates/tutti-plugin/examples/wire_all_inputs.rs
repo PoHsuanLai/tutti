@@ -127,9 +127,12 @@ fn main() -> Result<()> {
     // 3. Hand over the node. Consuming and explicit: a plugin *has* a node, it
     //    is not one — its audio ports count buses only, and would describe a
     //    synth as taking nothing while it consumes MIDI every block. `Plugin`
-    //    is itself an `IntoNode`: `editor.insert(key, kind, plugin)` puts it in
-    //    a graph and hands back its controls.
-    let (node, _controls) = tutti_graph::IntoNode::into_node(plugin);
+    //    binds to the project's tempo map (`Plugin::bind`), and the bound plugin
+    //    is an `IntoNode`: `editor.insert(key, kind, plugin.bind(tempo))` puts it
+    //    in a graph and hands back its controls.
+    let tempo =
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo");
+    let (node, _controls) = tutti_graph::IntoNode::into_node(plugin.bind(tempo));
     let shape = node.shape();
     println!(
         "\nnode ready: {} audio in, {} audio out",

@@ -4,13 +4,13 @@
 //! channel eight parallel damped combs (a diagonal [`Fdn`] of one-pole lines,
 //! the right channel's 23 frames longer) feeding four series all-passes in
 //! [`AllPassForm::Freeverb`] (Freeverb's own, not the unit-magnitude lattice),
-//! at Freeverb's tunings and constants. What it leaves out is the kernel's
+//! at Freeverb's tunings and constants. What it leaves out is the realization's
 //! flush of any value under 1e-6 to zero, a nonlinearity far below the tail's
 //! floor that no query models. The comb loop gain is `room * 0.28 + 0.7` and the
 //! damping `damp * 0.4`, computed in the same `f32` operations as
 //! [`Freeverb`]'s constants, so the General MIDI controls (room 0.5, damp 0.5)
-//! give today's coefficients to the bit. The kernel is [`Freeverb`] itself
-//! ([`Kernel`](crate::Kernel)): it reads those two numbers from the network, and
+//! give today's coefficients to the bit. The realization is [`Freeverb`] itself
+//! ([`Realization`](crate::Realization)): it reads those two numbers from the network, and
 //! this file changes no processing.
 
 use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate};
@@ -94,7 +94,7 @@ fn position(mix: Mix, default: f32) -> f32 {
 
 impl Design for FreeverbDesign {
     type Controls = FreeverbControls;
-    type Kernel = Freeverb;
+    type Realization = Freeverb;
 
     fn channels(&self) -> Channels {
         Channels {
@@ -104,7 +104,7 @@ impl Design for FreeverbDesign {
     }
 
     /// A [`Freeverb`] at the default rate; the node's `prepare` re-tunes it.
-    fn kernel(&self) -> Freeverb {
+    fn realization(&self) -> Freeverb {
         Freeverb::new(SampleRate::DEFAULT)
     }
 
@@ -193,10 +193,10 @@ mod tests {
     use tutti_types::{Db, Seconds};
 
     use super::*;
-    use crate::network::Band;
-    use crate::network::contract::{
+    use crate::contract::design::{
         DesignCase, Mutant, cases, design_contract, map_absorption, map_fdn,
     };
+    use crate::network::Band;
 
     fn controls(room: f32, damp: f32) -> FreeverbControls {
         FreeverbControls {
@@ -560,13 +560,15 @@ mod tests {
     }
 }
 
-/// The kernel contract over Freeverb: the kernel is `Freeverb` itself, held to
+/// The realization contract over Freeverb: the realization is `Freeverb` itself, held to
 /// its network's analytic figures.
 #[cfg(test)]
-mod kernel_tests {
+mod realization_tests {
     use super::*;
-    use crate::network::kernel_contract::{Defect, Defective, KernelCase, cases, kernel_contract};
-    use crate::network::{Band, Kernel, Setup};
+    use crate::contract::realization::{
+        Defect, Defective, RealizationCase, cases, realization_contract,
+    };
+    use crate::network::{Band, Realization, Setup};
 
     fn controls(room: f32, damp: f32) -> FreeverbControls {
         FreeverbControls {
@@ -575,7 +577,7 @@ mod kernel_tests {
         }
     }
 
-    impl KernelCase for FreeverbDesign {
+    impl RealizationCase for FreeverbDesign {
         /// 15%. The measured figure is the energy slope 40 to 65 dB down, where
         /// a bank of combs of 1116 to 1640 frames (a 1.47 ratio in rate) has
         /// not yet settled on the slowest: it lands 5 to 11% under the network's
@@ -618,7 +620,7 @@ mod kernel_tests {
         }
     }
 
-    kernel_contract!(FreeverbDesign);
+    realization_contract!(FreeverbDesign);
 
     fn defective(defect: Defect) -> Defective<FreeverbDesign> {
         Defective {
@@ -630,14 +632,14 @@ mod kernel_tests {
 
     #[track_caller]
     fn fails(result: Result<(), String>, why: &str) {
-        let e = result.expect_err("the case should fail on the defective kernel");
+        let e = result.expect_err("the case should fail on the defective realization");
         assert!(e.contains(why), "{e}");
     }
 
     /// Each case of the contract fails on a Freeverb with the defect its
     /// mutation names (the cases' mutation records, run every time).
     #[test]
-    fn a_defective_kernel_fails_its_case() {
+    fn a_defective_realization_fails_its_case() {
         // rt60: a loop gain 5% too high rings 39% longer.
         let m = defective(Defect::LoopGain(1.05));
         fails(cases::rt60(&m), "measured RT60");
@@ -676,7 +678,7 @@ mod kernel_tests {
             "jump",
         );
         // A modest step too: 1.5 times fails the 3 times allowance (measured
-        // margins of the clean kernels: Freeverb 1.98, the FDN 1.51 times the
+        // margins of the clean realizations: Freeverb 1.98, the FDN 1.51 times the
         // steady jump).
         fails(
             cases::click_free(&defective(Defect::UnslewedGain(1.5))),
@@ -701,7 +703,7 @@ mod kernel_tests {
 
     /// At the General MIDI controls `retarget` leaves the combs on exactly the
     /// coefficients a freshly built `Freeverb` starts with, bit for bit, so the
-    /// kernel of the General MIDI send renders what the reverb always did: the
+    /// realization of the General MIDI send renders what the reverb always did: the
     /// processing loops are untouched and the figures they read are the same
     /// bits. (An invariant of the coefficients, not a render compared with
     /// another render.)
@@ -714,18 +716,18 @@ mod kernel_tests {
         let rate = SampleRate(44_100.0);
         let fresh = Freeverb::new(rate);
         // Start from other figures so the retarget is seen to set them.
-        let mut kernel = Freeverb::new(rate);
-        kernel.retarget(&FreeverbDesign.design(&controls(0.9, 0.9), rate));
-        assert_ne!(kernel.figures().comb, fresh.figures().comb);
-        kernel.retarget(&FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, rate));
-        let (a, b) = (kernel.figures().comb, fresh.figures().comb);
+        let mut realization = Freeverb::new(rate);
+        realization.retarget(&FreeverbDesign.design(&controls(0.9, 0.9), rate));
+        assert_ne!(realization.figures().comb, fresh.figures().comb);
+        realization.retarget(&FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, rate));
+        let (a, b) = (realization.figures().comb, fresh.figures().comb);
         assert_eq!(
             (a.0.to_bits(), a.1.to_bits(), a.2.to_bits()),
             (b.0.to_bits(), b.1.to_bits(), b.2.to_bits())
         );
     }
 
-    /// A network the kernel does not understand leaves it as it was: no
+    /// A network the realization does not understand leaves it as it was: no
     /// recirculating stage, a stage that is not a one-pole, and figures that are
     /// not a stable loop.
     ///
@@ -734,34 +736,34 @@ mod kernel_tests {
     #[test]
     fn a_network_it_does_not_understand_is_ignored() {
         let rate = SampleRate(44_100.0);
-        let mut kernel = Freeverb::new(rate);
-        let before = kernel.figures().comb;
-        kernel.retarget(&Network::new(rate));
+        let mut realization = Freeverb::new(rate);
+        let before = realization.figures().comb;
+        realization.retarget(&Network::new(rate));
         let mut flat = FreeverbDesign.design(&controls(0.9, 0.9), rate);
-        crate::network::contract::map_absorption(&mut flat, |_| Absorption::Gain(Amplitude(0.5)));
-        kernel.retarget(&flat);
+        crate::contract::design::map_absorption(&mut flat, |_| Absorption::Gain(Amplitude(0.5)));
+        realization.retarget(&flat);
         let mut unstable = FreeverbDesign.design(&controls(0.9, 0.9), rate);
-        crate::network::contract::map_absorption(&mut unstable, |_| Absorption::OnePole {
+        crate::contract::design::map_absorption(&mut unstable, |_| Absorption::OnePole {
             gain: Amplitude(1.5),
             damp: 0.2,
         });
-        kernel.retarget(&unstable);
-        assert_eq!(kernel.figures().comb, before);
+        realization.retarget(&unstable);
+        assert_eq!(realization.figures().comb, before);
     }
 
-    /// A kernel prepared at another rate keeps the coefficients it was
+    /// A realization prepared at another rate keeps the coefficients it was
     /// retargeted to, and its lines are those of a `Freeverb` built at that rate.
     ///
     /// Mutation (run): `prepare` returning early leaves the 44 100 Hz lines and
     /// fails the lengths.
     #[test]
     fn prepare_retunes_the_lines_and_keeps_the_coefficients() {
-        let mut kernel = FreeverbDesign.kernel();
-        kernel.retarget(&FreeverbDesign.design(&controls(0.9, 0.2), SampleRate::DEFAULT));
-        let want = kernel.figures().comb;
+        let mut realization = FreeverbDesign.realization();
+        realization.retarget(&FreeverbDesign.design(&controls(0.9, 0.2), SampleRate::DEFAULT));
+        let want = realization.figures().comb;
         let rate = SampleRate(96_000.0);
         let ceiling = Ceiling::at(rate).unwrap();
-        kernel.prepare(
+        realization.prepare(
             &FreeverbDesign.bounds(&ceiling),
             &Setup {
                 rate,
@@ -770,9 +772,9 @@ mod kernel_tests {
                 output: tutti_types::ChannelLayout::STEREO,
             },
         );
-        assert_eq!(kernel.figures().comb, want);
+        assert_eq!(realization.figures().comb, want);
         assert_eq!(
-            kernel.figures().combs_left,
+            realization.figures().combs_left,
             Freeverb::new(rate).figures().combs_left
         );
     }

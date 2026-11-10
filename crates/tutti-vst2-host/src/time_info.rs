@@ -285,6 +285,19 @@ mod tests {
         assert_eq!(second.flags & F::TRANSPORT_CHANGED.bits(), 0);
     }
 
+    /// The plugin reads the snapshot's tempo unchanged (the project map's,
+    /// which the engine's plugin node puts there); VST2 has no slope field,
+    /// so the snapshot's `tempo_inc` reaches nothing.
+    ///
+    /// Mutation: `tempo: 120.0` in `build_vst2_time_info` -> fails.
+    #[test]
+    fn the_snapshots_tempo_is_what_the_plugin_reads() {
+        let transport = TransportInfo::new().with_tempo(97.5).with_tempo_inc(0.001);
+        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        assert_eq!(info.tempo, 97.5);
+        assert_ne!(info.flags & F::TEMPO_VALID.bits(), 0);
+    }
+
     /// A zeroed transport carries `tempo = 0.0`; advertising
     /// `kVstTempoValid` alongside it hands the plugin a divisor of zero, and
     /// `60.0 / tempo` puts an infinity on the master bus.

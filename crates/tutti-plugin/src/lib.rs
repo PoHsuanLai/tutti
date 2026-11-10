@@ -53,7 +53,8 @@ pub mod backend {
 // which dispatches here for `.vst` files.
 #[cfg(feature = "vst2")]
 pub use format::vst2_in_process::{
-    InProcessVst2Client, InProcessVst2Controls, load_client as in_process_vst2_client,
+    BoundInProcessVst2Client, InProcessVst2Client, InProcessVst2Controls,
+    load_client as in_process_vst2_client,
 };
 
 /// Discovering, persisting, and loading plugins.
@@ -94,7 +95,7 @@ pub mod catalog {
     };
     pub use tutti_plugin_types::{Helper, Locator};
     // Named in `Plugin::role` and `Plugins::iter`.
-    pub use crate::host::plugin::Plugin;
+    pub use crate::host::plugin::{BoundPlugin, Plugin};
     pub use crate::host::plugins::{PluginId, Plugins};
     pub use tutti_plugin_ipc::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
     pub use tutti_plugin_types::{PluginDescriptor, PluginRole};

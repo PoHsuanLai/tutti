@@ -4,7 +4,7 @@ use super::*;
 /// visible without waiting out an exponential ramp.
 fn instant() -> ExponentialSmoother {
     let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-    s.coeff = 1.0;
+    s.smoother.set_coeff(1.0);
     s
 }
 
@@ -19,7 +19,7 @@ fn angular_smoothing_crosses_the_seam_instead_of_going_around() {
 #[test]
 fn angular_smoothing_takes_the_short_arc_at_partial_coefficient() {
     let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-    s.coeff = 0.5;
+    s.smoother.set_coeff(0.5);
     s.seed_at(170.0);
     // Half of the +20 degree arc lands at 180, not back down near 0.
     let next = s.process_angle(Azimuth(-170.0));
@@ -27,7 +27,7 @@ fn angular_smoothing_takes_the_short_arc_at_partial_coefficient() {
 
     // The linear smoother, for contrast, heads the wrong way entirely.
     let mut linear = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-    linear.coeff = 0.5;
+    linear.smoother.set_coeff(0.5);
     linear.seed_at(170.0);
     assert_eq!(linear.process(Elevation(-170.0)), Elevation(0.0));
 }
@@ -35,7 +35,7 @@ fn angular_smoothing_takes_the_short_arc_at_partial_coefficient() {
 #[test]
 fn angular_smoothing_stays_on_the_circle_over_a_long_sweep() {
     let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-    s.coeff = 0.3;
+    s.smoother.set_coeff(0.3);
     s.seed_at(0.0);
     for _ in 0..2_000 {
         let v = s.process_angle(Azimuth(179.0));
@@ -69,7 +69,7 @@ fn a_zero_smoothing_time_is_instant() {
 fn linear_smoothing_still_converges_for_elevation() {
     // Elevation has no seam, so the plain form remains correct there.
     let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-    s.coeff = 0.5;
+    s.smoother.set_coeff(0.5);
     s.seed_at(0.0);
     assert_eq!(s.process(Elevation(90.0)), Elevation(45.0));
     assert_eq!(s.process(Elevation(90.0)), Elevation(67.5));
@@ -87,7 +87,7 @@ fn linear_smoothing_still_converges_for_elevation() {
 fn advance_is_the_closed_form_of_repeated_steps() {
     for steps in [1usize, 64, 1024, 48_000] {
         let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-        let coeff = f64::from(s.coeff);
+        let coeff = f64::from(s.smoother.coeff());
         let left = (1.0 - coeff).powi(steps as i32);
         s.seed_at(10.0);
         let h = s.advance(Elevation(70.0), steps).get();

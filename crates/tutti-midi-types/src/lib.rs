@@ -57,14 +57,10 @@ pub use translation::{
     to_midi1_messages,
 };
 pub use ump::{
-    ALL_FUNCTION_BLOCKS, Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
-    EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
-    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, KeySharpsFlats, Protocol, Tonic,
-    UmpVersion, device_identity, endpoint_discovery, endpoint_info, flex_set_chord_name,
-    flex_set_key_signature, flex_set_metronome, flex_set_tempo, flex_set_time_signature,
-    function_block_discovery, function_block_info, is_sysex8_abort, jr_clock_value,
-    jr_timestamp_value, stream_configuration_notification, stream_configuration_request,
-    sysex8_fragments, sysex8_header, sysex8_status,
+    Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType, FlexTextKind,
+    KeySharpsFlats, Protocol, Tonic, flex_set_chord_name, flex_set_key_signature,
+    flex_set_metronome, flex_set_tempo, flex_set_time_signature, is_sysex8_abort, jr_clock_value,
+    jr_timestamp_value, sysex8_fragments, sysex8_header, sysex8_status,
 };
 
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.

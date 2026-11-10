@@ -42,7 +42,10 @@ fn fork_rig(max_block: usize) -> (Rig, tutti_plugin::handles::PluginHandle) {
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(
+            ForkMode::Offline,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
         .expect("the probe forks");
     (Rig::new(fork, SAMPLE_RATE, max_block), probe.handle)
 }

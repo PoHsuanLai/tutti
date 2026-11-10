@@ -164,7 +164,9 @@ fn load_probe(env: &mut ProbeEnv, render_mode: u32) -> (PluginClient, PluginHand
 fn graph_of(client: PluginClient) -> Renderer {
     let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
     let mut g = GraphBuilder::new(layout(client.inputs()), layout(client.outputs()));
-    let (key, _controls) = g.add_with_controls(client.bind());
+    let (key, _controls) = g.add_with_controls(client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ));
     g.pipe_input(key).pipe_output(key);
     g.renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
         .expect("a one-plugin graph compiles")
@@ -502,7 +504,9 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
-    let mut node = client.bind();
+    let mut node = client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    );
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
     dump.extend(
@@ -550,7 +554,9 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
-    let mut node = client.bind();
+    let mut node = client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    );
     node.prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
@@ -600,7 +606,9 @@ fn the_controls_count_the_bridges_dropped_midi_too() {
     let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
-    let node = client.bind();
+    let node = client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    );
     node.state.params.count_midi_dropped(2);
     node.bridge
         .dropped_midi_cell()

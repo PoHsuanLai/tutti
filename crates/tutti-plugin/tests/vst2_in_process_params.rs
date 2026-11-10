@@ -31,7 +31,7 @@ use tutti_graph::{
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::handles::{Normalized, ParamId, PluginHandle};
-use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
@@ -82,10 +82,12 @@ impl Drop for ProbeEnv {
     }
 }
 
-fn load() -> (InProcessVst2Client, PluginHandle) {
+fn load() -> (BoundInProcessVst2Client, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
-        .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
+    let (client, handle) =
+        in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
+            .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
+    (client.bind(tempo()), handle)
 }
 
 /// The plugin's own value for parameter `i`.
@@ -176,7 +178,7 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
     let mut unit = Direct::new(client, SampleRate(SAMPLE_RATE), BLOCK);
     let p = 2;
 
-    let held = |unit: &mut Direct<InProcessVst2Client>, v: f32, blocks: usize| {
+    let held = |unit: &mut Direct<BoundInProcessVst2Client>, v: f32, blocks: usize| {
         for _ in 0..blocks {
             unit.events(0, &[ramp(0, p, v), ramp(32, p, v)]);
             unit.block();
@@ -278,4 +280,9 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         "the export plays the held lane over the edit live playback keeps"
     );
     drop(handle);
+}
+
+/// The project's tempo map the node under test is bound to.
+fn tempo() -> tutti_transport::TempoReader {
+    tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
 }

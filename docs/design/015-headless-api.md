@@ -423,6 +423,7 @@ pub enum SessionEvent {
     ExportDone(Result<ExportOutput, ExportError>),
     DeviceFault(StreamFault),
     MidiOutDropped(u64),
+    BlocksSilenced(u64),                      // blocks the engine rendered silent since the last update: an audible dropout (one per update that saw any; derived from `LoadReading::silenced`; `over_budget` stays a polled reading)
     // ...
 }
 ```

@@ -14,13 +14,28 @@ at most as a convenience, the choice explicit, built and prepared on the control
 side. And it applies the lesson of [doc 014](014-modulation.md) §1: modulation
 was modelled twice as an engine mechanism and failed both times; the fix was "a
 noun of the API, not of the engine: the API compiles, a node evaluates". Here
-the model is the *noun* (a value, with analytic queries), and the kernel is what
-evaluates. Nothing in the model forces a runtime shape on a kernel.
+the model is the *noun* (a value, with analytic queries), and the realization is what
+evaluates. Nothing in the model forces a runtime shape on a realization.
 
-The general shape here (design, model, kernel, the generic node and the contract
+The general shape here (design, model, realization, the generic node and the contract
 suites) is generalised in [024](024-design-model-realization.md), whose traits
 replace this doc's reverb-only ones; the general traits are doc 024's, and this
 doc keeps the reverb specifics.
+
+**Renamed by doc 024 step 1a** (the present-tense sections below use the new
+names; the "as built" logs keep the names they were written with):
+
+| Was | Is |
+|---|---|
+| `Kernel` (trait), `Design::Kernel`, `Design::kernel()` | `Realization`, `Design::Realization`, `Design::realization()` |
+| `kernel_contract!`, `KernelCase` | `realization_contract!`, `RealizationCase` |
+| `ReverbNode<D>` | `DesignNode<D>` (`FreeverbNode`, `FdnNode` unchanged) |
+| `ReverbDesign` | `NodeDesign` |
+| `ReverbParams` | `ControlParams` (`FreeverbParams`, `FdnParams` unchanged) |
+| `network/kernel.rs`, `network/contract.rs`, `network/kernel_contract.rs` | `network/realization.rs`, `contract/design.rs`, `contract/realization.rs` |
+
+`FdnKernel` keeps its name. Details and the rest of the model are in
+[024](024-design-model-realization.md) §9 and §10.
 
 ## Summary
 
@@ -32,17 +47,17 @@ doc keeps the reverb specifics.
   fixed-capacity value, with analytic queries written once (`rt60`, `tail`,
   `is_stable`, densities) and a `bounds()` worst case for allocation.
 - **An algorithm is a `Design` (its `Controls` type and design function) plus
-  its own `Kernel`** (§4). The `Network` is a *description for design and
+  its own `Realization`** (§4). The `Network` is a *description for design and
   analysis, not an instruction stream*: no engine interprets every network, so a
-  kernel stays free to specialise (fixed-N matrices, SIMD across lines, fused
+  realization stays free to specialise (fixed-N matrices, SIMD across lines, fused
   comb loops, Freeverb's exact float order).
 - **The link that keeps purity honest is a contract test, not a shared
-  runtime** (§8): a kernel's measured behaviour must match its `Network`'s
+  runtime** (§8): a realization's measured behaviour must match its `Network`'s
   analytic queries.
 - **Controls are existing units and `UnitParam` kinds** (§2.2), plus two new
   kinds (`Decay`, `Diffusion`) and `Freeze`. No new unit.
-- **One generic node, `ReverbNode<D: Design>`** (§5): reads its `Param` cells
-  once per block, designs, retargets its kernel, reports its tail from
+- **One generic node, `DesignNode<D: Design>`** (§5): reads its `Param` cells
+  once per block, designs, retargets its realization, reports its tail from
   `Network::tail` through the graph's dynamic tail (§12, step 0b).
 - **Decisions of 2026-11-08** (owner): the graph re-reads the tail; fork is
   `fresh()` with preroll; `ReverbKind` ships beside a second algorithm, the FDN;
@@ -137,14 +152,14 @@ recirculation coefficient with a stability ceiling, which a diffusion is not.
 
 ### 2.3 Wet/dry policy
 
-**The algorithm is wet-only; the node owns mix.** A kernel overwrites its output
+**The algorithm is wet-only; the node owns mix.** A realization overwrites its output
 with the reverberated signal at the wet gain. The node has a `Mix`
 (`UnitParam::Wet`, default `WET`, a send) for insert use and aligns the dry path
-to `Kernel::latency()`, never to pre-delay (pre-delay is part of the wet sound).
+to `Realization::latency()`, never to pre-delay (pre-delay is part of the wet sound).
 The existing `DryAlign` in `convolution/node.rs` solves the alignment once and
 moves to the shared node. `Network` carries no direct path (`D = 0`), so "wet-only
-means no dry leak" is a property of the model, and the kernel test checks the
-kernel keeps it.
+means no dry leak" is a property of the model, and the realization test checks the
+realization keeps it.
 
 ### 2.4 Channel shape
 
@@ -255,7 +270,7 @@ default 8 s). The kernel allocates from it in `prepare`, and the node declares
 asserts that `bounds()` dominates `design()` for every reachable control, which
 is what makes "no allocation after `prepare`" a checked fact.
 
-## 4. `Design` and `Kernel`
+## 4. `Design` and `Realization`
 
 > The general traits are doc 024's; from here, reverb specifics.
 
@@ -267,7 +282,7 @@ pub trait Design: Clone + Send {
     /// crossovers: [Hz; 2], size: Mix, diffusion: Mix, modulation: ..,
     /// width: StereoWidth, pre_delay: Seconds, wet: Db, freeze: bool }.
     type Controls: Copy + PartialEq + Send;
-    type Kernel: Kernel;
+    type Realization: Realization;
 
     /// Pure and allocation-free. The same controls always give the same network.
     fn design(&self, controls: &Self::Controls, rate: SampleRate) -> Network;
@@ -275,11 +290,11 @@ pub trait Design: Clone + Send {
     /// Worst case over the controls' ranges (§3.2).
     fn bounds(&self, ceiling: &Ceiling) -> Bounds;
 
-    /// An unprepared kernel for this design. Control side.
-    fn kernel(&self) -> Self::Kernel;
+    /// An unprepared realization for this design. Control side.
+    fn realization(&self) -> Self::Realization;
 }
 
-pub trait Kernel: Send + Sized {
+pub trait Realization: Send + Sized {
     /// Control side. Allocates from `bounds`; nothing allocates afterwards.
     fn prepare(&mut self, bounds: &Bounds, setup: &Setup);
     /// Real time, once per block whose network changed: slew lengths,
@@ -292,7 +307,7 @@ pub trait Kernel: Send + Sized {
     /// Processing latency only, never pre-delay or tap spacing.
     fn latency(&self) -> Samples { Samples(0) }
     fn effort(&self) -> Effort { Effort::Heavy }
-    /// Same kernel and prepared setup, empty state: the fork instance.
+    /// Same realization and prepared setup, empty state: the fork instance.
     fn fresh(&self) -> Self;
 }
 ```
@@ -305,10 +320,10 @@ ChannelLayout }`. `Effort` is a three-variant enum here because `Cost` is
 | Method | Why |
 |---|---|
 | `Design::design` | The functional mapping, the pure part. It is called with `Copy` controls so a test, a UI and the node call the same function |
-| `Design::bounds` | Allocation and the graph's ceiling come from one analysis, not from a kernel's private constants |
-| `Kernel::prepare(bounds, setup)` | Control side, like `Node::prepare` and the stretcher. A kernel sizes itself from `bounds`; it never inspects a `Network` to allocate |
-| `Kernel::retarget(&Network)` | The only coupling between model and runtime: a kernel reads what it wants from the network and moves toward it. Freeverb copies `feedback` and `damp` into its combs; the FDN slews its lengths and interpolates its absorption coefficients; convolution reads nothing but pre-delay and gain |
-| `process` | Controls are not an argument: they are in the kernel via `retarget`. Planar slices fit the node's `Io` and keep width runtime |
+| `Design::bounds` | Allocation and the graph's ceiling come from one analysis, not from a realization's private constants |
+| `Realization::prepare(bounds, setup)` | Control side, like `Node::prepare` and the stretcher. A realization sizes itself from `bounds`; it never inspects a `Network` to allocate |
+| `Realization::retarget(&Network)` | The only coupling between model and runtime: a realization reads what it wants from the network and moves toward it. Freeverb copies `feedback` and `damp` into its combs; the FDN slews its lengths and interpolates its absorption coefficients; convolution reads nothing but pre-delay and gain |
+| `process` | Controls are not an argument: they are in the realization via `retarget`. Planar slices fit the node's `Io` and keep width runtime |
 | `reset`, `fresh` | Seek/stop, and the fork rule from the stretcher decision. A fork starts from silence; the graph's `PrerollTable` warms it |
 | `latency` | `Samples`, wrapped in `Latency::new` by the node; a separate method so "musical delay is not latency" is checked by type and test |
 
@@ -321,31 +336,31 @@ matrix-vector product); SIMD across lines; fused comb loops (Freeverb's
 `process` runs one comb over a whole block); and Freeverb's exact float order,
 which the GM render has to keep. It would also make every algorithm pay for the
 union of all shapes. So the model is a description and each algorithm owns a
-kernel; `retarget` is the only crossing, and the kernel decides what to read.
+realization; `retarget` is the only crossing, and the realization decides what to read.
 
 The *link* between description and runtime is a contract test (§8), not a
-shared mechanism: a kernel's measured RT60 per band, pre-delay placement, tail
+shared mechanism: a realization's measured RT60 per band, pre-delay placement, tail
 coverage and stability must match its `Network`'s queries within a tolerance the
-kernel declares. Analysis and runtime cannot drift without a failure, and
-nothing constrains how the kernel is written.
+realization declares. Analysis and runtime cannot drift without a failure, and
+nothing constrains how the realization is written.
 
 ### 4.2 A generic engine as a convenience?
 
 **Recommend yes, as an opt-in, later, and never as the default or the oracle.**
-A `Generic` kernel interprets any `Network` sample by sample with the same
-building blocks. It earns its keep as (a) the kernel for a new or experimental
+A `Generic` realization interprets any `Network` sample by sample with the same
+building blocks. It earns its keep as (a) the realization for a new or experimental
 `Design` before anyone writes a fast one (a design can be tried by ear the day
 its `design` function exists) and (b) the way to check a `Network` by listening
-and by the kernel contract before a specialised kernel exists. It does not force
-anything: the shipped algorithms do not use it, `type Kernel = Generic` is a
+and by the realization contract before a specialised realization exists. It does not force
+anything: the shipped algorithms do not use it, `type Realization = Generic` is a
 choice, and it is not an oracle (CLAUDE.md: no new test compares a render
 against another reference render; its output is held to the same analytic
-queries as any kernel). It costs about 300 lines and a standing obligation to
+queries as any realization). It costs about 300 lines and a standing obligation to
 support every `Stage`, so it comes after the FDN, not before (§9, step 4).
 
 ### 4.3 Shared building blocks (tutti-dsp)
 
-Kernels are assembled from optimisable pieces; the pieces do not know the
+Realizations are assembled from optimisable pieces; the pieces do not know the
 `Network`.
 
 | Block | What |
@@ -365,8 +380,8 @@ A block is extracted when its second user lands, not before.
 ## 5. The graph node
 
 ```rust
-pub struct ReverbNode<D: Design> {
-    design: D, kernel: D::Kernel,
+pub struct DesignNode<D: Design> {
+    design: D, realization: D::Realization,
     params: D::Params,          // the Param<U> cells this algorithm declares
     last: Option<D::Controls>, network: Network,
     mix: Param<Mix>, dry: DryAlign,
@@ -376,10 +391,10 @@ pub struct ReverbNode<D: Design> {
 
 Per block: read the `Param` cells once (through `LastGood`), build `D::Controls`;
 if it differs from `last` (bitwise `PartialEq`), `design` into `network` and
-`kernel.retarget(&network)`; `kernel.process`; then
+`realization.retarget(&network)`; `realization.process`; then
 `io.report_tail(network.tail(TAIL_FLOOR))` with the high-water rule of §12.
 `D::Params` and its `fn controls(&self) -> D::Controls` live in a helper trait
-in `tutti-nodes` (`ReverbParams`), so `tutti-dsp` holds no `Param`. The node is
+in `tutti-nodes` (`ControlParams`), so `tutti-dsp` holds no `Param`. The node is
 `Node` + `ParamNode` inserted through `param_parts`, declares only the params in
 `D::Params` through its `ParamSet`, and `Shape::with_param_addrs` for the
 modulatable ones. `Shape::tail` is the ceiling from `design.bounds(..).tail`.
@@ -388,13 +403,13 @@ modulatable ones. `Shape::tail` is the ceiling from `design.bounds(..).tail`.
 
 > The general traits are doc 024's; from here, reverb specifics.
 
-`ReverbNode<D>` and not a box: `type Controls` and `type Kernel` make `Design`
+`DesignNode<D>` and not a box: `type Controls` and `type Realization` make `Design`
 not object-safe by design, and erasing them would reintroduce a settings bag. The
 per-sample loops are monomorphic. The cost is a registration line per algorithm
 and a runtime chooser (below). A structural change (a new IR, another algorithm,
-a different line count) builds a new `ReverbNode<D>` on the control side and goes
+a different line count) builds a new `DesignNode<D>` on the control side and goes
 in through the graph's `crossfade`; the audio thread never swaps an owning
-handle. The node's fork is `design.clone()` with `kernel.fresh()` and the same
+handle. The node's fork is `design.clone()` with `realization.fresh()` and the same
 params, replacing `ForkByClone`; a fork starts from silence and preroll warms it
 (pinned by an export-fork test in 1b).
 
@@ -402,25 +417,25 @@ params, replacing `ForkByClone`; a fork starts from silence and preroll warms it
 
 ```rust
 pub enum ReverbKind { Freeverb, Fdn(FdnConfig) /* later: Plate, Convolution(ir) */ }
-impl ReverbKind { pub fn spawn(self, ..) -> SpawnedReverb }  // builds the matching ReverbNode<D>
+impl ReverbKind { pub fn spawn(self, ..) -> SpawnedReverb }  // builds the matching DesignNode<D>
 ```
 In `tutti-nodes` (ships in 1c beside the FDN). It only spawns the matching node;
 there is no engine-level "auto", and it holds no policy.
 
 ### 5.3 General MIDI (#354)
 
-`Session::add_general_midi` keeps calling `ReverbNode::new()`, which becomes
-`ReverbNode::<Freeverb>::general_midi()`: Freeverb at `{room: 0.5, damp: 0.5}`
+`Session::add_general_midi` keeps calling `DesignNode::new()`, which becomes
+`FreeverbNode::general_midi()`: Freeverb at `{room: 0.5, damp: 0.5}`
 as a send. `Freeverb`'s design computes `room * 0.28 + 0.7` and `damp * 0.4` in
 the same `f32` operations as today's constants, the network carries exactly
 those numbers, and `retarget` copies them into the combs, so the GM render is
-bit-identical by construction (Freeverb's kernel is today's code: a diagonal
+bit-identical by construction (Freeverb's realization is today's code: a diagonal
 comb bank, its loop untouched). A follow-up `add_general_midi_with` takes
-another `ReverbNode<D>`.
+another `DesignNode<D>`.
 
 ### 5.4 Bevy
 
-`bevy-tutti` composes nothing new: `param_graph_node!(ReverbNode<Freeverb>)`
+`bevy-tutti` composes nothing new: `param_graph_node!(DesignNode<Freeverb>)`
 (one line per `D`) and `App::add_audio_param::<U, P>()` per row of §2.2; the
 `UnitParam` kinds are the only `tutti-types` change. `scripts/check-adapter.sh`
 holds.
@@ -429,12 +444,12 @@ holds.
 
 Ranked by value over cost. Pure Rust, written from the cited papers (no code
 derived except Freeverb, already MIT-noticed); no C libraries. Each row is a
-`Design` (a `design` function and `Controls`) and its own `Kernel`.
+`Design` (a `design` function and `Controls`) and its own `Realization`.
 
-| # | Algorithm | Network shape | Kernel | Source | Lines (est.) | Cannot do |
+| # | Algorithm | Network shape | Realization | Source | Lines (est.) | Cannot do |
 |---|---|---|---|---|---|---|
 | 1 | **Freeverb** (exists) | `Fdn` diagonal, `OnePole`, 8 lines per channel, then 4 `AllPass` per channel; `Controls { room, damp }` | Today's code unchanged; `retarget` copies two numbers | rustysynth `reverb.rs` (MIT, in header); Jezar's Freeverb | 344 now, +~150 (design, queries) | Three-band decay, freeze, modulation; RT60 accurate only to its declared tolerance |
-| 2 | **Feedback delay network** | `Fdn`, `Bands` absorption, Householder or Hadamard, optional modulation and diffusion | Const-generic N, O(N)/O(N log N) matrix, SIMD across lines, interpolating reads | Jot and Chaigne, AES 90th, 1991; Jot 1997; Smith, *Physical Audio Signal Processing*; Schlecht and Habets on matrices | ~600 kernel + ~250 design | A real room's exact early pattern; sparse at very short RT60 and huge size |
+| 2 | **Feedback delay network** | `Fdn`, `Bands` absorption, Householder or Hadamard, optional modulation and diffusion | Const-generic N, O(N)/O(N log N) matrix, SIMD across lines, interpolating reads | Jot and Chaigne, AES 90th, 1991; Jot 1997; Smith, *Physical Audio Signal Processing*; Schlecht and Habets on matrices | ~600 realization + ~250 design | A real room's exact early pattern; sparse at very short RT60 and huge size |
 | 3 | **Convolution** (exists) | `Fir(FirSummary)` + pre-delay | `Convolver`; `retarget` reads pre-delay and gain | `tutti-dsp::Convolver` | adapter ~250 | Live decay, size, damping, modulation. Latency one partition |
 | 4 | **Dattorro plate** | `Fdn` of 2 lines, `OnePole`, nested `AllPass` diffusers, modulated lengths | Nested all-pass loops, tuned, as the paper | Dattorro, JAES 45(9), 1997 | ~350 + ~150 design | Three-band decay, N > 2 channels, freeze |
 | 5 | **Early reflections** | `Taps`, A = 0 | Tap reader | Allen and Berkley, JASA 1979 | ~250 | A tail. Also a stage inside 2 and 4 |
@@ -447,15 +462,15 @@ Not planned: Schroeder (a one-line network, superseded by Freeverb), spring
 
 | Item | Crate | Layer | Check |
 |---|---|---|---|
-| `Network`, `Stage`, `Design`, `Kernel`, `Setup`, `Bounds`, `Effort`, the building blocks, `Freeverb`, `Fdn`, `Plate`, `EarlyReflections`, both contract suites | `tutti-dsp` | 2 | Allowed deps only (`tutti-types`; `tutti-graph` dev-only, hence `Effort`); no atomics or `Arc`-published state; controls per call; `design` is a pure function |
+| `Network`, `Stage`, `Design`, `Realization`, `Setup`, `Bounds`, `Effort`, the building blocks, `Freeverb`, `Fdn`, `Plate`, `EarlyReflections`, both contract suites | `tutti-dsp` | 2 | Allowed deps only (`tutti-types`; `tutti-graph` dev-only, hence `Effort`); no atomics or `Arc`-published state; controls per call; `design` is a pure function |
 | `UnitParam::{Decay, Diffusion, Freeze}` | `tutti-types` | 1 | vocabulary only; no new unit |
 | `generate_room_ir` | moves to `tutti-dsp` with the convolution design | 2 | a design builds its own IR |
-| `ReverbNode<D>`, `ReverbParams`, `ReverbKind`, shared `DryAlign`; `ConvolverNode` kept, thinned | `tutti-nodes` | 4 | node holds only the adapter |
+| `DesignNode<D>`, `ControlParams`, `ReverbKind`, shared `DryAlign`; `ConvolverNode` kept, thinned | `tutti-nodes` | 4 | node holds only the adapter |
 | `Session::add_general_midi` | `tutti-session` | 7 | call unchanged; Bevy-free |
 | Registration | `bevy-tutti` | 8 | `param_graph_node!` lines; no engine logic |
 
 `Freeverb` keeps its MIT header; the others are written from papers. CLAUDE.md's
-`tutti-dsp` paragraph names `Design`, `Kernel` and `Network` when 1a lands.
+`tutti-dsp` paragraph names `Design`, `Realization` and `Network` when 1a lands.
 
 ## 8. The contract suites
 
@@ -465,7 +480,7 @@ Two suites, so the model and the runtime are each tested against physics and the
 spec, and against each other through the model's own queries. Every figure is
 analytic or from the spec, never another implementation's render.
 
-### 8.1 Design tests (no kernel), `design_contract!`
+### 8.1 Design tests (no realization), `design_contract!`
 
 Run in `tutti-dsp` over every `Design`; they need no audio.
 
@@ -482,14 +497,14 @@ Run in `tutti-dsp` over every `Design`; they need no audio.
 | No direct path | `D = 0` in every network | add a direct gain |
 | Pre-delay | `pre_delay` in frames equals `round(pre_delay · fs)` | off by one |
 
-### 8.2 Kernel realises network, `kernel_contract!`
+### 8.2 Realization realises network, `realization_contract!`
 
-Run over every `Kernel` with its `Design`'s networks, in `tutti-dsp`. The kernel
+Run over every `Realization` with its `Design`'s networks, in `tutti-dsp`. The realization
 declares a tolerance per query (FDN 5%, Freeverb 10%).
 
 | Case | Figure | Mutation record |
 |---|---|---|
-| RT60 | An impulse's Schroeder-integrated decay, per band, matches `network.rt60(band)` within the kernel's tolerance | scale the kernel's loop gain by 1.02 |
+| RT60 | An impulse's Schroeder-integrated decay, per band, matches `network.rt60(band)` within the realization's tolerance | scale the realization's loop gain by 1.02 |
 | Tail covers | Measured time from input end to each floor (-40, -60, -90 dB) <= `network.tail(floor)` | halve `tail` |
 | Pre-delay | First non-zero output at `network.pre_delay` frames; `latency()` unchanged by it | off by one in the line |
 | Stability | 60 s of noise at the extreme controls (max decay, max size, modulation at its maximum): finite and bounded when `is_stable()`; freeze: neither growth nor loss beyond a stated figure | unity-plus loop |
@@ -498,8 +513,8 @@ declares a tolerance per query (FDN 5%, Freeverb 10%).
 | Wet-only | A Dirac at 0 with pre-delay > 0: exact zero before the pre-delay; wet `-inf` is exact zero | add the input to the output |
 | Click-free retarget | Step decay, size, wet and pre-delay mid-tail: max sample-to-sample jump <= the steady-state bound x a small factor | apply a length unslewed |
 | Reset | After `reset`, bit-identical to a fresh instance's render | skip one line |
-| Fresh | `fresh()` renders bit-identically to a freshly built kernel | share one line |
-| Block independence | Same input in blocks of 1, 17, 64, 512 bit-identical (time-domain kernels; the convolver within round-off, declared) | block-dependent ramp |
+| Fresh | `fresh()` renders bit-identically to a freshly built realization | share one line |
+| Block independence | Same input in blocks of 1, 17, 64, 512 bit-identical (time-domain realizations; the convolver within round-off, declared) | block-dependent ramp |
 | Latency | `latency()` equals the measured shift of the first output sample with pre-delay 0 | return 0 |
 | No allocation | `retarget` and `process` under `assert_no_alloc`, networks changing every block | n/a |
 

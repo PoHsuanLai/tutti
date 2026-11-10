@@ -22,12 +22,13 @@ use tutti_plugin_types::MainThread;
 use arrayvec::ArrayVec;
 use parking_lot::Mutex;
 use tutti_graph::{Cx, Offset};
-use tutti_transport::{MeterSlotReader, ProjectMeter};
+use tutti_tempo::{Cursor, TempoMap};
+use tutti_transport::{MeterSlotReader, ProjectMeter, TempoReader};
 use tutti_types::{MeterMap, Samples};
 use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, WireMidi};
 
 use super::instance::Instance;
-use crate::host::node::transport_source::{self, HostClock, ProjectTime, SteadyTime};
+use crate::host::node::transport_source::{self, HostClock, ProjectMaps, ProjectTime, SteadyTime};
 use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
 use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, TransportInfo};
 
@@ -47,7 +48,8 @@ use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, T
 /// A graph holding this node forks (`Editor::fork`, which an offline export
 /// takes) **by state transfer**: a second instance of the plugin, from the same
 /// library, restored from this one's saved state. See
-/// [`fork_instance`](Self::fork_instance).
+/// [`BoundInProcessVst2Client::fork_instance`]. The client becomes a graph node by
+/// [`bind`](Self::bind)ing it to the project's tempo map.
 pub struct InProcessVst2Client {
     pub(super) inner: Arc<Mutex<Instance>>,
     pub(super) metadata: PluginInfo,
@@ -233,6 +235,8 @@ impl TransportFeed {
         cx: &Cx<'_>,
         frames: usize,
         features: Features,
+        tempo: &TempoMap,
+        cursor: &mut Cursor,
     ) -> TransportInfo {
         if !features.contains(Features::TRANSPORT) {
             self.steady.advance(frames);
@@ -245,13 +249,50 @@ impl TransportFeed {
         self.last = transport_source::from_cx(
             cx,
             at,
+            frames,
             self.steady.at(0),
             &mut self.project,
             self.host_clock.map(HostClock::now_ns),
-            installed.as_deref().unwrap_or(&self.default_meter),
+            &mut ProjectMaps {
+                meter: installed.as_deref().unwrap_or(&self.default_meter),
+                tempo,
+                cursor,
+            },
         );
         self.steady.advance(frames);
         self.last
+    }
+}
+
+/// An in-process VST2 client bound to the project's tempo map
+/// ([`InProcessVst2Client::bind`]): the graph node. It owns the reader, lends
+/// the map once per block and keeps a cursor into it. Only this type is a
+/// [`Node`](tutti_graph::Node) and an [`IntoNode`](tutti_graph::IntoNode);
+/// the loaded client is neither. It derefs to the client for its control
+/// surface (`controls`, `set_meter`, ...).
+pub struct BoundInProcessVst2Client {
+    pub(super) client: InProcessVst2Client,
+    pub(super) tempo: TempoReader,
+    pub(super) cursor: Cursor,
+}
+
+impl std::fmt::Debug for BoundInProcessVst2Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundInProcessVst2Client")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for BoundInProcessVst2Client {
+    type Target = InProcessVst2Client;
+    fn deref(&self) -> &InProcessVst2Client {
+        &self.client
+    }
+}
+
+impl std::ops::DerefMut for BoundInProcessVst2Client {
+    fn deref_mut(&mut self) -> &mut InProcessVst2Client {
+        &mut self.client
     }
 }
 
@@ -342,6 +383,22 @@ impl InProcessVst2Client {
             rate_refused: false,
             params,
             segments,
+        }
+    }
+
+    /// Binds the client to the reader of the project's tempo map it tells the
+    /// plugin the tempo from (`audioMasterGetTime`'s `tempo`), lent once per
+    /// block: the step from a loaded client to a graph node, as
+    /// [`PluginClient::bind`](crate::host::node::PluginClient::bind) is for
+    /// the out-of-process one. `Session` hands every plugin it inserts a
+    /// reader of its own; a host with no session builds one over a fixed map
+    /// ([`TempoReader::fixed`]). A fork clones the reader. Control thread.
+    #[must_use]
+    pub fn bind(self, tempo: TempoReader) -> BoundInProcessVst2Client {
+        BoundInProcessVst2Client {
+            client: self,
+            tempo,
+            cursor: Cursor::default(),
         }
     }
 
@@ -563,6 +620,17 @@ mod transport_tests {
         }
     }
 
+    /// The project's tempo map for these blocks: the constant 132 BPM
+    /// `env()`'s transport carries, so a block reports the tempo the test's
+    /// transport has.
+    fn map() -> TempoMap {
+        TempoMap::constant(Bpm::of(132.0)).expect("a tempo")
+    }
+
+    fn feed() -> TransportFeed {
+        TransportFeed::new()
+    }
+
     fn cx(e: &Env) -> Cx<'_> {
         Cx {
             env: e,
@@ -594,8 +662,14 @@ mod transport_tests {
     #[test]
     fn the_block_context_carries_the_transport_from_cx() {
         let e = env();
-        let mut feed = TransportFeed::new();
-        let snapshot = feed.block(&cx(&e), 64, loader_features());
+        let mut feed = feed();
+        let snapshot = feed.block(
+            &cx(&e),
+            64,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
         let ctx = block_context(48_000.0, &[], &snapshot);
         let delivered = ctx.transport.expect("a transport snapshot");
         assert_eq!(delivered.timing.tempo, 132.0);
@@ -616,8 +690,14 @@ mod transport_tests {
     #[test]
     fn a_plugin_not_declaring_transport_is_handed_the_default() {
         let e = env();
-        let mut feed = TransportFeed::new();
-        let got = feed.block(&cx(&e), 64, Features::empty());
+        let mut feed = feed();
+        let got = feed.block(
+            &cx(&e),
+            64,
+            Features::empty(),
+            &map(),
+            &mut Cursor::default(),
+        );
         let default = TransportInfo::default();
         assert_eq!(got.timing.tempo, default.timing.tempo);
         assert_eq!(got.state.playing, default.state.playing);
@@ -634,10 +714,16 @@ mod transport_tests {
     #[test]
     fn a_meter_installed_on_one_clone_reaches_another() {
         let e = env();
-        let held = TransportFeed::new();
+        let held = feed();
         let mut running = held.clone();
         held.meter.set_meter(seven_eight_meter());
-        let got = running.block(&cx(&e), 64, loader_features());
+        let got = running.block(
+            &cx(&e),
+            64,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
         assert_eq!(got.timing.signature, seven_eight());
     }
 
@@ -651,12 +737,24 @@ mod transport_tests {
     #[test]
     fn a_fork_has_the_meter_installed_when_it_forked() {
         let e = env();
-        let mut live = TransportFeed::new();
+        let mut live = feed();
         live.meter.set_meter(seven_eight_meter());
-        let _ = live.block(&cx(&e), 64, loader_features());
+        let _ = live.block(
+            &cx(&e),
+            64,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
         let mut fork = live.forked(false);
         live.meter.clear_meter();
-        let got = fork.block(&cx(&e), 64, loader_features());
+        let got = fork.block(
+            &cx(&e),
+            64,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
         assert_eq!(got.timing.signature, seven_eight());
         assert_eq!(got.position.continuous_samples, 0);
     }
@@ -669,9 +767,21 @@ mod transport_tests {
     #[test]
     fn the_counter_counts_the_frames_rendered() {
         let e = env();
-        let mut feed = TransportFeed::new();
-        let _ = feed.block(&cx(&e), 64, loader_features());
-        let second = feed.block(&cx(&e), 64, loader_features());
+        let mut feed = feed();
+        let _ = feed.block(
+            &cx(&e),
+            64,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
+        let second = feed.block(
+            &cx(&e),
+            64,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
         assert_eq!(second.position.continuous_samples, 64);
     }
 
@@ -683,9 +793,21 @@ mod transport_tests {
     #[test]
     fn an_empty_block_repeats_the_last_snapshot() {
         let e = env();
-        let mut feed = TransportFeed::new();
-        let _ = feed.block(&cx(&e), 64, loader_features());
-        let empty = feed.block(&cx(&e), 0, loader_features());
+        let mut feed = feed();
+        let _ = feed.block(
+            &cx(&e),
+            64,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
+        let empty = feed.block(
+            &cx(&e),
+            0,
+            loader_features(),
+            &map(),
+            &mut Cursor::default(),
+        );
         assert_eq!(empty.timing.tempo, 132.0);
         assert!(empty.state.playing);
         assert_eq!(empty.position.continuous_samples, 0);
@@ -701,23 +823,57 @@ mod transport_tests {
     #[test]
     fn only_a_live_feed_carries_the_host_clock() {
         let e = env();
-        let mut live = TransportFeed::new();
+        let mut live = feed();
         assert!(
-            live.block(&cx(&e), 64, loader_features())
-                .system_time_ns
-                .is_some()
+            live.block(
+                &cx(&e),
+                64,
+                loader_features(),
+                &map(),
+                &mut Cursor::default()
+            )
+            .system_time_ns
+            .is_some()
         );
         let mut live_fork = live.forked(false);
         assert!(
             live_fork
-                .block(&cx(&e), 64, loader_features())
+                .block(
+                    &cx(&e),
+                    64,
+                    loader_features(),
+                    &map(),
+                    &mut Cursor::default()
+                )
                 .system_time_ns
                 .is_some()
         );
         let mut offline = live.forked(true);
         assert_eq!(
-            offline.block(&cx(&e), 64, loader_features()).system_time_ns,
+            offline
+                .block(
+                    &cx(&e),
+                    64,
+                    loader_features(),
+                    &map(),
+                    &mut Cursor::default()
+                )
+                .system_time_ns,
             None
         );
+    }
+
+    /// The tempo a block reports is the project map's at the playhead, not
+    /// the transport's own (`Env`'s 132).
+    ///
+    /// Mutation (run): drop `Snapshot::follow` from `from_cx` -> the block
+    /// reads 132 -> fails.
+    #[test]
+    fn a_block_reports_the_maps_tempo() {
+        let e = env();
+        let mut live = feed();
+        let map = TempoMap::constant(Bpm::of(100.0)).expect("a tempo");
+        let got = live.block(&cx(&e), 64, loader_features(), &map, &mut Cursor::default());
+        assert_eq!(got.timing.tempo, 100.0);
     }
 }

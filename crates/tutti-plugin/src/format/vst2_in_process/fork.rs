@@ -13,7 +13,7 @@
 //!
 //! # What a fork is
 //!
-//! [`InProcessVst2Client::fork_instance`], which the fork source calls, on the
+//! [`BoundInProcessVst2Client::fork_instance`], which the fork source calls, on the
 //! **main thread** (see "Threads" below):
 //!
 //! 1. **Read what the live node has delivered** per parameter (its parameter
@@ -109,7 +109,7 @@ use parking_lot::Mutex;
 use tutti_graph::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
 use tutti_plugin_types::Control;
 
-use super::client::{InProcessVst2Client, RateDelivery, TransportFeed};
+use super::client::{BoundInProcessVst2Client, RateDelivery, TransportFeed};
 use super::instance::Instance;
 use crate::host::node::DeliveryCounters;
 use tutti_plugin_ipc::PluginForkError;
@@ -133,14 +133,18 @@ pub(super) struct Vst2Fork {
     /// The live node's transport feed (its shared meter cell): the meter a
     /// fork reads its bars with, as installed when it forks.
     transport: TransportFeed,
+    /// The live node's tempo reader, cloned for each fork (control side).
+    tempo: tutti_transport::TempoReader,
     /// The live node's parameter delivery: what it has delivered, read when
     /// it forks, before its state.
     delivery: Arc<DeliveryCounters>,
 }
 
 impl Vst2Fork {
-    pub(super) fn of(client: &InProcessVst2Client) -> Self {
+    pub(super) fn of(bound: &BoundInProcessVst2Client) -> Self {
+        let client = &bound.client;
         Self {
+            tempo: bound.tempo.clone(),
             live: Arc::downgrade(&client.inner),
             origin: Arc::clone(&client.origin),
             id: client.metadata.id.clone(),
@@ -155,7 +159,7 @@ impl Vst2Fork {
         &self,
         main: &MainThread,
         mode: ForkMode,
-    ) -> Result<InProcessVst2Client, PluginForkError> {
+    ) -> Result<BoundInProcessVst2Client, PluginForkError> {
         // First, so a plugin that cannot save costs no second instance. The
         // `Arc` is dropped straight after: the fork holds no strong reference.
         let live = self.live.upgrade().ok_or(PluginForkError::LiveGone)?;
@@ -219,7 +223,7 @@ impl Vst2Fork {
         fork.params.seed(&delivered);
         fork.transport = self.transport.forked(offline);
         fork.rate_delivery = RateDelivery::InPrepare;
-        Ok(fork)
+        Ok(fork.bind(self.tempo.clone()))
     }
 }
 
@@ -246,7 +250,7 @@ impl ForkSource for Vst2Fork {
     }
 }
 
-impl InProcessVst2Client {
+impl BoundInProcessVst2Client {
     /// Creates a second instance of this plugin carrying this one's saved
     /// state, ready to insert or drive.
     ///
@@ -283,7 +287,7 @@ impl InProcessVst2Client {
         &self,
         main: &MainThread,
         mode: ForkMode,
-    ) -> Result<InProcessVst2Client, PluginForkError> {
+    ) -> Result<BoundInProcessVst2Client, PluginForkError> {
         Vst2Fork::of(self).instance(main, mode)
     }
 }

@@ -3745,6 +3745,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -3894,6 +3895,7 @@ dependencies = [
  "tutti-plugin-ipc",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-tempo",
  "tutti-transport",
  "tutti-types",
  "tutti-ump",

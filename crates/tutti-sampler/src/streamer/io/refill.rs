@@ -14,6 +14,7 @@
 //! resize is the only place the interleave stride enters.
 
 use super::super::cache::LruCache;
+use super::super::command::StreamId;
 use super::super::loops::{Content, RingMap};
 use super::super::metrics::Metrics;
 use super::super::plan::ChannelPlan;
@@ -76,7 +77,7 @@ fn varifill_chunk(
 /// does not allocate per cycle. Streamer thread throughout — this both blocks on
 /// disk and may grow that buffer, so it must never run on the audio thread.
 pub(crate) fn refill_all(
-    plans: &DashMap<usize, ChannelPlan>,
+    plans: &DashMap<StreamId, ChannelPlan>,
     regions: &mut RegionMap,
     metrics: &Metrics,
     base_chunk_size: usize,
@@ -113,7 +114,7 @@ pub(crate) fn refill_all(
 /// with it, so a looped stream refills here exactly as it does serially.
 /// Scratch is a thread-local per worker.
 pub(crate) fn refill_all_parallel(
-    plans: &DashMap<usize, ChannelPlan>,
+    plans: &DashMap<StreamId, ChannelPlan>,
     regions: &mut RegionMap,
     metrics: &Metrics,
     base_chunk_size: usize,
@@ -433,13 +434,11 @@ mod tests {
     /// without its saturation -> the first cycle panics -> fails.
     #[test]
     fn a_reader_at_an_unbounded_position_parks_the_window() {
-        use super::super::super::command::RegionId;
         use super::super::super::prefetch::RegionBuffer;
         use std::path::PathBuf;
 
-        let (mut writer, ring) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("t.wav"), 4096, 1u16);
-        let mut reader = ring.take_reader().expect("the reader");
+        let (mut writer, ring, mut reader) =
+            RegionBuffer::with_capacity(StreamId(1), PathBuf::from("t.wav"), 4096, 1u16);
         let rt_state = RtState::new();
         let mut buffer = Vec::new();
         for _ in 0..3 {

@@ -70,7 +70,6 @@ fn solo_voice() -> Solo<VoiceNodeHandle> {
             MemorySource::placed(flat_wave(48_000), Beat(0.0), None).expect("a placeable wave"),
         ),
         play: Playback::default(),
-        channel_index: None,
     };
     let mut solo = Solo::new(
         VoiceNode::with_channels(voice, ChannelLayout::MONO),
@@ -361,7 +360,6 @@ fn a_voices_gain_port_reads_its_cell_as_its_base() {
             gain: Amplitude::new(0.25),
             ..Playback::default()
         },
-        channel_index: None,
     };
     let node = VoiceNode::with_channels(voice, ChannelLayout::MONO);
     assert_eq!(

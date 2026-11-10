@@ -1,17 +1,17 @@
-//! Streamer-thread-local map of `RegionId` → `RegionOut`.
+//! Streamer-thread-local map of `StreamId` → `RegionOut`.
 //!
-//! Structurally a `Vec<RegionOut>` with a `HashMap<RegionId, usize>`
+//! Structurally a `Vec<RegionOut>` with a `HashMap<StreamId, usize>`
 //! side-index. The `Vec` is required because the parallel refill path uses
 //! rayon's `par_iter_mut` (which needs `Send`, not `Sync`), and a `DashMap`
 //! would force `Sync`. The index collapses the lookup pattern
 //! `index.get(id).and_then(|&i| writers.get(i))` into one call.
 //!
-//! `RegionId`s are monotonic and never reused, so removal does not compact the
+//! `StreamId`s are monotonic and never reused, so removal does not compact the
 //! id space — only the `Vec`, via `swap_remove` plus a reindex of whatever moved.
 
 use std::collections::HashMap;
 
-use super::command::RegionId;
+use super::command::StreamId;
 use super::prefetch::RegionOut;
 
 /// The streamer thread's private table of live region writers.
@@ -20,7 +20,7 @@ use super::prefetch::RegionOut;
 /// which is what lets the parallel refill hand out disjoint `&mut`s.
 pub(super) struct RegionMap {
     writers: Vec<RegionOut>,
-    index: HashMap<RegionId, usize>,
+    index: HashMap<StreamId, usize>,
 }
 
 impl RegionMap {
@@ -37,7 +37,7 @@ impl RegionMap {
     /// Ids are minted monotonically and never reused, so this does not check for
     /// an existing entry — registering a duplicate id would orphan the old
     /// writer's index entry rather than replace it.
-    pub(super) fn register(&mut self, region_id: RegionId, writer: RegionOut) {
+    pub(super) fn register(&mut self, region_id: StreamId, writer: RegionOut) {
         let idx = self.writers.len();
         self.writers.push(writer);
         self.index.insert(region_id, idx);
@@ -47,7 +47,7 @@ impl RegionMap {
     /// `swap_remove`s the writer and reindexes the entry that moved into its
     /// slot so the `Vec`/index side-index stays consistent. No-op if the id is
     /// unknown. Returns `true` if a writer was removed.
-    pub(super) fn remove(&mut self, region_id: RegionId) -> bool {
+    pub(super) fn remove(&mut self, region_id: StreamId) -> bool {
         let Some(idx) = self.index.remove(&region_id) else {
             return false;
         };
@@ -63,7 +63,7 @@ impl RegionMap {
 
     /// The writer for `region_id`, or `None` if it was never registered or has
     /// been removed.
-    pub(super) fn get(&self, region_id: RegionId) -> Option<&RegionOut> {
+    pub(super) fn get(&self, region_id: StreamId) -> Option<&RegionOut> {
         self.index
             .get(&region_id)
             .and_then(|&idx| self.writers.get(idx))
@@ -71,7 +71,7 @@ impl RegionMap {
 
     /// Mutable access to the writer for `region_id` — the serial refill and seek
     /// paths' way in. `None` if the region is unknown.
-    pub(super) fn get_mut(&mut self, region_id: RegionId) -> Option<&mut RegionOut> {
+    pub(super) fn get_mut(&mut self, region_id: StreamId) -> Option<&mut RegionOut> {
         let idx = *self.index.get(&region_id)?;
         self.writers.get_mut(idx)
     }
@@ -87,8 +87,8 @@ impl RegionMap {
     }
 
     /// Read-only view of the index — used by the parallel refill path to
-    /// map `RegionId` → slice position when building work items.
-    pub(super) fn index(&self) -> &HashMap<RegionId, usize> {
+    /// map `StreamId` → slice position when building work items.
+    pub(super) fn index(&self) -> &HashMap<StreamId, usize> {
         &self.index
     }
 }
@@ -99,8 +99,8 @@ mod tests {
     use crate::streamer::prefetch::RegionBuffer;
     use std::path::PathBuf;
 
-    fn make_writer(region_id: RegionId) -> RegionOut {
-        let (writer, _reader) =
+    fn make_writer(region_id: StreamId) -> RegionOut {
+        let (writer, _ring, _pos) =
             RegionBuffer::with_capacity(region_id, PathBuf::from("t.wav"), 1024, 2u16);
         writer
     }
@@ -108,17 +108,17 @@ mod tests {
     #[test]
     fn register_then_get_roundtrip() {
         let mut reg = RegionMap::new();
-        let id = RegionId(7);
+        let id = StreamId(7);
         reg.register(id, make_writer(id));
 
         assert!(reg.get(id).is_some());
-        assert!(reg.get(RegionId(999)).is_none());
+        assert!(reg.get(StreamId(999)).is_none());
     }
 
     #[test]
     fn get_mut_returns_same_entry() {
         let mut reg = RegionMap::new();
-        let id = RegionId(1);
+        let id = StreamId(1);
         reg.register(id, make_writer(id));
 
         let w = reg.get_mut(id).unwrap();
@@ -131,7 +131,7 @@ mod tests {
     fn writers_mut_covers_all_registered() {
         let mut reg = RegionMap::new();
         for i in 1..=3 {
-            let id = RegionId(i);
+            let id = StreamId(i);
             reg.register(id, make_writer(id));
         }
         assert_eq!(reg.writers_mut().len(), 3);
@@ -141,19 +141,19 @@ mod tests {
     fn remove_frees_writer_and_reindexes() {
         let mut reg = RegionMap::new();
         for i in 1..=3 {
-            let id = RegionId(i);
+            let id = StreamId(i);
             reg.register(id, make_writer(id));
         }
 
         // Remove the middle one; the swapped-in survivor must stay reachable.
-        assert!(reg.remove(RegionId(2)));
-        assert!(reg.get(RegionId(2)).is_none());
-        assert!(reg.get(RegionId(1)).is_some());
-        assert!(reg.get(RegionId(3)).is_some());
+        assert!(reg.remove(StreamId(2)));
+        assert!(reg.get(StreamId(2)).is_none());
+        assert!(reg.get(StreamId(1)).is_some());
+        assert!(reg.get(StreamId(3)).is_some());
         assert_eq!(reg.writers().len(), 2);
 
         // Removing an unknown id is a no-op.
-        assert!(!reg.remove(RegionId(999)));
+        assert!(!reg.remove(StreamId(999)));
         assert_eq!(reg.writers().len(), 2);
     }
 
@@ -163,7 +163,7 @@ mod tests {
     fn start_then_stop_n_streams_leaves_map_empty() {
         let mut reg = RegionMap::new();
         for i in 1..=64u64 {
-            let id = RegionId(i);
+            let id = StreamId(i);
             reg.register(id, make_writer(id));
             assert!(reg.remove(id));
         }

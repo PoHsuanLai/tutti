@@ -26,7 +26,7 @@
 //! `streamer_loop_async` is written in terms of `StreamerCycle::step`, so a
 //! divergence between what tests drive and what ships is not representable.
 
-use super::command::StreamerCommand;
+use super::command::{StreamId, StreamerCommand};
 use super::config::BufferConfig;
 use super::handlers::{Handles, Local, handle_command};
 use super::io::refill::{refill_all, refill_all_parallel};
@@ -162,7 +162,7 @@ impl StreamerCycle {
     /// The plans are read and released before any ring is touched, since a
     /// switch reads the file for its fade.
     fn apply_directions(&mut self, shared: &Handles) {
-        let turned: Vec<(super::command::RegionId, bool, f64)> = shared
+        let turned: Vec<(StreamId, bool, f64)> = shared
             .plans
             .iter()
             .filter_map(|entry| {
@@ -198,7 +198,7 @@ impl StreamerCycle {
 /// would report a stall for a stream at EOF even while its neighbours were
 /// still filling, and the pacing layer must keep running for those.
 fn total_buffered(
-    plans: &dashmap::DashMap<usize, super::plan::ChannelPlan>,
+    plans: &dashmap::DashMap<StreamId, super::plan::ChannelPlan>,
     regions: &super::region_map::RegionMap,
 ) -> usize {
     plans
@@ -214,7 +214,7 @@ fn total_buffered(
 /// True when no stream needs a refill — i.e. the loop can safely park on a
 /// short timer instead of spinning.
 fn buffers_healthy(
-    plans: &dashmap::DashMap<usize, super::plan::ChannelPlan>,
+    plans: &dashmap::DashMap<StreamId, super::plan::ChannelPlan>,
     buffer_margin: f64,
 ) -> bool {
     let fill_threshold = (0.75 / buffer_margin) as f32;
@@ -239,7 +239,7 @@ mod tests {
     use tutti_types::SampleRate;
 
     use super::super::cache::LruCache;
-    use super::super::command::RegionId;
+    use super::super::command::StreamId;
     use super::super::handlers::SessionRate;
     use super::super::loops::{Arrangement, RingMap};
     use super::super::metrics::Metrics;
@@ -265,8 +265,9 @@ mod tests {
             session_rate: SessionRate::new(SampleRate(48_000.0)),
         };
         let mut cycle = StreamerCycle::new(config);
-        let id = RegionId(1);
-        let (writer, _reader) = RegionBuffer::with_capacity(id, PathBuf::from("t.wav"), 1024, 1u16);
+        let id = StreamId(1);
+        let (writer, _ring, _pos) =
+            RegionBuffer::with_capacity(id, PathBuf::from("t.wav"), 1024, 1u16);
         let ring = Arc::clone(writer.ring());
         cycle.local.regions.register(id, writer);
 

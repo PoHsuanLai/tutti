@@ -20,8 +20,9 @@
 //! landing under a read are `tutti_rt::PosRing`'s (its module docs have the
 //! argument, and `tutti-rt/tests/pos_ring_loom.rs` checks it under loom).
 //! Its one `PosWriter` is the streamer's [`RegionOut`]'s; its one `PosReader`
-//! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
-//! one live reader per ring is the type's rule, not a flag's. This module
+//! is handed out by value, once, with the stream's open
+//! ([`Opening::poll`](crate::Opening::poll)), so one live reader per ring is the
+//! type's rule, not a flag's. This module
 //! adds what a disk stream needs on top: the region, the file, the map the
 //! reader reads the slots by.
 //!
@@ -44,8 +45,8 @@
 //! out.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use tutti_codec::Wave;
 use tutti_rt::{ArcLend, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader};
@@ -54,7 +55,7 @@ use tutti_types::{ChannelLayout, ChannelTopology, Samples};
 #[cfg(codec)]
 use tutti_codec::FileIn;
 
-use super::command::RegionId;
+use super::command::StreamId;
 use super::loops::{Arrangement, Content, Mapping, RingMap};
 use crate::nonempty;
 
@@ -62,71 +63,20 @@ use crate::nonempty;
 /// reads behind itself, and a little slack.
 pub(crate) const HISTORY_FRAMES: u64 = 4;
 
-/// Why a live voice could not be taken from a channel's stream.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
-pub enum TakeVoiceError {
-    /// The channel streams nothing yet: the streamer has not applied its
-    /// `Command::Stream`. Poll again next frame.
-    NotStreaming,
-    /// The stream already has its live reader. A ring serves one — it has
-    /// one `PosReader` to hand out: the streamer fills ahead of the one position
-    /// it is told (where the reader plays), so two readers at two positions
-    /// would pull its window back and forth, each starving the other. Take one
-    /// voice per stream, or stream the file again on another channel.
-    ReaderTaken,
-    /// The file's channels cannot be placed into the width asked for: a
-    /// channel no speaker names (a second LFE, a wide or high speaker), or a
-    /// narrowing with an unordered end (a 5.1 file into 5 channels). Nothing
-    /// was taken: the stream still has its reader.
-    Place(crate::PlaceError),
-}
-
-impl From<crate::PlaceError> for TakeVoiceError {
-    fn from(error: crate::PlaceError) -> Self {
-        Self::Place(error)
-    }
-}
-
-impl std::fmt::Display for TakeVoiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::NotStreaming => "the channel streams nothing yet",
-            Self::Place(error) => return write!(f, "the stream cannot be placed: {error}"),
-            Self::ReaderTaken => {
-                "the stream already has a live reader; a ring serves one (stream the file \
-                 again on another channel for a second voice)"
-            }
-        })
-    }
-}
-
-impl std::error::Error for TakeVoiceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Place(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
 /// A region's ring, shared by the streamer's writer and the audio thread's
 /// reader.
 pub(crate) struct Ring {
-    region_id: RegionId,
+    region_id: StreamId,
     file_path: PathBuf,
     channels: ChannelLayout,
-    /// Which speaker each of the file's channels feeds: what the voice that
-    /// reads the ring places by. The ring itself is at the file's width and
-    /// order.
+    /// Which speaker each of the file's channels feeds. The ring itself is at
+    /// the file's width and order; the placement the voice reads it by is built
+    /// when the stream opens (`Opened::place`), so only tests read this.
+    #[cfg(test)]
     topology: ChannelTopology,
     /// Glances at the window and where the reader plays (the writer's
     /// `watch`): no sample is read through it.
     core: Arc<PosRing>,
-    /// The ring's one reader, until a voice takes it. A lock taken on the
-    /// control thread only (`take_reader`); the audio thread holds the reader
-    /// itself.
-    reader: Mutex<Option<PosReader>>,
     /// Streamer → reader: output frames a reader's crossfade lasts.
     fade_frames: AtomicU64,
     /// Streamer → reader: how to read the slots, lent through the reader the
@@ -144,7 +94,7 @@ impl std::fmt::Debug for Ring {
 }
 
 impl Ring {
-    pub(crate) fn region_id(&self) -> RegionId {
+    pub(crate) fn region_id(&self) -> StreamId {
         self.region_id
     }
 
@@ -153,7 +103,8 @@ impl Ring {
         self.channels
     }
 
-    /// The speakers the file's channels feed, in the ring's order.
+    /// The speakers the file's channels feed, in the ring's order (tests).
+    #[cfg(test)]
     pub(crate) fn topology(&self) -> &ChannelTopology {
         &self.topology
     }
@@ -203,19 +154,17 @@ impl Ring {
         self.map.reclaim()
     }
 
+    /// Readers registered on the ring's map (tests): the cell's holders but
+    /// the ring itself.
+    #[cfg(test)]
+    pub(crate) fn map_readers(&self) -> usize {
+        Arc::strong_count(&self.map) - 1
+    }
+
     /// Maps retired and not yet freed (tests).
     #[cfg(test)]
     pub(crate) fn retired_maps(&self) -> usize {
         self.map.retired_len()
-    }
-
-    /// Take the ring's one live reader. Control thread.
-    pub(crate) fn take_reader(&self) -> Result<PosReader, TakeVoiceError> {
-        self.reader
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or(TakeVoiceError::ReaderTaken)
     }
 
     /// Window shrinks and moves so far (the ring's generation).
@@ -334,7 +283,7 @@ impl RegionOut {
         &self.ring.file_path
     }
 
-    pub(crate) fn region_id(&self) -> RegionId {
+    pub(crate) fn region_id(&self) -> StreamId {
         self.ring.region_id
     }
 
@@ -371,7 +320,7 @@ impl RegionOut {
         }
         match self.resident.as_deref() {
             Some(wave) => {
-                super::loops::read_wave(wave, at, out, channels);
+                super::io::wave_io::read_wave(wave, at, out, channels);
                 true
             }
             None => {
@@ -407,14 +356,14 @@ impl RegionBuffer {
     /// (floored at 4096 frames and one channel, capped at
     /// [`MAX_POS_RING_FRAMES`]), holding nothing, read as an unlooped forward
     /// stream of a file `len` frames long (`usize::MAX` for a length not
-    /// known). Returns the writer and the reader's handle.
+    /// known). Returns the writer, the ring and the ring's one position reader.
     #[cfg(test)]
     pub(crate) fn with_capacity(
-        region_id: RegionId,
+        region_id: StreamId,
         file_path: PathBuf,
         capacity: usize,
         channels: impl Into<ChannelLayout>,
-    ) -> (RegionOut, SharedReader) {
+    ) -> (RegionOut, SharedReader, PosReader) {
         let layout = nonempty(channels.into());
         let topology =
             ChannelTopology::assumed(layout).unwrap_or_else(|| ChannelTopology::discrete(layout));
@@ -423,12 +372,12 @@ impl RegionBuffer {
 
     /// `RegionBuffer::with_capacity` for a file `len` frames long.
     pub(crate) fn for_file(
-        region_id: RegionId,
+        region_id: StreamId,
         file_path: PathBuf,
         capacity: usize,
         topology: ChannelTopology,
         len: usize,
-    ) -> (RegionOut, SharedReader) {
+    ) -> (RegionOut, SharedReader, PosReader) {
         let channels = nonempty(topology.layout());
         let stride = channels.count() as usize;
         let frames = capacity.clamp(4096, MAX_POS_RING_FRAMES);
@@ -438,9 +387,9 @@ impl RegionBuffer {
             region_id,
             file_path,
             channels,
+            #[cfg(test)]
             topology,
             core: writer.watch(),
-            reader: Mutex::new(Some(reader)),
             fade_frames: AtomicU64::new(0),
             map: Arc::new(ArcLend::new(RingMap::plain(Arrangement::plain(len), 0))),
         });
@@ -454,7 +403,7 @@ impl RegionBuffer {
             fault_logged: false,
             resident: None,
         };
-        (writer, ring)
+        (writer, ring, reader)
     }
 
     /// Point a fresh ring at `start`: the reader there and the window from
@@ -479,9 +428,9 @@ mod tests {
         (0..frames * channels).map(|i| i as f32).collect()
     }
 
-    fn ring(capacity: usize, channels: usize) -> (RegionOut, SharedReader) {
+    fn ring(capacity: usize, channels: usize) -> (RegionOut, SharedReader, PosReader) {
         RegionBuffer::with_capacity(
-            RegionId(1),
+            StreamId(1),
             PathBuf::new(),
             capacity,
             ChannelLayout::try_from(channels).expect("a test width is small"),
@@ -495,13 +444,12 @@ mod tests {
     /// Mutation (run): `push_interleaved` discarding its push → fails.
     #[test]
     fn pushed_frames_land_by_position() {
-        let (mut writer, ring) = ring(64, 6);
+        let (mut writer, ring, mut reader) = ring(64, 6);
         assert_eq!(writer.channels(), ChannelLayout::from(6u16));
         let mut data = indexed(12, 6);
         data.extend_from_slice(&[99.0, 99.0, 99.0]);
         assert_eq!(writer.push_interleaved(&data), Samples(12));
         assert_eq!(ring.window(), (0, 12), "twelve whole frames");
-        let mut reader = ring.take_reader().expect("the ring's reader");
         let claim = reader.claim(0, [(0, 12), (0, 0)]);
         for s in 0..12u64 {
             for c in 0..6 {
@@ -517,23 +465,6 @@ mod tests {
         assert_eq!(ring(10, 2).1.frames(), 4_096);
         assert_eq!(ring(10_000, 6).1.frames(), 10_000);
         assert_eq!(ring(usize::MAX >> 8, 1).1.frames(), MAX_POS_RING_FRAMES);
-    }
-
-    /// A ring serves one live reader: it
-    /// has one `PosReader` (not `Clone`), and taking a second is refused,
-    /// naming why.
-    ///
-    /// Mutation (run): the slot put back after a take (`replace` of what was
-    /// taken) — the nearest a caller can come to handing out two, since the
-    /// reader cannot be cloned → fails.
-    #[test]
-    fn a_ring_serves_one_live_reader() {
-        let (_writer, ring) = ring(64, 2);
-        assert!(ring.take_reader().is_ok());
-        assert_eq!(
-            ring.take_reader().map(|_| ()),
-            Err(TakeVoiceError::ReaderTaken)
-        );
     }
 
     /// `read_file` reports a damaged file. The repo's FLAC fixture cut to
@@ -555,7 +486,7 @@ mod tests {
 
         let decoder = FileIn::open(&path).expect("a cut file still opens");
         let total = decoder.total_frames().expect("flac reports a length").get();
-        let (mut writer, _ring) = ring(4096, 2);
+        let (mut writer, _ring, _reader) = ring(4096, 2);
         writer.set_decoder(decoder);
 
         let mut out = vec![1.0f32; total * 2];

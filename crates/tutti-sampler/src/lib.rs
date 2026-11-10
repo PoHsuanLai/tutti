@@ -6,7 +6,8 @@
 //!
 //! - [`MemorySource`]: in-memory playback of a [`Wave`], configured with
 //!   [`MemorySourceConfig`], [`LoopSetting`] and [`VoiceWindow`].
-//! - [`DiskVoice`]: disk-streamed playback, built by [`Status::take_disk_voice`].
+//! - [`DiskVoice`]: disk-streamed playback, built from the [`StreamReader`] a
+//!   [`DiskStreamer::open`] answers with.
 //! - [`DiskStreamer`]: owns the streamer thread; [`Commands`] (a stream
 //!   [`Command`]) in, [`Status`] out.
 //! - [`Voice`], [`VoiceSource`], [`Playback`]: a voice of either tier and its
@@ -118,7 +119,10 @@ pub use voice::{VoicePoolNode, VoicePoolRef};
 // `StreamerThread` API.
 pub(crate) mod streamer;
 
-pub use streamer::{DiskStreamer, DiskStreamerConfig, TakeVoiceError};
+pub use streamer::{
+    DiskStreamer, DiskStreamerConfig, Open, OpenError, Opening, Placement, RefusedPlacement,
+    StreamId, StreamReader,
+};
 
 // The hand-driven streamer cycle's verdict, alongside `DiskStreamer::manual`.
 #[cfg(any(test, feature = "test-support"))]

@@ -121,7 +121,6 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
                 gain: Amplitude::new(play_gain),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
     (pool, clock)
@@ -206,7 +205,6 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
                 gain: Amplitude::new(0.5),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
 
@@ -298,7 +296,6 @@ fn gain_scales_every_channel_equally() {
                 gain: Amplitude::new(0.4),
                 ..Default::default()
             },
-            channel_index: None,
         },
     );
 
@@ -381,7 +378,6 @@ fn two_half_gain_voices_sum_to_one_full_gain_voice() {
                     gain: Amplitude::new(0.5),
                     ..Default::default()
                 },
-                channel_index: None,
             },
         );
     }

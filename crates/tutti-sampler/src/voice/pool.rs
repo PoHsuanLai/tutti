@@ -6,7 +6,7 @@
 //! of a graph edit, which is what keeps voice churn off the commit path.
 
 use crate::ports::Commands;
-use crate::streamer::RegionId;
+use crate::streamer::StreamId;
 use crate::stretch;
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
@@ -207,13 +207,12 @@ impl DrainCounters {
     }
 }
 
-/// The streamer stream a streaming voice reads: its channel, and the stream
-/// itself, which the streamer checks so a loop set on a voice whose stream has
-/// since stopped or been replaced on the channel is not applied to another.
+/// The streamer stream a streaming voice reads: the stream itself, which the
+/// streamer addresses a loop by, so a loop set on a voice whose stream has
+/// since stopped is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StreamAddr {
-    pub(crate) channel_index: usize,
-    pub(crate) stream: RegionId,
+    pub(crate) stream: StreamId,
 }
 
 /// Where a voice's loop is applied.
@@ -221,8 +220,9 @@ pub(crate) struct StreamAddr {
 pub(crate) enum LoopRoute {
     /// On the voice's in-memory source, by the drain.
     Memory,
-    /// On its streamer stream, forwarded from the control thread; `None` for a
-    /// streaming voice with no streamer channel.
+    /// On its streamer stream, forwarded from the control thread. Always
+    /// `Some` for a disk voice (a voice knows its own stream); the option
+    /// goes with the pool's stream table (doc 025, cut 6).
     Stream(Option<StreamAddr>),
 }
 
@@ -231,12 +231,9 @@ impl Voice {
     pub(crate) fn loop_route(&self) -> LoopRoute {
         match &self.source {
             VoiceSource::Memory(_) => LoopRoute::Memory,
-            VoiceSource::Disk(disk) => {
-                LoopRoute::Stream(self.channel_index.map(|channel_index| StreamAddr {
-                    channel_index,
-                    stream: disk.stream(),
-                }))
-            }
+            VoiceSource::Disk(disk) => LoopRoute::Stream(Some(StreamAddr {
+                stream: disk.stream(),
+            })),
         }
     }
 }
@@ -258,10 +255,7 @@ pub(crate) fn forward_loop(
         }
         return false;
     };
-    if streamer
-        .send_stream_loop(addr.channel_index, addr.stream, setting)
-        .is_err()
-    {
+    if streamer.send_stream_loop(addr.stream, setting).is_err() {
         DrainCounters::bump(&counters.loops_streamer_gone);
         return false;
     }

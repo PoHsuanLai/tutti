@@ -63,8 +63,8 @@ use tutti_codec::Wave;
 use tutti_graph::contract::{self, Direct};
 use tutti_graph::{Env, Node, Transport, TransportChanges};
 use tutti_sampler::{
-    Command, Direction, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback,
-    SlotId, StepOutcome, Voice, VoiceNode, VoicePool, VoiceSource,
+    Direction, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback, SlotId,
+    StepOutcome, Voice, VoiceNode, VoicePool, VoiceSource,
 };
 use tutti_types::{
     Beat, Bpm, Cents, Frame, PlaybackRate, SamplePosition, SampleRate, Samples, StretchFactor,
@@ -235,7 +235,6 @@ fn memory_voice(wave: &Arc<Wave>, play: Playback) -> Voice {
     Voice {
         source: VoiceSource::Memory(source),
         play,
-        channel_index: None,
     }
 }
 
@@ -341,22 +340,14 @@ fn write_wav(path: &Path, frames: usize) {
 /// whole, so the render never waits on the streamer).
 fn disk_voice(path: &Path) -> (DiskStreamer, tutti_sampler::DiskVoice) {
     let mut s = DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    s.commands()
-        .send(Command::Stream {
-            channel_index: 0,
-            file_path: path.to_path_buf(),
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
+    let opening = s.open(path, tutti_sampler::Placement::HEAD);
+    let reader = tutti_sampler::testing::settle(&mut s, opening).expect("the file opens");
     for _ in 0..4096 {
         if s.step_once() != StepOutcome::Busy {
             break;
         }
     }
-    let v = s
-        .status()
-        .take_disk_voice(0, Beat::new(0.0), None)
-        .expect("a primed stream gives a voice");
+    let v = tutti_sampler::DiskVoice::from_reader(reader, Beat::new(0.0), None);
     (s, v)
 }
 
@@ -384,7 +375,6 @@ fn a_disk_voice_renders_the_same_frames_at_any_block_length() {
             Voice {
                 source: VoiceSource::Disk(v),
                 play: Playback::default(),
-                channel_index: None,
             },
         );
         pool

@@ -83,7 +83,6 @@ fn pool(start: Beat) -> VoicePool {
         Voice {
             source: VoiceSource::Memory(source),
             play: Default::default(),
-            channel_index: None,
         },
     );
     pool

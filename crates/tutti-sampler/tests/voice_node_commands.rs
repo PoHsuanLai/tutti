@@ -58,7 +58,6 @@ fn voice_at(start: f64) -> Voice {
     Voice {
         source: VoiceSource::Memory(source),
         play: Playback::default(),
-        channel_index: None,
     }
 }
 

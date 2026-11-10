@@ -46,7 +46,6 @@ fn voice() -> Voice {
     Voice {
         source: VoiceSource::Memory(placed()),
         play: Playback::default(),
-        channel_index: None,
     }
 }
 

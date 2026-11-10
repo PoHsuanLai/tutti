@@ -30,9 +30,7 @@
 
 use std::sync::Arc;
 
-use super::io::wave_io::WaveIn;
 use super::prefetch::RegionOut;
-use tutti_codec::Wave;
 use tutti_types::{ChannelLayout, SampleRate};
 
 use crate::nonempty;
@@ -603,12 +601,6 @@ pub(crate) fn apply_mapping(
     Edit::Switch { at, fade }
 }
 
-/// Read file frames `at..` of a resident `wave` into `out` (`channels` wide),
-/// zero past its end: the whole-file source a region without a decoder reads.
-pub(crate) fn read_wave(wave: &Wave, at: usize, out: &mut [f32], channels: ChannelLayout) {
-    WaveIn::new(wave, at, channels).fill_interleaved(out);
-}
-
 /// Ring capacity in frames for a file of `file_length_samples` frames at
 /// `sample_rate`.
 ///
@@ -648,7 +640,9 @@ pub(crate) fn buffer_size_for_file(
 #[cfg(test)]
 #[cfg(test)]
 mod tests {
+    use super::super::io::wave_io::read_wave;
     use super::*;
+    use tutti_codec::Wave;
 
     /// A looped position the audio thread cannot place (`floor() as usize`
     /// saturates for infinity and anything from 2^64 up) makes taps near
@@ -995,14 +989,14 @@ mod tests {
     /// resident ramp, unlooped, with its reader's block in flight at
     /// `[0, 64)`; the reader, for a hook to move; and the ramp.
     fn switching_ring() -> (RegionOut, tutti_rt::PosReader, Arc<Wave>) {
-        use super::super::command::RegionId;
+        use super::super::command::StreamId;
         use super::super::prefetch::RegionBuffer;
         const LEN: usize = 20_000;
         let wave = Arc::new(make_mono_wave(
             &(0..LEN).map(|i| i as f32).collect::<Vec<_>>(),
         ));
-        let (mut writer, shared) = RegionBuffer::for_file(
-            RegionId(1),
+        let (mut writer, _ring, mut reader) = RegionBuffer::for_file(
+            StreamId(1),
             std::path::PathBuf::new(),
             LEN,
             tutti_types::ChannelTopology::new([tutti_types::Speaker::FrontCenter]),
@@ -1012,7 +1006,6 @@ mod tests {
         let mut held = vec![0.0f32; 10_000];
         writer.fill_with(&Mapping::plain(LEN), 0, &mut held);
         assert_eq!(writer.push_interleaved(&held), tutti_types::Samples(10_000));
-        let mut reader = shared.take_reader().expect("the ring's reader");
         let _ = reader.claim(0, [(0, 64), (0, 0)]);
         assert_eq!(writer.in_flight_end(), 64);
         (writer, reader, wave)

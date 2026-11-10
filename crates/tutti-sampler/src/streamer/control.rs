@@ -1,24 +1,23 @@
-//! The streamer's read-side operations over its channel-plan map, and the
+//! The streamer's record of what a stream plays (what a fork reads), and the
 //! error a command send reports.
 //!
 //! The command side is [`Commands`](crate::Commands): one mapping from the
 //! public [`Command`](crate::Command) to the streamer's own, sent from control
-//! threads only, waiting while the queue is full. The read
-//! side, "take the streaming consumer", is here, and
-//! [`Status`](crate::Status) drives it.
+//! threads only, waiting while the queue is full. The reader a stream hands
+//! its voice is the reply of its open ([`Opening`](crate::Opening)).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(test)]
 use dashmap::DashMap;
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::SampleRate;
 
-use super::prefetch::TakeVoiceError;
-use super::{ChannelPlan, RtState};
+#[cfg(test)]
+use super::command::StreamId;
+#[cfg(test)]
+use super::plan::ChannelPlan;
 use crate::voice::LoopSetting;
-use crate::voice::disk_voice::DiskSource;
-use crate::voice::interp::Place;
-use crate::voice_width;
 
 /// The streamer thread is gone, so a stream-control command was discarded.
 ///
@@ -43,47 +42,16 @@ impl core::fmt::Display for StreamerGone {
 
 impl std::error::Error for StreamerGone {}
 
-/// Build a bare `DiskSource` over a channel whose streamer link is
-/// ready, alongside the channel's shared [`RtState`], the file's own rate and
-/// the stream's [`StreamOrigin`]: the stream's one live reader.
-///
-/// [`TakeVoiceError::NotStreaming`] while the streamer hasn't installed the
-/// [`ChannelPlan`] link yet; [`TakeVoiceError::ReaderTaken`] once the stream
-/// has its reader; [`TakeVoiceError::Place`] when the file's channels cannot
-/// be placed into `width` (the placement is built before the reader is
-/// taken, so a refusal leaves the stream's one reader where it was).
-/// `width` is `None` for the file's own ([`voice_width`]).
-pub(crate) fn take_streaming_unit(
-    plans: &Arc<DashMap<usize, ChannelPlan>>,
-    channel_index: usize,
-    width: Option<ChannelLayout>,
-) -> Result<(DiskSource, Arc<RtState>, SampleRate, StreamOrigin), TakeVoiceError> {
-    let plan = plans
-        .get(&channel_index)
-        .ok_or(TakeVoiceError::NotStreaming)?;
-    let link = plan.link.as_ref().ok_or(TakeVoiceError::NotStreaming)?;
-    let consumer = link.consumer.clone();
-    let width = voice_width(width.unwrap_or_else(|| consumer.channels()));
-    // Build the placement (and so refuse) before the single reader is taken.
-    let place = Place::for_topology(consumer.topology(), width)?;
-    let reader = link.consumer.take_reader()?;
-    let file_rate = link.file_rate;
-    let origin = StreamOrigin(Arc::clone(&link.record));
-    let rt_state = plan.rt_state();
-    let unit = DiskSource::with_reader(consumer, Some(reader), Arc::clone(&rt_state), width, place);
-    Ok((unit, rt_state, file_rate, origin))
-}
-
-/// The loop the stream on `channel_index` runs, as its record says; `None`
-/// when the channel streams nothing (tests).
+/// The loop the stream `stream` runs, as its record says; `None` when it
+/// is not open (tests).
 #[cfg(test)]
 pub(crate) fn stream_loop(
-    plans: &DashMap<usize, ChannelPlan>,
-    channel_index: usize,
+    plans: &DashMap<StreamId, ChannelPlan>,
+    stream: StreamId,
 ) -> Option<LoopSetting> {
-    let plan = plans.get(&channel_index)?;
+    let plan = plans.get(&stream)?;
     let link = plan.link.as_ref()?;
-    StreamOrigin(Arc::clone(&link.record))
+    StreamOrigin::new(Arc::clone(&link.record))
         .describe()
         .map(|file| file.loop_)
 }
@@ -106,8 +74,7 @@ pub(crate) struct StreamRecord {
     /// values that change together, and neither side is the audio thread
     /// (the streamer writes; a fork reads, on the control thread).
     loop_: std::sync::Mutex<LoopSetting>,
-    /// Set when the stream's link goes: stopped, or replaced by a new stream
-    /// on the channel.
+    /// Set when the stream's link goes: stopped.
     ended: std::sync::atomic::AtomicBool,
     /// The streamer's wave cache, to hand a fork the file already decoded
     /// when it holds it (a file that cannot seek is always there, pinned for
@@ -182,8 +149,12 @@ impl std::fmt::Debug for StreamFile {
 }
 
 impl StreamOrigin {
+    pub(crate) fn new(record: Arc<StreamRecord>) -> Self {
+        Self(record)
+    }
+
     /// Describe the stream as its record says now, or `None` once it has
-    /// ended (stopped, or its channel restarted on another file): a voice on
+    /// ended (stopped): a voice on
     /// it then plays nothing live either.
     ///
     /// Control thread only: it takes the record's lock, and a cache

@@ -13,6 +13,7 @@ mod io;
 mod loop_body;
 mod loops;
 mod metrics;
+mod open;
 mod plan;
 mod prefetch;
 mod region_map;
@@ -20,13 +21,13 @@ mod rt_state;
 mod step;
 mod thread;
 
-pub(crate) use command::{RegionId, StreamerCommand};
+pub use command::StreamId;
+pub(crate) use command::StreamerCommand;
 pub(crate) use config::BufferConfig;
 pub(crate) use handlers::SessionRate;
 #[cfg(test)]
 pub(crate) use loops::GUARD_FRAMES;
 pub(crate) use loops::{Arrangement, RingMap};
-pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::SharedReader;
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::StreamerThread;
@@ -40,7 +41,7 @@ pub(crate) type StreamerSender = crossbeam_channel::Sender<StreamerCommand>;
 // The streamer's public face: the handle a host holds to drive disk streaming,
 // and the one failure every stream-control command can report.
 pub use control::StreamerGone;
-pub use prefetch::TakeVoiceError;
+pub use open::{Open, OpenError, Opening, Placement, RefusedPlacement, StreamReader};
 
 // The hand-driven cycle's verdict. Public only alongside the driver that
 // produces it — the threaded streamer consumes its own outcomes.
@@ -52,6 +53,8 @@ pub use step::StepOutcome;
 // do not count as dead code in normal builds.
 #[cfg(test)]
 pub(crate) use prefetch::RegionBuffer;
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Result;
 use crate::ports::{Commands, Status};
@@ -65,40 +68,40 @@ use tutti_types::SampleRate;
 /// control is split into two cloneable ports: the WRITE port
 /// [`commands`](Self::commands) (a [`Commands`] over the streamer's command
 /// channel) and the READ port [`status`](Self::status) (a [`Status`] carrying
-/// the sample rate and building the [`DiskVoice`](crate::DiskVoice) for a
-/// stream).
+/// the sample rate). A stream is opened with [`open`](Self::open), whose reply
+/// is the [`StreamReader`] a [`DiskVoice`](crate::DiskVoice) is built from.
 ///
 /// All of this is control-thread API. The audio thread only ever touches the
-/// `DiskVoice` a `Status` built, which reads its ring without locking or
+/// `DiskVoice` built from the reader, which reads its ring without locking or
 /// allocating.
 ///
 /// # Examples
 ///
-/// Stream a file on channel 0 and build the voice that plays it:
+/// Open a file and build the voice that plays it:
 ///
 /// ```no_run
-/// use tutti_types::{Beat, SamplePosition};
-/// use tutti_sampler::{Command, DiskStreamer, TakeVoiceError};
+/// use tutti_types::Beat;
+/// use tutti_sampler::{DiskStreamer, DiskVoice, Open, Placement};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let streamer = DiskStreamer::new(48_000.0, Default::default())?;
 ///
-/// streamer.commands().send(Command::Stream {
-///     channel_index: 0,
-///     file_path: "take_1.wav".into(),
-///     offset: SamplePosition(0.0),
-/// })?;
-///
-/// // The streamer opens the file on its own thread; poll until the stream is
-/// // ready, then place the voice at beat 0 for the file's full length.
-/// let voice = loop {
-///     match streamer.status().take_disk_voice(0, Beat(0.0), None) {
-///         Ok(voice) => break voice,
-///         Err(TakeVoiceError::NotStreaming) => std::thread::yield_now(),
-///         Err(e) => return Err(e.into()),
+/// // The streamer opens the file on its own thread; the reply is polled, and
+/// // a poll that is not ready hands the `Opening` back.
+/// let mut opening = streamer.open("take_1.wav".as_ref(), Placement::HEAD);
+/// let reader = loop {
+///     match opening.poll() {
+///         Open::Ready(reader) => break reader,
+///         Open::Pending(again) => opening = again,
+///         Open::Failed(error) => return Err(error.into()),
 ///     }
+///     std::thread::sleep(std::time::Duration::from_millis(1));
 /// };
-/// // `voice` is a graph node: insert it into the graph that renders the track.
+///
+/// // The reader is the voice's, by value: place it at beat 0 for the file's
+/// // full length. `voice` is a graph node: insert it into the graph that
+/// // renders the track.
+/// let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
 /// # drop(voice);
 /// # Ok(())
 /// # }
@@ -106,6 +109,8 @@ use tutti_types::SampleRate;
 pub struct DiskStreamer {
     streamer_tx: StreamerSender,
     streamer: StreamerThread,
+    /// The next stream's identity, minted here on the control side.
+    next_stream: AtomicU64,
 }
 
 // `streamer`/`streamer_tx` hold a thread handle + command channel that can't
@@ -145,6 +150,7 @@ impl DiskStreamer {
         Ok(DiskStreamer {
             streamer_tx,
             streamer,
+            next_stream: AtomicU64::new(0),
         })
     }
 
@@ -182,6 +188,7 @@ impl DiskStreamer {
         Ok(DiskStreamer {
             streamer_tx,
             streamer,
+            next_stream: AtomicU64::new(0),
         })
     }
 
@@ -229,6 +236,61 @@ impl DiskStreamer {
         budget
     }
 
+    /// Opens `path` as a new stream, its reader starting at `place`, and
+    /// answers with an [`Opening`]: poll it for the stream's one
+    /// [`StreamReader`]. The voice is as wide as the file
+    /// ([`voice_width`](crate::voice_width)); [`open_into`](Self::open_into)
+    /// asks for another width.
+    ///
+    /// Every open is a stream of its own, with its own ring: two opens of one
+    /// file are two streams, and a reader belongs to the open it came from.
+    ///
+    /// Control thread. Like [`Commands::send`] it waits while the streamer's
+    /// queue is full. A streamer that is gone answers
+    /// [`OpenError::StreamerGone`] at the first poll.
+    pub fn open(&self, path: &std::path::Path, place: Placement) -> Opening {
+        self.open_as(path, place, None)
+    }
+
+    /// [`open`](Self::open) for a voice `width` channels wide: the file's
+    /// channels are placed into it by their
+    /// [`ChannelTopology`](tutti_types::ChannelTopology), as
+    /// [`memory_voice`](crate::memory_voice) places a wave. A file in another
+    /// order than the engine's (a WAV 7.1 lists the rears before the sides) is
+    /// permuted to it, one wider than `width` with an order is folded into it,
+    /// and a mono one takes the centre of a wider frame. A placement that
+    /// cannot be made (a channel no speaker names, or a narrowing with an
+    /// unordered end: a 5.1 file into 5 channels) is
+    /// [`OpenError::Placement`], and nothing is opened.
+    pub fn open_into(
+        &self,
+        path: &std::path::Path,
+        place: Placement,
+        width: tutti_types::ChannelLayout,
+    ) -> Opening {
+        self.open_as(path, place, Some(width))
+    }
+
+    fn open_as(
+        &self,
+        path: &std::path::Path,
+        place: Placement,
+        width: Option<tutti_types::ChannelLayout>,
+    ) -> Opening {
+        let id = StreamId(self.next_stream.fetch_add(1, Ordering::Relaxed) + 1);
+        let (reply, answer) = crossbeam_channel::bounded(1);
+        // A refused send drops the command and with it `reply`, which is how
+        // a gone streamer reaches the caller: the answer is disconnected.
+        let _ = self.streamer_tx.send(StreamerCommand::Open {
+            id,
+            file_path: path.to_path_buf(),
+            start: place.frame(),
+            width,
+            reply,
+        });
+        Opening::new(id, answer)
+    }
+
     /// WRITE port: a cloneable [`Commands`] handle over the streamer command
     /// channel. Drive streaming with `commands().send(Command::…)`.
     #[must_use]
@@ -236,11 +298,17 @@ impl DiskStreamer {
         Commands::new(self.streamer_tx.clone())
     }
 
-    /// READ port: a cloneable [`Status`] snapshot carrying the sample rate and
-    /// the channel-plan map (the reader-factory).
+    /// READ port: a cloneable [`Status`] snapshot carrying the session rate.
     #[must_use]
     pub fn status(&self) -> Status {
-        Status::new(self.streamer.session_rate(), self.streamer.plans())
+        Status::new(self.streamer.session_rate())
+    }
+
+    /// The loop the stream `stream` runs, as the streamer last set it; `None`
+    /// when it is not open (tests).
+    #[cfg(test)]
+    pub(crate) fn stream_loop(&self, stream: StreamId) -> Option<crate::voice::LoopSetting> {
+        control::stream_loop(&self.streamer.plans(), stream)
     }
 
     /// Moves the session rate to `sample_rate`: what a device restart at a new
@@ -297,40 +365,23 @@ mod tests {
         let path = dir.path().join("loop.wav");
         write_tone(&path, 48_000, 2.0);
         let mut sampler = DiskStreamer::manual(48_000.0, Default::default()).unwrap();
-        let send = |sampler: &DiskStreamer, command| {
+        let opening = sampler.open(&path, Placement::HEAD);
+        let reader = crate::testing::settle(&mut sampler, opening).expect("the file opens");
+        for fade in [0usize, 500] {
             sampler
                 .commands()
-                .send(command)
-                .expect("the streamer is alive")
-        };
-        send(
-            &sampler,
-            Command::Stream {
-                channel_index: 0,
-                file_path: path.clone(),
-                offset: SamplePosition(0.0),
-            },
-        );
-        let _ = sampler.step_until_settled(1_000);
-        for fade in [0usize, 500] {
-            send(
-                &sampler,
-                Command::Loop {
-                    channel_index: 0,
+                .send(Command::Loop {
+                    stream: reader.id(),
                     setting: LoopSetting::On {
                         start: SamplePosition(10_000.0),
                         end: SamplePosition(20_000.0),
                         crossfade_frames: fade,
                     },
-                },
-            );
+                })
+                .expect("the streamer is alive");
             let _ = sampler.step_until_settled(1_000);
         }
-        let plans = sampler.streamer.plans();
-        let window = plans
-            .get(&0)
-            .and_then(|p| p.link.as_ref().map(|l| l.consumer.window()))
-            .unwrap_or_default();
+        let window = reader.ring.window();
         assert!(
             window.1 > 40_000,
             "the loop plays on past its end: {window:?}"
@@ -374,15 +425,14 @@ mod tests {
     ///   ratio stays 48/44.1 → fails;
     /// - `SessionRate::set` not storing the rate → the early `Status` reports
     ///   44.1 kHz → fails;
-    /// - `handle_stream_file` deriving against the build's 44.1 kHz (what the
+    /// - `open_stream_region` deriving against the build's 44.1 kHz (what the
     ///   old `StreamerCycle::sample_rate` copy did) → the later stream gets
     ///   unity → fails;
     /// - `status()` copying the rate into a fresh cell → the early `Status`
     ///   reports 44.1 kHz → fails.
     #[test]
     fn a_rate_change_re_derives_every_streams_ratio() {
-        use crate::ports::Command;
-        use tutti_types::{Beat, SamplePosition, SrcRatio};
+        use tutti_types::{Beat, SrcRatio};
 
         let dir = tempfile::tempdir().unwrap();
         let (at_48, at_44) = (dir.path().join("48k.wav"), dir.path().join("44k.wav"));
@@ -391,75 +441,66 @@ mod tests {
 
         let mut sampler = DiskStreamer::manual(44_100.0, Default::default()).unwrap();
         let early = sampler.status();
-        let stream = |sampler: &mut DiskStreamer, channel_index, path: &std::path::Path| {
-            sampler
-                .commands()
-                .send(Command::Stream {
-                    channel_index,
-                    file_path: path.to_path_buf(),
-                    offset: SamplePosition(0.0),
-                })
-                .expect("the streamer is alive in this test");
-            let _ = sampler.step_once();
+        let stream = |sampler: &mut DiskStreamer, path: &std::path::Path| {
+            let opening = sampler.open(path, Placement::HEAD);
+            crate::testing::settle(sampler, opening).expect("the file opens")
         };
         let plans = sampler.streamer.plans();
-        let ratio = |channel| plans.get(&channel).expect("streaming").rt_state.src_ratio();
+        let ratio = |id: StreamId| plans.get(&id).expect("streaming").rt_state.src_ratio();
 
-        stream(&mut sampler, 0, &at_48);
-        assert_eq!(ratio(0), SrcRatio::for_rates(48_000.0, 44_100.0));
-        assert!(ratio(0) != SrcRatio::UNITY, "setup: a converting stream");
+        let first = stream(&mut sampler, &at_48);
+        let first_id = first.id();
+        assert_eq!(ratio(first_id), SrcRatio::for_rates(48_000.0, 44_100.0));
+        assert!(
+            ratio(first_id) != SrcRatio::UNITY,
+            "setup: a converting stream"
+        );
 
         sampler.set_sample_rate(48_000.0);
-        assert_eq!(ratio(0), SrcRatio::UNITY, "the open stream is re-rated");
+        assert_eq!(
+            ratio(first_id),
+            SrcRatio::UNITY,
+            "the open stream is re-rated"
+        );
         assert_eq!(early.sample_rate(), SampleRate(48_000.0));
 
-        let voice = sampler
-            .status()
-            .take_disk_voice(0, Beat(0.0), None)
-            .expect("the link is installed");
+        let voice = crate::DiskVoice::from_reader(first, Beat(0.0), None);
         assert_eq!(voice.file_sample_rate(), SampleRate(48_000.0));
 
-        stream(&mut sampler, 1, &at_44);
-        assert_eq!(ratio(1), SrcRatio::for_rates(44_100.0, 48_000.0));
+        let second = stream(&mut sampler, &at_44);
+        assert_eq!(ratio(second.id()), SrcRatio::for_rates(44_100.0, 48_000.0));
     }
 
-    /// A stream that a new `Stream` on the same channel replaces is freed:
-    /// its ring (and with it the writer's decoder and any resident wave) goes
-    /// with the old link, as it does on `StopStreaming`.
+    /// A stopped stream is freed: its ring (and with it the writer's decoder
+    /// and any resident wave) goes with its plan, in the step that applies the
+    /// `Stop`. The reader is dropped first, so the streamer's writer is the
+    /// ring's last holder.
     ///
-    /// Mutation (run): `handle_stream_file` not removing the replaced
-    /// stream's region from `local.regions` -> the old ring is still held by
-    /// its writer -> fails.
+    /// Mutation (run): `close_stream` not removing the stream's region from
+    /// `local.regions` -> the ring is still held by its writer -> fails.
     #[test]
-    fn a_replaced_stream_is_freed() {
+    fn a_stopped_stream_is_freed() {
         use crate::ports::Command;
-        use tutti_types::SamplePosition;
 
         let dir = tempfile::tempdir().unwrap();
-        let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
-        write_tone(&a, 48_000, 1.0);
-        write_tone(&b, 48_000, 1.0);
+        let path = dir.path().join("a.wav");
+        write_tone(&path, 48_000, 1.0);
 
         let mut sampler = DiskStreamer::manual(48_000.0, Default::default()).unwrap();
-        let plans = sampler.streamer.plans();
-        let mut stream = |path: &std::path::Path| {
-            sampler
-                .commands()
-                .send(Command::Stream {
-                    channel_index: 0,
-                    file_path: path.to_path_buf(),
-                    offset: SamplePosition(0.0),
-                })
-                .expect("the streamer is alive in this test");
-            let _ = sampler.step_until_settled(1_000);
-        };
+        let opening = sampler.open(&path, Placement::HEAD);
+        let reader = crate::testing::settle(&mut sampler, opening).expect("the file opens");
+        let (id, ring) = (reader.id(), Arc::downgrade(&reader.ring));
+        drop(reader);
+        assert!(ring.upgrade().is_some(), "setup: the writer holds the ring");
 
-        stream(&a);
-        let old = Arc::downgrade(&plans.get(&0).unwrap().link.as_ref().unwrap().consumer);
-        stream(&b);
+        sampler
+            .commands()
+            .send(Command::Stop { stream: id })
+            .expect("the streamer is alive in this test");
+        let _ = sampler.step_once();
         assert!(
-            old.upgrade().is_none(),
-            "the replaced stream's ring is still alive: its region leaked"
+            ring.upgrade().is_none(),
+            "the stopped stream's ring is still alive: its region leaked"
         );
     }
 

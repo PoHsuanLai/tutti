@@ -36,7 +36,7 @@ use super::offline_read::OfflineRead;
 use super::types::Direction;
 use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES, audible};
 use crate::streamer::control::StreamOrigin;
-use crate::streamer::{RegionId, RtState, SharedReader};
+use crate::streamer::{RtState, SharedReader, StreamId, StreamReader};
 
 /// The streaming tier's bare reader: the streamer's ring, its control cell
 /// and its width. A [`DiskVoice`] wraps one and reads the ring by the clock.
@@ -82,26 +82,33 @@ impl Clone for DiskSource {
 }
 
 impl DiskSource {
-    /// A source over `consumer`, taking the ring's reader (test rings; a
-    /// taken one leaves this source silent).
+    /// A source over `consumer` through its one position `reader` (test rings),
+    /// at the ring's own width.
     #[cfg(test)]
-    pub(crate) fn new(consumer: SharedReader, shared_state: Arc<RtState>) -> Self {
-        let reader = consumer.take_reader().ok();
+    pub(crate) fn new(
+        consumer: SharedReader,
+        reader: tutti_rt::PosReader,
+        shared_state: Arc<RtState>,
+    ) -> Self {
         let width = crate::voice_width(consumer.channels());
         let place = Place::for_topology(consumer.topology(), width)
             .expect("a test ring is placeable at its own width");
-        Self::with_reader(consumer, reader, shared_state, width, place)
+        let map = consumer.map_reader();
+        Self::with_reader(consumer, Some((reader, map)), shared_state, width, place)
     }
 
-    /// A source over `consumer` through its one `reader`, `width` wide (at
-    /// most [`MAX_SAMPLER_CHANNELS`], the widest frame the read path stacks),
-    /// placing the ring's channels by `place`: the [`Place`] of the ring's
-    /// topology into `width` ([`Place::for_topology`], built, and so
-    /// refusing, before the reader is taken). The file's own width and order
-    /// give the identity.
+    /// A source over `consumer` through its one `reader` and the reader of its
+    /// map (`None`: silent), `width` wide (at most [`MAX_SAMPLER_CHANNELS`],
+    /// the widest frame the read path stacks), placing the ring's channels by
+    /// `place`: the [`Place`] of the ring's topology into `width`
+    /// ([`Place::for_topology`], built, and so refusing, when the stream was
+    /// opened). The file's own width and order give the identity.
     pub(crate) fn with_reader(
         consumer: SharedReader,
-        reader: Option<tutti_rt::PosReader>,
+        feed: Option<(
+            tutti_rt::PosReader,
+            tutti_rt::Reader<crate::streamer::RingMap>,
+        )>,
         shared_state: Arc<RtState>,
         width: ChannelLayout,
         place: Place,
@@ -109,7 +116,7 @@ impl DiskSource {
         let channels = crate::voice_width(width);
         let stride = channels.count() as usize;
         Self {
-            read: Box::new(LiveRead::new(consumer, reader, stride, place)),
+            read: Box::new(LiveRead::new(consumer, feed, stride, place)),
             shared_state: Some(shared_state),
             channels,
             stride,
@@ -181,7 +188,7 @@ pub struct DiskVoiceConfig {
     /// position, matching `MemorySource`'s use of `wave.sample_rate()`.
     ///
     /// The rate the streamer recorded from the file's header when it opened the
-    /// stream (`Status::take_disk_voice`), not one recovered from the session
+    /// stream (`StreamReader::file_rate`), not one recovered from the session
     /// rate: that one moves on a device restart, and the file's does not.
     pub file_sample_rate: SampleRate,
 }
@@ -222,7 +229,7 @@ pub struct DiskVoice {
 
     /// The streamer stream this voice consumes, as a read-only handle onto the
     /// streamer's record of it: what a fork reads its file from. `None` for a
-    /// voice not built by [`Status::take_disk_voice`](crate::Status::take_disk_voice)
+    /// voice not built by [`DiskVoice::from_reader`]
     /// (a test's bare ring), whose fork then plays silence.
     origin: Option<StreamOrigin>,
 
@@ -369,10 +376,62 @@ impl DiskVoice {
         }
     }
 
-    /// The streamer stream this voice reads: its ring's region, which a loop
+    /// Builds the voice that plays a stream, placed on the timeline at
+    /// `start_beat` for `duration` (the transport it reads is its block's,
+    /// from the graph). The reader is the stream's one, moved in: it is the
+    /// reply of the open ([`DiskStreamer::open`](crate::DiskStreamer::open)),
+    /// so it cannot be built into a second voice.
+    ///
+    /// `start_beat` and `duration` are musical time; the gate converts them to
+    /// file frames using the file's own rate ([`StreamReader::file_rate`], the
+    /// rate the streamer recorded when it opened the stream), so a session
+    /// rate that moves later (a device restart) leaves the gate's frames where
+    /// they were. The voice is as wide as the open asked for, and plays the
+    /// file's channels where they are unless the file's order is not the
+    /// engine's (a WAV 7.1): that was permuted to it when the stream opened.
+    ///
+    /// The voice also keeps a read-only handle onto the streamer's record of
+    /// the stream, so a fork of it for an offline render (an export) can read
+    /// the same file on its own rather than through the live ring; see
+    /// `DiskVoice::fork_copy`.
+    ///
+    /// Control thread; the returned voice is then moved into the graph.
+    pub fn from_reader(
+        reader: StreamReader,
+        start_beat: tutti_types::Beat,
+        duration: Option<tutti_types::BeatDuration>,
+    ) -> Self {
+        let StreamReader {
+            ring,
+            pos,
+            map,
+            rt_state,
+            file_rate,
+            origin,
+            place,
+            width,
+            ..
+        } = reader;
+        let inner =
+            DiskSource::with_reader(ring, Some((pos, map)), Arc::clone(&rt_state), width, place);
+        Self::new(
+            inner,
+            rt_state,
+            DiskVoiceConfig {
+                window: VoiceWindow {
+                    start: start_beat,
+                    duration,
+                },
+                file_sample_rate: file_rate,
+            },
+        )
+        .with_origin(origin)
+    }
+
+    /// The streamer stream this voice reads: its ring's stream, which a loop
     /// forwarded for the voice names so the streamer ignores it once the
-    /// channel carries another stream.
-    pub(crate) fn stream(&self) -> RegionId {
+    /// stream is gone.
+    pub(crate) fn stream(&self) -> StreamId {
         self.inner.read.ring().region_id()
     }
 

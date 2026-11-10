@@ -149,7 +149,6 @@ impl Rig {
                     Voice {
                         source: VoiceSource::Memory(source),
                         play,
-                        channel_index: None,
                     },
                 );
             }
@@ -157,7 +156,6 @@ impl Rig {
                 let mut node = VoiceNode::new(Voice {
                     source: VoiceSource::Memory(source),
                     play,
-                    channel_index: None,
                 });
                 node.prepare(&Prepare::new(SampleRate(SR), Samples(self.max_block)));
                 *slot = Some(node);

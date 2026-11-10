@@ -242,17 +242,6 @@ pub struct Voice {
     pub source: VoiceSource,
     /// The control intent applied to [`source`](Self::source).
     pub play: Playback,
-    /// Streamer channel index for a [`VoiceSource::Disk`] source; `None` for
-    /// [`Memory`](VoiceSource::Memory).
-    ///
-    /// A pool's control side (its handle's `send`, and `insert_voice`)
-    /// forwards the voice's loop to this channel over the typed
-    /// [`Commands`](crate::Commands) handle. Looping on the disk tier is
-    /// streamer-owned — it reads a fade-in head off disk and mutates the stream
-    /// plan, neither of which the reader can reach — so forwarding is the honest
-    /// path rather than an indirection. Meaningless for `Memory`, where the loop
-    /// is primed directly on the source.
-    pub channel_index: Option<usize>,
 }
 
 impl Clone for Voice {
@@ -260,7 +249,6 @@ impl Clone for Voice {
         Self {
             source: self.source.clone(),
             play: self.play,
-            channel_index: self.channel_index,
         }
     }
 }
@@ -287,7 +275,6 @@ impl Voice {
         Ok(Self {
             source,
             play: self.play,
-            channel_index: self.channel_index,
         })
     }
 

@@ -31,7 +31,7 @@ use tutti_types::{
 use super::memory_source::{LoopSetting, MemorySource};
 use super::pool::VoicePool;
 use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
-use crate::{Command, DiskStreamer, DiskStreamerConfig};
+use crate::{DiskStreamer, DiskStreamerConfig};
 
 const SR: f64 = 48_000.0;
 const LEN: usize = 3 * 48_000;
@@ -165,34 +165,35 @@ fn the_block_read_is_the_same_at_any_block_length() {
     let low = wave(2, 24_000.0);
     let six = wave(6, SR);
 
-    // Disk streams: channels 0..4 for the long-block pool, 4..8 for the
+    // Disk streams: 0..4 for the long-block pool, 4..8 for the
     // short-block one.
     let mut streamer =
         DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
-    for channel_index in 0..8 {
-        streamer
-            .commands()
-            .send(Command::Stream {
-                channel_index,
-                file_path: path.clone(),
-                offset: SamplePosition(0.0),
-            })
-            .expect("the streamer is alive");
-    }
+    let openings: Vec<_> = (0..8)
+        .map(|_| streamer.open(&path, crate::Placement::HEAD))
+        .collect();
     assert!(
         streamer.step_until_settled(512) < 512,
         "the rings never primed"
     );
-    let disk = |channel: usize| {
-        let mut v = streamer
-            .status()
-            .take_disk_voice(channel, Beat::new(0.0), None)
-            .expect("a primed stream gives a voice");
+    let mut readers: Vec<_> = openings
+        .into_iter()
+        .map(|opening| match opening.poll() {
+            crate::Open::Ready(reader) => Some(reader),
+            other => panic!("a primed stream answers its open: {other:?}"),
+        })
+        .collect();
+    // A stream's reader is its voice's, once: each voice takes its own.
+    let mut disk = |stream: usize| {
+        let reader = readers[stream]
+            .take()
+            .expect("each stream builds one voice");
+        let mut v = crate::DiskVoice::from_reader(reader, Beat::new(0.0), None);
         v.set_render_rate(SampleRate(SR));
         v
     };
 
-    let build = |first_disk: usize| {
+    let mut build = |first_disk: usize| {
         let mut pool = VoicePool::with_channels(None, ChannelLayout::STEREO)
             .expect("a width the sampler reads");
         pool.prepare(&Prepare::new(SampleRate(SR), Samples(256)));
@@ -257,14 +258,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
             (VoiceSource::Disk(forked), Playback::default()),
         ];
         for (i, (source, play)) in voices.into_iter().enumerate() {
-            pool.insert_voice(
-                SlotId(i as u128),
-                Voice {
-                    source,
-                    play,
-                    channel_index: None,
-                },
-            );
+            pool.insert_voice(SlotId(i as u128), Voice { source, play });
         }
         pool
     };

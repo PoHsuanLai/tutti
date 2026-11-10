@@ -29,6 +29,7 @@ mod offline;
 mod project_meter;
 mod settings;
 mod state;
+mod tempo_reader;
 mod timed;
 mod timeline;
 mod walk;
@@ -40,6 +41,7 @@ pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};
 pub use settings::TransportSettings;
+pub use tempo_reader::TempoReader;
 pub use timed::{IMMEDIATE_RESERVE, SCHEDULE_CAPACITY, ScheduleFull, Scheduled, TransportCommand};
 
 pub use timeline::{OfflineClock, OfflineTransport, Timeline};

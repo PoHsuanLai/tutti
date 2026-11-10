@@ -1,50 +1,39 @@
-//! Plugin-host per-note addressing: a stable `note_id` for a `(channel, note)`
-//! pair, shared by every format host that binds per-note expression to a voice.
+//! A plugin format's `note_id` for a `(channel, note)` voice.
 //!
-//! VST3 and CLAP both address per-note events by a host-chosen `note_id` the
-//! plugin echoes back, so a note-on and any later per-note expression for the
-//! *same* `(channel, note)` must compute the *same* id to bind to the same voice.
-//! [`note_id_for`] is that derivation, shared by both hosts.
-//!
-//! The packing is the dense `channel * 128 + note` (range `0..=2047`) that
-//! CLAP's round-trip guard [`note_id_to_channel_note`] depends on, the same
-//! value as [`tutti_ump::NoteId::from_channel_note`]'s; these functions are to
-//! be derived from `NoteId` (doc 017 stage 3c).
+//! VST3 and CLAP address per-note events by a host-chosen `note_id` the plugin
+//! echoes back, so a note-on and any later per-note expression for the *same*
+//! `(channel, note)` must carry the *same* id. The id is
+//! [`tutti_ump::NoteId`]'s (`channel * 128 + note`, `0..=2047`); the formats
+//! carry it as an `i32`, where `-1` is the wildcard. These two functions are
+//! that edge.
 
-/// Returns the plugin `note_id` for a `(channel, note)` pair.
-///
-/// A note-on and any per-note expression for the same `(channel, note)` compute
-/// the same id and therefore bind to the same voice. For `channel` in `0..16`
-/// and `note` in `0..128` the mapping is a bijection onto
-/// `0..=`[`MAX_HOST_NOTE_ID`], which [`note_id_to_channel_note`] inverts.
+use tutti_ump::{MidiChannel, NoteId, NoteNumber};
+
+/// The plugin `note_id` of `(channel, note)`: [`NoteId::from_channel_note`]
+/// as the formats' `i32`.
 ///
 /// This is distinct from the spec's "use `noteId = -1` for channel/pitch
 /// matching" fallback: that fallback only covers note-on/off, *not* note
-/// expression — note-expression events carry no channel/pitch, only a `noteId`,
+/// expression. Note-expression events carry no channel/pitch, only a `noteId`,
 /// so they have no voice to attach to unless the host assigns real ids.
 #[inline]
-pub fn note_id_for(channel: u8, note: u8) -> i32 {
-    (channel as i32) * 128 + (note as i32)
+#[must_use]
+pub fn note_id_for(channel: MidiChannel, note: NoteNumber) -> i32 {
+    // At most `NoteId::MAX_CHANNEL_NOTE` (2047): it fits.
+    NoteId::from_channel_note(channel, note).raw() as i32
 }
 
-/// Largest `note_id` [`note_id_for`] can mint: channel 15, note 127.
-pub const MAX_HOST_NOTE_ID: i32 = 15 * 128 + 127;
-
-/// Recovers the `(channel, note)` a [`note_id_for`] id was built from.
-///
-/// Returns `None` if `note_id` is outside the host-minted range
-/// `0..=MAX_HOST_NOTE_ID`.
+/// The `(channel, note)` a [`note_id_for`] id was built from, or `None` for
+/// any other id.
 ///
 /// A plugin may assign per-note events its *own* `note_id` space; such an id is
-/// not `channel * 128 + note` and must not be force-decoded — masking it would
+/// not `channel * 128 + note` and must not be force-decoded: masking it would
 /// bind the event to a phantom `(channel, note)`. Callers skip the event
-/// instead. (The `-1` wildcard is likewise out of range → `None`.)
+/// instead. (The `-1` wildcard is likewise `None`.)
 #[inline]
-pub fn note_id_to_channel_note(note_id: i32) -> Option<(u8, u8)> {
-    if !(0..=MAX_HOST_NOTE_ID).contains(&note_id) {
-        return None;
-    }
-    Some(((note_id / 128) as u8, (note_id % 128) as u8))
+#[must_use]
+pub fn note_id_to_channel_note(note_id: i32) -> Option<(MidiChannel, NoteNumber)> {
+    NoteId::from_raw(u32::try_from(note_id).ok()?).channel_note()
 }
 
 #[cfg(test)]
@@ -52,26 +41,34 @@ mod tests {
     use super::*;
 
     /// The whole host range is a bijection: every `(channel, note)` mints a
-    /// distinct id and every id decodes back to the pair that made it. An
-    /// exhaustive sweep is cheap here (2048 pairs) and is what makes the
-    /// distinctness and the endpoint claims below unnecessary to state
-    /// separately.
+    /// distinct id and every id decodes back to the pair that made it.
+    ///
+    /// Mutation (run): `note_id_for` returning `note * 16 + channel` → the
+    /// pairs no longer decode → fails.
     #[test]
     fn round_trips_within_host_range() {
         for channel in 0..16u8 {
             for note in 0..128u8 {
+                let (channel, note) = (MidiChannel::of(channel), NoteNumber::of(note));
                 let id = note_id_for(channel, note);
                 assert_eq!(note_id_to_channel_note(id), Some((channel, note)));
             }
         }
-        // The top of the range is the constant the out-of-range guard is
-        // written against, so pin the two together.
-        assert_eq!(note_id_for(15, 127), MAX_HOST_NOTE_ID);
+        assert_eq!(
+            note_id_for(MidiChannel::of(15), NoteNumber::of(127)),
+            NoteId::MAX_CHANNEL_NOTE as i32
+        );
     }
 
+    /// Mutation (run): `note_id_to_channel_note` decoding `id / 128` and
+    /// `id % 128` without the range check → the id past the range decodes →
+    /// fails.
     #[test]
     fn out_of_range_and_wildcard_decode_to_none() {
-        assert_eq!(note_id_to_channel_note(-1), None); // wildcard
-        assert_eq!(note_id_to_channel_note(MAX_HOST_NOTE_ID + 1), None);
+        assert_eq!(note_id_to_channel_note(-1), None);
+        assert_eq!(
+            note_id_to_channel_note(NoteId::MAX_CHANNEL_NOTE as i32 + 1),
+            None
+        );
     }
 }

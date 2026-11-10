@@ -33,7 +33,7 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{InProcessVst2Client, RenderMode, in_process_vst2_client};
+use tutti_plugin::{BoundInProcessVst2Client, RenderMode, in_process_vst2_client};
 use tutti_types::SampleRate;
 use tutti_vst2_test_plugin::ProcessCapture;
 
@@ -109,7 +109,7 @@ fn read_capture(path: &PathBuf) -> ProcessCapture {
 }
 
 struct Loaded {
-    unit: InProcessVst2Client,
+    unit: BoundInProcessVst2Client,
     handle: PluginHandle,
     path: PathBuf,
 }
@@ -120,23 +120,27 @@ fn load() -> Loaded {
     let (unit, handle) =
         in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
             .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
-    Loaded { unit, handle, path }
+    Loaded {
+        unit: unit.bind(tempo()),
+        handle,
+        path,
+    }
 }
 
 /// Render one block through the node, prepared as a graph prepares it
 /// (`Node::prepare`, which sizes its scratch and parks its rate), then
 /// `Node::process` by hand (`tutti_graph::contract::drive_input`).
-fn drive_block(unit: &mut InProcessVst2Client) {
+fn drive_block(unit: &mut BoundInProcessVst2Client) {
     drive_blocks(unit, BLOCK, BLOCK);
 }
 
 /// One block of `frames` through `unit` prepared for blocks of up to `max`.
-fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
+fn drive_blocks(unit: &mut BoundInProcessVst2Client, max: usize, frames: usize) {
     drive_blocks_at(unit, SAMPLE_RATE, max, frames);
 }
 
 /// [`drive_blocks`] at `hz`: the node is prepared at that rate.
-fn drive_blocks_at(unit: &mut InProcessVst2Client, hz: f64, max: usize, frames: usize) {
+fn drive_blocks_at(unit: &mut BoundInProcessVst2Client, hz: f64, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
     let rate = SampleRate(hz);
     Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
@@ -278,4 +282,9 @@ fn a_rate_change_keeps_the_render_mode() {
         cap.process_level, LEVEL_OFFLINE,
         "the rate change re-activated the plugin in realtime mode"
     );
+}
+
+/// The project's tempo map the node under test is bound to.
+fn tempo() -> tutti_transport::TempoReader {
+    tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
 }

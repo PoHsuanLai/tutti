@@ -99,7 +99,7 @@ impl MidiEncoder {
             // arrives as a Note Off.
             Voice2::NoteOn {
                 note, velocity: 0, ..
-            } => Some(note_off(offset, ch, note, 0)),
+            } => Some(note_off(offset, channel, note, 0)),
             // The attribute is not read: the Note On's `tuning` stays 0.
             Voice2::NoteOn { note, velocity, .. } => Some(Event::at(
                 offset,
@@ -107,12 +107,12 @@ impl MidiEncoder {
                     ch.into(),
                     note.get().into(),
                     u16_to_unit_f32(velocity),
-                    note_id_for(ch, note.get()),
+                    note_id_for(channel, note),
                 )),
             )),
             Voice2::NoteOff { note, velocity, .. } => {
                 // The release velocity, at its full width.
-                Some(note_off(offset, ch, note, velocity))
+                Some(note_off(offset, channel, note, velocity))
             }
             Voice2::PolyPressure { note, value } => Some(Event::at(
                 offset,
@@ -120,14 +120,14 @@ impl MidiEncoder {
                     ch.into(),
                     note.get().into(),
                     u32_to_unit_f32(value),
-                    note_id_for(ch, note.get()),
+                    note_id_for(channel, note),
                 )),
             )),
             Voice2::PerNotePitchBend { note, value } => {
                 let bend = bend_u32_to_signed_f32(value);
                 NoteExpressionValue {
                     sample_offset: offset,
-                    note_id: note_id_for(ch, note.get()),
+                    note_id: note_id_for(channel, note),
                     expression_type: NoteExpressionType::Tuning,
                     value: tuning_expression(bend, self.ranges.semitones(ch)),
                 }
@@ -141,7 +141,7 @@ impl MidiEncoder {
                 let expression_type = registered_controller_expression(controller)?;
                 NoteExpressionValue {
                     sample_offset: offset,
-                    note_id: note_id_for(ch, note.get()),
+                    note_id: note_id_for(channel, note),
                     expression_type,
                     value: f64::from(u32_to_unit_f32(value)),
                 }
@@ -155,7 +155,7 @@ impl MidiEncoder {
                 let expression_type = per_note_controller_expression(controller)?;
                 NoteExpressionValue {
                     sample_offset: offset,
-                    note_id: note_id_for(ch, note.get()),
+                    note_id: note_id_for(channel, note),
                     expression_type,
                     value: f64::from(u32_to_unit_f32(value)),
                 }
@@ -217,14 +217,14 @@ pub(super) fn bank_program(ump: &Ump) -> Option<[Midi1Bytes; 3]> {
     Some([messages.next()?, messages.next()?, messages.next()?])
 }
 
-fn note_off(offset: i32, channel: u8, note: NoteNumber, velocity: u16) -> Event {
+fn note_off(offset: i32, channel: MidiChannel, note: NoteNumber, velocity: u16) -> Event {
     Event::at(
         offset,
         Payload::NoteOff(NoteOff::new(
-            channel.into(),
+            channel.get().into(),
             note.get().into(),
             u16_to_unit_f32(velocity),
-            note_id_for(channel, note.get()),
+            note_id_for(channel, note),
         )),
     )
 }

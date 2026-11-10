@@ -111,6 +111,14 @@ pub struct MusicalTiming {
     /// be finite *and* positive before a format flags it valid — see
     /// [`is_usable`], which covers only the finiteness half.
     pub tempo: f64,
+    /// How the tempo moves across the block this snapshot opens, in BPM per
+    /// sample, until the next transport event: CLAP's `tempo_inc`. `0.0` for
+    /// a constant tempo, a stopped transport, or a block the host cannot
+    /// describe by one slope (a tempo point inside it). A raw `f64` rather
+    /// than a unit because it is handed straight to a C ABI, which is where
+    /// the unit types stop. VST2, VST3 and AU have no such field and read
+    /// [`tempo`](Self::tempo) alone.
+    pub tempo_inc: f64,
     /// The signature in force at the playhead.
     ///
     /// A [`TimeSignature`] rather than a loose `(i32, i32)` pair: each format
@@ -126,6 +134,7 @@ impl Default for MusicalTiming {
     fn default() -> Self {
         Self {
             tempo: 120.0,
+            tempo_inc: 0.0,
             signature: TimeSignature::default(),
         }
     }
@@ -234,6 +243,14 @@ impl TransportInfo {
     #[must_use]
     pub fn with_tempo(mut self, tempo: f64) -> Self {
         self.timing.tempo = tempo;
+        self
+    }
+
+    /// Sets the tempo's slope in BPM per sample (builder): CLAP's `tempo_inc`.
+    /// Not validated here — see [`is_usable`].
+    #[must_use]
+    pub fn with_tempo_inc(mut self, tempo_inc: f64) -> Self {
+        self.timing.tempo_inc = tempo_inc;
         self
     }
 

@@ -13,6 +13,7 @@ use tutti_graph::{
     Cx, Event, EventKind, Harmony, HarmonyKind, Io, MAX_PORTS, Node, Offset, Prepare, Shape,
     SortedEvents, Status,
 };
+use tutti_tempo::{Cursor, TempoMap};
 use tutti_types::MeterMap;
 use tutti_types::{ChannelLayout, Samples};
 
@@ -146,6 +147,8 @@ impl Node for PluginClient<Bound> {
             io: batcher,
             meter,
             default_meter,
+            tempo,
+            tempo_cursor,
             pending,
             out_events,
             steady,
@@ -161,6 +164,10 @@ impl Node for PluginClient<Bound> {
         // fixed at bind (see `PluginMeter`).
         let installed = meter.lend();
         let meter = installed.as_deref().unwrap_or(default_meter);
+        // And one lend of the project's tempo map, for the same reason: every
+        // chunk's tempo and slope are read from it (`Snapshot::follow`), and
+        // the loan ends with the call.
+        let tempo_map = tempo.lend();
 
         let events = if io.event_input_count() > 0 {
             io.events(0)
@@ -177,6 +184,8 @@ impl Node for PluginClient<Bound> {
             events,
             frames,
             meter,
+            tempo: &tempo_map,
+            tempo_cursor,
             features: c.loaded.features,
             steady: *steady,
             project,
@@ -258,6 +267,10 @@ struct PluginChunks<'a> {
     events: SortedEvents<'a>,
     frames: usize,
     meter: &'a MeterMap,
+    /// The project's tempo map, lent for this call.
+    tempo: &'a TempoMap,
+    /// The node's cursor into it, kept across blocks.
+    tempo_cursor: &'a mut Cursor,
     features: Features,
     /// The steady-time counter at this block's first frame.
     steady: SteadyTime,
@@ -290,10 +303,15 @@ impl Chunks for PluginChunks<'_> {
                 transport_source::from_cx(
                     &self.cx,
                     offset,
+                    chunk,
                     self.steady.at(at),
                     self.project,
                     self.block_ns,
-                    self.meter,
+                    &mut transport_source::ProjectMaps {
+                        meter: self.meter,
+                        tempo: self.tempo,
+                        cursor: self.tempo_cursor,
+                    },
                 )
             }
             _ => TransportInfo::default(),
@@ -539,6 +557,8 @@ mod loss_tests {
             play: PlayClock::ZERO,
         };
         let meter = MeterMap::default();
+        let tempo = tutti_tempo::TempoMap::constant(Bpm::of(120.0)).expect("a tempo");
+        let mut cursor = Cursor::default();
         let mut out_events = MidiEventVec::new();
         let mut segments = SegmentPoints::default();
         let mut project = ProjectTime::default();
@@ -551,6 +571,8 @@ mod loss_tests {
             events: SortedEvents::EMPTY,
             frames: 64,
             meter: &meter,
+            tempo: &tempo,
+            tempo_cursor: &mut cursor,
             features: Features::empty(),
             steady: SteadyTime::default(),
             project: &mut project,

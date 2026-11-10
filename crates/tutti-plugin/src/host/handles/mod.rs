@@ -44,4 +44,6 @@ pub use tutti_plugin_types::{ChordValue, Normalized, ParamId, Preset, PresetId, 
 /// `in_process_vst2_client`); it takes MIDI and parameter events on its event
 /// input.
 #[cfg(feature = "vst2")]
-pub use crate::format::vst2_in_process::{InProcessVst2Client, InProcessVst2Controls};
+pub use crate::format::vst2_in_process::{
+    BoundInProcessVst2Client, InProcessVst2Client, InProcessVst2Controls,
+};

@@ -29,7 +29,7 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
 use tutti_types::SampleRate;
 use tutti_vst2_test_plugin::ProcessCapture;
 
@@ -104,7 +104,7 @@ fn read_capture(path: &PathBuf) -> ProcessCapture {
 /// The graph node plus the handle that keeps it alive, loaded against the
 /// reference probe with its capture zeroed.
 struct Loaded {
-    unit: InProcessVst2Client,
+    unit: BoundInProcessVst2Client,
     handle: PluginHandle,
     path: PathBuf,
 }
@@ -115,11 +115,15 @@ fn load() -> Loaded {
     let (unit, handle) =
         in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
             .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
-    Loaded { unit, handle, path }
+    Loaded {
+        unit: unit.bind(tempo()),
+        handle,
+        path,
+    }
 }
 
 /// `unit` prepared at `rate`, for blocks of up to [`BLOCK`].
-fn prepare_at(unit: &mut InProcessVst2Client, rate: SampleRate) {
+fn prepare_at(unit: &mut BoundInProcessVst2Client, rate: SampleRate) {
     tutti_graph::Node::prepare(
         unit,
         &tutti_graph::Prepare::new(rate, tutti_types::Samples(BLOCK)),
@@ -129,12 +133,12 @@ fn prepare_at(unit: &mut InProcessVst2Client, rate: SampleRate) {
 /// Render one block through the node, prepared as a graph prepares it
 /// (`Node::prepare`, which sizes its scratch and parks its rate), then
 /// `Node::process` by hand (`tutti_graph::contract::drive_input`).
-fn drive_block(unit: &mut InProcessVst2Client) {
+fn drive_block(unit: &mut BoundInProcessVst2Client) {
     drive_blocks(unit, BLOCK, BLOCK);
 }
 
 /// One block of `frames` through `unit` prepared for blocks of up to `max`.
-fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
+fn drive_blocks(unit: &mut BoundInProcessVst2Client, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
     let rate = SampleRate(SAMPLE_RATE);
     Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
@@ -461,6 +465,7 @@ fn outputs_past_the_tables_are_silent() {
         std::env::remove_var("TUTTI_VST2_PROBE_OUTPUTS");
     }
     let (unit, handle) = loaded.unwrap_or_else(|e| panic!("in-process load: {e:?}"));
+    let unit = unit.bind(tempo());
 
     let wide = ChannelLayout::try_from(WIDE).expect("a test width is small");
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, wide);
@@ -617,4 +622,9 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     );
     assert!(seen.contains(&PluginInvalidation::Io), "{seen:?}");
     assert_eq!(loaded.unit.shape().latency.samples().get(), 300);
+}
+
+/// The project's tempo map the node under test is bound to.
+fn tempo() -> tutti_transport::TempoReader {
+    tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
 }

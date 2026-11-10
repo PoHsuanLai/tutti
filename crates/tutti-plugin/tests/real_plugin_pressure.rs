@@ -163,7 +163,14 @@ impl GraphUnit {
             plugin.loaded().total_inputs(),
             plugin.loaded().total_outputs(),
         );
-        Self::new(plugin, inputs, outputs)
+        Self::new(
+            plugin.bind(
+                tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0))
+                    .expect("a tempo"),
+            ),
+            inputs,
+            outputs,
+        )
     }
 
     fn inputs(&self) -> usize {
@@ -311,7 +318,14 @@ fn load_n_from_probe(
     for _ in 0..count {
         let probe = clap_probe::load_probe(SAMPLE_RATE);
         let (ins, outs) = (probe.client.inputs(), probe.client.outputs());
-        units.push(GraphUnit::new(probe.client.bind(), ins, outs));
+        units.push(GraphUnit::new(
+            probe.client.bind(
+                tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0))
+                    .expect("a tempo"),
+            ),
+            ins,
+            outs,
+        ));
         handles.push(probe.handle);
     }
     Some((units, handles))
@@ -1011,7 +1025,14 @@ fn load_stalled(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin::handles::Plu
     for _ in 0..count {
         let probe = clap_probe::load_probe(SAMPLE_RATE);
         let (ins, outs) = (probe.client.inputs(), probe.client.outputs());
-        units.push(GraphUnit::new(probe.client.bind(), ins, outs));
+        units.push(GraphUnit::new(
+            probe.client.bind(
+                tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0))
+                    .expect("a tempo"),
+            ),
+            ins,
+            outs,
+        ));
         handles.push(probe.handle);
     }
     (units, handles)

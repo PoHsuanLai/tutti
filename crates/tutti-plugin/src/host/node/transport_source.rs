@@ -27,6 +27,7 @@
 //! for an offline render).
 
 use tutti_graph::{Continuity, Cx, Offset, Transport};
+use tutti_tempo::{Cursor, TempoMap};
 use tutti_types::Samples;
 use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin};
 use tutti_types::{Meter, MeterMap};
@@ -42,6 +43,11 @@ pub(crate) struct Snapshot {
     pub(crate) playing: bool,
     pub(crate) recording: bool,
     pub(crate) tempo: Bpm,
+    /// How the tempo moves across the chunk this snapshot opens, in BPM per
+    /// sample ([`follow`](Snapshot::follow)): `0.0` until a map says
+    /// otherwise. A raw `f64`: it is CLAP's `tempo_inc`, and the unit types
+    /// stop at the C ABI.
+    pub(crate) tempo_inc: f64,
     /// The playhead, in quarter notes.
     pub(crate) beat: Beat,
     /// The loop region, when looping.
@@ -329,6 +335,53 @@ fn played_across(from: &Transport, gap: usize, rate: SampleRate, to: &Transport)
 }
 
 impl Snapshot {
+    /// Replaces the transport's chord tempo with the project's tempo map's,
+    /// and sets the slope, for a chunk of `chunk` frames starting at this
+    /// snapshot's beat (which already accounts for latency, loops and seeks).
+    ///
+    /// - **`tempo`** is the map's instantaneous tempo at the beat: a step's
+    ///   own tempo (not a chord across it), a ramp's curve at that beat.
+    /// - **`tempo_inc`** is the change in tempo over the chunk per sample
+    ///   (CLAP's field: "tempo increment for each sample and until the next
+    ///   time info event"), the tempo the map has one chunk later minus the
+    ///   tempo now, over `chunk`. Exact for a [`RampTime`](tutti_tempo::Shape::RampTime)
+    ///   ramp, whose tempo is linear in time. It is `0.0` when the transport is
+    ///   stopped, when a map point lies in `(beat, beat + chunk]` (a point at
+    ///   the beat itself is fine: the chunk starts on it), or when the chunk
+    ///   crosses the loop's end, where the beat jumps: one slope cannot
+    ///   describe any of these. A point inside the chunk is told to the
+    ///   plugin by a transport event at its frame (doc 020 stage 5b, not
+    ///   here), which is when a non-zero slope could be right across it.
+    ///
+    /// A beat that is not finite keeps the transport's tempo.
+    pub(crate) fn follow(&mut self, map: &TempoMap, cursor: &mut Cursor, chunk: usize) {
+        self.tempo_inc = 0.0;
+        let b0 = self.beat;
+        if !b0.get().is_finite() {
+            return;
+        }
+        self.tempo = map.tempo_at_with(b0, cursor);
+        let rate = self.sample_rate.get();
+        if !self.playing || chunk == 0 || !rate.is_finite() || rate <= 0.0 {
+            return;
+        }
+        let frames = chunk as f64;
+        let t1 = tutti_types::Seconds(map.seconds_at_with(b0, cursor).get() + frames / rate);
+        let b1 = map.beat_at_seconds_with(t1, cursor);
+        // The points are sorted by beat: the first one past `b0`.
+        let points = map.points();
+        let next = points.partition_point(|p| p.beat.get() <= b0.get());
+        if points.get(next).is_some_and(|p| p.beat.get() <= b1.get()) {
+            return;
+        }
+        if self.looping.is_some_and(|(_, end)| b1.get() > end.get()) {
+            return;
+        }
+        // `.get()`: the slope is a raw `f64` BPM per sample, for the C ABI.
+        let ahead = map.tempo_at_seconds_with(t1, cursor).get();
+        self.tempo_inc = (ahead - self.tempo.get()) / frames;
+    }
+
     /// The transport the node's input at frame `offset` was rendered at
     /// ([`Cx::transport_at`]: the node's arrival latency earlier, through
     /// changes, loop wraps and earlier blocks), with `continuous` as the
@@ -348,6 +401,7 @@ impl Snapshot {
             playing: t.playing,
             recording: t.recording(),
             tempo: t.tempo,
+            tempo_inc: 0.0,
             beat: t.beat(),
             looping: t.looping.map(|l| (l.start, l.end)),
             continuous,
@@ -359,20 +413,31 @@ impl Snapshot {
     }
 }
 
-/// [`Snapshot::at`], as the plugin ABIs carry it, with `meter`'s signature
-/// and bar at the playhead.
+/// What a block reads of the project besides its transport: the meter (the
+/// signature and bar) and the tempo map (the tempo and its slope), each lent
+/// once for the block, with the node's cursor into the map. Built per block
+/// from the node's two readers; nothing here allocates.
+pub(crate) struct ProjectMaps<'a> {
+    pub(crate) meter: &'a MeterMap,
+    pub(crate) tempo: &'a TempoMap,
+    pub(crate) cursor: &'a mut Cursor,
+}
+
+/// [`Snapshot::at`] for a chunk of `chunk` frames, as the plugin ABIs carry
+/// it: the tempo and slope from `maps`' tempo map ([`Snapshot::follow`]) and
+/// the signature and bar from its meter at the playhead.
 pub(crate) fn from_cx(
     cx: &Cx<'_>,
     offset: Offset,
+    chunk: usize,
     continuous: i64,
     project: &mut ProjectTime,
     block_ns: Option<i64>,
-    meter: &MeterMap,
+    maps: &mut ProjectMaps<'_>,
 ) -> TransportInfo {
-    transport_info(
-        &Snapshot::at(cx, offset, continuous, project, block_ns),
-        meter,
-    )
+    let mut s = Snapshot::at(cx, offset, continuous, project, block_ns);
+    s.follow(maps.tempo, maps.cursor, chunk);
+    transport_info(&s, maps.meter)
 }
 
 /// Map `s` onto the snapshot the plugin ABIs read, with `meter`'s signature
@@ -385,6 +450,7 @@ pub(crate) fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
 
     let mut info = TransportInfo::new()
         .with_tempo(tempo)
+        .with_tempo_inc(s.tempo_inc)
         .with_playing(s.playing)
         .with_recording(s.recording)
         .with_time_signature(position.signature)
@@ -492,6 +558,57 @@ mod tests {
         }
     }
 
+    /// `from_cx` for a chunk of one frame over `map`.
+    fn info_in(
+        map: &TempoMap,
+        cx: &Cx<'_>,
+        offset: Offset,
+        continuous: i64,
+        project: &mut ProjectTime,
+        block_ns: Option<i64>,
+        meter: &MeterMap,
+    ) -> TransportInfo {
+        from_cx(
+            cx,
+            offset,
+            1,
+            continuous,
+            project,
+            block_ns,
+            &mut ProjectMaps {
+                meter,
+                tempo: map,
+                cursor: &mut Cursor::default(),
+            },
+        )
+    }
+
+    /// A constant tempo map.
+    fn constant(bpm: f64) -> TempoMap {
+        TempoMap::constant(Bpm::of(bpm)).expect("a tempo")
+    }
+
+    /// `from_cx` over a constant 120 BPM map, the tempo these tests' transports
+    /// carry, so what the plugin is told is the transport's own.
+    fn info_at(
+        cx: &Cx<'_>,
+        offset: Offset,
+        continuous: i64,
+        project: &mut ProjectTime,
+        block_ns: Option<i64>,
+        meter: &MeterMap,
+    ) -> TransportInfo {
+        info_in(
+            &constant(120.0),
+            cx,
+            offset,
+            continuous,
+            project,
+            block_ns,
+            meter,
+        )
+    }
+
     fn at(i: usize, len: usize) -> Offset {
         Offset::new(i, Samples(len)).expect("inside the block")
     }
@@ -522,7 +639,7 @@ mod tests {
         let e = env(1_000, 64, t, TransportChanges::NONE);
         let meter = MeterMap::default();
 
-        let first = from_cx(
+        let first = info_at(
             &cx(&e),
             at(0, 64),
             0,
@@ -541,7 +658,7 @@ mod tests {
         // frame says (1 000 here: as after a re-prepare restarted the graph).
         let mut steady = SteadyTime::default();
         steady.advance(7_000);
-        let later = from_cx(
+        let later = info_at(
             &cx(&e),
             at(24, 64),
             steady.at(24),
@@ -588,9 +705,25 @@ mod tests {
             .expect("a change inside the block");
         let e = env(0, 64, t, changes);
         let meter = MeterMap::default();
+        // The project's map is 120 BPM until beat 16, then 90: what the
+        // transport's own tempo change (the seek lands on beat 16) agrees with.
+        let map = TempoMap::new([
+            tutti_tempo::TempoPoint {
+                beat: Beat(0.0),
+                tempo: Bpm::of(120.0),
+                shape: tutti_tempo::Shape::Step,
+            },
+            tutti_tempo::TempoPoint {
+                beat: Beat(16.0),
+                tempo: Bpm::of(90.0),
+                shape: tutti_tempo::Shape::Step,
+            },
+        ])
+        .expect("a map");
 
         for i in 0..64 {
-            let got = from_cx(
+            let got = info_in(
+                &map,
                 &cx(&e),
                 at(i, 64),
                 0,
@@ -605,7 +738,8 @@ mod tests {
         }
         // The wrap: 32 frames into a 32-frame loop is back at its start.
         assert_eq!(
-            from_cx(
+            info_in(
+                &map,
                 &cx(&e),
                 at(32, 64),
                 0,
@@ -618,7 +752,8 @@ mod tests {
             4.0
         );
         // The seek, and its tempo.
-        let seeked = from_cx(
+        let seeked = info_in(
+            &map,
             &cx(&e),
             at(40, 64),
             0,
@@ -662,7 +797,7 @@ mod tests {
             history: &history,
         };
         // Offset 50 of the second block hears frame 14 of the first.
-        let got = from_cx(
+        let got = info_at(
             &cx,
             at(50, 64),
             0,
@@ -692,7 +827,7 @@ mod tests {
             Transport::new(true, Bpm::of(120.0), Beat(3.5), None),
             TransportChanges::NONE,
         );
-        let out = from_cx(
+        let out = info_at(
             &cx(&e),
             at(0, 64),
             0,
@@ -708,6 +843,186 @@ mod tests {
         assert!((out.bar.position_quarters - 3.5).abs() < 1e-9);
         // And the VST playhead.
         assert!((out.position.quarters - 3.5).abs() < 1e-9);
+    }
+
+    fn point(beat: f64, bpm: f64, shape: tutti_tempo::Shape) -> tutti_tempo::TempoPoint {
+        tutti_tempo::TempoPoint {
+            beat: Beat(beat),
+            tempo: Bpm::of(bpm),
+            shape,
+        }
+    }
+
+    /// What a plugin is told for a chunk of `chunk` frames starting at `t`'s
+    /// beat, over `map`: the transport's own tempo is 120 in every test
+    /// below, so any other figure came from the map.
+    fn told(map: &TempoMap, t: Transport, chunk: usize) -> TransportInfo {
+        let e = env(0, 64, t, TransportChanges::NONE);
+        from_cx(
+            &cx(&e),
+            at(0, 64),
+            chunk,
+            0,
+            &mut ProjectTime::default(),
+            None,
+            &mut ProjectMaps {
+                meter: &MeterMap::default(),
+                tempo: map,
+                cursor: &mut Cursor::default(),
+            },
+        )
+    }
+
+    fn rolling(beat: f64) -> Transport {
+        Transport::new(true, Bpm::of(120.0), Beat(beat), None)
+    }
+
+    /// 120 BPM, then 90 from beat 4 (a step: the new tempo from the point's
+    /// own beat, no chord across it).
+    fn step_map() -> TempoMap {
+        TempoMap::new([
+            point(0.0, 120.0, tutti_tempo::Shape::Step),
+            point(4.0, 90.0, tutti_tempo::Shape::Step),
+        ])
+        .expect("a map")
+    }
+
+    /// 120 to 180 BPM over four beats, tempo linear in time (`RampTime`): it
+    /// lasts 1.6 s (mean 150 BPM), 76 800 frames at 48 kHz, so the tempo
+    /// climbs 60 / 76 800 BPM per frame, and is 150 at 0.8 s, beat 1.8
+    /// ((120 t + 18.75 t^2) / 60 at t = 0.8).
+    fn ramp_map() -> TempoMap {
+        TempoMap::new([
+            point(0.0, 120.0, tutti_tempo::Shape::RampTime),
+            point(4.0, 180.0, tutti_tempo::Shape::Step),
+        ])
+        .expect("a map")
+    }
+
+    const RAMP_SLOPE: f64 = 60.0 / 76_800.0;
+
+    /// A chunk that starts on a step reports the step's own tempo: the map's
+    /// instantaneous tempo at the chunk's beat, not the transport's (the
+    /// engine's chord, 120 here), and no slope across a step.
+    ///
+    /// Mutation: keep `t.tempo` in `Snapshot::follow` (drop the
+    /// `tempo_at_with` line) -> the chunk at beat 4 reads 120 -> fails.
+    #[test]
+    fn a_chunk_on_a_step_is_told_the_steps_own_tempo() {
+        let map = step_map();
+        let on = told(&map, rolling(4.0), 64);
+        assert_eq!(on.timing.tempo, 90.0);
+        assert_eq!(on.timing.tempo_inc, 0.0);
+        let before = told(&map, rolling(3.5), 64);
+        assert_eq!(before.timing.tempo, 120.0);
+        assert_eq!(before.timing.tempo_inc, 0.0);
+    }
+
+    /// Inside a `RampTime` ramp the chunk is told the curve's instantaneous
+    /// tempo at its start beat and the analytic slope, whatever the chunk's
+    /// length (tempo is linear in time).
+    ///
+    /// Mutation: leave `tempo_inc` at 0.0 in `follow` -> fails. Mutation:
+    /// divide by `chunk + 1` -> the slope is off by 1/65 -> fails. Mutation:
+    /// `frames / (rate * 2.0)` in `t1` (the chunk's end at half its time) ->
+    /// the tempo gained is halved -> fails.
+    #[test]
+    fn a_chunk_in_a_ramp_is_told_the_curve_and_its_slope() {
+        let map = ramp_map();
+        for chunk in [64, 1_000] {
+            let got = told(&map, rolling(1.8), chunk);
+            assert!(
+                (got.timing.tempo - 150.0).abs() < 1e-6,
+                "tempo {}",
+                got.timing.tempo
+            );
+            assert!(
+                (got.timing.tempo_inc - RAMP_SLOPE).abs() < 1e-9,
+                "slope {} for {chunk} frames",
+                got.timing.tempo_inc
+            );
+        }
+    }
+
+    /// A chunk with a map point inside `(beat, beat + chunk]` is told no
+    /// slope (one slope cannot describe it; the transport event at the point
+    /// is stage 5b). A chunk that *starts* on a point is fine: the slope is
+    /// the segment's.
+    ///
+    /// Mutation: skip the `points.get(next)` check -> the chunk reaching
+    /// beat 4 is told a slope -> fails. Mutation: `partition_point(|p|
+    /// p.beat < b0)` (a point at the start counts as inside) -> the chunk at
+    /// beat 4 is told 0.0 -> fails.
+    #[test]
+    fn a_chunk_holding_a_point_is_told_no_slope_and_one_starting_on_it_is() {
+        let map = TempoMap::new([
+            point(0.0, 120.0, tutti_tempo::Shape::RampTime),
+            point(4.0, 180.0, tutti_tempo::Shape::RampTime),
+            point(8.0, 60.0, tutti_tempo::Shape::Step),
+        ])
+        .expect("a map");
+        // 1000 frames at 180 BPM is 0.0625 beat: past beat 4 from 3.99.
+        let across = told(&map, rolling(3.99), 1_000);
+        assert!((across.timing.tempo - 180.0).abs() < 0.5);
+        assert_eq!(across.timing.tempo_inc, 0.0);
+        // On the point: 180 to 60 over four beats, 2 s (mean 120 BPM), so
+        // -120 BPM over 96 000 frames.
+        let on = told(&map, rolling(4.0), 64);
+        assert!((on.timing.tempo - 180.0).abs() < 1e-9);
+        assert!(
+            (on.timing.tempo_inc - (-120.0 / 96_000.0)).abs() < 1e-9,
+            "slope {}",
+            on.timing.tempo_inc
+        );
+    }
+
+    /// A stopped transport has no slope, though the map has one at its
+    /// playhead; the tempo is still the map's.
+    ///
+    /// Mutation: drop `!self.playing` from the early return -> the stopped
+    /// chunk is told the ramp's slope -> fails.
+    #[test]
+    fn a_stopped_transport_is_told_no_slope() {
+        let stopped = Transport::new(false, Bpm::of(120.0), Beat(1.8), None);
+        let got = told(&ramp_map(), stopped, 64);
+        assert!((got.timing.tempo - 150.0).abs() < 1e-6);
+        assert_eq!(got.timing.tempo_inc, 0.0);
+    }
+
+    /// A chunk that crosses the loop's end is told no slope: the beat jumps
+    /// back, so the ramp ahead is not what the plugin plays. One that stays
+    /// inside the loop keeps it.
+    ///
+    /// Mutation: drop the `self.looping` check -> the crossing chunk is told
+    /// the slope -> fails.
+    #[test]
+    fn a_chunk_crossing_the_loop_end_is_told_no_slope() {
+        let looped = |end: f64| {
+            Transport::new(
+                true,
+                Bpm::of(120.0),
+                Beat(1.8),
+                Some(LoopRange {
+                    start: Beat(1.0),
+                    end: Beat(end),
+                }),
+            )
+        };
+        // 64 frames at 150 BPM is 0.0033 beat.
+        let crossing = told(&ramp_map(), looped(1.801), 64);
+        assert_eq!(crossing.timing.tempo_inc, 0.0);
+        let inside = told(&ramp_map(), looped(3.0), 64);
+        assert!((inside.timing.tempo_inc - RAMP_SLOPE).abs() < 1e-9);
+    }
+
+    /// A constant map is its tempo and no slope.
+    ///
+    /// Mutation: add `+ 1.0` to the slope in `follow` -> fails.
+    #[test]
+    fn a_constant_map_is_its_tempo_and_no_slope() {
+        let got = told(&constant(97.0), rolling(2.0), 64);
+        assert_eq!(got.timing.tempo, 97.0);
+        assert_eq!(got.timing.tempo_inc, 0.0);
     }
 
     /// A command the engine's transport takes, as [`Host::block`] lands it.
@@ -833,7 +1148,7 @@ mod tests {
             let len = e.block_len.get();
             for &i in offsets.iter().filter(|&&i| i < len) {
                 let frame = e.frame.get() as i64 + i as i64;
-                let info = from_cx(&cx(e), at(i, len), frame, project, None, &meter);
+                let info = info_at(&cx(e), at(i, len), frame, project, None, &meter);
                 got.push((frame, info.position.samples));
             }
         }
@@ -884,7 +1199,7 @@ mod tests {
         let mut steady = SteadyTime::default();
         for e in [first, second] {
             for i in 0..64 {
-                let got = from_cx(&cx(&e), at(i, 64), steady.at(i), &mut project, None, &meter);
+                let got = info_at(&cx(&e), at(i, 64), steady.at(i), &mut project, None, &meter);
                 let want = 2_400_000 + steady.at(i);
                 assert_eq!(got.position.samples, Some(want), "frame {}", steady.at(i));
                 assert_eq!(got.position.seconds.get(), want as f64 / 48_000.0);
@@ -1354,7 +1669,7 @@ mod tests {
             TransportChanges::NONE,
         );
         let block_ns = Some(5_000_000_000);
-        let first = from_cx(
+        let first = info_at(
             &cx(&e),
             at(0, 64),
             0,
@@ -1363,7 +1678,7 @@ mod tests {
             &meter,
         );
         assert_eq!(first.system_time_ns, Some(5_000_000_000));
-        let later = from_cx(
+        let later = info_at(
             &cx(&e),
             at(48, 64),
             0,
@@ -1372,7 +1687,7 @@ mod tests {
             &meter,
         );
         assert_eq!(later.system_time_ns, Some(5_001_000_000));
-        let offline = from_cx(
+        let offline = info_at(
             &cx(&e),
             at(48, 64),
             0,

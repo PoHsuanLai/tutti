@@ -15,7 +15,6 @@ mod negotiate;
 mod outbound;
 mod schedule;
 mod split;
-mod sysex;
 mod traits;
 
 pub use gather::gather_midi;
@@ -41,12 +40,6 @@ pub use schedule::{
 };
 pub use split::{BlockSplitter, Overrun, Step};
 pub use traits::{MidiIn, MidiOut};
-// The two capacity ceilings come along: a caller sizing its own SysEx buffer, or
-// choosing a non-default limit, has to name the same bound.
-pub use sysex::{
-    DEFAULT_MAX_SYSEX_BYTES, DEFAULT_MAX_SYSEX8_BYTES, Sysex7PacketReassembler, Sysex8Abort,
-    Sysex8Event, Sysex8PacketReassembler,
-};
 
 // Value types that live one crate down, re-exported so a consumer of the runtime
 // needs one import rather than two.

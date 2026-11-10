@@ -136,10 +136,16 @@ host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
 - *MIDI 1.0 byte parsers.* `tutti_ump::Midi1Parser` against `tutti-plugin-types`'
   `Midi1Splitter` and `Midi1Decoder` (about 700 lines), whose one production caller
   is `tutti-au-ffi/src/midi_out.rs`.
-- *SysEx.* `tutti-plugin-types`' `SysExAssembler` (about 790 lines, packets to
-  whole messages for a plugin) and `tutti-midi-runtime`'s `Sysex7PacketReassembler`
-  (packets to the complete run) do overlapping work. `Sysex8PacketReassembler` and
-  the FlexText reassembly sit beside them.
+- *SysEx, one place since stage 3c.* `tutti_ump::SysexAssembler` (packets to whole
+  messages over a caller's buffer) and `SysexMessage` (a checked `F0 .. F7`). Before:
+  `tutti-plugin-types`' `SysExAssembler` (about 790 lines) and `tutti-midi-runtime`'s
+  `Sysex7PacketReassembler`, with `Sysex8PacketReassembler` and the FlexText
+  reassembly beside them. The plugin crates' `SysExAssembler`, `unframed` and
+  `is_framed` still stand until the Plugins session moves them.
+- *Note identity, one place since stage 3c.* `tutti_ump::NoteId`, `channel * 128 + note`,
+  which is also the plugin formats' wire value. Before: `tutti-midi-types`' `NoteId`
+  (`channel << 8 | note`) beside `tutti-plugin-types`' `note_id_for` (still standing,
+  as above).
 
 **Held-note structures answer different questions and stay separate.**
 `tutti-voicing`'s `Holds` is why one voice is still open (key, sustain,
@@ -783,9 +789,9 @@ the graph. The cycle that keeps `ump` and `translation` together today is mostly
 out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox`, routes,
 `gather_midi` and `BlockSplitter`, about 3,100 of its 5,700 production lines. Its
 layout flattens to match. `negotiate` and `jr_timestamp` move to `tutti-midi-device`,
-`mpe_ingest` to `tutti-midi-protocol`, and the SysEx reassemblers go with the layer
-that uses them (`Sysex8PacketReassembler` has no production caller and is deleted
-unless one appears). `outbound` goes away, along with the re-exports from
+`mpe_ingest` to `tutti-midi-protocol`, and the SysEx reassemblers are gone (stage 3c:
+`tutti_ump::SysexAssembler` is the one, and `Sysex8PacketReassembler` had no production
+caller). `outbound` goes away, along with the re-exports from
 `tutti-midi-types`, and `pub mod` inside a private parent becomes `mod`.
 
 `tutti-midi-hardware` is a transport and nothing else. Its re-exports go: `midi2`,
@@ -1139,7 +1145,9 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    here: both cut a block at its event offsets, and `dispatch` should call one.
    Keep the one with the tests, and delete the other with its callers moved.
    The survivor takes its block length as `Samples`, not the `usize` `BlockSplitter::new` takes now.
-- **Stage 3c. The MIDI dedup.** The AU host reads its bytes with
+- **Stage 3c. The MIDI dedup.** Part done (the SysEx and note-identity items below,
+   marked); what remains is the Plugins session's (see "Remaining" at the end of this
+   stage's list). The AU host reads its bytes with
    `tutti_ump::Midi1Parser`, and `Midi1Decoder` and `Midi1Splitter` go. One SysEx7
    reassembler stays, in the layer that uses it, and the other goes
    (`SysExAssembler` or `Sysex7PacketReassembler`, whichever is left with no
@@ -1147,7 +1155,19 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    Oracle: M2-104 §7.7.1 for the SysEx7 packets and the byte-stream rules of
    MIDI 1.0 for the parser (M1-100 is not available, §13). The `Reassemble` trait of
    §4.1 is revisited here. Two further items for this stage (plan item 5):
-   - **A checked SysEx type.** `tutti-plugin-types`' `sysex.rs` has `unframed` and
+   - **One SysEx7 reassembler. Done.** The survivor is the real-time one
+     (`SysExAssembler`: bytes out, never allocating, one open run, spans blocks),
+     because it serves MIDI-CI as well as a plugin: `CiMessage::decode` takes the
+     bytes it completes (`tests/midi1_wire_ci.rs`). It is now `tutti_ump::SysexAssembler<B>`,
+     `SysexStep` and `SysexRef`, over a buffer the caller provides (sized with
+     `SysexAssembler::room_for`; `tutti-ump` allocates nothing), reading packets with
+     `decode`. `Sysex7PacketReassembler`, `Sysex8PacketReassembler` (no production
+     caller) and their types and tests are deleted from `tutti-midi-runtime`.
+     Differences: a type-3 packet that does not decode (length past six, a reserved
+     status, a data byte of 128 or more) is `Held` and ignored, as a length past six
+     already was; `SysexRef::new` is gone. `ci::sysex7_to_ci` stays: `tutti-midi-types`'
+     own tests round-trip through it.
+   - **A checked SysEx type. Done:** `tutti_ump::SysexMessage<'a>`. `tutti-plugin-types`' `sysex.rs` has `unframed` and
      `is_framed`, which accept a message with or without `F0` and `F7`. A
      `SysexMessage<'a>` newtype (checked `F0` to `F7`, every interior byte 7-bit)
      retires the leniency: a host that sends one builds it once and the check
@@ -1157,7 +1177,11 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
      `sysex.rs` and `midi1_decoder.rs`, `tutti-clap-host`'s `events.rs`,
      `tutti-vst2-ffi`'s `midi.rs`, `tutti-vst3-ffi`'s `event_list` tests). They
      go to `tutti_ump::frame`.
-   - **One note identity.** There are two encodings of `(channel, note)` as an id:
+   - **One note identity. Done in `tutti-ump`:** `NoteId` lives there, one formula
+     (`channel * 128 + note`, `MAX_CHANNEL_NOTE == 2047`), `from_channel_note` takes
+     `(MidiChannel, NoteNumber)`, `channel_note()` returns `Option` (a minted id names
+     no pair), and `NoteRotationAllocator` mints from `MAX_CHANNEL_NOTE + 1`. The plugin
+     side below is the Plugins session's. Was: There are two encodings of `(channel, note)` as an id:
      `tutti-midi-types`' `NoteId::from_channel_note` (`channel << 8 | note`, a
      `u32`, typed `MidiChannel`) and `tutti-plugin-types`' `note_id_for` /
      `note_id_to_channel_note` (`channel * 128 + note`, an `i32`, raw `u8`s, with
@@ -1168,6 +1192,11 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
      note, not `u8`s. Oracle: the round trip for every channel and note, and
      a host-minted id never decoding a plugin's own id space (the existing
      `None` rule).
+   - **Remaining for the Plugins session.** Their `SysExAssembler`, `unframed`,
+     `is_framed` and `note_id_for` callers move to `SysexAssembler`, `SysexMessage` and
+     `NoteId` (the `i32` wire value is `NoteId::raw` at the FFI edge); the AU host's
+     `Midi1Parser` move (the `Midi1Decoder` and `Midi1Splitter` deletion); and the five
+     `framed` test helpers go to `tutti_ump::frame`.
    - **Per-note expression as MIDI 2.0 per-note controllers.**
      `tutti-plugin-types`' `NoteExpressionType` (volume, pan, tuning, vibrato,
      brightness, pressure, expression, custom) is a second per-note vocabulary

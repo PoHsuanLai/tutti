@@ -22,11 +22,9 @@
 use midi2::channel_voice2::ChannelVoice2 as Cv2;
 use midi2::{Channeled, UmpMessage};
 use tutti_ump::{
-    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
+    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber,
     RegisteredPerNoteController, System, U7, U14, Ump, Voice2, decode,
 };
-
-use crate::note_id::NoteId;
 
 /// Which per-note controller a [`MidiMessage::PerNoteController`] carries.
 /// Registered controllers name a spec-defined function; assignable ones carry a
@@ -395,7 +393,7 @@ impl MidiMessage {
             _ => return MidiMessage::Other(*this),
         };
         let channel = MidiChannel::masked(u8::from(cv2.channel()));
-        let note_id = |note: u8| NoteId::from_channel_note(channel, note);
+        let note_id = |note: u8| NoteId::from_channel_note(channel, NoteNumber::masked(note));
 
         match cv2 {
             Cv2::NoteOn(m) => {

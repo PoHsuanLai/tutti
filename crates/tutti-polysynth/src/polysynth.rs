@@ -22,14 +22,15 @@ use tutti_graph::UmpAt;
 use tutti_midi_protocol::narrow_value;
 use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
+use tutti_midi_types::cc;
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::mpe::PitchBendSensitivity;
 use tutti_midi_types::ump::{
     RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
-use tutti_midi_types::{NoteId, cc};
 use tutti_types::{Amplitude, Param, Tail};
+use tutti_ump::NoteId;
 use tutti_ump::{
     CCNumber, Message, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Ump, Unknown,
     Voice1, Voice2, decode,
@@ -400,7 +401,7 @@ impl PolySynth {
                 // per-note tuning override delivered at note start. Applied
                 // after allocation so it lands on the voice this note claimed.
                 if let Some(pitch) = attribute.pitch() {
-                    let id = NoteId::from_channel_note(channel, note.get());
+                    let id = NoteId::from_channel_note(channel, note);
                     self.set_voice_tuning(id, pitch.note_number());
                 }
             }
@@ -421,14 +422,14 @@ impl PolySynth {
             // A native per-note message addresses one voice by note id, so
             // two same-pitch notes stay independent even on one channel.
             Voice2::PerNotePitchBend { note, value } => {
-                let id = NoteId::from_channel_note(channel, note.get());
+                let id = NoteId::from_channel_note(channel, note);
                 let semitones = tutti_types::Semitones(
                     bend_u32_to_signed_f32(value) * self.config.mpe_pitch_bend_range.get(),
                 );
                 self.set_voice_mpe(id, MpeControl::PitchBend(semitones));
             }
             Voice2::PolyPressure { note, value } => {
-                let id = NoteId::from_channel_note(channel, note.get());
+                let id = NoteId::from_channel_note(channel, note);
                 self.set_voice_mpe(id, MpeControl::Pressure(u32_to_unit_f32(value)));
             }
             // Only the dimensions a voice can apply are honoured: brightness
@@ -438,7 +439,7 @@ impl PolySynth {
                 controller,
                 value,
             } => {
-                let id = NoteId::from_channel_note(channel, note.get());
+                let id = NoteId::from_channel_note(channel, note);
                 let data = u32_to_unit_f32(value);
                 // The index is a wire byte, not a 7-bit value: 0xCA is not
                 // CC74.
@@ -455,7 +456,7 @@ impl PolySynth {
                 controller,
                 value,
             } => {
-                let id = NoteId::from_channel_note(channel, note.get());
+                let id = NoteId::from_channel_note(channel, note);
                 match controller {
                     RegisteredPerNoteController::Volume => {
                         self.set_voice_mpe(id, MpeControl::Gain(u32_to_unit_f32(value)));
@@ -480,7 +481,7 @@ impl PolySynth {
                 detach,
                 reset,
             } => {
-                let id = NoteId::from_channel_note(channel, note.get());
+                let id = NoteId::from_channel_note(channel, note);
                 if detach {
                     self.detach_voice_mpe(id);
                 } else if reset {
@@ -526,7 +527,7 @@ impl PolySynth {
     }
 
     fn handle_note_on(&mut self, note: NoteNumber, vel_norm: f32, channel: MidiChannel) {
-        let id = NoteId::from_channel_note(channel, note.get());
+        let id = NoteId::from_channel_note(channel, note);
         // A key struck again while it sounds replaces its voice: the note logic
         // releases the old one at once whatever holds it, and the new one takes
         // the holds; the MIDI 1.0 spec is silent. With `NoSteal` and a full
@@ -536,7 +537,7 @@ impl PolySynth {
     }
 
     fn handle_note_off(&mut self, note: NoteNumber, channel: MidiChannel) {
-        let id = NoteId::from_channel_note(channel, note.get());
+        let id = NoteId::from_channel_note(channel, note);
         // `release` resolves the exact voice by id and reports whether it truly
         // stopped (vs. held by a pedal). Gate that voice by index — never by a
         // (note, channel) scan, which would alias two same-pitch voices.

@@ -8,10 +8,9 @@
 //! *id* per note (128-note polyphony on one channel, at the cost of the wire
 //! addressing caveat documented on that type).
 
-use tutti_ump::{MidiChannel, NoteNumber};
+use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 
 use super::zone::MpeZoneConfig;
-use crate::note_id::NoteId;
 
 /// Single-channel **Note Number Rotation** allocator: full 128-note polyphony on
 /// one MIDI channel, minting a distinct [`NoteId`] per note-on so the downstream
@@ -19,8 +18,9 @@ use crate::note_id::NoteId;
 ///
 /// This is the alternative to classic MPE (which spreads notes across member
 /// channels). Here everything stays on one channel and per-note identity is
-/// host-internal: each note-on mints an opaque [`NoteId::from_raw`] id from a
-/// monotonic counter.
+/// host-internal: each note-on mints an id from a monotonic counter
+/// that starts above [`NoteId::MAX_CHANNEL_NOTE`], so a minted id never names a
+/// `(channel, note)` pair.
 ///
 /// **Wire-addressing caveat (per M2-104):** MIDI 2.0 per-note messages carry a
 /// *note number*, not a note-id, so a per-note message can only be routed to a
@@ -34,9 +34,9 @@ pub struct NoteRotationAllocator {
     /// messages that arrive by note number). `None` when no live note of that
     /// number.
     active: [Option<NoteId>; 128],
-    /// Monotonic mint counter; the low bit space is the raw id. Starts at 1 so
-    /// a minted id is never 0 (keeps `Default`/zero distinguishable) and never
-    /// `u32::MAX` (reserved as the storage sentinel elsewhere).
+    /// Monotonic mint counter, the raw id of the next mint. It stays in
+    /// `MAX_CHANNEL_NOTE + 1 ..= u32::MAX`, so a minted id never names a pair
+    /// (those are `0 ..= MAX_CHANNEL_NOTE`, `NoteId::channel_note`).
     next: u32,
 }
 
@@ -47,13 +47,13 @@ impl Default for NoteRotationAllocator {
 }
 
 impl NoteRotationAllocator {
-    /// Builds an allocator with no live notes, minting ids from 1.
+    /// Builds an allocator with no live notes, minting ids from `NoteId::MAX_CHANNEL_NOTE + 1`.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
         Self {
             active: [None; 128],
-            next: 1,
+            next: NoteId::MAX_CHANNEL_NOTE + 1,
         }
     }
 
@@ -62,10 +62,10 @@ impl NoteRotationAllocator {
     #[inline]
     pub fn note_on(&mut self, note: NoteNumber) -> NoteId {
         let id = NoteId::from_raw(self.next);
-        // Advance, skipping the two reserved values (0 and u32::MAX).
-        self.next = match self.next.wrapping_add(1) {
-            0 | u32::MAX => 1,
-            n => n,
+        // Advance, wrapping back above the ids a pair names (never to 0).
+        self.next = match self.next.checked_add(1) {
+            Some(n) => n,
+            None => NoteId::MAX_CHANNEL_NOTE + 1,
         };
         self.active[usize::from(note.get())] = Some(id);
         id

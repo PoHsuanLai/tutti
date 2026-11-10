@@ -14,10 +14,8 @@ use std::time::Duration;
 
 use tutti_fixtures::midi::note_on;
 use tutti_graph::Offset;
-use tutti_midi_hardware::{
-    HardwareMidiDrain, HardwareMidiInputs, MidiMessage, MidiSession, NoteId,
-};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiMessage, MidiSession};
+use tutti_ump::{MidiChannel, MidiGroup, NoteId, NoteNumber, Ump};
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
@@ -156,5 +154,5 @@ fn main() {
 /// The per-note identity for a `(channel, note)` on the MIDI-1 path — what the
 /// decoder reconstructs on the way back in, so the sent and received ids match.
 fn note_id(channel: MidiChannel, note: u8) -> NoteId {
-    NoteId::from_channel_note(channel, note)
+    NoteId::from_channel_note(channel, NoteNumber::masked(note))
 }

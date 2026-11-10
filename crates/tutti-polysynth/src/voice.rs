@@ -8,10 +8,10 @@
 //! the id is `NoteId::from_channel_note(channel, note)`, so behaviour is unchanged;
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
-use tutti_midi_types::{NoteId, PerNoteMap};
+use tutti_midi_types::PerNoteMap;
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
-use tutti_ump::{MidiChannel, NoteNumber};
+use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 use tutti_voicing::{
     Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing, Zones,
 };
@@ -448,9 +448,9 @@ impl VoiceAllocator {
         velocity16: u16,
     ) -> (NoteId, f32) {
         match strike {
-            Some((id, v)) if id.note_number() == key => (id, v),
+            Some((id, v)) if id.channel_note().is_some_and(|(_, note)| note == key) => (id, v),
             _ => (
-                NoteId::from_channel_note(channel, key.get()),
+                NoteId::from_channel_note(channel, key),
                 f32::from(velocity16) / 65535.0,
             ),
         }
@@ -508,7 +508,10 @@ impl VoiceAllocator {
     /// gated off (the note actually stopped sounding), or `None` when the note
     /// is held by sustain/sostenuto or no live voice matched `id`.
     pub fn release(&mut self, id: NoteId, channel: MidiChannel) -> Option<usize> {
-        let note = id.note_number();
+        // Every id a caller holds comes from `from_channel_note`, which names a pair.
+        let (_, note) = id
+            .channel_note()
+            .expect("a voice id is made from a channel and a note");
         let off = Voice2::NoteOff {
             note,
             velocity: 0,

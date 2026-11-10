@@ -339,8 +339,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
                  `frame` and `Midi1Parser`, the status bytes the hosts use
                  (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
-                 until VST2 and AU move); no dependencies but `bytemuck` (and
-                 optional `serde`)
+                 until VST2 and AU move), `NoteId` (`channel * 128 + note`), and
+                 SysEx: `SysexMessage` (a checked `F0 .. F7`) and `SysexAssembler`
+                 (SysEx7 packets to whole messages over a caller's buffer); no
+                 dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
                  stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
                  depends on `tutti-ump` alone
@@ -465,7 +467,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   of range), and `masked` is the one constructor that masks, for bits the wire
   has just framed. A packet's Group and Channel are `Ump::group`,
   `Ump::address` and `Ump::channel`: nothing outside `tutti-ump` shifts a
-  header by hand.
+  header by hand. A note's identity is `NoteId`, `channel * 128 + note` (the
+  plugin formats' wire value, one formula); an id above `NoteId::MAX_CHANNEL_NOTE`
+  is one an allocator minted and `channel_note()` is `None`. A complete SysEx is a
+  `SysexMessage` (checked once: `F0`, 7-bit bytes, `F7`), and the one SysEx7
+  reassembler is `SysexAssembler<B>` over a buffer the caller sizes
+  (`SysexAssembler::room_for`): it allocates nothing, holds one open message
+  across all groups and counts what it drops.
 - `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates

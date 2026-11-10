@@ -228,7 +228,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
         // No byte parser on this path, deliberately. The port opens with
         // `Protocol::Midi20`, so CoreMIDI delivers UMP words — a MIDI-1.0
         // device's SysEx arrives already fragmented into UMP SysEx7 packets,
-        // which `Sysex7PacketReassembler` (one layer up) rejoins.
+        // which `tutti_ump::SysexAssembler` (one layer up) rejoins.
         // `tutti_ump::Midi1Parser` is for a transport that delivers raw
         // `F0 … F7` bytes.
         let mut port = client

@@ -26,15 +26,25 @@ fn rotation_note_off_frees_and_returns_id() {
     assert_eq!(rot.note_off(note(64)), None); // idempotent
 }
 
+/// A minted id never names a `(channel, note)` pair, including across the
+/// counter's wrap.
+///
+/// Mutation: start `next` at 1 (or let the wrap go to 0): `channel_note()` is
+/// `Some` and this fails.
 #[test]
-fn rotation_minted_ids_avoid_reserved_values() {
-    // The mint counter never yields 0 or u32::MAX (both reserved sentinels).
+fn rotation_minted_ids_never_name_a_pair() {
     let mut rot = NoteRotationAllocator::new();
     for _ in 0..300 {
-        let id = rot.note_on(note(60)).raw();
-        assert_ne!(id, 0);
-        assert_ne!(id, u32::MAX);
+        let id = rot.note_on(note(60));
+        assert!(id.raw() > NoteId::MAX_CHANNEL_NOTE);
+        assert_eq!(id.channel_note(), None);
     }
+    // Force the wrap: the last value, then back above the pair range.
+    rot.next = u32::MAX;
+    assert_eq!(rot.note_on(note(60)).raw(), u32::MAX);
+    let after = rot.note_on(note(60));
+    assert_eq!(after.raw(), NoteId::MAX_CHANNEL_NOTE + 1);
+    assert_eq!(after.channel_note(), None);
 }
 
 #[test]

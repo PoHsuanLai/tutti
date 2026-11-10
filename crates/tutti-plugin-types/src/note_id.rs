@@ -6,11 +6,10 @@
 //! *same* `(channel, note)` must compute the *same* id to bind to the same voice.
 //! [`note_id_for`] is that derivation, shared by both hosts.
 //!
-//! This is a **plugin-host convention**, deliberately distinct from
-//! [`tutti_midi_types::NoteId`] (the engine's per-note identity): the packing
-//! here is the dense `channel * 128 + note` (range `0..=2047`) that CLAP's
-//! round-trip guard [`note_id_to_channel_note`] depends on, *not* `NoteId`'s
-//! `(channel << 8) | note`. They must not be conflated.
+//! The packing is the dense `channel * 128 + note` (range `0..=2047`) that
+//! CLAP's round-trip guard [`note_id_to_channel_note`] depends on, the same
+//! value as [`tutti_ump::NoteId::from_channel_note`]'s; these functions are to
+//! be derived from `NoteId` (doc 017 stage 3c).
 
 /// Returns the plugin `note_id` for a `(channel, note)` pair.
 ///

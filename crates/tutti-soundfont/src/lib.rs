@@ -65,8 +65,8 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// preset and the channel ask (SF2 2.04 section 8.1.2, generators 15 and 16, and
 /// CC 93 and CC 91), and the chorus and reverb are graph nodes
 /// (`tutti_nodes::ModDelayNode` with `ModDelayConfig::GENERAL_MIDI_CHORUS`, and
-/// `tutti_nodes::FreeverbNode`) summed back with the dry pair by a
-/// `ChannelSumNode`; `tutti-session`'s `Session::add_general_midi` wires all of
+/// `tutti_nodes::FreeverbNode`) summed back with the dry pair by the graph's
+/// fan-in (the setup's fader holds all three as sources); `tutti-session`'s `Session::add_general_midi` wires all of
 /// that. A send with nothing to send is reported silent in the block's status
 /// (`Status::Masked`), and a unit with no voice sounding is `Status::Idle`. Build it with [`new`](Self::new), pick a preset with
 /// [`program_change`](Self::program_change), then insert it into a graph

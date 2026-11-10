@@ -6,8 +6,8 @@
 //!
 //! There is no `build_binaural_mix` counterpart to
 //! [`build_vbap_mix`](crate::vbap::build_vbap_mix): summing binaural
-//! renders is plain stereo addition, which `tutti_nodes::ChannelSumNode`
-//! already does.
+//! renders is plain stereo addition, which the graph's fan-in (several
+//! sources on one sink port or output channel) already does.
 
 mod node;
 

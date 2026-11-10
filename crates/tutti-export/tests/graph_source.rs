@@ -226,11 +226,9 @@ fn convolved_at(ir: &[f32], n: usize) -> f64 {
 /// is pinned against it in tutti-spatial's `tests/vbap_mix_parts.rs`, and
 /// `surround_export.rs` renders through it.)
 fn quad_vbap() -> GraphBuilder {
-    use tutti_nodes::ChannelSumNode;
     use tutti_spatial::VbapPannerNode;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
-    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::QUAD));
-    for (s, (az, f)) in [(45.0, 300.0), (135.0, 500.0)].into_iter().enumerate() {
+    for (az, f) in [(45.0, 300.0), (135.0, 500.0)] {
         let src = g.add(
             Osc::sine(Hz(f))
                 .with_amplitude(Amplitude(0.5))
@@ -242,10 +240,9 @@ fn quad_vbap() -> GraphBuilder {
         let (pan, _) = g.add_with_controls(pan);
         g.pipe(src, pan);
         for c in 0..4 {
-            g.connect(pan, c, sum, s * 4 + c);
+            g.connect_output(pan, c, c);
         }
     }
-    g.pipe_output(sum);
     g
 }
 

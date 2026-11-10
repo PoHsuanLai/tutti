@@ -11,7 +11,6 @@ use tutti_graph::{
     Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
-use tutti_nodes::ChannelSumNode;
 use tutti_spatial::VbapPannerNode;
 use tutti_types::{Azimuth, Beat, Bpm, ChannelLayout, Elevation, SampleRate, Samples};
 
@@ -57,7 +56,7 @@ fn wire(ed: &mut Editor, to: NodeKey, port: u16, from: Source) {
 }
 
 /// [`PANNERS`] declared panners and [`HEAVY`] undeclared ones, each off the
-/// stereo global input, summed (a `Light` bus) onto two global outputs; on
+/// stereo global input, summed by the graph (a fan-in onto each of two global outputs); on
 /// a pool of `workers` when more than one. `declared`: the panners as
 /// shipped, or every one wrapped to declare nothing.
 fn graph(workers: usize, declared: bool) -> Executor {
@@ -71,13 +70,9 @@ fn graph(workers: usize, declared: bool) -> Executor {
         )));
     }
     ed.spec_mut().topology.inputs = ChannelLayout::STEREO;
-    const SUM: NodeKey = NodeKey(1_000);
     let sources = PANNERS + HEAVY;
-    ed.insert(
-        SUM,
-        "sum",
-        ChannelSumNode::new(sources as usize, ChannelLayout::STEREO),
-    );
+    // Two silent global outputs, which the fan-in below fills.
+    ed.spec_mut().topology.set_outputs([Source::Zero; 2]);
     for k in 0..sources {
         let key = NodeKey(k + 1);
         if declared && k < PANNERS {
@@ -87,17 +82,13 @@ fn graph(workers: usize, declared: bool) -> Executor {
         }
         for c in 0..2u16 {
             wire(&mut ed, key, c, Source::Global(c));
-            wire(
-                &mut ed,
-                SUM,
-                k as u16 * 2 + c,
-                Source::Node(OutPort { node: key, port: c }),
-            );
+            // The graph's fan-in: output channel `c` holds every panner's
+            // port `c`, and the graph sums them.
+            ed.spec_mut()
+                .topology
+                .connect_output(c as usize, Source::Node(OutPort { node: key, port: c }));
         }
     }
-    ed.spec_mut()
-        .topology
-        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: SUM, port })));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

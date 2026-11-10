@@ -352,8 +352,9 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
                  `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
                  the parallel executor's claims and job gate, `with_no_denormals`,
-                 and the `ArcLend`/`Loan`/`Reader` re-export. Holds the lock-free
-                 and `unsafe` runtime structure, with every loom model, the one
+                 `handoff` (a Processor's way to the audio thread and back, doc
+                 016 §2.6), and the `ArcLend`/`Loan`/`Reader` re-export. Holds the
+                 lock-free and `unsafe` runtime structure, with every loom model, the one
                  thread-priority call (`request_priority`, which reports what the OS
                  granted) and the one OS clock read (`monotonic_ns`, the clock a
                  plugin's system time is on); depends on `arc-lend` alone (and
@@ -666,7 +667,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the realizations
-  and `Cadence::every(16)` (doc 024 §4.5) are step 2b's), the dynamics curves, followers and kernels, the partitioned
+  and `Cadence::every(16)`'s use in the nodes (doc 024 §4.5) are step 2b's), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
@@ -680,7 +681,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   and a stability test, all bounds stated as such); a `Realization<M>` is one
   realization of a model and an `Effect<M>` its planar block shape, prepared from a
   `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
-  over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` are the
+  over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` (a period and an anchor: only a
+  stream-anchored one is block independent) are the
   engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
   a `System` and an `Lti`, with `Bounds` and `FreeverbDesign`: a plain
   fixed-capacity description with analytic queries, never an instruction stream

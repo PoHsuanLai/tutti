@@ -228,6 +228,18 @@ fn a_published_tempo_map_is_taken_without_allocating() {
 /// panics -> fails; a `Vec::with_capacity(1)` in `TransportAudio::tempo_ahead`
 /// -> fails; the walk not running (`stepped` left false in `tempo_for_block`) -> the tempo stays
 /// 120 -> the assertion fails.
+///
+/// The ramp case (doc 020, stage 4) runs the same calls over a ramp, whose
+/// cells are a change each: the graph takes 4 096-frame blocks, so a call
+/// crosses 32 cell edges and the engine cuts it at every 8th change; loop
+/// wraps inside the ramp re-seat on a cell, and a seek back and a map swap
+/// land in the middle of it. Its clock really takes the cells
+/// (`tempo_in_force` is the chord of a ramp cell, strictly between the ends).
+///
+/// Mutation (run): a `Vec::with_capacity(1)` in `chord_cell_with` (reached
+/// through `TempoWalk::frames_to_edge`) -> the gate panics -> fails; the ramp
+/// not followed (`stepped` left false) -> `tempo_in_force` stays at the
+/// scalar 120 -> the assertion fails.
 #[test]
 fn a_step_map_is_followed_without_allocating() {
     use tutti_graph::{Editor, Prepare, Unforkable};
@@ -267,10 +279,7 @@ fn a_step_map_is_followed_without_allocating() {
         .collect();
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    transport
-        .settings
-        .set_tempo_map(dense(90.0))
-        .expect("steps");
+    transport.settings.set_tempo_map(dense(90.0));
     transport
         .motion
         .try_send(MotionEvent::play_from(Beat(0.0)))
@@ -283,8 +292,7 @@ fn a_step_map_is_followed_without_allocating() {
         // Control side: a new map, a loop over the steps, a seek back.
         transport
             .settings
-            .set_tempo_map(dense(80.0 + f64::from(round)))
-            .expect("steps");
+            .set_tempo_map(dense(80.0 + f64::from(round)));
         let m = &transport.motion;
         m.schedule(
             At::NextBlock,
@@ -300,6 +308,82 @@ fn a_step_map_is_followed_without_allocating() {
         // Looping over beats 0 to 0.02 keeps the tempo among the first 21.
         let tempo = transport.settings.tempo_in_force().get();
         assert!((120.0..=140.0).contains(&tempo), "round {round}: {tempo}");
+        transport.settings.reclaim_tempo();
+    }
+
+    // The ramp case: 120 to `end` BPM over 2 beats, linear in time.
+    let ramp = |end: f64, shape: Shape| {
+        Arc::new(
+            TempoMap::new([
+                TempoPoint {
+                    beat: Beat(0.0),
+                    tempo: Bpm::of(120.0),
+                    shape,
+                },
+                TempoPoint {
+                    beat: Beat(2.0),
+                    tempo: Bpm::of(end),
+                    shape: Shape::Step,
+                },
+            ])
+            .expect("a map"),
+        )
+    };
+    let transport = Transport::new(48_000.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        tutti_types::Samples(4_096),
+    ));
+    ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
+    ed.spec_mut().topology.outputs = (0..2)
+        .map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    transport
+        .settings
+        .set_tempo_map(ramp(60.0, Shape::RampTime));
+    transport
+        .motion
+        .try_send(MotionEvent::play_from(Beat(0.0)))
+        .expect("room");
+    let mut output = vec![0.0f32; 4_096 * 2];
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    let slowed = transport.settings.tempo_in_force().get();
+    assert!(
+        (60.0..119.0).contains(&slowed),
+        "a ramp cell's chord: {slowed}"
+    );
+    for round in 0..10u32 {
+        let shape = if round % 2 == 0 {
+            Shape::RampTime
+        } else {
+            Shape::RampBeats
+        };
+        transport
+            .settings
+            .set_tempo_map(ramp(50.0 + f64::from(round), shape));
+        let m = &transport.motion;
+        m.schedule(
+            At::NextBlock,
+            LoopEdit::over(LoopRange::new(0.1, 0.3).expect("ordered")),
+        )
+        .expect("room");
+        m.try_send(MotionEvent::play_from(Beat(0.2))).expect("room");
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..4 {
+                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            }
+        });
+        // Looping over beats 0.1 to 0.3 of a ramp that starts at 120 keeps the
+        // chord between the ramp's tempo there and its start.
+        let tempo = transport.settings.tempo_in_force().get();
+        assert!((90.0..120.0).contains(&tempo), "round {round}: {tempo}");
         transport.settings.reclaim_tempo();
     }
 }

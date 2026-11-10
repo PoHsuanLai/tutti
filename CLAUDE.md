@@ -518,9 +518,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   fixed `CellGrid`, also cut at every point's frame (`TempoMap::next_change`);
   `chord_cell` is a pure function of the absolute frame, a cell inside a step
   has that step's tempo to the bit, and the crate derives no grid from a block.
-  The transport follows a map of steps with one walker (`tutti-transport`'s
-  `TempoWalk`, doc 020 stage 3) on one engine grid of 128 frames: a step is a
-  `TransportChanges` entry, the engine splits a block that needs more than 8, and
+  The transport follows a map, steps and ramps, with one walker
+  (`tutti-transport`'s `TempoWalk`, doc 020 stages 3 and 4) on one engine grid
+  of 128 frames: a step or a ramp cell is a `TransportChanges` entry, the engine splits a block that needs more than 8, and
   a constant map never reaches the walker, so its render is bit-identical.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.

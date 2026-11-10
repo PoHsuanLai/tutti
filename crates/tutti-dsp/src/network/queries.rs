@@ -2,6 +2,8 @@
 
 use tutti_types::{Db, Hz, Samples, Seconds};
 
+use crate::{Ring, System};
+
 use super::gain::decay_seconds;
 use super::{AllPass, AllPassForm, Band, Fdn, Matrix, Network, Stage};
 
@@ -10,43 +12,13 @@ const LOSSLESS_TOLERANCE: f64 = 1e-6;
 /// How far a matrix may be from orthogonal and still be.
 const ORTHOGONAL_TOLERANCE: f64 = 1e-6;
 
-/// How long a network rings: [`Network::tail`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Ring {
-    /// It falls to the floor in this long.
-    Finite(Seconds),
-    /// It never does: a lossless loop, or one that grows.
-    Unbounded,
-}
-
-impl Ring {
-    /// Whether this ring lasts at least as long as `other`.
-    #[must_use]
-    pub fn covers(self, other: Ring) -> bool {
-        match (self, other) {
-            (Ring::Unbounded, _) => true,
-            (Ring::Finite(_), Ring::Unbounded) => false,
-            (Ring::Finite(a), Ring::Finite(b)) => a.get() >= b.get(),
-        }
-    }
-
-    /// The finite figure, or `None` for [`Unbounded`](Self::Unbounded).
-    #[must_use]
-    pub fn seconds(self) -> Option<Seconds> {
-        match self {
-            Ring::Finite(s) => Some(s),
-            Ring::Unbounded => None,
-        }
-    }
-}
-
 impl Fdn {
-    fn mixing(&self) -> bool {
+    pub(super) fn mixing(&self) -> bool {
         !matches!(self.matrix, Matrix::Diagonal)
     }
 
     /// Whether the matrix has the shape its kind needs for `n` lines.
-    fn matrix_fits(&self, n: usize) -> bool {
+    pub(super) fn matrix_fits(&self, n: usize) -> bool {
         match &self.matrix {
             Matrix::Diagonal | Matrix::Householder => true,
             Matrix::Reflection(v) => v.len() == n,
@@ -59,7 +31,7 @@ impl Fdn {
     /// The largest entry of `A Aᵀ - I`: zero for the structured kinds (orthogonal
     /// by construction), measured for a circulant or dense matrix, `None` when
     /// the matrix does not fit the line count.
-    fn orthogonality_error(&self) -> Option<f64> {
+    pub(super) fn orthogonality_error(&self) -> Option<f64> {
         let n = self.lines.len();
         if !self.matrix_fits(n) {
             return None;
@@ -109,7 +81,7 @@ impl Fdn {
     /// for the 64 lines of the largest network and is folded into the stability
     /// test, so a nearly-orthogonal matrix is never taken for an orthogonal one.
     /// Otherwise the Frobenius norm, sufficient and not necessary.
-    fn norm_bound(&self) -> f64 {
+    pub(super) fn norm_bound(&self) -> f64 {
         let n = self.lines.len() as f64;
         // Exact for a reflection: the eigenvalue along `v` is `1 - 2 |v|²` and
         // the rest are 1, so a reflection of a unit vector to within an `f32`
@@ -138,7 +110,7 @@ impl Fdn {
     }
 
     /// The largest gain of any line in any band (NaN or negative: infinity).
-    fn max_gain(&self) -> f64 {
+    pub(super) fn max_gain(&self) -> f64 {
         let mut max = 0.0f64;
         for line in self.lines.iter() {
             for band in Band::ALL {
@@ -156,7 +128,7 @@ impl Fdn {
     /// delay-free loop is not a loop), a finite modulation depth, and a nested
     /// all-pass that is a lattice (the form this analysis models) with
     /// `|g| < 1` and a finite non-negative delay.
-    fn lines_hold(&self) -> bool {
+    pub(super) fn lines_hold(&self) -> bool {
         self.lines.iter().all(|l| {
             l.length.is_finite()
                 && l.length > 0.0
@@ -207,7 +179,7 @@ impl Fdn {
     /// not positive). A line with a nested all-pass is read at its peak group
     /// delay, `D (1 + |g|) / (1 - |g|)`, a conservative reading that is not part
     /// of the proof in [`rt60_bound`](Self::rt60_bound).
-    fn slowest(&self, band: Band) -> Option<(f64, f64, f64)> {
+    pub(super) fn slowest(&self, band: Band) -> Option<(f64, f64, f64)> {
         let mut log_rho = f64::NEG_INFINITY;
         let mut longest = 0.0f64;
         for l in self.lines.iter() {
@@ -319,7 +291,7 @@ impl Fdn {
     }
 
     /// The longest effective line, in frames.
-    fn transit(&self) -> f64 {
+    pub(super) fn transit(&self) -> f64 {
         self.lines
             .iter()
             .map(|l| f64::from(l.effective_length()))
@@ -392,80 +364,6 @@ impl Network {
         slowest
     }
 
-    /// How long the wet signal rings after the input stops, until it is `floor`
-    /// below what it carried: the pre-delay, plus each stage's transit (the
-    /// longest line, the longest tap, an all-pass's delay times the trips of its
-    /// train, a FIR's length), plus the slowest band's
-    /// [`rt60_bound`](Self::rt60_bound) times `|floor| / 60` (with the
-    /// lag the bound's proof adds). It uses the bound,
-    /// not the estimate, so it never undercuts a mixing network whose lines
-    /// differ.
-    ///
-    /// [`Ring::Unbounded`] when a loop never settles (lossless, or a gain at 1
-    /// or above), or when `floor` is NaN. A positive `floor` is read as 0 dB.
-    #[must_use]
-    pub fn tail(&self, floor: Db) -> Ring {
-        if floor.get().is_nan() {
-            return Ring::Unbounded;
-        }
-        let depth = f64::from((-floor.get()).max(0.0));
-        let amplitude = libm::exp10(-depth / 20.0);
-        let mut decay = 0.0f64;
-        let mut frames = self.pre_delay.get() as f64;
-        for stage in self.stages.iter() {
-            match stage {
-                Stage::Taps(t) => {
-                    frames += t
-                        .taps
-                        .iter()
-                        .map(|t| f64::from(t.delay))
-                        .fold(0.0, f64::max);
-                }
-                Stage::AllPass(a) => {
-                    frames += a
-                        .iter()
-                        .map(|a| all_pass_ring(a, amplitude))
-                        .fold(0.0, f64::max);
-                }
-                Stage::Fdn(f) => {
-                    frames += f.transit();
-                    if f.is_lossless() {
-                        return Ring::Unbounded;
-                    }
-                    for band in Band::ALL {
-                        let rate = self.rate.get();
-                        let seconds = f.rt60_bound(band, rate).get() * depth / 60.0
-                            + f.lag_extra_frames(band) / rate;
-                        decay = decay.max(seconds);
-                    }
-                }
-                Stage::Fir(s) => frames += s.length.get() as f64,
-            }
-        }
-        if !frames.is_finite() || !decay.is_finite() {
-            return Ring::Unbounded;
-        }
-        Ring::Finite(Seconds(frames / self.rate.get() + decay))
-    }
-
-    /// Whether no loop can grow. Every recirculating stage must be stable
-    /// ([`Fdn::is_stable`]), every series all-pass must have `|g| < 1`, and the
-    /// figures must be finite.
-    #[must_use]
-    pub fn is_stable(&self) -> bool {
-        self.stages.iter().all(|s| match s {
-            Stage::Fdn(f) => f.is_stable(),
-            Stage::AllPass(a) => a
-                .iter()
-                .all(|a| a.gain.abs() < 1.0 && a.delay.is_finite() && a.delay >= 0.0),
-            Stage::Taps(t) => t
-                .taps
-                .iter()
-                .all(|t| t.gain.is_finite() && t.delay.is_finite() && t.delay >= 0.0),
-            Stage::Fir(s) => s.rt60.iter().all(|r| !r.get().is_nan()),
-        })
-    }
-
     /// Whether the network has a recirculating stage and every one loses
     /// nothing: the freeze case.
     #[must_use]
@@ -526,20 +424,6 @@ impl Network {
         Hz(total as f32)
     }
 
-    /// The processing latency: the largest of the FIR stages' (zero for the
-    /// time-domain stages).
-    #[must_use]
-    pub fn latency(&self) -> Samples {
-        self.stages
-            .iter()
-            .filter_map(|s| match s {
-                Stage::Fir(s) => Some(s.latency),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(Samples::ZERO)
-    }
-
     /// The shortest path from the input to the output, in frames: the
     /// pre-delay plus each stage's shortest path (a series all-pass has a
     /// direct term, zero; a line, its length; a tap, its delay; a FIR, its
@@ -572,6 +456,76 @@ impl Network {
     #[must_use]
     pub fn has_direct_path(&self) -> bool {
         self.min_delay() < 1.0
+    }
+}
+
+impl System for Network {
+    /// The processing latency: the largest of the FIR stages' (zero for the
+    /// time-domain stages).
+    fn latency(&self) -> Samples {
+        self.stages
+            .iter()
+            .filter_map(|s| match s {
+                Stage::Fir(s) => Some(s.latency),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(Samples::ZERO)
+    }
+
+    /// How long the wet signal rings after the input stops, until it is `floor`
+    /// below what it carried: the pre-delay, plus each stage's transit (the
+    /// longest line, the longest tap, an all-pass's delay times the trips of its
+    /// train, a FIR's length), plus the slowest band's
+    /// [`rt60_bound`](Network::rt60_bound) times `|floor| / 60` (with the
+    /// lag the bound's proof adds). It uses the bound,
+    /// not the estimate, so it never undercuts a mixing network whose lines
+    /// differ.
+    ///
+    /// [`Ring::Unbounded`] when a loop never settles (lossless, or a gain at 1
+    /// or above), or when `floor` is NaN. A positive `floor` is read as 0 dB.
+    fn tail(&self, floor: Db) -> Ring {
+        if floor.get().is_nan() {
+            return Ring::Unbounded;
+        }
+        let depth = f64::from((-floor.get()).max(0.0));
+        let amplitude = libm::exp10(-depth / 20.0);
+        let mut decay = 0.0f64;
+        let mut frames = self.pre_delay.get() as f64;
+        for stage in self.stages.iter() {
+            match stage {
+                Stage::Taps(t) => {
+                    frames += t
+                        .taps
+                        .iter()
+                        .map(|t| f64::from(t.delay))
+                        .fold(0.0, f64::max);
+                }
+                Stage::AllPass(a) => {
+                    frames += a
+                        .iter()
+                        .map(|a| all_pass_ring(a, amplitude))
+                        .fold(0.0, f64::max);
+                }
+                Stage::Fdn(f) => {
+                    frames += f.transit();
+                    if f.is_lossless() {
+                        return Ring::Unbounded;
+                    }
+                    for band in Band::ALL {
+                        let rate = self.rate.get();
+                        let seconds = f.rt60_bound(band, rate).get() * depth / 60.0
+                            + f.lag_extra_frames(band) / rate;
+                        decay = decay.max(seconds);
+                    }
+                }
+                Stage::Fir(s) => frames += s.length.get() as f64,
+            }
+        }
+        if !frames.is_finite() || !decay.is_finite() {
+            return Ring::Unbounded;
+        }
+        Ring::Finite(Seconds(frames / self.rate.get() + decay))
     }
 }
 
@@ -609,6 +563,7 @@ mod tests {
         Matrix, Modulation, Network, OutputMap, Stage, Tap, Taps, loop_gain,
     };
     use super::*;
+    use crate::{Lti as _, Sizes as _};
 
     const RATE: SampleRate = SampleRate(48_000.0);
 

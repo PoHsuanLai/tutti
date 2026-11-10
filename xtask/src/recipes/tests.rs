@@ -192,10 +192,15 @@ fn deny_probes_cargo_deny_first() {
 #[test]
 fn doc_sets_rustdocflags_and_the_dated_nightly() {
     let s = dry("doc", &[]);
-    assert_eq!(s.len(), 4);
+    assert_eq!(s.len(), 5);
     assert!(s[0].starts_with("RUSTDOCFLAGS='-D warnings --document-private-items' cargo doc"));
-    assert!(s[2].starts_with("doc-features: cargo doc"), "{}", s[2]);
-    assert!(s[3].contains("cargo +nightly-2026-10-14 doc"));
+    assert!(
+        s[2].contains("-p tutti-dsp") && s[2].contains("--features contract"),
+        "{}",
+        s[2]
+    );
+    assert!(s[3].starts_with("doc-features: cargo doc"), "{}", s[3]);
+    assert!(s[4].contains("cargo +nightly-2026-10-14 doc"));
 }
 
 #[test]

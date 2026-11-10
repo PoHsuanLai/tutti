@@ -676,10 +676,10 @@ fn the_close_reaches_a_sink_behind_a_delayed_edge() {
             node: NodeKey(2),
             port: 0,
         },
-        Edge::Direct(Source::Node(OutPort {
+        vec![Edge::Direct(Source::Node(OutPort {
             node: NodeKey(4),
             port: 0,
-        })),
+        }))],
     );
     ed.commit().unwrap();
     let f = run(&mut exec, 0, 8, 256);
@@ -725,10 +725,12 @@ fn forkable_rig() -> (
         },
     );
     connect(&mut ed, 1, 2);
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(2),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(2),
+            port: 0,
+        })]);
     ed.commit().unwrap();
     (ed, exec, controls, tally, forks)
 }

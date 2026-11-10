@@ -77,20 +77,27 @@ fn rolling_state_with(
             node: filter,
             port: 0,
         },
-        Edge::Direct(Source::Node(OutPort {
+        vec![Edge::Direct(Source::Node(OutPort {
             node: source,
             port: 0,
-        })),
+        }))],
     );
-    ed.spec_mut().topology.outputs = vec![
+    ed.spec_mut().topology.set_outputs(vec![
         Source::Node(OutPort {
             node: filter,
             port: 0,
         });
         2
-    ];
+    ]);
     let reader = tap.then(|| {
-        let sources = ed.spec().topology.outputs.clone();
+        let sources: Vec<_> = ed
+            .spec()
+            .topology
+            .outputs
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
         ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(MAX_FRAMES))
             .expect("the sources exist")
     });

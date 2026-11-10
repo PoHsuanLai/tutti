@@ -619,9 +619,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, libm and thiserror), keeps every
-  module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
-  the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
+  rustfft, libm and thiserror, and `rand` under the `contract` feature only), keeps every
+  module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
+  the per-module path gate on it; `contract`, behind the off-by-default `contract`
+  feature, is the one public module: the cases a `Design` and its `Realization` are
+  held to, `design_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
@@ -634,16 +636,24 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Realization` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
   `FdnKernel`: its kernel ramps between `retarget`s, in 32-frame chunks counted
   from the last reset, so the output does not depend on the block length), the
-  reverb model of doc 022 (`Network`, `Design`, `Realization`, `Setup`, `Bounds`,
-  `FreeverbDesign`: a plain
+  model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
+  to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
+  one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
+  and a stability test, all bounds stated as such); a `Realization<M>` is one
+  realization of a model and an `Effect<M>` its planar block shape, prepared from a
+  `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
+  over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` are the
+  engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
+  a `System` and an `Lti`, with `Bounds` and `FreeverbDesign`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
-  a realization must follow, and the realization that runs it, moved to each network by
-  `retarget`; a `Design` writes its network in place, `design_into`, because a
+  a realization must follow; a `Design` writes its model in place, `design_into`, because a
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork; `DesignNode<D: NodeDesign>` is
   the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
-  its two instances and `ReverbKind` the choice between them), and re-exports only the
+  its two instances and `ReverbKind` the choice between them; a `NodeDesign` names
+  its `Blend`, `DryWet` for an insert with a mix port and `NoBlend` for a
+  wet-only family), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
   `FdnDesign`, `FreeverbControls`, `FreeverbDesign`).

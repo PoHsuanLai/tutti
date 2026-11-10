@@ -18,7 +18,8 @@ use std::cmp;
 
 use tutti_types::{Db, SampleRate, Seconds};
 
-use crate::network::{Absorption, Bounds, Effort, Network, Realization, Setup, Stage};
+use crate::network::{Absorption, Bounds, Network, Stage};
+use crate::{Effect, Effort, Realization, Setup};
 
 /// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
 /// damping the only figures that move ([`Realization::retarget`]).
@@ -267,7 +268,9 @@ impl Freeverb {
 /// are not finite or not a stable loop, is ignored. The network's pre-delay,
 /// width and wet gain are not read: [`FreeverbDesign`](crate::FreeverbDesign)
 /// never sets them.
-impl Realization for Freeverb {
+impl Realization<Network> for Freeverb {
+    type Bounds = Bounds;
+
     /// Re-tunes the lines when the graph runs at another rate than they were
     /// built for, to the rounded hertz [`Freeverb::new`] uses. The coefficients
     /// are kept.
@@ -302,12 +305,6 @@ impl Realization for Freeverb {
         }
     }
 
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        if let ([mono], [left, right, ..]) = (input, output) {
-            Freeverb::process(self, mono, left, right);
-        }
-    }
-
     fn reset(&mut self) {
         self.mute();
     }
@@ -323,6 +320,14 @@ impl Realization for Freeverb {
         let mut fresh = self.clone();
         fresh.mute();
         fresh
+    }
+}
+
+impl Effect<Network> for Freeverb {
+    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        if let ([mono], [left, right, ..]) = (input, output) {
+            Freeverb::process(self, mono, left, right);
+        }
     }
 }
 

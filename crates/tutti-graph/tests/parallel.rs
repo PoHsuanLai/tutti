@@ -265,29 +265,29 @@ fn build(ed: &mut Editor) {
     let t = &mut spec.topology;
     let g = Edge::Direct(Source::Global(0));
     for k in [2, 3, 4, 5, 6, 30, 50] {
-        t.edges.insert(at(k, 0), g);
+        t.edges.insert(at(k, 0), vec![g]);
     }
-    t.edges.insert(at(7, 0), from(6, 0));
-    t.edges.insert(at(8, 0), from(2, 0));
-    t.edges.insert(at(8, 1), from(3, 0));
-    t.edges.insert(at(8, 2), from(4, 0));
-    t.edges.insert(at(9, 0), from(8, 0));
-    t.edges.insert(at(9, 1), from(5, 0));
-    t.edges.insert(at(9, 2), from(7, 0));
-    t.edges.insert(at(41, 0), from(9, 0));
-    t.edges.insert(at(41, 1), from(5, 0));
+    t.edges.insert(at(7, 0), vec![from(6, 0)]);
+    t.edges.insert(at(8, 0), vec![from(2, 0)]);
+    t.edges.insert(at(8, 1), vec![from(3, 0)]);
+    t.edges.insert(at(8, 2), vec![from(4, 0)]);
+    t.edges.insert(at(9, 0), vec![from(8, 0)]);
+    t.edges.insert(at(9, 1), vec![from(5, 0)]);
+    t.edges.insert(at(9, 2), vec![from(7, 0)]);
+    t.edges.insert(at(41, 0), vec![from(9, 0)]);
+    t.edges.insert(at(41, 1), vec![from(5, 0)]);
     t.edges.insert(
         at(50, 1),
-        Edge::Feedback(FeedbackFrom::new(out(51, 0), Samples(256))),
+        vec![Edge::Feedback(FeedbackFrom::new(out(51, 0), Samples(256)))],
     );
-    t.edges.insert(at(51, 0), from(50, 0));
-    t.outputs = vec![
+    t.edges.insert(at(51, 0), vec![from(50, 0)]);
+    t.set_outputs(vec![
         Source::Node(out(9, 0)),
         Source::Node(out(40, 0)),
         Source::Node(out(41, 1)),
         Source::Node(out(30, 0)),
         Source::Node(out(51, 0)),
-    ];
+    ]);
     for (to, src) in [
         (consumer_in(0), 20),
         (consumer_in(0), 22),
@@ -635,9 +635,11 @@ fn a_panic_on_a_worker_reaches_the_caller() {
         ed.spec_mut()
             .topology
             .edges
-            .insert(at(k, 0), Edge::Direct(Source::Global(0)));
+            .insert(at(k, 0), vec![Edge::Direct(Source::Global(0))]);
     }
-    ed.spec_mut().topology.outputs = (1..=6).map(|k| Source::Node(out(k, 0))).collect();
+    ed.spec_mut()
+        .topology
+        .set_outputs((1..=6).map(|k| Source::Node(out(k, 0))));
     ed.commit().expect("commits");
     let input = vec![0.5f32; MAX_BLOCK];
     let mut chans = vec![vec![0.0f32; MAX_BLOCK]; 6];
@@ -747,10 +749,12 @@ fn the_executor_waits_by_its_pools_budget() {
         );
     }
     let edges = &mut ed.spec_mut().topology.edges;
-    edges.insert(at(1, 0), Edge::Direct(Source::Global(0)));
-    edges.insert(at(2, 0), Edge::Direct(Source::Global(0)));
-    edges.insert(at(3, 0), Edge::Direct(Source::Node(out(1, 0))));
-    ed.spec_mut().topology.outputs = vec![Source::Node(out(2, 0)), Source::Node(out(3, 0))];
+    edges.insert(at(1, 0), vec![Edge::Direct(Source::Global(0))]);
+    edges.insert(at(2, 0), vec![Edge::Direct(Source::Global(0))]);
+    edges.insert(at(3, 0), vec![Edge::Direct(Source::Node(out(1, 0)))]);
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(out(2, 0)), Source::Node(out(3, 0))]);
     ed.commit().expect("commits");
     exec.apply_pending();
     assert!(exec.is_parallel());
@@ -824,10 +828,10 @@ fn reporting_nodes_render_bit_identically_on_a_pool() {
             ed.spec_mut()
                 .topology
                 .edges
-                .insert(at(fx.0, 0), from(src.0, 0));
+                .insert(at(fx.0, 0), vec![from(src.0, 0)]);
             outputs.push(Source::Node(out(fx.0, 0)));
         }
-        ed.spec_mut().topology.outputs = outputs;
+        ed.spec_mut().topology.set_outputs(outputs);
         ed.commit().expect("commits");
         exec.apply_pending();
         ed.collect();

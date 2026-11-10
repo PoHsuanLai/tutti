@@ -376,10 +376,13 @@ fn probe(ed: &mut Editor, host: &mut Host, id: u64, knob: f32) {
 fn probe_of(ed: &mut Editor, host: &mut Host, id: u64, p: Probe) {
     host.targets.insert(id, (key(id), Arc::clone(&p.knob)));
     ed.insert(key(id), "probe", ForkByClone(p));
-    ed.spec_mut().topology.outputs.push(Source::Node(OutPort {
-        node: key(id),
-        port: 0,
-    }));
+    ed.spec_mut()
+        .topology
+        .outputs
+        .push(vec![Source::Node(OutPort {
+            node: key(id),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
 }
 
@@ -923,10 +926,13 @@ fn a_host_key_is_never_taken() {
     let p = Probe::new(0.8);
     host.targets.insert(1, (NodeKey(0), Arc::clone(&p.knob)));
     ed.insert(NodeKey(0), "probe", ForkByClone(p));
-    ed.spec_mut().topology.outputs.push(Source::Node(OutPort {
-        node: NodeKey(0),
-        port: 0,
-    }));
+    ed.spec_mut()
+        .topology
+        .outputs
+        .push(vec![Source::Node(OutPort {
+            node: NodeKey(0),
+            port: 0,
+        })]);
     ed.insert(
         NodeKey(1),
         "pulse",
@@ -1411,10 +1417,10 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
             node: key(20),
             port: 0,
         },
-        Edge::Direct(Source::Node(OutPort {
+        vec![Edge::Direct(Source::Node(OutPort {
             node: key(1),
             port: 0,
-        })),
+        }))],
     );
     r.ed.commit().expect("commits");
     render(&mut r.ed, &mut r.exec, 128, 128);
@@ -1829,10 +1835,10 @@ fn a_feed_moved_after_a_steady_state_is_rewired() {
             node: follower,
             port: 0
         }),
-        Some(&Edge::Direct(Source::Node(OutPort {
+        Some(&vec![Edge::Direct(Source::Node(OutPort {
             node: key(11),
             port: 0
-        })))
+        }))])
     );
 }
 

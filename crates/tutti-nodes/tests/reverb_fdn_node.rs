@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use tutti_dsp::{Design, FdnControls, FdnDesign};
+use tutti_dsp::{Design, FdnControls, FdnDesign, System};
 use tutti_graph::contract::{Driven, assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
     Env, GraphBuilder, Node, ParamIn, ParamNode, PlayClock, Prepare, Status, Transport,

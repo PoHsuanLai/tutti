@@ -34,8 +34,14 @@ names; the "as built" logs keep the names they were written with):
 | `ReverbParams` | `ControlParams` (`FreeverbParams`, `FdnParams` unchanged) |
 | `network/kernel.rs`, `network/contract.rs`, `network/kernel_contract.rs` | `network/realization.rs`, `contract/design.rs`, `contract/realization.rs` |
 
+**Step 1b** then moved the general parts out of `network/` into doc 024's neutral
+`model` module (`Design`, `Channels`, `Ceiling<R>`, `Realization<M>`, `Effect<M>`,
+`Setup`, `Effort`, `Ring`; `Network` is a `System` and an `Lti`), and the contract into the
+`contract` feature of `tutti-dsp` (`tutti_dsp::contract`, public: core, `Lti` and
+reverb case groups).
+
 `FdnKernel` keeps its name. Details and the rest of the model are in
-[024](024-design-model-realization.md) §9 and §10.
+[024](024-design-model-realization.md) §9 and §10 ("Step 1b as built").
 
 ## Summary
 

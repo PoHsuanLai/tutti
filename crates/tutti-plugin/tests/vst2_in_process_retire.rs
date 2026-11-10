@@ -63,9 +63,10 @@ fn a_removed_vst2_node_is_dropped_on_the_control_side() {
     let key = NodeKey(1);
     let (mut editor, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
     editor.insert(key, "vst2", Unforkable(unit.bind(tempo())));
-    editor.spec_mut().topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: key, port }))
-        .collect();
+    editor
+        .spec_mut()
+        .topology
+        .set_outputs((0..2).map(|port| Source::Node(OutPort { node: key, port })));
     editor.commit().expect("commits");
     let mut left = vec![0.0f32; BLOCK];
     let mut right = vec![0.0f32; BLOCK];
@@ -79,7 +80,10 @@ fn a_removed_vst2_node_is_dropped_on_the_control_side() {
     let before = close_count(&path);
 
     editor.remove(key);
-    editor.spec_mut().topology.outputs = vec![Source::Zero, Source::Zero];
+    editor
+        .spec_mut()
+        .topology
+        .set_outputs(vec![Source::Zero, Source::Zero]);
     editor.commit().expect("the removal commits");
     // The executor applies the removal: the unit moves into the commit box (a drop here would
     // panic in a debug build, inside the audio scope). Applying may allocate, so it is outside

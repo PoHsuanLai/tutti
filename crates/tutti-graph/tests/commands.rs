@@ -97,10 +97,12 @@ fn rig() -> Rig {
             level: 0.0,
         }),
     );
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: PROBE,
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: PROBE,
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -466,20 +468,23 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
     t.inputs = ChannelLayout::MONO;
     t.edges.insert(
         tutti_graph::InPort { node: LAT, port: 0 },
-        tutti_graph::Edge::Direct(Source::Global(0)),
+        vec![tutti_graph::Edge::Direct(Source::Global(0))],
     );
     t.edges.insert(
         tutti_graph::InPort { node: A, port: 0 },
-        tutti_graph::Edge::Direct(Source::Node(OutPort { node: LAT, port: 0 })),
+        vec![tutti_graph::Edge::Direct(Source::Node(OutPort {
+            node: LAT,
+            port: 0,
+        }))],
     );
     t.edges.insert(
         tutti_graph::InPort { node: B, port: 0 },
-        tutti_graph::Edge::Direct(Source::Global(0)),
+        vec![tutti_graph::Edge::Direct(Source::Global(0))],
     );
-    t.outputs = vec![
+    t.set_outputs(vec![
         Source::Node(OutPort { node: A, port: 0 }),
         Source::Node(OutPort { node: B, port: 0 }),
-    ];
+    ]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -1017,14 +1022,17 @@ fn beat_resolution_matches_a_hand_computed_table() {
         t.inputs = ChannelLayout::MONO;
         t.edges.insert(
             tutti_graph::InPort { node: lat, port: 0 },
-            tutti_graph::Edge::Direct(Source::Global(0)),
+            vec![tutti_graph::Edge::Direct(Source::Global(0))],
         );
         t.edges.insert(
             tutti_graph::InPort {
                 node: sink,
                 port: 0,
             },
-            tutti_graph::Edge::Direct(Source::Node(OutPort { node: lat, port: 0 })),
+            vec![tutti_graph::Edge::Direct(Source::Node(OutPort {
+                node: lat,
+                port: 0,
+            }))],
         );
         ed.commit().expect("commits");
         exec.apply_pending();
@@ -1084,14 +1092,17 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
     t.inputs = ChannelLayout::MONO;
     t.edges.insert(
         tutti_graph::InPort { node: lat, port: 0 },
-        tutti_graph::Edge::Direct(Source::Global(0)),
+        vec![tutti_graph::Edge::Direct(Source::Global(0))],
     );
     t.edges.insert(
         tutti_graph::InPort {
             node: sink,
             port: 0,
         },
-        tutti_graph::Edge::Direct(Source::Node(OutPort { node: lat, port: 0 })),
+        vec![tutti_graph::Edge::Direct(Source::Node(OutPort {
+            node: lat,
+            port: 0,
+        }))],
     );
     ed.commit().expect("commits");
     exec.apply_pending();

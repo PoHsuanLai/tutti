@@ -185,7 +185,13 @@ fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
          means the load failed rather than the render crashing"
     );
 
-    let mut unit = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
+    let mut unit = Rig::new(
+        probe.client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+        SAMPLE_RATE,
+        BLOCK,
+    );
 
     // --- Before the crash: real audio, not silence and not the input echoed.
     //
@@ -306,7 +312,13 @@ fn rendering_through_a_dead_plugin_does_not_block() {
         .crash_on_block(1);
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle.clone();
-    let mut unit = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
+    let mut unit = Rig::new(
+        probe.client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+        SAMPLE_RATE,
+        BLOCK,
+    );
 
     // Get it dead first, so the measured blocks are all post-crash.
     let driven = drive_until_dead(&mut unit, &handle);
@@ -351,7 +363,14 @@ fn dropping_a_crashed_plugin_is_clean() {
     let handle = probe.handle.clone();
 
     {
-        let mut unit = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
+        let mut unit = Rig::new(
+            probe.client.bind(
+                tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0))
+                    .expect("a tempo"),
+            ),
+            SAMPLE_RATE,
+            BLOCK,
+        );
         let driven = drive_until_dead(&mut unit, &handle);
         assert!(
             handle.status().is_dead(),

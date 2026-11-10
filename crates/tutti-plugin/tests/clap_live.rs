@@ -159,7 +159,13 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     let (mut ed, exec) = Editor::new(prepare);
     let (src, key) = (NodeKey(1), NodeKey(2));
     ed.insert(src, "ramp", Unforkable(RampSource));
-    let _controls = ed.insert(key, "plugin", probe.client.bind());
+    let _controls = ed.insert(
+        key,
+        "plugin",
+        probe.client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+    );
     for port in 0..inputs {
         ed.spec_mut().topology.edges.insert(
             InPort {

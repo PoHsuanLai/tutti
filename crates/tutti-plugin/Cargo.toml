@@ -40,6 +40,7 @@ vst2 = ["dep:tutti-vst2-host", "dep:arrayvec"]
 [dependencies]
 # The transport the hosted plugins read.
 tutti-transport = { path = "../tutti-transport" }
+tutti-tempo = { path = "../tutti-tempo" }
 # The engine's value vocabulary (`Samples`, `SampleRate`).
 tutti-types = { path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }

@@ -119,7 +119,13 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         None,
         (0.0, 1.0),
     );
-    let (mut rig, sender) = Rig::prepared_with_keys(probe.client.bind(), prepare, vec![lfo, lane]);
+    let (mut rig, sender) = Rig::prepared_with_keys(
+        probe.client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+        prepare,
+        vec![lfo, lane],
+    );
     let meter = tutti_transport::ProjectMeter::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),

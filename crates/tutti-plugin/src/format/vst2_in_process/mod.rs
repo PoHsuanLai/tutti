@@ -13,6 +13,6 @@ mod instance;
 mod loader;
 mod node;
 
-pub use client::InProcessVst2Client;
+pub use client::{BoundInProcessVst2Client, InProcessVst2Client};
 pub use loader::{load_client, load_client_restoring};
 pub use node::InProcessVst2Controls;

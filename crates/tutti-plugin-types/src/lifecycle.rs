@@ -152,6 +152,17 @@ impl Prepare {
     }
 }
 
+/// Where a plugin stands after a refused rate, for the error: the rate it runs
+/// at, or that it is deactivated. Every format's refusal says it the same way.
+#[must_use]
+pub fn standing(active: bool, rate: SampleRate) -> String {
+    if active {
+        format!("running at {}", rate.0)
+    } else {
+        "deactivated".to_string()
+    }
+}
+
 fn valid_rate(rate: SampleRate) -> Option<SampleRate> {
     (rate.get().is_finite() && rate.get() > 0.0).then_some(rate)
 }

@@ -326,8 +326,9 @@ pub struct Plugin {
     pub(crate) gui_created: bool,
     // Dropped after `Plugin::drop` has destroyed the instance: the host the
     // plugin called, then the library its code lives in.
-    // `ManuallyDrop` so a drop off the main thread can leak them with the
-    // instance (see `Drop`) instead of unloading code a live plugin runs.
+    // `ManuallyDrop` so a drop off the main thread can move them to the main
+    // thread with the instance (see `Drop`) instead of unloading code a live
+    // plugin runs.
     _host: ManuallyDrop<Host>,
     _bundle: ManuallyDrop<Bundle>,
     // `Send` but not `Sync`: two threads never call the instance's main-thread
@@ -1422,6 +1423,16 @@ impl Plugin {
     }
 }
 
+/// How many [`Plugin`]s have been dropped off the main thread since the process began. Each
+/// one's destruction was handed to the main thread
+/// ([`tutti_plugin_types::run_deferred`], which the session's `Phase::Collect` calls); a
+/// nonzero count is worth a look, since the owner should have dropped it there.
+pub fn off_thread_drops() -> u64 {
+    OFF_THREAD_DROPS.load(Ordering::Relaxed)
+}
+
+static OFF_THREAD_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Drop for Plugin {
     fn drop(&mut self) {
         // Rule 4: retire, then wait out the audio side, then stop, deactivate
@@ -1429,9 +1440,39 @@ impl Drop for Plugin {
         if std::thread::current().id() != self.core.roles.main_thread_id() {
             // A drop has no token. Off the main thread, `gui.destroy` and the
             // plugin's `destroy` would run on the wrong thread, which a plugin
-            // may not survive, so the instance, its host and its library are
-            // leaked (the fields are `ManuallyDrop`): the plugin stays valid
-            // for any `AudioSide` still running.
+            // may not survive, and skipping them leaks the instance, its host
+            // and its library. So the whole value is rebuilt from this one's
+            // parts and handed to the main thread, to drop at its next
+            // `run_deferred` (the session's collect tick); the core stays
+            // alive in it, so any `AudioSide` still running keeps a valid
+            // plugin until then.
+            //
+            // Never the audio thread: the `Plugin` is the controller's half,
+            // not the render side's (`AudioSide` holds the core only, and its
+            // drop destroys nothing), and a unit leaves the graph on the
+            // control side (`defer_to_main`, "Never from an audio thread").
+            //
+            // SAFETY: each `ManuallyDrop` field is taken once and `self` is
+            // not used again; `self`'s own drop frees nothing but `core`.
+            let (host, bundle) = unsafe {
+                (
+                    ManuallyDrop::take(&mut self._host),
+                    ManuallyDrop::take(&mut self._bundle),
+                )
+            };
+            let moved = Plugin {
+                core: Arc::clone(&self.core),
+                gui_created: self.gui_created,
+                _host: ManuallyDrop::new(host),
+                _bundle: ManuallyDrop::new(bundle),
+                _not_sync: PhantomData,
+            };
+            let count = OFF_THREAD_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
+            log::warn!(
+                "a CLAP plugin was dropped off the main thread ({count} so far); its \
+                 destruction is handed to the main thread"
+            );
+            tutti_plugin_types::defer_to_main(move |_main| drop(moved));
             return;
         }
         // CLAP: `gui.destroy` comes before `plugin.destroy`. A caller that

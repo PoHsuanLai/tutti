@@ -35,6 +35,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types" }
 # `GraphPool`: a graph worker pool as the `TaskPool` that serves `clap.thread-pool`.
 tutti-graph = { path = "../tutti-graph" }
 tutti-rt = { path = "../tutti-rt" }
+log = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

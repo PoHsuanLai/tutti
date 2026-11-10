@@ -90,7 +90,7 @@ pub use harmony::{
 pub use lifecycle::{
     EFFECT_CAPACITY, Effect, Effects, Event, FDS_PER_TICK, FdId, HostOp, MAX_STEP_EFFECTS, Notice,
     Prepare, Reply, Request, RescanScope, RestartRules, Stage, State, TIMERS_PER_TICK, TimerId,
-    step,
+    standing, step,
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};

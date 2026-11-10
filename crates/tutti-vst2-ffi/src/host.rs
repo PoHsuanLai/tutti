@@ -225,7 +225,12 @@ pub trait Host {
         (1, "vendor string".to_owned(), "product string".to_owned())
     }
 
-    /// Handle incoming events from the plugin.
+    /// Handle incoming events from the plugin: what the host callback hands the host for
+    /// `audioMasterProcessEvents`, as a view only the callback can make.
+    fn process_plugin_events(&self, events: api::PluginEvents<'_>) {}
+
+    /// Send events to the host. This is the plugin's call, on a [`HostCallback`]; the host
+    /// side is [`process_plugin_events`](Self::process_plugin_events).
     fn process_events(&self, events: &api::Events) {}
 
     /// Get time information.
@@ -366,6 +371,16 @@ pub struct MidiChannelCounts {
 /// [`get_editor`](Plugin::get_editor), [`render_handle`](PluginInstance::render_handle))
 /// hold the same core, and `effClose` runs when the last of them drops, so none can
 /// reach the plugin after it is closed.
+///
+/// # Thread rules
+///
+/// The instance is `Send`, not `Sync`: `Send` permits moving it, and it is not a claim that any
+/// thread may call it. VST2's rules are the holder's to keep: `effOpen`, `effClose`,
+/// `effMainsChanged`, the state and editor opcodes are main-thread calls, `process` and its
+/// siblings the audio thread's (through a [`RenderHandle`]), and `setParameter` either's.
+/// Nothing here checks the thread. The typed handles of the next change enforce them in the
+/// types: a main-thread handle that is `!Sync`, and an audio-thread handle with the render
+/// entries only.
 #[allow(dead_code)] // To keep `lib` around.
 #[derive(Debug)]
 pub struct PluginInstance {
@@ -1828,6 +1843,11 @@ unsafe impl Send for PluginInstance {}
 impl PluginInstance {
     /// The plugin's editor, once, as an object that moves with the instance: the same as
     /// [`Plugin::get_editor`], for a caller that stores it.
+    ///
+    /// # Thread rules
+    ///
+    /// Main thread, like `get_editor`. The [`SendEditor`](crate::editor::SendEditor) it returns
+    /// may be moved, but its calls are main-thread calls the holder keeps; see its docs.
     pub fn take_editor(&mut self) -> Option<crate::editor::SendEditor> {
         self.get_editor().map(crate::editor::SendEditor::new)
     }

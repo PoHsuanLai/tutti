@@ -626,37 +626,121 @@ pub struct Events {
     pub events: [*mut Event; 2],
 }
 
-/// An event a plugin sent the host through `audioMasterProcessEvents`, copied out of the
-/// plugin's list by [`Events::plugin_events`].
+/// The events of one `audioMasterProcessEvents` call, as the host callback received them.
+///
+/// Raw [`Events`] is the ABI struct: its fields are public, so safe code can build one with
+/// any count and any pointers, and nothing on it dereferences them. This is the view that
+/// does. Only the host callback (`host_dispatch`) makes one, from the plugin's `VstEvents`
+/// after it has checked it is non-null and aligned, and it borrows that list for the
+/// callback, so a handler cannot keep it. A handler reads the events with
+/// [`iter`](Self::iter).
+///
+/// Safe code cannot construct a view, nor read a list through the raw struct:
+///
+/// ```compile_fail,E0624
+/// # use tutti_vst2_ffi::api::{Events, PluginEvents};
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = PluginEvents::new(&raw);
+/// ```
+///
+/// ```compile_fail,E0451
+/// # use tutti_vst2_ffi::api::{Events, PluginEvents};
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = PluginEvents { events: &raw };
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use tutti_vst2_ffi::api::Events;
+/// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
+/// let _ = raw.plugin_events();
+/// ```
+///
+/// Mutation (run): make `PluginEvents::new` or its field `pub`, or put an `iter` back on
+/// `Events`: the matching doctest compiles and fails.
 #[derive(Debug)]
-pub enum PluginEvent {
-    /// A MIDI event.
-    Midi(MidiEvent),
-    /// A SysEx event. Its `system_data` still points into the plugin's buffer: read it with
-    /// [`SysExEvent::payload`], inside the callback.
-    SysEx(SysExEvent),
+pub struct PluginEvents<'a> {
+    events: &'a Events,
 }
 
-impl Events {
-    /// The events of a list a plugin handed the host, each copied out.
+/// An event a plugin sent the host, copied out of its list by [`PluginEvents::iter`].
+#[derive(Debug)]
+pub enum PluginEvent<'a> {
+    /// A MIDI event.
+    Midi(MidiEvent),
+    /// A SysEx message, whose bytes are the plugin's, valid for the callback.
+    SysEx(SysExMessage<'a>),
+}
+
+/// A SysEx message in a plugin's event list: its frame and its bytes, which still lie in the
+/// plugin's buffer and are readable only for the callback that handed the list over (`'a`).
+///
+/// Only [`PluginEvents::iter`] makes one (the raw [`SysExEvent`] has no accessor for its
+/// pointer):
+///
+/// ```compile_fail,E0451
+/// # use tutti_vst2_ffi::api::SysExMessage;
+/// let _ = SysExMessage { delta_frames: 0, payload: &[] };
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use tutti_vst2_ffi::api::SysExEvent;
+/// fn go(e: &SysExEvent) { let _ = e.payload(); }
+/// ```
+///
+/// Mutation (run): make the fields `pub`, or give `SysExEvent` a `payload` again: the matching
+/// doctest compiles and fails.
+#[derive(Debug)]
+pub struct SysExMessage<'a> {
+    delta_frames: i32,
+    payload: &'a [u8],
+}
+
+impl SysExMessage<'_> {
+    /// The frame, in the block, the message lands on (negative as the plugin wrote it).
+    pub fn delta_frames(&self) -> i32 {
+        self.delta_frames
+    }
+
+    /// The payload bytes, empty for a null pointer or a non-positive size.
+    pub fn payload(&self) -> &[u8] {
+        self.payload
+    }
+}
+
+impl<'a> PluginEvents<'a> {
+    /// The view of a list the host callback has checked is non-null and aligned, and which the
+    /// VST2 contract has the plugin keep valid for the call.
+    pub(crate) fn new(events: &'a Events) -> Self {
+        Self { events }
+    }
+
+    /// A view of any `Events`, for the host crate's tests, which craft lists of null entries,
+    /// negative counts and short events.
     ///
-    /// This is for the `&Events` the host callback passes to [`Host::process_events`]
-    /// (`host_dispatch` checks its alignment and nullness): a list the VST2 contract has the
-    /// plugin keep valid for the call, with `num_events` valid event pointers. A negative count
-    /// is no events, a null entry is skipped, and an entry is read as a struct only when its
-    /// own `byte_size` says it is that big; the header is read as raw integers, never as the
-    /// [`EventType`] enum, because the plugin's memory can hold a value that is no variant.
-    /// An event of another type is skipped.
+    /// Not sound for arbitrary input: the caller must point every entry at memory it owns.
+    /// It exists behind `test-support` only, as the other FFI crates' raw builders do.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn for_test(events: &'a Events) -> Self {
+        Self::new(events)
+    }
+
+    /// The events, each copied out.
     ///
-    /// [`Host::process_events`]: crate::host::Host::process_events
-    pub fn plugin_events(&self) -> impl Iterator<Item = PluginEvent> + '_ {
+    /// A negative count is no events, a null entry is skipped, and an entry is read as a
+    /// struct only when its own `byte_size` says it is that big; the header is read as raw
+    /// integers, never as the [`EventType`] enum, because the plugin's memory can hold a value
+    /// that is no variant. An event of another type is skipped.
+    pub fn iter(&self) -> impl Iterator<Item = PluginEvent<'a>> + use<'a> {
+        let events: &'a Events = self.events;
         // A negative count is no events; it must not become `usize::MAX`.
-        let num = usize::try_from(self.num_events).unwrap_or(0);
-        let base = self.events.as_ptr();
+        let num = usize::try_from(events.num_events).unwrap_or(0);
+        let base = events.events.as_ptr();
         (0..num).filter_map(move |i| {
             // SAFETY: the VST2 contract has the plugin supply `num_events` valid event
-            // pointers in the flexible array for the duration of the callback; not checked
-            // here (the declared `[_; 2]` type is only the header's view of that array).
+            // pointers in the flexible array for the duration of the callback; a view is made
+            // only by the callback, for that call. Not checked here (the declared `[_; 2]`
+            // type is only the header's view of that array).
             let event_ptr = unsafe { *base.add(i) };
             if event_ptr.is_null() {
                 return None;
@@ -682,15 +766,25 @@ impl Events {
                 // `size_of::<MidiEvent>()` readable bytes at `event_ptr`; the type field was
                 // just checked to be the `Midi` discriminant, and every other field is an
                 // integer. The struct holds no owned data, so the copy needs no drop.
-                Some(PluginEvent::Midi(unsafe {
-                    std::ptr::read_unaligned(event_ptr.cast::<MidiEvent>())
-                }))
+                let midi = unsafe { std::ptr::read_unaligned(event_ptr.cast::<MidiEvent>()) };
+                Some(PluginEvent::Midi(midi))
             } else if event_type == EventType::SysEx as i32
                 && declared >= std::mem::size_of::<SysExEvent>()
             {
                 // SAFETY: as above for SysEx; the struct holds no owned data.
-                Some(PluginEvent::SysEx(unsafe {
-                    std::ptr::read_unaligned(event_ptr.cast::<SysExEvent>())
+                let sysex = unsafe { std::ptr::read_unaligned(event_ptr.cast::<SysExEvent>()) };
+                let len = usize::try_from(sysex.data_size).unwrap_or(0);
+                let payload: &'a [u8] = if sysex.system_data.is_null() || len == 0 {
+                    &[]
+                } else {
+                    // SAFETY: non-null and sized above; the VST2 contract has the plugin keep
+                    // `data_size` readable bytes at `system_data` for the callback, which `'a`
+                    // is.
+                    unsafe { std::slice::from_raw_parts(sysex.system_data, len) }
+                };
+                Some(PluginEvent::SysEx(SysExMessage {
+                    delta_frames: sysex.delta_frames,
+                    payload,
                 }))
             } else {
                 None
@@ -932,22 +1026,6 @@ pub struct SysExEvent {
 
     /// Reserved for future use. Should be 0.
     pub _reserved2: isize,
-}
-
-impl SysExEvent {
-    /// The payload bytes, empty for a null pointer or a non-positive size.
-    ///
-    /// For a [`PluginEvent::SysEx`] from [`Events::plugin_events`] inside the callback: the
-    /// VST2 contract has the plugin keep `data_size` readable bytes at `system_data` for the
-    /// duration of the callback, and the caller copies them out before it returns.
-    pub fn payload(&self) -> &[u8] {
-        let len = usize::try_from(self.data_size).unwrap_or(0);
-        if self.system_data.is_null() || len == 0 {
-            return &[];
-        }
-        // SAFETY: non-null and sized above; readable per the contract in the docs.
-        unsafe { std::slice::from_raw_parts(self.system_data, len) }
-    }
 }
 
 // SAFETY: the struct is plain `#[repr(C)]` data, and moving it to another thread never

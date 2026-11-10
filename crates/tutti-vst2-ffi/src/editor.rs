@@ -161,6 +161,15 @@ pub enum Key {
 /// `idle` from the main thread, one at a time, and never from the audio thread. A host moves it
 /// together with the instance it belongs to. `Send` is that contract, claimed here where the
 /// raw `AEffect` it reaches lives.
+///
+/// # Thread rules
+///
+/// `Send` permits moving the editor to another thread; it does not make any thread a valid
+/// caller. VST2's rules are the holder's to keep: the editor calls (`open`, `close`, `idle`,
+/// `size`) are main-thread calls, and so is the `effClose` the editor's instance sends when
+/// its last share drops. Nothing here checks the thread. The typed handles of the next change
+/// (a main-thread handle that is `!Sync`, an audio-thread handle with the render entries only)
+/// enforce them in the types.
 pub struct SendEditor(Box<dyn Editor>);
 
 impl std::fmt::Debug for SendEditor {

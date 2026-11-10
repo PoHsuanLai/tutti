@@ -2183,13 +2183,18 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
   them; they leave with the typed handles. MIT, derived from vst-rs 0.3.0 (`LICENSE`).
 - `tutti-vst2-host` is `#![forbid(unsafe_code)]`, checked by
   `scripts/check-plugin-ffi.sh`. What its `unsafe` did is a safe API of the FFI crate:
-  `Events::plugin_events` and `SysExEvent::payload` (the validated reads of a plugin's
-  event list), `RenderScratch::render_f32` / `render_f64` and
+  `PluginEvents` and `SysExMessage` (a view of a plugin's event list that only
+  `host_dispatch` can make, handed to the new `Host::process_plugin_events`; the raw `Events`
+  keeps its public ABI fields and dereferences nothing),
+  `RenderScratch::render_f32_piece` / `render_f64_piece` / `render_f64_as_f32_piece` (stage,
+  length-check, render and copy out in one call; the pointer tables are private) and
   `MidiSendBuffer::send_piece` (the pointer tables behind a safe call),
   `PluginInstance::take_editor` (a `SendEditor`), `Send` on `PluginInstance`, and
   `ControlCell` / `ControlKey`: the shell's cell, opened by a key the Controller alone
   holds, which replaces `Shell`'s `UnsafeCell` and `unsafe impl Sync` and makes the
-  Processor, Controller and `Vst2Loaded` `Send` by their fields. The server loader's
+  Processor, Controller and `Vst2Loaded` `Send` by their fields. It is in the FFI crate and
+  not in `tutti-rt` because it is a type-level capability around an `UnsafeCell`, not a
+  lock-free structure: there is no protocol between threads, so nothing for loom to model. The server loader's
   `unsafe impl Send for Vst2Instance` is gone for the same reason. The two
   `WindowHandle::from_ptr` decodes in the callers stay pinned.
 - The plugin-authoring half (`plugin_main!`, `main`, the plugin-side dispatcher,

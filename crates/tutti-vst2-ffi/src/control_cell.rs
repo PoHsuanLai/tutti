@@ -3,6 +3,10 @@
 //! [`ControlCell`] is shared between threads (it sits in an `Arc` both halves of an
 //! activation hold), but only the holder of its [`ControlKey`] can reach the value, so the
 //! type system, not a convention, says which thread that is.
+//!
+//! It lives here and not in `tutti-rt` because it is a type-level capability around an
+//! `UnsafeCell`, not a lock-free structure: there is no protocol between threads (no atomic
+//! but the id counter, which orders nothing), so there is nothing for a loom model to explore.
 
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
@@ -17,6 +21,16 @@ static NEXT_CELL: AtomicU64 = AtomicU64::new(1);
 /// `Sync` when `T: Send`: sharing the cell shares nothing but the right to ask for the value,
 /// and the key is the only way to ask. The key is `Send` and not `Sync`, so the thread that
 /// holds it is one thread at a time, and `get_mut` needs the key `&mut`.
+///
+/// A cell is not `Sync` for a `T` that is not `Send`:
+///
+/// ```compile_fail,E0277
+/// fn needs_sync<T: Sync>() {}
+/// needs_sync::<tutti_vst2_ffi::control_cell::ControlCell<std::rc::Rc<u8>>>();
+/// ```
+///
+/// Mutation (run): drop the `T: Send` bound from the `unsafe impl Sync`: the doctest compiles
+/// and fails.
 #[derive(Debug)]
 pub struct ControlCell<T> {
     id: u64,

@@ -28,15 +28,40 @@ use crate::host::RenderHandle;
 ///
 /// Carrying both costs `block_size * (in + out) * 12` bytes over one width —
 /// at a 512-sample block and stereo I/O, 24 KiB.
+///
+/// The pointer tables behind the plugin's buffers are private, and a render is reached only
+/// through the `render_*_piece` calls, which stage the block, check its length and render in
+/// one step. Safe code cannot read the tables or render a block that was not staged:
+///
+/// ```compile_fail,E0616
+/// # use tutti_vst2_ffi::scratch::RenderScratch;
+/// # use tutti_plugin_types::ChannelLayout;
+/// let scratch = RenderScratch::new(ChannelLayout::from(2u8), ChannelLayout::from(2u8), 64);
+/// let _ = &scratch.output_ptrs;
+/// ```
+///
+/// ```compile_fail,E0624
+/// # use tutti_vst2_ffi::scratch::RenderScratch;
+/// # use tutti_plugin_types::ChannelLayout;
+/// # fn go(handle: &mut tutti_vst2_ffi::host::RenderHandle) {
+/// let mut scratch = RenderScratch::new(ChannelLayout::from(2u8), ChannelLayout::from(2u8), 64);
+/// scratch.render_f32(handle, 1 << 20);
+/// # }
+/// ```
+///
+/// Mutation (run): make the `output_ptrs` field or `render_f32` `pub` again: its doctest
+/// compiles and fails.
 pub struct RenderScratch {
-    pub inputs: Vec<Vec<f32>>,
-    pub outputs: Vec<Vec<f32>>,
-    pub input_ptrs: Vec<*const f32>,
-    pub output_ptrs: Vec<*mut f32>,
-    pub inputs_f64: Vec<Vec<f64>>,
-    pub outputs_f64: Vec<Vec<f64>>,
-    pub input_ptrs_f64: Vec<*const f64>,
-    pub output_ptrs_f64: Vec<*mut f64>,
+    inputs: Vec<Vec<f32>>,
+    outputs: Vec<Vec<f32>>,
+    input_ptrs: Vec<*const f32>,
+    output_ptrs: Vec<*mut f32>,
+    inputs_f64: Vec<Vec<f64>>,
+    outputs_f64: Vec<Vec<f64>>,
+    input_ptrs_f64: Vec<*const f64>,
+    output_ptrs_f64: Vec<*mut f64>,
+    /// The most frames a render may be asked for: what every Vec was sized to.
+    block_size: usize,
 }
 
 impl std::fmt::Debug for RenderScratch {
@@ -93,6 +118,7 @@ impl RenderScratch {
             outputs_f64,
             input_ptrs_f64,
             output_ptrs_f64,
+            block_size,
         }
     }
 
@@ -107,7 +133,7 @@ impl RenderScratch {
     /// Panics if `num_samples` exceeds the block size given to
     /// [`new`](Self::new).
     #[cfg(test)]
-    pub fn prepare_f64(&mut self, caller_inputs: &[&[f64]], num_samples: usize) {
+    fn prepare_f64(&mut self, caller_inputs: &[&[f64]], num_samples: usize) {
         self.prepare_f64_range(caller_inputs, 0, num_samples);
     }
 
@@ -120,7 +146,7 @@ impl RenderScratch {
     // `copy_from_slice` requires equal lengths and would panic on any caller
     // slice that is not exactly the block, which `process_f32` allows.
     #[cfg(test)]
-    pub fn copy_out_f32(&self, caller_outputs: &mut [&mut [f32]], num_samples: usize) {
+    fn copy_out_f32(&self, caller_outputs: &mut [&mut [f32]], num_samples: usize) {
         self.copy_out_f32_range(caller_outputs, 0, num_samples);
     }
 
@@ -128,7 +154,7 @@ impl RenderScratch {
     ///
     /// Bounded on both sides like `copy_out_f32`.
     #[cfg(test)]
-    pub fn copy_out_f64(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
+    fn copy_out_f64(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
         self.copy_out_f64_range(caller_outputs, 0, num_samples);
     }
 
@@ -138,17 +164,93 @@ impl RenderScratch {
     /// `prepare_f64_as_f32`. Bounded like
     /// `copy_out_f64`.
     #[cfg(test)]
-    pub fn copy_out_f64_from_f32(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
+    fn copy_out_f64_from_f32(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
         self.copy_out_f64_from_f32_range(caller_outputs, 0, num_samples);
     }
 
+    /// Stages the piece `start..start + len` of the caller's `f32` block, renders it through
+    /// `render` and copies the outputs back: the one way in, so the pointer tables handed to
+    /// the plugin are always the ones just staged, and `len` is checked against the block size.
+    ///
+    /// # Panics
+    ///
+    /// If `len` exceeds the block size the scratch was made for.
+    pub fn render_f32_piece(
+        &mut self,
+        render: &mut RenderHandle,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+        start: usize,
+        len: usize,
+    ) {
+        self.check_block(len);
+        self.prepare_f32_range(inputs, start, len);
+        self.render_f32(render, len);
+        self.copy_out_f32_range(outputs, start, len);
+    }
+
+    /// [`render_f32_piece`](Self::render_f32_piece) through `processReplacingF64`, for a plugin
+    /// activated at 64-bit.
+    ///
+    /// Only for a plugin known to install that entry point: the vendor's `process_f64` zeroes
+    /// the outputs when it installed none, so reaching it unconditionally would render silence
+    /// rather than fall back.
+    ///
+    /// # Panics
+    ///
+    /// As [`render_f32_piece`](Self::render_f32_piece).
+    pub fn render_f64_piece(
+        &mut self,
+        render: &mut RenderHandle,
+        inputs: &[&[f64]],
+        outputs: &mut [&mut [f64]],
+        start: usize,
+        len: usize,
+    ) {
+        self.check_block(len);
+        self.prepare_f64_range(inputs, start, len);
+        self.render_f64(render, len);
+        self.copy_out_f64_range(outputs, start, len);
+    }
+
+    /// A 64-bit caller's piece rendered through `processReplacing` (the plugin was activated
+    /// at 32-bit): staged down to `f32`, rendered, widened back. Lossy, deliberately.
+    ///
+    /// # Panics
+    ///
+    /// As [`render_f32_piece`](Self::render_f32_piece).
+    pub fn render_f64_as_f32_piece(
+        &mut self,
+        render: &mut RenderHandle,
+        inputs: &[&[f64]],
+        outputs: &mut [&mut [f64]],
+        start: usize,
+        len: usize,
+    ) {
+        self.check_block(len);
+        self.prepare_f64_as_f32_range(inputs, start, len);
+        self.render_f32(render, len);
+        self.copy_out_f64_from_f32_range(outputs, start, len);
+    }
+
+    /// Refuses a render longer than the Vecs behind the pointer tables.
+    fn check_block(&self, num_samples: usize) {
+        assert!(
+            num_samples <= self.block_size,
+            "a render of {num_samples} frames exceeds the scratch's block size {}",
+            self.block_size
+        );
+    }
+
     /// Renders the first `num_samples` of the staged block through `render`, in `f32`.
-    pub fn render_f32(&mut self, render: &mut RenderHandle, num_samples: usize) {
+    fn render_f32(&mut self, render: &mut RenderHandle, num_samples: usize) {
         use crate::buffer::AudioBuffer;
 
-        // SAFETY: the tables hold `len()` channel pointers into the scratch's
-        // own Vecs, each `block_size >= num_samples` elements long and refreshed
-        // by the `prepare_*` call immediately above. The output Vecs are
+        self.check_block(num_samples);
+        // SAFETY: the tables hold `len()` channel pointers into the scratch's own Vecs, each
+        // `block_size >= num_samples` elements long (`check_block`, just above; the Vecs are
+        // never resized, so the pointers taken from them stay valid, and `prepare_*` refreshes
+        // them anyway). The output Vecs are
         // distinct allocations from the inputs and from each other, and the
         // scratch is borrowed mutably for the whole call, so nothing else
         // touches them.
@@ -170,9 +272,10 @@ impl RenderScratch {
     /// `process_f64` zeroes the outputs when the plugin installed no f64
     /// entry point, so reaching it unconditionally would render silence
     /// rather than fall back.
-    pub fn render_f64(&mut self, render: &mut RenderHandle, num_samples: usize) {
+    fn render_f64(&mut self, render: &mut RenderHandle, num_samples: usize) {
         use crate::buffer::AudioBuffer;
 
+        self.check_block(num_samples);
         // SAFETY: as `render_f32`, against the f64 tables and Vecs.
         let mut buffer = unsafe {
             AudioBuffer::from_raw(
@@ -188,7 +291,7 @@ impl RenderScratch {
 
     /// `prepare_f32` for the piece of the caller's block
     /// `start..start + len`, staged at the front of the scratch.
-    pub fn prepare_f32_range(&mut self, caller_inputs: &[&[f32]], start: usize, len: usize) {
+    fn prepare_f32_range(&mut self, caller_inputs: &[&[f32]], start: usize, len: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs.len() {
                 self.inputs[i][..len].copy_from_slice(&src[start..start + len]);
@@ -204,7 +307,7 @@ impl RenderScratch {
     }
 
     /// `prepare_f64` for the piece `start..start + len`.
-    pub fn prepare_f64_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
+    fn prepare_f64_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs_f64.len() {
                 let piece = &src[start.min(src.len())..(start + len).min(src.len())];
@@ -224,7 +327,7 @@ impl RenderScratch {
 
     /// `prepare_f64_as_f32` for the piece
     /// `start..start + len`.
-    pub fn prepare_f64_as_f32_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
+    fn prepare_f64_as_f32_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs.len() {
                 for (d, &s) in self.inputs[i][..len]
@@ -246,7 +349,7 @@ impl RenderScratch {
 
     /// `copy_out_f32` into the piece of the caller's
     /// block `start..start + len`.
-    pub fn copy_out_f32_range(&self, caller_outputs: &mut [&mut [f32]], start: usize, len: usize) {
+    fn copy_out_f32_range(&self, caller_outputs: &mut [&mut [f32]], start: usize, len: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs.len() {
                 let n = len
@@ -258,7 +361,7 @@ impl RenderScratch {
     }
 
     /// `copy_out_f64` into the piece `start..start + len`.
-    pub fn copy_out_f64_range(&self, caller_outputs: &mut [&mut [f64]], start: usize, len: usize) {
+    fn copy_out_f64_range(&self, caller_outputs: &mut [&mut [f64]], start: usize, len: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs_f64.len() {
                 let n = len
@@ -271,7 +374,7 @@ impl RenderScratch {
 
     /// `copy_out_f64_from_f32` into the piece
     /// `start..start + len`.
-    pub fn copy_out_f64_from_f32_range(
+    fn copy_out_f64_from_f32_range(
         &self,
         caller_outputs: &mut [&mut [f64]],
         start: usize,
@@ -318,6 +421,24 @@ impl RenderScratch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A render longer than the block the Vecs were sized for is refused**, before the
+    /// plugin sees pointers that would run past them.
+    ///
+    /// Mutation (run): delete the `assert!` in `check_block`: no panic and the test fails.
+    #[test]
+    #[should_panic(expected = "exceeds the scratch's block size")]
+    fn a_render_past_the_block_size_is_refused() {
+        let layout = ChannelLayout::from(2u8);
+        RenderScratch::new(layout, layout, 64).check_block(65);
+    }
+
+    /// A render at the block size is accepted.
+    #[test]
+    fn a_render_at_the_block_size_is_accepted() {
+        let layout = ChannelLayout::from(2u8);
+        RenderScratch::new(layout, layout, 64).check_block(64);
+    }
 
     /// Fills the scratch outputs with a recognizable ramp so a copy-out can be
     /// checked sample by sample.

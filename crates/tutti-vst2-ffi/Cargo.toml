@@ -8,6 +8,7 @@
 [package]
 name = "tutti-vst2-ffi"
 version = "0.3.0"
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 resolver = "2"
@@ -35,6 +36,11 @@ authors = [
     "Charles Saracco",
     "Frederik Halkjær",
 ]
+
+[features]
+# `PluginEvents::for_test`: a view of a crafted event list, for the host crate's tests. Off in
+# a production build.
+test-support = []
 
 [dependencies]
 bitflags = "1"

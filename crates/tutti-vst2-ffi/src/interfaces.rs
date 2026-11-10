@@ -102,8 +102,9 @@ pub fn host_dispatch(
             // SAFETY: VST2 ABI: for `audioMasterProcessEvents`, `ptr` is the plugin's
             // `VstEvents`, valid for the call; non-null and aligned (checked above). What
             // it holds beyond the header (the count's worth of event pointers) is the
-            // plugin's word, which `Host::process_events` receives unchecked.
-            host.process_events(unsafe { &*(ptr as *const api::Events) });
+            // plugin's word, which the view reads and `PluginEvents::iter` bounds as it can.
+            let events = unsafe { &*(ptr as *const api::Events) };
+            host.process_plugin_events(api::PluginEvents::new(events));
         }
 
         Ok(OpCode::GetTime) => {
@@ -238,7 +239,7 @@ mod tests {
     struct Counting(AtomicUsize);
 
     impl Host for Counting {
-        fn process_events(&self, _events: &api::Events) {
+        fn process_plugin_events(&self, _events: api::PluginEvents<'_>) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }

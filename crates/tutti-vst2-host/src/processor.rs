@@ -240,9 +240,8 @@ impl Vst2Processor {
         while start < num_samples {
             let len = (num_samples - start).min(self.block_size.max(1));
             self.begin_piece(ctx, start, len, num_samples);
-            self.scratch.prepare_f32_range(inputs, start, len);
-            self.process_block(len);
-            self.scratch.copy_out_f32_range(outputs, start, len);
+            self.scratch
+                .render_f32_piece(&mut self.render, inputs, outputs, start, len);
             self.midi.drain_from(start);
             start += len;
         }
@@ -290,14 +289,11 @@ impl Vst2Processor {
             let len = (num_samples - start).min(self.block_size.max(1));
             self.begin_piece(ctx, start, len, num_samples);
             if native_f64 {
-                self.scratch.prepare_f64_range(inputs, start, len);
-                self.process_block_f64(len);
-                self.scratch.copy_out_f64_range(outputs, start, len);
-            } else {
-                self.scratch.prepare_f64_as_f32_range(inputs, start, len);
-                self.process_block(len);
                 self.scratch
-                    .copy_out_f64_from_f32_range(outputs, start, len);
+                    .render_f64_piece(&mut self.render, inputs, outputs, start, len);
+            } else {
+                self.scratch
+                    .render_f64_as_f32_piece(&mut self.render, inputs, outputs, start, len);
             }
             self.midi.drain_from(start);
             start += len;
@@ -386,20 +382,6 @@ impl Vst2Processor {
         self.midi
             .send
             .send_piece(&mut self.render, midi, start, len, total);
-    }
-
-    fn process_block(&mut self, num_samples: usize) {
-        self.scratch.render_f32(&mut self.render, num_samples);
-    }
-
-    /// [`process_block`](Self::process_block) against `processReplacingF64`.
-    ///
-    /// Only called once `supports_f64` is known true: the vendor's
-    /// `process_f64` zeroes the outputs when the plugin installed no f64
-    /// entry point, so reaching it unconditionally would render silence
-    /// rather than fall back.
-    fn process_block_f64(&mut self, num_samples: usize) {
-        self.scratch.render_f64(&mut self.render, num_samples);
     }
 }
 

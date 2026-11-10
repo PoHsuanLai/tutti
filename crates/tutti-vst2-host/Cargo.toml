@@ -36,6 +36,7 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-vst2-ffi = { path = "../tutti-vst2-ffi" }
 
 [dev-dependencies]
+tutti-vst2-ffi = { path = "../tutti-vst2-ffi", features = ["test-support"] }
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }

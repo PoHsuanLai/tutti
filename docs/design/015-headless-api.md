@@ -1074,7 +1074,7 @@ with its failure message naming the alternative.
 
 1. **`tutti` holds no code.** `no_logic.rs`, unchanged.
 2. **`tutti-session` is Bevy-free.** `scripts/check-bevy-free.sh`, run in
-   `just ci` and CI, runs
+   `cargo xtask ci` and CI, runs
 
    ```bash
    cargo tree -p tutti-session -e normal --all-features --prefix none
@@ -1096,7 +1096,7 @@ with its failure message naming the alternative.
    - A script rather than a test, because a test that shells out to
      `cargo` inside `cargo nextest` contends for the build lock.
 3. **`bevy-tutti` holds no engine composition.** `scripts/check-adapter.sh`,
-   run in `just ci` and CI. It fails if `crates/bevy-tutti/src`, tests and
+   run in `cargo xtask ci` and CI. It fails if `crates/bevy-tutti/src`, tests and
    comment lines excluded, names any of these types as a whole word:
    - `Editor`, `Executor` (the graph's halves: `Session` and `Graph` own
      them);
@@ -1434,11 +1434,11 @@ doctest. The engine tests of `engine/build.rs` (the click, the rate, the
 voices, `root_width`) moved to `tests/engine.rs` and `tests/graph.rs`;
 `the_transport_converts_at_the_sessions_rate` is new, because the click
 cannot see the transport's rate. `scripts/check-bevy-free.sh` runs in
-`just ci` and CI, with its mutations recorded in the script. After review:
+`cargo xtask ci` and CI, with its mutations recorded in the script. After review:
 `a_target_removed_then_re_bound_keeps_its_clip`,
 `a_keyboard_follows_its_entity_onto_a_node_bound_after_a_removal` and
 `a_removal_is_any_threads_and_a_free_is_the_main_threads`, and CI and
-`just test-doc` run `cargo test --doc -p tutti-session --features device`
+`cargo xtask test-doc` run `cargo test --doc -p tutti-session --features device`
 (the `Device` `compile_fail` proof) by name.
 
 Where the code differs from the text above:
@@ -1783,7 +1783,7 @@ Where the code differs from the text above:
 
 **Scope:**
 
-- `scripts/check-adapter.sh` in `just ci` and CI.
+- `scripts/check-adapter.sh` in `cargo xtask ci` and CI.
 - `bevy-tutti`'s schedule test against `PHASES`.
 - The CLAUDE.md, engineering-notes and doc 013 edits of §8 not already
   made.
@@ -1797,14 +1797,14 @@ Where the code differs from the text above:
 
 **Properties:** the gates' mutations (§8).
 
-**Exit:** `just ci` is green, and `scripts/check-adapter.sh` reports no
+**Exit:** `cargo xtask ci` is green, and `scripts/check-adapter.sh` reports no
 denied type in `bevy-tutti/src`.
 
 The step is as scoped, plus a reproducible toolchain (the user's
 addition). Specifics:
 
 - **`scripts/check-adapter.sh`** holds §8 checks 3 and 4 (check 4 moved
-  there from `check-bevy-free.sh`), in `just ci` and CI's paths job. Check
+  there from `check-bevy-free.sh`), in `cargo xtask ci` and CI's paths job. Check
   3 is a small Perl lexer over `bevy-tutti/src`, not a line grep: it
   blanks comments (nested too), string, raw-string and char literals, and
   whatever a `#[cfg(test)]` or `#[cfg(all(test, …))]` governs (an item to
@@ -1846,7 +1846,7 @@ addition). Specifics:
   depends on it. The §5.2 example is still a test (`test = true`), run by
   `tutti --features clap,export`.
 - **Reproducible builds:** `Cargo.lock` is committed and every CI and
-  `just` cargo command passes `--locked`; `rust-toolchain.toml` pins 1.99.1,
+  `cargo xtask` cargo command passes `--locked`; `rust-toolchain.toml` pins 1.99.1,
   which CI installs in place of `dtolnay/rust-toolchain@stable`; miri names
   `+nightly`. The pin surfaced no new lint. `bevy-tutti --features
   plugin,modulation` had dead test code (`tests/mod_plugin.rs` loads a

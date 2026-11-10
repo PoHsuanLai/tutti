@@ -434,7 +434,7 @@ mod tests {
     /// VST2 confines to the main thread.
     ///
     /// **It bites only with a threaded pool**, so CI runs it threaded: the
-    /// `dark features` job (and `just test-features`) runs it, with
+    /// `dark features` job (and `cargo xtask test-features`) runs it, with
     /// `export_fork.rs`'s `off_thread` tests, under
     /// `--features full,bevy_tasks/multi_threaded`. This crate's own feature
     /// set leaves `multi_threaded` off (an app with Bevy's default features

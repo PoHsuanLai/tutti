@@ -501,7 +501,7 @@ old version.
 
 ## 9. Staged plan
 
-Each step is a PR that passes `just ci`. #354 merges first.
+Each step is a PR that passes `cargo xtask ci`. #354 merges first.
 
 | Step | Content | After | Rough size |
 |---|---|---|---|

@@ -297,7 +297,7 @@ could still load. The soundness argument, in C++20 terms, is in `arc-lend`'s
 pair is the whole argument, and both halves are load-bearing: the loom model
 (`arc-lend/tests/loom.rs`, run against the shipped code: nine models:
 eight exhaustive, and `registering_and_dropping_readers` at a preemption bound
-of 4 in CI and 5 under `just loom-full`) fails with either removed, and so does miri on the
+of 4 in CI and 5 under `cargo xtask loom-full`) fails with either removed, and so does miri on the
 concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 
@@ -544,7 +544,7 @@ names them directly:
 
 Both are declared in this repo's `[workspace.dependencies]`.
 
-`Cargo.lock` is committed and every CI and `just` cargo command passes
+`Cargo.lock` is committed and every CI and `cargo xtask` cargo command passes
 `--locked`, so a drifted lock fails loudly instead of resolving newer
 dependencies (an unpinned resolve once brought in a deprecation,
 `SystemCondition::and`, that broke a PR's clippy). That protects this repo

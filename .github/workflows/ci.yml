@@ -193,7 +193,7 @@ jobs:
   # is the only Windows job: it lints the code, and nothing runs it there.
   #
   # A native runner rather than a cross-check from ubuntu. The cross-check
-  # (`just check-windows`) reaches the plugin crates, but not the workspace:
+  # (`cargo xtask check-windows`) reaches the plugin crates, but not the workspace:
   # `ogg_next_sys` needs real Windows C headers, and `tutti-vst3-host`'s
   # `conformance` feature compiles and links the `audio-probe` DLL against the
   # SDK's Win32 sources, which only an MSVC toolchain can do. Here `cc` finds
@@ -330,12 +330,12 @@ jobs:
       #                         and its hot-plug tests
       #   tutti-au-host/installed-units — linted by the macOS clippy job (the
       #                         crate is empty on Linux) and run only locally
-      #                         (`just test-au-installed`, part of `test-all`):
+      #                         (`cargo xtask test-au-installed`, part of `test-all`):
       #                         it asserts a claim about third-party Audio
       #                         Units installed on the machine, and fails,
       #                         never skips, where there are none
       #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
-      #                         only locally (`just test-features`): the suite
+      #                         only locally (`cargo xtask test-features`): the suite
       #                         needs the kernel's `snd-seq` module, which the
       #                         runner's Azure kernel does not ship (no
       #                         `linux-modules-extra` package either). It fails,
@@ -536,7 +536,7 @@ jobs:
       # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
       # also runs the test targets in the release profile, where
       # `debug_assert!` is gone and a `#[should_panic]` over one fails.
-      # Mirrors `just bench`; adding a bench means adding a line in both.
+      # Mirrors `cargo xtask bench`; adding a bench means adding a line in both.
       - run: |
           cargo bench --locked -p tutti-nodes     --bench engine_render  -- --test
           cargo bench --locked -p tutti-cpal      --bench audio_callback -- --test
@@ -548,7 +548,7 @@ jobs:
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
           cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process -- --test
           cargo bench --locked -p arc-lend --bench lend -- --test
-          # `just bench-compare --test`: the comparison harness at tiny
+          # `cargo xtask bench-compare --test`: the comparison harness at tiny
           # counts. Never the full run here: it takes minutes, and a shared
           # runner's tails mean nothing.
           cargo bench --locked -p arc-lend-compare --bench compare -- --test
@@ -839,7 +839,7 @@ jobs:
   # the eight `ArcLend` models run unbounded (exhaustive, about 10 s together);
   # `registering_and_dropping_readers` runs at a preemption bound of 4
   # (about a minute), and every recorded mutation fails at a bound of 3. That
-  # model at 5 (about 6 minutes) is `just loom-full`, for a change to `arc-lend`'s
+  # model at 5 (about 6 minutes) is `cargo xtask loom-full`, for a change to `arc-lend`'s
   # protocol code itself; at 6 it did not finish in 25 minutes.
   loom:
     name: loom

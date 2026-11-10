@@ -1,0 +1,5 @@
+# `cargo xtask <recipe>` runs the repo's development commands (the `xtask`
+# crate; `cargo xtask help` lists them). `--locked` so a recipe never edits
+# Cargo.lock behind the lock check CI relies on.
+[alias]
+xtask = "run --locked -p xtask --"

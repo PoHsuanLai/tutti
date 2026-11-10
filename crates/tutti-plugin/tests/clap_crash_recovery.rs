@@ -44,24 +44,14 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, load_probe, render};
+// Paced to `PACE`: a starved subprocess reads back silence, which here would
+// be indistinguishable from the crash this suite observes.
+use clap_probe::{BLOCK, PACE, ProbeEnv, Rig, SAMPLE_RATE, load_probe, render};
 use tutti_fixtures::machine_lock;
 
 use std::time::{Duration, Instant};
 
 use tutti_plugin::handles::PluginStatus;
-
-const SAMPLE_RATE: f64 = 48_000.0;
-const BLOCK: usize = 64;
-
-/// One block period, and the pace the driving loop keeps.
-///
-/// The same reasoning as `clap_pdc_alignment`'s: the pipeline never waits for a
-/// reply, so a tight loop starves the subprocess and every block reads back
-/// silence — which here would be indistinguishable from the crash this suite is
-/// trying to observe.
-const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
-const PACE: Duration = PERIOD.saturating_mul(20);
 
 /// Which `process()` call kills the plugin.
 ///

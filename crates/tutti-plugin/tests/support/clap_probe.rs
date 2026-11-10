@@ -30,9 +30,11 @@
 #![allow(dead_code)]
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use tutti_graph::NodeKey;
-use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Renderer, Shape, Status, Unforkable};
+use tutti_graph::contract::Latent;
+use tutti_graph::{GraphBuilder, Prepare, Renderer, Unforkable};
 use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
 use tutti_types::{ChannelLayout, Latency, SampleRate, Samples};
@@ -128,13 +130,10 @@ impl Rig {
         assert!(inputs > 0, "the plugin has an audio input");
         let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout(outputs));
-        let latent = g.add(Unforkable(Latent {
-            latency,
-            width: layout(inputs),
-        }));
+        let latent = g.add(Unforkable(Latent::new(latency)));
         let (key, controls) = g.add_with_controls(client);
         for port in 0..inputs {
-            g.connect(latent, port, key, port);
+            g.connect(latent, 0, key, port);
         }
         g.pipe_output(key);
         let renderer = g.renderer(prepare).expect("the graph compiles");
@@ -187,26 +186,18 @@ impl Rig {
     }
 }
 
-/// A silent source that declares `latency`: what puts a plugin behind a
-/// latent path ([`Rig::behind`]).
-struct Latent {
-    latency: Latency,
-    width: ChannelLayout,
-}
+/// The rate the out-of-process suites run at.
+pub const SAMPLE_RATE: f64 = 48_000.0;
+/// The block the out-of-process suites run.
+pub const BLOCK: usize = 64;
 
-impl Node for Latent {
-    fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.width).with_latency(self.latency)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-        for c in 0..io.output_count() {
-            io.output(c).fill(0.0);
-        }
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
+/// One block's worth of wall time: the audio callback's deadline.
+pub const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
+
+/// The pace a live driving loop keeps. The pipeline never waits for a reply,
+/// so an unpaced loop starves the subprocess and every block reads back
+/// silence.
+pub const PACE: Duration = PERIOD.saturating_mul(20);
 
 /// Absolute path to the `plugin-server` binary these tests spawn.
 ///

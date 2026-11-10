@@ -20,7 +20,9 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, load_probe, load_probe_with, render};
+// The live side is paced to `PACE`; the fork is *not*: it waits for each
+// block, which is the property under test.
+use clap_probe::{BLOCK, PACE, ProbeEnv, Rig, SAMPLE_RATE, load_probe, load_probe_with, render};
 use tutti_fixtures::machine_lock;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,16 +39,6 @@ use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{SampleRate, Samples};
-
-const SAMPLE_RATE: f64 = 48_000.0;
-const BLOCK: usize = 64;
-
-/// The live side is paced to the block period, as every out-of-process suite
-/// here is: its pipeline never waits, so an unpaced loop starves the subprocess
-/// and reads silence. The fork is *not* paced — it waits for each block, which
-/// is the property under test.
-const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
-const PACE: Duration = PERIOD.saturating_mul(20);
 
 /// The probe's applied gain (`GAIN_PARAM_ID` in the plugin), and its range in
 /// dB. Mirrored rather than imported: this crate links no probe rlib.

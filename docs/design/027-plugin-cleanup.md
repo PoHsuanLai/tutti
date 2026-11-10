@@ -493,6 +493,25 @@ diff (new P4):
   `tutti-vst3-host`) move to the shared test plugin and the contract, then
   each `#[ignore]` goes after a mutation check (task 5, plan item 6).
 
+P4 lands in five PRs: 4a the fixtures helpers, 4b one `Active<L>` and
+`drive_block`, 4c the capture readers (with the `PROBE_LOCK`/`AU_LOCK`
+removal and the test plugins' narrowing), 4d the contract's G2 and C4 and
+the per-crate deletions, 4e the VST3 `#[ignore]`s. Decided in 4a
+(2026-11-10):
+
+- `main_thread()`, `machine_lock()`, `clap_probe()` and `vst2_probe()` are in
+  `tutti-fixtures`, the first behind its `plugin` feature.
+- The environment guards stay where they are. `tutti-fixtures` is
+  `#![forbid(unsafe_code)]` and `set_var` is `unsafe`. They go in 4c, when
+  the test plugins are configured through their state instead.
+- `Latent` is `tutti_graph::contract::Latent`, one mono output fanned to every
+  input port.
+- The CLAP timing constants (`SAMPLE_RATE`, `BLOCK`, `PERIOD`, `PACE`) are in
+  `tutti-plugin`'s `tests/support/clap_probe.rs`, not in `tutti-fixtures`.
+  Only the suites that include that module use them.
+  `real_plugin_pressure` keeps its own, because it includes the module only
+  under `clap` or `vst3`.
+
 ## 11. Order
 
 One list. Existing steps keep their names. The new PRs are P1 to P9. A PR

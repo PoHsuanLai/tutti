@@ -17,9 +17,10 @@
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 
+use tutti_graph::contract::Latent;
 use tutti_graph::{
-    Cx, Env, GraphBuilder, IntoNode, Io, LoopRange, Node, Offset, Prepare, Renderer, Shape, Status,
-    Transport, TransportChanges, Unforkable,
+    Env, GraphBuilder, IntoNode, LoopRange, Offset, Prepare, Renderer, Transport, TransportChanges,
+    Unforkable,
 };
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
@@ -100,39 +101,15 @@ fn load() -> (InProcessVst2Client, PluginHandle) {
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
-/// A silent source declaring `latency`: what puts the plugin behind a latent
-/// path.
-struct Latent {
-    latency: Latency,
-    width: ChannelLayout,
-}
-
-impl Node for Latent {
-    fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.width).with_latency(self.latency)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-        for c in 0..io.output_count() {
-            io.output(c).fill(0.0);
-        }
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
-
 /// The live node fed by a silent source of `arrival` frames' latency on both
 /// its inputs, its outputs global.
 fn rig<N: IntoNode>(node: N, arrival: usize) -> (Renderer, N::Controls) {
     let stereo = ChannelLayout::from_count(2);
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, stereo);
-    let latent = g.add(Unforkable(Latent {
-        latency: Latency::new(Samples(arrival)),
-        width: stereo,
-    }));
+    let latent = g.add(Unforkable(Latent::new(Latency::new(Samples(arrival)))));
     let (key, controls) = g.add_with_controls(node);
     for port in 0..2 {
-        g.connect(latent, port, key, port);
+        g.connect(latent, 0, key, port);
     }
     g.pipe_output(key);
     let r = g

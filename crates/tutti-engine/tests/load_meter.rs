@@ -163,7 +163,7 @@ impl tutti_graph::Node for Burst {
             // A note-on; a full port refuses it, which is the point.
             let _ = out.push(tutti_graph::Event::midi(
                 tutti_graph::Offset::ZERO,
-                [0x2090_3c7f, 0, 0, 0],
+                tutti_ump::Ump([0x2090_3c7f, 0, 0, 0]),
             ));
         }
         tutti_graph::Status::Modified

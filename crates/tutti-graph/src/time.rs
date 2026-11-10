@@ -48,7 +48,7 @@ use crate::node::{Env, Transport, TransportChanges};
 /// ```compile_fail
 /// use tutti_graph::{Env, Event};
 /// fn note_on_now(env: &Env) -> Event {
-///     Event::midi(env.frame, [0x2090_3c64, 0, 0, 0]) // a Frame is not an Offset
+///     Event::midi(env.frame, Ump([0x2090_3c64, 0, 0, 0])) // a Frame is not an Offset
 /// }
 /// ```
 ///
@@ -56,9 +56,12 @@ use crate::node::{Env, Transport, TransportChanges};
 ///
 /// ```
 /// use tutti_graph::{Env, Event, Offset};
+/// use tutti_ump::{Address, Message, MidiChannel, NoteNumber, Ump, Voice2};
 /// fn note_on_at(env: &Env, when: tutti_types::Frame) -> Option<Event> {
 ///     let at: Offset = env.offset_of(when)?; // `None` outside this block
-///     Some(Event::midi(at, [0x2090_3c64, 0, 0, 0]))
+///     let note = Voice2::note_on(NoteNumber::of(60), 0x8000);
+///     let ump = Ump::from(Message::Midi2(Address::first(MidiChannel::FIRST), note));
+///     Some(Event::midi(at, ump))
 /// }
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

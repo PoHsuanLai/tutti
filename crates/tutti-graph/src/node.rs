@@ -1071,7 +1071,9 @@ pub trait Node: Send + 'static {
 
     /// Sizes the node's buffers for `p`. Control thread; may allocate. Called before the
     /// first [`process`](Self::process), and again whenever the rate or the
-    /// maximum block changes.
+    /// maximum block changes. The node is in no executor while prepared: the
+    /// editor prepares a unit it holds (before placing it, or after the
+    /// executor returned it), so no [`process`](Self::process) runs meanwhile.
     fn prepare(&mut self, p: &Prepare);
 
     /// Renders one block and reports what it did to the outputs. Audio

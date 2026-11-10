@@ -5,6 +5,7 @@ use tutti_graph::GraphBuilder;
 use tutti_transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, SampleRate};
+use tutti_ump::Ump;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -320,7 +321,7 @@ mod loss {
                 let at = cx.env.offset(i).expect("inside the block");
                 let _ = io
                     .event_out(0)
-                    .push(Event::midi(at, [0x2090_3c64, 0, 0, 0]));
+                    .push(Event::midi(at, Ump([0x2090_3c64, 0, 0, 0])));
             }
             Status::Silent
         }

@@ -14,7 +14,7 @@ fn an_owed_off_is_the_note_off_the_wire_types_build() {
     };
     let off = key.off(Offset::ZERO);
     let want = note_off(key.group, key.channel, 61, 0);
-    assert_eq!(off, Event::midi(Offset::ZERO, want.0));
+    assert_eq!(off, Event::midi(Offset::ZERO, want));
 }
 
 /// **A table entry is 12 bytes for the clip's tag and 6 for none**, so

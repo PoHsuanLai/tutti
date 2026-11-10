@@ -1,15 +1,38 @@
+use super::midi::bank_program;
 use super::*;
-use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_graph::UmpAt;
+use tutti_midi_types::convert::{
+    bend_u32_to_signed_f32, midi2_velocity_to_midi1, u16_to_unit_f32, u32_to_unit_f32,
+};
+use tutti_midi_types::{MidiMessage, sysex7_fragments, sysex7_payload, sysex7_single};
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
+use tutti_types::Samples;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, System, Ump, Voice2,
     decode as decode_ump,
 };
 use tutti_vst3_ffi::EventList;
 
+/// A packet from its words, zero-padded to four, at offset 0.
+fn raw(words: &[u32]) -> UmpAt {
+    let mut packet = [0; 4];
+    packet[..words.len()].copy_from_slice(words);
+    (Offset::ZERO, Ump(packet))
+}
+
+/// A block longer than any offset these tests place an event at.
+const TEST_BLOCK: usize = 1 << 16;
+
+/// The offset `k` frames into a test block.
+fn at(k: u32) -> Offset {
+    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+}
+
 /// Encodes one event on a fresh stream (every per-note bend range at the
 /// MPE default).
-fn encode(event: &MidiEvent) -> Option<Event> {
+fn encode(event: &UmpAt) -> Option<Event> {
     MidiEncoder::default().encode(event)
 }
 
@@ -21,11 +44,14 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
     // (the same widening the hardware input path makes).
     use tutti_midi_types::convert::midi1_cc_to_midi2;
 
-    let event = MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::of(1),
-        CCNumber::BRIGHTNESS,
-        midi1_cc_to_midi2(100),
+    let event = (
+        Offset::ZERO,
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::of(1),
+            CCNumber::BRIGHTNESS,
+            midi1_cc_to_midi2(100),
+        ),
     );
     let vst3 = encode(&event).expect("CC -> Data");
     assert!(
@@ -33,7 +59,7 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
         "CC should be a Data event"
     );
     let back = vst3.to_midi().expect("cc decodes");
-    match decode_ump(Ump(back.data)).expect("valid UMP") {
+    match decode_ump(back.ump).expect("valid UMP") {
         Message::Midi2(address, Voice2::ControlChange { controller, .. }) => {
             assert_eq!(address.channel.get(), 1);
             assert_eq!(controller.get(), 74);
@@ -46,12 +72,12 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
 fn inbound_system_message_passes_through() {
     // A System real-time message (Timing Clock 0xF8) has no CV form and must
     // pass through unchanged, not be dropped or widened.
-    let event = MidiEvent::timing_clock(MidiGroup::FIRST);
+    let event = (Offset::ZERO, midi::timing_clock(MidiGroup::FIRST));
     let vst3 = encode(&event).expect("clock -> Data");
     let back = vst3.to_midi().expect("clock decodes");
     assert!(
         matches!(
-            decode_ump(Ump(back.data)),
+            decode_ump(back.ump),
             Ok(Message::System(_, System::TimingClock))
         ),
         "timing clock should stay a System Real-Time message"
@@ -60,8 +86,10 @@ fn inbound_system_message_passes_through() {
 
 #[test]
 fn note_on_lands_in_note_on_variant() {
-    let event =
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000).with_frame_offset(5);
+    let event = (
+        at(5),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000),
+    );
     let vst3 = encode(&event).expect("NoteOn should convert");
     match &vst3.payload {
         Payload::NoteOn(e) => {
@@ -74,16 +102,19 @@ fn note_on_lands_in_note_on_variant() {
     }
 
     let back = vst3.to_midi().expect("round-trip");
-    assert!(back.is_note_on());
-    assert_eq!(back.note(), Some(60));
-    assert_eq!(back.frame_offset, 5);
+    let message = MidiMessage::from_ump(back.ump);
+    assert!(message.is_note_on());
+    assert_eq!(message.note(), Some(60));
+    assert_eq!(back.offset, 5);
 }
 
 #[test]
 fn note_off_lands_in_note_off_variant() {
     const RELEASE: u16 = 0x4000;
-    let event = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 72, RELEASE)
-        .with_frame_offset(10);
+    let event = (
+        at(10),
+        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 72, RELEASE),
+    );
     let vst3 = encode(&event).expect("NoteOff should convert");
     match &vst3.payload {
         Payload::NoteOff(e) => {
@@ -99,23 +130,29 @@ fn note_off_lands_in_note_off_variant() {
     }
 
     let back = vst3.to_midi().expect("round-trip");
-    assert!(back.is_note_off());
-    assert_eq!(back.note(), Some(72));
+    assert!(back.ump.is_note_off());
+    let message = MidiMessage::from_ump(back.ump);
+    assert_eq!(message.note(), Some(72));
     assert!(
-        back.velocity_u7().is_some_and(|v| v > 0),
+        message
+            .velocity()
+            .is_some_and(|v| midi2_velocity_to_midi1(v) > 0),
         "release velocity was dropped on the way back from the plugin"
     );
 }
 
 /// A frame offset past `i32::MAX` must saturate, not wrap negative.
 ///
-/// `MidiEvent::frame_offset` is `u32` and VST3's `sampleOffset` is `i32`, so
+/// An `Offset` is a `u32` and VST3's `sampleOffset` is `i32`, so
 /// a bare `as i32` turns a large offset into a negative one, which the plugin
 /// indexes its own buffers with, out of bounds, where nothing here can catch it.
 #[test]
 fn a_huge_frame_offset_saturates_rather_than_going_negative() {
-    let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
-        .with_frame_offset(u32::MAX);
+    let event = (
+        // A block of 2^32 frames, so that its last offset is `u32::MAX`.
+        Offset::new(u32::MAX as usize, Samples(u32::MAX as usize + 1)).unwrap(),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+    );
     let vst3 = encode(&event).expect("NoteOn should convert");
     let offset = vst3.sample_offset();
     assert!(
@@ -129,27 +166,32 @@ fn a_huge_frame_offset_saturates_rather_than_going_negative() {
 #[test]
 fn poly_pressure_lands_in_poly_pressure_variant() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
-    let event = MidiEvent::poly_pressure(
-        MidiGroup::FIRST,
-        MidiChannel::of(1),
-        60,
-        midi1_cc_to_midi2(100),
-    )
-    .with_frame_offset(0);
+    let event = (
+        at(0),
+        midi::poly_pressure(
+            MidiGroup::FIRST,
+            MidiChannel::of(1),
+            60,
+            midi1_cc_to_midi2(100),
+        ),
+    );
     let vst3 = encode(&event).expect("PolyPressure should convert");
     assert!(matches!(vst3.payload, Payload::PolyPressure(_)));
     let back = vst3.to_midi().expect("round-trip");
-    assert_eq!(back.note(), Some(60));
+    assert_eq!(MidiMessage::from_ump(back.ump).note(), Some(60));
 }
 
 #[test]
 fn cc_falls_through_to_data_event() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
-    let event = MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::of(2),
-        CCNumber::BRIGHTNESS,
-        midi1_cc_to_midi2(100),
+    let event = (
+        Offset::ZERO,
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::of(2),
+            CCNumber::BRIGHTNESS,
+            midi1_cc_to_midi2(100),
+        ),
     );
     let vst3 = encode(&event).expect("CC should convert");
     match &vst3.payload {
@@ -166,10 +208,13 @@ fn cc_falls_through_to_data_event() {
 #[test]
 fn pitch_bend_falls_through_to_data_event() {
     use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
-    let event = MidiEvent::pitch_bend(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        midi1_pitch_bend_to_midi2(8192),
+    let event = (
+        Offset::ZERO,
+        midi::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            midi1_pitch_bend_to_midi2(8192),
+        ),
     );
     let vst3 = encode(&event).expect("PitchBend should convert");
     match &vst3.payload {
@@ -185,7 +230,10 @@ fn pitch_bend_falls_through_to_data_event() {
 
 #[test]
 fn program_change_falls_through_to_data_event() {
-    let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None);
+    let event = (
+        Offset::ZERO,
+        midi::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None),
+    );
     let vst3 = encode(&event).expect("ProgramChange should convert");
     match &vst3.payload {
         Payload::Data(e) => {
@@ -443,18 +491,14 @@ fn data_event_with_truncated_size_fails_gracefully() {
 fn note_on_and_off_share_a_derived_note_id() {
     // A note-on and its note-off for the same (channel, note) must carry the
     // same VST3 noteId so per-note events bind to the same voice.
-    let on = encode(&MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(5),
-        67,
-        0x8000,
+    let on = encode(&(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::of(5), 67, 0x8000),
     ))
     .unwrap();
-    let off = encode(&MidiEvent::note_off(
-        MidiGroup::FIRST,
-        MidiChannel::of(5),
-        67,
-        0,
+    let off = encode(&(
+        Offset::ZERO,
+        midi::note_off(MidiGroup::FIRST, MidiChannel::of(5), 67, 0),
     ))
     .unwrap();
     let expected = note_id_for(5, 67);
@@ -475,13 +519,15 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
     use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     // Center bend on note 67, channel 5 → Tuning expression at value 0.5,
     // bound to the same noteId the note-on for (5, 67) would carry.
-    let event = MidiEvent::per_note_pitch_bend(
-        MidiGroup::FIRST,
-        MidiChannel::of(5),
-        67,
-        midi1_pitch_bend_to_midi2(8192),
-    )
-    .with_frame_offset(12);
+    let event = (
+        at(12),
+        midi::per_note_pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::of(5),
+            67,
+            midi1_pitch_bend_to_midi2(8192),
+        ),
+    );
     let vst3 = encode(&event).expect("per-note bend should map");
     let expr = vst3.to_note_expression().expect("is a note expression");
     assert_eq!(expr.expression_type, NoteExpressionType::Tuning);
@@ -509,14 +555,17 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let bend = |channel: u8, amount: f32| {
-        MidiEvent::per_note_pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(channel),
-            60,
-            signed_f32_to_bend_u32(amount),
+        (
+            Offset::ZERO,
+            midi::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::of(channel),
+                60,
+                signed_f32_to_bend_u32(amount),
+            ),
         )
     };
-    let tuning = |encoder: &mut MidiEncoder, e: &MidiEvent| match encoder.encode(e) {
+    let tuning = |encoder: &mut MidiEncoder, e: &UmpAt| match encoder.encode(e) {
         Some(Event {
             payload: Payload::ExpressionValue(x),
             ..
@@ -538,12 +587,15 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
         0.5 - 48.0 / 240.0
     ));
 
-    let sensitivity = MidiEvent::registered_controller(
-        MidiGroup::FIRST,
-        MidiChannel::of(3),
-        RPN_BANK_MPE,
-        RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-        PitchBendSensitivity::of(24).to_rpn_bits(),
+    let sensitivity = (
+        Offset::ZERO,
+        midi::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::of(3),
+            RPN_BANK_MPE,
+            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::of(24).to_rpn_bits(),
+        ),
     );
     assert!(
         encoder.encode(&sensitivity).is_none(),
@@ -563,13 +615,16 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
 fn per_note_controller_maps_known_indices_only() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     // CC 74 (brightness) is a known dimension → Brightness expression.
-    let known = MidiEvent::per_note_controller(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        74,
-        midi1_cc_to_midi2(100),
-        false,
+    let known = (
+        Offset::ZERO,
+        midi::per_note_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            74,
+            midi1_cc_to_midi2(100),
+            false,
+        ),
     );
     match encode(&known) {
         Some(Event {
@@ -585,13 +640,16 @@ fn per_note_controller_maps_known_indices_only() {
         other => panic!("expected Brightness note expression, got {other:?}"),
     }
     // An index with no VST3 expression counterpart is dropped.
-    let unknown = MidiEvent::per_note_controller(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        33,
-        midi1_cc_to_midi2(100),
-        false,
+    let unknown = (
+        Offset::ZERO,
+        midi::per_note_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            33,
+            midi1_cc_to_midi2(100),
+            false,
+        ),
     );
     assert!(encode(&unknown).is_none());
 }
@@ -601,9 +659,7 @@ fn single_packet_sysex_round_trips_through_data_event() {
     // A short SysEx (identity request) → VST3 Data event with the SysEx
     // subtype and 0xF0 … 0xF7 framing, then back to the same UMP payload.
     let payload = [0x7E, 0x7F, 0x06, 0x01];
-    let event = MidiEvent::sysex7_single(MidiGroup::FIRST, &payload)
-        .unwrap()
-        .with_frame_offset(7);
+    let event = (at(7), sysex7_single(MidiGroup::FIRST, &payload).unwrap());
     let vst3 = encode(&event).expect("SysEx should map to Data");
     match &vst3.payload {
         Payload::Data(e) => {
@@ -618,10 +674,10 @@ fn single_packet_sysex_round_trips_through_data_event() {
     }
 
     let back = vst3.to_midi().expect("SysEx Data round-trips");
-    let (status, bytes, n) = back.sysex7_payload().expect("decodes as SysEx7");
+    let (status, bytes, n) = sysex7_payload(&back.ump).expect("decodes as SysEx7");
     assert_eq!(status, tutti_midi_types::ump::SYSEX7_STATUS_SINGLE);
     assert_eq!(&bytes[..n], &payload);
-    assert_eq!(back.frame_offset, 7);
+    assert_eq!(back.offset, 7);
 }
 
 /// **No packet of a multi-packet SysEx converts on its own**: a lone
@@ -633,10 +689,13 @@ fn single_packet_sysex_round_trips_through_data_event() {
 #[test]
 fn a_sysex_fragment_does_not_convert_alone() {
     let mut frags = Vec::new();
-    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8], &mut frags);
+    sysex7_fragments(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8], &mut frags);
     assert!(frags.len() > 1);
     for frag in &frags {
-        assert!(encode(frag).is_none(), "fragment {frag:?} converted alone");
+        assert!(
+            encode(&(Offset::ZERO, *frag)).is_none(),
+            "fragment {frag:?} converted alone"
+        );
     }
 }
 
@@ -646,10 +705,13 @@ fn note_on_velocity_round_trips_at_full_width() {
     // (close to) its width through the f32 VST3 struct on the way back out,
     // rather than collapsing to a 7-bit grid point.
     let velocity_u16 = 0x9123; // not a multiple of the 7-bit step
-    let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity_u16);
+    let event = (
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity_u16),
+    );
     let vst3 = encode(&event).expect("converts");
     let back = vst3.to_midi().expect("round-trips");
-    match decode_ump(Ump(back.data)).expect("decodes") {
+    match decode_ump(back.ump).expect("decodes") {
         Message::Midi2(_, Voice2::NoteOn { velocity: raw, .. }) => {
             let velocity = u16_to_unit_f32(raw);
             let expected = velocity_u16 as f32 / u16::MAX as f32;
@@ -779,8 +841,8 @@ fn legacy_cc_out_decodes_to_midi() {
     // Plain CC 74 = 100 on channel 3.
     let cc = Event::at(5, Payload::LegacyCcOut(legacy_cc(74, 3, 100, 0)));
     let m = cc.to_midi().expect("CC decodes");
-    assert_eq!(m.frame_offset, 5);
-    match decode_ump(Ump(m.data)).expect("UMP") {
+    assert_eq!(m.offset, 5);
+    match decode_ump(m.ump).expect("UMP") {
         Message::Midi2(address, Voice2::ControlChange { controller, value }) => {
             assert_eq!((address.channel.get(), controller.get()), (3, 74));
             let value = u32_to_unit_f32(value);
@@ -795,7 +857,7 @@ fn legacy_cc_out_decodes_to_midi() {
         Payload::LegacyCcOut(legacy_cc(kPitchBend as u8, 0, 0, 0x40)),
     );
     let pb_m = pb.to_midi().unwrap();
-    match decode_ump(Ump(pb_m.data)).expect("UMP") {
+    match decode_ump(pb_m.ump).expect("UMP") {
         Message::Midi2(_, Voice2::PitchBend(bend)) => {
             assert!(bend_u32_to_signed_f32(bend).abs() < 0.01)
         }
@@ -809,7 +871,7 @@ fn legacy_cc_out_decodes_to_midi() {
     );
     let pp_m = pp.to_midi().unwrap();
     assert_eq!(
-        decode_ump(Ump(pp_m.data)),
+        decode_ump(pp_m.ump),
         Ok(Message::Midi2(
             Address {
                 group: MidiGroup::FIRST,
@@ -828,7 +890,7 @@ fn legacy_cc_out_decodes_to_midi() {
         Payload::LegacyCcOut(legacy_cc(kAfterTouch as u8, 1, 127, 0)),
     );
     let at_m = at.to_midi().unwrap();
-    match decode_ump(Ump(at_m.data)).expect("UMP") {
+    match decode_ump(at_m.ump).expect("UMP") {
         Message::Midi2(address, Voice2::ChannelPressure(_)) => {
             assert_eq!(address.channel.get(), 1)
         }
@@ -875,8 +937,8 @@ mod message {
         U7::new(v).unwrap()
     }
 
-    fn packet(message: Message) -> MidiEvent {
-        MidiEvent::from_ump(7, Ump::from(message).words())
+    fn packet(message: Message) -> UmpAt {
+        (at(7), Ump::from(message))
     }
 
     fn data_bytes(event: &Event) -> [u8; 3] {
@@ -987,13 +1049,13 @@ mod message {
         let sinks = [
             // Reserved message type 0x6, and a Channel Voice 2 status 0x7 that
             // is undefined: `decode` cannot frame them.
-            MidiEvent::from_ump(0, &[0x6000_1234]),
-            MidiEvent::from_ump(0, &[0x4070_0000, 0]),
+            raw(&[0x6000_1234]),
+            raw(&[0x4070_0000, 0]),
             packet(Message::Utility(Utility::Noop)),
             packet(Message::Utility(Utility::JrClock(9))),
             // An Endpoint Discovery (stream) and a SysEx 8 packet (Data128).
-            MidiEvent::from_ump(0, &[0xF000_0101, 0x1F, 0, 0]),
-            MidiEvent::from_ump(0, &[0x5001_0000, 0, 0, 0]),
+            raw(&[0xF000_0101, 0x1F, 0, 0]),
+            raw(&[0x5001_0000, 0, 0, 0]),
             packet(Message::Flex(MidiGroup::FIRST, Flex::SetTempo(50_000_000))),
             packet(Message::Midi2(
                 address(0),
@@ -1021,7 +1083,7 @@ mod message {
         // defined messages.
         for (i, event) in sinks.iter().enumerate() {
             assert_eq!(
-                decode_ump(Ump(event.data)).is_err(),
+                decode_ump(event.1).is_err(),
                 i < 2,
                 "{event:?} decodes as the wrong kind"
             );
@@ -1123,8 +1185,7 @@ mod message {
     /// sent as `program ^ 1`; a MIDI 1.0 Channel Pressure sent as 0.
     #[test]
     fn spec_words_give_the_exact_midi1_bytes() {
-        let bytes =
-            |words: &[u32]| data_bytes(&encode(&MidiEvent::from_ump(0, words)).expect("carried"));
+        let bytes = |words: &[u32]| data_bytes(&encode(&raw(words)).expect("carried"));
         // MT 2: status in bits 23-20, channel 19-16, data bytes 15-8 and 7-0.
         assert_eq!(
             bytes(&[0x20C3_0900]),
@@ -1179,7 +1240,7 @@ mod message {
     /// value sent as 0.
     #[test]
     fn spec_words_give_the_exact_note_events() {
-        let event = |words: &[u32]| encode(&MidiEvent::from_ump(0, words)).expect("an event");
+        let event = |words: &[u32]| encode(&raw(words)).expect("an event");
         let expression_type = |words: &[u32]| match event(words).payload {
             Payload::ExpressionValue(e) => (e.typeId, e.noteId),
             other => panic!("expected an expression, got {other:?}"),
@@ -1198,7 +1259,7 @@ mod message {
             expression_type(&[0x4003_3C4A, 0x8000_0000]),
             (5, note_id_for(3, 60))
         );
-        assert!(encode(&MidiEvent::from_ump(0, &[0x4003_3C01, 0x8000_0000])).is_none());
+        assert!(encode(&raw(&[0x4003_3C01, 0x8000_0000])).is_none());
         // Assignable Per-Note Controller (status 1).
         assert_eq!(
             expression_type(&[0x4013_3C07, 0x8000_0000]),
@@ -1234,20 +1295,26 @@ mod message {
     /// → CC 0 is 5 → fails on both packets.
     #[test]
     fn a_bank_is_msb_then_lsb() {
-        let banked =
-            MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085));
-        let padded = |event| midi::bank_program(event).map(|messages| messages.map(|m| m.padded()));
+        let banked = (
+            Offset::ZERO,
+            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+        );
+        let padded =
+            |event: &UmpAt| bank_program(&event.1).map(|messages| messages.map(|m| m.padded()));
         assert_eq!(
             padded(&banked),
             Some([[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]])
         );
         // Spec words: MSB 2 at bits 15-8, LSB 5 at bits 7-0.
-        let spec_words = MidiEvent::from_ump(0, &[0x41C1_0001, 0x0900_0205]);
+        let spec_words = raw(&[0x41C1_0001, 0x0900_0205]);
         assert_eq!(
             padded(&spec_words),
             Some([[0xB1, 0, 2], [0xB1, 32, 5], [0xC1, 9, 0]])
         );
-        let plain = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, None);
+        let plain = (
+            Offset::ZERO,
+            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, None),
+        );
         assert_eq!(padded(&plain), None);
     }
 
@@ -1261,9 +1328,9 @@ mod message {
     fn raw_midi1_from_a_plugin_is_widened() {
         let on = Event::at(4, Payload::Data(Data::inline(0, [0x92, 60, 0])));
         let back = on.to_midi().expect("decodes");
-        assert_eq!(back.frame_offset, 4);
+        assert_eq!(back.offset, 4);
         assert_eq!(
-            decode_ump(Ump(back.data)),
+            decode_ump(back.ump),
             Ok(Message::Midi2(
                 address(2),
                 Voice2::NoteOff {
@@ -1275,7 +1342,7 @@ mod message {
         );
         let clock = Event::at(0, Payload::Data(Data::inline(0, [0xF8, 0, 0]))).to_midi();
         assert_eq!(
-            clock.map(|m| decode_ump(Ump(m.data))),
+            clock.map(|m| decode_ump(m.ump)),
             Some(Ok(Message::System(MidiGroup::FIRST, System::TimingClock)))
         );
     }
@@ -1372,19 +1439,16 @@ mod message {
         let mut events = Vec::new();
         for message in messages {
             let event = packet(message);
-            assert_eq!(decode_ump(Ump(event.data)), Ok(message), "{message:?}");
+            assert_eq!(decode_ump(event.1), Ok(message), "{message:?}");
             events.push(event);
         }
         // A Stream message, spelled out: an Endpoint Discovery.
-        let discovery = MidiEvent::from_ump(0, &[0xF000_0101, 0x1F, 0, 0]);
-        assert!(matches!(
-            decode_ump(Ump(discovery.data)),
-            Ok(Message::Stream(_))
-        ));
+        let discovery = raw(&[0xF000_0101, 0x1F, 0, 0]);
+        assert!(matches!(decode_ump(discovery.1), Ok(Message::Stream(_))));
         events.push(discovery);
         // A packet `decode` cannot frame.
-        let unknown = MidiEvent::from_ump(0, &[0x6000_0000]);
-        assert!(decode_ump(Ump(unknown.data)).is_err());
+        let unknown = raw(&[0x6000_0000]);
+        assert!(decode_ump(unknown.1).is_err());
         events.push(unknown);
 
         // The plugin-output side: raw MIDI 1.0 bytes in a Data event.
@@ -1407,7 +1471,7 @@ mod message {
         assert_no_alloc::assert_no_alloc(|| {
             for event in &events {
                 let _ = encoder.encode(event);
-                let _ = midi::bank_program(event);
+                let _ = bank_program(&event.1);
             }
             for event in &raw {
                 let _ = event.to_midi();
@@ -1452,7 +1516,7 @@ mod message {
     /// two events → fails.
     #[test]
     fn a_chord_stages_as_three_note_ons_in_order() {
-        let events: Vec<MidiEvent> = [60u8, 64, 67]
+        let events: Vec<UmpAt> = [60u8, 64, 67]
             .into_iter()
             .map(|n| {
                 packet(Message::Midi1(

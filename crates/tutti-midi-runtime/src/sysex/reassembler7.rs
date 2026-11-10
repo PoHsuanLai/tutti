@@ -10,16 +10,18 @@
 //! [`push`](Sysex7PacketReassembler::push); it returns the complete packet run the
 //! moment one finishes (ready to hand to
 //! [`tutti_midi_types::ci::sysex7_to_ci`] or any other
-//! [`sysex7_payload`](tutti_midi_types::ump::MidiEvent::sysex7_payload)-based
+//! [`sysex7_payload`]-based
 //! decoder), and `None` while a message is still in flight or the event isn't
 //! SysEx7. It keeps one in-flight buffer per UMP group, so interleaved streams
 //! on different groups don't corrupt each other.
 
 use tutti_midi_types::ump::{
-    MidiEvent, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
-    SYSEX7_STATUS_START, UmpMessageType,
+    SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
+    UmpMessageType, message_type, sysex7_payload,
 };
-use tutti_ump::MidiGroup;
+use tutti_ump::{MidiGroup, Ump};
+
+use crate::group::group_of;
 
 /// Whether `event` may appear between a SysEx7 Start and its End without
 /// terminating the message (M2-104 §7.7.1).
@@ -32,13 +34,13 @@ use tutti_ump::MidiGroup;
 ///
 /// Different-group traffic is also permitted, but the caller handles that by
 /// only ever terminating the run belonging to the event's own group.
-fn is_sysex_transparent(event: &MidiEvent) -> bool {
-    match event.message_type() {
+fn is_sysex_transparent(event: &Ump) -> bool {
+    match message_type(event) {
         // Groupless: cannot belong to the SysEx's group at all.
         UmpMessageType::Other(0x0) | UmpMessageType::UmpStream => true,
         UmpMessageType::System => {
             // System Real Time only; System Common terminates.
-            let status = ((event.data[0] >> 16) & 0xFF) as u8;
+            let status = ((event.0[0] >> 16) & 0xFF) as u8;
             status >= 0xF8
         }
         _ => false,
@@ -49,7 +51,7 @@ fn is_sysex_transparent(event: &MidiEvent) -> bool {
 #[derive(Clone, Debug)]
 struct InFlight {
     group: MidiGroup,
-    packets: Vec<MidiEvent>,
+    packets: Vec<Ump>,
 }
 
 /// Default cap on a reassembled payload, in bytes.
@@ -115,8 +117,8 @@ impl Sysex7PacketReassembler {
     /// An out-of-order packet (a `CONTINUE`/`END` with no matching `START`, or a
     /// second `START` mid-run) drops the stale buffer for that group and resyncs,
     /// rather than emitting a corrupt message.
-    pub fn push(&mut self, event: &MidiEvent) -> Option<Vec<MidiEvent>> {
-        if event.message_type() != UmpMessageType::Sysex7 {
+    pub fn push(&mut self, event: &Ump) -> Option<Vec<Ump>> {
+        if message_type(event) != UmpMessageType::Sysex7 {
             // M2-104 §7.7.1: "If any Message or UMP on the same Group, other
             // than a System Exclusive Continue UMP or a System Real Time
             // Message, is sent after a System Exclusive Start UMP and before the
@@ -132,12 +134,12 @@ impl Sysex7PacketReassembler {
             // Terminating drops the partial run rather than emitting it: the
             // message never got its End, so its payload is incomplete.
             if !is_sysex_transparent(event) {
-                self.take_group(event.group());
+                self.take_group(group_of(event));
             }
             return None;
         }
-        let group = event.group();
-        let (status, _bytes, _n) = event.sysex7_payload()?;
+        let group = group_of(event);
+        let (status, _bytes, _n) = sysex7_payload(event)?;
 
         match status {
             SYSEX7_STATUS_SINGLE => {
@@ -188,7 +190,7 @@ impl Sysex7PacketReassembler {
     }
 
     /// Remove and return the in-flight packet run for `group`, if any.
-    fn take_group(&mut self, group: MidiGroup) -> Option<Vec<MidiEvent>> {
+    fn take_group(&mut self, group: MidiGroup) -> Option<Vec<Ump>> {
         let idx = self.in_flight.iter().position(|e| e.group == group)?;
         Some(self.in_flight.swap_remove(idx).packets)
     }

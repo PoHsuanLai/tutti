@@ -1,4 +1,6 @@
 use super::*;
+use crate::from_midi1_bytes;
+use tutti_fixtures::midi;
 use tutti_ump::{CCNumber, MidiChannel};
 
 #[test]
@@ -14,15 +16,15 @@ fn events_round_trip_with_deltas() {
     let events = [
         ClipEvent {
             delta_ticks: 0,
-            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         },
         ClipEvent {
             delta_ticks: 240,
-            event: MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            event: midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         },
         ClipEvent {
             delta_ticks: 240,
-            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF),
         },
     ];
     let bytes = write_clip_file(96, &events);
@@ -46,11 +48,11 @@ fn to_bytes_re_encodes_what_from_bytes_parsed() {
     let events = [
         ClipEvent::new(
             0,
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         ),
         ClipEvent::new(
             240,
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
     ];
     let bytes = write_clip_file(96, &events);
@@ -81,7 +83,7 @@ fn large_delta_writes_dcs_noop_restarts() {
         480,
         &[ClipEvent {
             delta_ticks: big,
-            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         }],
     );
     let words = body_words(&bytes);
@@ -173,11 +175,11 @@ fn large_delta_round_trips() {
     let events = [
         ClipEvent {
             delta_ticks: 3_000_000,
-            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         },
         ClipEvent {
             delta_ticks: DCS_MAX, // exactly one full field — no restart needed
-            event: MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            event: midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         },
     ];
     let bytes = write_clip_file(480, &events);
@@ -192,7 +194,7 @@ fn exactly_max_delta_needs_no_restart() {
         480,
         &[ClipEvent {
             delta_ticks: DCS_MAX,
-            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         }],
     );
     let stream = body_words(&bytes)[7..].to_vec();
@@ -208,27 +210,27 @@ fn beats_round_trip_through_the_beat_facade() {
         [
             (
                 Beat(0.0),
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
             ),
             (
                 Beat(2.0),
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
             ),
             (
                 Beat(2.5),
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF),
             ),
         ],
     );
     let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
-    let timed: Vec<(Beat, MidiEvent)> = clip.iter().collect();
+    let timed: Vec<(Beat, Ump)> = clip.iter().collect();
     assert_eq!(timed.len(), 3);
     assert!((timed[0].0 - Beat(0.0)).abs() < BeatDuration(1e-9));
     assert!((timed[1].0 - Beat(2.0)).abs() < BeatDuration(1e-9));
     assert!((timed[2].0 - Beat(2.5)).abs() < BeatDuration(1e-9));
     assert_eq!(
         timed[2].1,
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF)
+        midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF)
     );
     assert!((clip.duration_beats() - BeatDuration(2.5)).abs() < BeatDuration(1e-9));
 }
@@ -241,11 +243,11 @@ fn beat_facade_orders_unsorted_input() {
         [
             (
                 Beat(4.0),
-                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
             ),
             (
                 Beat(0.0),
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
             ),
         ],
     );
@@ -271,7 +273,7 @@ fn header_round_trips_tempo_and_time_signature() {
         header,
         &[ClipEvent::new(
             0,
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         )],
     );
 
@@ -301,7 +303,7 @@ fn header_round_trips_tempo_and_time_signature() {
 
     // The note still lands at beat 0 — the header messages share its
     // zero clockstamp rather than pushing it later.
-    let timed: Vec<(Beat, MidiEvent)> = clip.iter().collect();
+    let timed: Vec<(Beat, Ump)> = clip.iter().collect();
     assert!(timed.iter().all(|(b, _)| *b == Beat(0.0)));
 
     // A clip written without a header simply declares none.
@@ -342,7 +344,7 @@ fn errors_distinguish_failure_modes() {
 /// never written. Presence was checked; the value was not.
 #[test]
 fn a_zero_tick_unit_is_rejected_rather_than_dividing_by_it() {
-    let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let ev = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
     let bytes = write_clip_file(0, &[ClipEvent::new(240, ev)]);
     assert_eq!(
         ParsedClipFile::from_bytes(&bytes),
@@ -421,7 +423,7 @@ fn structural_shalls_are_enforced() {
 // --- Note pairing ---
 
 /// Round-trip a beat-positioned event list and pair it back into notes.
-fn notes_from(events: impl IntoIterator<Item = (Beat, MidiEvent)>) -> Vec<ClipNote> {
+fn notes_from(events: impl IntoIterator<Item = (Beat, Ump)>) -> Vec<ClipNote> {
     let bytes = write_clip_file_from_beats(96, events);
     ParsedClipFile::from_bytes(&bytes).unwrap().notes()
 }
@@ -431,11 +433,11 @@ fn pairs_notes_and_keeps_full_velocity() {
     let notes = notes_from([
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD),
         ),
         (
             Beat(2.5),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
     ]);
 
@@ -455,27 +457,27 @@ fn a_note_off_only_closes_its_own_channel_and_group() {
     let notes = notes_from([
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x1000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x1000),
         ),
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0x2000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0x2000),
         ),
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::of(1), MidiChannel::FIRST, 60, 0x3000),
+            midi::note_on(MidiGroup::of(1), MidiChannel::FIRST, 60, 0x3000),
         ),
         (
             Beat(1.0),
-            MidiEvent::note_off(MidiGroup::of(1), MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::of(1), MidiChannel::FIRST, 60, 0),
         ),
         (
             Beat(2.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
         ),
         (
             Beat(3.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
     ]);
 
@@ -507,19 +509,19 @@ fn overlapping_identical_notes_close_in_lifo_order() {
     let notes = notes_from([
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x1000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x1000),
         ),
         (
             Beat(1.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x2000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x2000),
         ),
         (
             Beat(2.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
         (
             Beat(4.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
     ]);
 
@@ -542,8 +544,8 @@ fn a_midi1_velocity_zero_note_on_closes_a_note() {
     // notes and yield nothing. Built from MIDI 1.0 bytes so these are real
     // Channel Voice 1 packets — `note_on_7bit` would widen to CV2 and never
     // reach this path.
-    let on = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100]).expect("midi1 note-on");
-    let off = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 0]).expect("midi1 note-on vel 0");
+    let on = from_midi1_bytes(&[0x90, 60, 100]).expect("midi1 note-on");
+    let off = from_midi1_bytes(&[0x90, 60, 0]).expect("midi1 note-on vel 0");
     let notes = notes_from([(Beat(0.0), on), (Beat(1.5), off)]);
 
     assert_eq!(notes.len(), 1);
@@ -560,16 +562,16 @@ fn notes_left_open_at_end_of_clip_are_dropped() {
     let notes = notes_from([
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         ),
         (
             Beat(1.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
         // Never closed — its duration is unknowable, so it is not a note.
         (
             Beat(2.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
         ),
     ]);
 
@@ -582,11 +584,11 @@ fn non_note_events_do_not_disturb_pairing() {
     let notes = notes_from([
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         ),
         (
             Beat(0.5),
-            MidiEvent::cc(
+            midi::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::BRIGHTNESS,
@@ -595,7 +597,7 @@ fn non_note_events_do_not_disturb_pairing() {
         ),
         (
             Beat(1.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
     ]);
 

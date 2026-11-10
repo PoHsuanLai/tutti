@@ -17,11 +17,14 @@
 //! - a block longer than the announced maximum is split before the plugin.
 
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_plugin_types::{Control, Controller, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
-    MidiEvent, Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,
+    Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,
 };
 use tutti_vst2_test_plugin::ProcessCapture;
 
@@ -503,7 +506,7 @@ fn editor_idle_reaches_an_open_editor() {
 fn render_f32(
     instance: &mut Active,
     frames: usize,
-    midi: &[MidiEvent],
+    midi: &[UmpAt],
     transport: Option<&TransportInfo>,
     input: f32,
 ) -> Vec<Vec<f32>> {
@@ -587,9 +590,11 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
 
-    let at = |frame: u32, note: u8| {
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x4000)
-            .with_frame_offset(frame)
+    let at = |frame: usize, note: u8| {
+        (
+            Offset::new(frame, Samples(200)).unwrap(),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x4000),
+        )
     };
     let midi = [at(10, 60), at(150, 62)];
     render_f32(&mut instance, 200, &midi, None, 0.0);

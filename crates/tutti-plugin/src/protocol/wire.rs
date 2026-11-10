@@ -1,11 +1,13 @@
 //! Serde adapters for wire fields whose in-memory type is not serde.
 
-/// A block's MIDI list on the wire: a sequence of `(frame_offset, [u32; 4])`.
+/// A block's MIDI list on the wire: a sequence of `(offset, [u32; 4])`.
 ///
-/// [`MidiEvent`](tutti_midi_types::ump::MidiEvent) is serde-free on purpose:
-/// its `frame_offset` is relative to one block, so it is not a persistable
-/// value. The wire is the one place it is encoded, and only through this
-/// adapter, used as `#[serde(with = "wire::midi")]`.
+/// [`WireMidi`](tutti_plugin_types::WireMidi) is serde-free on purpose: its
+/// offset is relative to one block, so it is not a persistable value. The wire
+/// is the one place it is encoded, and only through this adapter, used as
+/// `#[serde(with = "wire::midi")]`. The offset is a raw `u32` because the
+/// types stop at the IPC boundary (CLAUDE.md, "Where the types stop"); it
+/// becomes an `Offset` where the receiving side knows the block length.
 ///
 /// Encoding walks the list in place and allocates nothing. Decoding builds the
 /// inline [`MidiEventVec`](tutti_plugin_types::MidiEventVec) and rejects a list longer than
@@ -15,12 +17,12 @@ pub mod midi {
 
     use serde::de::{self, SeqAccess, Visitor};
     use serde::{Deserializer, Serializer};
-    use tutti_midi_types::ump::MidiEvent;
-    use tutti_plugin_types::{MIDI_STACK_CAPACITY, MidiEventVec};
+    use tutti_plugin_types::{MIDI_STACK_CAPACITY, MidiEventVec, WireMidi};
+    use tutti_ump::Ump;
 
-    /// Encodes each event as `(frame_offset, data)`.
+    /// Encodes each event as `(offset, packet words)`.
     pub fn serialize<S: Serializer>(events: &MidiEventVec, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_seq(events.iter().map(|e| (e.frame_offset, e.data)))
+        s.collect_seq(events.iter().map(|e| (e.offset, e.ump.0)))
     }
 
     /// Decodes a list of at most [`MIDI_STACK_CAPACITY`] events.
@@ -45,9 +47,12 @@ pub mod midi {
                     return Err(de::Error::invalid_length(len, &self));
                 }
                 let mut out = MidiEventVec::new();
-                while let Some((frame_offset, data)) = seq.next_element::<(u32, [u32; 4])>()? {
-                    out.try_push(MidiEvent { frame_offset, data })
-                        .map_err(|_| de::Error::invalid_length(MIDI_STACK_CAPACITY + 1, &self))?;
+                while let Some((offset, data)) = seq.next_element::<(u32, [u32; 4])>()? {
+                    out.try_push(WireMidi {
+                        offset,
+                        ump: Ump(data),
+                    })
+                    .map_err(|_| de::Error::invalid_length(MIDI_STACK_CAPACITY + 1, &self))?;
                 }
                 Ok(out)
             }
@@ -137,8 +142,8 @@ pub mod normalized_f64_opt {
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};
-    use tutti_midi_types::ump::MidiEvent;
-    use tutti_plugin_types::{MIDI_STACK_CAPACITY, MidiEventVec};
+    use tutti_plugin_types::{MIDI_STACK_CAPACITY, MidiEventVec, WireMidi};
+    use tutti_ump::Ump;
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct Holder {
@@ -146,10 +151,10 @@ mod tests {
         events: MidiEventVec,
     }
 
-    fn ev(i: u32) -> MidiEvent {
-        MidiEvent {
-            frame_offset: i,
-            data: [0x2090_3C40, 0, 0, 0],
+    fn ev(i: u32) -> WireMidi {
+        WireMidi {
+            offset: i,
+            ump: Ump([0x2090_3C40, 0, 0, 0]),
         }
     }
 

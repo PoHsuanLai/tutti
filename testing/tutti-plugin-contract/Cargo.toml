@@ -14,6 +14,7 @@ publish = false
 tutti-plugin-types = { path = "../../crates/tutti-plugin-types" }
 tutti-fixtures = { path = "../tutti-fixtures" }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
+tutti-graph = { path = "../../crates/tutti-graph" }
 tutti-midi-types = { path = "../../crates/tutti-midi-types" }
 tutti-clap-host = { path = "../../crates/tutti-clap-host" }
 tutti-vst2-host = { path = "../../crates/tutti-vst2-host" }

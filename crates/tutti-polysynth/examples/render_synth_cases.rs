@@ -17,15 +17,15 @@
 
 use std::path::Path;
 
+use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
 use tutti_types::{Amplitude, Hz, Q, Samples, Seconds, Spread};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -52,14 +52,14 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
     let events: Vec<Event> = notes
         .iter()
         .map(|&n| {
-            MidiEvent::note_on(
+            midi::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 n,
                 midi1_velocity_to_midi2(100),
             )
         })
-        .map(|e: MidiEvent| Event::midi(at, e.data))
+        .map(|e: Ump| Event::midi(at, e.0))
         .collect();
     synth.events(0, &events);
 

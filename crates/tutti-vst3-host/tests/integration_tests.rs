@@ -9,10 +9,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
 use tutti_plugin_types::{Control, Normalized, ParamId};
 use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, TransportInfo};
+use tutti_vst3_host::{AudioBuffer, InputEvents, TransportInfo};
+
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
@@ -439,7 +443,7 @@ fn test_process_silence() {
 
     let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
     let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
-    let midi: [MidiEvent; 0] = [];
+    let midi: [UmpAt; 0] = [];
 
     let _output_events = plugin.process(
         &mut buffer,
@@ -482,11 +486,9 @@ fn test_process_with_midi() {
     let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
     let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
 
-    let midi = [MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0x9999,
+    let midi = [(
+        Offset::ZERO,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x9999),
     )];
 
     let _output_events = plugin.process(
@@ -533,19 +535,15 @@ fn test_process_multiple_buffers() {
         let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
         let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
 
-        let midi: Vec<MidiEvent> = if i == 0 {
-            vec![MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                0x9999,
+        let midi: Vec<UmpAt> = if i == 0 {
+            vec![(
+                Offset::ZERO,
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x9999),
             )]
         } else if i == 9 {
-            vec![MidiEvent::note_off(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                0,
+            vec![(
+                Offset::ZERO,
+                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
             )]
         } else {
             vec![]
@@ -709,7 +707,7 @@ fn test_rapid_process_calls() {
         Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
-    let midi: [MidiEvent; 0] = [];
+    let midi: [UmpAt; 0] = [];
 
     let start = std::time::Instant::now();
     for _ in 0..689 {

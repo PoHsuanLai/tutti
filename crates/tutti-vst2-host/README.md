@@ -41,8 +41,9 @@ The main types:
 **The shared vocabulary.** [`ParameterInfo`], [`TransportInfo`],
 [`WindowHandle`], [`EditorSize`] and [`Samples`] are
 [`tutti-plugin-types`](../tutti-plugin-types)' — re-exported here so a caller
-can stay format-agnostic, not defined here. MIDI is the workspace-wide UMP
-[`tutti_midi_types::MidiEvent`], re-exported as [`MidiEvent`].
+can stay format-agnostic, not defined here. MIDI into a plugin is a block's
+`(Offset, Ump)` list (`tutti_graph::Offset`, `tutti_ump::Ump`); MIDI out of one
+is [`WireMidi`] (a raw, unchecked `deltaFrames`), re-exported here.
 
 **Subprocess isolation.** VST2 fuses the editor and the audio processor into a
 single `AEffect` instance, so you cannot host the editor in one process and audio
@@ -212,6 +213,5 @@ MIT OR Apache-2.0
 [`WindowHandle`]: crate::WindowHandle
 [`EditorSize`]: crate::EditorSize
 [`Samples`]: crate::Samples
-[`MidiEvent`]: crate::MidiEvent
+[`WireMidi`]: crate::WireMidi
 [`ParamId`]: tutti_plugin_types::ParamId
-[`tutti_midi_types::MidiEvent`]: tutti_midi_types::MidiEvent

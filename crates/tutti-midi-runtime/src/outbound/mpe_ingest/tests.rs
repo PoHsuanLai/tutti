@@ -1,38 +1,61 @@
 use super::*;
+use tutti_fixtures::midi;
+use tutti_graph::UmpAt;
+use tutti_midi_types::MidiMessage;
 use tutti_midi_types::convert::{
     midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
 };
 use tutti_midi_types::mpe::MpeZoneConfig;
+use tutti_types::Samples;
 
-fn note_on(channel: u8, note: u8, vel_u7: u8) -> MidiEvent {
-    MidiEvent::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(channel),
-        note,
-        midi1_velocity_to_midi2(vel_u7),
+/// `ump` at frame `offset` of a 64-frame block.
+fn at(offset: usize, ump: Ump) -> UmpAt {
+    (Offset::new(offset, Samples(64)).unwrap(), ump)
+}
+
+/// The channel nibble of a channel voice packet.
+fn channel_of(ump: &Ump) -> u8 {
+    ((ump.0[0] >> 16) & 0x0F) as u8
+}
+
+fn note_on(channel: u8, note: u8, vel_u7: u8) -> UmpAt {
+    at(
+        0,
+        midi::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::of(channel),
+            note,
+            midi1_velocity_to_midi2(vel_u7),
+        ),
     )
 }
-fn pitch_bend14(channel: u8, bend14: u16) -> MidiEvent {
-    MidiEvent::pitch_bend(
-        MidiGroup::FIRST,
-        MidiChannel::of(channel),
-        midi1_pitch_bend_to_midi2(bend14),
+fn pitch_bend14(channel: u8, bend14: u16) -> UmpAt {
+    at(
+        0,
+        midi::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::of(channel),
+            midi1_pitch_bend_to_midi2(bend14),
+        ),
     )
 }
-fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> MidiEvent {
-    MidiEvent::cc(
-        MidiGroup::FIRST,
-        MidiChannel::of(channel),
-        cc_num,
-        midi1_cc_to_midi2(value_u7),
+fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> UmpAt {
+    at(
+        0,
+        midi::cc(
+            MidiGroup::FIRST,
+            MidiChannel::of(channel),
+            cc_num,
+            midi1_cc_to_midi2(value_u7),
+        ),
     )
 }
 
 /// True if the event is the given native CV2 kind — matched inline so the
-/// borrow of `data_words()` never escapes.
+/// borrow of `words()` never escapes.
 macro_rules! assert_cv2 {
     ($ev:expr, $pat:pat $(if $guard:expr)?) => {
-        match UmpMessage::try_from($ev.data_words()).unwrap() {
+        match UmpMessage::try_from($ev.1.words()).unwrap() {
             UmpMessage::ChannelVoice2($pat) $(if $guard)? => {}
             other => panic!("unexpected message: {other:?}"),
         }
@@ -47,8 +70,8 @@ fn member_channel_bend_becomes_per_note_pitch_bend() {
         ingest
             .translate(&note_on(2, 60, 100))
             .next()
+            .map(|(_, ump)| MidiMessage::from_ump(ump).is_note_on())
             .unwrap()
-            .is_note_on()
     );
     // Channel bend on ch2 → per-note bend on note 60.
     let out = ingest
@@ -93,10 +116,9 @@ fn member_channel_pressure_becomes_per_note_pressure() {
     let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
     ingest.translate(&note_on(2, 60, 100));
     let out = ingest
-        .translate(&MidiEvent::channel_pressure(
-            MidiGroup::FIRST,
-            MidiChannel::of(2),
-            0xFFFF_FFFF,
+        .translate(&at(
+            0,
+            midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(2), 0xFFFF_FFFF),
         ))
         .next()
         .expect("emits");
@@ -113,8 +135,10 @@ fn bend_with_no_held_note_is_dropped() {
 #[test]
 fn native_per_note_passes_through() {
     let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
-    let native =
-        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF);
+    let native = at(
+        0,
+        midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF),
+    );
     let out = ingest.translate(&native).next().expect("passes");
     assert_cv2!(out, ChannelVoice2::PerNotePitchBend(_));
 }
@@ -143,12 +167,12 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     // Start disabled; an MCM on the master channel (0) declaring 7 members
     // must enable the lower zone from the wire (M2-104 §7.4.7).
     let mut ingest = MpeIngest::new(MpeMode::Disabled);
-    let mcm = MpeZoneConfig::lower(7).to_mcm();
+    let mcm = at(0, MpeZoneConfig::lower(7).to_mcm());
 
     // The MCM itself is absorbed (configuration, not a musical event);
     // what goes on is the zone's reset ranges, all registered controllers
     // (`an_mcm_resets_its_zones_bend_ranges`).
-    let reset: Vec<MidiEvent> = ingest.translate(&mcm).collect();
+    let reset: Vec<UmpAt> = ingest.translate(&mcm).collect();
     assert_eq!(reset.len(), 8, "master and seven members");
     assert!(!reset.contains(&mcm));
     assert!(matches!(ingest.mode(), MpeMode::LowerZone(_)));
@@ -168,12 +192,15 @@ fn mcm_with_zero_members_disables_the_zone() {
     // A raw MCM on master channel 0 with member_count == 0 disables the lower
     // zone. (`MpeZoneConfig::lower` clamps to >= 1, so the disabling value can
     // only come off the wire — build it directly.)
-    let disable = MidiEvent::registered_controller(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST, // lower-zone master channel
-        tutti_midi_types::ump::RPN_BANK_MPE,
-        tutti_midi_types::ump::RPN_INDEX_MCM,
-        0, // 0 members → disable
+    let disable = at(
+        0,
+        midi::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST, // lower-zone master channel
+            tutti_midi_types::ump::RPN_BANK_MPE,
+            tutti_midi_types::ump::RPN_INDEX_MCM,
+            0, // 0 members → disable
+        ),
     );
     assert!(ingest.translate(&disable).next().is_none());
     assert!(matches!(ingest.mode(), MpeMode::Disabled));
@@ -182,12 +209,12 @@ fn mcm_with_zero_members_disables_the_zone() {
 /// What a receiver following RPN #00/00 (channel bend range) and
 /// #00/07 (per-note bend range) per channel ends with after `events`:
 /// `(channel, index) → semitones`, in order of arrival.
-fn ranges_after(events: impl IntoIterator<Item = MidiEvent>) -> Vec<(u8, u8, f32)> {
+fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
     events
         .into_iter()
         .map(|ev| {
             let Ok(UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m))) =
-                UmpMessage::try_from(ev.data_words())
+                UmpMessage::try_from(ev.1.words())
             else {
                 panic!("{ev:?} is not a registered controller");
             };
@@ -224,25 +251,25 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(3)));
     let mut receiver = PerNoteBendRanges::default();
     for ev in ingest.translate(&bend_sensitivity(1, 12)) {
-        receiver.observe(&ev);
+        receiver.observe(&ev.1);
     }
-    let mcm = MpeZoneConfig::upper(3).to_mcm().with_frame_offset(9);
-    let reset: Vec<MidiEvent> = ingest.translate(&mcm).collect();
+    let mcm = at(9, MpeZoneConfig::upper(3).to_mcm());
+    let reset: Vec<UmpAt> = ingest.translate(&mcm).collect();
     assert!(matches!(ingest.mode(), MpeMode::DualZone { .. }));
-    assert!(reset.iter().all(|ev| ev.frame_offset == 9));
+    assert!(reset.iter().all(|ev| ev.0.get() == 9));
     assert_eq!(
         ranges_after(reset.iter().copied()),
         vec![(15, 0, 2.0), (12, 7, 48.0), (13, 7, 48.0), (14, 7, 48.0)]
     );
     // An upper member set to ±12, then the upper MCM again: the upper
     // members are back at ±48, the lower zone's ±12 stands.
-    let mcm = MpeZoneConfig::upper(3).to_mcm();
+    let mcm = at(0, MpeZoneConfig::upper(3).to_mcm());
     for ev in ingest.translate(&bend_sensitivity(13, 12)) {
-        receiver.observe(&ev);
+        receiver.observe(&ev.1);
     }
     assert_eq!(receiver.semitones(13), 12.0);
     for ev in ingest.translate(&mcm) {
-        receiver.observe(&ev);
+        receiver.observe(&ev.1);
     }
     for channel in 12..=14 {
         assert_eq!(receiver.semitones(channel), 48.0, "channel {channel}");
@@ -253,12 +280,15 @@ fn an_mcm_resets_its_zones_bend_ranges() {
         "the lower zone keeps its range"
     );
 
-    let disable = MidiEvent::registered_controller(
-        MidiGroup::FIRST,
-        MidiChannel::of(15),
-        RPN_BANK_MPE,
-        tutti_midi_types::ump::RPN_INDEX_MCM,
+    let disable = at(
         0,
+        midi::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::of(15),
+            RPN_BANK_MPE,
+            tutti_midi_types::ump::RPN_INDEX_MCM,
+            0,
+        ),
     );
     assert_eq!(ingest.translate(&disable).len(), 0);
 
@@ -267,7 +297,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
         lower: MpeZoneConfig::lower(2),
         upper: MpeZoneConfig::upper(1),
     });
-    let defaults = ingest.zone_defaults(MidiGroup::FIRST, 0);
+    let defaults = ingest.zone_defaults(MidiGroup::FIRST, Offset::ZERO);
     assert_eq!(defaults.len(), 5);
     assert_eq!(
         ranges_after(defaults),
@@ -280,18 +310,23 @@ fn an_mcm_resets_its_zones_bend_ranges() {
         ]
     );
     ingest.set_mode(MpeMode::Disabled);
-    assert_eq!(ingest.zone_defaults(MidiGroup::FIRST, 0).len(), 0);
+    assert_eq!(
+        ingest.zone_defaults(MidiGroup::FIRST, Offset::ZERO).len(),
+        0
+    );
 }
 
-fn bend_sensitivity(channel: u8, semitones: u8) -> MidiEvent {
-    MidiEvent::registered_controller(
-        MidiGroup::FIRST,
-        MidiChannel::of(channel),
-        tutti_midi_types::ump::RPN_BANK_MPE,
-        RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-        tutti_midi_types::PitchBendSensitivity::of(semitones).to_rpn_bits(),
+fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
+    at(
+        17,
+        midi::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::of(channel),
+            tutti_midi_types::ump::RPN_BANK_MPE,
+            RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+            tutti_midi_types::PitchBendSensitivity::of(semitones).to_rpn_bits(),
+        ),
     )
-    .with_frame_offset(17)
 }
 
 /// **A member channel's bend range is every member's per-note range; the
@@ -319,18 +354,18 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
     let mut receiver = PerNoteBendRanges::default();
 
     let master = bend_sensitivity(0, 2);
-    let out: Vec<MidiEvent> = ingest.translate(&master).collect();
+    let out: Vec<UmpAt> = ingest.translate(&master).collect();
     assert_eq!(out, vec![master], "the master's own range passes through");
-    assert!(!receiver.observe(&out[0]));
+    assert!(!receiver.observe(&out[0].1));
 
     for (member, semitones, channels) in [(2, 12, 1..=3), (13, 24, 12..=14)] {
         let fanned = ingest.translate(&bend_sensitivity(member, semitones));
         assert_eq!(fanned.len(), 3);
         let mut seen = Vec::new();
         for ev in fanned {
-            assert_eq!(ev.frame_offset, 17);
-            assert!(receiver.observe(&ev), "{ev:?} is RPN #00/07");
-            seen.push(ev.channel().map(MidiChannel::get));
+            assert_eq!(ev.0.get(), 17);
+            assert!(receiver.observe(&ev.1), "{ev:?} is RPN #00/07");
+            seen.push(Some(channel_of(&ev.1)));
         }
         assert_eq!(seen, channels.map(Some).collect::<Vec<_>>());
     }

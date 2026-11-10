@@ -28,13 +28,25 @@ use support::main_thread;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{
-    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, ParameterChanges,
-    TransportInfo,
+    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, ParameterChanges, TransportInfo,
 };
 // The reference plugin is a dev-dependency (cdylib + rlib), so we share its
 // `#[repr(C)]` capture type directly instead of hand-mirroring it — the
 // host dlopens the cdylib, the test reads the capture through this type.
 use tutti_clap_test_plugin::ProcessCapture;
+use tutti_fixtures::midi as fx;
+use tutti_graph::Offset;
+use tutti_types::Samples;
+
+/// A block long enough for every offset these tests use. The test that sends
+/// 9,999 drives a shorter block on purpose: the host clamps what the caller
+/// hands it, and that is what the case is for.
+const OFFSET_BLOCK: usize = 10_000;
+
+/// The offset `k` frames into the block.
+fn at(k: u32) -> Offset {
+    Offset::new(k as usize, Samples(OFFSET_BLOCK)).expect("inside the block")
+}
 
 // CLAP event type constants we assert against (from clap-sys).
 const CLAP_EVENT_NOTE_ON: u16 = 0;
@@ -165,9 +177,18 @@ fn host_sorts_events_by_sample_offset() {
     // present them to the plugin in non-decreasing time order
     // (instance/audio.rs `sort_by_time`).
     let midi = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(200),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000).with_frame_offset(50),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000).with_frame_offset(100),
+        (
+            at(200),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        ),
+        (
+            at(50),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000),
+        ),
+        (
+            at(100),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000),
+        ),
     ];
     let ctx = ClapProcessContext {
         midi: &midi,
@@ -240,10 +261,10 @@ fn host_never_delivers_an_event_time_outside_the_block() {
     params.add_change(REAL_PARAM_ID, -1, 0.5); // negative → must not wrap
     params.add_change(REAL_PARAM_ID, 100_000, 0.9); // past the block → must clamp
     params.add_change(REAL_PARAM_ID, 64, 0.25); // in range → untouched
-    let midi = [
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
-            .with_frame_offset(9_999),
-    ];
+    let midi = [(
+        at(9_999),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+    )];
     let ctx = ClapProcessContext {
         midi: &midi,
         params: Some(&params),

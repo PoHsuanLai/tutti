@@ -18,7 +18,7 @@
 //! A per-frame system firing notes as the beat passes them is the obvious
 //! design, and it cannot be sample-accurate, for three independent reasons:
 //!
-//! - `frame_offset` is meaningful only relative to the block that *pops* the
+//! - an event's `Offset` is meaningful only relative to the block that *pops* the
 //!   event, and an off-thread producer cannot know which block that will be.
 //! - The block size is not published off-thread; it comes from the device
 //!   buffer, per callback.

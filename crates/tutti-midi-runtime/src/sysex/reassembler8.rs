@@ -17,10 +17,12 @@
 //! Buffering per group alone would concatenate them into one corrupt payload.
 
 use tutti_midi_types::ump::{
-    MidiEvent, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,
-    SYSEX8_STATUS_START, UmpMessageType, sysex8_message,
+    SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE, SYSEX8_STATUS_START,
+    UmpMessageType, is_sysex8_abort, message_type, sysex8_header, sysex8_message,
 };
-use tutti_ump::MidiGroup;
+use tutti_ump::{MidiGroup, Ump};
+
+use crate::group::group_of;
 
 /// Default cap on a reassembled SysEx8 payload, in bytes. See
 /// [`Sysex8PacketReassembler::with_max_bytes`].
@@ -47,7 +49,7 @@ pub enum Sysex8Abort {
 struct InFlight {
     group: MidiGroup,
     stream_id: u8,
-    packets: Vec<MidiEvent>,
+    packets: Vec<Ump>,
 }
 
 /// What [`Sysex8PacketReassembler::push`] produced for one event.
@@ -116,12 +118,12 @@ impl Sysex8PacketReassembler {
     /// Unlike the SysEx7 reassembler this never terminates a run on unrelated
     /// traffic: §7.8.1 permits interspersing, and the Stream ID is what keeps
     /// concurrent messages apart.
-    pub fn push(&mut self, event: &MidiEvent) -> Option<Sysex8Event> {
-        if event.message_type() != UmpMessageType::Sysex8 {
+    pub fn push(&mut self, event: &Ump) -> Option<Sysex8Event> {
+        if message_type(event) != UmpMessageType::Sysex8 {
             return None;
         }
-        let group = event.group();
-        let (status, stream_id, _bytes) = event.sysex8_header()?;
+        let group = group_of(event);
+        let (status, stream_id, _bytes) = sysex8_header(event)?;
 
         match status {
             SYSEX8_STATUS_SINGLE => {
@@ -157,7 +159,7 @@ impl Sysex8PacketReassembler {
                 // §7.8: "The special value 0xF is used in an End UMP to abort a
                 // System Exclusive 8 message." The partial data is explicitly
                 // untrustworthy, so report the abort rather than a payload.
-                if event.is_sysex8_abort() {
+                if is_sysex8_abort(event) {
                     return Some(Sysex8Event::Aborted {
                         stream_id,
                         reason: Sysex8Abort::SenderAborted,
@@ -171,7 +173,7 @@ impl Sysex8PacketReassembler {
     }
 
     /// Decode a complete packet run, reporting an abort if it doesn't parse.
-    fn finish(stream_id: u8, run: &[MidiEvent]) -> Sysex8Event {
+    fn finish(stream_id: u8, run: &[Ump]) -> Sysex8Event {
         match sysex8_message(run) {
             Some((sid, payload)) => Sysex8Event::Message {
                 stream_id: sid,
@@ -195,7 +197,7 @@ impl Sysex8PacketReassembler {
             .find(|e| e.group == group && e.stream_id == stream_id)
     }
 
-    fn take(&mut self, group: MidiGroup, stream_id: u8) -> Option<Vec<MidiEvent>> {
+    fn take(&mut self, group: MidiGroup, stream_id: u8) -> Option<Vec<Ump>> {
         let idx = self
             .in_flight
             .iter()

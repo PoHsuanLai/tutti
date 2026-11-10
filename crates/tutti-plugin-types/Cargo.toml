@@ -41,6 +41,8 @@ tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # plugin-width narrowing of that vocabulary's element type, and `AudioBuffer`
 # names its roles in the doc contract.
 tutti-types = { path = "../tutti-types" }
+# `Offset`: where a block's MIDI sits (`ProcessContext::midi_events`, `WireMidi::at`).
+tutti-graph = { path = "../tutti-graph" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }

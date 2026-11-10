@@ -1,4 +1,5 @@
 use super::*;
+use tutti_fixtures::midi;
 use tutti_ump::MidiChannel;
 use tutti_ump::MidiGroup;
 
@@ -41,42 +42,42 @@ fn test_basic_beat_counting() {
 #[test]
 fn song_position_then_continue_resumes_at_spp_times_six_ticks() {
     let mut clock = MidiClockDecoder::new();
-    assert!(clock.feed(&MidiEvent::song_position(MidiGroup::FIRST, 0x0123), 0));
+    assert!(clock.feed(&midi::song_position(MidiGroup::FIRST, 0x0123), 0));
     // 0x0123 sixteenths = 291 × 6 ticks.
     assert!((clock.beat_position() - 291.0 * 6.0 / 24.0).abs() < 1e-9);
-    assert!(clock.feed(&MidiEvent::continue_msg(MidiGroup::FIRST), 0));
+    assert!(clock.feed(&midi::continue_msg(MidiGroup::FIRST), 0));
     let mut ts = 0;
     for _ in 0..24 {
-        clock.feed(&MidiEvent::timing_clock(MidiGroup::FIRST), ts);
+        clock.feed(&midi::timing_clock(MidiGroup::FIRST), ts);
         ts += us_per_tick(120.0);
     }
     assert!((clock.beat_position() - (291.0 * 6.0 / 24.0 + 1.0)).abs() < 1e-9);
     // A Start begins at zero whatever the pointer said.
-    clock.feed(&MidiEvent::start(MidiGroup::FIRST), ts);
+    clock.feed(&midi::start(MidiGroup::FIRST), ts);
     assert_eq!(clock.beat_position(), 0.0);
 }
 
 #[test]
 fn feed_dispatches_transport_events_like_the_direct_methods() {
     let mut clock = MidiClockDecoder::new();
-    // Start via a real MidiEvent, then advance a beat of clock ticks.
-    assert!(clock.feed(&MidiEvent::start(MidiGroup::FIRST), 0));
+    // Start via a real System packet, then advance a beat of clock ticks.
+    assert!(clock.feed(&midi::start(MidiGroup::FIRST), 0));
     assert_eq!(clock.transport_state(), ClockTransportState::Playing);
 
     let interval = us_per_tick(120.0);
     let mut ts = 0u64;
     for _ in 0..24 {
-        assert!(clock.feed(&MidiEvent::timing_clock(MidiGroup::FIRST), ts));
+        assert!(clock.feed(&midi::timing_clock(MidiGroup::FIRST), ts));
         ts += interval;
     }
     assert!((clock.beat_position() - 1.0).abs() < 0.001);
 
-    assert!(clock.feed(&MidiEvent::stop(MidiGroup::FIRST), ts));
+    assert!(clock.feed(&midi::stop(MidiGroup::FIRST), ts));
     assert_eq!(clock.transport_state(), ClockTransportState::Stopped);
 
     // A non-transport event is ignored and reported as unrecognised.
     assert!(!clock.feed(
-        &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        &midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
         ts
     ));
 }

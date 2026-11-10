@@ -7,7 +7,7 @@
 //! incoming stream to derive transport state, this reads the transport to
 //! *produce* the stream. It is ticked once per transport segment of a block,
 //! on the audio thread, by a [`ClockNode`](crate::ClockNode), and stamps each
-//! event it emits with a sample-accurate `frame_offset`, so receiving gear
+//! event it emits with a sample-accurate [`Offset`], so receiving gear
 //! locks tightly instead of chasing frame-quantised jitter. The node sends
 //! them out of an event port; wire it to a [`MidiOutNode`](crate::MidiOutNode)
 //! for a hardware pump to drain.
@@ -31,12 +31,12 @@
 //!   (when `send_mtc` is set).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use tutti_ump::MidiGroup;
+use tutti_graph::UmpAt;
+use tutti_ump::{Message, MidiGroup, System, U7, U14, Ump};
 
 use atomic_float::AtomicF64;
-use tutti_graph::Transport;
+use tutti_graph::{Offset, Transport};
 use tutti_midi_types::sync::{SmpteFrameRate, SmpteTimecode};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_types::{
     Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, first_frame_at_or_after,
 };
@@ -132,6 +132,11 @@ struct MtcGrid {
 }
 
 impl ClockMaster {
+    /// A System message on this master's group.
+    fn system(&self, message: System) -> Ump {
+        Message::System(self.group, message).into()
+    }
+
     /// A clock master placing events at `sample_rate`. Starts **disabled**;
     /// call [`set_enabled`](Self::set_enabled) once a hardware output is
     /// connected.
@@ -283,13 +288,13 @@ impl ClockMaster {
     }
 
     /// Generate the clock/timecode of `block_size` frames starting with the
-    /// transport at `transport`, handing each event (its `frame_offset` from
+    /// transport at `transport`, handing each event (its [`Offset`] from
     /// the first of those frames) to `emit`. Call once per stretch of
     /// unchanging transport: a block, or each of its segments.
     ///
     /// Events come out in the order generated, not by offset: in each pass
     /// (the block cut at a loop wrap) the MTC quarter-frames follow its ticks.
-    pub fn tick(&self, transport: &Transport, block_size: usize, emit: &mut impl FnMut(MidiEvent)) {
+    pub fn tick(&self, transport: &Transport, block_size: usize, emit: &mut impl FnMut(UmpAt)) {
         // Once per block: a rate moved mid-block would split it in two. A
         // counted transport carries the rate its block runs at, and that is
         // the one its clock is rebuilt at (a master re-rated between the
@@ -315,18 +320,18 @@ impl ClockMaster {
         // --- transport edges -------------------------------------------------
         if playing && !was_playing {
             if beat.get().abs() <= START_EPSILON_BEATS {
-                emit(MidiEvent::start(self.group));
+                emit((Offset::ZERO, self.system(System::Start)));
             } else {
-                emit(MidiEvent::song_position(
-                    self.group,
-                    beats_to_midi_beats(beat),
+                emit((
+                    Offset::ZERO,
+                    self.system(System::SongPosition(beats_to_midi_beats(beat))),
                 ));
-                emit(MidiEvent::continue_msg(self.group));
+                emit((Offset::ZERO, self.system(System::Continue)));
             }
             // Realign the MTC grid to the (possibly non-zero) start beat.
             self.restart_mtc();
         } else if !playing && was_playing {
-            emit(MidiEvent::stop(self.group));
+            emit((Offset::ZERO, self.system(System::Stop)));
             self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
@@ -354,9 +359,9 @@ impl ClockMaster {
         let located = (beat - prev_end).abs() > BeatDuration(SEEK_EPSILON_BEATS);
         let wrapped = self.prev.wrapped.load(Ordering::Acquire);
         if !is_edge && (located || wrapped) {
-            emit(MidiEvent::song_position(
-                self.group,
-                beats_to_midi_beats(beat),
+            emit((
+                Offset::ZERO,
+                self.system(System::SongPosition(beats_to_midi_beats(beat))),
             ));
             self.restart_mtc();
         }
@@ -375,15 +380,15 @@ impl ClockMaster {
         for pass in clock.passes(Samples(block_size), region) {
             ends_on_wrap = pass.end == PassEnd::Wrap;
             if !pass.start.is_zero() {
-                emit(
-                    MidiEvent::song_position(self.group, beats_to_midi_beats(pass.beat))
-                        .with_frame_offset(frame_offset(pass.start.get())),
-                );
+                emit((
+                    frame_offset(pass.start.get(), block_size),
+                    self.system(System::SongPosition(beats_to_midi_beats(pass.beat))),
+                ));
                 self.restart_mtc();
             }
-            self.tick_clock(&pass, beats_per_sample, emit);
+            self.tick_clock(&pass, block_size, beats_per_sample, emit);
             if self.send_mtc.load(Ordering::Acquire) {
-                self.tick_mtc(&pass, sample_rate, beats_per_sample, emit);
+                self.tick_mtc(&pass, block_size, sample_rate, beats_per_sample, emit);
             }
         }
         self.prev.end.store(clock.beat().get(), Ordering::Release);
@@ -412,8 +417,9 @@ impl ClockMaster {
     fn tick_clock(
         &self,
         pass: &Pass,
+        block_size: usize,
         beats_per_sample: BeatDuration,
-        emit: &mut impl FnMut(MidiEvent),
+        emit: &mut impl FnMut(UmpAt),
     ) {
         let tick_beats = BeatDuration(1.0 / PPQN);
         // The tick at or before the pass's first beat: its frame is 0 (on the
@@ -428,10 +434,10 @@ impl ClockMaster {
                 continue;
             }
             match usize::try_from(k) {
-                Ok(k) if k < pass.len.get() => emit(
-                    MidiEvent::timing_clock(self.group)
-                        .with_frame_offset(frame_offset(pass.start.get() + k)),
-                ),
+                Ok(k) if k < pass.len.get() => emit((
+                    frame_offset(pass.start.get() + k, block_size),
+                    self.system(System::TimingClock),
+                )),
                 _ => break,
             }
         }
@@ -446,9 +452,10 @@ impl ClockMaster {
     fn tick_mtc(
         &self,
         pass: &Pass,
+        block_size: usize,
         sample_rate: SampleRate,
         beats_per_sample: BeatDuration,
-        emit: &mut impl FnMut(MidiEvent),
+        emit: &mut impl FnMut(UmpAt),
     ) {
         let (beat, len) = (pass.beat, pass.len.get());
         let fps = self.fps();
@@ -510,10 +517,12 @@ impl ClockMaster {
                 cycle = mtc_cycle_nibbles(&tc, fps);
             }
             let nibble = (piece << 4) | ((cycle >> (4 * u32::from(piece))) & 0x0F) as u8;
-            emit(
-                MidiEvent::mtc_quarter_frame(self.group, nibble)
-                    .with_frame_offset(frame_offset(sample_offset)),
-            );
+            emit((
+                frame_offset(sample_offset, block_size),
+                self.system(System::TimeCode(
+                    U7::new(nibble).expect("a piece below 8 and a nibble fit 7 bits"),
+                )),
+            ));
             next += 1;
         }
 
@@ -523,19 +532,24 @@ impl ClockMaster {
     }
 }
 
-/// A frame index as an event's offset; a block is never near `u32::MAX`
-/// frames, so the saturation is unreachable.
-fn frame_offset(frames: usize) -> u32 {
-    u32::try_from(frames).unwrap_or(u32::MAX)
+/// A frame index as an event's offset in a block of `block_size` frames. Every
+/// frame placed is inside the block, so the clamp onto the last frame (what the
+/// node did to a stray offset) is unreachable.
+fn frame_offset(frames: usize, block_size: usize) -> Offset {
+    Offset::new(
+        frames.min(block_size.saturating_sub(1)),
+        Samples(block_size),
+    )
+    .unwrap_or(Offset::ZERO)
 }
 
 /// Convert a beat position to MIDI beats (1/16 notes) for Song Position, which
 /// counts sixteenth-notes from the start (M2-104 §7.6, 0xF2). Clamped to the
 /// 14-bit field; the constructor masks, but clamping keeps semantics sane.
 #[inline]
-fn beats_to_midi_beats(beat: Beat) -> u16 {
+fn beats_to_midi_beats(beat: Beat) -> U14 {
     let sixteenths = (beat.get().max(0.0) * 4.0).round();
-    sixteenths.min(0x3FFF as f64) as u16
+    U14::new(sixteenths.min(0x3FFF as f64) as u16).expect("clamped to 14 bits")
 }
 
 /// The timecode at `position` samples from transport beat 0 at `rate` Hz: the

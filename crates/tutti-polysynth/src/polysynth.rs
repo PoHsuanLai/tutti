@@ -17,13 +17,15 @@ use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
+use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_protocol::narrow_value;
 use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::mpe::PitchBendSensitivity;
 use tutti_midi_types::ump::{
-    MidiEvent, RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+    RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
 use tutti_midi_types::{NoteId, cc};
@@ -96,7 +98,7 @@ pub struct PolySynth {
     /// or an infinity into reads as this, not as itself.
     last_volume: f32,
     /// The block's MIDI, sorted by offset: its event input's.
-    midi_buffer: Vec<MidiEvent>,
+    midi_buffer: Vec<UmpAt>,
     /// Voices that finished this span. Sized to `max_voices` and only cleared,
     /// so it never allocates on the audio thread.
     finished_indices: Vec<usize>,
@@ -162,7 +164,7 @@ impl PolySynth {
             mpe_range_default,
             master_volume,
             last_volume: Amplitude::UNITY.get(),
-            midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
+            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(max_voices),
         })
     }
@@ -861,7 +863,7 @@ impl PolySynth {
         let mut walk = BlockSplitter::new(size, Overrun::Defer);
         while let Some(step) = walk.step(&self.midi_buffer[..midi_count]) {
             match step {
-                Step::Event(event) => self.process_midi_event(Ump(event.data)),
+                Step::Event((_, ump)) => self.process_midi_event(ump),
                 Step::Span(span) => self.render_span(span.start, span.len(), volume, emit),
             }
         }
@@ -918,7 +920,7 @@ impl Clone for PolySynth {
             mpe_range_default: self.mpe_range_default,
             master_volume: self.master_volume.clone(),
             last_volume: self.last_volume,
-            midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
+            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }

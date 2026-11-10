@@ -3,7 +3,7 @@
 //!
 //! The control thread pushes into a [`MidiSender`] (the node's controls);
 //! each block the node drains what arrived and sends it out, every event on
-//! its `frame_offset` clamped into the block (what a control thread builds
+//! its stamp clamped into the block (what a control thread builds
 //! has offset 0: the block's first frame). Wire the port to the node that
 //! should hear it; to reach several, wire it to each.
 //!
@@ -14,11 +14,11 @@ use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
 };
-use tutti_midi_types::ump::MidiEvent;
 use tutti_types::ChannelLayout;
+use tutti_ump::Ump;
 
 use super::mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
-use super::order::{in_offset_order, offset_of};
+use super::order::{clamp_stamp, in_offset_order};
 
 /// A [`MidiQueueNode`]'s ring, and its event port's declared capacity.
 pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
@@ -28,18 +28,18 @@ pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
 ///
 /// ```
 /// use tutti_types::{NodeKey, SampleRate, Samples};
-/// use tutti_ump::MidiChannel;
+/// use tutti_ump::{MidiChannel, NoteNumber, U7};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiQueueNode;
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
 /// let keys = editor.insert(NodeKey(1), "keyboard", MidiQueueNode::new());
-/// assert!(keys.note_on(MidiChannel::FIRST, 60, 100));
+/// assert!(keys.note_on(MidiChannel::FIRST, NoteNumber::new(60).unwrap(), U7::new(100).unwrap()));
 /// ```
 pub struct MidiQueueNode {
     rx: MidiReceiver,
     tx: MidiSender,
-    scratch: Box<[MidiEvent]>,
+    scratch: Box<[(u32, Ump)]>,
 }
 
 impl std::fmt::Debug for MidiQueueNode {
@@ -59,7 +59,7 @@ impl MidiQueueNode {
         Self {
             rx,
             tx,
-            scratch: vec![MidiEvent::noop(); MIDI_QUEUE_CAPACITY].into_boxed_slice(),
+            scratch: vec![(0, Ump([0; 4])); MIDI_QUEUE_CAPACITY].into_boxed_slice(),
         }
     }
 }
@@ -89,7 +89,7 @@ impl Node for MidiQueueNode {
         in_offset_order(events);
         let out = io.event_out(0);
         for ev in events.iter() {
-            let _ = out.push(Event::midi(offset_of(ev, block_len), ev.data));
+            let _ = out.push(Event::midi(clamp_stamp(ev.0, block_len), ev.1.0));
         }
         Status::Modified
     }

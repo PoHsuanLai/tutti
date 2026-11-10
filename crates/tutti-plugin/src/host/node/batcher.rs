@@ -70,7 +70,7 @@ use super::fork::ForkWatch;
 use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
-use crate::protocol::{MidiEvent, MidiEventVec, ParameterChanges, SampleFormat};
+use crate::protocol::{MidiEventVec, ParameterChanges, SampleFormat, WireMidi};
 use crate::util::transport::shm::AudioSlab;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -208,7 +208,7 @@ pub(super) trait Chunks {
     /// One of those events, at frame `frame` of this call: where the ring
     /// plays the chunk frame it was emitted at, so it keeps its place against
     /// the plugin's audio. Called in frame order.
-    fn emit(&mut self, frame: usize, event: MidiEvent);
+    fn emit(&mut self, frame: usize, event: WireMidi);
 }
 
 /// The pipeline between the plugin node and the plugin-server bridge: an
@@ -514,9 +514,9 @@ impl Batcher {
         bridge.take_replies(self.expect_seq.unwrap_or(0), &mut self.reply);
         let last = u32::try_from(chunk.saturating_sub(1)).unwrap_or(u32::MAX);
         for e in self.reply.iter_mut() {
-            e.frame_offset = e.frame_offset.min(last);
+            e.offset = e.offset.min(last);
         }
-        tutti_plugin_types::insertion_sort_by_key(&mut self.reply, |e| e.frame_offset);
+        tutti_plugin_types::insertion_sort_by_key(&mut self.reply, |e| e.offset);
         host.midi_out(&self.reply);
         self.expect_seq = None;
         self.counters.in_flight.store(0, Ordering::Release);
@@ -600,11 +600,9 @@ impl Batcher {
             for (row, out) in self.ring.iter().zip(output.iter_mut()) {
                 out[i..i + n].copy_from_slice(&row[at..to]);
             }
-            let first = self
-                .reply
-                .partition_point(|e| (e.frame_offset as usize) < at);
+            let first = self.reply.partition_point(|e| (e.offset as usize) < at);
             for e in &self.reply[first..] {
-                let o = e.frame_offset as usize;
+                let o = e.offset as usize;
                 if o >= to {
                     break;
                 }

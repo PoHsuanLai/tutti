@@ -28,7 +28,7 @@ use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, MidiInputNode};
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_transport::Transport;
 use tutti_types::{NodeKey, SampleRate};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -397,7 +397,11 @@ mod keyboard {
         app.world_mut().entity_mut(lead).insert(LiveMidiInput);
         app.update();
         let keys = app.world().get::<LiveMidi>(lead).unwrap().clone();
-        assert!(keys.note_on(MidiChannel::FIRST, 69, 100));
+        assert!(keys.note_on(
+            MidiChannel::FIRST,
+            NoteNumber::new(69).unwrap(),
+            U7::new(100).unwrap()
+        ));
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let mut peak = 0.0f32;
         for _ in 0..2_048 {

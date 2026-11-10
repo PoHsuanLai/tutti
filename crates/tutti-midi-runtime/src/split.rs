@@ -1,7 +1,7 @@
 //! Cutting a block at its MIDI events.
 
 use core::ops::Range;
-use tutti_midi_types::MidiEvent;
+use tutti_graph::UmpAt;
 
 /// What to do with an event whose offset is at or past the block's end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub enum Overrun {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Apply this event to the instrument now.
-    Event(MidiEvent),
+    Event(UmpAt),
     /// Render these frames, which no event falls inside.
     Span(Range<usize>),
 }
@@ -57,8 +57,8 @@ impl BlockSplitter {
 
     /// Where `event` takes effect in this block.
     #[inline]
-    fn offset_of(&self, event: &MidiEvent) -> usize {
-        let at = event.frame_offset as usize;
+    fn offset_of(&self, event: &UmpAt) -> usize {
+        let at = event.0.index();
         match self.overrun {
             Overrun::Defer => at,
             Overrun::ClampToLastFrame => at.min(self.size.saturating_sub(1)),
@@ -69,7 +69,7 @@ impl BlockSplitter {
     /// call), or `None` when the block is done.
     #[inline]
     #[must_use]
-    pub fn step(&mut self, events: &[MidiEvent]) -> Option<Step> {
+    pub fn step(&mut self, events: &[UmpAt]) -> Option<Step> {
         let due = events.get(self.next_event);
         if let Some(event) = due
             && (self.pos >= self.size || self.offset_of(event) <= self.pos)
@@ -94,22 +94,29 @@ impl BlockSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
+    use tutti_types::Samples;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    fn at(offset: u32, note: u8) -> MidiEvent {
-        let mut e = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xFFFF);
-        e.frame_offset = offset;
-        e
+    /// An event at `offset`, which may lie past the walked block: it is built
+    /// against a block long enough to hold it.
+    fn at(offset: u32, note: u8) -> UmpAt {
+        let long = Samples(1 << 20);
+        (
+            Offset::new(offset as usize, long).unwrap(),
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xFFFF),
+        )
     }
 
-    fn walk(size: usize, overrun: Overrun, events: &[MidiEvent]) -> Vec<String> {
+    fn walk(size: usize, overrun: Overrun, events: &[UmpAt]) -> Vec<String> {
         let mut split = BlockSplitter::new(size, overrun);
         let mut out = Vec::new();
         while let Some(step) = split.step(events) {
             // A splitter that stops advancing fails here instead of hanging.
             assert!(out.len() < 64, "the walk does not terminate: {out:?}");
             out.push(match step {
-                Step::Event(e) => format!("e{}@{}", (e.data[0] >> 8) & 0x7f, e.frame_offset),
+                Step::Event(e) => format!("e{}@{}", (e.1.0[0] >> 8) & 0x7f, e.0.get()),
                 Step::Span(r) => format!("{}..{}", r.start, r.end),
             });
         }

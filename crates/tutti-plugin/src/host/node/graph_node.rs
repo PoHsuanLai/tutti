@@ -25,7 +25,7 @@ use super::transport_source::{self, HostClock, ProjectTime, SteadyTime};
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{
-    ChordValue, Features, MidiEvent, MidiEventVec, ParameterChanges, ScaleValue, TransportInfo,
+    ChordValue, Features, MidiEventVec, ParameterChanges, ScaleValue, TransportInfo, WireMidi,
 };
 
 impl<S> PluginClient<S> {
@@ -212,11 +212,11 @@ impl Node for PluginClient<Bound> {
         if io.event_output_count() > 0 {
             let out = io.event_out(0);
             for e in out_events.iter() {
-                let Some(at) = cx.env.offset(e.frame_offset as usize) else {
+                let Some(at) = cx.env.offset(e.offset as usize) else {
                     continue;
                 };
                 // Refused past the port's capacity: counted by the executor.
-                let _ = out.push(Event::midi(at, e.data));
+                let _ = out.push(Event::midi(at, e.ump.0));
             }
         }
         // Never reset, not even by `prepare`: see `SteadyTime`. (Not pinned
@@ -349,7 +349,10 @@ impl Chunks for PluginChunks<'_> {
             params,
             |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
-                    let event = MidiEvent::from_ump(frame as u32, &ump.0);
+                    let event = WireMidi {
+                        offset: frame as u32,
+                        ump,
+                    };
                     midi_dropped += intake.push_displacing(&mut pending.midi, event);
                 }
                 EventKind::Harmony(h) => {
@@ -368,7 +371,7 @@ impl Chunks for PluginChunks<'_> {
     /// came in. A stable insertion sort, in place: the list is short, and
     /// already sorted unless a chunk's frames came in out of order.
     fn payload(&mut self, _frames: usize) -> BlockPayload {
-        tutti_plugin_types::insertion_sort_by_key(&mut self.pending.midi, |e| e.frame_offset);
+        tutti_plugin_types::insertion_sort_by_key(&mut self.pending.midi, |e| e.offset);
         std::mem::take(self.pending)
     }
 
@@ -398,11 +401,11 @@ impl Chunks for PluginChunks<'_> {
     /// ([`emit`](Chunks::emit)).
     fn midi_out(&mut self, _events: &MidiEventVec) {}
 
-    fn emit(&mut self, frame: usize, mut event: MidiEvent) {
+    fn emit(&mut self, frame: usize, mut event: WireMidi) {
         if !self.features.contains(Features::MIDI_OUT) {
             return;
         }
-        event.frame_offset = u32::try_from(frame).unwrap_or(u32::MAX);
+        event.offset = u32::try_from(frame).unwrap_or(u32::MAX);
         // Past the cap the event is dropped.
         let _ = self.out_events.try_push(event);
     }
@@ -505,17 +508,19 @@ mod loss_tests {
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// A 30-byte dump's five packets.
-    fn dump() -> Vec<MidiEvent> {
+    fn dump() -> Vec<WireMidi> {
         let payload: Vec<u8> = (0..30).collect();
         let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+        tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
         assert_eq!(out.len(), 5);
-        out
+        out.into_iter()
+            .map(|ump| WireMidi { offset: 0, ump })
+            .collect()
     }
 
     /// `f` on the chunks of a node whose intake took `taken` into its
     /// pending chunk; what the node counted, and its intake after.
-    fn on_chunks(taken: &[MidiEvent], f: impl FnOnce(&mut PluginChunks<'_>)) -> (u64, MidiIntake) {
+    fn on_chunks(taken: &[WireMidi], f: impl FnOnce(&mut PluginChunks<'_>)) -> (u64, MidiIntake) {
         let counters = Arc::new(DeliveryCounters::default());
         let mut params = ParamDelivery::new([], Arc::clone(&counters));
         let mut intake = MidiIntake::default();
@@ -566,7 +571,10 @@ mod loss_tests {
     #[test]
     fn an_unsent_chunk_is_counted_and_cuts_its_sysex() {
         let dump = dump();
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+        let note = WireMidi {
+            offset: 0,
+            ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+        };
         let taken = [dump[0], dump[1], dump[2], note];
         let (dropped, mut intake) = on_chunks(&taken, |c| c.unsent());
         assert_eq!(dropped, 4);

@@ -4,14 +4,14 @@
 //! events" — tempo, time signature, key signature, metronome, chord names, and
 //! text/lyrics (M2-104 §7.5). They are group-scoped (no channel).
 //!
-//! Three shapes live here, all following the [`super`] constructor idiom:
+//! Three shapes live here, all free functions over [`Ump`]:
 //! - **Fixed-size setup/performance** — tempo, time signature, metronome, key
-//!   signature, chord name: inherent `MidiEvent::flex_set_*` methods over a
-//!   `[u32; 4]` midi2 builder, with a matching decoder.
+//!   signature, chord name: `flex_set_*` functions over a `[u32; 4]` midi2
+//!   builder, with a matching decoder.
 //! - **Variable-length text/metadata** — the ~19 UTF-8 messages (project /
 //!   composition / clip name, lyrics, copyright, performer names, …): the free
 //!   function [`push_flex_text`] (a text may span several 128-bit packets, so it
-//!   appends one or more [`MidiEvent`]s to an `&mut Vec`, mirroring
+//!   appends one or more [`Ump`]s to an `&mut Vec`, mirroring
 //!   [`super::endpoint_name`]) plus the [`flex_text`] decoder.
 //!
 //! The midi2 field enums (`Tonic`, chord/key `SharpsFlats`, `ChordType`,
@@ -21,9 +21,7 @@
 
 use midi2::prelude::*;
 use tutti_types::Bpm;
-use tutti_ump::MidiGroup;
-
-use super::MidiEvent;
+use tutti_ump::{MidiGroup, Ump};
 
 /// The tonic (root pitch class) of a key signature or chord (M2-104 §7.5.9/§7.5.10).
 /// Re-export of midi2's `flex_data::Tonic` so consumers avoid a `midi2` import.
@@ -117,116 +115,109 @@ pub const fn ten_ns_per_quarter_to_bpm(ten_ns_per_qn: u32) -> Option<Bpm> {
     }
 }
 
-impl MidiEvent {
-    /// Flex Data **Set Tempo** from beats-per-minute. See
-    /// [`bpm_to_ten_ns_per_quarter`] for the BPM ↔ wire-field conversion.
-    #[inline]
-    pub fn flex_set_tempo(group: MidiGroup, bpm: Bpm) -> Self {
-        use midi2::flex_data::SetTempo;
-        let mut m = SetTempo::<[u32; 4]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_number_of_10_nanosecond_units_per_quarter_note(bpm_to_ten_ns_per_quarter(bpm));
-        Self::from_ump(0, m.data())
-    }
+/// Flex Data **Set Tempo** from beats-per-minute. See
+/// [`bpm_to_ten_ns_per_quarter`] for the BPM ↔ wire-field conversion.
+#[inline]
+pub fn flex_set_tempo(group: MidiGroup, bpm: Bpm) -> Ump {
+    use midi2::flex_data::SetTempo;
+    let mut m = SetTempo::<[u32; 4]>::new();
+    m.set_group(u4::new(group.get()));
+    m.set_number_of_10_nanosecond_units_per_quarter_note(bpm_to_ten_ns_per_quarter(bpm));
+    super::packet_from(m.data())
+}
 
-    /// Flex Data **Set Time Signature**. `numerator`/`denominator` are the beats
-    /// per bar and the beat unit; `num_32nd_notes` is the number of 1/32 notes
-    /// per quarter note (usually 8).
-    #[inline]
-    pub fn flex_set_time_signature(
-        group: MidiGroup,
-        numerator: u8,
-        denominator: u8,
-        num_32nd_notes: u8,
-    ) -> Self {
-        use midi2::flex_data::SetTimeSignature;
-        let mut m = SetTimeSignature::<[u32; 4]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_numerator(numerator);
-        m.set_denominator(denominator);
-        m.set_number_of_32nd_notes(num_32nd_notes);
-        Self::from_ump(0, m.data())
-    }
+/// Flex Data **Set Time Signature**. `numerator`/`denominator` are the beats
+/// per bar and the beat unit; `num_32nd_notes` is the number of 1/32 notes
+/// per quarter note (usually 8).
+#[inline]
+pub fn flex_set_time_signature(
+    group: MidiGroup,
+    numerator: u8,
+    denominator: u8,
+    num_32nd_notes: u8,
+) -> Ump {
+    use midi2::flex_data::SetTimeSignature;
+    let mut m = SetTimeSignature::<[u32; 4]>::new();
+    m.set_group(u4::new(group.get()));
+    m.set_numerator(numerator);
+    m.set_denominator(denominator);
+    m.set_number_of_32nd_notes(num_32nd_notes);
+    super::packet_from(m.data())
+}
 
-    /// Flex Data **Set Metronome**. `clocks_per_click` = MIDI clocks per primary
-    /// click; `accents` marks which bar subdivisions are accented.
-    #[inline]
-    pub fn flex_set_metronome(group: MidiGroup, clocks_per_click: u8, accents: BarAccents) -> Self {
-        use midi2::flex_data::SetMetronome;
-        let mut m = SetMetronome::<[u32; 4]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_number_of_clocks_per_primary_click(clocks_per_click);
-        m.set_bar_accent1(accents.primary);
-        m.set_bar_accent2(accents.secondary);
-        m.set_bar_accent3(accents.tertiary);
-        Self::from_ump(0, m.data())
-    }
+/// Flex Data **Set Metronome**. `clocks_per_click` = MIDI clocks per primary
+/// click; `accents` marks which bar subdivisions are accented.
+#[inline]
+pub fn flex_set_metronome(group: MidiGroup, clocks_per_click: u8, accents: BarAccents) -> Ump {
+    use midi2::flex_data::SetMetronome;
+    let mut m = SetMetronome::<[u32; 4]>::new();
+    m.set_group(u4::new(group.get()));
+    m.set_number_of_clocks_per_primary_click(clocks_per_click);
+    m.set_bar_accent1(accents.primary);
+    m.set_bar_accent2(accents.secondary);
+    m.set_bar_accent3(accents.tertiary);
+    super::packet_from(m.data())
+}
 
-    /// Flex Data **Set Key Signature** (M2-104 §7.5.9). `tonic` is the key's
-    /// root pitch class; `sharps_flats` its accidental count. Group-scoped.
-    #[inline]
-    pub fn flex_set_key_signature(
-        group: MidiGroup,
-        tonic: Tonic,
-        sharps_flats: KeySharpsFlats,
-    ) -> Self {
-        use midi2::flex_data::SetKeySignature;
-        let mut m = SetKeySignature::<[u32; 4]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_tonic(tonic);
-        m.set_sharps_flats(sharps_flats);
-        Self::from_ump(0, m.data())
-    }
+/// Flex Data **Set Key Signature** (M2-104 §7.5.9). `tonic` is the key's
+/// root pitch class; `sharps_flats` its accidental count. Group-scoped.
+#[inline]
+pub fn flex_set_key_signature(group: MidiGroup, tonic: Tonic, sharps_flats: KeySharpsFlats) -> Ump {
+    use midi2::flex_data::SetKeySignature;
+    let mut m = SetKeySignature::<[u32; 4]>::new();
+    m.set_group(u4::new(group.get()));
+    m.set_tonic(tonic);
+    m.set_sharps_flats(sharps_flats);
+    super::packet_from(m.data())
+}
 
-    /// Flex Data **Set Chord Name** (M2-104 §7.5.10) from a [`ChordName`]. Writes
-    /// the tonic (pitch class + accidental + quality + up to four alterations) and
-    /// — when `chord.bass` is `Some` — the bass note likewise. Group-scoped.
-    #[inline]
-    pub fn flex_set_chord_name(group: MidiGroup, chord: &ChordName) -> Self {
-        use midi2::flex_data::SetChordName;
-        let mut m = SetChordName::<[u32; 4]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_tonic_sharps_flats(chord.tonic_sharps_flats);
-        m.set_tonic(chord.tonic);
-        m.set_chord_type(chord.chord_type);
-        m.set_chord_alteration1(chord.alterations[0]);
-        m.set_chord_alteration2(chord.alterations[1]);
-        m.set_chord_alteration3(chord.alterations[2]);
-        m.set_chord_alteration4(chord.alterations[3]);
-        if let Some(bass) = chord.bass {
-            m.set_bass_sharps_flats(bass.sharps_flats);
-            m.set_bass_note(bass.note);
-            m.set_bass_chord_type(bass.chord_type);
-            m.set_bass_alteration1(bass.alterations[0]);
-            m.set_bass_alteration2(bass.alterations[1]);
-        }
-        Self::from_ump(0, m.data())
+/// Flex Data **Set Chord Name** (M2-104 §7.5.10) from a [`ChordName`]. Writes
+/// the tonic (pitch class + accidental + quality + up to four alterations) and
+/// — when `chord.bass` is `Some` — the bass note likewise. Group-scoped.
+#[inline]
+pub fn flex_set_chord_name(group: MidiGroup, chord: &ChordName) -> Ump {
+    use midi2::flex_data::SetChordName;
+    let mut m = SetChordName::<[u32; 4]>::new();
+    m.set_group(u4::new(group.get()));
+    m.set_tonic_sharps_flats(chord.tonic_sharps_flats);
+    m.set_tonic(chord.tonic);
+    m.set_chord_type(chord.chord_type);
+    m.set_chord_alteration1(chord.alterations[0]);
+    m.set_chord_alteration2(chord.alterations[1]);
+    m.set_chord_alteration3(chord.alterations[2]);
+    m.set_chord_alteration4(chord.alterations[3]);
+    if let Some(bass) = chord.bass {
+        m.set_bass_sharps_flats(bass.sharps_flats);
+        m.set_bass_note(bass.note);
+        m.set_bass_chord_type(bass.chord_type);
+        m.set_bass_alteration1(bass.alterations[0]);
+        m.set_bass_alteration2(bass.alterations[1]);
     }
+    super::packet_from(m.data())
 }
 
 /// Recover the [`KeySharpsFlats`] tonic pair from a Flex Data Set Key Signature
-/// [`MidiEvent`], or `None` if `event` isn't one. Inverse of
-/// [`MidiEvent::flex_set_key_signature`].
-pub fn flex_key_signature(event: &MidiEvent) -> Option<(Tonic, KeySharpsFlats)> {
+/// [`Ump`], or `None` if `ump` isn't one. Inverse of
+/// [`flex_set_key_signature`].
+pub fn flex_key_signature(ump: &Ump) -> Option<(Tonic, KeySharpsFlats)> {
     use midi2::UmpMessage;
     use midi2::flex_data::FlexData;
     let UmpMessage::FlexData(FlexData::SetKeySignature(m)) =
-        UmpMessage::try_from(event.data_words()).ok()?
+        UmpMessage::try_from(ump.words()).ok()?
     else {
         return None;
     };
     Some((m.tonic(), m.sharps_flats()))
 }
 
-/// Recover a [`ChordName`] from a Flex Data Set Chord Name [`MidiEvent`], or
-/// `None` if `event` isn't one. Inverse of [`MidiEvent::flex_set_chord_name`].
+/// Recover a [`ChordName`] from a Flex Data Set Chord Name [`Ump`], or
+/// `None` if `ump` isn't one. Inverse of [`flex_set_chord_name`].
 /// The bass half is reported only when the message carries a bass chord type
 /// other than the "no bass" sentinel (`ChordType::ClearChord`).
-pub fn flex_chord_name(event: &MidiEvent) -> Option<ChordName> {
+pub fn flex_chord_name(ump: &Ump) -> Option<ChordName> {
     use midi2::UmpMessage;
     use midi2::flex_data::{ChordType, FlexData};
-    let UmpMessage::FlexData(FlexData::SetChordName(m)) =
-        UmpMessage::try_from(event.data_words()).ok()?
+    let UmpMessage::FlexData(FlexData::SetChordName(m)) = UmpMessage::try_from(ump.words()).ok()?
     else {
         return None;
     };
@@ -302,10 +293,10 @@ pub enum FlexTextKind {
 }
 
 /// Emits a Flex Data text/metadata message of `kind` carrying `text`, appending
-/// one or more [`MidiEvent`]s (one per 128-bit packet) to `out`. UTF-8 text
+/// one or more [`Ump`]s (one per 128-bit packet) to `out`. UTF-8 text
 /// longer than one packet is fragmented by midi2's Format field, mirroring
 /// [`super::endpoint_name`]. Inverse: [`flex_text`] on each reassembled message.
-pub fn push_flex_text(kind: FlexTextKind, text: &str, group: MidiGroup, out: &mut Vec<MidiEvent>) {
+pub fn push_flex_text(kind: FlexTextKind, text: &str, group: MidiGroup, out: &mut Vec<Ump>) {
     use midi2::Data;
 
     /// One arm per text message type: build the midi2 message into a growable
@@ -321,7 +312,7 @@ pub fn push_flex_text(kind: FlexTextKind, text: &str, group: MidiGroup, out: &mu
             m.set_group(u4::new(group.get()));
             m.$setter(text);
             for packet in m.data().chunks(4) {
-                out.push(MidiEvent::from_ump(0, packet));
+                out.push(super::packet_from(packet));
             }
         }};
     }
@@ -349,13 +340,13 @@ pub fn push_flex_text(kind: FlexTextKind, text: &str, group: MidiGroup, out: &mu
 }
 
 /// Recover `(kind, text)` from a single-packet Flex Data text/metadata
-/// [`MidiEvent`], or `None` if `event` isn't one.
+/// [`Ump`], or `None` if `ump` isn't one.
 ///
 /// A text longer than one packet holds is fragmented by [`push_flex_text`], and
 /// a single packet of such a run does not decode on its own — use
 /// [`FlexTextReassembler`] to read those back.
-pub fn flex_text(event: &MidiEvent) -> Option<(FlexTextKind, String)> {
-    flex_text_from_words(event.data_words())
+pub fn flex_text(ump: &Ump) -> Option<(FlexTextKind, String)> {
+    flex_text_from_words(ump.words())
 }
 
 /// Reassembles multi-packet Flex Data text runs.
@@ -365,9 +356,9 @@ pub fn flex_text(event: &MidiEvent) -> Option<(FlexTextKind, String)> {
 /// one packet could be *written* by tutti and not read back by tutti. This is
 /// the missing half.
 ///
-/// Feed every inbound event to [`push`](Self::push); it returns
+/// Feed every inbound packet to [`push`](Self::push); it returns
 /// `(kind, text)` the moment a run completes, and `None` while one is in flight
-/// or the event isn't Flex Data. Single-packet texts complete immediately, so a
+/// or the packet isn't Flex Data. Single-packet texts complete immediately, so a
 /// caller can route all Flex traffic through this rather than special-casing.
 #[derive(Clone, Debug, Default)]
 pub struct FlexTextReassembler {
@@ -383,13 +374,13 @@ impl FlexTextReassembler {
         Self::default()
     }
 
-    /// Feeds one inbound event, returning the completed `(kind, text)` if this
-    /// event finishes a run.
-    pub fn push(&mut self, event: &MidiEvent) -> Option<(FlexTextKind, String)> {
-        if event.message_type() != super::UmpMessageType::FlexData {
+    /// Feeds one inbound packet, returning the completed `(kind, text)` if this
+    /// packet finishes a run.
+    pub fn push(&mut self, ump: &Ump) -> Option<(FlexTextKind, String)> {
+        if super::message_type(ump) != super::UmpMessageType::FlexData {
             return None;
         }
-        self.words.extend_from_slice(event.data_words());
+        self.words.extend_from_slice(ump.words());
         // midi2 owns the Format-field fragmentation rules, so decoding the
         // accumulated words is what marks the run complete.
         match flex_text_from_words(&self.words) {
@@ -448,13 +439,12 @@ fn flex_text_from_words(words: &[u32]) -> Option<(FlexTextKind, String)> {
     })
 }
 
-/// Recover BPM from a Flex Data Set Tempo [`MidiEvent`], or `None` if `event`
-/// isn't one. Inverse of [`MidiEvent::flex_set_tempo`].
-pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<Bpm> {
+/// Recover BPM from a Flex Data Set Tempo [`Ump`], or `None` if `event`
+/// isn't one. Inverse of [`flex_set_tempo`].
+pub fn flex_tempo_bpm(ump: &Ump) -> Option<Bpm> {
     use midi2::UmpMessage;
     use midi2::flex_data::FlexData;
-    let UmpMessage::FlexData(FlexData::SetTempo(m)) =
-        UmpMessage::try_from(event.data_words()).ok()?
+    let UmpMessage::FlexData(FlexData::SetTempo(m)) = UmpMessage::try_from(ump.words()).ok()?
     else {
         return None;
     };
@@ -462,13 +452,13 @@ pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<Bpm> {
 }
 
 /// Recover `(numerator, denominator)` from a Flex Data Set Time Signature
-/// [`MidiEvent`], or `None` if `event` isn't one. Inverse of
-/// [`MidiEvent::flex_set_time_signature`].
-pub fn flex_time_signature(event: &MidiEvent) -> Option<(u8, u8)> {
+/// [`Ump`], or `None` if `ump` isn't one. Inverse of
+/// [`flex_set_time_signature`].
+pub fn flex_time_signature(ump: &Ump) -> Option<(u8, u8)> {
     use midi2::UmpMessage;
     use midi2::flex_data::FlexData;
     let UmpMessage::FlexData(FlexData::SetTimeSignature(m)) =
-        UmpMessage::try_from(event.data_words()).ok()?
+        UmpMessage::try_from(ump.words()).ok()?
     else {
         return None;
     };

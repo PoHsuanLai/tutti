@@ -53,6 +53,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi::{cc, note_off, note_on};
 use tutti_graph::contract::Direct;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode,
@@ -60,7 +61,6 @@ use tutti_graph::{
     Shape, Status, Transport, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
-use tutti_midi_types::MidiEvent;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, Latency, NodeKey, SampleRate, Samples};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
@@ -79,15 +79,15 @@ fn stopped(frame: u64) -> Transport {
     Transport::new(false, Bpm::of(120.0), beat_of(frame), None)
 }
 
-fn on(n: u8) -> MidiEvent {
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
+fn on(n: u8) -> Ump {
+    note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
 }
 
-fn off(n: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, n, 0)
+fn off(n: u8) -> Ump {
+    note_off(MidiGroup::FIRST, MidiChannel::FIRST, n, 0)
 }
 
-fn at(frame: u64, e: MidiEvent) -> TimedMidiEvent {
+fn at(frame: u64, e: Ump) -> TimedMidiEvent {
     TimedMidiEvent::new(beat_of(frame), e)
 }
 
@@ -349,17 +349,16 @@ impl Node for Relay {
 
 fn ump_on(n: u32) -> Ump {
     let (c, n) = (((n / 128) % 16) as u8, (n % 128) as u8);
-    Ump(MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(c), n, 0xFFFF).data)
+    note_on(MidiGroup::FIRST, MidiChannel::of(c), n, 0xFFFF)
 }
 
 fn ump_off(n: u32) -> Ump {
     let (c, n) = (((n / 128) % 16) as u8, (n % 128) as u8);
-    Ump(MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(c), n, 0).data)
+    note_off(MidiGroup::FIRST, MidiChannel::of(c), n, 0)
 }
 
 fn ump_cc(v: u32) -> Ump {
-    let cc = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, CCNumber::of(7), v);
-    Ump(cc.data)
+    cc(MidiGroup::FIRST, MidiChannel::FIRST, CCNumber::of(7), v)
 }
 
 /// `script` through `relay` into a sink, in 64-frame blocks; `blocks` of
@@ -520,8 +519,8 @@ fn random_clip(seed: u64) -> (Shared, u64) {
             };
             let end = start + 1 + r.below(1_200);
             [
-                at(start, MidiEvent::note_on(g, c, n, 0xFFFF)),
-                at(end, MidiEvent::note_off(g, c, n, 0)),
+                at(start, note_on(g, c, n, 0xFFFF)),
+                at(end, note_off(g, c, n, 0)),
             ]
         })
         .collect();
@@ -575,8 +574,8 @@ fn a_full_table_withholds_what_it_cannot_keep() {
     let note = |i: u32, start: u64, end: u64| {
         let (g, c, n) = key(i);
         [
-            at(start, MidiEvent::note_on(g, c, n, 0xFFFF)),
-            at(end, MidiEvent::note_off(g, c, n, 0)),
+            at(start, note_on(g, c, n, 0xFFFF)),
+            at(end, note_off(g, c, n, 0)),
         ]
     };
     let events = (0..2_100u32)
@@ -1029,13 +1028,13 @@ fn spread_clip(r: &mut Rng, overlap: bool) -> (Vec<TimedMidiEvent>, usize, usize
         };
         *next = end + 1;
         let (g, c, n) = (MidiGroup::of(key.0), MidiChannel::of(key.1), key.2);
-        events.push(at(start, MidiEvent::note_on(g, c, n, 0xFFFF)));
-        events.push(at(end, MidiEvent::note_off(g, c, n, 0)));
+        events.push(at(start, note_on(g, c, n, 0xFFFF)));
+        events.push(at(end, note_off(g, c, n, 0)));
     }
     let ccs = 100 + r.below(300);
     for v in 0..ccs {
         let f = bunches[r.below(4) as usize];
-        let cc = MidiEvent::cc(
+        let cc = cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::of(7),

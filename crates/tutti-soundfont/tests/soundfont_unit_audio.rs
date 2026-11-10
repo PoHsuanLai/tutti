@@ -6,15 +6,18 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 mod support;
 
 use support::Hand;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_fixtures::midi;
+use tutti_graph::Offset;
+use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_nodes::testing::assert_golden;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::SampleRate;
+use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
 
 fn key(n: u8) -> NoteNumber {
@@ -62,14 +65,14 @@ fn render_samples(unit: &mut Hand, count: usize) -> Vec<(f32, f32)> {
 
 /// Render `blocks` consecutive blocks of `size` frames (at most
 /// `support::BLOCK`), `events` on the first block's event input, each on its
-/// `frame_offset`: the path a graph drives.
+/// `Offset`: the path a graph drives.
 fn render_process_blocks(
     unit: &mut Hand,
     size: usize,
     blocks: usize,
-    events: &[MidiEvent],
+    events: &[UmpAt],
 ) -> Vec<(f32, f32)> {
-    unit.queue_midi(events);
+    unit.queue_midi_at(events);
     let mut out = Vec::with_capacity(size * blocks);
     for _ in 0..blocks {
         let (l, r) = unit.block(size);
@@ -78,7 +81,7 @@ fn render_process_blocks(
     out
 }
 
-/// A note-on's `frame_offset` shifts the render by exactly that many frames.
+/// A note-on's `Offset` shifts the render by exactly that many frames.
 ///
 /// # The exact assertion, and why it is this one
 ///
@@ -117,8 +120,11 @@ fn process_honors_frame_offset_within_block() {
     const OFFSETS: [usize; 3] = [16, 32, 48];
 
     let note = |offset: u32| {
-        MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)
-            .with_frame_offset(offset)
+        let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+        (
+            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
+        )
     };
 
     let render_at = |offset: u32| {
@@ -205,11 +211,14 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     const SECOND_OFFSET: u32 = 32;
 
     let note = |key: u8, offset: u32| {
-        MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, key, 100)
-            .with_frame_offset(offset)
+        let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+        (
+            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, velocity),
+        )
     };
 
-    let render = |events: &[MidiEvent]| {
+    let render = |events: &[UmpAt]| {
         let mut unit = Hand::new(
             SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"),
         );
@@ -295,8 +304,11 @@ fn event_at_last_frame_of_block_still_applies() {
     const LAST: u32 = BLOCK as u32 - 1;
 
     let note = |offset: u32| {
-        MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)
-            .with_frame_offset(offset)
+        let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+        (
+            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
+        )
     };
 
     let mut unit =
@@ -356,7 +368,13 @@ fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     const BLOCK: usize = 64;
     const BLOCKS: usize = 6;
 
-    let note = || MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
+    let note = || {
+        let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+        (
+            Offset::ZERO,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
+        )
+    };
 
     let mut straight =
         Hand::new(SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create unit"));

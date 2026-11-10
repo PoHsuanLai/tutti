@@ -11,6 +11,7 @@
 //! moves to a `Vec`-backed interval history or similar.
 
 use assert_no_alloc::AllocDisabler;
+use tutti_midi_types::from_midi1_bytes;
 use tutti_midi_types::sync::clock::MidiClockDecoder;
 
 #[global_allocator]
@@ -86,8 +87,6 @@ fn midi_clock_decoder_queries_are_allocation_free() {
 /// the process aborts on `[0xF7, 1, 2]` under `assert_no_alloc`.
 #[test]
 fn from_midi1_bytes_on_hostile_bytes_is_allocation_free() {
-    use tutti_midi_types::ump::MidiEvent;
-
     let hostile: [&[u8]; 8] = [
         &[0xF7, 1, 2],
         &[0x90, 60],
@@ -100,12 +99,9 @@ fn from_midi1_bytes_on_hostile_bytes_is_allocation_free() {
     ];
     assert_no_alloc::assert_no_alloc(|| {
         for bytes in hostile {
-            assert!(
-                MidiEvent::from_midi1_bytes(0, bytes).is_none(),
-                "{bytes:02X?}"
-            );
+            assert!(from_midi1_bytes(bytes).is_none(), "{bytes:02X?}");
         }
-        assert!(MidiEvent::from_midi1_bytes(3, &[0x90, 60, 100]).is_some());
+        assert!(from_midi1_bytes(&[0x90, 60, 100]).is_some());
     });
 }
 
@@ -116,13 +112,13 @@ fn from_midi1_bytes_on_hostile_bytes_is_allocation_free() {
 /// the process aborts.
 #[test]
 fn sysex7_single_is_allocation_free() {
-    use tutti_midi_types::ump::MidiEvent;
+    use tutti_midi_types::sysex7_single;
     use tutti_ump::MidiGroup;
 
     assert_no_alloc::assert_no_alloc(|| {
         for payload in [&[][..], &[1, 2, 3], &[0x81, 0xFF, 2, 3, 4, 5]] {
-            assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, payload).is_some());
+            assert!(sysex7_single(MidiGroup::FIRST, payload).is_some());
         }
-        assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
+        assert!(sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
     });
 }

@@ -39,8 +39,8 @@ pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    ControllerNamespace, MidiEvent, MidiIn, MidiMessage, MidiOut, NoteAttribute, NoteId,
-    PerNoteController, UmpMessageType, UnencodableMessage, midi2, midly, normalize,
+    ControllerNamespace, MidiMessage, NoteAttribute, NoteId, PerNoteController, UmpMessageType,
+    UnencodableMessage, midi2, midly, normalize,
 };
 
 /// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's
@@ -80,8 +80,8 @@ pub use tutti_midi_types::sync::{
 // file codec fails: a `.mid` reader needs no port, and no port needs it.
 
 pub use tutti_midi_runtime::{
-    MidiInputNode, MidiMailbox, MidiOutNode, MidiReceiver, MidiSender, Sysex7PacketReassembler,
-    TimedMidiEvent,
+    MidiIn, MidiInputNode, MidiMailbox, MidiOut, MidiOutNode, MidiReceiver, MidiSender,
+    Sysex7PacketReassembler, TimedMidiEvent,
 };
 
 // --- Standard MIDI File codec: NOT here ---
@@ -109,16 +109,18 @@ pub use tutti_midi_runtime::{
 ///
 /// ```
 /// use tutti_midi_hardware::prelude::*;
-/// use tutti_ump::{MidiChannel, MidiGroup};
+/// use tutti_fixtures::midi::note_on;
+/// use tutti_graph::Offset;
+/// use tutti_ump::{MidiChannel, MidiGroup, Ump};
 ///
 /// // The types prelude comes along: build + decode an event.
-/// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-/// assert!(ev.message().is_note_on());
+/// let ump = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+/// assert!(MidiMessage::from_ump(ump).is_note_on());
 ///
 /// // And the delivery types are here too — hand an event across threads.
 /// let (tx, rx) = MidiMailbox::pair();
-/// tx.queue(&[ev]);
-/// let mut buf = [ev; 4];
+/// tx.queue(&[(Offset::ZERO, ump)]);
+/// let mut buf = [(0u32, Ump::default()); 4];
 /// assert_eq!(rx.poll_into(&mut buf), 1);
 /// ```
 pub mod prelude {

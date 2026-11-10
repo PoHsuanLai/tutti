@@ -1,6 +1,6 @@
 //! A SoundFont unit driven by hand the way a graph drives it: MIDI queued with
 //! [`Hand::queue_midi`] is the next block's event input, each event on its
-//! `frame_offset`, and a block is `Node::process` through
+//! `Offset`, and a block is `Node::process` through
 //! `tutti_graph::contract::Direct` (buffers built once, so the allocation
 //! gates can run it).
 //!
@@ -9,15 +9,16 @@
 #![allow(dead_code)] // each test binary uses its own subset
 
 use std::ops::{Deref, DerefMut};
+use tutti_graph::UmpAt;
 
 pub mod font;
 pub mod rig;
 
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{Event, Offset, Status};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_soundfont::SoundFontUnit;
 use tutti_types::{SampleRate, Samples};
+use tutti_ump::Ump;
 
 /// The block length a [`Hand`] renders: 64 frames.
 pub const BLOCK: usize = 64;
@@ -52,13 +53,19 @@ impl Hand {
         }
     }
 
-    /// Play `events` in the next block, each on its `frame_offset` (clamped
-    /// into the block). Allocation-free up to `HAND_EVENT_CAPACITY` a block.
-    pub fn queue_midi(&mut self, events: &[MidiEvent]) {
+    /// Play `events` in the next block, each on its first frame.
+    /// Allocation-free up to `HAND_EVENT_CAPACITY` a block.
+    pub fn queue_midi(&mut self, events: &[Ump]) {
         for e in events {
-            let at = (e.frame_offset as usize).min(BLOCK - 1);
-            let at = Offset::new(at, Samples(BLOCK)).expect("inside the block");
-            self.queued.push(Event::midi(at, e.data));
+            self.queued.push(Event::midi(Offset::ZERO, e.0));
+        }
+    }
+
+    /// Play `events` in the next block, each on its own `Offset`.
+    /// Allocation-free up to `HAND_EVENT_CAPACITY` a block.
+    pub fn queue_midi_at(&mut self, events: &[UmpAt]) {
+        for (at, ump) in events {
+            self.queued.push(Event::midi(*at, ump.0));
         }
     }
 

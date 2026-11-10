@@ -16,14 +16,14 @@ use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
 use tutti_midi_types::ump::{endpoint_name, function_block_name, product_instance_id};
 use tutti_midi_types::{
     ALL_FUNCTION_BLOCKS, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
-    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
+    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, Protocol, UmpVersion,
 };
-use tutti_ump::MidiGroup;
+use tutti_ump::{MidiGroup, Ump};
 
 /// One Function Block this endpoint exposes (M2-104 §7.1.3).
 ///
 /// `name` is the block's label, reported in a Function Block Name Notification
-/// (§7.1.9) when a [`FunctionBlockDiscovery`](MidiEvent::function_block_discovery)
+/// (§7.1.9) when a [`FunctionBlockDiscovery`](tutti_midi_types::function_block_discovery)
 /// asks for it. An empty name omits that reply — a device picker then shows the
 /// block number instead. It is not `Copy` because of this field; the topology
 /// fields alone were, but a name that must be truncated to stay `Copy` is worse
@@ -126,8 +126,8 @@ impl EndpointNegotiator {
     }
 
     /// The Endpoint Info notification describing this endpoint.
-    pub fn endpoint_info(&self) -> MidiEvent {
-        MidiEvent::endpoint_info(
+    pub fn endpoint_info(&self) -> Ump {
+        tutti_midi_types::endpoint_info(
             self.ump_version,
             FunctionBlocks {
                 count: self.function_blocks.len() as u8,
@@ -141,9 +141,9 @@ impl EndpointNegotiator {
     /// if `event` is not an Endpoint Discovery. Replies are ordered Endpoint Info
     /// → Device Identity → Stream Configuration → Function Block Info (one per
     /// block), each included only if the discovery requested it.
-    pub fn respond_to(&self, event: &MidiEvent) -> Vec<MidiEvent> {
+    pub fn respond_to(&self, event: &Ump) -> Vec<Ump> {
         let Ok(UmpMessage::UmpStream(UmpStream::EndpointDiscovery(d))) =
-            UmpMessage::try_from(event.data_words())
+            UmpMessage::try_from(event.words())
         else {
             return Vec::new();
         };
@@ -154,7 +154,7 @@ impl EndpointNegotiator {
         }
         if d.request_device_identity() {
             let id = &self.identity;
-            out.push(MidiEvent::device_identity(
+            out.push(tutti_midi_types::device_identity(
                 id.manufacturer,
                 id.family,
                 id.family_model,
@@ -168,7 +168,7 @@ impl EndpointNegotiator {
             product_instance_id(&self.product_instance_id, &mut out);
         }
         if d.request_stream_configuration() {
-            out.push(MidiEvent::stream_configuration_notification(
+            out.push(tutti_midi_types::stream_configuration_notification(
                 self.protocol,
                 self.jr,
             ));
@@ -182,8 +182,8 @@ impl EndpointNegotiator {
     }
 
     /// The Function Block Info notification for one block.
-    fn block_info(fb: &FunctionBlock) -> MidiEvent {
-        MidiEvent::function_block_info(
+    fn block_info(fb: &FunctionBlock) -> Ump {
+        tutti_midi_types::function_block_info(
             true,
             fb.block_number,
             fb.first_group,
@@ -204,9 +204,9 @@ impl EndpointNegotiator {
     /// A block whose `name` is empty contributes no Name notification even when
     /// asked: there is no such thing as a nameless Name message, and an empty
     /// one would claim the block is called "".
-    pub fn respond_to_function_block_discovery(&self, event: &MidiEvent) -> Vec<MidiEvent> {
+    pub fn respond_to_function_block_discovery(&self, event: &Ump) -> Vec<Ump> {
         let Ok(UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(d))) =
-            UmpMessage::try_from(event.data_words())
+            UmpMessage::try_from(event.words())
         else {
             return Vec::new();
         };
@@ -238,14 +238,14 @@ impl EndpointNegotiator {
     pub fn function_block_discovery_request(
         block_number: u8,
         request: FunctionBlockDiscoveryRequest,
-    ) -> MidiEvent {
-        MidiEvent::function_block_discovery(block_number, request)
+    ) -> Ump {
+        tutti_midi_types::function_block_discovery(block_number, request)
     }
 
     /// Builds the outbound Endpoint Discovery request this endpoint would send to
     /// probe a peer, asking for every reply. Use when tutti is the *discoverer*.
-    pub fn discovery_request() -> MidiEvent {
-        MidiEvent::endpoint_discovery(
+    pub fn discovery_request() -> Ump {
+        tutti_midi_types::endpoint_discovery(
             UmpVersion::V1_1.major,
             UmpVersion::V1_1.minor,
             EndpointDiscoveryRequest::all(),
@@ -321,14 +321,14 @@ impl EndpointInquiry {
 
     /// The outbound Endpoint Discovery this inquiry sends to probe a peer, asking
     /// for every reply. Identical to [`EndpointNegotiator::discovery_request`].
-    pub fn request() -> MidiEvent {
+    pub fn request() -> Ump {
         EndpointNegotiator::discovery_request()
     }
 
     /// Feeds one reply event from the peer. Non-UMP-Stream events are ignored.
     /// Returns `true` if the event advanced the discovered state.
-    pub fn ingest(&mut self, event: &MidiEvent) -> bool {
-        let Ok(UmpMessage::UmpStream(stream)) = UmpMessage::try_from(event.data_words()) else {
+    pub fn ingest(&mut self, event: &Ump) -> bool {
+        let Ok(UmpMessage::UmpStream(stream)) = UmpMessage::try_from(event.words()) else {
             return false;
         };
         match stream {
@@ -414,7 +414,7 @@ impl EndpointInquiry {
                 true
             }
             UmpStream::FunctionBlockName(_) => {
-                self.block_name_words.extend_from_slice(event.data_words());
+                self.block_name_words.extend_from_slice(event.words());
                 if let Some((block_number, name)) =
                     decode_function_block_name(&self.block_name_words)
                 {
@@ -443,7 +443,7 @@ impl EndpointInquiry {
                 true
             }
             UmpStream::EndpointName(_) => {
-                self.name_words.extend_from_slice(event.data_words());
+                self.name_words.extend_from_slice(event.words());
                 if let Some(name) = decode_endpoint_name(&self.name_words) {
                     self.discovered.name = name;
                     self.name_words.clear();
@@ -451,7 +451,7 @@ impl EndpointInquiry {
                 true
             }
             UmpStream::ProductInstanceId(_) => {
-                self.product_words.extend_from_slice(event.data_words());
+                self.product_words.extend_from_slice(event.words());
                 if let Some(id) = decode_product_instance_id(&self.product_words) {
                     self.discovered.product_instance_id = id;
                     self.product_words.clear();

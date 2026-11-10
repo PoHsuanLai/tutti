@@ -36,6 +36,7 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 [[bench]]
 name = "clip_node"

@@ -20,12 +20,10 @@ pub const WINDOW: usize = 1024;
 /// longest block of the cases.
 #[must_use]
 pub fn setup<D: Design>(d: &D, rate: SampleRate) -> Setup {
-    let Channels { input, output } = d.channels();
     Setup {
         rate,
         max_block: MaxBlock::of(Samples(MAX_BLOCK)),
-        input,
-        output,
+        channels: d.channels(),
     }
 }
 

@@ -105,8 +105,10 @@ fn freeverb_retargets_and_renders_without_allocating() {
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::STEREO,
+            channels: tutti_dsp::Channels {
+                input: ChannelLayout::MONO,
+                output: ChannelLayout::STEREO,
+            },
         },
     );
     let mut network = Box::new(Network::new(rate));
@@ -169,8 +171,10 @@ fn the_fdn_retargets_and_renders_without_allocating() {
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::STEREO,
+            channels: tutti_dsp::Channels {
+                input: ChannelLayout::MONO,
+                output: ChannelLayout::STEREO,
+            },
         },
     );
     let mut network = Box::new(Network::new(rate));

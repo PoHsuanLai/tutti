@@ -13,14 +13,14 @@
 //! ([`Realization`](crate::Realization)): it reads those two numbers from the network, and
 //! this file changes no processing.
 
-use tutti_types::{Amplitude, ChannelLayout, Db, Mix, SampleRate};
+use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate};
 
 use crate::network::{
     Absorption, AllPass, AllPassForm, Bounds, Fdn, Gains, Inline, Line, MAX_CHANNELS, MAX_LINES,
     Matrix, Modulation, Network, OutputMap, Stage,
 };
 use crate::reverb::Freeverb;
-use crate::{Ceiling, Channels, Design, MaxDecay};
+use crate::{Ceiling, Channels, Design, MaxDecay, Sizes};
 
 const COMBS_LEFT: [usize; 8] = [
     Freeverb::CF_TUNING_L1,
@@ -190,11 +190,7 @@ impl Design for FreeverbDesign {
             room: Mix(1.0),
             damp: Mix(0.0),
         };
-        self.measure(&self.design(&worst, ceiling.rate()), ceiling.floor())
-    }
-
-    fn measure(&self, model: &Network, floor: Db) -> Bounds {
-        Bounds::of(model, floor)
+        Bounds::measure(&self.design(&worst, ceiling.rate()), ceiling.floor())
     }
 }
 
@@ -672,7 +668,7 @@ mod tests {
         let ceiling = Ceiling::at(SampleRate(48_000.0)).unwrap();
         let b = FreeverbDesign.bounds(&ceiling);
         let room_one = FreeverbDesign.design(&controls(1.0, 0.0), SampleRate(48_000.0));
-        assert_eq!(b, Bounds::of(&room_one, ceiling.floor()));
+        assert_eq!(b, Bounds::measure(&room_one, ceiling.floor()));
         assert_eq!((b.lines, b.stages, b.outputs), (16, 5, 2));
         let short = Ceiling::new(
             SampleRate(48_000.0),
@@ -928,8 +924,10 @@ mod realization_tests {
             &Setup {
                 rate,
                 max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
-                input: tutti_types::ChannelLayout::MONO,
-                output: tutti_types::ChannelLayout::STEREO,
+                channels: Channels {
+                    input: tutti_types::ChannelLayout::MONO,
+                    output: tutti_types::ChannelLayout::STEREO,
+                },
             },
         );
         assert_eq!(realization.figures().comb, want);

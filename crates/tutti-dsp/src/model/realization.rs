@@ -1,7 +1,9 @@
 //! [`Realization`]: what runs a model, [`Effect`], its block shape, and the
 //! [`Setup`] it is prepared for.
 
-use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{MaxBlock, SampleRate, Samples};
+
+use super::Channels;
 
 /// What a realization is prepared for: the rate, the longest block and the widths.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -10,10 +12,8 @@ pub struct Setup {
     pub rate: SampleRate,
     /// The longest block [`Effect::process`] is handed.
     pub max_block: MaxBlock,
-    /// The input width.
-    pub input: ChannelLayout,
-    /// The output width.
-    pub output: ChannelLayout,
+    /// The input and output widths.
+    pub channels: Channels,
 }
 
 /// How costly a realization is to run, in the three classes a graph schedules by.

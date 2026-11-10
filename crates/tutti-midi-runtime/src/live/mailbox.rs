@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tutti_graph::UmpAt;
 
 use crossbeam_queue::ArrayQueue;
-use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
+use tutti_ump::{Address, Message, MidiChannel, NoteNumber, Ump, Voice2};
 
 use crate::traits::MidiOut;
 
@@ -104,17 +104,7 @@ impl MidiSender {
     pub fn note_on(&self, channel: MidiChannel, note: NoteNumber, velocity: u16) -> bool {
         self.slot
             .events
-            .push((
-                0,
-                voice(
-                    channel,
-                    Voice2::NoteOn {
-                        note,
-                        velocity,
-                        attribute: Attribute::None,
-                    },
-                ),
-            ))
+            .push((0, voice(channel, Voice2::note_on(note, velocity))))
             .is_ok()
     }
 
@@ -123,17 +113,7 @@ impl MidiSender {
     pub fn note_off(&self, channel: MidiChannel, note: NoteNumber) -> bool {
         self.slot
             .events
-            .push((
-                0,
-                voice(
-                    channel,
-                    Voice2::NoteOff {
-                        note,
-                        velocity: 0,
-                        attribute: Attribute::None,
-                    },
-                ),
-            ))
+            .push((0, voice(channel, Voice2::note_off(note, 0))))
             .is_ok()
     }
 }
@@ -146,14 +126,7 @@ impl MidiOut for MidiSender {
 
 /// A group-1 channel voice message as a packet.
 fn voice(channel: MidiChannel, v: Voice2) -> Ump {
-    Message::Midi2(
-        Address {
-            group: MidiGroup::FIRST,
-            channel,
-        },
-        v,
-    )
-    .into()
+    Message::Midi2(Address::first(channel), v).into()
 }
 
 /// The pop half of a [`MidiMailbox`]. One reader at a time: two polling the

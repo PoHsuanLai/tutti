@@ -12,6 +12,7 @@
 //! ```
 
 use std::hint::black_box;
+use tutti_ump::Ump;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::NodeKey;
@@ -46,7 +47,7 @@ impl Node for Source {
                 0x2080_3c00
             };
             let at = cx.env.offset(i as usize * BLOCK / total).expect("inside");
-            let _ = out.push(Event::midi(at, [word, 0, 0, 0]));
+            let _ = out.push(Event::midi(at, Ump([word, 0, 0, 0])));
         }
         Status::Modified
     }

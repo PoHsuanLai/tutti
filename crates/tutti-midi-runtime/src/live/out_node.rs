@@ -123,10 +123,10 @@ impl Node for MidiOutNode {
         };
         let block = cx.env.frame.get();
         for e in io.events(0) {
-            if let EventKind::Midi(Ump(data)) = e.kind {
+            if let EventKind::Midi(ump) = e.kind {
                 // Truncated on purpose: the frame wraps at 2^32.
                 let at = block.wrapping_add(u64::from(e.offset.get())) as u32;
-                if tx.queue_stamped(&[(at, Ump(data))]) == 0 {
+                if tx.queue_stamped(&[(at, ump)]) == 0 {
                     self.dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }

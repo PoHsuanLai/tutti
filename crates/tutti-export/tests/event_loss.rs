@@ -14,6 +14,7 @@ use tutti_graph::{Cx, Event, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;
 use tutti_types::Seconds;
 use tutti_types::{ChannelLayout, Hz, SampleRate};
+use tutti_ump::Ump;
 
 #[derive(Clone)]
 struct Burst;
@@ -30,7 +31,7 @@ impl Node for Burst {
             let at = cx.env.offset(i).expect("inside the block");
             let _ = io
                 .event_out(0)
-                .push(Event::midi(at, [0x2090_3c64, 0, 0, 0]));
+                .push(Event::midi(at, Ump([0x2090_3c64, 0, 0, 0])));
         }
         Status::Silent
     }

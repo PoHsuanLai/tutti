@@ -3638,6 +3638,7 @@ dependencies = [
  "tutti-spatial",
  "tutti-transport",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]

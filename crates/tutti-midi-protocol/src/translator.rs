@@ -5,19 +5,6 @@ use crate::scale;
 use crate::voice::widen;
 use tutti_ump::{Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2};
 
-/// Bank Select MSB and LSB.
-const BANK_MSB: u8 = 0;
-const BANK_LSB: u8 = 32;
-/// Data Entry MSB and LSB.
-const DATA_MSB: u8 = 6;
-const DATA_LSB: u8 = 38;
-/// The parameter selects: NRPN LSB and MSB, RPN LSB and MSB.
-const NRPN_LSB: u8 = 98;
-const NRPN_MSB: u8 = 99;
-const RPN_LSB: u8 = 100;
-const RPN_MSB: u8 = 101;
-/// Reset All Controllers.
-const RESET_ALL: u8 = 121;
 /// The byte that, in both halves of a parameter number, is the Null Function.
 const NULL: u8 = 0x7F;
 /// The registered controllers in bank 0 whose data is a pair of 7-bit fields,
@@ -215,16 +202,16 @@ fn controller_change(
     value: U7,
     send: &mut impl FnMut(Voice2),
 ) {
-    match controller.get() {
-        RPN_MSB | RPN_LSB | NRPN_MSB | NRPN_LSB => {
+    match controller {
+        CCNumber::RPN_MSB | CCNumber::RPN_LSB | CCNumber::NRPN_MSB | CCNumber::NRPN_LSB => {
             flush(channel, send);
-            let registered = matches!(controller.get(), RPN_MSB | RPN_LSB);
+            let registered = matches!(controller, CCNumber::RPN_MSB | CCNumber::RPN_LSB);
             let number = if registered {
                 &mut channel.rpn
             } else {
                 &mut channel.nrpn
             };
-            if matches!(controller.get(), RPN_MSB | NRPN_MSB) {
+            if matches!(controller, CCNumber::RPN_MSB | CCNumber::NRPN_MSB) {
                 number.bank = value;
             } else {
                 number.index = value;
@@ -238,7 +225,7 @@ fn controller_change(
             channel.pending = false;
             channel.early_lsb = None;
         }
-        DATA_MSB if channel.kind != Kind::None => {
+        CCNumber::DATA_ENTRY if channel.kind != Kind::None => {
             // A later CC 6 ends the run before it.
             if channel.pending {
                 emit(channel, None, send);
@@ -249,7 +236,7 @@ fn controller_change(
                 None => channel.pending = true,
             }
         }
-        DATA_LSB if channel.kind != Kind::None => {
+        CCNumber::DATA_ENTRY_LSB if channel.kind != Kind::None => {
             if channel.msb.is_some() {
                 emit(channel, Some(value), send);
             } else {
@@ -257,22 +244,22 @@ fn controller_change(
             }
         }
         // Data Entry with nothing selected, or after the Null Function.
-        DATA_MSB | DATA_LSB => {}
+        CCNumber::DATA_ENTRY | CCNumber::DATA_ENTRY_LSB => {}
         // RP-015: Reset All Controllers sets the RPN and NRPN to null. What a
         // run had not sent is dropped with it (sending it as well would make
         // two packets of one); the message itself goes on.
-        RESET_ALL => {
+        CCNumber::RESET_ALL => {
             channel.kind = Kind::None;
             channel.msb = None;
             channel.pending = false;
             channel.early_lsb = None;
             send(widen(Voice1::ControlChange { controller, value }));
         }
-        BANK_MSB => {
+        CCNumber::BANK_SELECT => {
             channel.bank_msb = value;
             channel.bank_set = true;
         }
-        BANK_LSB => {
+        CCNumber::BANK_SELECT_LSB => {
             channel.bank_lsb = value;
             channel.bank_set = true;
         }

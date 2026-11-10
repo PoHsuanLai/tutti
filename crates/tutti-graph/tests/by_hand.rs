@@ -66,8 +66,8 @@ fn drive_in_plays_events_under_the_env() {
         play: tutti_graph::PlayClock::ZERO,
     };
     let events = [
-        Event::midi(at(3, 64), [0x2090_3c64, 0, 0, 0]),
-        Event::midi(at(40, 64), [0x2080_3c00, 0, 0, 0]),
+        Event::midi(at(3, 64), Ump([0x2090_3c64, 0, 0, 0])),
+        Event::midi(at(40, 64), Ump([0x2080_3c00, 0, 0, 0])),
     ];
     let got = drive_input(&mut Probe, &env, &[], &[], &[&events]);
     let marked: Vec<usize> = (0..64).filter(|&i| got.audio[0][i] == 1.0).collect();
@@ -91,7 +91,7 @@ fn drive_in_plays_events_under_the_env() {
 fn direct_plays_events_once_advances_and_rolls() {
     let mut probe = Direct::new(Probe, RATE, 64);
     probe.set_transport(Transport::new(true, Bpm::of(120.0), Beat(2.0), None));
-    probe.events(0, &[Event::midi(at(5, 64), [0x2090_3c64, 0, 0, 0])]);
+    probe.events(0, &[Event::midi(at(5, 64), Ump([0x2090_3c64, 0, 0, 0]))]);
     probe.block();
     assert_eq!(probe.output(0)[5], 1.0);
     assert_eq!(probe.events_out(0).len(), 1);

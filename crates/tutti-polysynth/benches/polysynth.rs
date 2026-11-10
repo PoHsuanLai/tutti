@@ -95,7 +95,7 @@ fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
                 tutti_fixtures::midi::wide_velocity(100),
             )
         })
-        .map(|e: Ump| Event::midi(at, e.0))
+        .map(|e: Ump| Event::midi(at, e))
         .collect();
     synth.events(0, &events);
 
@@ -274,7 +274,7 @@ fn bench_events(c: &mut Criterion) {
     let events: Vec<Event> = (0..BLOCK)
         .map(|i| {
             let at = Offset::new(i, Samples(BLOCK)).expect("inside");
-            Event::midi(at, Ump::from(wire[i % wire.len()]).0)
+            Event::midi(at, Ump::from(wire[i % wire.len()]))
         })
         .collect();
 

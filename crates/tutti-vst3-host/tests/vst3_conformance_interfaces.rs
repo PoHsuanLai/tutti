@@ -8,6 +8,7 @@
 #[path = "support/conformance.rs"]
 mod conformance_support;
 
+use tutti_fixtures::main_thread;
 use tutti_plugin_types::ParamId;
 use tutti_vst3_host::{Library, LoadOptions, Vst3Loaded};
 
@@ -598,10 +599,4 @@ fn the_factory_flag_word_is_read_not_discarded() {
         "every VST3 plugin sets kUnicode ({unicode} of {read} did); a zero here \
          means the flag word is being dropped again rather than read"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

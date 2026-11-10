@@ -14,6 +14,7 @@
 
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
+use tutti_fixtures::main_thread;
 
 use tutti_plugin_types::{
     Loaded, MaxBlock, PluginError, Prepare, SampleFormat, SampleRate, Samples,
@@ -250,10 +251,4 @@ impl DerefMut for Active {
     fn deref_mut(&mut self) -> &mut Vst2Controller {
         &mut self.pair.as_mut().expect("the pair is whole").1
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

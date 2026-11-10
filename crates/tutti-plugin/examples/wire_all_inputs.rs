@@ -16,6 +16,7 @@
 //! what a plugin will and will not receive *at wiring time* rather than
 //! wondering later why a stream had no effect.
 
+use tutti_fixtures::main_thread;
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 use tutti_modulation::{
@@ -144,10 +145,4 @@ fn report(name: &str, accepted: bool) {
         "  {name:<10} {}",
         if accepted { "wired" } else { "declined" }
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

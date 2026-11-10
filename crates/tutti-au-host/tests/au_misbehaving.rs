@@ -44,6 +44,7 @@
 
 use tutti_au_host::AuInstance;
 use tutti_au_host::BusDirection;
+use tutti_fixtures::main_thread;
 use tutti_types::Samples;
 
 mod support;
@@ -668,10 +669,4 @@ fn every_probe_loads_and_drops_cleanly() {
         let _ = au.factory_presets();
         drop(au);
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

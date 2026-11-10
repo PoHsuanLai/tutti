@@ -1,7 +1,6 @@
-//! One machine-wide lock for every timing-sensitive test in this crate: the
-//! unit suites here (`process_pipeline_tests`, `real_stall_tests`) and the
-//! integration suites that drive a real `plugin-server`
-//! (`tests/support/clap_probe.rs`'s `cross_process_lock`, the same path).
+//! One machine-wide lock for every timing-sensitive plugin test: what one test
+//! process holds while it drives a real `plugin-server`, or depends on
+//! answers within a few milliseconds, so two such tests never run at once.
 //!
 //! # Why a directory, not a `static Mutex`
 //!
@@ -24,22 +23,25 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// The path every suite agrees on. The integration suites spell the same
-/// literal in `tests/support/clap_probe.rs` (they cannot name this module); a
-/// change here must change it there.
-pub(crate) fn path() -> PathBuf {
+/// The path every test process agrees on.
+fn path() -> PathBuf {
     std::env::temp_dir().join("tutti-plugin-clap-probe.lock")
 }
 
-/// How long to wait before assuming the holder died. The integration suites'
-/// figure: long enough for their slowest holder (`real_plugin_pressure.rs`).
+/// How long to wait before assuming the holder died: long enough for the
+/// slowest holder (`tutti-plugin`'s `real_plugin_pressure.rs`, which spawns up
+/// to eight servers paced to a 1.333 ms block, slower again on a shared CI
+/// runner). Being generous costs only how long a wedged holder delays the next
+/// test; being tight steals the lock from a live one.
 const STALE_AFTER: Duration = Duration::from_secs(120);
 
 /// Held for one test; released on drop, including on a failing assertion's
 /// unwind.
-pub(crate) struct Guard(Option<PathBuf>);
+#[must_use = "the lock is released when this drops"]
+#[derive(Debug)]
+pub struct MachineLock(Option<PathBuf>);
 
-impl Drop for Guard {
+impl Drop for MachineLock {
     fn drop(&mut self) {
         if let Some(p) = &self.0 {
             let _ = std::fs::remove_dir(p);
@@ -48,18 +50,18 @@ impl Drop for Guard {
 }
 
 /// Take the machine, waiting for whoever holds it.
-pub(crate) fn acquire() -> Guard {
+pub fn machine_lock() -> MachineLock {
     acquire_at(&path())
 }
 
-/// [`acquire`] on a given path, so a test can exercise the protocol on a
+/// [`machine_lock`] on a given path, so a test can exercise the protocol on a
 /// private directory instead of racing every other process for the real one.
-fn acquire_at(p: &std::path::Path) -> Guard {
+fn acquire_at(p: &std::path::Path) -> MachineLock {
     let p = p.to_path_buf();
     let deadline = Instant::now() + STALE_AFTER;
     loop {
         match std::fs::create_dir(&p) {
-            Ok(()) => return Guard(Some(p)),
+            Ok(()) => return MachineLock(Some(p)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 if Instant::now() >= deadline {
                     let _ = std::fs::remove_dir(&p);
@@ -69,7 +71,7 @@ fn acquire_at(p: &std::path::Path) -> Guard {
             }
             // An unusable temp dir must not fail the suites; fall back to
             // running unserialized.
-            Err(_) => return Guard(None),
+            Err(_) => return MachineLock(None),
         }
     }
 }
@@ -103,7 +105,7 @@ mod tests {
     /// releases on drop (without touching the shared path raw).
     #[test]
     fn the_machine_wide_lock_can_be_taken_again_after_a_release() {
-        drop(acquire());
-        drop(acquire());
+        drop(machine_lock());
+        drop(machine_lock());
     }
 }

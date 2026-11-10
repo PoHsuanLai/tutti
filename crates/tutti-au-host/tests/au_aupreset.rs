@@ -61,6 +61,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 mod support;
 use support::corpus::{
@@ -851,10 +852,4 @@ fn presets_round_trip_before_initialize() {
     au.initialize()
         .expect("the AU must still initialize after pre-init preset I/O");
     assert_still_renders(&mut au, "after a pre-initialize round trip");
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

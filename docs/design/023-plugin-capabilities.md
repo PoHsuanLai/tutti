@@ -29,9 +29,7 @@ Builds on [016](016-plugin-hosts.md) (`Loaded`, `Processor`, `Controller`) and o
 [021](021-plugin-hosting-axes.md) (plugin format and hosting are two axes),
 whose probe binary (021 §2.5) carries the honesty probes of §6. It uses the
 runtime tail of [013](013-native-graph.md), which is built (PR #359):
-`Io::report_tail` and `contract::assert_honest_tail`. Numbering: 021, 022 and
-this doc are on `main`; 019, 020 and 024 are drafts on other branches until they
-merge.
+`Io::report_tail` and `contract::assert_honest_tail`.
 
 ## Summary
 

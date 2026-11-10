@@ -1,6 +1,7 @@
 //! Shared helpers used by format-specific loaders.
 
 use tutti_plugin::server::{BusChannels, ChannelLayout, LoadedPlugin, PluginDescriptor};
+#[cfg(any(feature = "clap", feature = "vst2", feature = "vst3"))]
 use tutti_plugin_types::SampleRate;
 
 /// The two metadata snapshots every loaded plugin carries: the catalog

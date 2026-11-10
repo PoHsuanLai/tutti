@@ -39,6 +39,7 @@ tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-plugin-types = { path = "../tutti-plugin-types" }
 # `tests/clock_tempo_map.rs` renders the clock through the live engine over a
 # published `TempoMap` (doc 020, stage 5). Dev edges only: nothing here
 # depends on the engine.

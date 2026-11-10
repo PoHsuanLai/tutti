@@ -11,7 +11,7 @@ use tutti_graph::UmpAt;
 
 use crate::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionTextChanges, ParamId,
-    ParameterChanges, ScaleChanges, TransportInfo, WireMidi,
+    ParameterChanges, ScaleChanges, TransportChange, TransportInfo, WireMidi,
 };
 
 /// Sequencer-context inputs for one block: chords, scales, per-note text and
@@ -54,6 +54,12 @@ pub struct ProcessContext<'a> {
     pub note_expression: Option<&'a NoteExpressionChanges>,
     /// Sent only when the plugin advertised [`Features::TRANSPORT`](crate::Features).
     pub transport: Option<&'a TransportInfo>,
+    /// The transport changes inside the block, in time order, each at its
+    /// frame ([`TransportChange`]); `transport` is the one at the first frame.
+    /// Empty when there are none, or for a plugin told no transport. Only a
+    /// format with an inter-block transport event reads it (CLAP); VST3,
+    /// VST2 and AU have none and read `transport` alone.
+    pub transport_changes: &'a [TransportChange],
     /// Sent only when the plugin advertised [`Features::SEQUENCER_CONTEXT`](crate::Features).
     pub expressive: Option<ExpressiveContext<'a>>,
 }
@@ -93,6 +99,14 @@ impl<'a> ProcessContext<'a> {
     #[must_use]
     pub fn transport(mut self, info: &'a TransportInfo) -> Self {
         self.transport = Some(info);
+        self
+    }
+
+    /// Attaches the transport changes inside the block (builder). Call only
+    /// when the plugin advertised [`Features::TRANSPORT`](crate::Features).
+    #[must_use]
+    pub fn transport_changes(mut self, changes: &'a [TransportChange]) -> Self {
+        self.transport_changes = changes;
         self
     }
 

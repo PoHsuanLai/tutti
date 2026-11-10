@@ -10,7 +10,8 @@
 //! - Filters: [`SvfCoeffs`] and [`SvfCoefficients`] with [`svf_step`]
 //!   ([`SvfType`]); [`LadderCoeffs`] and [`LadderCoefficients`] with
 //!   [`ladder_step`] ([`LadderType`]); the Linkwitz-Riley [`Crossover`]; and
-//!   [`Real`], the `f32` or `f64` their state runs in.
+//!   [`Real`], the `f32` or `f64` their state runs in; their models ([`SvfModel`],
+//!   [`LadderModel`], [`CrossoverModel`]) and the [`Biquad`] section they share.
 //! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
 //!   curves [`compute_compressor_gain_reduction`], [`compute_gate_gain`],
 //!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`], [`LimiterKernel`] and
@@ -119,8 +120,9 @@ pub use fdn::FdnKernel;
 pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
-    Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,
-    SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
+    Biquad, Crossover, CrossoverError, CrossoverModel, LadderCoefficients, LadderCoeffs,
+    LadderModel, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoefficients, SvfCoeffs,
+    SvfControls, SvfModel, SvfType, fit_to_rate, ladder_step, svf_step,
 };
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};

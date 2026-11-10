@@ -1773,6 +1773,7 @@ fn two_stale_blocks(
             Default::default(),
             Default::default(),
             Default::default(),
+            Default::default(),
         );
         assert!(submitted.block);
     }

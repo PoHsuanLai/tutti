@@ -233,6 +233,31 @@ impl TempoMap {
         s.bpm_at_sec(seconds - s.sec0)
     }
 
+    /// How fast the tempo moves from `from` to `to`, in BPM per second: the
+    /// difference of the two tempos over their distance, **held inside the
+    /// segment `from` is in**. The span stops where that segment ends, so a
+    /// point between the two never adds its jump (a step's change of tempo is
+    /// a transport event of its own, not a slope), and a ramp that ends in the
+    /// span is read to its end. Exact for a [`RampTime`](Shape::RampTime)
+    /// ramp, whose tempo is linear in time; a beat ramp's tempo is
+    /// exponential in time, and this is its chord over the span. `0.0` for a
+    /// step, an empty span, or a span that ends before it begins.
+    ///
+    /// A bare `f64` (BPM per second): no unit covers a tempo's slope, and its
+    /// reader divides it into CLAP's per-sample `tempo_inc` at the C ABI.
+    #[must_use]
+    pub fn tempo_slope_with(&self, from: Seconds, to: Seconds, hint: &mut Cursor) -> f64 {
+        let s = self.by_sec(from.get(), hint);
+        let ds0 = from.get() - s.sec0;
+        let ds1 = (to.get() - s.sec0).min(s.dsec);
+        let span = ds1 - ds0;
+        // `is_nan` too: a NaN span is no span.
+        if span.is_nan() || span <= 0.0 {
+            return 0.0;
+        }
+        (s.bpm_at_sec(ds1).get() - s.bpm_at_sec(ds0).get()) / span
+    }
+
     /// The tempo on `frame`, counted from beat 0 at `rate`: the curve's
     /// instantaneous tempo there, not a cell's chord. The slope a reader wants
     /// over a stretch of frames is the difference of two of these over their

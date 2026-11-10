@@ -20,11 +20,12 @@
 //! the sum is an all-pass, not a delayed copy of the input. They add no
 //! latency.
 
-use core::f64::consts::{FRAC_1_SQRT_2, PI};
 use std::fmt;
 
 use tutti_types::{Hz, SampleRate};
 
+use super::biquad::Biquad;
+use super::crossover_model::CrossoverModel;
 use crate::COEFF_INTERVAL;
 
 /// Most splits a [`Crossover`] holds: one fewer than [`Crossover::MAX_BANDS`].
@@ -126,61 +127,6 @@ impl fmt::Display for CrossoverError {
 
 impl std::error::Error for CrossoverError {}
 
-/// One biquad's coefficients, normalised so `a0 = 1`.
-#[derive(Clone, Copy, Debug)]
-struct Biquad {
-    b0: f64,
-    b1: f64,
-    b2: f64,
-    a1: f64,
-    a2: f64,
-}
-
-/// The three biquads one split needs, from one warped frequency.
-#[derive(Clone, Copy, Debug)]
-struct Split {
-    low: Biquad,
-    high: Biquad,
-    all_pass: Biquad,
-}
-
-impl Split {
-    /// The Butterworth (Q = 1/sqrt(2)) low-pass, high-pass and all-pass at
-    /// `hz` against `rate` (bilinear transform).
-    fn solve(hz: f64, rate: f64) -> Self {
-        let hz = hz.min(SOLVE_CEILING * rate);
-        let k = libm::tan(PI * hz / rate);
-        let k2 = k * k;
-        let norm = 1.0 / (1.0 + k / FRAC_1_SQRT_2 + k2);
-        let a1 = 2.0 * (k2 - 1.0) * norm;
-        let a2 = (1.0 - k / FRAC_1_SQRT_2 + k2) * norm;
-        let low = k2 * norm;
-        Self {
-            low: Biquad {
-                b0: low,
-                b1: 2.0 * low,
-                b2: low,
-                a1,
-                a2,
-            },
-            high: Biquad {
-                b0: norm,
-                b1: -2.0 * norm,
-                b2: norm,
-                a1,
-                a2,
-            },
-            all_pass: Biquad {
-                b0: a2,
-                b1: a1,
-                b2: 1.0,
-                a1,
-                a2,
-            },
-        }
-    }
-}
-
 /// A biquad's two state words (transposed direct form II).
 #[derive(Clone, Copy, Debug, Default)]
 struct State([f64; 2]);
@@ -222,13 +168,11 @@ impl State {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Crossover {
-    rate: f64,
-    bands: usize,
-    /// The frequencies the coefficients are solved at now.
-    current: [f64; MAX_SPLITS],
-    /// The frequencies set; `current` ramps to them.
+    /// The design: the rate and the frequencies the coefficients are solved at
+    /// now, and those coefficients. Everything else here is state.
+    model: CrossoverModel,
+    /// The frequencies set; the model's ramp to them.
     target: [f64; MAX_SPLITS],
-    coeffs: [Split; MAX_SPLITS],
     /// Per split, the two cascaded sections of its low-pass and high-pass.
     low: [[State; 2]; MAX_SPLITS],
     high: [[State; 2]; MAX_SPLITS],
@@ -255,11 +199,8 @@ impl Crossover {
         let rate = rate.into();
         validate(frequencies, rate)?;
         let mut xo = Self {
-            rate: rate.get(),
-            bands: frequencies.len() + 1,
-            current: [0.0; MAX_SPLITS],
+            model: CrossoverModel::unsolved(frequencies.len() + 1, rate.get()),
             target: [0.0; MAX_SPLITS],
-            coeffs: [Split::solve(1_000.0, 48_000.0); MAX_SPLITS],
             low: [[State::default(); 2]; MAX_SPLITS],
             high: [[State::default(); 2]; MAX_SPLITS],
             all_pass: [[State::default(); MAX_SPLITS]; MAX_SPLITS],
@@ -274,7 +215,7 @@ impl Crossover {
     /// How many bands [`split`](Self::split) produces.
     #[must_use]
     pub fn bands(&self) -> usize {
-        self.bands
+        self.model.bands
     }
 
     /// Crossover `i`'s frequency as last set (the ramp's target), or `None`
@@ -284,14 +225,22 @@ impl Crossover {
         (i < self.splits()).then(|| Hz(self.target[i] as f32))
     }
 
+    /// The design at the frequencies the coefficients are solved at now (a ramp
+    /// in flight is between two of these): the splits' coefficients without the
+    /// state that runs them.
+    #[must_use]
+    pub fn model(&self) -> &CrossoverModel {
+        &self.model
+    }
+
     /// The sample rate the coefficients are solved at.
     #[must_use]
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(self.rate)
+        SampleRate(self.model.rate)
     }
 
     fn splits(&self) -> usize {
-        self.bands - 1
+        self.model.bands - 1
     }
 
     /// Moves crossover `i` to `hz`: ramped across the next
@@ -308,7 +257,7 @@ impl Crossover {
         if i >= n {
             return Err(CrossoverError::Index { index: i, len: n });
         }
-        check_one(i, hz, &self.target[..n], SampleRate(self.rate))?;
+        check_one(i, hz, &self.target[..n], SampleRate(self.model.rate))?;
         self.target[i] = f64::from(hz.get());
         Ok(())
     }
@@ -329,7 +278,7 @@ impl Crossover {
                 expected: self.splits(),
             });
         }
-        validate(frequencies, SampleRate(self.rate))?;
+        validate(frequencies, SampleRate(self.model.rate))?;
         for (t, f) in self.target.iter_mut().zip(frequencies) {
             *t = f64::from(f.get());
         }
@@ -342,7 +291,7 @@ impl Crossover {
     pub fn set_sample_rate(&mut self, rate: impl Into<SampleRate>) {
         let rate = rate.into().get();
         if rate.is_finite() && rate > 0.0 {
-            self.rate = rate;
+            self.model.rate = rate;
             self.settle();
         }
     }
@@ -361,7 +310,7 @@ impl Crossover {
     /// [`split_block`](Self::split_block).
     #[inline]
     pub fn split(&mut self, x: f32) -> [f32; Self::MAX_BANDS] {
-        if self.current != self.target {
+        if self.model.freqs != self.target {
             self.settle();
         }
         self.tick(x)
@@ -378,21 +327,21 @@ impl Crossover {
         let n = input.len();
         assert_eq!(
             out.len(),
-            self.bands * n,
+            self.model.bands * n,
             "split_block: out holds one block per band"
         );
-        let from = self.current;
+        let from = self.model.freqs;
         let mut done = 0;
         while done < n {
-            let len = if self.current == self.target {
+            let len = if self.model.freqs == self.target {
                 n - done
             } else {
                 COEFF_INTERVAL.min(n - done)
             };
-            if self.current != self.target {
+            if self.model.freqs != self.target {
                 let end = done + len;
                 let splits = self.splits();
-                let ramps = self.current.iter_mut().zip(&self.target).zip(&from);
+                let ramps = self.model.freqs.iter_mut().zip(&self.target).zip(&from);
                 for ((cur, &to), &from) in ramps.take(splits) {
                     *cur = if end >= n {
                         to
@@ -404,7 +353,7 @@ impl Crossover {
             }
             for i in done..done + len {
                 let bands = self.tick(input[i]);
-                for (b, y) in bands.iter().take(self.bands).enumerate() {
+                for (b, y) in bands.iter().take(self.model.bands).enumerate() {
                     out[b * n + i] = *y;
                 }
             }
@@ -414,14 +363,12 @@ impl Crossover {
 
     /// Takes the targets whole.
     fn settle(&mut self) {
-        self.current = self.target;
+        self.model.freqs = self.target;
         self.solve();
     }
 
     fn solve(&mut self) {
-        for j in 0..self.splits() {
-            self.coeffs[j] = Split::solve(self.current[j], self.rate);
-        }
+        self.model.solve();
     }
 
     #[inline]
@@ -430,7 +377,7 @@ impl Crossover {
         let splits = self.splits();
         let mut rest = f64::from(x);
         for (j, slot) in out.iter_mut().enumerate().take(splits) {
-            let c = &self.coeffs[j];
+            let c = &self.model.coeffs[j];
             let mut lo = rest;
             lo = self.low[j][0].tick(&c.low, lo);
             lo = self.low[j][1].tick(&c.low, lo);
@@ -438,7 +385,7 @@ impl Crossover {
             hi = self.high[j][0].tick(&c.high, hi);
             hi = self.high[j][1].tick(&c.high, hi);
             for k in j + 1..splits {
-                lo = self.all_pass[j][k].tick(&self.coeffs[k].all_pass, lo);
+                lo = self.all_pass[j][k].tick(&self.model.coeffs[k].all_pass, lo);
             }
             *slot = lo as f32;
             rest = hi;
@@ -449,7 +396,7 @@ impl Crossover {
 }
 
 /// Checks a whole set: count, then each frequency in order.
-fn validate(frequencies: &[Hz], rate: SampleRate) -> Result<(), CrossoverError> {
+pub(super) fn validate(frequencies: &[Hz], rate: SampleRate) -> Result<(), CrossoverError> {
     let bands = frequencies.len() + 1;
     if !(Crossover::MIN_BANDS..=Crossover::MAX_BANDS).contains(&bands) {
         return Err(CrossoverError::Bands {

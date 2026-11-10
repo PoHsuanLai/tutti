@@ -22,9 +22,10 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_CHOKE,
     CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
     CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
-    CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_midi, clap_event_midi_sysex,
-    clap_event_note, clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
-    clap_event_param_value, clap_input_events, clap_output_events,
+    CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT, clap_event_header, clap_event_midi,
+    clap_event_midi_sysex, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
+    clap_event_param_mod, clap_event_param_value, clap_event_transport, clap_input_events,
+    clap_output_events,
 };
 
 use crate::guard::{ctx_ref, guard};
@@ -60,6 +61,9 @@ pub enum EventRef<'a> {
     ParamMod(&'a clap_event_param_mod),
     /// The start or end of a parameter gesture, by the header's type.
     ParamGesture(&'a clap_event_param_gesture),
+    /// A transport update inside the block: the host's tempo, position and
+    /// play state from this event's time on.
+    Transport(&'a clap_event_transport),
     /// A complete SysEx message: `event.buffer` addresses `event.size` bytes
     /// inside `backing`, which the list borrows for the call.
     Sysex {
@@ -134,6 +138,7 @@ impl EventRef<'_> {
                 &e.header,
                 &[CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END],
             ),
+            EventRef::Transport(e) => checked(e, &e.header, &[CLAP_EVENT_TRANSPORT]),
             EventRef::Sysex { event, backing } => {
                 let start = backing.as_ptr() as usize;
                 let end = start + backing.len();
@@ -498,6 +503,46 @@ mod tests {
         assert_eq!(
             seen(EventRef::Note(&n)),
             (CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON)
+        );
+    }
+
+    /// A transport event reaches the plugin as itself (doc 020 stage 5b), and
+    /// one with another type in its header does not.
+    ///
+    /// Mutation: drop the `EventRef::Transport` arm's type list
+    /// (`&[CLAP_EVENT_NOTE_ON]`) -> the event is replaced by the inert header
+    /// -> fails.
+    #[test]
+    fn a_transport_event_is_lent_as_itself() {
+        let t = |type_: u16| clap_event_transport {
+            header: clap_event_header {
+                size: header_size::<clap_event_transport>(),
+                time: 7,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_,
+                flags: 0,
+            },
+            flags: 0,
+            song_pos_beats: 0,
+            song_pos_seconds: 0,
+            tempo: 100.0,
+            tempo_inc: 0.0,
+            loop_start_beats: 0,
+            loop_end_beats: 0,
+            loop_start_seconds: 0,
+            loop_end_seconds: 0,
+            bar_start: 0,
+            bar_number: 0,
+            tsig_num: 4,
+            tsig_denom: 4,
+        };
+        assert_eq!(
+            seen(EventRef::Transport(&t(CLAP_EVENT_TRANSPORT))),
+            (CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT)
+        );
+        assert_eq!(
+            seen(EventRef::Transport(&t(CLAP_EVENT_NOTE_ON))),
+            (u16::MAX, u16::MAX)
         );
     }
 

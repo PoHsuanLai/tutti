@@ -2,7 +2,7 @@
 
 use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_ump::Ump;
-use tutti_ump::{Rpn, U7};
+use tutti_ump::{Message, Rpn, Voice2, decode};
 
 /// The per-note pitch-bend range of each MIDI channel: what a per-note pitch
 /// bend's full scale means, in semitones, for a receiver that turns one into
@@ -29,7 +29,7 @@ use tutti_ump::{Rpn, U7};
 /// ```
 /// use tutti_fixtures::midi::registered_rpn;
 /// use tutti_midi_protocol::PitchBendSensitivity;
-/// use tutti_midi_types::PerNoteBendRanges;
+/// use tutti_plugin_types::PerNoteBendRanges;
 /// use tutti_ump::{MidiChannel, MidiGroup, Rpn};
 ///
 /// let mut ranges = PerNoteBendRanges::default();
@@ -83,19 +83,14 @@ impl PerNoteBendRanges {
 /// The channel and range of a per-note bend sensitivity message (RPN
 /// #00/07), or `None` for any other packet.
 fn per_note_bend_sensitivity(ump: &Ump) -> Option<(u8, PitchBendSensitivity)> {
-    use midi2::channel_voice2::ChannelVoice2;
-    use midi2::{Channeled, UmpMessage};
-    let UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) =
-        UmpMessage::try_from(ump.words()).ok()?
+    let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) = decode(*ump)
     else {
         return None;
     };
-    // A midi2 bank and index are 7-bit, so `U7::new` never refuses.
-    let rpn = Rpn::new(U7::new(u8::from(m.bank()))?, U7::new(u8::from(m.index()))?);
-    (rpn == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY).then(|| {
+    (Rpn::new(bank, index) == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY).then(|| {
         (
-            u8::from(m.channel()),
-            PitchBendSensitivity::from_rpn_bits(m.controller_data()),
+            address.channel.get(),
+            PitchBendSensitivity::from_rpn_bits(value),
         )
     })
 }

@@ -594,7 +594,7 @@ impl Unit {
     /// change mid-stream costs a per-channel geometry rebuild and nothing else.
     ///
     /// Keeping the state is a choice, and not every processor makes it
-    /// (`tutti_spatial`'s HRTF panner, preparing at a new rate, rebuilds its
+    /// (`tutti_nodes`'s HRTF panner, preparing at a new rate, rebuilds its
     /// HRIR sphere and zeroes its streaming buffers), so a caller should not
     /// assume the two behave alike.
     pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {

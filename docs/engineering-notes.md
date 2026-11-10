@@ -113,9 +113,7 @@ crates/             everything shipped, directory name = package name
   tutti-modulation         # Pure modulation: the route compiler, curves. Audio-free.
   tutti-export      # Offline rendering and export
   tutti-dsp         # Pure algorithms over slices. Names only tutti-types.
-  tutti-nodes       # DSP nodes (LFO, dynamics, convolution, automation).
-  tutti-spatial     # The engine's only geometry: `vbap` and `hrtf`. Depends on
-                    #   tutti-nodes; the arrow never runs back.
+  tutti-nodes       # DSP nodes (LFO, dynamics, convolution, automation, VBAP and HRTF panners).
   tutti-sampler     # Sample playback (streaming, audition)
   tutti-polysynth   # Polyphonic subtractive/wavetable synth
   tutti-soundfont   # SoundFont (.sf2) playback: the voice render (derived from rustysynth) under tutti-voicing

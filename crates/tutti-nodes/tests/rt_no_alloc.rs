@@ -1,6 +1,5 @@
 //! Regression gate for RT-safety: built-in nodes must not allocate on the
-//! process path. The panner tests live in `tutti-spatial`'s own copy of this
-//! gate, alongside the nodes they cover.
+//! process path. The panner tests are `spatial_rt_no_alloc.rs`.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_types::Drive;

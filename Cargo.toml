@@ -74,7 +74,6 @@ members = [
     "crates/tutti-polysynth",
     "crates/tutti-soundfont",
     "crates/tutti-nodes",
-    "crates/tutti-spatial",
     "crates/tutti-dsp",
     "crates/tutti-measure",
     "crates/tutti-plugin-ipc",

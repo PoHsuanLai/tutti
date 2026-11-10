@@ -36,6 +36,9 @@
 //! - Signal-driven modulation sources (design doc 014 §6), feeding a
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
+//! - Spatial: [`VbapPannerNode`] ([`VbapPannerControls`], [`VbapError`]) and
+//!   [`HrtfBinauralNode`] ([`HrtfBinauralControls`]), steered by a
+//!   [`SpatialTarget`].
 //! - Mixing: [`ChannelSumNode`], [`DownmixNode`], [`BusStripNode`].
 //! - Param ports: each node's `*_PARAMS` port list (for example
 //!   [`SVF_PARAMS`]), which a control lane drives
@@ -111,7 +114,6 @@ pub use dynamics::{
 
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one
 // `N`-wide output. Ungated on purpose — it is arity arithmetic, not geometry.
-// `tutti-spatial`'s `build_vbap_mix` is one consumer, not the only one.
 mod mix_bus;
 pub use mix_bus::ChannelSumNode;
 
@@ -144,8 +146,12 @@ pub use reverb_fdn::{FdnNode, FdnParams, ReverbKind, SpawnedReverb};
 // The designs and controls that sit in a `DesignNode<D>`'s signature.
 pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 
-// Spatial panners (VBAP, binaural) are `tutti-spatial`'s, which depends on
-// this crate; nothing here names it.
+// The spatial panners: VBAP speaker panning and binaural HRTF rendering.
+mod spatial;
+pub use spatial::{
+    HrtfBinauralControls, HrtfBinauralNode, SpatialTarget, VbapError, VbapPannerControls,
+    VbapPannerNode,
+};
 
 mod modulation;
 pub use modulation::{MOD_DELAY_PARAMS, ModDelayConfig, ModDelayNode, PHASER_PARAMS, PhaserNode};

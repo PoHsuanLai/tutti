@@ -33,8 +33,8 @@ use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, SysExAssembler,
-    SysExStep, WireMidi, note_id_for, note_id_to_channel_note, push_sysex, sysex_packets,
+    Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi, note_id_for,
+    note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;
@@ -44,7 +44,7 @@ use tutti_midi_protocol::{
 use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
 use tutti_ump::{
     Address, Attribute, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
-    RegisteredPerNoteController, Ump, Unknown, Voice1, Voice2, decode,
+    RegisteredPerNoteController, SysexAssembler, SysexStep, Ump, Unknown, Voice1, Voice2, decode,
 };
 // Only the tests name it; the conversion code works in raw CC numbers.
 #[cfg(test)]
@@ -939,7 +939,7 @@ pub struct InputEventList {
     /// Reassembles SysEx7 packets and owns the bytes an input
     /// [`ClapEvent::MidiSysex`] points at. No room until
     /// [`reserve_sysex`](Self::reserve_sysex).
-    sysex: SysExAssembler,
+    sysex: SysexAssembler<Box<[u8]>>,
     /// Notes go out as `clap_event_midi`: the input note port does not take
     /// CLAP note events. See [`set_midi_notes`](Self::set_midi_notes).
     midi_notes: bool,
@@ -956,7 +956,7 @@ impl InputEventList {
             midi_dropped: 0,
             bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
-            sysex: SysExAssembler::default(),
+            sysex: SysexAssembler::new(Box::default(), 0),
             midi_notes: false,
         }
     }
@@ -994,7 +994,7 @@ impl InputEventList {
             midi_dropped: 0,
             bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
-            sysex: SysExAssembler::default(),
+            sysex: SysexAssembler::new(Box::default(), 0),
             midi_notes: false,
         }
     }
@@ -1054,13 +1054,13 @@ impl InputEventList {
     }
 
     /// Reserve the SysEx reassembly buffer
-    /// ([`SysExAssembler::reserved`], about 66 KiB). Off-RT; call once at
+    /// ([`sysex_assembler`], about 66 KiB). Off-RT; call once at
     /// activation. Until then every SysEx message is dropped and counted
     /// ([`sysex_dropped`](Self::sysex_dropped)). A list already reserved
     /// keeps its buffer, and any message open in it.
     pub fn reserve_sysex(&mut self) {
         if self.sysex.max_message() < SYSEX_MESSAGE_CAPACITY {
-            self.sysex = SysExAssembler::reserved();
+            self.sysex = sysex_assembler();
         }
     }
 
@@ -1069,7 +1069,7 @@ impl InputEventList {
     /// `START` or a `SINGLE` on their group, past the buffer's room in one
     /// block, open at a [`reset_sysex`](Self::reset_sysex), or any message
     /// before [`reserve_sysex`](Self::reserve_sysex). Neither call zeroes
-    /// it. See [`SysExAssembler`] for the policy.
+    /// it. See [`SysexAssembler`] for the policy.
     pub fn sysex_dropped(&self) -> u64 {
         self.sysex.dropped()
     }
@@ -1094,8 +1094,8 @@ impl InputEventList {
     /// Allocation-free once [`reserve_sysex`](Self::reserve_sysex)ed.
     pub fn add_midi(&mut self, event: &UmpAt) -> &mut Self {
         let (offset, ump) = *event;
-        match self.sysex.push(&ump) {
-            SysExStep::NotSysEx => {
+        match self.sysex.push(ump) {
+            SysexStep::NotSysex => {
                 if self.bend_ranges.observe(&ump) {
                     return self;
                 }
@@ -1124,9 +1124,9 @@ impl InputEventList {
                     self.events.push(clap_event);
                 }
             }
-            SysExStep::Held => {}
-            SysExStep::Complete(message) => {
-                let bytes = self.sysex.message(message);
+            SysexStep::Held => {}
+            SysexStep::Complete(message) => {
+                let bytes = self.sysex.message(message).bytes();
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "a message is at most SYSEX_MESSAGE_CAPACITY bytes"
@@ -1142,7 +1142,7 @@ impl InputEventList {
                     },
                     port_index: 0,
                     // The reassembler's buffer never grows and nothing in it
-                    // moves until `clear` (`SysExAssembler::begin_block`),
+                    // moves until `clear` (`SysexAssembler::begin_block`),
                     // which empties `events` in the same call.
                     buffer: bytes.as_ptr(),
                     size,

@@ -2141,7 +2141,7 @@ Today two parallel lifecycles: the typestate `AuLoaded` / `AuActive`
 callable on `&mut self`. **The façade goes**: `Lifecycle<AuLoaded>` is that state
 machine, and its `Poisoned` is `State::Empty`. What the façade owns moves to the
 types that need it: the open editor (`Option<AuEditor>`) into `AuLoaded` and
-`AuController`, and the SysEx assembler (`RefCell<SysExAssembler>`) into
+`AuController`, and the SysEx assembler (`RefCell<SysexAssembler<Box<[u8]>>>`) into
 `AuProcessor`, reserved at activation as `initialize` does today. `AuActive`
 splits: `AuProcessor` (render and MIDI from the render thread) and `AuController`
 (parameters, properties, state, the view).

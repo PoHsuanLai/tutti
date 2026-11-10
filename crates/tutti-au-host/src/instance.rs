@@ -25,11 +25,12 @@ use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport;
 use crate::types::*;
 use tutti_plugin_types::{
-    ChannelLayout, EditorSize, MainThread, SYSEX_MESSAGE_CAPACITY, SysExAssembler, TransportInfo,
-    WindowHandle,
+    ChannelLayout, EditorSize, MainThread, SYSEX_MESSAGE_CAPACITY, TransportInfo, WindowHandle,
+    sysex_assembler,
 };
 use tutti_types::Samples;
 use tutti_types::value::units::Seconds;
+use tutti_ump::SysexAssembler;
 
 /// An AU that has been instantiated but not yet initialized.
 ///
@@ -137,7 +138,7 @@ pub struct AuInstance {
     /// does not allocate for a long message. A `RefCell` because `send_midi`
     /// takes `&self`; it is not re-entered (`MusicDeviceSysEx` does not call
     /// back into the host) and the instance is not `Sync`.
-    sysex: std::cell::RefCell<SysExAssembler>,
+    sysex: std::cell::RefCell<SysexAssembler<Box<[u8]>>>,
 }
 
 impl std::fmt::Debug for AuInstance {
@@ -166,7 +167,9 @@ impl AuInstance {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
             editor: None,
-            sysex: Default::default(),
+            // No room until `initialize` reserves one: every message is
+            // dropped and counted.
+            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0)),
         })
     }
 
@@ -179,7 +182,9 @@ impl AuInstance {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new_with_config(component, config)?),
             editor: None,
-            sysex: Default::default(),
+            // No room until `initialize` reserves one: every message is
+            // dropped and counted.
+            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0)),
         })
     }
 
@@ -258,7 +263,7 @@ impl AuInstance {
                     // `send_midi` never grows one. A re-initialize keeps it.
                     let sysex = self.sysex.get_mut();
                     if sysex.max_message() < SYSEX_MESSAGE_CAPACITY {
-                        *sysex = SysExAssembler::reserved();
+                        *sysex = sysex_assembler();
                     }
                     Ok(())
                 }
@@ -623,8 +628,7 @@ impl AuInstance {
     /// single rejected message can't abort the whole block.
     pub fn send_midi(&self, events: &[UmpAt]) {
         use tutti_midi_protocol::midi1;
-        use tutti_plugin_types::{SysExStep, is_framed};
-        use tutti_ump::{Message, decode};
+        use tutti_ump::{Message, SysexStep, decode};
 
         /// Hands a complete SysEx message to the AU.
         ///
@@ -671,12 +675,12 @@ impl AuInstance {
                 // (system, stream, utility) has no AUv2 delivery and the
                 // assembler passes it by.
                 _ => {
-                    if let SysExStep::Complete(message) = sysex.push(&ev) {
+                    if let SysexStep::Complete(message) = sysex.push(ev) {
                         // `MusicDeviceSysEx` takes the complete message,
                         // `0xF0` and `0xF7` included (`MusicDevice.h`).
-                        let bytes = sysex.message(message);
-                        debug_assert!(is_framed(bytes));
-                        send_sysex(unit, bytes);
+                        // The message is a `SysexMessage`: framed and 7-bit
+                        // by its type.
+                        send_sysex(unit, sysex.message(message).bytes());
                     }
                 }
             }
@@ -686,7 +690,7 @@ impl AuInstance {
     /// SysEx messages [`send_midi`](Self::send_midi) dropped whole since this
     /// instance was made: longer than [`SYSEX_MESSAGE_CAPACITY`], cut by a
     /// later `START`, or sent before [`initialize`](Self::initialize) reserved
-    /// the buffer. See [`SysExAssembler`] for the policy.
+    /// the buffer. See [`SysexAssembler`] for the policy.
     pub fn sysex_dropped(&self) -> u64 {
         self.sysex.borrow().dropped()
     }

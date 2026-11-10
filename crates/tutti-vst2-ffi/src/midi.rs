@@ -12,7 +12,7 @@
 //!
 //! SysEx, which has no 3-byte form, goes to the plugin as a `kVstSysExType`
 //! event: [`MidiSendBuffer`] reassembles the UMP SysEx7 packets
-//! ([`SysExAssembler`]) and hands the plugin one complete `0xF0 … 0xF7`
+//! ([`SysexAssembler`]) and hands the plugin one complete `0xF0 … 0xF7`
 //! message at its `END` packet's frame. A message may span blocks; one past
 //! [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY) is
 //! dropped whole and counted.
@@ -29,7 +29,8 @@ use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 
 use crate::host::RenderHandle;
-use tutti_plugin_types::{MIDI_STACK_CAPACITY, SysExAssembler, SysExRef, SysExStep};
+use tutti_plugin_types::{MIDI_STACK_CAPACITY, sysex_assembler};
+use tutti_ump::{SysexAssembler, SysexRef, SysexStep};
 
 /// Per-block MIDI plumbing for one `Vst2Processor` (in `tutti-vst2-host`): the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned
@@ -216,12 +217,12 @@ pub struct MidiSendBuffer {
     order: Vec<Staged>,
     /// Reassembles SysEx7 packets and owns the bytes a `SysExEvent` points
     /// at. Reserved at construction; an open message carries across blocks.
-    sysex: SysExAssembler,
+    sysex: SysexAssembler<Box<[u8]>>,
     /// The SysEx messages the block completed, each with the index of its
     /// `END` packet and the frame (clamped to the block) it lands on, filled once at the block's first piece and
     /// selected from by every piece. A message is assembled once per block: a
     /// run is open across blocks, not pieces.
-    completed: Vec<(usize, usize, SysExRef)>,
+    completed: Vec<(usize, usize, SysexRef)>,
     /// Pointer table — one `*mut api::Event` per event, laid out into
     /// the trailing flexible-array region of `header`.
     event_ptrs: Vec<*mut crate::api::Event>,
@@ -275,7 +276,7 @@ impl MidiSendBuffer {
             api_events: Vec::with_capacity(events),
             sysex_events: Vec::with_capacity(events),
             order: Vec::with_capacity(events),
-            sysex: SysExAssembler::reserved(),
+            sysex: sysex_assembler(),
             completed: Vec::with_capacity(events),
             event_ptrs: Vec::with_capacity(events),
             header: Vec::with_capacity(header_words(events)),
@@ -355,7 +356,7 @@ impl MidiSendBuffer {
             self.sysex.begin_block();
             self.completed.clear();
             for (index, (offset, ump)) in midi_events.iter().enumerate() {
-                if let SysExStep::Complete(message) = self.sysex.push(ump) {
+                if let SysexStep::Complete(message) = self.sysex.push(*ump) {
                     if self.completed.len() == self.completed.capacity() {
                         self.events_dropped += 1;
                     } else {
@@ -514,8 +515,8 @@ impl MidiSendBuffer {
     }
 
     /// The `SysExEvent` for a reassembled message, at `end`'s frame.
-    fn sysex_event(&self, delta_frames: i32, message: SysExRef) -> crate::api::SysExEvent {
-        let bytes = self.sysex.message(message);
+    fn sysex_event(&self, delta_frames: i32, message: SysexRef) -> crate::api::SysExEvent {
+        let bytes = self.sysex.message(message).bytes();
         crate::api::SysExEvent {
             event_type: crate::api::EventType::SysEx,
             byte_size: std::mem::size_of::<crate::api::SysExEvent>() as i32,

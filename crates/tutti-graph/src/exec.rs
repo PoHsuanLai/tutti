@@ -168,7 +168,7 @@ use crate::NodeKey;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_rt::{RtScope, with_no_denormals};
-use tutti_types::{Frame, MaxBlock, Samples, Tail};
+use tutti_types::{Amplitude, Frame, MaxBlock, Samples, Tail};
 
 use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};
@@ -177,6 +177,7 @@ use crate::event::PortCount;
 use crate::event::{Event, EventWriter, SortedEvents, merge_into};
 use crate::event_tap::EventTapWriter;
 use crate::fade::CrossfadeCurve;
+use crate::gain::{self, GainCell, SumLane, Weight};
 use crate::held::{Held, Keys, Tables};
 use crate::history::TransportHistory;
 use crate::io::Io;
@@ -194,7 +195,7 @@ use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
 use crate::tap::TapWriter;
-use crate::{EventTapId, MeterId, TapId};
+use crate::{EdgeId, EventTapId, MeterId, TapId};
 use tutti_types::PlayReading;
 
 /// Events per block an event output port holds when its node declares no
@@ -346,10 +347,14 @@ pub(crate) struct Commit {
     opened: Opened,
 }
 
-/// What the editor opened since its last commit, handed to the executor with
-/// the next: a tap's producers and a meter's cells.
+/// What the editor hands the executor with a commit: what it opened since its
+/// last one (a tap's producers and a meter's cells), and the cell of every
+/// weighted lane the plan lists (`Plan::sum_lanes`).
 #[derive(Debug, Default)]
 pub(crate) struct Opened {
+    /// The live base of each weighted lane of the plan, by edge. The editor
+    /// owns the cells and keeps one per edge across commits.
+    pub(crate) gains: BTreeMap<EdgeId, GainCell>,
     pub(crate) taps: Vec<(TapId, TapWriter)>,
     pub(crate) event_taps: Vec<(EventTapId, EventTapWriter)>,
     pub(crate) meters: Vec<(MeterId, MeterWriter)>,
@@ -671,6 +676,9 @@ struct State {
     event_taps: Vec<Option<EventTapWriter>>,
     /// One set of cells per planned meter (`None`: nobody opened it).
     meters: Vec<Option<MeterWriter>>,
+    /// One state per entry of `Plan::sum_lanes`: a weighted lane's weight
+    /// across blocks, or a plain addend's none.
+    lanes: Vec<SumLane>,
     inject: Vec<Inject>,
     has_inject: Vec<bool>,
     /// Plan units with a scheduled command landing this block.
@@ -695,6 +703,7 @@ impl State {
             taps: Vec::new(),
             event_taps: Vec::new(),
             meters: Vec::new(),
+            lanes: Vec::new(),
             inject: Vec::new(),
             has_inject: Vec::new(),
             has_due: Vec::new(),
@@ -1380,6 +1389,33 @@ impl Executor {
                     .collect()
             })
             .unwrap_or_default();
+        // Weighted lanes, by edge: the weight a lane was last given carries
+        // across a commit that keeps the edge (not a sample-rate change's
+        // reset: a weight is not time), and a new edge starts at its value.
+        let old_weights: BTreeMap<EdgeId, Amplitude> = old_plan
+            .map(|p| {
+                p.sum_lanes
+                    .iter()
+                    .zip(&old.lanes)
+                    .filter_map(|(id, lane)| Some((((*id)?), lane.carried()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let lanes: Vec<SumLane> = plan
+            .sum_lanes
+            .iter()
+            .map(|id| match id {
+                None => SumLane::plain(),
+                Some(id) => SumLane::weighted(
+                    opened
+                        .gains
+                        .get(id)
+                        .cloned()
+                        .expect("the editor sends a cell for every weighted lane"),
+                    old_weights.get(id).copied(),
+                ),
+            })
+            .collect();
         let meters: Vec<Option<MeterWriter>> = plan
             .meters
             .iter()
@@ -1634,6 +1670,7 @@ impl Executor {
             taps,
             event_taps,
             meters,
+            lanes,
             inject,
             has_inject,
             has_due: vec![false; plan.units.len()],
@@ -1834,6 +1871,7 @@ impl Executor {
                 taps,
                 event_taps,
                 meters,
+                lanes,
                 inject,
                 has_inject,
                 has_due,
@@ -1854,6 +1892,13 @@ impl Executor {
             let cap = *event_cap;
             commands.gather(&env, plan, *applied, has_due);
             let mut fade_ended = false;
+
+            // Every weighted lane reads its cell once, here: a store while
+            // the block runs reaches no op of it, so the serial and the
+            // parallel render cannot disagree on when it landed.
+            for lane in lanes.iter_mut() {
+                lane.snapshot();
+            }
 
             // Feedback reads happen before any op: the delay is a whole
             // `MaxBlock`, so nothing this block's captures queue is due yet.
@@ -1899,6 +1944,7 @@ impl Executor {
                         taps,
                         event_taps,
                         meters: &*meters,
+                        lanes: &mut lanes[..],
                         inject,
                         has_inject,
                         has_due,
@@ -1942,6 +1988,21 @@ impl Executor {
                                 &mut *st.arena,
                                 &mut *st.flags,
                                 &plan.audio_list[srcs.range()],
+                                &mut [],
+                                dst,
+                                frames,
+                            );
+                        }
+                        Op::WeightedSum {
+                            srcs,
+                            dst,
+                            lanes: span,
+                        } => {
+                            sum_op(
+                                &mut *st.arena,
+                                &mut *st.flags,
+                                &plan.audio_list[srcs.range()],
+                                &mut lanes[span.range()],
                                 dst,
                                 frames,
                             );
@@ -2135,47 +2196,64 @@ pub(crate) fn delay_op<A: AudioSlots, F: SlotFlags + ?Sized>(
     flags.set(dst, flag(out_silent, out_silent));
 }
 
-/// [`Op::Sum`] of the slots `list` into `dst`: the left fold `((+0.0 + a_0) +
-/// a_1) + ..` in `f32`, one rounding per add, never fused (doc 013, "Audio
-/// fan-in sums", points 1, 2 and 4).
+/// [`Op::Sum`] or [`Op::WeightedSum`] of the slots `list` into `dst`: the left
+/// fold `((+0.0 + w_0 * a_0) + w_1 * a_1) + ..` in `f32`, one rounding per
+/// multiply and per add, never fused (doc 013, "Audio fan-in sums", points 1,
+/// 2 and 4, and "Edge gain"). `lanes` is empty for a plain sum, else one per
+/// addend; an addend's weight is exactly `1.0` unless its lane says otherwise,
+/// and a `1.0` weight is the plain add, no multiply (`crate::gain`).
 ///
-/// An addend flagged [`SILENT`] is skipped: the accumulator starts at `+0.0`
-/// and so is never `-0.0`, and `acc + (+0.0)` is `acc` bit for bit. When no
-/// addend is live the output is zero-filled and flagged silent; otherwise it
-/// is constant when every live addend is. The flags are a claim made from the
-/// addends' flags, never from scanning samples. The loop is source-major (it
-/// vectorises); each sample still sees the same sequence of adds as the
-/// frame-major fold.
+/// An addend flagged [`SILENT`] is skipped whatever its weight: the
+/// accumulator starts at `+0.0` and so is never `-0.0`, and `acc + w * (+0.0)`
+/// is `acc` bit for bit (a finite `w`; every base is finite). A weight of
+/// `0.0` is not skipped by value: `0.0 * NaN` is `NaN`, and the render must
+/// not depend on whether a gain happens to be zero. Every lane's state
+/// advances **every** block, skipped addend or not. When no addend is live
+/// the output is zero-filled and flagged silent; otherwise it is constant when
+/// every live addend is **and none is ramping** (a constant times a ramp is
+/// not constant). The flags are a claim made from the addends' flags, never
+/// from scanning samples. The loop is source-major (it vectorises); each
+/// sample still sees the same sequence of adds as the frame-major fold.
 ///
 /// `dst` is the first addend's own slot in the in-place form. That addend is
-/// then not borrowed for reading: `dst += +0.0` (which turns a `-0.0` into
-/// `+0.0`, as `+0.0 + a_0` does) and the rest are added into it.
+/// then not borrowed for reading: it is weighted in place (`dst = +0.0 + w *
+/// dst`, which turns a `-0.0` into `+0.0`, as `+0.0 + w * a_0` does) and the
+/// rest are added into it.
 #[inline]
 pub(crate) fn sum_op<A: AudioSlots, F: SlotFlags + ?Sized>(
     arena: &mut A,
     flags: &mut F,
     list: &[u32],
+    lanes: &mut [SumLane],
     dst: u32,
     frames: usize,
 ) {
-    debug_assert!((2..=MAX_PORTS).contains(&list.len()));
+    debug_assert!(!list.is_empty() && list.len() <= MAX_PORTS);
+    debug_assert!(lanes.is_empty() || lanes.len() == list.len());
+    // Moved on first, for every lane: a silent addend's weight moves too.
+    let mut weights = [Weight::Unit; MAX_PORTS];
+    for (w, lane) in weights.iter_mut().zip(lanes.iter_mut()) {
+        *w = lane.weight();
+    }
     // Requests, then sorted by slot; the order of addition is the `Read`
     // index, among the live addends.
     let mut reqs = [(0u32, Role::Read(0)); MAX_PORTS + 1];
+    let mut live_weights = [Weight::Unit; MAX_PORTS];
     let (mut live, mut m) = (0usize, 0usize);
     let (mut in_place, mut constant) = (false, true);
-    for &s in list {
+    for (k, &s) in list.iter().enumerate() {
         let f = flags.get(s);
         if f & SILENT != 0 {
             continue;
         }
-        constant &= f & CONSTANT != 0;
+        constant &= f & CONSTANT != 0 && !matches!(weights[k], Weight::Ramp { .. });
         if live == 0 && s == dst {
             in_place = true;
         } else {
             reqs[m] = (s, Role::Read(live as u8));
             m += 1;
         }
+        live_weights[live] = weights[k];
         live += 1;
     }
     if live == 0 {
@@ -2190,21 +2268,10 @@ pub(crate) fn sum_op<A: AudioSlots, F: SlotFlags + ?Sized>(
     let mut outs: [&mut [f32]; 1] = [&mut [][..]];
     arena.borrow(frames, &reqs[..m], &mut ins, &mut outs);
     let [out] = outs;
-    let rest = if in_place {
-        for o in out.iter_mut() {
-            *o += 0.0;
-        }
-        &ins[1..live]
-    } else {
-        for (o, &a) in out.iter_mut().zip(ins[0]) {
-            *o = 0.0 + a;
-        }
-        &ins[1..live]
-    };
-    for a in rest {
-        for (o, &x) in out.iter_mut().zip(*a) {
-            *o += x;
-        }
+    // `ins[k]` is live addend `k`, but for the first when it is `dst` itself.
+    gain::first(out, (!in_place).then(|| ins[0]), live_weights[0]);
+    for (a, &w) in ins[1..live].iter().zip(&live_weights[1..live]) {
+        gain::add(out, a, w);
     }
     flags.set(dst, flag(false, constant));
 }

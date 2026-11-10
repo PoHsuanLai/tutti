@@ -6354,6 +6354,80 @@ is the same); no-alloc over a ramping, driven, 64-lane sum on both executors.
 Mutations: fused multiply-add in the kernel; ramp from the new value; skip
 on `w == 0.0`; read the cell per op rather than per block.
 
+**As built (G1).** `EdgeId { sink, from }`, `EdgeGain { base, range }` and
+`GraphSpec::gains` (`BTreeMap<EdgeId, EdgeGain>`; `EdgeGain` is `Eq + Hash` by
+bits, as `ParamRange` is), the weighted kernel and ramp, the cell,
+`Editor::set_edge_gain` and the reference. Where the build chose:
+
+- **No `source` field yet.** `EdgeGain` has `base` and `range` only, so no
+  unused state ships before the driven lane (G2) adds `source` with
+  `connect_edge_gain`. `range` is carried and validated and clamps nothing
+  until then: the base is a control and is never clamped (as a param's is
+  not).
+- **One new op, `Op::WeightedSum { srcs, dst, lanes }`.** A plain `Op::Sum`
+  is unchanged (no lane state, bit for bit what it was), and a sum with a
+  weighted lane is its own variant over `Plan::sum_lanes`: one entry per
+  addend, the edge whose gain weights it or `None` for a plain addend (an
+  edge with no entry, or a chain's carried result). It may have **one**
+  addend, which is the one-edge sink with an entry; `verify` checks the span,
+  the lane count and that at least one lane is weighted. `sum_op` is one
+  kernel for both (an empty lane list is every weight `1.0`), `par.rs` claims
+  an op's lanes as a run, and `op_work` prices a weighted lane at two units
+  per frame.
+- **Lane state is `SumLane` in `State::lanes`**, one per `Plan::sum_lanes`
+  entry, rebuilt with the rest of the state when a plan is applied. A
+  weighted lane's `prev` carries across a commit that keeps its edge (looked
+  up by `EdgeId` in the old plan) and starts fresh for a new one; a sample-rate
+  change does not reset it (a weight is not time). The cell comes with the
+  commit (`Opened::gains`): the editor keeps one `Arc<PackedAtomic<f32>>` per
+  weighted edge of the plan sent last, writes it from the spec at every send
+  and `sync_ranges`, and drops it with the entry. The cell holds the raw
+  `f32` because `Amplitude` is not `bytemuck::Pod`; `GainCell` converts at its
+  edge, so no bare float is in a field or a signature.
+- **Snapshot.** `render_applied` calls `SumLane::snapshot` on every lane
+  before the first op, on the calling thread, serial and parallel alike; an
+  op's `SumLane::weight` reads the snapshot, never the cell. `weight` also
+  advances the lane's `prev` to the block's target, **every block, silent
+  addend or not**, so a fader moved under a silent source has arrived when it
+  is heard. A lane's `prev` is the weight the previous block was *given* (its
+  target), not the last sample its ramp computed (`from + (to - from) * 1.0`
+  need not equal `to`).
+- **No ramp scratch.** The ramp is evaluated per sample from the doc's
+  expression (`gain::ramp_at`), so there is no per-lane `max_block` buffer to
+  size: nothing allocates on the audio thread and nothing is sized at apply
+  but the lane list. G2's driven lanes need per-frame values and bring the
+  scratch with them.
+- **The constant flag.** A weighted sum is `CONSTANT` only when every live
+  addend is and none is ramping (a constant times a ramp is not constant);
+  the doc's "constant when every non-silent addend is" is for unweighted ones.
+- **`validate`.** `GraphInvalid::GainWithoutEdge { id }` and
+  `GraphInvalid::BadEdgeGain { id, gain }` (a base that is not finite, or a
+  NaN range bound). `BadParamRange` is keyed by `ParamIn` and cannot name an
+  edge, so a gain has its own variant. `ValidGraph::gains()` carries the
+  checked entries to `compile`.
+- **API.** `GraphSpec::{connect, disconnect, disconnect_output}` (the last
+  two remove the edge's entry), `set_edge_gain` and `clear_edge_gain` (the
+  structural add and remove); `Editor::set_edge_gain(id, Amplitude)`
+  (adds an entry with the default range for an edge that has none, which is a
+  recompile at the next commit; refuses an edge that does not exist and a base
+  that is not finite) and `edge_gain(id)`; `Editor::remove` drops the entries
+  of the edges that went with a node; `Reference::set_edge_gain`.
+  `same_but_ranges` compares the entries' keys, not their values, so a commit
+  whose only change is a base or a range sends nothing. A fork keeps the
+  entries of the edges it keeps.
+- **`Amplitude` is a signed weight here.** Its docs name zero as its floor; a
+  negative edge weight (polarity) is representable (`Amplitude(-1.0)`) and
+  accepted, as the section above intends.
+- **Tests.** `tests/edge_gain.rs` (the fold, the wide chain, unity against the
+  plain sum and the one-edge corner, the ramp, the carry across commits, the
+  plan untouched, silence, zero, the constant flag, validate, the fork),
+  `gain.rs`'s unit tests (the snapshot, the ramp), the differential suite's
+  `weighted_graphs_are_bit_identical_to_the_reference` (a separate RNG, so the
+  other properties' seeds did not move) and `rt_no_alloc.rs`'s weighted
+  fan-in on both executors. The "read the cell per op" mutation is pinned on
+  `SumLane`, since an integration test cannot place a store between two ops
+  without a thread race.
+
 #### Bypass and mute are graph state
 
 Decided by the owner. Bypass and mute are state the **graph** holds for any

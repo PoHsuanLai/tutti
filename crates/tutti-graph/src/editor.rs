@@ -54,7 +54,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::MAX_NODE_LATENCY;
-use crate::{Edge, FeedbackFrom, NodeSpec, Source};
+use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Source};
 use crate::{EventTapId, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::{Latency, Samples};
@@ -71,12 +71,14 @@ use crate::exec::{
 };
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
+use crate::gain::{EdgeGain, GainCell};
 use crate::meter::{MeterReader, MeterWriter};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec};
 use crate::tap::{TapReader, TapWriter};
+use tutti_types::Amplitude;
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -496,6 +498,11 @@ pub struct Editor {
     /// state. Written from the spec by every commit, and by
     /// [`set_param_range`](Self::set_param_range) at once.
     param_ranges: BTreeMap<NodeKey, Arc<ParamRanges>>,
+    /// The live base of each weighted lane of the plan sent last
+    /// (`src/gain.rs`), shared with the running executor's lane state.
+    /// Written from the spec by every commit, and by
+    /// [`set_edge_gain`](Self::set_edge_gain) at once.
+    edge_gains: BTreeMap<EdgeId, GainCell>,
     /// [`revision`](Self::revision): moved by every call that can change
     /// what a reader of the editor sees.
     revision: u64,
@@ -954,6 +961,7 @@ impl Editor {
             event_capacity: cap,
             fork_health: Vec::new(),
             param_ranges: BTreeMap::new(),
+            edge_gains: BTreeMap::new(),
             revision: 0,
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
@@ -1518,8 +1526,65 @@ impl Editor {
             .and_then(|cells| cells.reader(at.param))
     }
 
-    /// Write every live range cell from the spec.
+    /// Moves edge `id`'s weight to `base` from the next block on, without a
+    /// new plan: the control of a mixer's fader (doc 013, "Edge gain"). It
+    /// stores into the lane's cell and the spec and **marks nothing for
+    /// commit**: the executor reads the cell once at the start of a block and
+    /// ramps from the weight the last block was given to this one's across
+    /// the block, so a move does not zipper. A move set while the audio
+    /// thread is inside a block lands on the next.
+    ///
+    /// An edge with no entry yet gets one (with the default range): that is
+    /// structural, and the next [`commit`](Self::commit) compiles the weighted
+    /// sum. An entry's `range` is kept.
+    ///
+    /// # Errors
+    ///
+    /// Refused, changing nothing: [`GraphInvalid::GainWithoutEdge`] when
+    /// `id` is not an edge of the spec, and [`GraphInvalid::BadEdgeGain`]
+    /// for a base that is not finite.
+    pub fn set_edge_gain(&mut self, id: EdgeId, base: Amplitude) -> Result<(), GraphInvalid> {
+        let range = self
+            .spec
+            .gains
+            .get(&id)
+            .map_or(EdgeGain::DEFAULT_RANGE, |g| g.range);
+        let gain = EdgeGain { base, range };
+        if !gain.is_sound() {
+            return Err(GraphInvalid::BadEdgeGain { id, gain });
+        }
+        if !self.spec.has_edge(id) {
+            return Err(GraphInvalid::GainWithoutEdge { id });
+        }
+        self.touch();
+        self.spec.set_edge_gain(id, gain);
+        if let Some(cell) = self.edge_gains.get(&id) {
+            cell.store(base);
+        }
+        // As for a range: the cell holds it, so the spec last committed
+        // holds it too, and a later commit with nothing else to send is the
+        // plain comparison. (A committed spec without the entry differs in
+        // its keys anyway, and gets a full commit.)
+        if let Some((committed, _)) = &mut self.committed
+            && let Some(g) = committed.gains.get_mut(&id)
+        {
+            g.base = base;
+        }
+        Ok(())
+    }
+
+    /// Edge `id`'s weight as the spec holds it, if the edge has an entry.
+    pub fn edge_gain(&self, id: EdgeId) -> Option<Amplitude> {
+        self.spec.gains.get(&id).map(|g| g.base)
+    }
+
+    /// Write every live range cell, and every edge gain's, from the spec.
     fn sync_ranges(&self) {
+        for (id, cell) in &self.edge_gains {
+            if let Some(g) = self.spec.gains.get(id) {
+                cell.store(g.base);
+            }
+        }
         for (&node, cells) in &self.param_ranges {
             for &param in cells.declared().as_slice() {
                 cells.store(param, range_of(&self.spec, ParamIn { node, param }));
@@ -1592,6 +1657,17 @@ impl Editor {
             if m.source.is_some_and(|s| s.node == key) {
                 m.source = None;
             }
+        }
+        // The gain of an edge that went with the node goes with it.
+        let spec = &self.spec;
+        let stale: Vec<EdgeId> = spec
+            .gains
+            .keys()
+            .copied()
+            .filter(|id| !spec.has_edge(*id))
+            .collect();
+        for id in stale {
+            self.spec.gains.remove(&id);
         }
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
@@ -2203,6 +2279,26 @@ impl Editor {
             }
             ParamState::new(ports, max, Some(Arc::clone(cells)))
         };
+        // One cell per weighted lane of the plan, kept across commits for an
+        // edge that stays, and written from the spec.
+        let lanes: BTreeSet<EdgeId> = plan.sum_lanes.iter().flatten().copied().collect();
+        self.edge_gains.retain(|id, _| lanes.contains(id));
+        let gains: BTreeMap<EdgeId, GainCell> = lanes
+            .into_iter()
+            .map(|id| {
+                let base = self
+                    .spec
+                    .gains
+                    .get(&id)
+                    .map_or(Amplitude::UNITY, |g| g.base);
+                let cell = self
+                    .edge_gains
+                    .entry(id)
+                    .or_insert_with(|| GainCell::new(base));
+                cell.store(base);
+                (id, cell.clone())
+            })
+            .collect();
         let taps = std::mem::take(&mut self.pending_taps);
         let event_taps = std::mem::take(&mut self.pending_event_taps);
         let meters = std::mem::take(&mut self.pending_meters);
@@ -2213,6 +2309,7 @@ impl Editor {
             units,
             params,
             Opened {
+                gains,
                 taps,
                 event_taps,
                 meters,

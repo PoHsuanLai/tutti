@@ -60,7 +60,7 @@ pub(crate) mod verify;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::NodeKey;
-use crate::{Edge, FeedbackFrom, InPort, OutPort, Source};
+use crate::{Edge, EdgeId, FeedbackFrom, InPort, OutPort, Sink, Source};
 use tutti_types::{ChannelLayout, Latency, Samples, Tail};
 
 use crate::node::{InPlaceMask, MAX_PORTS, Prepare, Resolution, Shape};
@@ -314,6 +314,12 @@ enum Pre {
     },
     Sum {
         srcs: Vec<ARef>,
+        dst: u32,
+    },
+    /// A `Sum` with a weighted lane: `lanes` is one entry per addend.
+    WeightedSum {
+        srcs: Vec<ARef>,
+        lanes: Vec<Option<EdgeId>>,
         dst: u32,
     },
     EventDelay {
@@ -755,9 +761,9 @@ pub fn compile(
             let at = InPort { node: key, port };
             let mut sources: Vec<Edge> = topology.edges.get(&at).cloned().unwrap_or_default();
             sources.sort();
-            let mut refs: Vec<ARef> = Vec::with_capacity(sources.len());
+            let mut refs: Vec<Addend> = Vec::with_capacity(sources.len());
             for edge in sources {
-                refs.push(match edge {
+                let r = match edge {
                     // Silence adds nothing, bit for bit (the sum starts at
                     // `+0.0`); `validate` refuses it in a set, so this is a
                     // raw write's.
@@ -778,6 +784,16 @@ pub fn compile(
                         )
                     }
                     Edge::Feedback(f) => ARef::Fb(fb_index(audio_fb_key(f), &audio_fb)),
+                };
+                // An edge with a gain entry is a weighted lane (doc 013,
+                // "Edge gain").
+                let id = EdgeId {
+                    sink: Sink::Port(at),
+                    from: edge,
+                };
+                refs.push(Addend {
+                    r,
+                    lane: graph.gains().contains_key(&id).then_some(id),
                 });
             }
             ain.push(sum_chain(&mut em, refs));
@@ -933,11 +949,19 @@ pub fn compile(
             .filter(|s| *s != Source::Zero)
             .collect();
         sources.sort();
-        if sources.len() > 1 {
-            // A summed channel: each source is delayed to the output time on
-            // its own, as an op of its own, then summed; the `Output` op
-            // carries no ring (doc 013, "Audio fan-in sums", point 3).
-            let refs: Vec<ARef> = sources
+        let lane_of = |source: Source| {
+            let id = EdgeId {
+                sink: Sink::Output(channel),
+                from: Edge::Direct(source),
+            };
+            graph.gains().contains_key(&id).then_some(id)
+        };
+        if sources.len() > 1 || sources.iter().any(|&s| lane_of(s).is_some()) {
+            // A summed channel (or one whose source is weighted): each source
+            // is delayed to the output time on its own, as an op of its own,
+            // then summed; the `Output` op carries no ring (doc 013, "Audio
+            // fan-in sums", point 3).
+            let refs: Vec<Addend> = sources
                 .iter()
                 .map(|&source| {
                     let (v, dep) = match source {
@@ -945,15 +969,18 @@ pub fn compile(
                         Source::Global(ch) => (global_val[&ch], Latency::ZERO),
                         Source::Zero => unreachable!("filtered above"),
                     };
-                    align_audio(
-                        &mut em,
-                        v,
-                        dep.gap_to(total),
-                        DelayKey::Output {
-                            channel,
-                            from: source,
-                        },
-                    )
+                    Addend {
+                        r: align_audio(
+                            &mut em,
+                            v,
+                            dep.gap_to(total),
+                            DelayKey::Output {
+                                channel,
+                                from: source,
+                            },
+                        ),
+                        lane: lane_of(source),
+                    }
                 })
                 .collect();
             let src = sum_chain(&mut em, refs);
@@ -1249,7 +1276,7 @@ pub fn compile(
             }
             // The sum accumulates into its first addend's slot when that
             // addend is read nowhere else later (the colouring's own test).
-            Pre::Sum { srcs, dst } => {
+            Pre::Sum { srcs, dst } | Pre::WeightedSum { srcs, dst, .. } => {
                 if let Some(&ARef::Val(u)) = srcs.first() {
                     in_place.insert(*dst, u);
                 }
@@ -1350,6 +1377,7 @@ pub fn compile(
     let mut audio_list: Vec<u32> = Vec::new();
     let mut event_list: Vec<u32> = Vec::new();
     let mut param_ports: Vec<ParamPortOp> = Vec::new();
+    let mut sum_lanes: Vec<Option<EdgeId>> = Vec::new();
     let span_of = |list: &mut Vec<u32>, items: &mut dyn Iterator<Item = u32>| {
         let start = list.len() as u32;
         list.extend(items);
@@ -1374,6 +1402,18 @@ pub fn compile(
                 srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
                 dst: aslot(*dst),
             },
+            Pre::WeightedSum { srcs, lanes, dst } => {
+                let lane_start = sum_lanes.len() as u32;
+                sum_lanes.extend(lanes.iter().copied());
+                Op::WeightedSum {
+                    srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
+                    dst: aslot(*dst),
+                    lanes: Span {
+                        start: lane_start,
+                        len: lanes.len() as u32,
+                    },
+                }
+            }
             Pre::EventDelay { delay, src, dst } => Op::EventDelay {
                 delay: *delay,
                 src: eslot(*src),
@@ -1478,7 +1518,7 @@ pub fn compile(
     // ---- 7. coarsen, and price the plan (the cost model) -----------------
     let op_work: Vec<crate::cost::Work> = ops
         .iter()
-        .map(|op| crate::cost::op_work(op, &node_shapes))
+        .map(|op| crate::cost::op_work(op, &node_shapes, &sum_lanes))
         .collect();
     let coarse = coarsen::coarsen(
         &em.preds,
@@ -1612,6 +1652,7 @@ pub fn compile(
         event_values,
         value_readers,
         param_ports,
+        sum_lanes,
         nodes,
     };
 
@@ -1645,43 +1686,65 @@ fn align_audio(em: &mut Emitted, v: u32, by: Samples, key: DelayKey) -> ARef {
     ARef::Val(dv)
 }
 
+/// One addend of a sum: the value, and the edge whose gain weights it when
+/// the edge has an entry (doc 013, "Edge gain").
+#[derive(Clone, Copy)]
+struct Addend {
+    r: ARef,
+    lane: Option<EdgeId>,
+}
+
 /// Sum `refs` (already in source order) into one audio value: the left fold
-/// `((+0.0 + a_0) + a_1) + ..` (doc 013, "Audio fan-in sums", point 2).
+/// `((+0.0 + a_0) + a_1) + ..` (doc 013, "Audio fan-in sums", point 2), each
+/// weighted addend `acc + w * a` (doc 013, "Edge gain").
 ///
 /// Silence (`ARef::Zero`) adds nothing and is dropped; none left is silence,
-/// one is itself (an alias, no op). Up to [`MAX_PORTS`] addends are one
-/// `Op::Sum`. A wider fan-in is a **chain, not a tree**: a float sum is not
-/// associative, so the first op folds the first `MAX_PORTS` and each next one
-/// reads the last result as its first addend and adds the following
-/// `MAX_PORTS - 1`. The accumulator is never `-0.0`, so adding it to `+0.0`
-/// again changes no bit: the chain is one flat fold, wherever it is cut.
-fn sum_chain(em: &mut Emitted, refs: Vec<ARef>) -> ARef {
-    let refs: Vec<ARef> = refs.into_iter().filter(|&r| r != ARef::Zero).collect();
-    let emit = |em: &mut Emitted, srcs: Vec<ARef>| -> ARef {
-        let op = em.push(Pre::Sum {
-            srcs: srcs.clone(),
-            dst: 0,
+/// one plain one is itself (an alias, no op). A weighted one is an op even
+/// alone (`+0.0 + w * a`: a plain alias keeps a `-0.0` and a weight does not).
+/// Up to [`MAX_PORTS`] addends are one op. A wider fan-in is a **chain, not a
+/// tree**: a float sum is not associative, so the first op folds the first
+/// `MAX_PORTS` and each next one reads the last result as its first addend
+/// (plain: its weight is `1.0`) and adds the following `MAX_PORTS - 1`. The
+/// accumulator is never `-0.0`, so adding it to `+0.0` again changes no bit:
+/// the chain is one flat fold, wherever it is cut. An op with no weighted
+/// lane is a plain `Op::Sum`.
+fn sum_chain(em: &mut Emitted, refs: Vec<Addend>) -> ARef {
+    let refs: Vec<Addend> = refs.into_iter().filter(|a| a.r != ARef::Zero).collect();
+    let emit = |em: &mut Emitted, addends: Vec<Addend>| -> ARef {
+        let srcs: Vec<ARef> = addends.iter().map(|a| a.r).collect();
+        let lanes: Vec<Option<EdgeId>> = addends.iter().map(|a| a.lane).collect();
+        let op = em.push(if lanes.iter().any(Option::is_some) {
+            Pre::WeightedSum {
+                srcs: srcs.clone(),
+                lanes,
+                dst: 0,
+            }
+        } else {
+            Pre::Sum {
+                srcs: srcs.clone(),
+                dst: 0,
+            }
         });
         for &r in &srcs {
             em.read_aref(r, op);
         }
         let v = em.audio_value(op);
-        if let Pre::Sum { dst, .. } = &mut em.pre[op as usize] {
+        if let Pre::Sum { dst, .. } | Pre::WeightedSum { dst, .. } = &mut em.pre[op as usize] {
             *dst = v;
         }
         ARef::Val(v)
     };
     match refs.len() {
         0 => ARef::Zero,
-        1 => refs[0],
+        1 if refs[0].lane.is_none() => refs[0].r,
         len => {
             let first = len.min(MAX_PORTS);
             let mut acc = emit(em, refs[..first].to_vec());
             for run in refs[first..].chunks(MAX_PORTS - 1) {
-                let mut srcs = Vec::with_capacity(run.len() + 1);
-                srcs.push(acc);
-                srcs.extend_from_slice(run);
-                acc = emit(em, srcs);
+                let mut addends = Vec::with_capacity(run.len() + 1);
+                addends.push(Addend { r: acc, lane: None });
+                addends.extend_from_slice(run);
+                acc = emit(em, addends);
             }
             acc
         }

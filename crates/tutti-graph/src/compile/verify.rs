@@ -90,7 +90,7 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
     match *op {
         Op::GlobalIn { dst, .. } => vec![a(dst, true)],
         Op::Delay { src, dst, .. } => vec![a(src, false), a(dst, true)],
-        Op::Sum { srcs, dst } => plan.audio_list[srcs.range()]
+        Op::Sum { srcs, dst } | Op::WeightedSum { srcs, dst, .. } => plan.audio_list[srcs.range()]
             .iter()
             .map(|&s| a(s, false))
             .chain([a(dst, true)])
@@ -157,17 +157,46 @@ fn param_reads(plan: &Plan, params: crate::plan::Span) -> impl Iterator<Item = u
 /// Each sum op adds at least two addends and at most [`MAX_PORTS`] (a wider
 /// fan-in is a chain of ops, doc 013 "Audio fan-in sums"): one is an alias the
 /// compiler emits no op for, and the executor's request table holds no more.
-/// That its write may alias only the first read is rule 4's; that each read is
-/// of a written value, rule 3's.
+/// A weighted sum may add one (an edge with a gain entry is never an alias),
+/// and lists one lane per addend, within `sum_lanes`, with at least one of
+/// them weighted: an op with none is a plain sum. That its write may alias
+/// only the first read is rule 4's; that each read is of a written value,
+/// rule 3's.
 fn verify_sums(plan: &Plan) -> Result<(), VerifyError> {
     for (i, op) in plan.ops.iter().enumerate() {
-        if let Op::Sum { srcs, .. } = *op
-            && !(2..=MAX_PORTS).contains(&(srcs.len as usize))
-        {
-            return Err(VerifyError(format!(
-                "sum op {i} adds {} addends, not 2 to {MAX_PORTS}",
-                srcs.len
-            )));
+        match *op {
+            Op::Sum { srcs, .. } if !(2..=MAX_PORTS).contains(&(srcs.len as usize)) => {
+                return Err(VerifyError(format!(
+                    "sum op {i} adds {} addends, not 2 to {MAX_PORTS}",
+                    srcs.len
+                )));
+            }
+            Op::WeightedSum { srcs, lanes, .. } => {
+                if !(1..=MAX_PORTS).contains(&(srcs.len as usize)) {
+                    return Err(VerifyError(format!(
+                        "weighted sum op {i} adds {} addends, not 1 to {MAX_PORTS}",
+                        srcs.len
+                    )));
+                }
+                if lanes.len != srcs.len {
+                    return Err(VerifyError(format!(
+                        "weighted sum op {i} has {} lanes for {} addends",
+                        lanes.len, srcs.len
+                    )));
+                }
+                let Some(list) = plan.sum_lanes.get(lanes.range()) else {
+                    return Err(VerifyError(format!(
+                        "weighted sum op {i} names lanes past the {} the plan lists",
+                        plan.sum_lanes.len()
+                    )));
+                };
+                if list.iter().all(Option::is_none) {
+                    return Err(VerifyError(format!(
+                        "weighted sum op {i} has no weighted lane (a plain sum is `Op::Sum`)"
+                    )));
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -271,7 +300,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
                 Op::Delay { src, dst, .. } => src == dst,
                 // The in-place form: the written slot is the first addend's,
                 // and no other addend's.
-                Op::Sum { srcs, dst } => {
+                Op::Sum { srcs, dst } | Op::WeightedSum { srcs, dst, .. } => {
                     let ins = &plan.audio_list[srcs.range()];
                     ins.first() == Some(&dst) && ins.iter().filter(|&&t| t == dst).count() == 1
                 }

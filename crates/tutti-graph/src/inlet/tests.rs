@@ -8,7 +8,7 @@ use tutti_types::{Frame, SampleRate};
 const RATE: SampleRate = SampleRate(48_000.0);
 
 fn ring_with(frames: &[[f32; 2]]) -> (InletNode, TapWriter) {
-    let (node, mut writer) = InletNode::standalone(ChannelLayout::STEREO, Samples(64));
+    let (node, mut writer) = InletNode::pair(ChannelLayout::STEREO, Samples(64));
     writer.push_interleaved(frames.as_flattened());
     (node, writer)
 }
@@ -93,7 +93,7 @@ fn reset_does_not_consume_the_ring() {
 /// post-wrap reads come back as silence -> fails.
 #[test]
 fn a_block_reads_across_the_ring_wrap() {
-    let (node, mut prod) = InletNode::standalone(ChannelLayout::STEREO, Samples(4));
+    let (node, mut prod) = InletNode::pair(ChannelLayout::STEREO, Samples(4));
     let mut node = prepared_node(node);
     prod.push_interleaved(&[1.0, -1.0, 2.0, -2.0, 3.0, -3.0]);
     assert_eq!(block(&mut node, 3)[0], [1.0, 2.0, 3.0]);
@@ -166,7 +166,7 @@ fn the_inlet_refuses_to_fork() {
 /// fails the order.
 #[test]
 fn a_ring_of_six_is_six_outputs_in_the_order_pushed() {
-    let (node, mut writer) = InletNode::standalone(ChannelLayout::from(6u16), Samples(64));
+    let (node, mut writer) = InletNode::pair(ChannelLayout::from(6u16), Samples(64));
     writer.push_interleaved(&[
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, //
         -1.0, -2.0, -3.0, -4.0, -5.0, -6.0,
@@ -189,7 +189,7 @@ fn a_ring_of_six_is_six_outputs_in_the_order_pushed() {
 /// makes the third frame overrun and the writer's `debug_assert` fail.
 #[test]
 fn a_full_ring_refuses_whole_frames() {
-    let (node, mut writer) = InletNode::standalone(ChannelLayout::from(3u16), Samples(2));
+    let (node, mut writer) = InletNode::pair(ChannelLayout::from(3u16), Samples(2));
     writer.push_interleaved(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
     let mut node = prepared_node(node);
     let out = block(&mut node, 4);

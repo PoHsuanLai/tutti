@@ -811,7 +811,7 @@ fn a_tap_cannot_change_its_width_under_its_writer() {
 /// first fails.
 #[test]
 fn pop_planes_reads_whole_frames_and_keeps_the_lanes_level() {
-    let (mut reader, mut writer) = TapReader::standalone(TapId(7), 3, Samples(8));
+    let (mut reader, mut writer) = TapReader::pair(TapId(7), 3, Samples(8));
     writer.push_interleaved(&[1.0, 10.0, 100.0, 2.0, 20.0, 200.0, 3.0, 30.0, 300.0]);
     let (mut a, mut b) = ([9.0f32; 4], [9.0f32; 4]);
     // Two planes for three lanes, two frames wanted of three there.

@@ -478,7 +478,7 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
 #### Inlets: audio into the graph
 
 The inverse of the tap. `InletNode` has no inputs and one output a channel,
-and copies a standalone ring (`TapReader::standalone`, the writer kept by
+and copies a ring of its own (`TapReader::pair`, the writer kept by
 a thread of your own) into the graph: a block pops one frame per output frame,
 and a ring that runs dry writes silence for the frames it lacks. A width other
 than the ring's writes silence on every output and pops nothing. It is

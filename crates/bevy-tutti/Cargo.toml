@@ -52,7 +52,9 @@ tutti-graph = { path = "../tutti-graph" }
 # sound card. Each subsystem feature below forwards to the session's own. Not
 # re-exported: a Bevy app sees this crate's API (`param_graph_node!` names
 # `SessionNode` through `__private`).
-tutti-session = { path = "../tutti-session", default-features = false, features = ["device"] }
+# `record`: `AudioPump` (`graph::pump`, always compiled) is a component around
+# `tutti_session::Recorder`, the one pump loop.
+tutti-session = { path = "../tutti-session", default-features = false, features = ["device", "record"] }
 # tutti-nodes holds graph nodes and no ECS types; the bindings are this crate's.
 # The optional `convolution` feature below adds the convolver on top.
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
@@ -65,12 +67,7 @@ tutti-spatial = { path = "../tutti-spatial", default-features = false, optional 
 # feature turns on its `bevy` feature (Reflect on its vocabulary).
 tutti-modulation = { path = "../tutti-modulation", optional = true, default-features = false }
 tutti-sampler = { path = "../tutti-sampler", optional = true, default-features = false }
-# The I/O edge. Not optional: `AudioPump` (`graph::pump`, always compiled)
-# is a component around `tutti_io::Recorder`, the one pump loop. `audio-io`
-# adds the device half and re-exports `WavOut`,
-# `MicMonitorNode` and `Recorder` through `crate::io`.
-tutti-io = { path = "../tutti-io" }
-# `Pcm` (a `WavOut` width) and, with a decode feature, `Wave` and the decoder
+# `FileOut`, `Format`, `Spec` and `Pcm` (a sink's file and width) and, with a decode feature, `Wave` and the decoder
 # the `sampler` feature loads through. With no decode feature the crate
 # compiles no decoder.
 tutti-codec = { path = "../tutti-codec" }
@@ -201,10 +198,10 @@ sampler = [
 ]
 
 # The live audio I/O edge: mic capture, WAV sink, and the pump between them
-# (`tutti-cpal/capture`, plus `tutti-io`'s re-exports → `crate::io`). Independent of `sampler` in
+# (`tutti-cpal/capture`, plus the sink and recorder re-exports → `crate::io`). Independent of `sampler` in
 # both directions — recording a take needs no clip playback, and playing a clip
 # needs no microphone.
-audio-io = ["tutti-cpal/capture", "tutti-session/audio-io"]
+audio-io = ["tutti-cpal/capture", "tutti-session/audio-io", "tutti-codec/encode-wav"]
 
 # Plugin hosting: editor windows, catalog scan, crash detection.
 plugin = [
@@ -259,7 +256,7 @@ tutti-midi-hardware = { path = "../tutti-midi-hardware", features = [
 # RT-safety regression tests use the
 # allocation-disabling global allocator via the harness in lib.rs.
 assert_no_alloc = { version = "1", default-features = false }
-# The `Recorder` round-trip test writes a real `WavOut` to a temp dir and reads
+# The `Recorder` round-trip test writes a real `FileOut` to a temp dir and reads
 # it back with `hound` — same crates the sampler's own capture tests use.
 hound = "3.5"
 tempfile = "3.8"

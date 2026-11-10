@@ -31,12 +31,12 @@ list is on `ExportConfig`.
 
 ## What this crate does not own
 
-- **Live capture.** Its peer is `tutti-io`, the **LIVE** edge — a microphone, a
-  tap, a `Recorder` pushing blocks into a WAV as they arrive. The distinction is
+- **Live capture.** Its peer is the **LIVE** edge — a microphone, a
+  tap, a `Recorder` (`tutti-session`) pushing blocks into a `FileOut` as they arrive. The distinction is
   structural rather than stylistic: a live capture has no total frame count (it
   ends when someone stops it), so it cannot be expressed as an export, and an
   export needs a total (to size a plan, trim latency, cap output), so it cannot
-  be expressed as a live pump. Reach here to bounce a mix; reach for `tutti-io`
+  be expressed as a live pump. Reach here to bounce a mix; reach for `Recorder`
   to record one.
 - **Loudness measurement.** EBU R128 lives in `tutti-measure`, which is where
   the engine's `Config`/`State`/step analysis vocabulary is;

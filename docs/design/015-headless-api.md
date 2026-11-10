@@ -356,7 +356,7 @@ plugin crates, and `core/` is the floor.
 | `tutti-nodes` | always | click, control lanes, `Modulation` |
 | `tracing` | always | logging; what `GraphRuntime`'s `bevy_log` calls become |
 | `tutti-cpal` | `device` | the sound card; off means offline only, with no ALSA headers |
-| `tutti-io` | `audio-io` | the pump (`Recorder`), mic |
+| `tutti-session` (`record`; `audio-io` adds the mic) | `audio-io` | the pump (`Recorder`), mic |
 | `tutti-modulation` | `modulation` | declarations |
 | `tutti-midi-types`, `tutti-midi-runtime`, `tutti-midi-file` | `midi` | |
 | `tutti-midi-hardware` | `midi-hardware` | |
@@ -1331,6 +1331,14 @@ no thread and is reported through `PumpFinished` as an `InvalidInput` error
 carrying `tutti_io::Error::ChannelWidthMismatch` (new
 `From<tutti_io::Error> for io::Error`). `tutti-io` became a required
 dependency of `bevy-tutti`, since `graph::pump` is always compiled.
+
+> **Since:** `tutti-io` was dissolved. `Recorder` and `PumpLoop` moved to
+> `tutti-session` (feature `record`, which `audio-io` implies), without the
+> driver seam: `PumpLoop` and `PumpPass` are public and a test steps a loop by
+> hand, where `Recorder` is the thread that runs one. `FinalizeStatus` went with
+> the drivers (a failed drop-path finalize is logged). The error is
+> `tutti_session::RecorderError`, and `AudioPump` passes its park to
+> `Recorder::start_with_capacity`.
 
 Tests: `bevy-tutti`'s `audio_io_pump.rs` passes unchanged, plus
 `a_width_mismatch_is_reported_not_recorded`. Their Bevy-free halves are in

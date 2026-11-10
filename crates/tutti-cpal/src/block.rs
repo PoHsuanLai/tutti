@@ -6,20 +6,15 @@
 //! the closure handed to `device.build_output_stream` is what lets a test run
 //! it without a sound card.
 //!
-//! [`OutputBlock`] is the *outer* seam, and it maps onto `tutti_io`'s pump
-//! split exactly:
+//! [`OutputBlock`] is the *outer* seam, the output side's `PumpLoop`
+//! (`tutti-session`'s recorder keeps one pass's work apart from the thread that
+//! runs it the same way): buffers, layout and stride, with `StreamDriver` as
+//! who calls it and on what thread, and `RunningStream` the handle whose drop
+//! is the stop.
 //!
-//! | `tutti-io` | here | owns |
-//! |---|---|---|
-//! | `PumpLoop` | [`OutputBlock`] | one pass' work: buffers, layout, stride |
-//! | `PumpDriver` | `StreamDriver` | who calls it, and on what thread |
-//! | `RunningPump` | `RunningStream` | the handle whose drop is the stop |
-//!
-//! [`OutputBlock::render`] is **not a second implementation of the callback** —
-//! the same claim `tutti_io::ManualDriver`'s doc makes about
-//! `PumpLoop::pump_once`. `CpalDriver`'s closure body is
-//! `move |data, _| block.render(data)`, and a manual driver calls the identical
-//! method.
+//! [`OutputBlock::render`] is **not a second implementation of the callback**.
+//! `CpalDriver`'s closure body is `move |data, _| block.render(data)`, and a
+//! manual driver calls the identical method.
 //!
 //! The `debug_assert!` on the callback size deliberately does **not** live
 //! here: an over-sized buffer is a claim about *CPAL's* contract, not about

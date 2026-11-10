@@ -67,6 +67,8 @@ mod modulation;
 mod node;
 #[cfg(feature = "plugin")]
 mod plugin;
+#[cfg(feature = "record")]
+mod recorder;
 #[cfg(feature = "plugin")]
 mod recovery;
 mod session;
@@ -76,7 +78,7 @@ mod watch;
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted};
-pub use error::{Error, HeardTapError, Result};
+pub use error::{Error, HeardTapError, InletError, Result};
 #[cfg(feature = "export")]
 pub use export::{
     EXPORT_STALL_WARNING, ExportClock, ExportHandle, ExportJob, ExportOutput, ExportRendered,
@@ -110,6 +112,8 @@ pub use plugin::{
 };
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};
+#[cfg(feature = "record")]
+pub use recorder::{IDLE_PARK, PumpLoop, PumpPass, Recorder, RecorderError};
 #[cfg(feature = "plugin")]
 pub use recovery::{GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy};
 #[cfg(feature = "midi")]

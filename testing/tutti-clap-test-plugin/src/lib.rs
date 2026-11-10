@@ -199,6 +199,8 @@ pub struct ProcessCapture {
     pub transport_present: bool,
     /// Transport tempo (only meaningful when `transport_present`).
     pub transport_tempo: f64,
+    /// Transport `tempo_inc` (only meaningful when `transport_present`).
+    pub transport_tempo_inc: f64,
     pub event_count: u32,
     pub events: [CapturedEvent; MAX_CAPTURED_EVENTS],
 }
@@ -216,6 +218,7 @@ impl Default for ProcessCapture {
             out0_data64_present: false,
             transport_present: false,
             transport_tempo: 0.0,
+            transport_tempo_inc: 0.0,
             event_count: 0,
             events: [CapturedEvent::default(); MAX_CAPTURED_EVENTS],
         }
@@ -233,6 +236,7 @@ static CAPTURE: Mutex<ProcessCapture> = Mutex::new(ProcessCapture {
     out0_data64_present: false,
     transport_present: false,
     transport_tempo: 0.0,
+    transport_tempo_inc: 0.0,
     event_count: 0,
     events: [CapturedEvent {
         time: 0,
@@ -472,6 +476,7 @@ unsafe extern "C" fn plugin_process(
         let t: &clap_event_transport = unsafe { &*p.transport };
         cap.transport_present = true;
         cap.transport_tempo = t.tempo;
+        cap.transport_tempo_inc = t.tempo_inc;
     }
 
     // Walk the input event list in the order the host presents it.
@@ -1219,7 +1224,8 @@ pub enum RenderMode {
     /// 2. the flags this host sets from its own state, as a sum: `1.0`
     ///    playing, `2.0` recording, `4.0` loop active;
     /// 3. `loop_start_beats`, in beats;
-    /// 4. `loop_end_beats`, in beats.
+    /// 4. `loop_end_beats`, in beats;
+    /// 5. `tempo_inc`, in BPM per sample.
     ///
     /// All zero when the host passes no transport. What an out-of-process host
     /// told the plugin, read back through the audio it returns.
@@ -1227,7 +1233,7 @@ pub enum RenderMode {
 }
 
 /// Frames [`RenderMode::Transport`] writes per block.
-pub const TRANSPORT_ECHO_FRAMES: usize = 5;
+pub const TRANSPORT_ECHO_FRAMES: usize = 6;
 
 impl RenderMode {
     fn from_u32(v: u32) -> Self {
@@ -1580,6 +1586,7 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
                         );
                         dst[3] = T::from_f32(beats(t.loop_start_beats));
                         dst[4] = T::from_f32(beats(t.loop_end_beats));
+                        dst[5] = T::from_f32(t.tempo_inc as f32);
                     }
                 }
                 RenderMode::Notes => {

@@ -30,7 +30,7 @@ use tutti_graph::{
 use tutti_graph::{OutPort, Source};
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{
-    InProcessVst2Client, PluginForkError, PresetId, RenderMode, in_process_vst2_client,
+    BoundInProcessVst2Client, PluginForkError, PresetId, RenderMode, in_process_vst2_client,
 };
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::{
@@ -145,14 +145,20 @@ impl Drop for ProbeEnv {
     }
 }
 
-fn load() -> (InProcessVst2Client, PluginHandle) {
+fn load() -> (BoundInProcessVst2Client, PluginHandle) {
+    load_with(tutti_transport::TempoReader::constant(Bpm::of(120.0)).expect("a tempo"))
+}
+
+/// The probe loaded in process and bound to `tempo`, the project's tempo map.
+fn load_with(tempo: tutti_transport::TempoReader) -> (BoundInProcessVst2Client, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    in_process_vst2_client(
+    let (client, handle) = in_process_vst2_client(
         &main_thread(),
         path,
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
-    .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
+    .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
+    (client.bind(tempo), handle)
 }
 
 fn prepare_at(rate: f64) -> Prepare {
@@ -446,7 +452,10 @@ fn a_plugin_handed_back_by_into_client_forks() {
     };
 
     let key = NodeKey(5);
-    let editor = live_graph(key, *plugin);
+    let editor = live_graph(
+        key,
+        plugin.bind(tutti_transport::TempoReader::constant(Bpm::of(120.0)).expect("a tempo")),
+    );
     let (fork_ed, fork_exec) = editor
         .fork(
             ForkTarget::Node(key),
@@ -472,13 +481,18 @@ fn a_plugin_handed_back_by_into_client_forks() {
 /// in `TransportFeed::block`) → the probe reads 120 BPM at 0 → fails.
 /// Mutation (run): give the fork an empty meter cell in
 /// `TransportFeed::forked` → the probe reads 4/4 → fails. Mutation (run):
-/// `forked` ignoring `offline` → `kVstNanosValid` set → fails.
+/// `forked` ignoring `offline` → `kVstNanosValid` set → fails. Mutation
+/// (run): the fork bound to a fresh 120 BPM reader in place of a clone of the
+/// live node's (`Vst2Fork::instance`) → the probe reads 120, not 93 → fails.
 #[test]
 fn a_fork_reads_its_transport_from_the_render() {
     let _lock = lock_probe();
     reset_probe();
     let _env = ProbeEnv::new(true);
-    let (client, handle) = load();
+    // The tempo the plugin is told is the project map's: a constant 93 BPM,
+    // which the render's transport carries too.
+    let (client, handle) =
+        load_with(tutti_transport::TempoReader::constant(Bpm::of(93.0)).expect("a tempo"));
     let seven_eight = TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH);
     client.set_meter(tutti_transport::ProjectMeter::new(MeterMap::new([
         MeterChange::new(Beat(0.0), seven_eight),
@@ -502,7 +516,7 @@ fn a_fork_reads_its_transport_from_the_render() {
         cap.time_info_present,
         "the fork answered audioMasterGetTime"
     );
-    assert_eq!(cap.time_tempo, 93.0, "the render's tempo");
+    assert_eq!(cap.time_tempo, 93.0, "the map's tempo");
     assert_eq!(cap.time_ppq_pos, 5.0, "the render's beat");
     assert_eq!(
         (cap.time_sig_numerator, cap.time_sig_denominator),

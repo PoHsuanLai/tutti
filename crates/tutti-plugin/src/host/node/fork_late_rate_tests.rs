@@ -84,7 +84,10 @@ fn a_late_rate_answer_does_not_silence_an_offline_fork() {
         format!("{SLOW_RATE}:{ACTIVATE_MS}"),
     );
     let fork = live
-        .fork_instance(ForkMode::Offline)
+        .fork_instance(
+            ForkMode::Offline,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
         .expect("the probe forks");
     let bridge = fork.bridge();
     bridge.set_rate_timeout(RATE_TIMEOUT);

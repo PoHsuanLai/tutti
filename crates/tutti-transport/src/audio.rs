@@ -12,10 +12,10 @@ use super::clock::{Control, TransportClock};
 use super::handle::Transport;
 use super::motion::{MotionAudio, is_declicking};
 use super::settings::TransportSettings;
+use super::tempo_reader::TempoReader;
 use super::timed::{ScheduleAudio, Scheduled, TransportCommand};
 use super::walk::TempoAhead;
 use std::sync::atomic::Ordering;
-use tutti_rt::Reader;
 use tutti_tempo::TempoMap;
 use tutti_types::{Beat, Bpm, SampleRate};
 
@@ -80,7 +80,7 @@ pub struct TransportAudio {
     settings: TransportSettings,
     /// The published tempo map, lent once per block and only when
     /// [`seen`](Self::seen) is behind the publisher's count.
-    tempo_map: Reader<TempoMap>,
+    tempo_map: TempoReader,
     /// The publisher's count at the last block that took the map.
     seen: u64,
     /// Whether the map in force changes tempo: the clock then follows it

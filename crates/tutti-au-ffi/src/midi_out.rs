@@ -10,13 +10,13 @@
 
 use std::mem::align_of;
 use std::os::raw::c_void;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use coreaudio_sys::{AudioTimeStamp, MIDIPacket, MIDIPacketList, OSStatus};
-use tutti_plugin_types::{Midi1Decoder, WireMidi};
 #[cfg(feature = "test-support")]
-use tutti_plugin_types::{Midi1Message, Midi1Splitter};
+use tutti_midi_protocol::midi1;
+use tutti_midi_protocol::widen_message;
+use tutti_plugin_types::{MidiEventVec, WireMidi};
+use tutti_ump::{Message, Midi1Parser, MidiGroup};
 
 use crate::callback::with_state_mut;
 use crate::error::Result;
@@ -70,11 +70,79 @@ pub type MidiOutSink = Box<dyn FnMut(u32, &[WireMidi]) + Send>;
 /// removal ordering protects.
 struct MidiOutState {
     sink: MidiOutSink,
-    /// Reads the packets' bytes; reserved at [`install`], never grown.
-    decoder: Midi1Decoder,
-    /// [`Midi1Decoder::sysex_dropped`] as of the last callback, for
-    /// [`AuMidiOutput::sysex_dropped`] to read from another thread.
-    sysex_dropped: Arc<AtomicU64>,
+    /// Reads the packets' bytes into events.
+    decoder: Decoder,
+}
+
+/// A plugin's MIDI 1.0 byte stream as engine events.
+///
+/// A `MIDIPacketList` is a stream, not a list of messages: a packet may carry
+/// several messages and real-time bytes inside another message, and a SysEx
+/// may start in one packet and end in a later one. [`Midi1Parser`] reads it;
+/// a packet's end ends a short message (`end_of_message`), and a SysEx goes on
+/// as SysEx7 packets in the order the parser completes them, each at the
+/// offset of the packet that held its `0xF0` (offset 0 for one opened in an
+/// earlier list). A channel voice message is widened to MIDI 2.0, as every
+/// plugin's output is. Events are handed to the sink in batches of a
+/// [`MidiEventVec`]; nothing allocates.
+#[derive(Debug)]
+struct Decoder {
+    parser: Midi1Parser,
+    batch: MidiEventVec,
+    /// The offset of the SysEx being read.
+    sysex_at: u32,
+}
+
+impl Decoder {
+    fn new() -> Self {
+        Self {
+            parser: Midi1Parser::new(MidiGroup::FIRST),
+            batch: MidiEventVec::new(),
+            sysex_at: 0,
+        }
+    }
+
+    /// A new list: events staged and not flushed (a list cut short by a
+    /// panic) belong to a block that is gone, and an open SysEx goes on at
+    /// offset 0.
+    fn begin_list(&mut self) {
+        self.batch.clear();
+        self.sysex_at = 0;
+    }
+
+    /// Reads one packet's `bytes`. Whenever the batch is full, `flush` gets
+    /// it first.
+    fn decode(&mut self, bytes: &[u8], frame_offset: u32, flush: &mut impl FnMut(&[WireMidi])) {
+        for &byte in bytes {
+            if byte == 0xF0 {
+                self.sysex_at = frame_offset;
+            }
+            let Some(message) = self.parser.feed(byte) else {
+                continue;
+            };
+            let offset = match message {
+                Message::Sysex7(..) => self.sysex_at,
+                _ => frame_offset,
+            };
+            if self.batch.is_full() {
+                self.flush(flush);
+            }
+            // Room: the batch is not full, or was just flushed.
+            let _ = self.batch.try_push(WireMidi {
+                offset,
+                ump: widen_message(message).into(),
+            });
+        }
+        self.parser.end_of_message();
+    }
+
+    /// Hands on what is staged.
+    fn flush(&mut self, flush: &mut impl FnMut(&[WireMidi])) {
+        if !self.batch.is_empty() {
+            flush(&self.batch);
+            self.batch.clear();
+        }
+    }
 }
 
 /// A host's registration of a MIDI-output callback on one AU.
@@ -95,15 +163,11 @@ pub struct AuMidiOutput {
     /// `Option` so [`Self::remove`] can take the box out *after* the property has
     /// been cleared, giving `Drop` nothing left to free.
     state: Option<Box<MidiOutState>>,
-    /// Shared with `state`, so it can be read while the AU holds the state.
-    sysex_dropped: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for AuMidiOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuMidiOutput")
-            .field("sysex_dropped", &self.sysex_dropped.load(Ordering::Relaxed))
-            .finish_non_exhaustive()
+        f.debug_struct("AuMidiOutput").finish_non_exhaustive()
     }
 }
 
@@ -180,11 +244,9 @@ pub fn install(unit: &Unit, sink: MidiOutSink) -> Result<AuMidiOutput> {
     // Boxed once, here, on the control thread — the only allocation in the whole
     // path. `MidiOutState` is heap-pinned so the `userData` the AU retains stays
     // valid across moves of the returned handle.
-    let sysex_dropped = Arc::new(AtomicU64::new(0));
     let state = Box::new(MidiOutState {
         sink,
-        decoder: Midi1Decoder::new(),
-        sysex_dropped: Arc::clone(&sysex_dropped),
+        decoder: Decoder::new(),
     });
     let user_data: *mut c_void = &*state as *const MidiOutState as *mut c_void;
 
@@ -200,20 +262,12 @@ pub fn install(unit: &Unit, sink: MidiOutSink) -> Result<AuMidiOutput> {
     let handle = AuMidiOutput {
         unit: unit.clone(),
         state: Some(state),
-        sysex_dropped,
     };
     unit.set::<MidiOutputCallbackProperty>(Scope::GLOBAL, Element::ZERO, &callback)?;
     Ok(handle)
 }
 
 impl AuMidiOutput {
-    /// SysEx messages the callback dropped whole since this registration was
-    /// made: past `tutti_plugin_types::SYSEX_OUT_CAPACITY` bytes, or ended by
-    /// another status byte before their `0xF7`. As of the AU's last call.
-    pub fn sysex_dropped(&self) -> u64 {
-        self.sysex_dropped.load(Ordering::Relaxed)
-    }
-
     /// Withdraw the callback, returning any error the AU reported.
     ///
     /// Equivalent to dropping the handle, except that the AU's status reaches the
@@ -367,14 +421,11 @@ fn dispatch(
     // The tail of the list is flushed whole, never held for the next one: a
     // note-off held back is a stuck voice.
     decoder.flush(&mut flush);
-    state
-        .sysex_dropped
-        .store(state.decoder.sysex_dropped(), Ordering::Relaxed);
     NO_ERR
 }
 
 /// Walks a `MIDIPacketList`, calling `f(frame_offset, packet_bytes)` once per
-/// packet. A packet's bytes are a stream, not a message: [`Midi1Decoder`] splits
+/// packet. A packet's bytes are a stream, not a message: [`Decoder`] reads
 /// them (see below).
 ///
 /// # Why the walk is by byte offset rather than by struct read
@@ -503,7 +554,7 @@ fn next_packet(raw_next: *const u8) -> *const u8 {
 #[cfg(feature = "test-support")]
 pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<WireMidi> {
     let mut out = Vec::new();
-    let mut decoder = Midi1Decoder::new();
+    let mut decoder = Decoder::new();
     let mut flush = |events: &[WireMidi]| out.extend_from_slice(events);
     // SAFETY: the test passes a packet list it built; see `for_each_packet`.
     unsafe {
@@ -515,12 +566,13 @@ pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec
     out
 }
 
-/// Test-only: the messages the walk found, before UMP conversion; a SysEx
-/// message appears whole, `0xF0` to `0xF7`.
+/// Test-only: the short messages the walk found, before widening, as their
+/// MIDI 1.0 bytes (running status expanded). A SysEx is not here: it arrives as
+/// SysEx7 packets ([`decode_packet_list_for_test`]).
 ///
 /// Separate from [`decode_packet_list_for_test`] so a test can tell "the walk
-/// missed the message" from "the walk found it and `from_midi1_bytes` refused
-/// it" — two failures with the same visible symptom.
+/// missed the message" from "the walk found it and the widening lost it": two
+/// failures with the same visible symptom.
 ///
 /// # Safety
 /// As [`decode_packet_list_for_test`].
@@ -528,15 +580,16 @@ pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec
 #[cfg(feature = "test-support")]
 pub unsafe fn split_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<(u32, Vec<u8>)> {
     let mut out = Vec::new();
-    let mut splitter = Midi1Splitter::new();
+    let mut parser = Midi1Parser::new(MidiGroup::FIRST);
     // SAFETY: the test passes a packet list it built; see `for_each_packet`.
     unsafe {
         for_each_packet(pktlist, |frame_offset, bytes| {
-            splitter.split(bytes, frame_offset, &mut |frame, message| match message {
-                Midi1Message::Short(bytes) | Midi1Message::SysEx(bytes) => {
-                    out.push((frame, bytes.to_vec()));
+            for message in parser.feed_all(bytes) {
+                for short in midi1(message) {
+                    out.push((frame_offset, short.as_slice().to_vec()));
                 }
-            });
+            }
+            parser.end_of_message();
         })
     };
     out

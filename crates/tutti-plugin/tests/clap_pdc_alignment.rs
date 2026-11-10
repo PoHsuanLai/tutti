@@ -293,7 +293,9 @@ fn the_probe_declares_the_latency_this_suite_expects() {
         "the host must report the plugin's own declared figure"
     );
 
-    let rig = plugin_alone(probe.client.bind());
+    let rig = plugin_alone(probe.client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ));
     assert_eq!(
         rig.graph.editor().spec().topology.nodes[&rig.plugin].latency,
         Samples(EXPECTED_TOTAL_LATENCY),
@@ -326,7 +328,9 @@ fn the_plugin_path_alone_arrives_a_full_latency_late() {
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
 
-    let mut rig = plugin_alone(probe.client.bind());
+    let mut rig = plugin_alone(probe.client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ));
     let out = render_impulse(&mut rig.graph);
     assert!(
         !handle.status().is_dead(),
@@ -370,7 +374,9 @@ fn with_compensation_both_paths_land_on_the_same_sample() {
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
 
-    let mut rig = two_paths(probe.client.bind());
+    let mut rig = two_paths(probe.client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ));
     assert_eq!(
         rig.total_latency(),
         Samples(EXPECTED_TOTAL_LATENCY),
@@ -429,7 +435,9 @@ fn a_latency_change_reaches_pdc_at_the_next_commit() {
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
 
-    let mut rig = two_paths(probe.client.bind());
+    let mut rig = two_paths(probe.client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ));
     assert_eq!(rig.total_latency(), Samples(EXPECTED_TOTAL_LATENCY));
 
     // The plugin now claims more latency than it did at load. Its *rendering*

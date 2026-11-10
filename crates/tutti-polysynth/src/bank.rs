@@ -84,8 +84,7 @@ impl EnvShape {
         // Where the types stop: these are per-sample slopes and a frame count
         // used as a divisor inside the SIMD loop, not quantities any unit
         // covers. `Seconds`/`Amplitude` come off here, once.
-        let frames =
-            |s: tutti_types::Seconds| s.narrowed().to_samples(sample_rate).get().max(1) as f32;
+        let frames = |s: tutti_types::Seconds| s.to_samples(sample_rate).get().max(1) as f32;
         // Clamped to unity: the attack peaks at 1.0 and decay runs from there
         // to sustain. A sustain above 1.0 would make "decay" a rise, and a
         // retrigger from a held level above 1.0 would drop the note to the
@@ -287,7 +286,7 @@ impl VoiceBank {
             filter,
             env_config: *envelope,
             shape: EnvShape::new(envelope, sample_rate),
-            gain_glide: GAIN_GLIDE.narrowed().one_pole_coeff(sample_rate),
+            gain_glide: GAIN_GLIDE.one_pole_coeff(sample_rate),
             sample_rate,
             stride: stride.max(1),
             voices,
@@ -429,7 +428,7 @@ impl VoiceBank {
     pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         self.shape = EnvShape::new(&self.env_config, sample_rate);
-        self.gain_glide = GAIN_GLIDE.narrowed().one_pole_coeff(sample_rate);
+        self.gain_glide = GAIN_GLIDE.one_pole_coeff(sample_rate);
         // The SVF's output mix depends on the tap and `Q`, not the rate, so
         // only the per-lane coefficients need recomputing.
         self.cutoff_seen.fill(f32::NAN);

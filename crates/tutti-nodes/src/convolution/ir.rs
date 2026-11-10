@@ -14,9 +14,10 @@ pub fn generate_test_ir_into(
     decay_time: impl Into<Seconds>,
     sample_rate: impl Into<SampleRate>,
 ) {
-    let decay_time = decay_time.into().to_f32();
+    let decay_time = decay_time.into();
     let sample_rate = sample_rate.into().get();
-    let decay_rate = -1.0 / (decay_time * sample_rate as f32);
+    // One coefficient: computed exactly, rounded once to the `f32` the loop runs in.
+    let decay_rate = (-1.0 / (decay_time.get() * sample_rate)) as f32;
     for (i, slot) in out.iter_mut().enumerate() {
         *slot = (decay_rate * i as f32).exp();
     }
@@ -45,7 +46,7 @@ pub fn generate_room_ir_into(
     decay_time: impl Into<Seconds>,
     sample_rate: impl Into<SampleRate>,
 ) {
-    let decay_time = decay_time.into().to_f32();
+    let decay_time = decay_time.into();
     let sample_rate = sample_rate.into().get();
     out.fill(0.0);
     if out.is_empty() {
@@ -73,7 +74,8 @@ pub fn generate_room_ir_into(
     if tail_start >= out.len() {
         return;
     }
-    let decay_rate = -1.0 / (decay_time * sample_rate as f32);
+    // One coefficient: computed exactly, rounded once to the `f32` the loop runs in.
+    let decay_rate = (-1.0 / (decay_time.get() * sample_rate)) as f32;
 
     let mut rng = 12345u32;
     for (offset, slot) in out[tail_start..].iter_mut().enumerate() {

@@ -31,11 +31,11 @@ pub fn loop_gain(delay: f32, rt60: Seconds, rate: SampleRate) -> Amplitude {
 /// that is NaN or negative (not a loop gain), never settle: infinity.
 #[must_use]
 pub fn rt60_from_gain(gain: Amplitude, delay: f32, rate: SampleRate) -> Seconds {
-    Seconds::from_f32(decay_seconds(
+    Seconds(decay_seconds(
         f64::from(delay),
         libm::log10(f64::from(gain.get())),
         rate.get(),
-    ) as f32)
+    ))
 }
 
 /// RT60 in seconds of a loop set (`delay_sum` frames in all, `log10_gain_sum`
@@ -85,6 +85,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The RT60 is the formula in `f64`, returned exact: delay 100 at gain 0.5
+    /// and 48 kHz is `-3 * 100 / (48000 * log10 0.5)` = 0.020763936...  s, to the
+    /// bit. An `f32` rounding of the result differs.
+    ///
+    /// Mutation (run): `Seconds::from_f32(... as f32)` around `decay_seconds`
+    /// fails.
+    #[test]
+    fn rt60_from_gain_is_exact() {
+        let want = -3.0 * 100.0 / (48_000.0 * libm::log10(0.5));
+        assert_eq!(
+            rt60_from_gain(Amplitude(0.5), 100.0, SampleRate(48_000.0)),
+            Seconds(want)
+        );
     }
 
     /// The edges: no memory is gain 0, never decaying is gain 1 and the inverse

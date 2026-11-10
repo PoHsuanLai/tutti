@@ -653,13 +653,13 @@ const TOY_LENGTHS: [f32; 8] = [
 const TOY_MAX_PRE_DELAY: Seconds = Seconds(1.0);
 
 impl ToyFdn {
-    fn decay(s: Seconds) -> f32 {
-        let v = s.to_f32();
-        if v.is_nan() {
+    fn decay(s: Seconds) -> Seconds {
+        let v = s.get();
+        Seconds(if v.is_nan() {
             1.0
         } else {
-            v.clamp(0.05, Ceiling::MAX_DECAY.to_f32())
-        }
+            v.clamp(0.05, Ceiling::MAX_DECAY.get())
+        })
     }
 }
 
@@ -714,7 +714,7 @@ impl Design for ToyFdn {
         let rt60 = if c.freeze {
             [Seconds(f64::INFINITY); 3]
         } else {
-            c.decay.map(|s| Seconds::from_f32(Self::decay(s)))
+            c.decay.map(Self::decay)
         };
         let scale = (0.5 + size) * (rate.get() / 44_100.0) as f32;
         let mut lines: Inline<Line, MAX_LINES> = Inline::new();

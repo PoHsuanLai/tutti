@@ -186,8 +186,7 @@ impl LimiterNode {
         // the shape report no channels, so clamp to at least mono.
         let layout = ChannelLayout::from_count(layout.count().max(1));
         let n = usize::from(layout.count());
-        // Narrowed, as `with_lookahead` stores it: the ring is sized by a `_ceil`.
-        let lookahead_secs = Seconds(0.005).narrowed();
+        let lookahead_secs = Seconds(0.005);
         // `_ceil`, the allocation form: the ring must hold at *least* the
         // lookahead, and nearest-rounding under-allocates for half of all
         // inputs.
@@ -229,7 +228,7 @@ impl LimiterNode {
         // Keep the request, not just the count it derives: `prepare`
         // re-derives from this, and a count is `_ceil`ed and so cannot round-trip
         // back to the seconds that produced it.
-        self.lookahead = lookahead.into().narrowed();
+        self.lookahead = lookahead.into();
         // Ceil: a lookahead ring must hold at least the requested window.
         let samples = self.lookahead.to_samples_ceil(self.sample_rate);
         self.ring.resize(samples.get().max(1));
@@ -796,6 +795,22 @@ mod tests {
     /// compensates against, so a regression here is a regression in what the graph is told —
     /// not merely in a private field.
     #[test]
+    fn lookahead_frames_are_the_ceil_of_the_exact_product() {
+        // 0.1 s at 48 kHz: `0.1 * 48000` is 4800 in f64, so ceil is 4800. The
+        // f32 nearest 0.1 times 48000 is 4800.00007, which ceils to 4801.
+        // Mutation (run): a round trip through `f32` (`from_f32(x.to_f32())`) on the lookahead in
+        // `with_lookahead` or `prepare` makes the ring 4801 and fails.
+        let device = tutti_types::SampleRate(48_000.0);
+        let mut lim = LimiterNode::new(-6.0, -0.3).with_lookahead(Seconds(0.1));
+        lim.prepare(&Prepare::new(device, Samples(64)));
+        assert_eq!(
+            lim.ring.lookahead_samples(),
+            (0.1_f64 * 48_000.0).ceil() as usize
+        );
+        assert_eq!(lim.ring.lookahead_samples(), 4800);
+    }
+
+    #[test]
     fn lookahead_is_a_duration_and_prepare_is_what_preserves_it() {
         const LOOKAHEAD: Seconds = Seconds(0.005);
         let device = tutti_types::SampleRate(48_000.0);
@@ -807,10 +822,7 @@ mod tests {
         let born = lim.ring.lookahead_samples();
         assert_eq!(
             born,
-            LOOKAHEAD
-                .narrowed()
-                .to_samples_ceil(SampleRate::DEFAULT)
-                .get(),
+            LOOKAHEAD.to_samples_ceil(SampleRate::DEFAULT).get(),
             "construction must size the ring at the placeholder rate"
         );
         let born_secs = born as f64 / device.get();
@@ -827,7 +839,7 @@ mod tests {
         let fixed = lim.ring.lookahead_samples();
         assert_eq!(
             fixed,
-            LOOKAHEAD.narrowed().to_samples_ceil(device).get(),
+            LOOKAHEAD.to_samples_ceil(device).get(),
             "prepare must re-derive the frame count at the new rate"
         );
         assert!(

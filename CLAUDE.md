@@ -669,9 +669,10 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
   are readings. Do not swap them for `Mix` or `Depth`.
 - **Where the types stop:** C ABI, IPC and WIT boundaries, and precision the
   unit cannot carry. Say why in a comment. `Seconds` is `f64` (short or long);
-  a DSP kernel that runs in `f32` narrows once at its edge (`Seconds::to_f32`,
-  or `narrowed` before a frame conversion), and a modulation lane's value is an
-  `f32` (`ParamCell`).
+  a DSP kernel that runs in `f32` narrows once at its edge (`Seconds::to_f32`),
+  and a modulation lane's value is an `f32` (`ParamCell`). A frame count or a
+  coefficient is computed from the exact `Seconds`, never from a value rounded
+  through `f32` first.
 - **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
   names for the same behaviour is not a type.
 

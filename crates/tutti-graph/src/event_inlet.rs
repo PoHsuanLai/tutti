@@ -394,7 +394,11 @@ impl EventInletNode {
                     self.waiting.remove(i);
                 }
                 Some(_) => return,
-                None if self.waiting.last().is_some_and(|last| last.frame > frame) => {
+                // Only a must-arrive event displaces one: a loseable event that
+                // meets a full list of note-offs and panics is the one lost.
+                None if must_arrive(ump)
+                    && self.waiting.last().is_some_and(|last| last.frame > frame) =>
+                {
                     self.waiting.pop();
                 }
                 None => return,

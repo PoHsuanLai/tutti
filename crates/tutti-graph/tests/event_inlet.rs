@@ -315,6 +315,38 @@ fn a_list_of_nothing_but_note_offs_loses_the_latest() {
     assert_eq!(keys(&d), [12], "the earlier one took the latest's place");
 }
 
+/// A loseable event never displaces a must-arrive one: a note-on pushed
+/// earlier than a full list of note-offs is the event lost, and every
+/// note-off still goes out (a dropped note-off would leave its note hanging).
+///
+/// Mutation (run, recorded here): removing `must_arrive(ump) &&` from the
+/// `None` arm of `keep` pops the latest note-off for the note-on: key 30 is
+/// sent and key 27 is missing.
+#[test]
+fn a_note_on_never_displaces_a_waiting_note_off() {
+    let (mut d, mut tx) = rig(8);
+    for k in 0u32..8 {
+        tx.push(At::Frame(Frame(10_000 + u64::from(k))), off(20 + k))
+            .unwrap();
+    }
+    d.block();
+    tx.push(At::Frame(Frame(9_000)), note(30)).unwrap();
+    d.block();
+    assert_eq!(tx.evicted(), 1);
+    block_at(&mut d, 9_000, R48, 64);
+    assert_eq!(
+        keys(&d),
+        Vec::<u32>::new(),
+        "the note-on was the event lost"
+    );
+    block_at(&mut d, 10_000, R48, 64);
+    assert_eq!(
+        keys(&d),
+        (20..28).collect::<Vec<u32>>(),
+        "every note-off went out"
+    );
+}
+
 /// A port narrower than the burst: the node's list holds 1500 events, the port
 /// (the harness's, 1024) takes 1024, and the other 476 are counted as
 /// refused by the port, and nowhere else.

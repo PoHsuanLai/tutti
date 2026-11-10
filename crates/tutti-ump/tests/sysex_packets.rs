@@ -201,3 +201,46 @@ fn a_ref_made_by_hand_names_its_range() {
     assert_eq!(r.len(), 4);
     assert!(!r.is_empty());
 }
+
+/// The words of a single packet from M2-104 Table 18: type 3, group, status 0,
+/// byte count, then the bytes.
+///
+/// Mutation (run): the count nibble shifted by 20 instead of 16 -> each case
+/// fails.
+#[test]
+fn a_single_packet_is_the_spec_words() {
+    let words = |group, payload: &[u8]| {
+        let bytes: Vec<U7> = payload.iter().map(|&b| U7::of(b)).collect();
+        let mut packets = sysex7_packets(MidiGroup::of(group), &bytes);
+        assert_eq!(packets.len(), 1);
+        packets.next().unwrap().words().to_vec()
+    };
+    assert_eq!(
+        words(3, &[0x7E, 0x7F, 0x06, 0x01]),
+        [0x3304_7E7F, 0x0601_0000]
+    );
+    assert_eq!(words(0, &[]), [0x3000_0000, 0]);
+    assert_eq!(words(15, &[1, 2, 3, 4, 5, 6]), [0x3F06_0102, 0x0304_0506]);
+}
+
+/// `Sysex7Packets::checked` is `sysex7_packets` for a payload of plain bytes,
+/// and refuses one with a byte of 128 or more instead of masking it.
+///
+/// Mutation: `b < 0x80` written `b <= 0x80`, or the check dropped -> fails.
+#[test]
+fn checked_bytes_are_the_same_packets_and_a_high_bit_is_refused() {
+    use tutti_ump::Sysex7Packets;
+    for len in 0..=20 {
+        let p = payload(len);
+        let plain = raw(&p);
+        let checked = Sysex7Packets::checked(MidiGroup::of(2), &plain).expect("7-bit bytes");
+        assert_eq!(
+            checked.collect::<Vec<Ump>>(),
+            sysex7_packets(MidiGroup::of(2), &p).collect::<Vec<Ump>>(),
+            "{len} bytes"
+        );
+    }
+    assert!(Sysex7Packets::checked(MidiGroup::of(0), &[1, 0x80, 2]).is_none());
+    assert!(Sysex7Packets::checked(MidiGroup::of(0), &[0xF7]).is_none());
+    assert!(Sysex7Packets::checked(MidiGroup::of(0), &[0x7F]).is_some());
+}

@@ -31,7 +31,7 @@ mod note_id;
 //   ~28 CCNumber consts). Flattened into the root they would drown it, and the
 //   prefix is what makes `cc::MOD_WHEEL` readable.
 // - `cc`, `mpe`, `sync`, `translation` and `ci` all have `pub mod` children that
-//   callers reach (`cc::mapping`, `sync::clock`, `translation::scaling`), and a
+//   callers reach (`cc::mapping`, `sync::clock`, `translation::wire`), and a
 //   used two-level path is evidence the namespace is doing real work.
 pub mod cc;
 pub mod ci;
@@ -39,12 +39,6 @@ pub mod mpe;
 pub mod sync;
 pub mod translation;
 pub mod ump;
-
-/// Bit Scaling and Resolution (M2-104 §1.7 — MIDI 1.0 ↔ 2.0 widths + DSP-edge
-/// f32). Kept reachable at the crate root as `tutti_midi_types::convert::*`, the
-/// path many consumers import directly, while physically living under
-/// [`translation`] with the rest of the MIDI-1↔2 boundary.
-pub use translation::scaling as convert;
 
 pub use clip_file::{
     CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
@@ -67,12 +61,11 @@ pub use ump::{
     ALL_FUNCTION_BLOCKS, Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
     EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
     FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, KeySharpsFlats, Protocol, Tonic,
-    UmpMessageType, UmpVersion, device_identity, endpoint_discovery, endpoint_info,
-    flex_set_chord_name, flex_set_key_signature, flex_set_metronome, flex_set_tempo,
-    flex_set_time_signature, function_block_discovery, function_block_info, is_sysex8_abort,
-    jr_clock_value, jr_timestamp_value, message_type, stream_configuration_notification,
-    stream_configuration_request, sysex7_fragments, sysex7_packet_count, sysex7_packets,
-    sysex7_payload, sysex7_single, sysex8_fragments, sysex8_header, sysex8_status,
+    UmpVersion, device_identity, endpoint_discovery, endpoint_info, flex_set_chord_name,
+    flex_set_key_signature, flex_set_metronome, flex_set_tempo, flex_set_time_signature,
+    function_block_discovery, function_block_info, is_sysex8_abort, jr_clock_value,
+    jr_timestamp_value, stream_configuration_notification, stream_configuration_request,
+    sysex8_fragments, sysex8_header, sysex8_status,
 };
 
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
@@ -84,7 +77,7 @@ pub use ump::{
 ///
 /// Deliberately *narrow* — the advanced surfaces (UMP-Stream endpoint
 /// negotiation, Flex Data, RPN/NRPN translation state, MPE zone config, the sync
-/// decoders, the raw scaling `convert` module) stay explicit imports so a glob
+/// decoders) stay explicit imports so a glob
 /// import doesn't flood scope. Reach for them by path when you need them.
 ///
 /// For hardware and file I/O on top of these types, use

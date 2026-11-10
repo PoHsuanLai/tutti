@@ -4040,6 +4040,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-fixtures",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-rt",
  "tutti-types",

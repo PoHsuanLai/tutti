@@ -75,6 +75,5 @@ pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame};
 pub use note_id::NoteId;
 pub use sysex::{
     NotSysex, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep, sysex7_packets,
-    sysex7_packets_masked,
 };
 pub use ump::{Key, KeyEvent, Ump};

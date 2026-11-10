@@ -140,7 +140,7 @@ pub enum MidiMessage {
         /// **32-bit** unipolar value, full scale `u32::MAX`. This is where the
         /// 7-bit/32-bit gap bites hardest: a consumer expecting CC's familiar
         /// 0..=127 reads full scale as `0xFFFFFFFF` and must downscale through
-        /// [`crate::convert`], never by truncation.
+        /// `tutti_midi_protocol::narrow_value`, never by truncation.
         value: u32,
     },
     /// Program change, with an optional bank (MSB<<7 | LSB) when present.

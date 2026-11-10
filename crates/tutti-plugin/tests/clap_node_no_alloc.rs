@@ -29,7 +29,6 @@ use std::time::Duration;
 
 use tutti_fixtures::midi;
 use tutti_graph::{Offset, Transport, TransportChanges};
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, CurveType};
 use tutti_types::{Beat, Bpm, Samples};
@@ -145,7 +144,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 note,
-                midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             );
             let off = midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), note, 0);
             sender.queue(&[(Offset::ZERO, on), (Offset::ZERO, off)]);

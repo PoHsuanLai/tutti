@@ -20,7 +20,6 @@ use std::sync::Mutex;
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
@@ -115,7 +114,7 @@ fn process_with_midi_does_not_allocate() {
         MidiGroup::FIRST,
         MidiChannel::of(1),
         60,
-        midi1_velocity_to_midi2(100),
+        tutti_fixtures::midi::wide_velocity(100),
     );
     unit.events(0, &[at_start(warm_event)]);
     unit.block();
@@ -131,7 +130,7 @@ fn process_with_midi_does_not_allocate() {
                     MidiGroup::FIRST,
                     MidiChannel::of(1),
                     60 + (i as u8 % 12),
-                    midi1_velocity_to_midi2(100),
+                    tutti_fixtures::midi::wide_velocity(100),
                 );
                 unit.events(0, &[at_start(ev)]);
             }

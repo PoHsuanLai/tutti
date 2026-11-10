@@ -81,27 +81,31 @@ pub fn sysex7_packets(group: MidiGroup, payload: &[U7]) -> Sysex7Packets<'_> {
     Sysex7Packets::over(group, bytemuck::cast_slice(payload))
 }
 
-/// [`sysex7_packets`] over plain bytes whose high bit is dropped (the low
-/// seven bits are kept), for a caller whose payload is not yet checked: the
-/// one entry that masks, as [`U7::masked`] does for a byte the wire has just
-/// framed. A checked payload goes through [`sysex7_packets`].
-#[must_use]
-pub fn sysex7_packets_masked(group: MidiGroup, payload: &[u8]) -> Sysex7Packets<'_> {
-    Sysex7Packets::over(group, payload)
-}
-
 /// The packets of one SysEx payload; see [`sysex7_packets`].
 #[derive(Clone, Debug)]
 pub struct Sysex7Packets<'a> {
     group: MidiGroup,
-    /// The payload not yet packed; the high bit of a byte is dropped when its
-    /// packet is made (a checked payload has none to drop).
+    /// The payload not yet packed: every byte below 128, checked by the caller's
+    /// type (`U7`, `SysexMessage`).
     rest: &'a [u8],
     /// Whether a packet has been yielded, so an empty payload is one packet.
     started: bool,
 }
 
 impl<'a> Sysex7Packets<'a> {
+    /// The packets of `payload` (the bytes between `0xF0` and `0xF7`, without
+    /// them) from plain bytes, or `None` if a byte is 128 or more: the entry
+    /// for a payload that arrives unchecked, such as a plugin's. Nothing is
+    /// masked and nothing is allocated; a message with its delimiters is a
+    /// [`SysexMessage`].
+    #[must_use]
+    pub fn checked(group: MidiGroup, payload: &'a [u8]) -> Option<Self> {
+        payload
+            .iter()
+            .all(|&b| b < 0x80)
+            .then(|| Self::over(group, payload))
+    }
+
     fn over(group: MidiGroup, payload: &'a [u8]) -> Self {
         Self {
             group,
@@ -128,9 +132,7 @@ impl Iterator for Sysex7Packets<'_> {
         self.rest = rest;
         self.started = true;
         let mut data = [0u8; 6];
-        for (slot, &byte) in data.iter_mut().zip(chunk) {
-            *slot = byte & 0x7F;
-        }
+        data[..chunk.len()].copy_from_slice(chunk);
         let packet = Sysex7Packet::new(status, &data[..chunk.len()])
             .expect("at most six bytes, each below 128");
         Some(Ump::from(Message::Sysex7(self.group, packet)))

@@ -797,3 +797,34 @@ fn random_packets_agree_with_midi2() {
         unexplained.join("\n")
     );
 }
+
+/// `sysex7_packets` emits exactly the packets `midi2`'s SysEx7 fragmenter does,
+/// for every length around the 6-byte packet boundary and a long one.
+///
+/// Mutation: end the last packet as `Continue` instead of `End` (or split at 5
+/// bytes) in `Sysex7Packets::next` and this fails.
+#[test]
+fn sysex7_packets_match_the_midi2_fragmenter() {
+    use midi2::prelude::*;
+    let data: Vec<u8> = (0..200u32).map(|i| (i * 7 % 128) as u8).collect();
+    for len in (0..=40).chain([199, 200]) {
+        for group in [tutti_ump::MidiGroup::FIRST, tutti_ump::MidiGroup::of(5)] {
+            let mut m = midi2::sysex7::Sysex7::<Vec<u32>>::new();
+            m.set_group(u4::new(group.get()));
+            m.set_payload(data[..len].iter().map(|&b| u7::new(b)));
+            let expected: Vec<Ump> = m
+                .data()
+                .chunks(2)
+                .map(|p| {
+                    let mut words = [0u32; 4];
+                    words[..p.len()].copy_from_slice(p);
+                    Ump(words)
+                })
+                .collect();
+            let payload: Vec<tutti_ump::U7> =
+                data[..len].iter().map(|&b| tutti_ump::U7::of(b)).collect();
+            let got: Vec<Ump> = tutti_ump::sysex7_packets(group, &payload).collect();
+            assert_eq!(got, expected, "{len} bytes, group {}", group.get());
+        }
+    }
+}

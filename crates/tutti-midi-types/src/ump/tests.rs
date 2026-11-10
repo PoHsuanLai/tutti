@@ -39,9 +39,9 @@ fn the_16_bit_velocity_is_lossless_where_u7_is_not() {
     let ev = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD);
     assert_eq!(MidiMessage::from_ump(ev).velocity(), Some(0xABCD));
     // The 7-bit view is the spec's Min-Center-Max downscale.
-    let narrowed = crate::convert::midi2_velocity_to_midi1(0xABCD);
+    let narrowed = tutti_midi_protocol::narrow_velocity(0xABCD).get();
     assert_ne!(
-        crate::convert::midi1_velocity_to_midi2(narrowed),
+        tutti_fixtures::midi::wide_velocity(narrowed),
         0xABCD,
         "u7 round-trip must be lossy — otherwise the 16-bit read is pointless"
     );

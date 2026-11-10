@@ -4,7 +4,7 @@
 //! other, enable *Profiles*, and exchange *Properties* — over Universal System
 //! Exclusive messages (sub-ID#1 `0x0D`). It is **not** a UMP message type: a CI
 //! message is a byte payload carried inside a SysEx, so tutti transports it over
-//! the existing SysEx7 fragmenter ([`crate::ump::sysex7_fragments`]).
+//! the SysEx7 writer (`tutti_ump::sysex7_packets`).
 //!
 //! `midi2` v0.11 does not help here — its `ci` module is a WIP stub with no
 //! usable message builders — so this layer is hand-rolled from the M2-101 byte
@@ -20,7 +20,7 @@
 //! [`discovery`] (the mandatory core), [`profile`], [`property`].
 
 use std::vec::Vec;
-use tutti_ump::{MidiGroup, Ump};
+use tutti_ump::{Message, MidiGroup, U7, Ump, decode, sysex7_packets};
 
 pub mod discovery;
 pub mod profile;
@@ -344,20 +344,29 @@ impl CiMessage {
 }
 
 /// Encodes `message` and fragments it onto `out` as SysEx7 packets on `group`
-/// (the CI transport). Thin wrapper over [`sysex7_fragments`](crate::ump::sysex7_fragments).
+/// (the CI transport): `tutti_ump::sysex7_packets` over the encoded body.
+///
+/// The encoder emits 7-bit bytes only. A body with a byte of 128 or more would
+/// be a bug in it; such a message is not sent (nothing is appended).
 pub fn ci_to_sysex7(group: MidiGroup, message: &CiMessage, out: &mut Vec<Ump>) {
     let body = message.encode();
-    crate::ump::sysex7_fragments(group, &body, out);
+    let payload: Option<Vec<U7>> = body.iter().map(|&byte| U7::new(byte)).collect();
+    debug_assert!(payload.is_some(), "a CI message encodes to 7-bit bytes");
+    if let Some(payload) = payload {
+        out.extend(sysex7_packets(group, &payload));
+    }
 }
 
 /// Reassembles a run of SysEx7 packets (as emitted by [`ci_to_sysex7`]) back into
 /// a [`CiMessage`], or `None` if they don't form one. Concatenates each packet's
-/// payload via [`sysex7_payload`](crate::ump::sysex7_payload) then decodes.
+/// payload (`Sysex7Packet::data`) then decodes.
 pub fn sysex7_to_ci(packets: &[Ump]) -> Option<CiMessage> {
     let mut body = Vec::new();
-    for ev in packets {
-        let (_status, bytes, n) = crate::ump::sysex7_payload(ev)?;
-        body.extend_from_slice(&bytes[..n]);
+    for &ev in packets {
+        let Ok(Message::Sysex7(_, packet)) = decode(ev) else {
+            return None;
+        };
+        body.extend_from_slice(packet.data());
     }
     CiMessage::decode(&body)
 }

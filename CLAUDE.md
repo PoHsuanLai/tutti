@@ -342,7 +342,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  until VST2 and AU move), `NoteId` (`channel * 128 + note`), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
                  (SysEx7 packets to whole messages over a caller's buffer) and its
-                 inverse `sysex7_packets` (`SysexMessage::packets`), with
+                 inverse `sysex7_packets` (`SysexMessage::packets`,
+                 `Sysex7Packets::checked` for a payload of plain bytes), with
                  `Sysex7Packet::data` and `SysexRef::new`; no
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the

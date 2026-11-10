@@ -929,7 +929,10 @@ fn at(k: usize) -> Offset {
 /// The SysEx7 packets of `payload`, each `k` frames into the block.
 fn sysex_packets(payload: &[u8], k: usize) -> Vec<UmpAt> {
     let mut packets = Vec::new();
-    tutti_midi_types::sysex7_fragments(tutti_ump::MidiGroup::FIRST, payload, &mut packets);
+    packets.extend(
+        tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, payload)
+            .expect("a 7-bit payload"),
+    );
     packets.into_iter().map(|ump| (at(k), ump)).collect()
 }
 

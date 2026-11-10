@@ -42,6 +42,13 @@ fn invalidate_muid_round_trips_over_sysex7() {
 fn non_ci_sysex_is_rejected() {
     // A random SysEx7 (not starting 0x7E … 0x0D) is not a CI message.
     let mut events = Vec::new();
-    crate::ump::sysex7_fragments(MidiGroup::FIRST, &[0x01, 0x02, 0x03], &mut events);
+    events.extend(tutti_ump::sysex7_packets(
+        MidiGroup::FIRST,
+        &[
+            tutti_ump::U7::of(1),
+            tutti_ump::U7::of(2),
+            tutti_ump::U7::of(3),
+        ],
+    ));
     assert!(sysex7_to_ci(&events).is_none());
 }

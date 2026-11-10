@@ -15,16 +15,17 @@
 
 use tutti_midi_runtime::CiInitiator;
 use tutti_midi_types::ci::{CiMessage, DiscoveryData, Muid, NO_FUNCTION_BLOCK, ci_to_sysex7};
-use tutti_midi_types::sysex7_payload;
-use tutti_ump::{Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, Ump};
+use tutti_ump::{Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, Ump, decode};
 
 /// The payload bytes of SysEx7 packets, in order.
 fn payload_of(packets: &[Ump]) -> Vec<u8> {
     packets
         .iter()
         .flat_map(|packet| {
-            let (_status, bytes, n) = sysex7_payload(packet).expect("a SysEx7 packet");
-            bytes.into_iter().take(n)
+            let Ok(Message::Sysex7(_, packet)) = decode(*packet) else {
+                panic!("a SysEx7 packet");
+            };
+            packet.data().to_vec()
         })
         .collect()
 }

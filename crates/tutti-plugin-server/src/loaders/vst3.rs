@@ -1393,7 +1393,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(1),
                 60,
-                tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+                tutti_fixtures::midi::wide_velocity(100),
             ),
         )];
 

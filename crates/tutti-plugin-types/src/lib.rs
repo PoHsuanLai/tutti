@@ -16,6 +16,7 @@ pub mod features;
 mod format_host;
 mod harmony;
 mod host;
+mod hosting;
 mod lifecycle;
 mod load_stage;
 mod main_thread;
@@ -70,6 +71,7 @@ pub use editor::{
     ResizeHints, WindowHandle,
 };
 pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
+pub use hosting::{Editor, InProcess, Load, OutOfProcess, Reopen};
 pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
 pub use requests::{Edit, EditDrain, EditSink, edits, taken};

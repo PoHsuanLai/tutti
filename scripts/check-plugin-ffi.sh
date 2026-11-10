@@ -8,9 +8,10 @@
 # - any `unsafe` token appears in `tutti-<fmt>-host` (the whole of `src/`,
 #   tests inside it included: the crate is `#![forbid(unsafe_code)]`);
 # - `tutti-<fmt>-host`'s `lib.rs` lacks `#![forbid(unsafe_code)]`;
-# - any `unsafe` token appears in `tutti-plugin-server/src/loaders/<fmt>.rs` or
-#   `tutti-plugin/src/format/gui/<fmt>.rs` before their `#[cfg(test)]` module.
-#   Their test modules may call into the reference plugin's cdylib through
+# - any `unsafe` token appears in `tutti-plugin-server/src/loaders/<fmt>.rs`
+#   before its `#[cfg(test)]` module. (The CLAP and VST3 editor instances are
+#   `OutOfProcess::Editor` in the host crates, under the rule above; design 021
+#   step 2.) Its test module may call into the reference plugin's cdylib through
 #   `libloading`, which is `unsafe` and cannot go through the FFI crate, so the
 #   scan stops where the test module (`#[cfg(test)]` then `mod`) starts.
 # - `tutti-<fmt>-ffi`'s `lib.rs` lacks the lints that make every `unsafe` block
@@ -52,7 +53,6 @@ FORMATS = [
         "crates/tutti-clap-ffi",
         [
             "crates/tutti-plugin-server/src/loaders/clap.rs",
-            "crates/tutti-plugin/src/format/gui/clap.rs",
         ],
     ),
     (
@@ -61,7 +61,6 @@ FORMATS = [
         "crates/tutti-vst3-ffi",
         [
             "crates/tutti-plugin-server/src/loaders/vst3.rs",
-            "crates/tutti-plugin/src/format/gui/vst3.rs",
         ],
     ),
     # The AU loaders still carry two `unsafe` sites of their own

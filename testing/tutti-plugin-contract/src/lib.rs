@@ -2,10 +2,14 @@
 //! through `Loaded`, `Processor`, `Controller` and `Control` on the format's
 //! real host and the one test plugin (`tutti-shared-plugin`).
 //!
-//! A format is a [`Format`] and a test file, `contract!(Format, gaps = N)`. The
+//! A format is a [`Format`] and a test file,
+//! `contract!(Format, gaps = N, hostings = [InProcess, OutOfProcess])`. The
 //! expected figures are in [`spec`], not imported from the plugin. A case a
 //! format cannot pass is a [`Gap`]: it must fail with the stated text, and `N`
-//! must equal the number of gaps, so none is added unnoticed.
+//! must equal the number of gaps, so none is added unnoticed. `hostings` names
+//! the markers the format's loaded type implements (design 021 §3.3): each one
+//! listed is checked at compile time, and `scripts/check-hosting.sh` fails an
+//! impl the list leaves out.
 
 mod active;
 mod cases;
@@ -25,11 +29,20 @@ pub use transcript::{
     Kind, Logged, Transcript, find_blob, patch_level, patch_mode, replace_blob, set_level,
     set_mode, transcript,
 };
+pub use tutti_plugin_types::{InProcess, OutOfProcess};
 
 /// The case list, once: a test per case, and the names a [`Gap`] may use.
 #[macro_export]
 macro_rules! contract {
-    ($fmt:ty, gaps = $gaps:expr) => {
+    ($fmt:ty, gaps = $gaps:expr, hostings = [$($hosting:ident),+ $(,)?]) => {
+        // Mutation (run): list `OutOfProcess` for `Vst2` → E0277, does not
+        // compile.
+        const _: fn() = || {
+            $({
+                fn hosted<T: $crate::$hosting>() {}
+                hosted::<<$fmt as $crate::Format>::L>();
+            })+
+        };
         $crate::contract!(@each $fmt, $gaps,
             routing_tag_oracle,
             reconfigure_keeps_rendering,

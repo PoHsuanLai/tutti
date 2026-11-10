@@ -1,15 +1,15 @@
 //! In-process Audio Unit GUI instance (editor only, no audio processing).
 //! macOS only.
 //!
-//! Implements the host-side [`PluginEditor`](super::PluginEditor) trait. Even
+//! Implements the shared [`Editor`](tutti_plugin_types::Editor) trait. Even
 //! though `AuInstance` (in `loaders/au.rs`) owns the *subprocess-side* editor
 //! open/close/state paths, this host-process object is a separate dlopen: the
 //! two editor surfaces stay distinct by design, one per world.
 
-use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamId, ParamRange};
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{Editor, EditorError, PluginError, PluginResult};
 
 /// Look up declared bounds for `id` in a table sorted by id.
 fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
@@ -89,7 +89,7 @@ impl AuGuiInstance {
     }
 }
 
-impl PluginEditor for AuGuiInstance {
+impl Editor for AuGuiInstance {
     /// `_scale` is unused: an AU view is an `NSView`, which lays out in
     /// logical pixels and reads its backing scale itself.
     fn open_editor(
@@ -97,7 +97,7 @@ impl PluginEditor for AuGuiInstance {
         main: &MainThread,
         parent: WindowHandle,
         _scale: ContentScale,
-    ) -> Result<EditorSize> {
+    ) -> PluginResult<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         // No size to offer here either: this entry point receives a
         // parent handle and a scale, no size. See the sibling in
@@ -112,7 +112,11 @@ impl PluginEditor for AuGuiInstance {
                     height: 600,
                 },
             )
-            .map_err(|e| BridgeError::ProtocolError(format!("AU open_editor failed: {e}")))?;
+            .map_err(|e| {
+                PluginError::Editor(EditorError::PluginError(format!(
+                    "AU open_editor failed: {e}"
+                )))
+            })?;
         Ok(EditorSize {
             width: size.width,
             height: size.height,
@@ -150,13 +154,15 @@ impl PluginEditor for AuGuiInstance {
         let _ = self.inner.set_parameter(id.get(), plain);
     }
 
-    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
-        self.inner
-            .set_state(main, data)
-            .map_err(|e| BridgeError::ProtocolError(format!("AU set_state failed: {e}")))
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
+        self.inner.set_state(main, data).map_err(|e| {
+            PluginError::Editor(EditorError::PluginError(format!(
+                "AU set_state failed: {e}"
+            )))
+        })
     }
 
-    fn poll_gui_param_changes(&mut self, _main: &MainThread) -> Vec<(ParamId, f32)> {
+    fn poll_edits(&mut self, _main: &MainThread) -> Vec<(ParamId, f32)> {
         // AUv2 doesn't have a built-in parameter change notification from GUI.
         // Parameter changes from Cocoa views go through AudioUnitSetParameter directly.
         Vec::new()

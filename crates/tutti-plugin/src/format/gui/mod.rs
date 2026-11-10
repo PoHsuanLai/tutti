@@ -1,100 +1,21 @@
 //! In-process plugin editor.
 //!
-//! The plugin-server subprocess owns audio processing; the editor must
-//! live in the host process because platform GUI toolkits are
-//! host-process-local. Each supported format (VST3, CLAP, AU) has its
-//! own [`PluginEditor`] implementation that dlopens the plugin library
-//! a second time purely for the editor.
+//! The plugin-server subprocess owns audio processing; the editor must live in
+//! the host process because platform GUI toolkits are host-process-local. Each
+//! format that is [`OutOfProcess`](tutti_plugin_types::OutOfProcess) loads an
+//! editor-only second instance here through `load_editor` (design 021 §5); the
+//! CLAP and VST3 ones live in their host crates. AU's is in this module until
+//! its `Loaded` lands (design 021 step 7).
 
 #[cfg(all(feature = "au", target_os = "macos"))]
 mod au;
-#[cfg(all(feature = "clap", unix))]
-mod clap;
-#[cfg(all(feature = "vst3", unix))]
-mod vst3;
 
 use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::{Normalized, ParamId};
-use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
-use tutti_plugin_types::MainThread;
-
-/// The host-side, in-process plugin editor.
-///
-/// The two-world counterpart of the subprocess-side
-/// [`PluginEditorHost`](tutti_plugin_types::PluginEditorHost): this object is a
-/// *second* dlopen of the plugin, editor-only, living in the host process
-/// because platform GUI toolkits are host-process-local. It carries the display
-/// helpers the editor needs (parameter/state push, GUI-originated param polling)
-/// that the audio subprocess object does not.
-///
-/// Kept `pub(crate)` — its only consumer is the host `PluginBridge`
-/// ([`composite`](crate::host::ipc_client::composite)); promote to `pub` if a
-/// cross-crate consumer ever appears.
-/// Every method is a main-thread call, which the `&MainThread` proves.
-pub(crate) trait PluginEditor: Send {
-    /// Embed into `parent`, whose backing-store scale is `scale` (forwarded
-    /// where the format takes it; see [`ContentScale`]).
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> Result<EditorSize>;
-
-    /// Open as a plugin-owned floating window. No parent in, no size out.
-    ///
-    /// Defaulted to a refusal: only CLAP has the concept, so VST3 and AU are
-    /// not made to write an override that could only say this.
-    fn open_floating_editor(&mut self, _main: &MainThread) -> Result<()> {
-        Err(BridgeError::ProtocolError(
-            "this plugin format has no floating-window editor".into(),
-        ))
-    }
-
-    fn close_editor(&mut self, main: &MainThread);
-    fn editor_idle(&mut self, main: &MainThread);
-    /// Mirror a parameter write onto the GUI instance so the editor's display
-    /// follows a host-side edit. [`Normalized`] for the same reason the audio
-    /// path takes one: this is the host's authoring domain, and each impl
-    /// denormalizes at its own FFI edge if its format needs plain units.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
-    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()>;
-    /// Poll GUI-originated parameter changes to forward to the audio bridge.
-    ///
-    /// Every format with an editor here is one of the three opaque-id formats
-    /// (VST2's in-process editor does not go through this trait), so an impl
-    /// tags what the plugin handed it rather than choosing a model.
-    fn poll_gui_param_changes(&mut self, main: &MainThread) -> Vec<(ParamId, f32)>;
-
-    /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
-    /// GUI instance so the editor can update its automation UI feedback. Each
-    /// format encodes the mode onto its own ABI (VST3 `IAutomationState`, …).
-    /// Default no-op for formats without the concept; only the VST3 GUI overrides it.
-    fn set_automation_state(&mut self, _main: &MainThread, _mode: crate::protocol::AutomationMode) {
-    }
-
-    fn editor_capabilities(&mut self, _main: &MainThread) -> EditorCapabilities {
-        EditorCapabilities::default()
-    }
-
-    fn set_editor_size(
-        &mut self,
-        _main: &MainThread,
-        _requested: EditorSize,
-    ) -> Result<EditorSize> {
-        Err(BridgeError::ProtocolError(
-            "set_editor_size not supported".into(),
-        ))
-    }
-
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
-        None
-    }
-}
+use tutti_plugin_types::{Editor, MainThread};
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
-pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dyn PluginEditor>> {
+pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dyn Editor>> {
     use tutti_plugin_db::{PluginFormat, format_from_path};
 
     let format = format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
@@ -105,9 +26,9 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dy
 
     match format {
         #[cfg(feature = "vst3")]
-        PluginFormat::Vst3 => Ok(Box::new(vst3::Vst3GuiInstance::load(main, path)?)),
+        PluginFormat::Vst3 => editor::<tutti_vst3_host::Vst3Loaded>(main, path, "VST3"),
         #[cfg(feature = "clap")]
-        PluginFormat::Clap => Ok(Box::new(clap::ClapGuiInstance::load(main, path)?)),
+        PluginFormat::Clap => editor::<tutti_clap_host::ClapLoaded>(main, path, "CLAP"),
         #[cfg(all(feature = "au", target_os = "macos"))]
         PluginFormat::AudioUnit => Ok(Box::new(au::AuGuiInstance::load(path)?)),
         PluginFormat::Vst2 => Err(BridgeError::LoadFailed {
@@ -135,8 +56,28 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dy
     }
 }
 
+/// `F`'s editor-only instance, boxed.
+#[cfg(all(any(feature = "vst3", feature = "clap"), unix))]
+fn editor<F: tutti_plugin_types::OutOfProcess>(
+    main: &MainThread,
+    path: &Path,
+    format: &str,
+) -> Result<Box<dyn Editor>>
+where
+    F::Editor: 'static,
+{
+    let editor = F::load_editor(main, path, &tutti_plugin_types::Load::new()).map_err(|e| {
+        BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Opening,
+            reason: format!("{format} GUI-only load failed: {e}"),
+        }
+    })?;
+    Ok(Box::new(editor))
+}
+
 #[cfg(not(all(any(feature = "vst3", feature = "clap", feature = "au"), unix)))]
-pub(crate) fn load_gui_instance(_main: &MainThread, path: &Path) -> Result<Box<dyn PluginEditor>> {
+pub(crate) fn load_gui_instance(_main: &MainThread, path: &Path) -> Result<Box<dyn Editor>> {
     Err(BridgeError::LoadFailed {
         path: path.to_path_buf(),
         stage: LoadStage::Opening,

@@ -539,7 +539,7 @@ mod tests {
         }
 
         let config = BridgeConfig {
-            socket_path: dir.path().join("leak.sock"),
+            socket_path: crate::unique_socket_path(),
             timeout_ms: 200,
             ..Default::default()
         };
@@ -601,9 +601,8 @@ mod tests {
             // of it reads the environment.
             unsafe { std::env::set_var(k, v) };
         }
-        let dir = tempfile::tempdir().expect("a private temp dir");
         let config = BridgeConfig {
-            socket_path: dir.path().join("s.sock"),
+            socket_path: crate::unique_socket_path(),
             timeout_ms,
             ..Default::default()
         };
@@ -728,7 +727,7 @@ mod tests {
     fn a_library_that_is_not_a_plugin_fails_the_launch_with_the_loaders_reason() {
         let dir = tempfile::tempdir().expect("a private temp dir");
         let config = BridgeConfig {
-            socket_path: dir.path().join("s.sock"),
+            socket_path: crate::unique_socket_path(),
             ..Default::default()
         };
         // A copy in this test's own directory, not `publish_with_extension`:
@@ -951,13 +950,7 @@ mod tests {
         // Unique per run. A fixed name collides with a leftover socket from an
         // earlier run, and `connect` then fails with EINVAL *before* the version
         // is ever compared — an IO error that would masquerade as a working gate.
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static N: AtomicU32 = AtomicU32::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "tutti-v3-{}-{}.sock",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = crate::unique_socket_path();
         let _ = std::fs::remove_file(&path);
         let name = crate::transport::control::socket_name(&path).unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();

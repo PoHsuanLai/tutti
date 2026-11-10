@@ -60,9 +60,9 @@
 use tutti_types::{PitchClass, Samples};
 
 use crate::chroma::{CLASSES, ChromaConfig};
+use crate::{Error, Result};
 use tutti_dsp::Grid;
 use tutti_dsp::StftGeometry;
-use tutti_dsp::{Error, Result};
 
 /// The states: 12 major roots, 12 minor roots, and "no chord".
 const STATES: usize = 2 * CLASSES + 1;

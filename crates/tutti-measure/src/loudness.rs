@@ -32,7 +32,7 @@
 use ebur128::{EbuR128, Mode};
 use tutti_types::{ChannelLayout, Db, Interleaved, SampleRate};
 
-use tutti_dsp::{Error, Result};
+use crate::{Error, Result};
 
 /// What the meter is measuring: the rate and channel layout of the frames fed
 /// to [`step_loudness`].

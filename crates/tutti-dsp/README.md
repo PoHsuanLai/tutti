@@ -4,7 +4,7 @@ Pure DSP algorithms over `&[f32]` for the Tutti audio engine: a CPU-independent
 real FFT and the algorithms behind the built-in effect nodes: filters, dynamics,
 the partitioned convolver, delay lines, reverb, waveshapers and the export
 resampler. The analyzers (loudness, pitch, onsets, spectra, ...) are `tutti-measure`,
-built on this crate's FFT, windows, `StftGeometry` and `Error`.
+built on this crate's FFT, windows and `StftGeometry` (whose refusals are `Error`).
 
 ## Effect algorithms
 

@@ -250,7 +250,7 @@ bitflags! {
         /// The value is an enumerated choice (`CLAP_PARAM_IS_ENUM`): an index
         /// into names the plugin gives through `value_to_text`. Implies
         /// [`STEPPED`](Self::STEPPED).
-        const IS_ENUM                 = 1 << 16;
+        const IS_ENUM                 = clap_sys::ext::params::CLAP_PARAM_IS_ENUM;
     }
 }
 

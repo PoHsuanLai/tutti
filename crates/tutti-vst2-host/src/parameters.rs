@@ -386,6 +386,10 @@ mod measures_tests {
     }
 
     /// Near-misses and the non-ASCII space are `None` over a fitting range.
+    ///
+    /// Mutation (run, 2026-11-11): `from_label`'s `trim_matches(' ')` changed to
+    /// `trim()` → the `Hz` + em-space and no-break-space rows map, and this test
+    /// fails.
     #[test]
     fn near_misses_are_none() {
         for label in [

@@ -494,15 +494,16 @@ mod measures_tests {
         assert_eq!(projected(ClapParamFlags::IS_ENUM).role, None);
     }
 
-    /// The flag word as the plugin reports it reaches `IS_ENUM`: the raw bit is
-    /// 16 (`CLAP_PARAM_IS_ENUM`), and `from_bits_truncate` would drop an
-    /// undeclared one.
+    /// `IS_ENUM` is the spec's bit 16 (`CLAP_PARAM_IS_ENUM`, clap/ext/params.h),
+    /// read from the plugin's raw flag word rather than truncated away.
     ///
-    /// Mutation (run): `IS_ENUM = 1 << 16` changed to `1 << 17` → fails.
+    /// Mutation (run, 2026-11-11): `IS_ENUM` defined as
+    /// `CLAP_PARAM_IS_STEPPED` → fails.
     #[test]
     fn the_raw_enum_bit_is_read() {
+        assert_eq!(ClapParamFlags::IS_ENUM.bits(), 1 << 16);
         assert_eq!(
-            ClapParamFlags::from_bits_truncate(clap_sys::ext::params::CLAP_PARAM_IS_ENUM),
+            ClapParamFlags::from_bits_truncate(1 << 16),
             ClapParamFlags::IS_ENUM
         );
     }

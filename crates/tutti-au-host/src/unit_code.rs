@@ -151,6 +151,10 @@ mod tests {
     }
 
     /// A code outside the enumeration is not a unit.
+    ///
+    /// Mutation (run, 2026-11-11): the match's catch-all `_ => return None`
+    /// changed to `_ => ParamUnit::Hertz` → code 27 and up map, and this test
+    /// fails (the table test covers 0..=26 only).
     #[test]
     fn an_unknown_code_is_none() {
         for raw in [27, 28, 100, 0x6d73_7264, u32::MAX] {

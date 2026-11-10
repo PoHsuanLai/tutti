@@ -524,12 +524,14 @@ pub struct ParameterInfo {
     /// unit through [`typed`](Self::typed); set it with
     /// [`with_measures`](Self::with_measures), which applies the range check.
     ///
-    /// `serde(default)`: data saved before this field reads as `None`.
-    #[cfg_attr(feature = "serde", serde(default))]
+    /// Data saved before this field reads as `None` with no attribute: serde's
+    /// derive already reads a missing `Option` field as `None` (a mutation that
+    /// removed an explicit `serde(default)` here survived), unlike
+    /// [`role`](Self::role), whose custom serde needs its own `default`.
     pub measures: Option<ParamUnit>,
     /// The tutti role this parameter plays, only where the format declared the
     /// role itself (a bypass flag, AU's pan unit, VST3's `DryWetMix` function
-    /// name), never from a name. `serde(default)` as [`measures`](Self::measures).
+    /// name), never from a name. Its `serde(default)` is load-bearing: `with` turns off serde's implicit missing-`Option` default.
     #[cfg_attr(feature = "serde", serde(default, with = "role_serde"))]
     pub role: Option<UnitParam>,
 }
@@ -1152,10 +1154,8 @@ mod measures_serde_tests {
     ///
     /// Mutation (run, 2026-11-11): `default` removed from `role`'s attribute
     /// (`serde(with = ..)` alone) → the old JSON fails with a missing-field
-    /// error, and this test fails. Removing `serde(default)` from `measures` does
-    /// **not** fail it: serde's derive already reads a missing `Option` as
-    /// `None`, so that attribute documents the rule and `role`'s is the one that
-    /// holds it.
+    /// error, and this test fails. `measures` has no attribute: serde's derive
+    /// already reads a missing `Option` as `None`.
     #[test]
     fn an_old_parameter_without_the_fields_still_deserializes() {
         let p: ParameterInfo = serde_json::from_str(OLD_JSON).expect("old data reads");
@@ -1204,6 +1204,10 @@ mod measures_serde_tests {
     }
 
     /// A role number that is no `UnitParam` is refused, not mapped to another.
+    ///
+    /// Mutation (run, 2026-11-11): `role_serde::deserialize` falling back to
+    /// `UnitParam::Cutoff` for an unknown number (`unwrap_or`) → 9999 reads as
+    /// `Cutoff`, and this test fails.
     #[test]
     fn a_role_that_names_no_unit_param_is_refused() {
         let json = OLD_JSON.replace(r#""group": "Filter""#, r#""group": "Filter", "role": 9999"#);

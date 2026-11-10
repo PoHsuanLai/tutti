@@ -470,6 +470,10 @@ mod tests {
     }
 
     /// A value its target type cannot hold is `None`, not clamped.
+    ///
+    /// Mutation (run, 2026-11-11): `Mix`'s range check `(0.0..=1.0)` widened to
+    /// `(-1.0..=1.0)` → the `-50` percent row returns `Some`, and this test
+    /// fails.
     #[test]
     fn typed_refuses_a_value_outside_the_target() {
         let percent = ParameterInfo::new(ParamId::new(1), "Bal")

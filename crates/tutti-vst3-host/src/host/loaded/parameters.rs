@@ -624,6 +624,9 @@ mod measures_tests {
     }
 
     /// Near-misses are `None`, whatever the range.
+    ///
+    /// Mutation (run, 2026-11-11): `ParamUnit::from_label`'s `Hz` arm widened to
+    /// `"Hz" | "hz"` → the `hz` row maps, and this test fails.
     #[test]
     fn near_misses_are_not_units() {
         for label in ["kHz", "Db", "dB(A)", "semitones", "", "\u{a0}Hz", "hz"] {

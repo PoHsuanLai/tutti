@@ -26,7 +26,6 @@ crossbeam-queue = { version = "0.3", default-features = false, features = ["allo
 parking_lot = "0.12"
 thiserror = "2"
 tutti-graph = { path = "../tutti-graph" }
-tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # `SeqWriter` / `SeqReader`, the sequence lock the transport snapshot lives in.
 tutti-rt = { path = "../tutti-rt" }

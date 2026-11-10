@@ -81,6 +81,7 @@ mod segment_points;
 // (`crate::format::vst2_in_process`) is a peer host, not a subprocess client,
 // and reads its transport through the same mapping rather than a second copy.
 pub(crate) mod transport_source;
+mod transport_walk;
 
 #[cfg(test)]
 mod process_pipeline_tests;
@@ -170,6 +171,9 @@ pub struct Bound {
     /// Project time the plugin's transport carries: rolls with playback,
     /// holds while stopped, re-seated at a jump.
     project: transport_source::ProjectTime,
+    /// The transport changes inside the chunk being filled: where the walk
+    /// is, between calls (`transport_walk`).
+    walk: transport_walk::TransportWalk,
     /// The host's monotonic clock the plugin's transport carries
     /// (`systemTime`), read once per block. `None` on an offline fork: no
     /// clock relates to a render that runs at its own speed.
@@ -304,7 +308,11 @@ pub(super) struct BlockPayload {
     pub midi: tutti_plugin_types::MidiEventVec,
     pub note_expression: tutti_plugin_types::NoteExpressionChanges,
     pub harmony: HarmonyInputs,
+    /// The transport at the chunk's first frame.
     pub transport: TransportInfo,
+    /// The transport changes after it, each at its chunk frame (doc 020
+    /// stage 5b; `transport_walk`). Inline: nothing allocates.
+    pub changes: tutti_plugin_types::TransportChanges,
 }
 
 impl PluginClient<Unbound> {
@@ -544,6 +552,7 @@ impl PluginClient<Unbound> {
                 out_events: MidiEventVec::new(),
                 steady: transport_source::SteadyTime::default(),
                 project: transport_source::ProjectTime::default(),
+                walk: transport_walk::TransportWalk::default(),
                 host_clock: Some(transport_source::HostClock),
                 meter,
                 default_meter: MeterMap::default(),

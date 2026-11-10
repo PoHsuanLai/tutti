@@ -32,9 +32,9 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
     CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
-    CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_midi, clap_event_midi_sysex,
-    clap_event_note, clap_event_param_value, clap_event_transport,
+    CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_IS_LOOP_ACTIVE,
+    CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_midi,
+    clap_event_midi_sysex, clap_event_note, clap_event_param_value, clap_event_transport,
 };
 use clap_sys::ext::audio_ports::{
     CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORT_SUPPORTS_64BITS, CLAP_EXT_AUDIO_PORTS, CLAP_PORT_MONO,
@@ -1229,11 +1229,33 @@ pub enum RenderMode {
     ///
     /// All zero when the host passes no transport. What an out-of-process host
     /// told the plugin, read back through the audio it returns.
+    ///
+    /// Then, from frame [`TRANSPORT_ECHO_FRAMES`], the `CLAP_EVENT_TRANSPORT`
+    /// events inside the block (a host that tells the plugin of a transport
+    /// change part-way through a chunk): frame 6 is how many arrived, and for
+    /// the first [`TRANSPORT_EVENTS_ECHOED`] of them, in the order the host
+    /// presented them, [`TRANSPORT_EVENT_FRAMES`] frames each from frame 7:
+    ///
+    /// 0. the event's `time`, in frames into the block;
+    /// 1. `song_pos_beats`, in beats;
+    /// 2. `tempo`;
+    /// 3. the flags, as above;
+    /// 4. `tempo_inc`, in BPM per sample.
+    ///
+    /// Only when the block has [`TRANSPORT_EVENTS_END`] frames or more.
     Transport = 5,
 }
 
-/// Frames [`RenderMode::Transport`] writes per block.
+/// Frames [`RenderMode::Transport`] writes per block for the block's own
+/// transport.
 pub const TRANSPORT_ECHO_FRAMES: usize = 6;
+/// How many `CLAP_EVENT_TRANSPORT` events [`RenderMode::Transport`] echoes.
+pub const TRANSPORT_EVENTS_ECHOED: usize = 8;
+/// Frames [`RenderMode::Transport`] writes for each such event.
+pub const TRANSPORT_EVENT_FRAMES: usize = 5;
+/// The frame past the last the event echo writes: the block length it needs.
+pub const TRANSPORT_EVENTS_END: usize =
+    TRANSPORT_ECHO_FRAMES + 1 + TRANSPORT_EVENTS_ECHOED * TRANSPORT_EVENT_FRAMES;
 
 impl RenderMode {
     fn from_u32(v: u32) -> Self {
@@ -1350,6 +1372,36 @@ unsafe fn note_event(p: &clap_process, index: usize) -> Option<(u32, NoteChange)
         };
         if seen == index {
             return Some((hdr.time, change));
+        }
+        seen += 1;
+    }
+    None
+}
+
+/// The `index`th `CLAP_EVENT_TRANSPORT` of the block's input events, in the
+/// order the host presented them, with its `time`.
+///
+/// # Safety
+/// `p` must be the live `clap_process` the host passed to `process`.
+unsafe fn transport_event(p: &clap_process, index: usize) -> Option<(u32, clap_event_transport)> {
+    let list = p.in_events;
+    if list.is_null() {
+        return None;
+    }
+    let (size_fn, get_fn) = (unsafe { (*list).size }?, unsafe { (*list).get }?);
+    let mut seen = 0;
+    for i in 0..unsafe { size_fn(list) } {
+        let hdr_ptr = unsafe { get_fn(list, i) };
+        if hdr_ptr.is_null() {
+            continue;
+        }
+        let hdr: &clap_event_header = unsafe { &*hdr_ptr };
+        if hdr.type_ != CLAP_EVENT_TRANSPORT {
+            continue;
+        }
+        if seen == index {
+            let t = unsafe { *(hdr_ptr as *const clap_event_transport) };
+            return Some((hdr.time, t));
         }
         seen += 1;
     }
@@ -1587,6 +1639,29 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
                         dst[3] = T::from_f32(beats(t.loop_start_beats));
                         dst[4] = T::from_f32(beats(t.loop_end_beats));
                         dst[5] = T::from_f32(t.tempo_inc as f32);
+                    }
+                    if frames >= TRANSPORT_EVENTS_END {
+                        let beats = |b: i64| (b as f64 / CLAP_BEATTIME_FACTOR as f64) as f32;
+                        let flag = |t: &clap_event_transport, bit: u32, v: f32| {
+                            if t.flags & bit != 0 { v } else { 0.0 }
+                        };
+                        let mut n = 0;
+                        while let Some((time, t)) = unsafe { transport_event(p, n) } {
+                            if n < TRANSPORT_EVENTS_ECHOED {
+                                let at = TRANSPORT_ECHO_FRAMES + 1 + n * TRANSPORT_EVENT_FRAMES;
+                                dst[at] = T::from_f32(time as f32);
+                                dst[at + 1] = T::from_f32(beats(t.song_pos_beats));
+                                dst[at + 2] = T::from_f32(t.tempo as f32);
+                                dst[at + 3] = T::from_f32(
+                                    flag(&t, CLAP_TRANSPORT_IS_PLAYING, 1.0)
+                                        + flag(&t, CLAP_TRANSPORT_IS_RECORDING, 2.0)
+                                        + flag(&t, CLAP_TRANSPORT_IS_LOOP_ACTIVE, 4.0),
+                                );
+                                dst[at + 4] = T::from_f32(t.tempo_inc as f32);
+                            }
+                            n += 1;
+                        }
+                        dst[TRANSPORT_ECHO_FRAMES] = T::from_f32(n as f32);
                     }
                 }
                 RenderMode::Notes => {

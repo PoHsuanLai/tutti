@@ -26,10 +26,15 @@ pub(crate) mod wire;
 ///   a payload from the newer side runs the decoder off the end or into the next
 ///   field's bytes. `serde(default)` does not rescue this — it covers the JSON
 ///   and struct-update paths, not this wire.
+/// - **Version 24** appended `ParameterInfo::measures` (an `Option<ParamUnit>`, a
+///   variant index) and `role` (an `Option<u16>`, a `UnitParam` discriminant)
+///   to every entry of a `ParameterList` and `ParameterInfoResponse`: two
+///   `0x00` bytes after `group` when both are `None`. No recorded golden holds
+///   a `ParameterInfo`, so none needed re-recording.
 /// - An **enum variant** is a varint discriminant over declaration order, so a
 ///   peer receiving a tag it has no arm for fails the decode mid-stream rather
 ///   than at a message boundary.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -141,7 +146,8 @@ pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, ContentScale, LoadedPlugin,
     Normalized, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
     ParamId, ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginDescriptor,
-    PluginTail, Preset, PresetId, RenderMode, Samples, ScaleChanges, TransportInfo,
+    PluginTail, Preset, PresetId, RenderMode, Samples, ScaleChanges, TransportChanges,
+    TransportInfo,
 };
 
 #[cfg(test)]
@@ -713,5 +719,42 @@ mod tests {
         assert_eq!(back.scales.changes[0].text, "D Dorian");
         assert_eq!(back.expr_texts.changes[0].text, "staccato");
         assert_eq!(back.expr_ints.changes[0].value, -42);
+    }
+
+    /// **A parameter's typed unit and role cross the wire**, in a `ParameterList`
+    /// and a `ParameterInfoResponse`, and an untyped one stays untyped.
+    ///
+    /// Mutation (run, 2026-11-11): `#[serde(skip)]` on `ParameterInfo::measures`
+    /// → it arrives `None` → fails.
+    #[test]
+    fn a_parameters_unit_and_role_cross_the_wire() {
+        use tutti_plugin_types::ParamUnit;
+        use tutti_types::UnitParam;
+
+        let typed = ParameterInfo::new(ParamId::new(2), "Pan")
+            .with_plain_range(-1.0, 1.0, 0.0)
+            .with_measures(Some(ParamUnit::Pan))
+            .with_role(Some(UnitParam::Pan));
+        let untyped = ParameterInfo::new(ParamId::new(3), "Other");
+
+        let list = BridgeMessage::ParameterList {
+            parameters: vec![typed.clone(), untyped],
+        };
+        let BridgeMessage::ParameterList { parameters } =
+            bincode::deserialize(&bincode::serialize(&list).unwrap()).unwrap()
+        else {
+            panic!("a ParameterList decodes as one");
+        };
+        assert_eq!(parameters[0].measures, Some(ParamUnit::Pan));
+        assert_eq!(parameters[0].role, Some(UnitParam::Pan));
+        assert_eq!((parameters[1].measures, parameters[1].role), (None, None));
+
+        let one = BridgeMessage::ParameterInfoResponse { info: Some(typed) };
+        let BridgeMessage::ParameterInfoResponse { info: Some(info) } =
+            bincode::deserialize(&bincode::serialize(&one).unwrap()).unwrap()
+        else {
+            panic!("a ParameterInfoResponse decodes as one");
+        };
+        assert_eq!(info.measures, Some(ParamUnit::Pan));
     }
 }

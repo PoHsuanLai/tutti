@@ -4,6 +4,8 @@ use super::*;
 use crate::types::{PlainRange, ProcessContextRequirements, UnitId};
 use tutti_plugin_types::AutomationMode;
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::ParamUnit;
+use tutti_types::UnitParam;
 
 impl Vst3Loaded {
     // VST3 enumerates parameters by index (`getParameterInfo`) and addresses
@@ -61,13 +63,19 @@ impl Vst3Loaded {
         let units = self.units(main);
         let groups = unit_names(&units);
 
-        (0..self.parameter_count(main))
+        let list = (0..self.parameter_count(main))
             .filter_map(|i| {
                 let info = self.parameter_info_at(main, i)?;
                 let plain = self.parameter_plain_range(main, ParamId::new(info.id()));
                 Some(build_param_info(info, plain, &groups))
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // `IParameterFunctionName` is read once per unit with the function the
+        // spec names a mix by: the one role VST3 declares itself.
+        let wet = std::iter::once(UnitId::ROOT)
+            .chain(units.iter().map(|u| u.id))
+            .find_map(|unit| self.param_id_for_function_name(main, unit, DRY_WET_MIX));
+        apply_function_roles(list, wet)
     }
 
     /// The plugin's own `[min, max]` for a parameter, recovered by asking its
@@ -321,6 +329,45 @@ pub(super) fn unit_names(units: &[Vst3UnitInfo]) -> HashMap<UnitId, &str> {
         .collect()
 }
 
+/// `FunctionNameType::kDryWetMix`: the function name a plugin gives its
+/// dry/wet mix parameter (`ivstparameterfunctionname.h`).
+const DRY_WET_MIX: &str = "DryWetMix";
+
+/// Gives the parameter the plugin names as its dry/wet mix the role
+/// [`UnitParam::Wet`]. `wet` is what `IParameterFunctionName` answered for
+/// [`DRY_WET_MIX`]; `None` (no such interface, or no such function) leaves every
+/// role alone.
+fn apply_function_roles(mut list: Vec<ParameterInfo>, wet: Option<ParamId>) -> Vec<ParameterInfo> {
+    if let Some(wet) = wet {
+        for p in list.iter_mut().filter(|p| p.id == wet) {
+            p.role = Some(UnitParam::Wet);
+        }
+    }
+    list
+}
+
+/// What a VST3 parameter's declaration says it measures (doc 023 §5.2).
+///
+/// A list (`kIsList`) with at least one step is a [`Choice`](ParamUnit::Choice);
+/// otherwise a step count of 1 is a [`Toggle`](ParamUnit::Toggle) (a two-entry
+/// list is still a choice, because it names its options); otherwise the `units`
+/// string, by [`ParamUnit::from_label`]'s closed list. The range check
+/// ([`ParameterInfo::with_measures`]) is the caller's.
+fn declared_measures(units: &str, is_list: bool, step_count: i32) -> Option<ParamUnit> {
+    if is_list && step_count >= 1 {
+        Some(ParamUnit::Choice)
+    } else if step_count == 1 {
+        Some(ParamUnit::Toggle)
+    } else {
+        ParamUnit::from_label(units)
+    }
+}
+
+/// The role a VST3 parameter's flags declare: the bypass switch.
+fn declared_role(is_bypass: bool) -> Option<UnitParam> {
+    is_bypass.then_some(UnitParam::Bypass)
+}
+
 /// Builds a shared [`ParameterInfo`] from a VST3 parameter descriptor and the
 /// plain range probed from the plugin's controller.
 ///
@@ -380,6 +427,9 @@ pub(super) fn build_param_info(
         _ => ParamSteps::Unknown,
     };
 
+    let measures = declared_measures(&info.units_string(), info.is_list(), info.step_count());
+    let role = declared_role(info.is_bypass());
+
     ParameterInfo {
         // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
         // the ParamID-vs-index note above.
@@ -400,7 +450,11 @@ pub(super) fn build_param_info(
             .get(&info.unit_id())
             .map(|n| n.to_string())
             .unwrap_or_default(),
+        measures: None,
+        role: None,
     }
+    .with_measures(measures)
+    .with_role(role)
 }
 
 #[cfg(test)]
@@ -516,5 +570,137 @@ mod requirements_tests {
         assert!(wants_transport(Some(f::NEED_TEMPO)));
         assert!(!wants_sequencer_context(Some(f::NEED_TEMPO)));
         assert!(wants_sequencer_context(Some(f::NEED_CHORD)));
+    }
+}
+
+#[cfg(test)]
+mod measures_tests {
+    use super::*;
+
+    fn plain(min: f64, max: f64) -> ParamRange {
+        ParamRange::Plain {
+            min,
+            max,
+            default: min,
+        }
+    }
+
+    /// Builds the `measures` a plugin's declaration ends in, as
+    /// `build_param_info` does: the mapping, then the range check.
+    fn measures(units: &str, is_list: bool, steps: i32, range: ParamRange) -> Option<ParamUnit> {
+        let mut p = ParameterInfo::new(ParamId::new(1), "p");
+        p.range = range;
+        p.with_measures(declared_measures(units, is_list, steps))
+            .measures
+    }
+
+    /// Every string on the closed list maps over a plain range that fits.
+    ///
+    /// Mutation (run, 2026-11-11): `"st" => Some(Self::Semitones)` changed to
+    /// `Some(Self::Cents)` in `ParamUnit::from_label` → the `st` row fails.
+    #[test]
+    fn every_accepted_units_string_maps() {
+        for (label, unit) in [
+            ("Hz", ParamUnit::Hertz),
+            ("dB", ParamUnit::Decibels),
+            ("s", ParamUnit::Seconds),
+            ("ms", ParamUnit::Milliseconds),
+            ("%", ParamUnit::Percent),
+            ("ct", ParamUnit::Cents),
+            ("st", ParamUnit::Semitones),
+            ("BPM", ParamUnit::Bpm),
+        ] {
+            assert_eq!(
+                measures(label, false, 0, plain(1.0, 100.0)),
+                Some(unit),
+                "{label:?}"
+            );
+        }
+        assert_eq!(
+            measures("  Hz ", false, 0, plain(20.0, 20_000.0)),
+            Some(ParamUnit::Hertz),
+            "ASCII spaces are trimmed"
+        );
+    }
+
+    /// Near-misses are `None`, whatever the range.
+    ///
+    /// Mutation (run, 2026-11-11): `ParamUnit::from_label`'s `Hz` arm widened to
+    /// `"Hz" | "hz"` → the `hz` row maps, and this test fails.
+    #[test]
+    fn near_misses_are_not_units() {
+        for label in ["kHz", "Db", "dB(A)", "semitones", "", "\u{a0}Hz", "hz"] {
+            assert_eq!(
+                measures(label, false, 0, plain(0.0, 100.0)),
+                None,
+                "{label:?}"
+            );
+        }
+    }
+
+    /// A label with no plain range, or a range that does not fit, is `None`:
+    /// VST3 declares only normalized values, so most plugins get `None` here.
+    ///
+    /// Mutation (run): `build_param_info`-style `with_measures` replaced by
+    /// assigning `measures` directly → the normalized and `0..1000` rows
+    /// return `Some`, and this test fails.
+    #[test]
+    fn a_unit_without_a_range_that_fits_is_none() {
+        let hz = |range| measures("Hz", false, 0, range);
+        assert_eq!(hz(ParamRange::Normalized { default: 0.0 }), None);
+        assert_eq!(hz(plain(-5.0, 100.0)), None);
+        assert_eq!(measures("%", false, 0, plain(0.0, 1000.0)), None);
+    }
+
+    /// A list flag with a step count is a `Choice`; a step count of 1 is a
+    /// `Toggle`; both over a normalized range, which is all VST3 declares.
+    ///
+    /// Mutation (run): `step_count == 1` changed to `step_count == 2` → the
+    /// `Toggle` row fails; `is_list && step_count >= 1` changed to
+    /// `is_list && step_count >= 99` → the `Choice` rows fail.
+    #[test]
+    fn a_list_is_a_choice_and_one_step_is_a_toggle() {
+        let n = || ParamRange::Normalized { default: 0.0 };
+        assert_eq!(measures("", true, 4, n()), Some(ParamUnit::Choice));
+        assert_eq!(
+            measures("", true, 1, n()),
+            Some(ParamUnit::Choice),
+            "a two-entry list names its options"
+        );
+        assert_eq!(measures("", false, 1, n()), Some(ParamUnit::Toggle));
+        assert_eq!(measures("", false, 0, n()), None, "continuous, no unit");
+        assert_eq!(measures("", true, 0, n()), None, "a list with no steps");
+        assert_eq!(measures("", false, 5, n()), None, "stepped, not a list");
+    }
+
+    /// The bypass flag is the `Bypass` role, and nothing else gives one.
+    ///
+    /// Mutation (run): `is_bypass.then_some(UnitParam::Bypass)` changed to
+    /// `(!is_bypass).then_some(..)` → both rows fail.
+    #[test]
+    fn the_bypass_flag_gives_bypass() {
+        assert_eq!(declared_role(true), Some(UnitParam::Bypass));
+        assert_eq!(declared_role(false), None);
+    }
+
+    /// `IParameterFunctionName`'s answer for the dry/wet mix gives that one
+    /// parameter `Wet`; no answer leaves every role alone.
+    ///
+    /// Mutation (run): the filter `p.id == wet` changed to `true` → every
+    /// parameter becomes `Wet`, and the neighbour row fails.
+    #[test]
+    fn the_dry_wet_function_name_gives_wet() {
+        let list = || {
+            vec![
+                ParameterInfo::new(ParamId::new(1), "Cutoff"),
+                ParameterInfo::new(ParamId::new(2), "Mix"),
+            ]
+        };
+        let got = apply_function_roles(list(), Some(ParamId::new(2)));
+        assert_eq!(got[0].role, None);
+        assert_eq!(got[1].role, Some(UnitParam::Wet));
+        let none = apply_function_roles(list(), None);
+        assert!(none.iter().all(|p| p.role.is_none()));
+        assert_eq!(DRY_WET_MIX, "DryWetMix");
     }
 }

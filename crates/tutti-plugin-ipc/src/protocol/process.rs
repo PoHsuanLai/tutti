@@ -6,7 +6,7 @@ use tutti_plugin_types::MidiEventVec;
 
 use super::{
     ChordChanges, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
-    ParameterChanges, ScaleChanges, TransportInfo,
+    ParameterChanges, ScaleChanges, TransportChanges, TransportInfo,
 };
 
 /// One process block's inputs, except the audio itself.
@@ -43,14 +43,18 @@ pub struct ProcessAudioData {
     pub expr_texts: NoteExpressionTextChanges,
     /// VST3 per-note integer expression. VST3-only; other formats ignore it.
     pub expr_ints: NoteExpressionIntChanges,
-    /// Tempo, time signature and play state for the block.
+    /// Tempo, time signature and play state at the block's first frame.
     pub transport: TransportInfo,
+    /// The transport changes inside the block, in time order, each at its
+    /// frame (never frame 0: that is `transport`). At most
+    /// `MAX_TRANSPORT_CHANGES`, inline; a longer list is a decode error.
+    pub transport_changes: TransportChanges,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_plugin_types::WireMidi;
+    use tutti_plugin_types::{TransportChange, WireMidi};
     use tutti_ump::Ump;
 
     /// The block behind [`GOLDEN_BLOCK`]: every list populated, MIDI,
@@ -138,6 +142,17 @@ mod tests {
                 system_time_ns: Some(0x0102_0304_0506_0708),
                 ..Default::default()
             },
+            transport_changes: [TransportChange {
+                offset: 17,
+                transport: TransportInfo {
+                    sample_rate: 48_000.0,
+                    system_time_ns: Some(0x0102_0304_0506_0708),
+                    ..Default::default()
+                }
+                .with_tempo(90.0),
+            }]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -154,8 +169,19 @@ mod tests {
     /// byte variant tag is gone (two queues, eight bytes). **And for protocol
     /// version 22**: `MusicalTiming::tempo_inc` (CLAP's slope, an `f64`, here
     /// zero) sits right after `tempo`, so the array is that one with eight
-    /// zero bytes inserted after the tempo's `0x5e, 0x40`.
-    const GOLDEN_BLOCK: [u8; 436] = [
+    /// zero bytes inserted after the tempo's `0x5e, 0x40`. **And for protocol
+    /// version 23**: `transport_changes` follows `transport`, a bincode
+    /// sequence (its length as a `u64`) of `(offset: u32, transport)`. The
+    /// block carries one change, at frame 17, whose transport is the block's
+    /// own with the tempo 90 (`0x4056800000000000`, little-endian, in place of
+    /// 120's `0x405e000000000000`), so the array is the version-22 one (the
+    /// bytes up to and including the block's transport) then
+    /// `01 00 00 00 00 00 00 00` (one change), `11 00 00 00` (frame 17), and a
+    /// copy of the block's 133 transport bytes with the tempo's eight bytes
+    /// swapped. Derived by a script that reads the version-22 bytes, locates
+    /// the transport after the last note-expression integer (`-1234`), and
+    /// writes that; not by encoding the block.
+    const GOLDEN_BLOCK: [u8; 581] = [
         0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x3c,
         0x90, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f,
@@ -185,7 +211,16 @@ mod tests {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x70, 0xe7, 0x40, 0x01, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02,
-        0x01,
+        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x56, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70,
+        0xe7, 0x40, 0x01, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
     ];
 
     /// **A fully populated block encodes to the bytes the code before this
@@ -199,7 +234,9 @@ mod tests {
     /// Mutation (run): `chords` and `scales` swapped in `ProcessAudioData`'s
     /// declaration → the encoding differs → fails. Mutation (run):
     /// `#[serde(skip)]` on `TransportInfo::system_time_ns` → the nine
-    /// trailing bytes are missing → fails.
+    /// trailing bytes are missing → fails. Mutation: `#[serde(skip)]` on
+    /// `ProcessAudioData::transport_changes` → the 145 trailing bytes are
+    /// missing → fails.
     #[test]
     fn a_block_encodes_as_before_smallvec_was_removed() {
         assert_eq!(bincode::serialize(&golden_block()).unwrap(), GOLDEN_BLOCK);
@@ -220,6 +257,9 @@ mod tests {
         assert_eq!(back.expr_texts.changes[0].text, "ah");
         assert_eq!(back.expr_ints.changes[0].value, -1234);
         assert_eq!(back.transport.system_time_ns, Some(0x0102_0304_0506_0708));
+        assert_eq!(back.transport_changes.len(), 1);
+        assert_eq!(back.transport_changes[0].offset, 17);
+        assert_eq!(back.transport_changes[0].transport.timing.tempo, 90.0);
     }
 
     /// **The transport's project-time position and host clock cross the
@@ -259,5 +299,64 @@ mod tests {
             bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
         assert_eq!(back.transport.timing.tempo, 93.5);
         assert_eq!(back.transport.timing.tempo_inc, -0.000_125);
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+    use tutti_plugin_types::TransportChange;
+
+    /// **The transport changes cross the wire, in order, each at its frame
+    /// with its own tempo and slope**, up to the graph's bound; a list one
+    /// longer is refused at decode (the server never grows one).
+    ///
+    /// Mutation: `#[serde(skip)]` on `ProcessAudioData::transport_changes` →
+    /// the list arrives empty → fails. Mutation: `ProcessAudioData`'s
+    /// list read back reversed (swap the two tuples expected below) → fails.
+    #[test]
+    fn the_transport_changes_cross_the_wire_in_order() {
+        let mut block = ProcessAudioData::default();
+        for (offset, tempo, inc) in [(10, 100.0, 0.001), (50, 90.0, -0.002)] {
+            block.transport_changes.push(TransportChange {
+                offset,
+                transport: TransportInfo::new()
+                    .with_tempo(tempo)
+                    .with_tempo_inc(inc)
+                    .with_playing(true),
+            });
+        }
+        let back: ProcessAudioData =
+            bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+        let got: Vec<_> = back
+            .transport_changes
+            .iter()
+            .map(|c| {
+                (
+                    c.offset,
+                    c.transport.timing.tempo,
+                    c.transport.timing.tempo_inc,
+                )
+            })
+            .collect();
+        assert_eq!(got, [(10, 100.0, 0.001), (50, 90.0, -0.002)]);
+        assert!(back.transport_changes[1].transport.state.playing);
+
+        // One more than the bound: the encoding of nine is a decode error.
+        let mut nine = bincode::serialize(&ProcessAudioData::default()).unwrap();
+        let tail = nine.len() - 8;
+        // The empty list is the last eight bytes (a `u64` length of 0); say 9
+        // and append nine changes' worth of bytes taken from a real one.
+        let one = bincode::serialize(&TransportChange {
+            offset: 1,
+            transport: TransportInfo::new(),
+        })
+        .unwrap();
+        nine.truncate(tail);
+        nine.extend_from_slice(&9u64.to_le_bytes());
+        for _ in 0..9 {
+            nine.extend_from_slice(&one);
+        }
+        assert!(bincode::deserialize::<ProcessAudioData>(&nine).is_err());
     }
 }

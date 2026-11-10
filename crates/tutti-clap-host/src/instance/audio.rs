@@ -17,6 +17,7 @@ use std::sync::atomic::Ordering;
 use tutti_clap_ffi::{Planar, ProcessCall, ProcessError};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::AudioBufferMut;
+use tutti_plugin_types::TransportChange;
 use tutti_plugin_types::WireMidi;
 use tutti_plugin_types::is_usable;
 
@@ -93,6 +94,14 @@ pub struct ClapProcessContext<'a> {
     /// Transport snapshot for the block. `None` sends no transport event, so
     /// the plugin sees a host with no timeline rather than a stopped one.
     pub transport: Option<&'a TransportInfo>,
+    /// The transport changes inside the block, in time order, each at its
+    /// frame: one `CLAP_EVENT_TRANSPORT` per change, in time order with the
+    /// block's other input events (`clap_event_transport::tempo_inc` is "until
+    /// the next transport event", so a plugin follows a tempo that changes
+    /// part-way). Sent only with a [`transport`](Self::transport); a change
+    /// at frame 0 or past the block is clamped into it. At most the graph's
+    /// `MAX_TRANSPORT_CHANGES` are taken, the room reserved for them.
+    pub transport_changes: &'a [TransportChange],
 }
 
 impl ClapProcessor {
@@ -174,6 +183,7 @@ impl ClapProcessor {
             params,
             ctx.expressions,
             ctx.transport,
+            ctx.transport_changes,
         )
     }
 
@@ -276,6 +286,7 @@ impl ClapProcessor {
         param_changes: &ParameterChanges,
         note_expressions: &[ClapNoteExpression],
         transport: Option<&TransportInfo>,
+        transport_changes: &[TransportChange],
     ) -> Result<ProcessOutputRef<'_>> {
         // Cheap early out; `AudioSide::process` checks again under the claim.
         if self.audio_side.is_retired() {
@@ -321,6 +332,20 @@ impl ClapProcessor {
             self.scratch
                 .input_events
                 .add_note_expressions(note_expressions);
+        }
+        // The transport's changes inside the block, each at its frame, added
+        // after the rest so that on one frame they follow it, and sorted in
+        // with it below. Only beside a transport: a host that sends none has
+        // no timeline to change.
+        if transport.is_some() {
+            for change in transport_changes
+                .iter()
+                .take(tutti_graph::MAX_TRANSPORT_CHANGES)
+            {
+                self.scratch
+                    .input_events
+                    .add_transport(change.offset, build_clap_transport(&change.transport));
+            }
         }
         // A host-supplied offset past the block is clamped to its last sample,
         // and the list is put in time order: CLAP requires both.

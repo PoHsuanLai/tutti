@@ -266,7 +266,7 @@ fn a_requested_mpe_mode_is_adopted_once() {
 #[test]
 fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_plugin_types::PerNoteBendRanges;
     use tutti_ump::Rpn;
     let range = at(
         0,
@@ -311,7 +311,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
 /// fan-out overwrites the unread note → fails.
 #[test]
 fn a_member_bend_range_fans_out_over_the_zones_ports() {
-    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_plugin_types::PerNoteBendRanges;
     let wire = Wire::new(vec![vec![
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
@@ -356,7 +356,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 /// dropped → fails. Mutation (run): leave the counter out → 0 → fails.
 #[test]
 fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
-    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_plugin_types::PerNoteBendRanges;
     let mut batch: Vec<UmpAt> = (0..507).map(|i| note(0, 60, i)).collect();
     batch.extend([
         cc_ev(2, cc::RPN_MSB, 0),

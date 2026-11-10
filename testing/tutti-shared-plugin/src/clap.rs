@@ -10,8 +10,10 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_midi, clap_event_note,
-    clap_event_param_value, clap_input_events, clap_output_events,
+    CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
+    CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
+    CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_midi, clap_event_note,
+    clap_event_param_value, clap_event_transport, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::audio_ports::{
     CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORT_SUPPORTS_64BITS, CLAP_EXT_AUDIO_PORTS,
@@ -29,6 +31,7 @@ use clap_sys::ext::params::{
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_plugin_tail};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
+use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::host::clap_host;
 use clap_sys::id::CLAP_INVALID_ID;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
@@ -39,7 +42,7 @@ use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::string_sizes::{CLAP_NAME_SIZE, CLAP_PATH_SIZE};
 use clap_sys::version::CLAP_VERSION;
 
-use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample};
+use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample, Transport};
 
 /// The plugin id.
 pub const ID: &CStr = c"tutti.shared-test-plugin";
@@ -354,6 +357,27 @@ unsafe fn decode(h: *const clap_event_header) -> Option<Ev> {
     }
 }
 
+/// A transport, as `offset` and the CLAP struct carry it: the flags mapped
+/// bit for bit, the beat out of CLAP's fixed point.
+fn told(t: &clap_event_transport, offset: u32) -> Transport {
+    let map = [
+        (CLAP_TRANSPORT_IS_PLAYING, core::T_PLAYING),
+        (CLAP_TRANSPORT_IS_RECORDING, core::T_RECORDING),
+        (CLAP_TRANSPORT_IS_LOOP_ACTIVE, core::T_CYCLE),
+        (CLAP_TRANSPORT_HAS_TEMPO, core::T_TEMPO),
+        (CLAP_TRANSPORT_HAS_BEATS_TIMELINE, core::T_BEAT),
+    ];
+    Transport {
+        offset,
+        flags: map
+            .iter()
+            .filter(|(clap, _)| t.flags & clap != 0)
+            .fold(0, |f, (_, ours)| f | ours),
+        tempo: t.tempo,
+        beat: t.song_pos_beats as f64 / CLAP_BEATTIME_FACTOR as f64,
+    }
+}
+
 /// The flush path: a host with no `process` to carry parameter changes (an
 /// inactive plugin) sends them here.
 unsafe extern "C" fn params_flush(
@@ -509,11 +533,22 @@ unsafe extern "C" fn process(
     }
     let mut guard = me.dsp.lock().unwrap_or_else(|e| e.into_inner());
     let dsp = &mut *guard;
+    if let Some(t) = unsafe { p.transport.as_ref() } {
+        me.core.log_transport(told(t, 0));
+    }
     if let Some(input) = unsafe { p.in_events.as_ref() }
         && let (Some(size), Some(get)) = (input.size, input.get)
     {
         for i in 0..unsafe { size(input) } {
-            if let Some(ev) = unsafe { decode(get(input, i)) } {
+            let h = unsafe { get(input, i) };
+            if let Some(hdr) = unsafe { h.as_ref() }
+                && hdr.space_id == CLAP_CORE_EVENT_SPACE_ID
+                && hdr.type_ == CLAP_EVENT_TRANSPORT
+            {
+                // SAFETY: the header's type says the event is a transport.
+                let t = unsafe { &*(h as *const clap_event_transport) };
+                me.core.log_transport(told(t, hdr.time));
+            } else if let Some(ev) = unsafe { decode(h) } {
                 me.core.push(dsp, ev);
             }
         }

@@ -6,11 +6,12 @@ extern crate tutti_vst2_author as vst;
 
 use std::sync::{Arc, Mutex};
 
-use vst::api::{self, AEffect, HostCallbackProc};
+use vst::api::{self, AEffect, HostCallbackProc, TimeInfoFlags};
 use vst::buffer::AudioBuffer;
+use vst::host::Host;
 use vst::plugin::{CanDo, Category, HostCallback, Info, Plugin, PluginParameters};
 
-use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample};
+use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample, Transport};
 
 /// `AEffect::uniqueId`.
 pub const UNIQUE_ID: i32 = i32::from_be_bytes(*b"TSHP");
@@ -62,6 +63,7 @@ impl PluginParameters for Params {
 }
 
 struct Shared {
+    host: HostCallback,
     core: Arc<Core>,
     dsp: Mutex<Dsp>,
     rate: f64,
@@ -70,8 +72,9 @@ struct Shared {
 }
 
 impl Plugin for Shared {
-    fn new(_host: HostCallback) -> Self {
+    fn new(host: HostCallback) -> Self {
         Self {
+            host,
             core: Arc::new(Core::new()),
             dsp: Mutex::new(Dsp::default()),
             rate: 44_100.0,
@@ -173,6 +176,33 @@ impl Plugin for Shared {
 }
 
 impl Shared {
+    /// Asks the host for the block's transport (`audioMasterGetTime`), the
+    /// one way a VST2 plugin learns it, and records what comes back: a VST2
+    /// transport is the block's first frame, so the offset is 0.
+    fn ask_time(&self) {
+        let want = TimeInfoFlags::TEMPO_VALID | TimeInfoFlags::PPQ_POS_VALID;
+        let Some(t) = self.host.get_time_info(want.bits()) else {
+            return;
+        };
+        let has = TimeInfoFlags::from_bits_truncate(t.flags);
+        let map = [
+            (TimeInfoFlags::TRANSPORT_PLAYING, core::T_PLAYING),
+            (TimeInfoFlags::TRANSPORT_RECORDING, core::T_RECORDING),
+            (TimeInfoFlags::TRANSPORT_CYCLE_ACTIVE, core::T_CYCLE),
+            (TimeInfoFlags::TEMPO_VALID, core::T_TEMPO),
+            (TimeInfoFlags::PPQ_POS_VALID, core::T_BEAT),
+        ];
+        self.core.log_transport(Transport {
+            offset: 0,
+            flags: map
+                .iter()
+                .filter(|(vst, _)| has.contains(*vst))
+                .fold(0, |f, (_, ours)| f | ours),
+            tempo: t.tempo,
+            beat: t.ppq_pos,
+        });
+    }
+
     fn run<S: Sample + num_traits::Float>(&mut self, buffer: &mut AudioBuffer<S>) {
         let frames = buffer.samples();
         let (inputs, mut outputs) = buffer.split();
@@ -181,6 +211,7 @@ impl Shared {
             outputs.len().min(MAX_CHANNELS),
         );
         let mut dsp = self.dsp.lock().unwrap_or_else(|e| e.into_inner());
+        self.ask_time();
         let scratch = self
             .core
             .stage(&mut dsp, frames, |c, i| inputs.get(c)[i], nin);

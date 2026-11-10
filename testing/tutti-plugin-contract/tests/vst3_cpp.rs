@@ -2,6 +2,6 @@
 
 tutti_plugin_contract::contract!(
     tutti_plugin_contract::Vst3Cpp,
-    gaps = 0,
+    gaps = 1,
     hostings = [InProcess, OutOfProcess]
 );

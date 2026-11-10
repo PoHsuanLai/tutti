@@ -1513,7 +1513,7 @@ Doc 013's change note is updated when step 1 lands (the tail and park logic is n
 the node's, not the reverb's); doc 022 gains a pointer here, and its section 4/5
 text is not rewritten.
 
-[Doc 028](028-dsp-roadmap.md) places the DSP coverage roadmap (oversampling, ADAA, true peak, EQ, ambisonics and the rest) in these steps, with the new traits each family needs.
+[Doc 028](028-dsp-roadmap.md) places the DSP coverage roadmap (oversampling, ADAA, true peak, EQ, ambisonics and the rest) in these steps, with the abstraction each family needs.
 
 ## 11. Open questions
 

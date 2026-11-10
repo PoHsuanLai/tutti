@@ -8,15 +8,15 @@
 //! split).
 //!
 //! This asserts the whole promotion chain: raw bytes, `Midi1Parser`, UMP
-//! SysEx7 packets, `Sysex7PacketReassembler`, a typed `CiMessage`.
+//! SysEx7 packets, `SysexAssembler`, a typed `CiMessage`.
 //!
 //! Mutation (run): `Midi1Parser` pushing a packet at five bytes instead of six,
 //! and its last packet always `Complete` instead of `End` -> fails each time.
 
-use tutti_midi_runtime::{CiInitiator, Sysex7PacketReassembler};
-use tutti_midi_types::ci::{DiscoveryData, Muid, NO_FUNCTION_BLOCK, ci_to_sysex7, sysex7_to_ci};
+use tutti_midi_runtime::CiInitiator;
+use tutti_midi_types::ci::{CiMessage, DiscoveryData, Muid, NO_FUNCTION_BLOCK, ci_to_sysex7};
 use tutti_midi_types::sysex7_payload;
-use tutti_ump::{Message, Midi1Parser, MidiGroup, Ump};
+use tutti_ump::{Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, Ump};
 
 /// The payload bytes of SysEx7 packets, in order.
 fn payload_of(packets: &[Ump]) -> Vec<u8> {
@@ -70,10 +70,13 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
         })
         .collect();
 
-    let mut reassembler = Sysex7PacketReassembler::new();
+    let mut assembler = SysexAssembler::new(vec![0; SysexAssembler::room_for(256, 16)], 256);
     let decoded = fragments
         .iter()
-        .find_map(|event| reassembler.push(event).and_then(|run| sysex7_to_ci(&run)));
+        .find_map(|event| match assembler.push(*event) {
+            SysexStep::Complete(at) => CiMessage::decode(assembler.message(at).payload()),
+            _ => None,
+        });
 
     assert_eq!(
         decoded,

@@ -10,7 +10,10 @@
 //! nibble), which a test ties to `decode`. MIDI 1.0 on the wire is the other
 //! place that knows bit positions: [`Voice1::bytes`] and [`System::bytes`] write
 //! a message's bytes, [`frame`] adds a SysEx's delimiters, and [`Midi1Parser`]
-//! reads a byte stream into [`Message`]s.
+//! reads a byte stream into [`Message`]s. [`NoteId`] is a note's identity
+//! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
+//! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
+//! reassembler, over a buffer the caller owns.
 //!
 //! ```
 //! use tutti_ump::{Message, Ump, Voice2, decode};
@@ -47,6 +50,8 @@ mod message;
 mod midi1;
 mod midi_channel;
 mod midi_group;
+mod note_id;
+mod sysex;
 mod ump;
 
 pub use cc_number::CCNumber;
@@ -66,4 +71,6 @@ pub use message::{
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame};
+pub use note_id::NoteId;
+pub use sysex::{NotSysex, SysexAssembler, SysexMessage, SysexRef, SysexStep};
 pub use ump::{Key, KeyEvent, Ump};

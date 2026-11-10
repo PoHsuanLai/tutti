@@ -18,9 +18,8 @@
 //! # Reassembly lives elsewhere
 //!
 //! MIDI-CI arrives as SysEx7, so this module's inbound path depends on
-//! [`Sysex7PacketReassembler`](crate::Sysex7PacketReassembler) — which is in
-//! [`crate::sysex`], not here. Rejoining fragments is a transport concern that
-//! serves any SysEx payload, not just a negotiation one.
+//! `tutti_ump::SysexAssembler`, which is not here. Rejoining fragments is a
+//! transport concern that serves any SysEx payload, not just a negotiation one.
 
 pub mod capability_inquiry;
 pub mod endpoint;

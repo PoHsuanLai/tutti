@@ -39,13 +39,13 @@ pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    ControllerNamespace, MidiMessage, NoteAttribute, NoteId, PerNoteController, UmpMessageType,
+    ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UmpMessageType,
     UnencodableMessage, midi2, midly, normalize,
 };
 
 /// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's
-/// inbound-decode path can turn a reassembled SysEx7 run into a `CiMessage`
-/// (`ci::sysex7_to_ci`) to feed the negotiators.
+/// inbound-decode path can turn a message `tutti_ump::SysexAssembler` completed
+/// into a `CiMessage` (`ci::CiMessage::decode`) to feed the negotiators.
 pub use tutti_midi_types::ci;
 
 /// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,
@@ -75,7 +75,7 @@ pub use tutti_midi_types::sync::{
 
 pub use tutti_midi_runtime::{
     MidiIn, MidiInputNode, MidiMailbox, MidiOut, MidiOutNode, MidiReceiver, MidiSender,
-    Sysex7PacketReassembler, TimedMidiEvent,
+    TimedMidiEvent,
 };
 
 // --- Standard MIDI File codec: NOT here ---

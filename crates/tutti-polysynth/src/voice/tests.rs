@@ -1,5 +1,5 @@
 use super::*;
-use tutti_ump::{MidiChannel, NoteNumber};
+use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 
 #[test]
 fn test_basic_allocation() {
@@ -11,7 +11,7 @@ fn test_basic_allocation() {
 
     // Allocate first note
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -24,7 +24,7 @@ fn test_basic_allocation() {
 
     // Allocate second note
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -47,13 +47,13 @@ fn test_voice_stealing_oldest() {
 
     // Fill all voices
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -61,7 +61,7 @@ fn test_voice_stealing_oldest() {
 
     // Third note should steal the oldest (note 60)
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 67),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
@@ -75,7 +75,7 @@ fn test_release() {
     let mut alloc = VoiceAllocator::new(config);
 
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -83,7 +83,7 @@ fn test_release() {
     assert_eq!(alloc.active_count(), 1);
 
     alloc.release(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         MidiChannel::of(0),
     );
     // Voice should be releasing, not idle
@@ -101,14 +101,14 @@ fn test_sustain_pedal() {
     let mut alloc = VoiceAllocator::new(config);
 
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.sustain_pedal(MidiChannel::of(0), true);
     alloc.release(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         MidiChannel::of(0),
     );
 
@@ -132,7 +132,7 @@ fn test_mono_mode() {
     let mut alloc = VoiceAllocator::new(config);
 
     let result1 = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -146,7 +146,7 @@ fn test_mono_mode() {
 
     // Second note should retrigger in slot 0 (mono = always slot 0)
     let result2 = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -162,13 +162,19 @@ fn test_mono_mode() {
     assert!(
         alloc
             .id_to_slot
-            .get(NoteId::from_channel_note(MidiChannel::of(0), 60))
+            .get(NoteId::from_channel_note(
+                MidiChannel::of(0),
+                NoteNumber::of(60)
+            ))
             .is_none()
     );
     assert_eq!(
         alloc
             .id_to_slot
-            .get(NoteId::from_channel_note(MidiChannel::of(0), 64))
+            .get(NoteId::from_channel_note(
+                MidiChannel::of(0),
+                NoteNumber::of(64)
+            ))
             .copied(),
         Some(0)
     );
@@ -185,7 +191,7 @@ fn test_legato_mode() {
 
     // First note triggers normally
     let result1 = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -194,7 +200,7 @@ fn test_legato_mode() {
 
     // Second note should be legato (no retrigger)
     let result2 = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -216,13 +222,13 @@ fn test_no_steal() {
     let mut alloc = VoiceAllocator::new(config);
 
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -230,7 +236,7 @@ fn test_no_steal() {
 
     // Third note should fail
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 67),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
@@ -249,7 +255,7 @@ fn test_voice_stealing_quietest() {
 
     // Allocate two voices
     let result1 = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -260,7 +266,7 @@ fn test_voice_stealing_quietest() {
     };
 
     let result2 = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -276,7 +282,7 @@ fn test_voice_stealing_quietest() {
 
     // Third note should steal the quietest (slot 0, note 60)
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 67),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
@@ -300,13 +306,13 @@ fn test_voice_stealing_highest_note() {
 
     // Allocate C4 (60) and G4 (67)
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     ); // slot 0
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 67),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.8,
@@ -314,7 +320,7 @@ fn test_voice_stealing_highest_note() {
 
     // Third note should steal the highest (G4 = 67)
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 72),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(72)),
         NoteNumber::of(72),
         MidiChannel::of(0),
         0.9,
@@ -338,13 +344,13 @@ fn test_voice_stealing_lowest_note() {
 
     // Allocate C4 (60) and G4 (67)
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     ); // slot 0 - lower note
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 67),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.8,
@@ -352,7 +358,7 @@ fn test_voice_stealing_lowest_note() {
 
     // Third note should steal the lowest (C4 = 60)
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 72),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(72)),
         NoteNumber::of(72),
         MidiChannel::of(0),
         0.9,
@@ -375,13 +381,13 @@ fn test_voice_stealing_newest() {
     let mut alloc = VoiceAllocator::new(config);
 
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     ); // slot 0 - older
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -389,7 +395,7 @@ fn test_voice_stealing_newest() {
 
     // Third note should steal the newest (note 64 in slot 1)
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 67),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
@@ -409,7 +415,7 @@ fn test_sostenuto_pedal() {
 
     // Play note, then press sostenuto
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -418,7 +424,7 @@ fn test_sostenuto_pedal() {
 
     // Release key - should be held by sostenuto
     alloc.release(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         MidiChannel::of(0),
     );
     assert!(alloc.slots()[0].is_active());
@@ -426,7 +432,7 @@ fn test_sostenuto_pedal() {
 
     // New note played AFTER sostenuto down should NOT be held
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -436,7 +442,7 @@ fn test_sostenuto_pedal() {
         "New notes should not be sostenuto-held"
     );
     alloc.release(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         MidiChannel::of(0),
     );
     assert!(
@@ -460,7 +466,7 @@ fn test_sostenuto_key_still_held() {
 
     // Play note, then press sostenuto
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -481,19 +487,19 @@ fn test_all_notes_off() {
 
     // Play notes on channel 0 and 1
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
     );
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(1), 67),
+        NoteId::from_channel_note(MidiChannel::of(1), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(1),
         0.9,
@@ -518,13 +524,13 @@ fn test_all_sound_off() {
 
     // Play notes
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -546,13 +552,13 @@ fn test_reset() {
 
     // Play notes with pedals
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
@@ -568,13 +574,13 @@ fn test_reset() {
     assert_eq!(alloc.active_count(), 0);
     // Pedals should be cleared
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.release(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         MidiChannel::of(0),
     );
     // Without sustain, should go to releasing
@@ -588,7 +594,7 @@ fn test_retrigger_same_note() {
 
     // Play same note twice
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
@@ -597,7 +603,7 @@ fn test_retrigger_same_note() {
 
     // Same note again should release old and allocate new
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.9,
@@ -622,25 +628,25 @@ fn test_prefer_stealing_releasing_voices() {
 
     // Allocate and release one voice
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
     );
     alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 64),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
     );
     alloc.release(
-        NoteId::from_channel_note(MidiChannel::of(0), 60),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
         MidiChannel::of(0),
     ); // Now slot 0 is releasing
 
     // New note should prefer the releasing voice over active
     let result = alloc.allocate(
-        NoteId::from_channel_note(MidiChannel::of(0), 67),
+        NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
@@ -747,7 +753,7 @@ fn random_streams_keep_their_invariants() {
             let op = rng.below(14);
             match op {
                 0..=4 => {
-                    let id = NoteId::from_channel_note(ch, k);
+                    let id = NoteId::from_channel_note(ch, NoteNumber::of(k));
                     let full = alloc.active_count() == max;
                     let before = table(&alloc);
                     let expect = (mode == VoiceMode::Poly && full)
@@ -788,7 +794,7 @@ fn random_streams_keep_their_invariants() {
                 }
                 5..=8 => {
                     held[usize::from(c)].retain(|&x| x != k);
-                    alloc.release(NoteId::from_channel_note(ch, k), ch);
+                    alloc.release(NoteId::from_channel_note(ch, NoteNumber::of(k)), ch);
                 }
                 9 => {
                     pedal[usize::from(c)] = !pedal[usize::from(c)];
@@ -872,7 +878,7 @@ fn random_streams_keep_their_invariants() {
             alloc.sostenuto_pedal(ch, false);
             for _ in 0..2 {
                 for k in 60..68u8 {
-                    alloc.release(NoteId::from_channel_note(ch, k), ch);
+                    alloc.release(NoteId::from_channel_note(ch, NoteNumber::of(k)), ch);
                 }
             }
         }
@@ -949,7 +955,12 @@ fn a_return_after_the_voice_ended_starts_a_fresh_one() {
         });
         let ch = MidiChannel::of(0);
         for k in [60, 64] {
-            alloc.allocate(NoteId::from_channel_note(ch, k), NoteNumber::of(k), ch, 0.5);
+            alloc.allocate(
+                NoteId::from_channel_note(ch, NoteNumber::of(k)),
+                NoteNumber::of(k),
+                ch,
+                0.5,
+            );
         }
         let _ = alloc.take_gates();
         let live = alloc
@@ -959,7 +970,7 @@ fn a_return_after_the_voice_ended_starts_a_fresh_one() {
             .map(|s| s.voice_id())
             .unwrap();
         alloc.voice_finished(live);
-        alloc.release(NoteId::from_channel_note(ch, 64), ch);
+        alloc.release(NoteId::from_channel_note(ch, NoteNumber::of(64)), ch);
         let gates = alloc.take_gates();
         assert!(
             gates.iter().any(

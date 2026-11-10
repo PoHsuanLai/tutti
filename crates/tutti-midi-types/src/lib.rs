@@ -58,7 +58,7 @@ pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator, PerNoteBendRanges,
     PitchBendSensitivity, ZoneInfo,
 };
-pub use note_id::{NoteId, PerNoteMap};
+pub use note_id::PerNoteMap;
 pub use translation::{
     Midi1Messages, MidiParseError, from_midi1_bytes, normalize, parse_midi1_bytes, to_midi1_bytes,
     to_midi1_messages,
@@ -78,8 +78,7 @@ pub use ump::{
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
 ///
 /// Pulls in what building and decoding MIDI needs: the decoded view
-/// ([`MidiMessage`] via [`MidiMessage::from_ump`]), per-note identity
-/// ([`NoteId`]), the [`normalize`] seam, and the MIDI 2.0 Clip File codec
+/// ([`MidiMessage`] via [`MidiMessage::from_ump`]), the [`normalize`] seam, and the MIDI 2.0 Clip File codec
 /// (beat-domain [`write_clip_file_from_beats`] / [`ParsedClipFile::from_bytes`] /
 /// [`ParsedClipFile`]). The wire packet is `tutti_ump::Ump`, imported from there.
 ///
@@ -170,9 +169,8 @@ pub use ump::{
 /// [`MidiIo`]: https://docs.rs/tutti-midi-hardware
 pub mod prelude {
     pub use crate::{
-        ClipEvent, ClipFileError, ControllerNamespace, MidiMessage, NoteAttribute, NoteId,
-        ParsedClipFile, PerNoteController, Protocol, normalize, write_clip_file,
-        write_clip_file_from_beats,
+        ClipEvent, ClipFileError, ControllerNamespace, MidiMessage, NoteAttribute, ParsedClipFile,
+        PerNoteController, Protocol, normalize, write_clip_file, write_clip_file_from_beats,
     };
     pub use tutti_rt::ArcLend;
     pub use tutti_types::{Beat, BeatDuration, Bpm};

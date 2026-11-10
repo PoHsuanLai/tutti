@@ -32,7 +32,7 @@
 # - `tutti-midi-device` depends on no workspace crate;
 # - `tutti-codec` depends on `tutti-types` alone;
 # - `tutti-metering` depends on `tutti-types` alone, and `tutti-transport` on
-#   `tutti-types`, `tutti-rt` and `tutti-graph`;
+#   `tutti-types`, `tutti-rt`, `tutti-graph` and `tutti-tempo`;
 # - `tutti-tempo` depends on `tutti-types` alone;
 # - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types` only;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
@@ -88,7 +88,7 @@
 # - `tutti-rt` as a `[dependencies]` entry of `tutti-metering`: "tutti-metering
 #   may depend on ['tutti-types'] only"; `tutti-engine` as a `[dependencies]`
 #   entry of `tutti-transport`: "tutti-transport may depend on ['tutti-graph',
-#   'tutti-rt', 'tutti-types'] only";
+#   'tutti-rt', 'tutti-tempo', 'tutti-types'] only";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-plugin-db`: "tutti-plugin-db
 #   may depend on ['tutti-plugin-types'] only";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-codec`: "tutti-codec ->
@@ -397,7 +397,7 @@ if "tutti-tempo" in pkgs:
 if "tutti-voicing" in pkgs:
     only("tutti-voicing", ["tutti-ump", "tutti-midi-protocol", "tutti-types"])
 if "tutti-transport" in pkgs:
-    only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
+    only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph", "tutti-tempo"])
 if "tutti-plugin-db" in pkgs:
     only("tutti-plugin-db", ["tutti-plugin-types"])
 # The probe binary (design 021 section 2.5) links the format hosts and the

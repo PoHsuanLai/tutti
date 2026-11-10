@@ -939,12 +939,13 @@ impl Session {
     /// as it went in ([`SessionNode::reclaimer`](crate::SessionNode::reclaimer)),
     /// and each hosted plugin's meter. Beside it, the cells the session
     /// publishes to itself: the project meter (and
-    /// every slot following it), the modulation lanes (inserted by the
+    /// every slot following it), the transport's tempo map, the modulation lanes (inserted by the
     /// reconciler, not through `add`), the hardware ports' table and an
     /// offline engine's output folds.
     pub(crate) fn reclaim(&self) -> usize {
         let mut pinned = self.graph.reclaim();
         pinned += self.click_settings.project_meter().reclaim();
+        pinned += self.transport.settings.reclaim_tempo();
         // The engine's output folds are swept by the graph (`Graph::reclaim`),
         // offline or on a device, through the `OutputControl` it kept.
         #[cfg(feature = "modulation")]

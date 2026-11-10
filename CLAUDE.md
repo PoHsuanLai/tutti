@@ -470,7 +470,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   CI runs the per-module path gate on each), are `publish = false`,
   `#![forbid(unsafe_code)]` and have no `bevy` feature. `tutti-metering`
   depends on `tutti-types` alone; `tutti-transport` on `tutti-types`,
-  `tutti-rt` and `tutti-graph`; `tutti-engine` on those and the two crates
+  `tutti-rt`, `tutti-graph` and `tutti-tempo` (the project's tempo is a
+  `TempoMap` that `TransportSettings` publishes through an `ArcLend`, swept by
+  the session's `Reclaim` phase: `reclaim_tempo`); `tutti-engine` on those and the two crates
   above, with a dev edge to `tutti-nodes` for the `ClickNode` tests.
   `TransportAudio` (`Transport::audio`, taken once) is the audio side the
   engine drives across the crate edge; the clock, control inputs and pending

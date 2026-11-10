@@ -16,6 +16,7 @@
 mod error;
 pub use error::{Error, Result};
 
+mod note_id;
 mod voice;
 pub(crate) use voice::{VoiceAllocator, VoiceAllocatorConfig};
 

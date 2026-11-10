@@ -542,10 +542,8 @@ not the graph's chord, and CLAP its slope.
   VST3, VST2 and AU read `tempo` alone.
 - Tests: the unit tests of `transport_source` (step, ramp, point, stopped,
   loop, constant), the CLAP host's event, the test plugin's echo through a real
-  `plugin-server` (`clap_transport`), and the wire. The shared contract plugin
-  records no transport, so a per-format contract case needs it to (the C++
-  VST3 mirror included): not done in 5a; each host's unit tests pin that
-  `timing.tempo` reaches the ABI field.
+  `plugin-server` (`clap_transport`), and the wire. The per-format contract
+  case came after 5b (below).
 
 **As built, stage 5b (a transport event at each change inside a chunk).** A
 chunk is the plugin node's FIFO batch, not the graph's block. It can span
@@ -615,9 +613,8 @@ zeroed the slope when a point lay inside. 5b tells it where things change:
 - **VST3, VST2 and AU** have no transport event inside a block: VST3's
   `ProcessContext` and VST2's `VstTimeInfo` are one snapshot per `process`
   call, and AU's host callbacks are read for the call's start. Each reads the
-  chunk's first transport, as in 5a, and ignores the list. This is not a
-  contract `Gap`: no format offers more, and the shared plugin records no
-  transport.
+  chunk's first transport, as in 5a, and ignores the list. In the contract
+  that is a `Gap` (below).
 - Tests: `graph_node::walk_tests` through the node (a step at its frame, a
   ramp's end splitting the slope, a ramp chunk's slope and no entry for cell
   edges, stop / start / seek / wrap, a chunk spanning two calls, nine changes,
@@ -627,6 +624,19 @@ zeroed the slope when a point lay inside. 5b tells it where things change:
   (`clap_transport`; the test plugin's `Transport` mode now echoes the chunk's
   transport events), and `clap_node_no_alloc`, whose chunks hold a map point
   and a seek in every pass.
+
+**As built, the contract case (after 5b).** The shared test plugin records
+each transport it is sent, before it reads anything from it: the call, the
+frame, the play, record and cycle flags, the tempo and beat and whether the
+host marked each valid (`tutti-shared-plugin`'s `core`, "State"; the C++ VST3
+plugin's `core.hpp` the same). The log is separate from the events, so VST3's
+context on every block never overflows them. Both VST3 plugins declare
+`kNeedTempo`, `kNeedProjectTimeMusic` and `kNeedTransportState`, since the
+host fills only what a plugin asks for. Two cases run on every format:
+`transport_reaches_the_plugin` (each block's transport at its first frame)
+and `transport_change_is_told_at_its_frame`, which CLAP passes and VST3, the
+C++ VST3 plugin and VST2 fail as a `Gap` (one transport per block), raising
+their ratchets to 1, 1 and 2.
 
 Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's

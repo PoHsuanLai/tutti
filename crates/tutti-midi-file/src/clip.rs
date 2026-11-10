@@ -1,5 +1,5 @@
 //! MIDI 2.0 **Clip File** (M2-116) file I/O — the path-level half of the codec
-//! whose byte-level half lives in [`tutti_midi_types`].
+//! whose byte-level half is [`ClipFileError`](crate::ClipFileError)'s codec in this crate.
 //!
 //! [`read()`] and [`write()`] move a clip to and from disk;
 //! [`MidiFile::read`](crate::MidiFile::read) reads either container. [`MidiFileKind`] decides *which* of the two a
@@ -12,8 +12,10 @@
 
 use std::path::Path;
 
-use tutti_midi_types::{CLIP_FILE_MAGIC, ClipEvent, ClipHeader, ParsedClipFile};
-
+use crate::clip_file::{
+    CLIP_FILE_MAGIC, ClipEvent, ClipHeader, ParsedClipFile, write_clip_file,
+    write_clip_file_with_header,
+};
 use crate::{Error, Result};
 
 /// The 4-byte Standard MIDI File header chunk id (SMF spec §2.1). A clip file's
@@ -27,7 +29,7 @@ const SMF_MAGIC: [u8; 4] = *b"MThd";
 pub enum MidiFileKind {
     /// A Standard MIDI File — leading `MThd`. Read with [`SmfFile::from_bytes`](crate::SmfFile::from_bytes).
     StandardMidiFile,
-    /// A MIDI 2.0 Clip File — leading `SMF2CLIP`. Read with [`ParsedClipFile::from_bytes`](tutti_midi_types::ParsedClipFile::from_bytes).
+    /// A MIDI 2.0 Clip File — leading `SMF2CLIP`. Read with [`ParsedClipFile::from_bytes`](crate::ParsedClipFile::from_bytes).
     ClipFile,
 }
 
@@ -71,7 +73,7 @@ impl MidiFileKind {
 
 /// Reads and parses a MIDI 2.0 Clip File from `path`.
 ///
-/// Parse errors keep their [`ClipFileError`](tutti_midi_types::ClipFileError)
+/// Parse errors keep their [`ClipFileError`](crate::ClipFileError)
 /// wording, prefixed with the path. Use [`MidiFileKind::detect_path`] first to
 /// branch on the container programmatically, or
 /// [`MidiFile::read`](crate::MidiFile::read) to accept either.
@@ -105,8 +107,8 @@ pub fn write(
     events: &[ClipEvent],
 ) -> Result<()> {
     let bytes = match header {
-        Some(h) => tutti_midi_types::write_clip_file_with_header(ticks_per_quarter, h, events),
-        None => tutti_midi_types::write_clip_file(ticks_per_quarter, events),
+        Some(h) => write_clip_file_with_header(ticks_per_quarter, h, events),
+        None => write_clip_file(ticks_per_quarter, events),
     };
     std::fs::write(path.as_ref(), bytes)?;
     Ok(())

@@ -10,7 +10,7 @@ mod real;
 mod svf;
 mod svf_model;
 
-pub use biquad::Biquad;
+pub use biquad::{Biquad, DirectForm1};
 pub use crossover::{Crossover, CrossoverError, MAX_SPLITS, SOLVE_CEILING, fit_to_rate};
 pub use crossover_model::CrossoverModel;
 pub use ladder::{LadderCoefficients, LadderCoeffs, LadderType, ladder_step};

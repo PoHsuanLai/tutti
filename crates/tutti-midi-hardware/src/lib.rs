@@ -43,20 +43,11 @@ pub use tutti_midi_types::{
     midly, normalize,
 };
 
-/// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,
-/// distinct from project save and from SMF. The MIDI 1.0 equivalent (`smf`) and
-/// the file-level path codec (`clip`) are `tutti-midi-file`'s and are not
-/// re-exported here.
-pub use tutti_midi_types::{
-    CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
-    write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
-};
-
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
 pub use tutti_midi_types::cc::mapping::{CCMapping, CCTarget, MappingId};
 
-pub use tutti_midi_types::sync::{
+pub use tutti_midi_runtime::{
     ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
 };
 

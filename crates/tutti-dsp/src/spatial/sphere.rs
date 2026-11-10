@@ -7,9 +7,9 @@
 //! length, vertex count and index count, the face indices, and per vertex its
 //! position followed by its left and right responses as `f32`s.
 
-use tutti_dsp::{Complex32, CosineWindow, RealFft, WindowedSinc};
+use crate::{Complex32, CosineWindow, RealFft, WindowedSinc};
 
-use super::panner::{HrtfBinauralError, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
+use super::hrtf::{HrtfBinauralError, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
 
 /// The range a vertex's distance from the origin must fall in. Closer, its
 /// direction does not survive normalization in `f32`.

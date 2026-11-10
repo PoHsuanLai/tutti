@@ -1,4 +1,5 @@
 use super::*;
+use tutti_dsp::HRTF_STEP;
 use tutti_graph::contract::{drive, prepared};
 
 const RATE: SampleRate = SampleRate(44_100.0);
@@ -98,9 +99,9 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
         .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
     settle(&mut node);
     assert!(
-        near(node.panner.aim(), (-45.0, 30.0)),
+        near(node.aim.current(), (-45.0, 30.0)),
         "{:?}",
-        node.panner.aim()
+        node.aim.current()
     );
     // An infinite bearing wraps to NaN on the way into the cell; an
     // infinite height is clamped to the pole there, so it is a position.
@@ -114,17 +115,17 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
             .set_position(Azimuth::new(az), Elevation::new(el));
         settle(&mut node);
         assert!(
-            near(node.panner.aim(), want),
+            near(node.aim.current(), want),
             "({az}, {el}): aimed at {:?}, want {want:?}",
-            node.panner.aim()
+            node.aim.current()
         );
         node.controls()
             .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
         settle(&mut node);
         assert!(
-            near(node.panner.aim(), (-45.0, 30.0)),
+            near(node.aim.current(), (-45.0, 30.0)),
             "did not recover from ({az}, {el}): {:?}",
-            node.panner.aim()
+            node.aim.current()
         );
     }
     // `set_position` normalizes, so ±∞ reaches the cell only by a raw
@@ -143,17 +144,17 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
         target.elevation.store(Elevation(el));
         settle(&mut node);
         assert!(
-            near(node.panner.aim(), (-45.0, 30.0)),
+            near(node.aim.current(), (-45.0, 30.0)),
             "raw ({az}, {el}): aimed at {:?}",
-            node.panner.aim()
+            node.aim.current()
         );
         node.controls()
             .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
         settle(&mut node);
         assert!(
-            near(node.panner.aim(), (-45.0, 30.0)),
+            near(node.aim.current(), (-45.0, 30.0)),
             "did not recover from raw ({az}, {el}): {:?}",
-            node.panner.aim()
+            node.aim.current()
         );
     }
     // A reset (and a fork's) seats on the held position, not on a NaN.
@@ -161,9 +162,9 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
         .set_position(Azimuth::new(f32::NAN), Elevation::new(f32::NAN));
     Node::reset(&mut node);
     assert!(
-        near(node.panner.aim(), (-45.0, 30.0)),
+        near(node.aim.current(), (-45.0, 30.0)),
         "{:?}",
-        node.panner.aim()
+        node.aim.current()
     );
 }
 
@@ -182,7 +183,7 @@ fn produces_output_after_one_frame_of_latency() {
     // Drive a steady tone through more than one step and confirm the
     // renderer eventually emits non-silence (output lags by one step).
     let mut produced_nonzero = false;
-    for n in 0..(crate::hrtf::panner::STEP * 2) {
+    for n in 0..(tutti_dsp::HRTF_STEP * 2) {
         let s = ((n as f32) * 0.05).sin();
         let out = tick(&mut node, [s, s]);
         if out[0].abs() > 1e-6 || out[1].abs() > 1e-6 {
@@ -238,7 +239,7 @@ fn onsets(ch: &[f32]) -> Vec<usize> {
 /// fails every impulse (declared one frame early).
 #[test]
 fn reported_latency_is_the_measured_impulse_delay() {
-    use crate::hrtf::panner::{LATENCY, STEP};
+    use tutti_dsp::{HRTF_LATENCY as LATENCY, HRTF_STEP as STEP};
     let node = make_node();
     assert_eq!(node.shape().latency, Latency::new(Samples(STEP)));
 
@@ -261,7 +262,7 @@ fn reported_latency_is_the_measured_impulse_delay() {
 /// leaves at frame 0, `LATENCY` early → fails.
 #[test]
 fn pdc_compensates_the_other_path_by_the_binaural_latency() {
-    use crate::hrtf::panner::LATENCY;
+    use tutti_dsp::HRTF_LATENCY as LATENCY;
     use tutti_graph::GraphBuilder;
     use tutti_nodes::testing::Through;
 
@@ -300,7 +301,7 @@ fn pdc_compensates_the_other_path_by_the_binaural_latency() {
 /// arrives).
 #[test]
 fn dry_and_wet_leave_together_at_every_blend() {
-    use crate::hrtf::panner::{LATENCY, STEP};
+    use tutti_dsp::{HRTF_LATENCY as LATENCY, HRTF_STEP as STEP};
     for blend in [0.0_f32, 0.5, 1.0] {
         let mut node = make_node();
         node.controls()
@@ -330,9 +331,9 @@ fn a_nan_blend_holds_the_last_one() {
     node.controls()
         .set_position(Azimuth(90.0), Elevation::LEVEL);
     node.controls().set_blend(Mix(0.5));
-    let (l0, _) = impulse_response(&mut node, 0, 4 * crate::hrtf::panner::STEP);
+    let (l0, _) = impulse_response(&mut node, 0, 4 * tutti_dsp::HRTF_STEP);
     node.controls().set_blend(Mix(f32::NAN));
-    let (l, r) = impulse_response(&mut node, 0, 4 * crate::hrtf::panner::STEP);
+    let (l, r) = impulse_response(&mut node, 0, 4 * tutti_dsp::HRTF_STEP);
     assert!(
         l.iter().chain(&r).all(|s| s.is_finite()),
         "NaN blend reached the output"
@@ -371,7 +372,7 @@ fn reset_drops_the_convolution_tail() {
         .set_position(Azimuth(90.0), Elevation::LEVEL);
 
     // Fill the step and the input history with a loud take.
-    for n in 0..(crate::hrtf::panner::STEP * 3) {
+    for n in 0..(tutti_dsp::HRTF_STEP * 3) {
         let s = ((n as f32) * 0.05).sin();
         tick(&mut node, [s, s]);
     }
@@ -381,7 +382,7 @@ fn reset_drops_the_convolution_tail() {
     // Silence in. With the tail dropped the frames that follow are silent
     // too; a retained tail would ring out through them.
     let mut peak = 0.0f32;
-    for _ in 0..(crate::hrtf::panner::STEP * 2) {
+    for _ in 0..(tutti_dsp::HRTF_STEP * 2) {
         let out = tick(&mut node, [0.0, 0.0]);
         peak = peak.max(out[0].abs()).max(out[1].abs());
     }
@@ -414,4 +415,70 @@ fn clone_shares_the_position_atomics() {
         .set_position(Azimuth::new(-60.0), Elevation::new(-20.0));
     assert_eq!(node.controls().azimuth(), Azimuth(-60.0));
     assert_eq!(node.controls().elevation(), Elevation(-20.0));
+}
+
+/// Two graph rates above [`MAX_PREPARED_RATE`] share one prepared set, but
+/// the de-zipper still glides in the graph's own time: built at 1.536 MHz
+/// and prepared at 1.024 MHz, 50 ms is 51 200 samples, exactly 400 steps,
+/// and leaves `e^-1` of a move. Left at 1.536 MHz's coefficient (600 steps
+/// per 50 ms) it would leave `e^-(2/3)` = 0.51.
+///
+/// Mutation (run): drop `self.aim.set_sample_rate(self.sample_rate)` from
+/// `prepare` → 0.513 of the move is left and the glide assertion fails.
+#[test]
+fn a_prepare_above_the_ceiling_retunes_the_glide() {
+    assert_eq!(HRTF_STEP, 128, "the rates below assume 128-sample steps");
+    let mut node =
+        HrtfBinauralNode::new(&synthetic_hrir_sphere(48_000, 4), SampleRate(1_536_000.0))
+            .expect("parses");
+    node.prepare(&Prepare::new(SampleRate(1_024_000.0), Samples(64)));
+
+    let e_inv = (-1.0f32).exp();
+    let left = remaining_after(&mut node.aim, 400);
+    assert!(
+        (left - e_inv).abs() < 1e-4,
+        "after 50 ms at 1.024 MHz {left} of the move is left, expected e^-1 = {e_inv}"
+    );
+}
+
+/// Remaining fraction of a step from 0 to 90 degrees of height after
+/// `steps` rendered steps.
+fn remaining_after(aim: &mut AngleSmoother, steps: usize) -> f32 {
+    aim.reset_to_target(Azimuth::FRONT, Elevation(0.0));
+    for _ in 0..steps {
+        aim.step(Azimuth::FRONT, Elevation(90.0));
+    }
+    let (_, el) = aim.current();
+    (90.0 - el.get()) / 90.0
+}
+
+/// The de-zipper's time constant is 50 ms of audio: after 50 ms of
+/// steps a move has `e^-1` of its distance left. At 51.2 kHz, 50 ms is
+/// 2560 samples, exactly twenty 128-sample steps; at 102.4 kHz (after a
+/// retune) it is forty.
+///
+/// Mutations (run):
+/// - build with a stride of one (`AngleSmoother::new(sample_rate,
+///   Samples(1))`) → after twenty steps almost all of the move is left
+///   and the assertion fails.
+/// - drop `self.stride` from `ExponentialSmoother::set_sample_rate`
+///   (retune with a stride of one) → the 102.4 kHz half fails.
+#[test]
+fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
+    assert_eq!(HRTF_STEP, 128, "the rates below assume 128-sample steps");
+    let e_inv = (-1.0f32).exp();
+
+    let mut aim = AngleSmoother::new(SampleRate(51_200.0), Samples(HRTF_STEP));
+    let left = remaining_after(&mut aim, 20);
+    assert!(
+        (left - e_inv).abs() < 1e-4,
+        "after 50 ms at 51.2 kHz {left} of the move is left, expected e^-1 = {e_inv}"
+    );
+
+    aim.set_sample_rate(SampleRate(102_400.0));
+    let left = remaining_after(&mut aim, 40);
+    assert!(
+        (left - e_inv).abs() < 1e-4,
+        "after 50 ms at 102.4 kHz {left} of the move is left, expected e^-1 = {e_inv}"
+    );
 }

@@ -36,6 +36,29 @@ pub struct Logged {
     pub value: f64,
 }
 
+/// A transport as the plugin received it, before it read anything from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Told {
+    /// The process call it came with, counted from 0 since the activation.
+    pub call: u32,
+    /// Its sample offset in that block.
+    pub offset: u32,
+    /// Rolling.
+    pub playing: bool,
+    /// Capturing.
+    pub recording: bool,
+    /// The loop is on.
+    pub cycle: bool,
+    /// The host marked `tempo` valid.
+    pub tempo_valid: bool,
+    /// The host marked `beat` valid.
+    pub beat_valid: bool,
+    /// Beats per minute, as written.
+    pub tempo: f64,
+    /// Quarter notes from the timeline's start, as written.
+    pub beat: f64,
+}
+
 /// What the plugin recorded of what the host sent, read from its state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transcript {
@@ -62,6 +85,12 @@ pub struct Transcript {
     /// The host sent more than the plugin keeps, so the lists above are
     /// incomplete.
     pub overflow: bool,
+    /// The first transports the host sent since the activation, in arrival
+    /// order.
+    pub transports: Vec<Told>,
+    /// How many it sent: more than `transports` holds when the plugin kept
+    /// only the first.
+    pub transports_sent: u32,
 }
 
 /// A reader over the blob.
@@ -86,6 +115,9 @@ impl Cursor<'_> {
         f64::from_bits(self.u64())
     }
 }
+
+/// Transports the plugin keeps per activation.
+const LOG_TRANSPORTS: u32 = 16;
 
 /// Where the plugin's bytes start inside a state the host saved verbatim.
 fn blob_at(state: &[u8]) -> usize {
@@ -154,6 +186,24 @@ impl Transcript {
                 }
             })
             .collect();
+        let transports_sent = c.u32();
+        let transports = (0..transports_sent.min(LOG_TRANSPORTS))
+            .map(|_| {
+                let (call, offset, flags, _) = (c.u32(), c.u32(), c.u32(), c.u32());
+                let bit = |b: u32| flags & b != 0;
+                Told {
+                    call,
+                    offset,
+                    playing: bit(1),
+                    recording: bit(2),
+                    cycle: bit(4),
+                    tempo_valid: bit(8),
+                    beat_valid: bit(16),
+                    tempo: c.f64(),
+                    beat: c.f64(),
+                }
+            })
+            .collect();
         Self {
             mode,
             level,
@@ -166,6 +216,8 @@ impl Transcript {
             max_block,
             events,
             overflow,
+            transports,
+            transports_sent,
         }
     }
 

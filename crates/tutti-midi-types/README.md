@@ -1,7 +1,7 @@
 # tutti-midi-types
 
 Pure MIDI types for the Tutti audio engine — MIDI 2.0 / UMP native, plus the
-MPE and sync vocabulary. The `tutti` facade re-exports this crate as
+MPE vocabulary. The `tutti` facade re-exports this crate as
 `tutti::midi` (feature `midi`).
 
 ## What is here
@@ -14,17 +14,15 @@ a multi-packet one (SysEx, Flex Data, UMP Stream) with the free functions here
 (`tutti_ump::sysex7_packets`, [`flex_set_tempo`], …); decode through
 [`MidiMessage::from_ump`] (a [`MidiMessage`]) or `midi2::UmpMessage::try_from`.
 
-Around it, six public modules:
+Around it, these public modules:
 
 - [`ump`] — the UMP surface: SysEx7 and SysEx8 packets, endpoint capabilities,
   Flex Data, JR Timestamps.
 - [`mpe`] — MIDI Polyphonic Expression (RP-053): zones, modes, note rotation.
-- [`sync`] — MIDI clock and MTC decoders.
 - [`cc`] — CC numbers and CC→target mapping ([`cc::mapping`]).
 - [`translation`] — the MIDI 1↔2 boundary (the widths are `tutti_midi_protocol`'s).
 
-The MIDI 2.0 Clip File codec ([`ParsedClipFile::from_bytes`] / [`write_clip_file`],
-M2-116), and [`MidiMessage`] are at the crate root. `midi2` and `midly` are re-exported whole, so a
+[`MidiMessage`] is at the crate root. `midi2` and `midly` are re-exported whole, so a
 consumer matching this crate's version needs no dependency entry of its own.
 
 ```rust
@@ -53,8 +51,8 @@ and none pulls the others in by doing so.
 - **No mailboxes, nodes or schedulers.** The graph's MIDI nodes, the rings
   MIDI crosses threads on and clip playback are `tutti-midi-runtime`'s. This
   crate defines no queue trait: `MidiIn` / `MidiOut` are `tutti-midi-runtime`'s.
-- **No `.mid` files.** SMF is `tutti-midi-file`'s. The Clip File codec here is
-  the **byte-level** half; the path-level half is that crate's.
+- **No `.mid` files.** SMF is `tutti-midi-file`'s. The MIDI 2.0 Clip File codec is
+  that crate's too.
 
 ## One vocabulary, whatever the source protocol
 

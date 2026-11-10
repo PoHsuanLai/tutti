@@ -46,7 +46,7 @@ PRs 365, 366 and 367 (the reverb kernel and node), and is cited by path. Types
 this document proposes are marked **(proposal)**. The traits in section 4 were
 type-checked in a scratch crate outside the repo (two realisations of one biquad
 run the same class case; a case bounded on `Lti` refuses a model without it; a
-`Series` and a `Parallel` of `Lti` models are `Lti`; a `Wiener` is a `StaticMap`);
+`Series` and a `Parallel` of `Lti` models are `Lti`; a `Wiener` is a `SettledCurve` and the `StaticMap` case refuses it);
 nothing else here has been built, and no figure is measured except those doc 022
 already measured.
 
@@ -72,7 +72,8 @@ already measured.
   state-variable filter and a lattice are three kernels of one `Lti` model.
 - **Queries hang off the class** (section 4.2): `Causal` (latency, tail; every
   processor), `Lti` (response, spectral radius, gain bound, dc gain, stability),
-  `StaticMap` (curve, DC, harmonics, gain bound), `Generator` with `Periodic`,
+  `StaticMap` (curve, DC, harmonics, gain bound; memoryless only), `SettledCurve`
+  (class 4: settled curve, time constants, gain bound), `Generator` with `Periodic`,
   `Segmented` and `Noise` (frequency, spectrum, durations). `Readout` is on the
   kernel (it observes state, `y = C s`).
 - **A composition algebra** (section 4.9): `Series`, `Parallel`, `SeriesN`,
@@ -250,7 +251,7 @@ like, per CLAUDE.md "Unit types").
 | 2 | 4 (1 lin.) | **Moog ladder**, LP12/LP24/HP12/HP24 (`filter/ladder.rs`, `LadderFilterNode`) | `ladder_step`, four stages with a `tanh` at the input (`ladder_step`), `LadderCoefficients`. Typed: `Hz`, `Resonance`, `Drive` | **Partly** | The small-signal model fits: design `(Hz, Resonance, rate)` to `(g1, k)`; `response` of the linearised ladder (`(s/(1+s))^n` forms are in the type docs), stability (resonance below the self-oscillation gain), `tail` (`Unbounded` at maximum resonance: it self-oscillates). The `tanh` makes the large-signal response drive-dependent, which `response` does not claim: it is stated "small signal" and the contract measures it at an input level far below the `tanh` knee |
 | 3 | 1 (2) | **Linkwitz-Riley crossover**, 2 to 6 bands (`filter/crossover.rs`, `CrossoverNode`) | `Crossover::split_block`; design and state fused in one struct (`set_frequency` re-solves). Typed: `Hz` | **Fits** | Design: `(frequencies, rate)` to per-split `Split` coefficients (already a private type). Multi-output `response` (`outputs() = bands`): LP/HP at `fc` are -6.02 dB and in phase, the bands sum to unity magnitude (the file's own header states it), and the sum is the Butterworth all-pass. Stability, `tail`, `latency` zero. Needs design and state separated, which is the one real refactor |
 | 4 | P | `Real` float trait (`filter/real.rs`) | `f32`/`f64` | **No** | A numeric abstraction below the shape. A kernel generic over `F: Real` is still one kernel |
-| 5 | 4 | **Compressor** (`dynamics/compressor.rs`, `curves.rs`; `CompressorNode`) | `CompressorKernel` (envelope + `EnvelopeFollower`), `CompressorBlock { threshold, knee, ratio, makeup_from, makeup_to }`. Typed: `Db`, `CompressionRatio`, `Seconds` | **Fits** | Design: `(threshold, knee, ratio, makeup, attack, release, rate)` to `Gained<Wiener<Follower, GainMap>>` (section 4.9): a follower (`Lti`, one pole per direction) then the gain map (`StaticMap`) multiplying the input. Queries: `StaticMap` (`compute_compressor_gain_reduction`, `In = Db`, `Out = Db`: zero below `threshold - knee/2`, the quadratic over the knee, slope `1 - 1/ratio` above), time constants (step response reaches 63% in `attack`), `tail` zero (silent in, silent out; the node declares no tail, `compressor.rs` line 443), `latency` zero. `Readout`: `CompressorKernel::gain_reduction_db` exists |
+| 5 | 4 | **Compressor** (`dynamics/compressor.rs`, `curves.rs`; `CompressorNode`) | `CompressorKernel` (envelope + `EnvelopeFollower`), `CompressorBlock { threshold, knee, ratio, makeup_from, makeup_to }`. Typed: `Db`, `CompressionRatio`, `Seconds` | **Fits** | Design: `(threshold, knee, ratio, makeup, attack, release, rate)` to `Gained<Wiener<Follower, GainMap>>` (section 4.9): a follower (`Lti`, one pole per direction) then the gain map (`StaticMap`, memoryless) multiplying the input. Queries: `SettledCurve` (the gain map seen through the follower's DC gain; the map is `compute_compressor_gain_reduction`, `In = Db`, `Out = Db`: zero below `threshold - knee/2`, the quadratic over the knee, slope `1 - 1/ratio` above), time constants (step response reaches 63% in `attack`), `tail` zero (silent in, silent out; the node declares no tail, `compressor.rs` line 443), `latency` zero. `Readout`: `CompressorKernel::gain_reduction_db` exists |
 | 6 | 4 + E | **Gate** (`dynamics/gate.rs`; `GateNode`) | `GateKernel`, `GateEnvelopeFollower`, `GateBlock`. Typed: `Db`, `Seconds` | **Partly** | Class 4 plus event logic. Fits: the settled curve is a step (`gate_gain_at`: range below the threshold, unity above), so `StaticMap` is degenerate; attack and release are the smoother's time constants; `Readout`: `is_open`/`gate_level` exist. Does not: the **hold** is a timer (`GateEnvelopeFollower::step(gate_open: bool)`), a discrete state machine (class E) that no `Lti` or `StaticMap` query describes; it is an inherent query |
 | 7 | 4 | **Lookahead limiter** (`dynamics/limiter.rs`, `curves.rs`; `LimiterNode`) | `LookaheadRing`, `MonotonicMinDeque` for the window minimum, `LimiterCurve`. Typed: `Db`, `Seconds` | **Partly** | Class 4 with a delay and a windowed minimum. Fits: `StaticMap` (`LimiterCurve::gain`: gain `ceiling - threshold` up to the threshold, `ceiling/peak` past it, so output `<= ceiling`), `latency` = the lookahead (the node declares it, `limiter.rs` line 340), `tail` zero, `Readout` gain reduction. Does not: the detector is a sliding-window minimum (`MonotonicMinDeque`), a nonlinear operator that is not an LTI smoother, so the Wiener decomposition holds for steady input only and the attack is the lookahead by construction |
 | 8 | 3 | **Brickwall clip** (`limiter.rs` `brickwall_clip`; `BrickwallLimiterNode`) | one `clamp` | **Fits** | A memoryless `StaticMap` over amplitude (`In = Out = f32`), `latency` and `tail` zero. Trivial, and the same trait as the waveshaper (row 17) |
@@ -340,7 +341,7 @@ with nothing to design.
 | 1. LTI, order 0 (gain matrix) | 30, 31, 32, 44 | 4 | `Causal`, `Lti` | `Fold`, VBAP, strip, sum |
 | 2. Slowly varying LTI | 12, 13 | 2 | `Lti`, `Varying` | chorus, flanger, phaser; the FDN's modulated lines are the reverb's (row 15) |
 | 3. Memoryless nonlinear | 8, 17 | 2 | `Causal`, `StaticMap` | waveshaper, brickwall |
-| 4. Stateful nonlinear | 2, 5, 6, 7, 9, 10 | 6 | `Wiener`, `Hammerstein`, `Gained`, `StaticMap`, `Readout` | the ladder only linearises to class 1 |
+| 4. Stateful nonlinear | 2, 5, 6, 7, 9, 10 | 6 | `Wiener`, `Hammerstein`, `Gained`, `SettledCurve` (parts: `Lti`, `StaticMap`), `Readout` | the ladder only linearises to class 1 |
 | 5. Autonomous generators | 19, 25, 26, 27, 34, 35, 38, 39 | 8 | `Generator`, `Periodic`, `Segmented`, `Noise` | oscillators, LFOs, envelopes, noise, click waveform |
 | 6. Multirate, time-scale | 18, 41, 42 | 3 | per-family; the prototype is an `Lti` | own kernel shape |
 | M. Measurements | 23 | 1 | none | `Readout`-like results |
@@ -433,6 +434,17 @@ pub trait StaticMap: Causal {
     // provided for f32 -> f32: dc(), is_odd(), harmonics(amplitude, &mut [Complex64])
 }
 
+/// Class 4. The settled behaviour of a stateful nonlinear composite. NOT `StaticMap`: it has
+/// memory, and the memoryless check of class 3 fails it by construction.
+pub trait SettledCurve: Causal {
+    type In: Copy;  type Out: Copy;
+    /// The steady-state output for a steady input level (the envelope settled).
+    fn settled(&self, x: Self::In) -> Self::Out;
+    /// The time constants of the stateful part (attack, release, a window), in seconds.
+    fn time_constants(&self, out: &mut [Seconds]) -> usize;
+    fn gain_bound(&self) -> f64;
+}
+
 /// Class 5. An autonomous generator. Not `Causal`: it has no input to end.
 pub trait Generator { fn range(&self) -> (f32, f32); }
 pub trait Periodic:  Generator { fn frequency(&self) -> Hz; fn harmonic(&self, k: usize) -> Complex64; }
@@ -463,7 +475,7 @@ How each class answers through its own structure, and what it is **not**:
   (a lookahead, a partition); `group_delay` is a response-derived query and a
   different thing (an IIR has group delay and no latency). The contract measures
   the first non-zero output against `latency`.
-- **`StaticMap` is the only class whose answers are exact and cheap.** DC, odd
+- **`StaticMap` is memoryless only, and its answers are exact and cheap.** DC, odd
   symmetry and the harmonics of a sine of amplitude `A` come from `eval` alone (the
   DFT of `eval(A sin t)` over one cycle, on the control side).
 - **`Generator` is not `Causal`.** An oscillator has no input whose end starts a
@@ -679,8 +691,9 @@ linear. The settled curve is the gain map seen through the detector's DC gain.
 
 ```rust
 type CompressorModel = Gained<Wiener<Follower, GainMap>>;      // section 4.9
-impl StaticMap for GainMap { type In = Db; type Out = Db; fn eval(&self, x: Db) -> Db { /* compute_compressor_gain_reduction */ } }
-impl Lti       for Follower { /* one pole per direction: attack, release */ }
+impl StaticMap    for GainMap { type In = Db; type Out = Db; fn eval(&self, x: Db) -> Db { /* compute_compressor_gain_reduction */ } }
+impl Lti       for Follower { /* one pole per direction: attack, release; LTI only while the direction is fixed (the switch is the nonlinearity, row 10) */ }
+impl SettledCurve for CompressorModel { /* settled(level) = gain map at the follower's DC gain; time_constants = [attack, release] */ }
 impl Readout   for CompressorKernel { type Value = Db; fn take(&mut self) -> Db { /* deepest since last take */ } }
 ```
 
@@ -711,17 +724,27 @@ realises the same model (the model does not care).
 | `Series<A, B>` (A then B) | `Lti` if both | `H_B H_A` (a matrix product when multi-channel; exact) | `l_A + l_B` (exact) | `tail_A(f - g_B) + tail_B(f - g_A)`, where `g_X = 20 log10 max(1, gain_bound_X)`: a bound, so that the residue of each part passed through the other stays under the floor (the proof is a step-3 obligation, with the contract's measured tail as the safety net) | preserved: radius `max(r_A, r_B)` | product |
 | `Parallel<A, B>` (A + B, aligned) | `Lti` if both | `H_A z^-(L - l_A) + H_B z^-(L - l_B)`, `L = max(l_A, l_B)` | `max(l_A, l_B)` (the shorter branch is delayed to align) | `max(t_A, t_B)` (tail excludes latency, so the alignment delays cancel) | preserved: `max(r_A, r_B)` | sum |
 | `SeriesN<M, N>` (N of one model, a runtime count up to `N`) | `Lti` if `M` is | product over the bands | sum | as `Series` | preserved | product |
-| `Wiener<L, S>` (LTI then static map) | class 4: `StaticMap` for the settled curve | no response (nonlinear); the settled curve is `S(L.dc_gain * x)` | `L`'s | `L`'s | bounded if `L` is stable and `S` has a finite `max_gain`: `gain_bound(L) * max_gain(S)` | |
-| `Hammerstein<S, L>` (map then LTI) | class 4 | no response; settled curve `L.dc_gain * S(x)` | `L`'s | `L`'s | as `Wiener` | |
-| `Gained<W>` (a gain computed from a detector path multiplies the input) | class 4 | none; the settled gain curve is `W`'s | `W`'s | zero (silence in, silence out) | bounded by `max_gain` of the gain curve | |
+| `Wiener<L, S>` (LTI then static map) | class 4: `SettledCurve` (not `StaticMap`: it has memory) | no response (nonlinear); the settled curve is `S(L.dc_gain * x)` | `L`'s | `L`'s | bounded if `L` is stable and `S` has a finite `max_gain`: `gain_bound(L) * max_gain(S)` | |
+| `Hammerstein<S, L>` (map then LTI) | class 4: `SettledCurve` | no response; settled curve `L.dc_gain * S(x)` | `L`'s | `L`'s | as `Wiener` | |
+| `Gained<W>` (a gain computed from a detector path multiplies the input) | class 4: `SettledCurve` | none; the settled gain curve is `W`'s | `W`'s | zero (silence in, silence out) | bounded by `max_gain` of the gain curve | |
 
 ```rust
 pub struct Series<A, B>(pub A, pub B);       // sketched and compiled in the scratch crate
 pub struct Parallel<A, B>(pub A, pub B);
 impl<A: Lti, B: Lti> Lti for Series<A, B>   { /* response multiplies; radius max; gain_bound multiplies */ }
 impl<A: Lti, B: Lti> Lti for Parallel<A, B> { /* response adds (with alignment); radius max; gain_bound adds */ }
-impl<L: Lti, S: StaticMap<In = f32, Out = f32>> StaticMap for Wiener<L, S> { /* eval = S(L.dc_gain * x) */ }
+impl<L: Lti, S: StaticMap<In = f32, Out = f32>> SettledCurve for Wiener<L, S> { /* settled(x) = S(L.dc_gain * x) */ }
 ```
+
+**Open obligation (step 3): the `Series` tail bound has no proof yet.** The
+bound `tail_A(f - g_B) + tail_B(f - g_A)` is argued, not proved: the argument is
+that the residue of each part after its own tail, passed through the other part,
+stays under the floor, and the exact floor shift (the other part's l1 gain, plus a
+margin for the two residues adding) is what step 3 must derive, as doc 022 derived
+`rt60_bound` ("Step 1a as built"). Until it is written, the table's tail entry for
+`Series` is a conjecture; `Parallel`'s (the maximum) and `Series`'s latency and
+gain bound are exact or standard. The contract's measured-tail case on random
+pairs is the safety net, not the proof.
 
 What composition does **not** include, deliberately: **feedback.** Closing a loop
 around a composite does not preserve stability (it needs a small-gain argument and
@@ -887,7 +910,7 @@ own `tests/` file.
 | **`Lti`** (1; also 2 at frozen `theta`) | `spectral_radius` below 1 on the whole reachable grid and the radius is a true bound on the poles where they are cheap; `response` at the family's **anchors** equals the spec (LP at `fc` is -3.01 dB at Butterworth Q; a bell's centre is its gain; a shelf is half its gain at `fc`; LR4 is -6.02 dB at `fc` and the bands sum flat); `tail` non-decreasing along the family's slower pairs; order 0: `spectral_radius == 0`, `tail == 0` | **Membership:** the kernel is linear (`f(a+b) = f(a)+f(b)`, `f(ka) = k f(a)`) and shift-invariant (a delayed input gives the delayed output) at the frozen setting, within rounding. **Response:** the `RealFft` of the impulse response against `response`, magnitude (and phase where declared) on a log grid. **Ring time:** the measured decay rate against `spectral_radius`, the measured time to -40, -60, -90 dB within `tail(floor)` (covers) and `tail` not above a declared slack over it (tight). **Stability:** 60 s of noise at the extreme controls finite and under `gain_bound`. **DC:** the measured DC gain against `dc_gain` | add a `tanh` (membership fails); detune the cutoff 2% (response fails); halve `tail` (covers); double it (tight); a pole outside the unit circle (stability) |
 | **`Varying`** (2) | the declared `variation` rate is slow against `rate / CADENCE` | at a segment's end the kernel's frozen response **is** the model's (a response check after the segment) | a kernel that never reaches the target |
 | **`StaticMap`** (3) | monotone where the family says; `max_gain` bounds `eval`; the limiter's output never above the ceiling; a shaper's symmetry and bound | **Memoryless:** shuffling the input samples shuffles the output (no state). **Level sweep:** a steady tone or DC at each level against `eval(level)`, exact to the ulp for a memoryless kernel. **Harmonics:** the DFT of a sine through the kernel against `harmonics`; DC against `dc` | threshold +1 dB; ignore the knee; make it stateful |
-| **Class 4 composites** (`Wiener`, `Hammerstein`, `Gained`) | the settled curve of the composite equals the map at the LTI part's DC gain; `max_gain` bounds it | **Level sweep with the envelope settled** (at least five of the slowest constant) against the settled curve; **step response** reaches 63% in the LTI part's time constant; `Readout::take` equals the curve at the level and equals the gain measured on the output (two kernel facts that must agree); `take` clears what it took | threshold +1 dB; flip the readout's sign; report the gain before makeup |
+| **`SettledCurve`** (4: `Wiener`, `Hammerstein`, `Gained`; **not** the memoryless check, which a stateful composite fails by construction) | the settled curve of the composite equals the map at the LTI part's DC gain; `gain_bound` bounds it; `time_constants` are non-negative | **Settled-level sweep:** a steady tone or DC at each level, run for at least five of the slowest time constant, against `settled(level)`; **step response** reaches 63% in the LTI part's time constant; `Readout::take` equals the curve at the level and equals the gain measured on the output (two kernel facts that must agree); `take` clears what it took | threshold +1 dB; flip the readout's sign; report the gain before makeup |
 | **`Periodic`** (5) | `harmonic(k)` decays as the family says (saw `1/k`) | the measured fundamental (autocorrelation) against `frequency`; the DFT lines against `harmonic(k)`; the aliasing floor against `Fidelity` | detune the phase increment; drop the band-limiting |
 | **`Segmented`** (5) | `durations` non-negative and sum to the total | the measured time to each threshold crossing against the segment durations (the SoundFont tests already assert that a stage falls 100 dB in its time) | a decay stage one constant short |
 | **`Noise`** (5) | `variance` is the closed form of the shape | the measured variance and spectrum over a long run | triangular treated as rectangular |
@@ -916,7 +939,7 @@ kernel_contract!(Tdf2Design: Lti, tolerance = ..);       // another realisation 
    sweep).
 3. A class implemented but **not listed** is not a compile error (a macro cannot
    see every `impl`). `scripts/check-contract-coverage.sh` **(proposal)** greps
-   every `impl Lti|StaticMap|Periodic|Segmented|Noise for` in the workspace and
+   every `impl Lti|StaticMap|SettledCurve|Periodic|Segmented|Noise for` in the workspace and
    fails unless the type appears in a `*_contract!` list, as
    `check-range-types.sh` does for its rule. The plugin contract's `gaps = N`
    ratchet is the precedent for a count a reviewer must raise.
@@ -966,7 +989,7 @@ pub enum Curve<'a> {
 A `DesignNode<D>` where `D::Model: Lti` returns a `Curve::Magnitude` built
 on the control side from the cells' base values (`ControlParams::snapshot`,
 **(proposal)**, the cells without a port) by `design` then `Lti::magnitude`.
-Where `D::Model: StaticMap` (or a class-4 composite's settled curve, section 4.9) it returns `Curve::Transfer` the same way. It is
+Where `D::Model: StaticMap` (or a class-4 composite's `SettledCurve`, section 4.9) it returns `Curve::Transfer` the same way. It is
 **available only where the class exists**, by an inherent `impl` with a
 `where D::Model: Lti` bound (`DesignNode::curve()`); no run-time "does this
 node have a curve" flag is stored. The design is cheap (0.2 us for the reverb; one
@@ -1012,7 +1035,7 @@ pub trait Describe {
 
 | Question | Native `DesignNode<D>` | Hosted plugin (doc 023) |
 |---|---|---|
-| Curve | `Lti::response` or the `StaticMap`/settled curve of `design(controls)`: exact, at any controls | CLAP mini-curve-display, AU `FrequencyResponse`: a main-thread call through the `Controller` (016), only at the plugin's current parameters |
+| Curve | `Lti::response` or the `StaticMap`/`SettledCurve` of `design(controls)`: exact, at any controls | CLAP mini-curve-display, AU `FrequencyResponse`: a main-thread call through the `Controller` (016), only at the plugin's current parameters |
 | Readout | the node's `level_cell` reader | the plugin's meter parameter or function name, polled and folded into the same cell shape |
 | Latency and tail | `Is(model.latency())`, `Is(model.tail())`: analytic, and held by the contract | `Is(plugin claim)`, with `measured: Some(..)` from the probe (doc 023 section 6) |
 | Quality | `Graded::quality()` | `Reported<QualityRange>` from AU, `Unasked` elsewhere |
@@ -1113,7 +1136,7 @@ Layering per CLAUDE.md and `scripts/check-layout.sh` (lines 381 to 383:
 
 | Item | Crate | Layer | Check |
 |---|---|---|---|
-| `Design`, `Kernel<M>`, `Effect<M>`, `Setup`, `Channels`, `Ring`; the class traits (`Causal`, `Lti`, `Varying`, `StaticMap`, `Generator`, `Periodic`, `Segmented`, `Noise`), `Fidelity`, `Readout`, `Graded`; the combinators (`Series`, `Parallel`, `SeriesN`, `Wiener`, `Hammerstein`, `Gained`); the engineering items (`Bounds`, `Ceiling<R>`, `Effort`, `Cadence`); `Complex64` use | `tutti-dsp`, a neutral module (`model`), exported at the crate root | 2 | no new tutti edge; `forbid(unsafe_code)`; no atomics or `Arc`-published state; every control arrives per call |
+| `Design`, `Kernel<M>`, `Effect<M>`, `Setup`, `Channels`, `Ring`; the class traits (`Causal`, `Lti`, `Varying`, `StaticMap`, `SettledCurve`, `Generator`, `Periodic`, `Segmented`, `Noise`), `Fidelity`, `Readout`, `Graded`; the combinators (`Series`, `Parallel`, `SeriesN`, `Wiener`, `Hammerstein`, `Gained`); the engineering items (`Bounds`, `Ceiling<R>`, `Effort`, `Cadence`); `Complex64` use | `tutti-dsp`, a neutral module (`model`), exported at the crate root | 2 | no new tutti edge; `forbid(unsafe_code)`; no atomics or `Arc`-published state; every control arrives per call |
 | The families' models and designs | `tutti-dsp` (`filter/`, `dynamics/`, `delay`, `waveshape`, `convolver`, `reverb`, `resample/`, `dither`) | 2 | pure algorithm over slices; a node file holds only the adapter (CLAUDE.md) |
 | `contract` module: core cases, class groups, `design_contract!`, `kernel_contract!`, `no_alloc_contract!`, the measuring helpers, `Defect` and `Flawed` | `tutti-dsp`, behind a `contract` feature (off by default; `rand` becomes an optional dependency of it) | 2 | the precedent is `tutti-graph`'s `contract` feature (`lib.rs` lines 201 to 222; `tutti-nodes` turns it on in its dev-dependencies) |
 | `Quality` | `tutti-types`, beside `RenderMode` | 1 | vocabulary only |
@@ -1167,7 +1190,7 @@ test compares a render against another reference render.
 | 1 | **Generalise on the reverb, which answers as `Lti`.** The neutral `model` module: `Design`'s `type Model`, `blank`, `measure`, engineering `Bounds`/`Range`; the class traits `Causal` and `Lti` (`StaticMap` and `Generator` are not added until they have an implementer); `Kernel<M>`, `Effect<M>`, `Ceiling<R>`, `Cadence` (only `Block` used); `Network: Causal + Lti` (`response` from the comb sums and the FDN solve over its own lines, `spectral_radius` from `rt60_bound`, `gain_bound` from the L1 bound `peak_bound` already computes); the `contract` feature with core and `Lti` groups and the reverb-only cases split out; `ReverbNode` to `DesignNode` with `DryWet`, `NoBlend` and `()` as `Readouts`; the renames of section 9 | `network/{design,kernel,contract,kernel_contract,queries}.rs`, `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The GM digest `the_general_midi_send_renders_what_it_always_did` and `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged; every 022 case passes under its new name and still fails its `Defect`; the new `Lti` group passes on Freeverb (response at the comb frequencies, measured decay against `spectral_radius`, linearity and shift invariance) and fails a defective kernel; `tests/reverb_node*.rs` pass; port order pinned. Risk named: `Network::response` for a mixing FDN is a control-side solve per frequency (64x64 at most). If it proves too large, `response` splits into a sub-trait `Spectral: Lti` and the reverb implements it in 1c | #367 (merged); ideally 1c (the FDN) so **two reverb kernels** run the traits; if 1c is not in, the test-only `ToyFdn` is the second |
 | 2 | **Filters (SVF, ladder, LR crossover), with several realisations of one H(z).** `SvfModel`, `LadderModel` (small signal, class 1 by `Linearised`), `CrossoverModel`; `Cadence::Every(16)` in the node; separate the crossover's design from its state; **a transposed-direct-form-II biquad kernel and a lattice kernel as second and third realisations of `SvfModel`'s response** (test-support kernels in `tutti-dsp`), so the `Lti` group is run on three kernels of one H(z) and the model is shown to be the equivalence class; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | The `Lti` group on all three realisations (mutants: a 2% cutoff error, a `tanh` in the loop); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `Every(16)` is the old schedule; the segment-end case | 1 |
 | 3 | **Composition, first consumer the parametric EQ.** `Series`, `Parallel`, `SeriesN` and their kernels (two kernels in order; two summed), with the algebra as free functions over `Lti` parts that `Network`'s stage fold also uses; a parametric EQ design whose model is `SeriesN<SvfModel, N>`; the `Series` tail bound proof. Reverb step 3b (early reflections as `Parallel<Taps, Network>`) is then unblocked and is doc 022's own PR | `tutti-dsp` `model` module, a new EQ design in `filter/` | The algebra laws as unit tests (response of `Series` is the product of the parts' responses at random points; `Parallel` aligns latency; stability preserved); the composite passes the unchanged `Lti` group; the tail bound against the measured tail on random pairs; mutants: sum the latencies in `Parallel`, drop the alignment | 2 (and the reverb's 1b for the 3b consumer) |
-| 4 | **Dynamics: compressor, gate, limiter, brickwall (class 3 and 4).** `StaticMap`, `Wiener`, `Hammerstein`, `Gained`, `Readout`, `Readouts` publishing through `level_cell`, `Describe::readout`, `Curve::Transfer`. Decide `Driven<M>` against the code (Q3). Gate hold and the limiter's windowed minimum stay inherent (they are class E and a nonlinear operator). **Delivers G9** | `dynamics/*.rs`; the dynamics nodes | The class-4 level sweep (mutants: threshold +1 dB, ratio off, knee ignored); the readout equals the measured gain; node digests; the `multiband` readout test unchanged | 3 (`Wiener`), 2 (the `Describe` plumbing) |
+| 4 | **Dynamics: compressor, gate, limiter, brickwall (class 3 and 4).** `SettledCurve`, `Wiener`, `Hammerstein`, `Gained` (over the memoryless `StaticMap` for the brickwall and the gain maps), `Readout`, `Readouts` publishing through `level_cell`, `Describe::readout`, `Curve::Transfer`. Decide `Driven<M>` against the code (Q3). Gate hold and the limiter's windowed minimum stay inherent (they are class E and a nonlinear operator). **Delivers G9** | `dynamics/*.rs`; the dynamics nodes | The class-4 settled-level sweep and step response (mutants: threshold +1 dB, ratio off, knee ignored); the readout equals the measured gain; node digests; the `multiband` readout test unchanged | 3 (`Wiener`), 2 (the `Describe` plumbing) |
 | 5 | **Delay, chorus, flanger, phaser (class 1 and 2); the waveshaper (class 3).** `Varying`; the frozen comb and all-pass `response`; the waveshaper's `StaticMap` with its harmonics and `Fidelity`; `Graded` for oversampling if the kernel gains it | `delay.rs`, `swept_delay.rs`, `allpass.rs`, `waveshape.rs` and their nodes | Comb response against the FFT; notch frequencies; the slow-variation case; DC and odd-symmetry cases; the aliasing case; digests | 2 |
 | 6 | **Convolver, HRTF (class 1, published model).** The published control path (5.3), `FirSummary` unified with the convolver's model, `Graded` for the partition; `ReverbKind` gains the convolution variant (doc 022 step 2) | `convolver.rs`, `ConvolverNode`, `tutti-spatial` hrtf | `response` against the IR FFT; `latency` = `B`; a `Loan` is never parked; the export-fork test | 1 and doc 022 step 2 |
 | 7 | **The rest, each in the PR that needs it, in this order:** resampler (class 6, own shape trait; `Fidelity`, `Graded`, latency; used by export); panners and fold (class 1 at order 0); envelopes, oscillators, LFOs and noise (class 5: `Generator`, `Periodic`, `Segmented`, `Noise`, in `tutti-polysynth` and `tutti-soundfont`, the latter gated on a `tutti-dsp` edge); stretch; dither | per family | per family, with a mutation record | the step 1 shape |

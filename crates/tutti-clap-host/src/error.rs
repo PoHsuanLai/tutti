@@ -76,6 +76,11 @@ pub enum ClapError {
     #[error("Processing error: the block's sample format is not the activated one")]
     FormatMismatch,
 
+    /// The block is shorter than the plugin was activated for (`min_frames`),
+    /// or empty. The plugin was not called.
+    #[error("Processing error: the block is shorter than the activated min_frames")]
+    BlockTooSmall,
+
     /// The port layout needs more channels or ports than the activation's
     /// scratch was sized for. The plugin was not called.
     #[error("Processing error: the port layout is larger than the activation sized for")]

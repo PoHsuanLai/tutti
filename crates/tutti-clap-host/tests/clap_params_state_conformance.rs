@@ -88,7 +88,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -238,12 +238,12 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     let loaded = probe.load();
 
     assert_eq!(
-        loaded.parameter_count(),
+        loaded.parameter_count(&main_thread()),
         probe_params().len(),
         "host must report the plugin's parameter count"
     );
 
-    let listed = loaded.parameter_list();
+    let listed = loaded.parameter_list(&main_thread());
     let got_ids: Vec<ParamId> = listed.iter().map(|p| p.id).collect();
     let want_ids: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
     assert_eq!(
@@ -259,7 +259,7 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
 fn host_projects_parameter_metadata_exactly() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.parameter_list(&main_thread());
 
     for (i, want) in probe_params().iter().enumerate() {
         let got = &listed[i];
@@ -304,7 +304,7 @@ fn host_projects_parameter_metadata_exactly() {
 fn host_derives_step_count_from_the_stepped_flag() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.parameter_list(&main_thread());
 
     // `CLAP_PARAM_IS_STEPPED` is bit 0.
     const STEPPED: u32 = 1 << 0;
@@ -354,7 +354,7 @@ fn host_projects_parameter_flags() {
     let probe = Probe::acquire();
     let loaded = probe.load();
 
-    for p in loaded.parameter_list() {
+    for p in loaded.parameter_list(&main_thread()) {
         assert_eq!(
             p.flag(ParamFlags::AUTOMATABLE),
             Some(true),
@@ -404,7 +404,7 @@ fn host_reads_parameter_values_by_id_not_index() {
 
     for want in probe_params() {
         assert_eq!(
-            loaded.plain_value(want.id),
+            loaded.plain_value(&main_thread(), want.id),
             Some(want.default),
             "host must read param id {} by its id",
             want.id
@@ -415,7 +415,7 @@ fn host_reads_parameter_values_by_id_not_index() {
     // rejected — that is what makes the assertion above load-bearing.
     for index in 0..probe_params().len() as u32 {
         assert_eq!(
-            loaded.plain_value(index),
+            loaded.plain_value(&main_thread(), index),
             None,
             "index {index} is not a param id in this plugin; a host that reads \
              it as one is confusing index with id"
@@ -438,7 +438,7 @@ fn parameter_range_is_keyed_by_id_and_refuses_unknown_ids() {
 
     for want in probe_params() {
         assert_eq!(
-            loaded.parameter_range(want.id),
+            loaded.parameter_range(&main_thread(), want.id),
             Some((want.min, want.max)),
             "range for param id {} must be the plugin's declared bounds",
             want.id
@@ -449,7 +449,7 @@ fn parameter_range_is_keyed_by_id_and_refuses_unknown_ids() {
     // id, so answering for one would mean a host had confused the two.
     for index in 0..probe_params().len() as u32 {
         assert_eq!(
-            loaded.parameter_range(index),
+            loaded.parameter_range(&main_thread(), index),
             None,
             "index {index} is not a param id in this plugin"
         );
@@ -478,7 +478,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
         "the change must land in the plugin's value table"
     );
     assert_eq!(
-        loaded.plain_value(p.id),
+        loaded.plain_value(&main_thread(), p.id),
         Some(new_value),
         "the host must read back what it set"
     );

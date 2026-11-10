@@ -120,6 +120,17 @@ impl HostState for InProcessVst2Backend {
     /// left the caller unable to tell "the plugin has no state" from "asking it
     /// failed". The in-process path cannot hit the transport's size limit, so
     /// `Rejected` is the only failure it can produce.
+    ///
+    /// **Takes no [`MainThread`]**, and reaches `effGetChunk` from whichever thread
+    /// calls it, behind the backend's lock. `HostState::save_state` is shared by every
+    /// backend and is called off the main thread on purpose: the health snapshot is a
+    /// job on the task pool, because a subprocess save is a blocking round trip with a
+    /// ten-second timeout. For this backend that is a chunk read beside the editor and
+    /// the audio thread, which the SDK does not promise to be safe; a plugin that
+    /// cannot take it is the `Shell` clause 3 convention breaking. Deferred: the fix
+    /// is a main-thread route for the snapshot (the session asks the main thread for
+    /// an in-process plugin's state), which is a change to `tutti-session` and
+    /// `bevy-tutti`, not to this crate.
     fn save_state(&self) -> Result<Vec<u8>, StateError> {
         self.inner
             .lock()
@@ -145,10 +156,10 @@ impl crate::backend::HostPresets for InProcessVst2Backend {
     /// really are dense. `bank` is `None`: VST2 exposes one flat set, and
     /// inventing a bank name to fill the field would be a claim the format
     /// never made.
-    fn presets(&self) -> Vec<Preset> {
+    fn presets(&self, main: &MainThread) -> Vec<Preset> {
         self.inner
             .lock()
-            .programs()
+            .programs(main)
             .into_iter()
             .map(|(index, name)| Preset::new(PresetId::Number(index), name))
             .collect()
@@ -159,15 +170,15 @@ impl crate::backend::HostPresets for InProcessVst2Backend {
     /// `false` for an id this format cannot address — a `Program` or `Location`
     /// belongs to another format and names no VST2 program, so it is refused
     /// rather than coerced into an index.
-    fn load_preset(&self, id: &PresetId) -> bool {
+    fn load_preset(&self, main: &MainThread, id: &PresetId) -> bool {
         match id.number() {
-            Some(index) => self.inner.lock().set_program(index),
+            Some(index) => self.inner.lock().set_program(main, index),
             None => false,
         }
     }
 
-    fn current_preset(&self) -> Option<PresetId> {
-        Some(PresetId::Number(self.inner.lock().current_program()))
+    fn current_preset(&self, main: &MainThread) -> Option<PresetId> {
+        Some(PresetId::Number(self.inner.lock().current_program(main)))
     }
 }
 

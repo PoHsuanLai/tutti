@@ -50,6 +50,8 @@ num_enum = "0.5.2"
 # how a fork with "no failing tests" also had no *running* ones.
 [dev-dependencies]
 rand = "0.8"
+# Test-only global allocator: the grown-pins refusal must not allocate.
+assert_no_alloc = { version = "1", default-features = false }
 
 [lints]
 workspace = true

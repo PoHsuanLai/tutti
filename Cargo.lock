@@ -4270,7 +4270,9 @@ dependencies = [
  "libloading 0.8.9",
  "tutti-clap-test-plugin",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-plugin-types",
+ "tutti-rt",
 ]
 
 [[package]]
@@ -5094,6 +5096,7 @@ dependencies = [
 name = "vst-tutti"
 version = "0.3.0"
 dependencies = [
+ "assert_no_alloc",
  "bitflags 1.3.2",
  "libc",
  "libloading 0.7.4",

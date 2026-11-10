@@ -353,7 +353,9 @@ pub trait HostRenderMode: Send + Sync {
 /// - **AU** and **VST2** list and load.
 ///
 /// Calls block on a subprocess round trip for out-of-process plugins, so make
-/// them from a control thread.
+/// them from the main thread's control tick, not the frame's critical path. Each
+/// takes the [`MainThread`] token: a program change or read is a main-thread
+/// call for every format (VST2's `effSetProgram`/`effGetProgram` included).
 ///
 /// A backend implements this only if it can reach presets at all; others do
 /// not, so [`PluginHandle::presets`] returns `None` — no stub.
@@ -370,7 +372,7 @@ pub trait HostPresets: Send + Sync {
     /// other unasked-versus-declined capability.
     ///
     /// [`Features::PRESET_LIST`]: crate::protocol::Features::PRESET_LIST
-    fn presets(&self) -> Vec<Preset>;
+    fn presets(&self, main: &MainThread) -> Vec<Preset>;
 
     /// Asks the plugin to load a preset, by an id [`presets`](Self::presets)
     /// produced (or, for CLAP, a path id).
@@ -378,7 +380,7 @@ pub trait HostPresets: Send + Sync {
     /// Returns whether the plugin *accepted*. `false` is a refusal, not an
     /// error: leave the UI selection where it was rather than move it to a
     /// preset the plugin never loaded.
-    fn load_preset(&self, id: &PresetId) -> bool;
+    fn load_preset(&self, main: &MainThread, id: &PresetId) -> bool;
 
     /// Returns the preset the plugin considers current, when it will say.
     ///
@@ -386,7 +388,7 @@ pub trait HostPresets: Send + Sync {
     /// declined — never "the first one". Do not substitute an index of your
     /// own; see [`PresetId`], where most formats number presets in a space that
     /// is not a position.
-    fn current_preset(&self) -> Option<PresetId>;
+    fn current_preset(&self, main: &MainThread) -> Option<PresetId>;
 }
 
 /// Compile-time guard that all six control capabilities stay **object-safe** —

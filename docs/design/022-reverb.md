@@ -586,6 +586,182 @@ written.
   run over Freeverb and a test-only `ToyFdn` that has the controls Freeverb
   lacks; each case also has a deliberately defective design it must fail.
 
+### Step 1b as built
+
+Where the code made a decision the text above leaves open, or overrode it; the
+rest is as written. The modulation findings the owner asked for are the last
+list.
+
+**API.** `tutti-dsp`: `Kernel` (`prepare(&Bounds, &Setup)`, `retarget(&Network)`,
+`process(&[&[f32]], &mut [&mut [f32]])`, `reset`, `latency`, `effort`,
+`fresh`), `Setup { rate, max_block, input, output }`, `Effort`, `Channels`;
+`Design` gains `type Kernel`, `fn kernel`, `fn channels` and `fn design_into`;
+`Network::clear` and `Inline::clear` build a network in place; `Freeverb` is
+`FreeverbDesign`'s `Kernel` (the type itself, not a wrapper: one copy of the
+comb and all-pass loops). `tutti-nodes`: `ReverbNode<D: ReverbDesign>`,
+`ReverbDesign` (a `Design` and its `Params`), `ReverbParams` (the `Param`
+cells, their addresses, how a block reads them), `FreeverbParams` and
+`type FreeverbNode = ReverbNode<FreeverbDesign>`. `ReverbNode::new(design,
+controls)` is a live node, `fixed` one whose controls never change, and
+`general_midi()` the fixed Freeverb at room 0.5 and damping 0.5 that the
+SoundFont player's `add_general_midi` inserts (`ReverbNode::new()` with no
+arguments is gone; its three callers say `general_midi()`). `DryAlign` moved
+from the convolver's file to `tutti-nodes/src/dry_align.rs` and takes a
+latency of zero. `tutti_graph::contract::Driven` gains `status`, so a test can
+see `Status::Idle`.
+
+**Deviations from the text.**
+
+- **`design_into` is the required method and `design` the provided one.** A
+  `Network` is 56 KB, so a design that returns one by value cannot run on an
+  audio thread (§9 step 1a said so, and said step 1b would settle how). It
+  writes into a network the node owns, pushing stages and lines into it
+  (`Network::clear` first); `tests/network_alloc.rs` runs it on a 96 KiB stack,
+  where building a `Network` value (about three times its size in an unoptimised
+  build) overflows. The default `design` builds the value for the control side,
+  a test and a UI.
+- **The audio thread designs; nothing is published through `ArcLend`.** The
+  brief was to design on the control side and publish. It does not survive
+  modulation: a lane writes the node's *port*, never its cell, so the audio
+  thread is the only place that ever sees a modulated value. The cells are also
+  written by anyone (`Graph::set_param`, a UI, a fork's snapshot) with no hook
+  to run a control-side design on. A control-side tick that polled the cells
+  would make a render depend on when `update()` ran and would not see a lane at
+  all. So the node reads its cells and ports once per block, designs *in place*
+  when the controls changed (a bitwise compare with the last block's), and
+  retargets; the network is the node's, never shared, so there is nothing to
+  publish, retire or reclaim, and `SessionNode::reclaimer` is not implemented
+  (CLAUDE.md: "derive at the point of use rather than mirror and reconcile").
+  `ArcLend` will be right for a network that cannot be derived from the
+  controls (a convolution's IR), which is step 2's.
+- **A live node and a fixed one.** The ceiling of §10.1 is the design's worst
+  case (`bounds().tail`), and for Freeverb that is room 1: 12.7 s at -60 dB, eight
+  times the General MIDI room's. A send with no cells cannot reach it, and a
+  SoundFont export would be stretched for nothing. So a `fixed` node declares
+  the exact tail of its one network and offers the mix alone to the graph, a
+  `new` node offers the room and the damping and declares the worst case.
+  `FreeverbDesign` still has no range to configure (`Ceiling::max_decay` is the
+  build parameter that would, when a design has a decay).
+- **Freeverb declares `RoomSize` and `Damping`, not `Decay` and `Diffusion`.**
+  It has neither control (§9 step 1a says so); the two kinds land with the FDN
+  in 1c. `ReverbParams` is where an algorithm lists its own, and the mix is the
+  node's (port 0, `UnitParam::Wet`), never an algorithm's.
+- **The tail floor stays -60 dB, and the node now cuts there.** The node parks:
+  past its tail it resets the kernel and returns `Status::Idle` (§10.1). The
+  General MIDI send has always declared its ring-out to -60 dB, and
+  `tutti-session`'s `every_stage_declares_its_own_tail` pins the figure between
+  1 and 2 s, so the floor is not deeper; the cost is that the room is cut off at
+  -60 dB re the level it carried, where it used to ring on to the flush. Measured
+  against the old Freeverb at `input_end + tail`, what the cut discards is more
+  than 100 dB below the rendered peak (peak -1 dBFS; a 2 s noise burst leaves
+  about -112 dBFS RMS, a 50 ms burst -128 dBFS, an impulse nothing). A node that wants a deeper floor takes it from
+  `TAIL_FLOOR`; the ceiling and the reported tail follow. `tail` is the network's
+  `rt60_bound` figure, about 1.2 times the old `ring_out`.
+- **The node cuts at `tail + latency`, to the frame.** `assert_honest_tail`
+  wants exact silence after the reported tail, and the executor's own skip is
+  block-granular and never calls `reset`, so the node scans its input for the last
+  non-zero frame, owes `ring` frames after it (plus the kernel's latency, since a
+  tail excludes latency), renders only that many, zeroes the rest of the block and
+  resets the kernel. The reported figure is held at the longer of the old and
+  new decay until it has been heard out (`ring`, §12.3's high-water rule), and a
+  modulated block reports from the room that rings longest anywhere in it
+  (`ReverbParams::longest`), not the last frame's.
+- **Freeverb's `retarget` steps.** It copies the comb loop gain and damping off
+  the network's first one-pole line into the 16 combs at once, with no ramp: the
+  output is read from the past, so a step in the gain is a step in what the *next
+  trip* carries, and the contract's click-free case holds it to that. It ignores
+  the network's pre-delay, width and wet gain (`FreeverbDesign` never sets them)
+  and refuses a loop gain outside `[0, 1)`, a damping outside `(-1, 1)` or a
+  network without a one-pole.
+
+**The kernel contract (`kernel_contract!`, §8.2).** Crate-private and
+`cfg(test)` like the design contract; `tests/network_alloc.rs` holds the one
+case that needs a counting allocator. Each case has a `Defect` it must fail
+(`Defective`/`Flawed`, a real kernel with one defect), run by
+`a_defective_kernel_fails_its_case`.
+
+| Case | Figure | Defect it fails |
+|---|---|---|
+| `rt60` | Tone burst per band (DC, a quarter of the rate, Nyquist) with raised-cosine fades, then silence; the energy slope 40 to 65 dB down gives an RT60 within the kernel's tolerance of `network.rt60(band)` | every loop gain x1.05 (+39%) |
+| `band_order` | Measured bands ordered as the network's, where it separates them by more than twice the tolerance | the damping dropped |
+| `tail_covers` | Time from the input's end to -40, -60 and -90 dB of the loudest windowed RMS the render reached is within `network.tail(floor)` | every loop gain x1.03 (2.4 times as long at room 0.9) |
+| `arrival` | A unit impulse first sounds at exactly `pre_delay + min_delay + latency()` | output one frame late; `latency()` one frame too many |
+| `latency` | `latency()` equals the network's | `latency()` one frame too many |
+| `wet_only` | Noise in from frame 0: exact zero before the shortest path | the input added to the output |
+| `decorrelated` | Zero-lag correlation of the two channels under 0.3 | channel 1 a copy of channel 0 |
+| `stability` | 60 s of noise at room 1 (damping 0 and 1): finite and under an L1 bound from the network (486 at room 1) | a gain growing 0.01% a frame (a loop gain over 1 is refused by `retarget`, so `LoopGain` cannot make it unstable) |
+| `click_free` | Noise through a step of the controls: the largest jump after it within 1.5 times the larger steady state's | a gain of 4 applied whole at the second retarget |
+| `line_lengths` | For a diagonal first stage followed by series all-passes only: an impulse's first echo of every line lands at `pre_delay + length` at the input gain's size (a line another line plus an all-pass delay would cancel is read by the others) | the longest comb 5% long, inside the RT60 tolerance; `arrival` sees only the shortest line |
+| `reset`, `fresh` | Bit-identical to a freshly built kernel at the same controls | `reset` doing nothing; `fresh` keeping the state |
+| `block_independent` | Blocks of 1, 17, 64 and 512 bit-identical | a gain that depends on the block length |
+
+What differs from §8.2: **the tolerance is 15%, not 10%.** A bank of combs of
+1116 to 1640 frames decays at the slowest comb's rate only in the end, so the
+energy slope 40 to 65 dB down measures 0.89 to 0.96 of the network's `rt60` (the
+slowest comb's). Deeper fits measure the kernel's flush of values under 1e-6,
+which the network does not model; 15% still fails a loop gain 5% high (+25%
+measured). **The tail's reference is the loudest windowed level the render
+reached, not the level at the stop**: a short burst has not filled the lines, and
+the output *rises* after the input stops while what is in flight comes round, so
+the level at the stop understates what the network carried (measured: 8% over
+the tail at -40 dB against that reference, within it against the other). The
+**pre-delay, latency and wet-only cases are one arrival and one silence figure**,
+and the **freeze, width, wet-gain and pre-delay directions are vacuous for
+Freeverb**, which has none of those controls.
+
+**Bit-identity of the General MIDI send.** `Freeverb::process`'s loops are
+untouched and `retarget` writes the same bits the constructor does
+(`retargeting_to_the_general_midi_network_changes_no_coefficient`, and 1a's
+`the_general_midi_controls_give_todays_coefficients_to_the_bit`). The node-level
+figure is a digest of its answer to 24 000 frames of seeded noise, recorded from
+`Freeverb::process` at `f30a9d1db` before any of this
+(`the_general_midi_send_renders_what_it_always_did`); the render has no `libm`
+call, so it needs no golden guard. The existing `general_midi_effects` and
+`tutti-session` `general_midi` suites pass unchanged (the declared tail is now
+the network's -60 dB figure, the old one).
+
+**What the reverb found in the modulation design (§10 against the code).**
+
+- **Design cost is small, so designing every modulated block is fine.** In
+  release, `design_into` is 0.2 us, `Network::tail` 1.1 us (libm `exp10` per band
+  per line) and `retarget` 5 ns. A reverb under a lane that changes every block
+  pays about 1.3 us per block, against 2.3 us to render 64 frames: it matters at
+  tiny blocks and not at 512. `tail` is what dominates, and could be skipped in
+  a block that cannot lengthen it.
+- **The audio thread must be able to design.** §3 and §5 said so; 1a's 56 KB
+  `Network` took it away; this step gave it back by writing in place. A
+  modulation design where only the control side can compile a node's model could
+  not drive this node.
+- **The cadence of §10.2 held without change.** `block_driven` (the port's last
+  frame) is the value of a block; the lane's grid of 32 frames and a reverb
+  decay that moves over seconds agree; Freeverb needed no ramp. The ramp in
+  `retarget` §10.2 asked for is the FDN's to need.
+- **A tail that follows a modulated decay needs more than the last frame.**
+  §12.3 says a modulated decay reports from the larger end of the block's ramp.
+  The port gives every frame, but the *direction* in which a param lengthens the
+  tail (more room, less damping) is the algorithm's knowledge, so each
+  `ReverbParams` writes it (`longest`). That is one more method per algorithm,
+  not a change to the graph.
+- **A ModRange above the ceiling is harmless, as §10.1 argued, but the clamp is
+  the design's, not the node's.** `design_into` clamps every control, so a port
+  past 1 designs the room at 1, whose tail the bounds hold.
+- **`report_tail` alone is not enough to park a reverb.** The executor never
+  calls `reset`, a `Modified` node is never parked, and the skip is
+  block-granular, so the node has to run its own silence scan, its own cut and
+  its own `reset` before it returns `Idle`. The contract harness gives a node no
+  silence masks (`SilenceMask::NONE`), so it cannot rely on `Io::silent()`
+  either. All of that is the node's `process`, about 40 lines; the executor
+  needed no change, and 0b's `assert_honest_tail` is what checks it.
+- **Park and wake are testable without a graph** once `drive_input` returns the
+  `Status` (a small addition to the contract harness), and a lying design
+  (`tests/reverb_node_generic.rs`: an echo that rings past its claim, with a
+  latency) is the way to test the cut and the dry alignment that Freeverb, with
+  no latency and a tail longer than a block, cannot show.
+- **Open for 1c.** `Network::tail` costs more than the rest of the redesign; the
+  FDN's three-band `Absorption::from_rt60` and its `lerp` (§10.2) are untried;
+  and `Ceiling::max_decay` is not yet a node build parameter (the node uses the
+  default 8 s).
+
 Step 1 is three PRs. The old plan's two were ~2,200 lines together; the model
 adds the `Network` and its queries (~1,000 lines with their tests), which is
 reviewable on its own and needs no audio, so it comes first and can start in

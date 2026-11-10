@@ -7,8 +7,8 @@
 //!
 //! # No summing kernel, yet
 //!
-//! There is no audio fan-in kernel here because audio fan-in is
-//! unrepresentable (one source per port; summing is a node). A
+//! There is no audio fan-in kernel here because the compiler refuses a
+//! set of two or more sources (`CompileError::FanInNotCompiled`). A
 //! compiler-owned summing op, if one is added, should accumulate in `f64`
 //! and store `f32`: a many-input bus is where `f32`
 //! accumulation error compounds, and the widening is cheap next to the loads.

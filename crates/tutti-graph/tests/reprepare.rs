@@ -89,17 +89,17 @@ fn wire(ed: &mut Editor) {
     let t = &mut spec.topology;
     t.edges.insert(
         InPort { node: LAG, port: 0 },
-        Edge::Direct(Source::Global(0)),
+        vec![Edge::Direct(Source::Global(0))],
     );
     t.edges.insert(
         InPort { node: SUM, port: 0 },
-        Edge::Direct(Source::Node(OutPort { node: LAG, port: 0 })),
+        vec![Edge::Direct(Source::Node(OutPort { node: LAG, port: 0 }))],
     );
     t.edges.insert(
         InPort { node: SUM, port: 1 },
-        Edge::Direct(Source::Global(0)),
+        vec![Edge::Direct(Source::Global(0))],
     );
-    t.outputs = vec![Source::Node(OutPort { node: SUM, port: 0 })];
+    t.set_outputs(vec![Source::Node(OutPort { node: SUM, port: 0 })]);
     let emit = EventOut {
         node: EMIT,
         port: 0,
@@ -332,10 +332,10 @@ fn a_feedback_edge_shorter_than_the_new_block_is_refused_first() {
     let at = InPort { node: LAG, port: 0 };
     ed.spec_mut().topology.edges.insert(
         at,
-        Edge::Feedback(FeedbackFrom::new(
+        vec![Edge::Feedback(FeedbackFrom::new(
             OutPort { node: LAG, port: 0 },
             Samples(96),
-        )),
+        ))],
     );
     ed.commit().expect("96 >= 64");
     exec.apply_pending();
@@ -398,9 +398,11 @@ fn every_unit_is_re_prepared_and_its_new_latency_compiled() {
     ed.insert(LAG, "look", Unforkable(unit(&log)));
     ed.spec_mut().topology.edges.insert(
         InPort { node: LAG, port: 0 },
-        Edge::Direct(Source::Global(0)),
+        vec![Edge::Direct(Source::Global(0))],
     );
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: LAG, port: 0 })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: LAG, port: 0 })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -410,9 +412,11 @@ fn every_unit_is_re_prepared_and_its_new_latency_compiled() {
     ed.insert(SUM, "look", Unforkable(unit(&log)));
     ed.spec_mut().topology.edges.insert(
         InPort { node: SUM, port: 0 },
-        Edge::Direct(Source::Node(OutPort { node: LAG, port: 0 })),
+        vec![Edge::Direct(Source::Node(OutPort { node: LAG, port: 0 }))],
     );
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SUM, port: 0 })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node: SUM, port: 0 })]);
     log.lock().unwrap().clear();
 
     let p = prep(96_000.0, 64);
@@ -594,10 +598,12 @@ fn assert_poisoned(mut ed: Editor, mut exec: Executor, cause: &str) {
 fn a_panic_in_prepare_poisons_the_editor() {
     let (mut ed, mut exec) = Editor::new(prep(48_000.0, 64));
     ed.insert(NodeKey(1), "fragile", Unforkable(FragileAt96k));
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(1),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -639,10 +645,12 @@ fn a_resolution_that_coarsens_on_prepare_poisons_the_editor() {
     ed.spec_mut().connect_events(at, EventEdge::Direct(from));
     ed.spec_mut()
         .require_resolution(at, from, tutti_graph::Resolution::Sample);
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(0),
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(0),
+            port: 0,
+        })]);
     ed.commit().expect("sample-accurate at 48 kHz");
     exec.apply_pending();
     ed.collect();

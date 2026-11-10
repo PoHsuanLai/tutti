@@ -64,10 +64,10 @@ const SR: f64 = 48_000.0;
 fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey, out: u16) {
     ed.spec_mut().topology.edges.insert(
         InPort { node, port },
-        Edge::Direct(Source::Node(OutPort {
+        vec![Edge::Direct(Source::Node(OutPort {
             node: from,
             port: out,
-        })),
+        }))],
     );
 }
 
@@ -93,14 +93,12 @@ fn chain_engine(outputs: usize) -> Engine {
     wire(&mut ed, eq, 0, osc, 0);
     wire(&mut ed, strip, 0, eq, 0);
     wire(&mut ed, strip, 1, eq, 0);
-    ed.spec_mut().topology.outputs = (0..outputs)
-        .map(|c| {
-            Source::Node(OutPort {
-                node: strip,
-                port: (c % 2) as u16,
-            })
+    ed.spec_mut().topology.set_outputs((0..outputs).map(|c| {
+        Source::Node(OutPort {
+            node: strip,
+            port: (c % 2) as u16,
         })
-        .collect();
+    }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
@@ -353,17 +351,19 @@ fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
         ed.insert(k, "lowpass", Unforkable(f));
         ed.spec_mut().topology.edges.insert(
             InPort { node: k, port: 0 },
-            Edge::Direct(Source::Node(OutPort {
+            vec![Edge::Direct(Source::Node(OutPort {
                 node: last,
                 port: 0,
-            })),
+            }))],
         );
         last = k;
     }
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: last,
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: last,
+            port: 0,
+        })]);
     ed.commit().expect("commits");
     let engine = Engine::new(&Transport::new(SampleRate::new(SR)), &mut ed, exec)
         .expect("within the limits");

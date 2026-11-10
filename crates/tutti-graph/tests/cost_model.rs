@@ -41,7 +41,7 @@ fn wire(ed: &mut Editor, node: u64, port: u16, from: Source) {
             node: NodeKey(node),
             port,
         },
-        Edge::Direct(from),
+        vec![Edge::Direct(from)],
     );
 }
 
@@ -84,7 +84,7 @@ fn fans(ed: &mut Editor, fans: usize, lanes: usize, gains: Option<Cost>, sums: O
         }
         outputs.push(node(s));
     }
-    ed.spec_mut().topology.outputs = outputs;
+    ed.spec_mut().topology.set_outputs(outputs);
 }
 
 /// `lanes` chains of `depth` gains declaring `cost`, each off the global
@@ -103,7 +103,7 @@ fn wide(ed: &mut Editor, lanes: usize, depth: usize, cost: Option<Cost>) {
         }
         wire(ed, s, l as u16, last);
     }
-    ed.spec_mut().topology.outputs = vec![node(s)];
+    ed.spec_mut().topology.set_outputs(vec![node(s)]);
 }
 
 /// Render `blocks` (input on every channel), every output's samples.
@@ -238,7 +238,7 @@ fn packed_siblings_render_bit_identically() {
             wire(&mut ed, l + 1, 0, Source::Global(0));
             wire(&mut ed, s, l as u16, node(l + 1));
         }
-        ed.spec_mut().topology.outputs = vec![node(s)];
+        ed.spec_mut().topology.set_outputs(vec![node(s)]);
         commit(&mut ed, &mut exec);
         exec
     };

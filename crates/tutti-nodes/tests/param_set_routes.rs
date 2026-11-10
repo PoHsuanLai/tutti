@@ -127,10 +127,12 @@ fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
     let probe = NodeKey(1);
     ed.insert(probe, "probe", Unforkable(Probe));
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: probe,
-        port: 0,
-    })];
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: probe,
+            port: 0,
+        })]);
     let at = ParamIn {
         node: probe,
         param: UnitParam::Cutoff.into(),

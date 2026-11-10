@@ -32,15 +32,22 @@ const SR: f64 = 48_000.0;
 fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<TapReader>) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     ed.insert(NodeKey(1), "sine", Osc::sine(Hz(440.0)));
-    ed.spec_mut().topology.outputs = vec![
+    ed.spec_mut().topology.set_outputs(vec![
         Source::Node(OutPort {
             node: NodeKey(1),
             port: 0,
         });
         outputs
-    ];
+    ]);
     let tap = tap_open.then(|| {
-        let sources = ed.spec().topology.outputs.clone();
+        let sources: Vec<_> = ed
+            .spec()
+            .topology
+            .outputs
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
         ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(8192))
             .expect("the sources exist")
     });

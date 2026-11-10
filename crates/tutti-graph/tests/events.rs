@@ -165,7 +165,7 @@ fn spec_of(ph: &Phase, emitters: &[(u32, u64)]) -> (GraphSpec, Shapes) {
     );
     t.edges.insert(
         InPort { node: REC, port: 0 },
-        Edge::Direct(Source::Node(OutPort { node: LAG, port: 0 })),
+        vec![Edge::Direct(Source::Node(OutPort { node: LAG, port: 0 }))],
     );
     let mut g = GraphSpec::new(t);
     for (p, srcs) in ph.edges.iter().enumerate() {
@@ -693,15 +693,15 @@ fn feedback_delays_by_its_declared_delay_at_any_max_block() {
             );
             t.edges.insert(
                 InPort { node: tap, port: 0 },
-                Edge::Feedback(FeedbackFrom::new(
+                vec![Edge::Feedback(FeedbackFrom::new(
                     OutPort {
                         node: clock,
                         port: 0,
                     },
                     Samples(DELAY),
-                )),
+                ))],
             );
-            t.outputs = vec![Source::Node(OutPort { node: tap, port: 0 })];
+            t.set_outputs(vec![Source::Node(OutPort { node: tap, port: 0 })]);
             let mut g = GraphSpec::new(t);
             g.connect_events(
                 EventIn { node: tap, port: 0 },
@@ -784,13 +784,13 @@ fn a_feedback_delay_shorter_than_max_block_is_refused() {
     );
     t.edges.insert(
         InPort { node: tap, port: 0 },
-        Edge::Feedback(FeedbackFrom::new(
+        vec![Edge::Feedback(FeedbackFrom::new(
             OutPort {
                 node: clock,
                 port: 0,
             },
             Samples(96),
-        )),
+        ))],
     );
     let valid = GraphSpec::new(t).validate().unwrap();
     let shapes: Shapes = [(clock, cs), (tap, ts)].into();

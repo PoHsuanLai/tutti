@@ -23,18 +23,16 @@ use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
 fn root(outputs: usize, wire: &[usize]) -> (Editor, tutti_graph::Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
     ed.insert(NodeKey(1), "sine", ForkByClone(Sine::new(Hz(440.0))));
-    ed.spec_mut().topology.outputs = (0..outputs)
-        .map(|ch| {
-            if wire.contains(&ch) {
-                Source::Node(OutPort {
-                    node: NodeKey(1),
-                    port: 0,
-                })
-            } else {
-                Source::Zero
-            }
-        })
-        .collect();
+    ed.spec_mut().topology.set_outputs((0..outputs).map(|ch| {
+        if wire.contains(&ch) {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port: 0,
+            })
+        } else {
+            Source::Zero
+        }
+    }));
     ed.commit().expect("commits");
     (ed, exec)
 }

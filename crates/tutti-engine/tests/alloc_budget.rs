@@ -127,17 +127,17 @@ fn graph(nodes: usize) -> (Editor, Executor) {
                 node: NodeKey(i),
                 port: 0,
             },
-            Edge::Direct(Source::Node(OutPort {
+            vec![Edge::Direct(Source::Node(OutPort {
                 node: NodeKey(i - 1),
                 port: 0,
-            })),
+            }))],
         );
     }
     let last = Source::Node(OutPort {
         node: NodeKey(nodes as u64),
         port: 0,
     });
-    ed.spec_mut().topology.outputs = vec![last, last];
+    ed.spec_mut().topology.set_outputs(vec![last, last]);
     ed.commit().expect("commits");
     (ed, exec)
 }
@@ -294,20 +294,22 @@ fn fan(nodes: usize, pooled: bool) -> (Editor, Executor) {
                 node: NodeKey(i),
                 port: 0,
             },
-            Edge::Direct(Source::Node(OutPort {
+            vec![Edge::Direct(Source::Node(OutPort {
                 node: NodeKey(0),
                 port: 0,
-            })),
+            }))],
         );
     }
-    ed.spec_mut().topology.outputs = [1, 2]
-        .map(|k| {
-            Source::Node(OutPort {
-                node: NodeKey(k),
-                port: 0,
+    ed.spec_mut().topology.set_outputs(
+        [1, 2]
+            .map(|k| {
+                Source::Node(OutPort {
+                    node: NodeKey(k),
+                    port: 0,
+                })
             })
-        })
-        .to_vec();
+            .to_vec(),
+    );
     ed.commit().expect("commits");
     (ed, exec)
 }

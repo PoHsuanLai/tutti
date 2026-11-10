@@ -2102,7 +2102,7 @@ impl BlockRig {
         topology.inputs =
             ChannelLayout::try_from(ins).expect("asserted within RIG_MAX_CHANNELS above");
         for c in 0..ins {
-            topology.edges.insert(
+            topology.connect(
                 crate::InPort {
                     node: key,
                     port: c as u16,
@@ -2112,10 +2112,10 @@ impl BlockRig {
         }
         topology.outputs = (0..outs)
             .map(|c| {
-                crate::Source::Node(OutPort {
+                vec![crate::Source::Node(OutPort {
                     node: key,
                     port: c as u16,
-                })
+                })]
             })
             .collect();
         editor.commit().expect("a one-node graph commits");

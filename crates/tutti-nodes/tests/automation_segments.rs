@@ -81,10 +81,10 @@ fn graph(lane: ControlLaneNode) -> (Editor, Executor) {
     ed.insert(NodeKey(1), "lane", lane);
     ed.insert(NodeKey(2), "probe", Unforkable(Probe));
     let s = ed.spec_mut();
-    s.topology.outputs = vec![Source::Node(OutPort {
+    s.topology.set_outputs(vec![Source::Node(OutPort {
         node: NodeKey(2),
         port: 0,
-    })];
+    })]);
     s.connect_param(
         ParamIn {
             node: NodeKey(2),

@@ -176,7 +176,7 @@ impl GraphBuilder {
     pub fn new(inputs: ChannelLayout, outputs: ChannelLayout) -> Self {
         let mut spec = GraphSpec::default();
         spec.topology.inputs = inputs;
-        spec.topology.outputs = vec![Source::Zero; outputs.count() as usize];
+        spec.topology.outputs = vec![Vec::new(); outputs.count() as usize];
         Self {
             spec,
             shapes: Vec::new(),
@@ -333,7 +333,13 @@ impl GraphBuilder {
         );
         let at = self.check_in(node, port);
         let source = self.check_source(source);
-        self.spec.topology.edges.insert(at, Edge::Direct(source));
+        // Silence is the empty set: no key, never a stored `Zero`.
+        let edges = &mut self.spec.topology.edges;
+        if source == Source::Zero {
+            edges.remove(&at);
+        } else {
+            edges.insert(at, vec![Edge::Direct(source)]);
+        }
         self
     }
 
@@ -367,13 +373,12 @@ impl GraphBuilder {
         self.spec
             .topology
             .edges
-            .insert(at, Edge::Feedback(FeedbackFrom::new(from, delay)));
+            .insert(at, vec![Edge::Feedback(FeedbackFrom::new(from, delay))]);
         self
     }
 
-    /// Feeds `node`'s input `port` from silence. An
-    /// explicit [`Source::Zero`], which reads the same as an unconnected
-    /// port but says it was meant.
+    /// Feeds `node`'s input `port` from silence: clears the port, which is
+    /// the same value as one never wired.
     pub fn disconnect(&mut self, node: NodeKey, port: usize) -> &mut Self {
         self.set_source(node, port, Source::Zero)
     }
@@ -400,7 +405,10 @@ impl GraphBuilder {
             channel < n,
             "the graph has {n} global outputs; output {channel} is out of range"
         );
-        self.spec.topology.outputs[channel] = self.check_source(source);
+        self.spec.topology.outputs[channel] = match self.check_source(source) {
+            Source::Zero => Vec::new(),
+            source => vec![source],
+        };
         self
     }
 
@@ -489,10 +497,14 @@ impl GraphBuilder {
         } else {
             let outputs = self.spec.topology.outputs.clone();
             for c in 0..self.input_count(key) {
+                // The builder wires one source per output channel.
                 let source = if outputs.is_empty() {
                     Source::Zero
                 } else {
                     outputs[c % outputs.len()]
+                        .first()
+                        .copied()
+                        .unwrap_or(Source::Zero)
                 };
                 self.set_source(key, c, source);
             }

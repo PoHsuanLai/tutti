@@ -19,11 +19,14 @@
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use tutti_types::{Amplitude, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth};
+use tutti_types::{
+    Amplitude, ChannelLayout, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth,
+};
 
 use super::{
-    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Design, Fdn, Gains, Inline, Line,
-    MAX_LINES, Matrix, Modulation, Network, OutputMap, Ring, Stage, loop_gain, pre_delay_frames,
+    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Channels, Design, Fdn, Gains, Inline,
+    Kernel, Line, MAX_LINES, Matrix, Modulation, Network, OutputMap, Ring, Setup, Stage, loop_gain,
+    pre_delay_frames,
 };
 
 /// A design plus what the contract needs to know to test it.
@@ -535,11 +538,19 @@ impl<D> Mutant<D> {
 
 impl<D: Design> Design for Mutant<D> {
     type Controls = D::Controls;
+    type Kernel = D::Kernel;
 
-    fn design(&self, controls: &D::Controls, rate: SampleRate) -> Network {
-        let mut n = self.inner.design(controls, rate);
-        (self.network)(&mut n);
-        n
+    fn channels(&self) -> Channels {
+        self.inner.channels()
+    }
+
+    fn design_into(&self, controls: &D::Controls, rate: SampleRate, out: &mut Network) {
+        self.inner.design_into(controls, rate, out);
+        (self.network)(out);
+    }
+
+    fn kernel(&self) -> D::Kernel {
+        self.inner.kernel()
     }
 
     fn bounds(&self, ceiling: &Ceiling) -> Bounds {
@@ -652,10 +663,39 @@ impl ToyFdn {
     }
 }
 
+/// The kernel of a design that is never run: [`ToyFdn`] is analysed, not
+/// heard.
+#[derive(Clone, Debug)]
+pub(crate) struct Unrun;
+
+impl Kernel for Unrun {
+    fn prepare(&mut self, _: &Bounds, _: &Setup) {}
+    fn retarget(&mut self, _: &Network) {}
+    fn process(&mut self, _: &[&[f32]], output: &mut [&mut [f32]]) {
+        output.iter_mut().for_each(|c| c.fill(0.0));
+    }
+    fn reset(&mut self) {}
+    fn fresh(&self) -> Self {
+        Unrun
+    }
+}
+
 impl Design for ToyFdn {
     type Controls = ToyControls;
+    type Kernel = Unrun;
 
-    fn design(&self, c: &ToyControls, rate: SampleRate) -> Network {
+    fn channels(&self) -> Channels {
+        Channels {
+            input: ChannelLayout::MONO,
+            output: ChannelLayout::STEREO,
+        }
+    }
+
+    fn kernel(&self) -> Unrun {
+        Unrun
+    }
+
+    fn design_into(&self, c: &ToyControls, rate: SampleRate, out: &mut Network) {
         let size = if c.size.get().is_nan() {
             0.5
         } else {
@@ -725,7 +765,7 @@ impl Design for ToyFdn {
         let _ = network.stages.push(Stage::AllPass(channels));
         network.width = StereoWidth::NATURAL;
         network.wet = Db(0.0);
-        network
+        *out = network;
     }
 
     /// The largest design (size 1, the longest decay, the longest pre-delay);

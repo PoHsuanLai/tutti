@@ -21,15 +21,10 @@ use tutti_plugin_types::{
 use crate::host::ParameterChange;
 use crate::loaded::Vst2Loaded;
 
-/// Wrapper to make `Arc<dyn PluginParameters>` `Send`.
+/// The plugin's parameter object, shared by the `Vst2Loaded` and the Processor.
 ///
-/// The concrete type behind the trait object
-/// (`PluginParametersInstance`) is `Send + Sync`, but that information is
-/// erased by `get_parameter_object()` returning `Arc<dyn PluginParameters>`.
+/// `PluginParameters` is `Send + Sync`, so the handle is `Send` without an `unsafe impl`.
 pub(crate) struct SendParams(pub(crate) Arc<dyn vst::plugin::PluginParameters>);
-// SAFETY: the concrete type behind the trait object is `Send + Sync` (see the
-// type's docs); only the erased trait object hides it.
-unsafe impl Send for SendParams {}
 
 impl std::ops::Deref for SendParams {
     type Target = dyn vst::plugin::PluginParameters;

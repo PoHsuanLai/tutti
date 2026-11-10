@@ -49,7 +49,7 @@ use crate::plugin::AsyncEvent;
 /// never waits for a helper that has not started a task (the audio thread
 /// runs tasks from the start, and helpers join as they arrive), though a
 /// helper preempted mid-task delays the request.
-fn thread_pool() -> Option<std::sync::Arc<dyn tutti_graph::Pool>> {
+fn thread_pool() -> Option<std::sync::Arc<tutti_graph::WorkerPool>> {
     THREAD_POOL
         .get_or_init(|| {
             let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -76,7 +76,6 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_graph::Pool>> {
                 .map(std::sync::Arc::new)
         })
         .clone()
-        .map(|pool| pool as std::sync::Arc<dyn tutti_graph::Pool>)
 }
 
 /// Participants of the server's pool on a machine with `cores` cores (see
@@ -173,7 +172,7 @@ impl ClapInstance {
     ) -> Result<(Self, Option<String>)> {
         Self::activate(
             main,
-            Self::open(path, sample_rate, block_size)?,
+            Self::open(main, path, sample_rate, block_size)?,
             path,
             prefer_f64,
             state,
@@ -182,20 +181,21 @@ impl ClapInstance {
     }
 
     /// Opens the plugin, without activating it.
-    fn open(path: &Path, sample_rate: f64, block_size: usize) -> Result<Opened> {
+    fn open(main: &MainThread, path: &Path, sample_rate: f64, block_size: usize) -> Result<Opened> {
         let (resolved, differs) = resolve(path)?;
         let mut options = LoadOptions::new();
         if differs {
             options = options.library(resolved);
         }
-        let mut loaded = ClapLoaded::load(path, options).map_err(|e| BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage: match e {
-                tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
-                _ => LoadStage::Opening,
-            },
-            reason: e.to_string(),
-        })?;
+        let mut loaded =
+            ClapLoaded::load(main, path, options).map_err(|e| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: match e {
+                    tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
+                    _ => LoadStage::Opening,
+                },
+                reason: e.to_string(),
+            })?;
         if loaded.supports_thread_pool() {
             loaded.set_thread_pool(thread_pool());
         }
@@ -374,7 +374,7 @@ impl ClapInstance {
         for (id, value) in pending {
             let requires = self
                 .loaded_ref()
-                .is_some_and(|loaded| loaded.param_requires_process(id.get()));
+                .is_some_and(|loaded| loaded.param_requires_process(main, id.get()));
             if flush_out_of_band(requires, processing) {
                 if let Some(loaded) = self.loaded_mut() {
                     Control::set_parameter(loaded, main, id, value);
@@ -527,11 +527,11 @@ impl PluginAudio for ClapInstance {
     /// optional by design (*"If this information does not influence your
     /// rendering code, then don't implement this extension"*), so a plugin
     /// that does not export it has genuinely declined.
-    fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
         let offline = mode.is_offline();
         let accepted = self
             .loaded_mut()
-            .is_some_and(|loaded| loaded.set_render_mode(offline));
+            .is_some_and(|loaded| loaded.set_render_mode(main, offline));
         // The mode is a field of the `Prepare` every later activation (a
         // restart, a rate change) applies, so the core holds the new one or the
         // next restart would put the old mode back. Nothing restarts now: the
@@ -628,8 +628,9 @@ impl PluginParams for ClapInstance {
             .unwrap_or_default()
     }
 
-    fn parameter_count(&self, _main: &MainThread) -> usize {
-        self.loaded_ref().map_or(0, ClapLoaded::parameter_count)
+    fn parameter_count(&self, main: &MainThread) -> usize {
+        self.loaded_ref()
+            .map_or(0, |loaded| loaded.parameter_count(main))
     }
 }
 
@@ -855,7 +856,7 @@ mod tests {
     fn the_buses_are_those_the_plugin_has_at_activation() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
-        let opened = ClapInstance::open(path, 44100.0, 512).expect("open");
+        let opened = ClapInstance::open(&main_thread(), path, 44100.0, 512).expect("open");
 
         let _layout = crate::test_utils::clap_probe_port_layout(
             tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
@@ -886,7 +887,7 @@ mod tests {
         let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
             | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
         let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
-        let opened = ClapInstance::open(path, 44100.0, 512).expect("open");
+        let opened = ClapInstance::open(&main_thread(), path, 44100.0, 512).expect("open");
         assert!(opened.loaded.supports_f64(), "fixture: flagged at open");
 
         let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
@@ -1921,7 +1922,9 @@ mod tests {
         )
         .expect("Failed to load Surge XT");
 
-        let port_info = instance.clap_loaded().audio_port_info(0, false);
+        let port_info = instance
+            .clap_loaded()
+            .audio_port_info(&main_thread(), 0, false);
         assert!(port_info.is_some(), "Expected at least one output port");
 
         let port = port_info.unwrap();
@@ -2421,7 +2424,7 @@ mod tests {
         // plain range, at the head of the block.
         let (min, max) = instance
             .clap_loaded()
-            .parameter_range(clap_id)
+            .parameter_range(&main_thread(), clap_id)
             .expect("the parameter declares a range");
         let capture = read_process_capture();
         let event = capture.events[..capture.event_count as usize]
@@ -2511,7 +2514,9 @@ mod tests {
         )
         .expect("Failed to load");
 
-        let output_count = instance.clap_loaded().audio_port_count(false);
+        let output_count = instance
+            .clap_loaded()
+            .audio_port_count(&main_thread(), false);
         assert!(
             output_count > 0,
             "Synth should have at least one output port"
@@ -2520,7 +2525,7 @@ mod tests {
         for i in 0..output_count {
             let info = instance
                 .clap_loaded()
-                .audio_port_info(i, false)
+                .audio_port_info(&main_thread(), i, false)
                 .expect("audio_port_info should return Some");
             assert!(info.layout.count() > 0, "Port {} should have channels", i);
             assert!(!info.name.is_empty(), "Port {} should have a name", i);
@@ -2539,7 +2544,7 @@ mod tests {
         )
         .expect("Failed to load");
 
-        let input_count = instance.clap_loaded().note_port_count(true);
+        let input_count = instance.clap_loaded().note_port_count(&main_thread(), true);
         assert!(
             input_count > 0,
             "Synth should have at least one note input port"
@@ -2548,7 +2553,7 @@ mod tests {
         for i in 0..input_count {
             let info = instance
                 .clap_loaded()
-                .note_port_info(i, true)
+                .note_port_info(&main_thread(), i, true)
                 .expect("note_port_info should return Some");
             assert!(!info.name.is_empty(), "Note port {} should have a name", i);
         }
@@ -2569,8 +2574,8 @@ mod tests {
         .expect("Failed to load");
 
         // Just verify no crash — values depend on plugin
-        let _latency = instance.clap_loaded().latency_samples();
-        let _tail = instance.clap_loaded().tail_samples();
+        let _latency = instance.clap_loaded().latency_samples(&main_thread());
+        let _tail = instance.clap_loaded().tail_samples(&main_thread());
     }
 
     // ── Group G: Processing with Param Automation, Expressions, Transport ──
@@ -2762,12 +2767,14 @@ mod tests {
         )
         .expect("Failed to load Surge XT");
 
-        let output_count = instance.clap_loaded().audio_port_count(false);
+        let output_count = instance
+            .clap_loaded()
+            .audio_port_count(&main_thread(), false);
         assert!(output_count > 0, "Surge XT should have output ports");
 
         let port = instance
             .clap_loaded()
-            .audio_port_info(0, false)
+            .audio_port_info(&main_thread(), 0, false)
             .expect("Should have at least one output port");
         assert!(
             port.layout.count() >= 2,
@@ -2788,8 +2795,8 @@ mod tests {
         )
         .expect("Failed to load Surge XT");
 
-        let _latency = instance.clap_loaded().latency_samples();
-        let _tail = instance.clap_loaded().tail_samples();
+        let _latency = instance.clap_loaded().latency_samples(&main_thread());
+        let _tail = instance.clap_loaded().tail_samples(&main_thread());
     }
 
     // ── Group J: GUI / Editor ──
@@ -2917,9 +2924,13 @@ mod tests {
         .expect("Failed to load");
 
         // Set offline mode — returns true if plugin supports render extension
-        let _ = instance.loaded_mut_unwrapped().set_render_mode(true);
+        let _ = instance
+            .loaded_mut_unwrapped()
+            .set_render_mode(&main_thread(), true);
         // Set back to realtime
-        let _ = instance.loaded_mut_unwrapped().set_render_mode(false);
+        let _ = instance
+            .loaded_mut_unwrapped()
+            .set_render_mode(&main_thread(), false);
         // No crash is the assertion
     }
 
@@ -2936,7 +2947,9 @@ mod tests {
         .expect("Failed to load");
 
         // Most synths don't have hard RT requirements
-        let _has_rt = instance.clap_loaded().has_hard_realtime_requirement();
+        let _has_rt = instance
+            .clap_loaded()
+            .has_hard_realtime_requirement(&main_thread());
     }
 
     // ── Group L: Voice Info ──
@@ -2954,7 +2967,7 @@ mod tests {
         .expect("Failed to load");
 
         // TAL-NoiseMaker may or may not support voice info
-        if let Some(info) = instance.clap_loaded().voice_info() {
+        if let Some(info) = instance.clap_loaded().voice_info(&main_thread()) {
             assert!(info.voice_count > 0, "voice_count should be > 0");
             assert!(info.voice_capacity > 0, "voice_capacity should be > 0");
         }
@@ -2973,7 +2986,7 @@ mod tests {
         .expect("Failed to load Surge XT");
 
         // Surge XT likely supports voice info
-        if let Some(info) = instance.clap_loaded().voice_info() {
+        if let Some(info) = instance.clap_loaded().voice_info(&main_thread()) {
             assert!(info.voice_count > 0, "Surge XT voice_count should be > 0");
             assert!(
                 info.voice_capacity > 0,
@@ -2996,10 +3009,10 @@ mod tests {
         )
         .expect("Failed to load");
 
-        let count = instance.clap_loaded().note_name_count();
+        let count = instance.clap_loaded().note_name_count(&main_thread());
         // Iterate whatever's there — may be 0 for synths without custom note names
         for i in 0..count {
-            let name = instance.clap_loaded().note_name(i);
+            let name = instance.clap_loaded().note_name(&main_thread(), i);
             assert!(name.is_some(), "note_name at index {} should exist", i);
             assert!(
                 !name.unwrap().name.is_empty(),

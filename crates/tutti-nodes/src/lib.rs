@@ -123,9 +123,14 @@ pub use downmix_unit::DownmixNode;
 mod strip;
 pub use strip::{BusStripNode, STRIP_PARAMS};
 
-// The reverb send: a Freeverb (`tutti_dsp::Freeverb`), mono in, stereo wet out.
+// The dry path's delay, shared by the nodes that blend a processed signal with
+// their input.
+mod dry_align;
+
+// The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
+// stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
-pub use reverb::ReverbNode;
+pub use reverb::{FreeverbNode, FreeverbParams, ReverbDesign, ReverbNode, ReverbParams};
 
 // Spatial panners (VBAP, binaural) are `tutti-spatial`'s, which depends on
 // this crate; nothing here names it.

@@ -781,13 +781,13 @@ mod tests {
     }
 
     impl HostPresets for FakePresets {
-        fn presets(&self) -> Vec<Preset> {
+        fn presets(&self, _main: &MainThread) -> Vec<Preset> {
             self.listed.clone()
         }
-        fn load_preset(&self, _id: &PresetId) -> bool {
+        fn load_preset(&self, _main: &MainThread, _id: &PresetId) -> bool {
             self.accepts
         }
-        fn current_preset(&self) -> Option<PresetId> {
+        fn current_preset(&self, _main: &MainThread) -> Option<PresetId> {
             None
         }
     }
@@ -904,7 +904,9 @@ mod tests {
             accepts: false,
         })));
         assert_eq!(
-            empty.presets().map(|p| p.presets()),
+            empty
+                .presets()
+                .map(|p| p.presets(&MainThread::claim().unwrap())),
             Some(Vec::new()),
             "a capability that listed nothing must report an empty list, not None"
         );
@@ -933,7 +935,9 @@ mod tests {
             accepts: false,
         })));
         assert_eq!(
-            refusing.presets().map(|p| p.load_preset(&id)),
+            refusing
+                .presets()
+                .map(|p| p.load_preset(&MainThread::claim().unwrap(), &id)),
             Some(false),
             "a refusal must report a present route that said no"
         );
@@ -943,7 +947,9 @@ mod tests {
             accepts: true,
         })));
         assert_eq!(
-            accepting.presets().map(|p| p.load_preset(&id)),
+            accepting
+                .presets()
+                .map(|p| p.load_preset(&MainThread::claim().unwrap(), &id)),
             Some(true),
             "an accepted load must report true"
         );
@@ -966,7 +972,9 @@ mod tests {
             accepts: true,
         })));
         assert_eq!(
-            handle.presets().map(|p| p.presets()),
+            handle
+                .presets()
+                .map(|p| p.presets(&MainThread::claim().unwrap())),
             Some(listed),
             "the handle must not reorder or renumber what the plugin listed"
         );

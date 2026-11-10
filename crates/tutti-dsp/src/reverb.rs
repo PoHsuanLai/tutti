@@ -6,16 +6,22 @@
 //! A Freeverb: eight parallel damped comb filters then four all-pass filters
 //! per channel, fed by one mono input and giving a stereo wet signal.
 //!
-//! [`Freeverb`] holds the figures of the General MIDI reverb the SoundFont unit
-//! used to carry inside itself (room size 0.5, damping 0.5, width 1, wet 1), and
-//! no controls: every figure is a constant of the type. It allocates in
-//! [`new`](Freeverb::new) and nowhere after.
+//! [`Freeverb`] starts with the figures of the General MIDI reverb the SoundFont
+//! unit used to carry inside itself (room size 0.5, damping 0.5, width 1, wet 1).
+//! It is also the [`Kernel`] of [`FreeverbDesign`](crate::FreeverbDesign): the
+//! two coefficients a network carries (the comb feedback and damping) are the
+//! only figures [`retarget`](Kernel::retarget) moves, and the lines and the
+//! processing loops are untouched by it. It allocates in [`new`](Freeverb::new)
+//! and in [`prepare`](Kernel::prepare) at another rate, and nowhere after.
 
 use std::cmp;
 
 use tutti_types::{Db, SampleRate, Seconds};
 
-/// A Freeverb at one sample rate: mono in, stereo out, nothing to set.
+use crate::network::{Absorption, Bounds, Effort, Kernel, Network, Setup, Stage};
+
+/// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
+/// damping the only figures that move ([`Kernel::retarget`]).
 ///
 /// Its comb and all-pass lengths are Freeverb's, tuned at 44.1 kHz and scaled
 /// to the rate. The input is scaled by a fixed gain inside
@@ -184,6 +190,16 @@ impl Freeverb {
         }
     }
 
+    /// Makes the last right comb `len` frames long (empty), for the kernel
+    /// contract's defective kernel.
+    #[cfg(test)]
+    pub(crate) fn lengthen_last_comb(&mut self, len: usize) {
+        if let Some(c) = self.cfs_r.last_mut() {
+            c.buffer = vec![0_f32; len];
+            c.buffer_index = 0;
+        }
+    }
+
     /// The comb and all-pass lengths and the first comb's coefficients, for the
     /// design's tests: `(left combs, right combs, left all-passes, right
     /// all-passes, (feedback, damp1, damp2))`.
@@ -222,6 +238,91 @@ impl Freeverb {
         // takes one trip more than the power does.
         let loops = (floor.to_amplitude().get().ln() / Self::ROOM_FEEDBACK.ln()).ceil() + 1_f32;
         Seconds((loops * longest as f32 + chain as f32) / self.rate.get() as f32)
+    }
+}
+
+impl Freeverb {
+    /// Sets every comb's loop gain and damping. The damping's complement is
+    /// computed here as `1 - damp`, the operation the constructor uses for the
+    /// General MIDI figure, so the same figures give the same coefficients to the
+    /// bit.
+    fn set_combs(&mut self, feedback: f32, damp: f32) {
+        for cf in self.cfs_l.iter_mut().chain(&mut self.cfs_r) {
+            cf.feedback = feedback;
+            cf.damp1 = damp;
+            cf.damp2 = 1_f32 - damp;
+        }
+    }
+}
+
+/// The kernel of [`FreeverbDesign`](crate::FreeverbDesign): `process` is the
+/// comb and all-pass loops of [`Freeverb::process`], untouched.
+///
+/// [`retarget`](Kernel::retarget) copies the comb loop gain and the damping off
+/// the network's first recirculating stage (a one-pole absorption on its first
+/// line) into every comb, whole and at once: a step in the loop gain is a step
+/// in what the next trip carries, not in the output, which is read from the
+/// past, so it needs no ramp to be free of a click (the kernel contract holds
+/// it to that). A network without a one-pole absorption, or with figures that
+/// are not finite or not a stable loop, is ignored. The network's pre-delay,
+/// width and wet gain are not read: [`FreeverbDesign`](crate::FreeverbDesign)
+/// never sets them.
+impl Kernel for Freeverb {
+    /// Re-tunes the lines when the graph runs at another rate than they were
+    /// built for, to the rounded hertz [`Freeverb::new`] uses. The coefficients
+    /// are kept.
+    fn prepare(&mut self, _bounds: &Bounds, setup: &Setup) {
+        if setup.rate.get().round() != self.rate.get() {
+            let (feedback, damp) = self
+                .cfs_l
+                .first()
+                .map_or((Self::ROOM_FEEDBACK, Self::DAMPING), |c| {
+                    (c.feedback, c.damp1)
+                });
+            *self = Freeverb::new(setup.rate);
+            self.set_combs(feedback, damp);
+        }
+    }
+
+    fn retarget(&mut self, network: &Network) {
+        let one_pole = network.stages.iter().find_map(|stage| match stage {
+            Stage::Fdn(f) => match f.lines.first().map(|l| l.absorption) {
+                Some(Absorption::OnePole { gain, damp }) => Some((gain.get(), damp)),
+                _ => None,
+            },
+            _ => None,
+        });
+        if let Some((feedback, damp)) = one_pole
+            && feedback.is_finite()
+            && (0.0..1.0).contains(&feedback)
+            && damp.is_finite()
+            && damp.abs() < 1.0
+        {
+            self.set_combs(feedback, damp);
+        }
+    }
+
+    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        if let ([mono], [left, right, ..]) = (input, output) {
+            Freeverb::process(self, mono, left, right);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.mute();
+    }
+
+    fn effort(&self) -> Effort {
+        // Measured by `tutti-nodes`'s `benches/node_kernels.rs` (`reverb`): 18 ns
+        // a frame and output channel, the class for 2.8 to 45 (doc 013, "The cost
+        // model and coarsening").
+        Effort::Moderate
+    }
+
+    fn fresh(&self) -> Self {
+        let mut fresh = self.clone();
+        fresh.mute();
+        fresh
     }
 }
 

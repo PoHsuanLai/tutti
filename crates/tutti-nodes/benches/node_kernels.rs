@@ -289,7 +289,7 @@ fn dynamics(c: &mut Criterion) {
 
 /// The reverb: one input, two outputs, so the throughput counts two channels.
 fn reverb(c: &mut Criterion) {
-    run(c, "reverb", "freeverb", ReverbNode::new, None);
+    run(c, "reverb", "freeverb", ReverbNode::general_midi, None);
 }
 
 #[cfg(feature = "convolution")]

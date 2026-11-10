@@ -19,8 +19,12 @@
 //!
 //! So the instance is dropped normally and the module is leaked: the leak
 //! lives in `vst::host::PluginInstance`, which holds its `Library` in a
-//! `ManuallyDrop`. Dropping the instance here closes the plugin without ever
-//! unloading the module.
+//! `ManuallyDrop`. `effClose` runs when the last handle on the instance's core
+//! drops: the instance, the parameter object (`Vst2Loaded::params`), the editor and
+//! the Processor's render handle all hold it, so no handle outlives the close. On
+//! the control side that is `Vst2Loaded`'s drop (the Processor's handles are
+//! released before its `Hold`, so they are never last). The module is never
+//! unloaded.
 
 use vst::host::PluginInstance;
 use vst::plugin::Plugin as _;
@@ -33,8 +37,9 @@ use vst::plugin::Plugin as _;
 /// alongside. There is no way to load a second editor against the same
 /// audio instance.
 pub(crate) struct Vst2Handle {
-    /// Dropped normally: its destructor dispatches `effClose`. The module is
-    /// what stays loaded, not the instance — see the module docs.
+    /// One of the handles on the plugin's core, which dispatches `effClose` when the
+    /// last of them drops. The module is what stays loaded, not the instance — see
+    /// the module docs.
     pub(crate) instance: PluginInstance,
     pub(crate) editor: Option<SendEditor>,
     /// Whether the last `effMainsChanged` dispatched carried `value=1`.
@@ -110,9 +115,9 @@ impl Drop for Vst2Handle {
             self.resumed = false;
         }
 
-        // `self.instance` is then dropped normally, which dispatches
-        // `effClose`. The shared module is *not* unloaded — that leak lives in
-        // `PluginInstance` itself. See the module docs for why the two must not
-        // be conflated.
+        // `effClose` runs when the last handle on the instance's core drops, which
+        // is after this (the parameter object is `Vst2Loaded`'s next field). The
+        // shared module is *not* unloaded — that leak lives in `PluginInstance`
+        // itself. See the module docs for why the two must not be conflated.
     }
 }

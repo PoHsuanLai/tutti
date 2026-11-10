@@ -43,7 +43,7 @@ use support::probe_path::probe_path;
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{
     CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
-    CMD_UNREGISTER_TIMER, Site, ThreadCapture,
+    CMD_UNREGISTER_TIMER, CMD_UNREGISTER_TIMER_IN_DEACTIVATE, Site, ThreadCapture,
 };
 
 /// The probe's capture, command word and reset are process-globals shared by
@@ -85,7 +85,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -842,4 +842,68 @@ fn main_thread_methods_run_on_the_loading_thread() {
          that it returns rather than panicking"
     );
     inst.on_main_thread(&main_thread());
+}
+
+/// `Control::info` has no token, and the editor's presence is a question put
+/// to the plugin (`gui.is_api_supported`, a `[main-thread]` entry), so off the
+/// thread that holds the main role it answers from the factory alone
+/// (`EditorPresence::Unknown`) and asks nothing; on the main thread it
+/// measures, and keeps the measurement.
+///
+/// Mutation (run): in `info`, answer the `None` arm (no `MainThread`) with a
+/// measured descriptor -> the off-thread assertion fails.
+#[test]
+fn info_off_the_main_thread_asks_the_plugin_nothing() {
+    use tutti_plugin_types::{Control, EditorPresence};
+
+    let probe = Probe::acquire();
+    let inst = probe.load();
+    let _main = main_thread();
+    let (inst, off) = std::thread::spawn(move || {
+        let editor = Control::info(&inst).editor;
+        (inst, editor)
+    })
+    .join()
+    .expect("info does not panic");
+    assert_eq!(off, EditorPresence::Unknown);
+    assert_ne!(
+        Control::info(&inst).editor,
+        EditorPresence::Unknown,
+        "the main thread measures"
+    );
+}
+
+/// `deactivate` is `[main-thread]`, so what a plugin calls from it is legal: a
+/// timer it unregisters there is accepted, and never fires afterwards. The
+/// instance's roles lock is held across `deactivate` (nothing audio-side may
+/// run beside it) but must not make the main thread answer as the audio thread,
+/// or the host refuses the `[main-thread]` callback and the timer outlives the
+/// plugin's editor.
+///
+/// Mutation (run): have `ThreadRoles::claim_lifecycle` publish the audio
+/// identity as `claim` does -> `unregister_timer` is refused, `timer_unregistered`
+/// reads false, and the timer fires after `deactivate`.
+#[test]
+fn a_timer_unregistered_from_deactivate_is_accepted_and_does_not_fire_after() {
+    let probe = Probe::acquire();
+    let mut inst = probe.activate();
+    probe.command(CMD_REGISTER_TIMER);
+    drive_block(&mut inst, 64);
+    assert!(callback_requested(&mut inst));
+    inst.on_main_thread(&main_thread());
+    assert!(probe.capture().timer_registered);
+
+    probe.command(CMD_UNREGISTER_TIMER_IN_DEACTIVATE);
+    let mut loaded = inst.deactivate();
+    assert!(
+        probe.capture().timer_unregistered,
+        "the host refused `unregister_timer` from the plugin's own `deactivate`"
+    );
+    let before = probe.capture().sites[Site::OnTimer as usize].visits;
+    assert_eq!(loaded.poll_timers(&main_thread()), 0, "no timer is left");
+    assert_eq!(
+        probe.capture().sites[Site::OnTimer as usize].visits,
+        before,
+        "`on_timer` ran after the plugin unregistered its timer"
+    );
 }

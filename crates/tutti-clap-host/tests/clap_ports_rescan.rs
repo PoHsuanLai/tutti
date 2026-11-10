@@ -99,7 +99,7 @@ impl Probe {
 
     fn load(&self) -> ClapLoaded {
         let path = Path::new(probe_path());
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 }
@@ -181,10 +181,13 @@ fn a_plugin_without_clap_tail_has_no_answer() {
     let probe = Probe::acquire();
 
     probe.tail_extension(false);
-    assert_eq!(probe.load().tail_samples(), None);
+    assert_eq!(probe.load().tail_samples(&main_thread()), None);
 
     probe.tail_extension(true);
-    assert_eq!(probe.load().tail_samples(), Some(REPORTED_TAIL_SAMPLES));
+    assert_eq!(
+        probe.load().tail_samples(&main_thread()),
+        Some(REPORTED_TAIL_SAMPLES)
+    );
 }
 
 /// **A rescan of an active plugin is refused.** CLAP lets a plugin change its
@@ -230,13 +233,21 @@ fn a_rate_change_rereads_the_port_layout() {
         .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("activates");
-    assert_eq!(active.audio_port_count(true), 1, "fixture: one input port");
+    assert_eq!(
+        active.audio_port_count(&main_thread(), true),
+        1,
+        "fixture: one input port"
+    );
     assert_eq!(active.info().audio_inputs, 2);
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
     active.reconfigure(44_100.0, 512).expect("re-activates");
 
-    assert_eq!(active.audio_port_count(true), 2, "the plugin's new layout");
+    assert_eq!(
+        active.audio_port_count(&main_thread(), true),
+        2,
+        "the plugin's new layout"
+    );
     assert_eq!(active.info().audio_inputs, 3, "stereo main + mono aux");
 
     // The scratch fits the new layout: a block of 3 channels in and out runs.
@@ -341,7 +352,11 @@ fn a_refused_activation_with_a_new_layout_leaves_ports_the_next_one_fits() {
         .activate_at::<f64>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("flagged, so 64-bit activation is allowed");
-    assert_eq!(active.audio_port_count(true), 1, "fixture: one input port");
+    assert_eq!(
+        active.audio_port_count(&main_thread(), true),
+        1,
+        "fixture: one input port"
+    );
     let loaded = active.deactivate();
 
     probe.ports_64bit(0);
@@ -350,7 +365,7 @@ fn a_refused_activation_with_a_new_layout_leaves_ports_the_next_one_fits() {
         .activate_at::<f64>(44_100.0, 512)
         .expect_err("the flags are gone");
     assert_eq!(
-        loaded.audio_port_count(true),
+        loaded.audio_port_count(&main_thread(), true),
         2,
         "the rescan is committed, so the layout is the plugin's"
     );

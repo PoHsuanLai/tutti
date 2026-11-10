@@ -11,12 +11,15 @@ use tutti_plugin_types::MainThread;
 impl ClapLoaded {
     /// Serializes the plugin's state to bytes via `CLAP_EXT_STATE`.
     ///
+    /// The state is capped at 1 GiB: a plugin whose state is larger fails to
+    /// save, which is a `StateError`.
+    ///
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
-    /// its `save` callback returns failure.
-    pub(crate) fn read_state(&self, _main: &MainThread) -> Result<Vec<u8>> {
+    /// its `save` callback returns failure (the cap included).
+    pub(crate) fn read_state(&self, main: &MainThread) -> Result<Vec<u8>> {
         let mut stream = OutputStream::new();
-        match self.plugin.state_save(&mut stream) {
+        match self.plugin.state_save(main, &mut stream) {
             Ok(()) => Ok(stream.into_data()),
             Err(CallError::NoExtension) => {
                 Err(ClapError::StateError("No state extension".to_string()))
@@ -36,12 +39,12 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `load` callback rejects the data.
-    pub(crate) fn write_state(&mut self, _main: &MainThread, data: &[u8]) -> Result<()> {
+    pub(crate) fn write_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
         let mut stream = InputStream::new(data);
-        match self.plugin.state_load(&mut stream) {
+        match self.plugin.state_load(main, &mut stream) {
             Ok(()) => Ok(()),
             Err(CallError::NoExtension) => {
                 Err(ClapError::StateError("No state extension".to_string()))
@@ -78,7 +81,7 @@ impl ClapLoaded {
         let mut stream = OutputStream::new();
         match self
             .plugin
-            .state_save_with_context(&mut stream, context.into())
+            .state_save_with_context(main, &mut stream, context.into())
         {
             Ok(()) => Ok(stream.into_data()),
             Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
@@ -117,7 +120,7 @@ impl ClapLoaded {
         let mut stream = InputStream::new(data);
         match self
             .plugin
-            .state_load_with_context(&mut stream, context.into())
+            .state_load_with_context(main, &mut stream, context.into())
         {
             Ok(()) => Ok(()),
             Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
@@ -151,8 +154,8 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin doesn't implement preset
     /// loading, the path isn't valid UTF-8, or the plugin rejects the load.
-    pub fn load_preset_file(&mut self, _main: &MainThread, path: impl AsRef<Path>) -> Result<()> {
-        match self.plugin.preset_load_file(path.as_ref()) {
+    pub fn load_preset_file(&mut self, main: &MainThread, path: impl AsRef<Path>) -> Result<()> {
+        match self.plugin.preset_load_file(main, path.as_ref()) {
             Ok(()) => Ok(()),
             Err(CallError::NoExtension) => Err(ClapError::StateError(
                 "No preset-load extension".to_string(),

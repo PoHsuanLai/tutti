@@ -518,12 +518,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
-  (`DitherNoise`), the Freeverb reverb (`Freeverb`, which `ReverbNode`
-  adapts), the reverb model of doc 022 (`Network`, `Design`, `Bounds`,
-  `FreeverbDesign`: a plain fixed-capacity description with analytic queries,
-  never an instruction stream a kernel must follow), the
+  (`DitherNoise`), the Freeverb reverb (`Freeverb`, which is also the
+  `Kernel` of `FreeverbDesign`), the reverb model of doc 022 (`Network`,
+  `Design`, `Kernel`, `Setup`, `Bounds`, `FreeverbDesign`: a plain
+  fixed-capacity description with analytic queries, never an instruction stream
+  a kernel must follow, and the kernel that runs it, moved to each network by
+  `retarget`; a `Design` writes its network in place, `design_into`, because a
+  `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
-  them (shape, prepare, process, params, fork), and re-exports only the
+  them (shape, prepare, process, params, fork; `ReverbNode<D: ReverbDesign>` is
+  the one node over every reverb `Design`, with `FreeverbNode` its Freeverb
+  instance), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`).
 - **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only

@@ -3,8 +3,9 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char};
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
@@ -116,6 +117,14 @@ pub fn chars_to_string(field: &[c_char]) -> String {
 /// upgrading and the next acquire re-runs `init`.
 static ENTRY_REGISTRY: Mutex<Option<HashMap<PathBuf, Weak<LiveEntry>>>> = Mutex::new(None);
 
+type Registry = Option<HashMap<PathBuf, Weak<LiveEntry>>>;
+
+/// The registry, locked. A poisoned lock is taken as is: the map is only
+/// ever inserted into, so a panicking holder left it consistent.
+fn registry() -> MutexGuard<'static, Registry> {
+    ENTRY_REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Liveness token of one initialised entry: its existence proves the image
 /// is still mapped and initialised.
 struct LiveEntry;
@@ -128,12 +137,30 @@ struct EntryGuard {
 
 type InitFn = unsafe extern "C" fn(*const c_char) -> bool;
 
+#[cfg(test)]
 fn entry_registry_acquire(
     path: &Path,
     init_fn: InitFn,
     path_cstr: &CString,
 ) -> Result<EntryGuard, LoadError> {
-    let mut registry = ENTRY_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    acquire_in(&mut registry(), path, init_fn, path_cstr)
+}
+
+/// The entry claim for `path` on a registry the caller already holds locked.
+///
+/// `Bundle::open` holds the lock from before it maps the image until the
+/// entry is acquired, and `Bundle`'s drop holds it from before the image is
+/// unmapped until the guard is released. The two cannot interleave, so a
+/// `Weak` that upgrades always names the image the caller just mapped (still
+/// mapped by the other holder, which it shares), and one that does not names
+/// no image at all: `init` never runs twice on one image, nor is skipped on a
+/// fresh one.
+fn acquire_in(
+    registry: &mut Registry,
+    path: &Path,
+    init_fn: InitFn,
+    path_cstr: &CString,
+) -> Result<EntryGuard, LoadError> {
     let map = registry.get_or_insert_with(HashMap::new);
     if let Some(live) = map.get(path).and_then(Weak::upgrade) {
         return Ok(EntryGuard { _live: live });
@@ -150,11 +177,13 @@ fn entry_registry_acquire(
 
 /// An opened CLAP bundle: its library, initialised entry and factory.
 ///
-/// Dropping it releases the entry claim, then unloads the library.
+/// Dropping it unloads the library, then releases the entry claim, both under
+/// the registry lock (see `acquire_in`).
 pub struct Bundle {
-    // Field order is drop order: the guard releases before the image unmaps.
-    _entry: EntryGuard,
-    library: libloading::Library,
+    // `ManuallyDrop` so `Drop` can close the image and release the claim in
+    // one hold of the registry lock.
+    _entry: ManuallyDrop<EntryGuard>,
+    library: ManuallyDrop<libloading::Library>,
     factory: *const clap_plugin_factory,
     descriptors: Vec<DescriptorInfo>,
 }
@@ -172,6 +201,19 @@ impl std::fmt::Debug for Bundle {
             .field("library", &self.library)
             .field("descriptors", &self.descriptors)
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Bundle {
+    fn drop(&mut self) {
+        let _registry = registry();
+        // SAFETY: each is dropped once, here, and never used again. The
+        // library goes first (the image unmaps), then the claim that the image
+        // is initialised, so no opener sees the claim outlive its image.
+        unsafe {
+            ManuallyDrop::drop(&mut self.library);
+            ManuallyDrop::drop(&mut self._entry);
+        }
     }
 }
 
@@ -200,6 +242,8 @@ impl Bundle {
     /// factory or its descriptors.
     pub fn open(bundle_path: &Path, library_path: Option<&Path>) -> Result<Self, LoadError> {
         let load_path = library_path.unwrap_or(bundle_path);
+        // Held until the entry is acquired: see `acquire_in`.
+        let mut registry = registry();
         // SAFETY: loading a plugin library runs its initialisers, which the
         // host accepts by loading plugins at all; the caller named the path.
         let library = unsafe { libloading::Library::new(load_path) }
@@ -220,7 +264,7 @@ impl Bundle {
             .ok_or_else(|| fail(Stage::Opening, "No init function"))?;
         let path_cstr = CString::new(bundle_path.to_string_lossy().as_ref())
             .map_err(|e| fail(Stage::Opening, format!("Invalid path: {e}")))?;
-        let entry_guard = entry_registry_acquire(bundle_path, init_fn, &path_cstr)?;
+        let entry_guard = acquire_in(&mut registry, bundle_path, init_fn, &path_cstr)?;
 
         let get_factory = entry
             .get_factory
@@ -269,8 +313,8 @@ impl Bundle {
             ));
         }
         Ok(Self {
-            _entry: entry_guard,
-            library,
+            _entry: ManuallyDrop::new(entry_guard),
+            library: ManuallyDrop::new(library),
             factory,
             descriptors,
         })
@@ -604,5 +648,62 @@ mod select_tests {
             1
         );
         assert!(select_index(&descriptors, Some("")).is_err());
+    }
+
+    /// `Bundle::open` and a `Bundle`'s drop each hold the registry lock across
+    /// the image's mapping and unmapping and the claim that goes with it, so an
+    /// opener can never see a claim outlive its image, nor a fresh image
+    /// inherit one (`init` run twice on one image, or skipped on a new one).
+    /// The test holds the lock and shows both wait for it.
+    ///
+    /// Mutation: take no lock in `Bundle`'s drop: the drop finishes while the
+    /// test holds the lock and the first assertion fails; have `open` use a
+    /// registry of its own, not the global one (`let mut local = None;`, passed
+    /// to `acquire_in`): the opener never waits and the second fails.
+    /// Not covered: that `open` takes the lock *before* it maps the image
+    /// rather than at the acquire (an opener blocks at either, and the map
+    /// call has no observable effect here); that order is the construction in
+    /// `open`, argued at `acquire_in`.
+    #[test]
+    fn opening_and_dropping_a_bundle_take_the_registry_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let path = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+        let bundle = Bundle::open(&path, None).expect("opens");
+        let wait = Duration::from_millis(300);
+
+        let held = registry();
+        let (done, finished) = mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(bundle);
+            done.send(()).unwrap();
+        });
+        assert!(
+            finished.recv_timeout(wait).is_err(),
+            "the drop waits for the registry"
+        );
+        drop(held);
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the drop ends");
+        dropper.join().unwrap();
+
+        let held = registry();
+        let (done, finished) = mpsc::channel();
+        let opener = std::thread::spawn(move || {
+            let bundle = Bundle::open(&path, None).expect("opens");
+            done.send(()).unwrap();
+            drop(bundle);
+        });
+        assert!(
+            finished.recv_timeout(wait).is_err(),
+            "the open waits for the registry"
+        );
+        drop(held);
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the open ends");
+        opener.join().unwrap();
     }
 }

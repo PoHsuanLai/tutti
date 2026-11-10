@@ -2,7 +2,7 @@
 #
 # Every host callback a plugin can call into must run its body in the panic
 # guard (`guard(..)`, its `guarded(..)` wrapper around a `HostCallbacks`
-# call, or, for `request_exec`, `or_abort(..)`), because a panic
+# call, `main_only(..)`, which is `guarded` behind a thread check, or, for `request_exec`, `or_abort(..)`), because a panic
 # out of an `extern "C"` / COM method aborts the process:
 #
 # - tutti-clap-ffi: each `extern "C" fn NAME(` defined outside test code (text
@@ -91,7 +91,7 @@ def body_of(s, name_end):
 
 
 def guarded(body):
-    return re.search(r"\b(guard|guarded|or_abort|with_state|with_state_mut)(::<[^(]*>)?\(", body) is not None
+    return re.search(r"\b(guard|guarded|main_only|or_abort|with_state|with_state_mut)(::<[^(]*>)?\(", body) is not None
 
 
 bad, seen = [], 0

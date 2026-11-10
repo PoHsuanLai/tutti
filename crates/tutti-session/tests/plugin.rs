@@ -100,7 +100,7 @@ fn round_trip(s: &Session, node: NodeKey) {
     let _ = handle
         .presets()
         .expect("the subprocess backend has a preset route")
-        .current_preset();
+        .current_preset(&main_thread());
 }
 
 /// Waits (up to 10 s) for the probe's latency to read `want`: the

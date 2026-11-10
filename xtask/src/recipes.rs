@@ -164,6 +164,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ("check-plugin-ffi", "", "scripts/check-plugin-ffi.sh"),
     ("check-layout", "", "scripts/check-layout.sh"),
     ("check-range-types", "", "scripts/check-range-types.sh"),
+    ("check-hosting", "", "scripts/check-hosting.sh"),
     (
         "check-paths",
         "[script args]",
@@ -370,6 +371,7 @@ impl Planner<'_> {
             "check-plugin-ffi" => self.lines(&["scripts/check-plugin-ffi.sh"]),
             "check-layout" => self.lines(&["scripts/check-layout.sh"]),
             "check-range-types" => self.lines(&["scripts/check-range-types.sh"]),
+            "check-hosting" => self.lines(&["scripts/check-hosting.sh"]),
             "check-paths" => self.run(Cmd::sh("scripts/check-canonical-paths.sh").args(args)),
             "lint" => self.lines(&[
                 "cargo fmt --all --check",
@@ -407,7 +409,8 @@ impl Planner<'_> {
             "ci" => {
                 for d in [
                     "lint", "deny", "check-paths", "check-bevy-free", "check-adapter", "check-guards",
-                    "check-plugin-ffi", "check-layout", "check-range-types", "check-features",
+                    "check-plugin-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-features",
                     "check-loom", "test", "test-features", "test-editor", "test-doc",
                     "test-release", "doc",
                 ] {
@@ -471,6 +474,7 @@ impl Planner<'_> {
 const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p bevy-tutti --features audio-io --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p bevy-tutti --features soundfont --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p bevy-tutti --features sampler --all-targets -- -D warnings"#,
@@ -479,6 +483,7 @@ const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-export --lib -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-export --lib --features wav -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-export --lib --features flac -- -D warnings"#,
@@ -517,6 +522,7 @@ const TEST_FEATURES: &[&str] = &[
     r#"cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3"#,
     r#"cargo build --locked -p tutti-plugin-probe"#,
     r#"cargo nextest run --locked -p tutti-cpal --features capture"#,
+    r#"cargo nextest run --locked -p tutti-session --features audio-io"#,
     r#"cargo nextest run --locked -p bevy-tutti --features audio-io"#,
     r#"cargo nextest run --locked -p bevy-tutti --features soundfont"#,
     r#"cargo nextest run --locked -p bevy-tutti --features sampler"#,
@@ -524,6 +530,7 @@ const TEST_FEATURES: &[&str] = &[
     r#"cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont"#,
     r#"cargo nextest run --locked -p tutti --features clap,export,modulation"#,
     r#"cargo nextest run --locked -p tutti --features audio-io"#,
+    r#"cargo nextest run --locked -p tutti --no-default-features --features io"#,
     r#"cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg"#,
     r#"cargo nextest run --locked -p tutti-codec"#,
     r#"cargo nextest run --locked -p tutti-codec --features encode-wav"#,

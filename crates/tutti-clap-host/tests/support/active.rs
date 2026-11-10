@@ -3,9 +3,11 @@
 //!
 //! The Processor and the Controller are separate values on purpose; most of
 //! these suites want "the active plugin", so [`Active`] holds the pair, derefs
-//! to the Controller (and so to `ClapLoaded`), and forwards the Processor's
-//! calls. [`Active::reconfigure`] is the deactivate/activate pair a rate or
-//! block-size change is.
+//! to the Controller, and forwards the Processor's calls. It does not deref to
+//! `ClapLoaded`: a call meant for the loaded plugin names [`Active::loaded`], so
+//! a name both have (`set_thread_pool`) cannot quietly skip what the Controller tells
+//! the Processor. [`Active::reconfigure`] is the deactivate/activate pair a
+//! rate or block-size change is.
 
 // The error carries the whole plugin back, which is the point of it.
 #![allow(clippy::result_large_err)]
@@ -218,6 +220,19 @@ impl<T: Width> Active<T> {
     pub fn reactivate(&mut self) -> Result<(), PluginError> {
         let prepare = self.prepare;
         self.reconfigure(prepare.rate().0, prepare.max_block().get() as u32)
+    }
+}
+
+impl<T: Width> Active<T> {
+    /// The loaded plugin under the Controller. A suite names it on purpose:
+    /// a call through it skips what the Controller tells the Processor.
+    pub fn loaded(&self) -> &ClapLoaded {
+        self.pair().1.loaded()
+    }
+
+    /// [`loaded`](Self::loaded), mutably.
+    pub fn loaded_mut(&mut self) -> &mut ClapLoaded {
+        self.pair_mut().1.loaded_mut()
     }
 }
 

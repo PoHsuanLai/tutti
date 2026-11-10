@@ -192,8 +192,8 @@ fn a_plugin_without_clap_tail_has_no_answer() {
 
 /// **A rescan of an active plugin is refused.** CLAP lets a plugin change its
 /// ports only while deactivated, so a layout read under an active plugin would
-/// pair with buffers sized for the old one. The Controller derefs mutably to
-/// `ClapLoaded`, so the call is reachable.
+/// pair with buffers sized for the old one. The loaded plugin stays reachable
+/// under the Controller (`loaded_mut`), so the call is too.
 ///
 /// Mutation (run): change the guard in `ClapLoaded::rescan_audio_ports` to
 /// `if false && self.flags.active` → the call succeeds → `expect_err` fails.
@@ -208,11 +208,12 @@ fn a_rescan_of_an_active_plugin_is_refused() {
 
     probe.ports_64bit(BOTH_SIDES);
     let err = active
+        .loaded_mut()
         .rescan_audio_ports(&main_thread())
         .expect_err("the plugin is active");
     assert!(matches!(err, ClapError::NotSupported(_)), "got {err}");
     assert!(
-        !active.supports_f64(),
+        !active.loaded().supports_f64(),
         "a refused rescan reads nothing: the flag stays what activation read"
     );
 }
@@ -234,21 +235,25 @@ fn a_rate_change_rereads_the_port_layout() {
         .map_err(|(_, e)| e)
         .expect("activates");
     assert_eq!(
-        active.audio_port_count(&main_thread(), true),
+        active.loaded().audio_port_count(&main_thread(), true),
         1,
         "fixture: one input port"
     );
-    assert_eq!(active.info().audio_inputs, 2);
+    assert_eq!(active.loaded().info().audio_inputs, 2);
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
     active.reconfigure(44_100.0, 512).expect("re-activates");
 
     assert_eq!(
-        active.audio_port_count(&main_thread(), true),
+        active.loaded().audio_port_count(&main_thread(), true),
         2,
         "the plugin's new layout"
     );
-    assert_eq!(active.info().audio_inputs, 3, "stereo main + mono aux");
+    assert_eq!(
+        active.loaded().info().audio_inputs,
+        3,
+        "stereo main + mono aux"
+    );
 
     // The scratch fits the new layout: a block of 3 channels in and out runs.
     const FRAMES: usize = 64;
@@ -323,7 +328,7 @@ fn an_f64_activation_on_dropped_flags_is_refused_with_the_plugin_intact() {
         .activate_at::<f32>(44_100.0, 512)
         .map_err(|(_, e)| e)
         .expect("the same instance runs at 32-bit");
-    assert!(active.is_active());
+    assert!(active.loaded().is_active());
     process_f32_block(&mut active, 2).expect("and renders");
     drop(active);
     assert_eq!(
@@ -353,7 +358,7 @@ fn a_refused_activation_with_a_new_layout_leaves_ports_the_next_one_fits() {
         .map_err(|(_, e)| e)
         .expect("flagged, so 64-bit activation is allowed");
     assert_eq!(
-        active.audio_port_count(&main_thread(), true),
+        active.loaded().audio_port_count(&main_thread(), true),
         1,
         "fixture: one input port"
     );
@@ -391,14 +396,20 @@ fn a_successful_rate_change_exposes_the_new_layout() {
         .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("activates");
-    let before = (active.info().audio_inputs, active.info().audio_outputs);
+    let before = (
+        active.loaded().info().audio_inputs,
+        active.loaded().info().audio_outputs,
+    );
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
     active.reconfigure(44_100.0, 512).expect("re-activates");
 
-    let after = (active.info().audio_inputs, active.info().audio_outputs);
+    let after = (
+        active.loaded().info().audio_inputs,
+        active.loaded().info().audio_outputs,
+    );
     assert_ne!(before, after, "the totals follow the plugin's new layout");
-    assert!(active.is_active());
+    assert!(active.loaded().is_active());
 }
 
 /// **A deactivate and activate at the rate and block size the plugin runs at
@@ -415,14 +426,26 @@ fn reactivate_rereads_the_port_layout_in_place() {
         .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("activates");
-    assert_eq!(active.info().audio_inputs, 2, "fixture: one stereo input");
+    assert_eq!(
+        active.loaded().info().audio_inputs,
+        2,
+        "fixture: one stereo input"
+    );
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    assert_eq!(active.info().audio_inputs, 2, "nothing was re-read");
+    assert_eq!(
+        active.loaded().info().audio_inputs,
+        2,
+        "nothing was re-read"
+    );
 
     active.reactivate().expect("re-activates");
-    assert!(active.is_active());
-    assert_eq!(active.info().audio_inputs, 3, "the plugin's new layout");
-    assert_eq!(active.sample_rate(), 48_000.0);
-    assert_eq!(active.block_size(), 512);
+    assert!(active.loaded().is_active());
+    assert_eq!(
+        active.loaded().info().audio_inputs,
+        3,
+        "the plugin's new layout"
+    );
+    assert_eq!(active.loaded().sample_rate(), 48_000.0);
+    assert_eq!(active.loaded().block_size(), 512);
 }

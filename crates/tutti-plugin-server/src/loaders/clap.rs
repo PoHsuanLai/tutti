@@ -21,8 +21,9 @@ use tutti_plugin_types::{
     SampleRate, Samples, Seat, Stage, State,
 };
 
-use crate::loaders::common::{Meta, standing};
+use crate::loaders::common::Meta;
 use crate::plugin::AsyncEvent;
+use tutti_plugin_types::standing;
 
 /// The pool this process serves `clap.thread-pool` requests on, built the
 /// first time a plugin that implements the extension loads; `None` on a
@@ -462,7 +463,7 @@ impl ClapInstance {
     fn loaded_ref(&self) -> Option<&ClapLoaded> {
         match &self.lifecycle {
             Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(controller),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded()),
             Lifecycle::Poisoned => None,
         }
     }
@@ -471,7 +472,7 @@ impl ClapInstance {
     fn loaded_mut(&mut self) -> Option<&mut ClapLoaded> {
         match &mut self.lifecycle {
             Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(&mut **controller),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded_mut()),
             Lifecycle::Poisoned => None,
         }
     }

@@ -146,7 +146,7 @@ impl HostState for InProcessVst2Backend {
     /// This is the whole change on the in-process path: the `Result` was
     /// already in hand and discarded on the previous line.
     fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError> {
-        Control::load_state(&mut **self.inner.lock(), main, data)
+        Control::load_state(self.inner.lock().controller_mut(), main, data)
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 }
@@ -236,6 +236,14 @@ impl HostEditor for InProcessVst2Backend {
 
         let (changes, param_changes) = {
             let mut instance = self.inner.lock();
+            // Before the lost check: a refusal that lost the plugin is the one to report.
+            if let Some(report) = instance.take_rate_report() {
+                use crate::handles::PluginInvalidation;
+                self.invalidate_sink.fire(match report {
+                    Some((rate, reason)) => PluginInvalidation::RateRefused { rate, reason },
+                    None => PluginInvalidation::RateRestored,
+                });
+            }
             if instance.is_lost() {
                 return;
             }

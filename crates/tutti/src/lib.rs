@@ -69,10 +69,14 @@ pub use tutti_cpal as device;
 #[cfg(feature = "codec")]
 pub use tutti_codec as codec;
 
-/// The live I/O edge (`tutti-io`): mic monitoring, the analysis tap, WAV out
-/// and recording. Feature `io`, which `audio-io` implies.
+/// The live I/O edge: recording a source into a sink. `Recorder` and the
+/// `PumpLoop` it runs (`tutti-session`); the sink is `tutti-codec`'s `FileOut`
+/// (`tutti::codec`), and a graph tap is an `AudioIn` as it is. Feature `io`,
+/// which `audio-io` implies.
 #[cfg(feature = "io")]
-pub use tutti_io as io;
+pub mod io {
+    pub use tutti_session::{IDLE_PARK, PumpLoop, PumpPass, Recorder, RecorderError};
+}
 
 /// Offline rendering and export (`tutti-export`). Feature `export`.
 #[cfg(feature = "export")]

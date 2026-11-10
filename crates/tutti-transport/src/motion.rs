@@ -487,7 +487,9 @@ impl MotionAudio {
     pub fn apply(&mut self, command: TransportCommand) {
         match command {
             TransportCommand::Motion(event) => self.step(event),
-            TransportCommand::Tempo(bpm) => self.settings.set_tempo(bpm),
+            // The audio thread cannot publish a map: the command is a scalar
+            // the clock keeps until the next publish (doc 020, stage 6).
+            TransportCommand::Tempo(bpm) => self.settings.tempo.store(bpm, Ordering::Release),
             TransportCommand::Loop(edit) => {
                 if let Some(owner) = self.owner.as_mut() {
                     owner.apply(edit);

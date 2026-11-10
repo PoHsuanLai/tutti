@@ -1,7 +1,13 @@
-use super::*;
-use tutti_graph::{Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+//! A tap's reader is an `AudioIn` (`impl AudioIn for TapReader`), so a pump
+//! or a recorder takes it as it is.
+
+use tutti_graph::{
+    Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
+};
 use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, TapAlign, TapId};
+use tutti_types::{
+    AudioIn, Beat, Bpm, ChannelLayout, NodeKey, OnEmpty, SampleRate, Samples, TapAlign, TapId,
+};
 
 /// A stereo source that plays `frames` in order, then silence: the graph the
 /// tap copies out of.
@@ -33,12 +39,12 @@ const BLOCK: usize = 512;
 /// The tap's reader over a graph that has rendered `frames`, through the real
 /// tap op the audio thread runs: the executor copies the source's two
 /// channels into the tap's lanes, and the reader interleaves them.
-fn tap_with(frames: &[(f32, f32)]) -> TapIn {
+fn tap_with(frames: &[(f32, f32)]) -> TapReader {
     tap_with_ring(frames, frames.len().max(1))
 }
 
 /// [`tap_with`], the rings holding `ring` frames.
-fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapIn {
+fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
     let (mut ed, mut exec): (Editor, Executor) =
         Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
     ed.insert(
@@ -74,7 +80,7 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapIn {
         let mut outs: [&mut [f32]; 2] = [&mut left[..block.len()], &mut right[..block.len()]];
         exec.process(block.len(), &t, &[], &mut outs);
     }
-    TapIn::new(reader)
+    reader
 }
 
 /// Frames the graph rendered come back out in order, interleaved L then R.
@@ -92,7 +98,7 @@ fn rendered_frames_come_back_in_order_and_channel_side() {
     let mut tap = tap_with(&frames);
     let mut out = [0.0f32; 8 * 2];
     assert_eq!(
-        tap.poll_into(&mut out),
+        AudioIn::poll_into(&mut tap, &mut out),
         Samples(4),
         "the return is FRAMES, not samples"
     );
@@ -112,14 +118,14 @@ fn a_poll_never_writes_past_the_output_slice() {
     let mut tap = tap_with(&[(1.0, 1.0); 32]);
     let mut out = [0.0f32; 4 * 2];
     assert_eq!(
-        tap.poll_into(&mut out),
+        AudioIn::poll_into(&mut tap, &mut out),
         Samples(4),
         "must fill exactly the slice"
     );
 
     // The rest is still queued, not dropped.
     let mut rest = [0.0f32; 32 * 2];
-    assert_eq!(tap.poll_into(&mut rest), Samples(28));
+    assert_eq!(AudioIn::poll_into(&mut tap, &mut rest), Samples(28));
 }
 
 /// An empty tap yields nothing and says so — without claiming the end.
@@ -132,19 +138,19 @@ fn an_empty_tap_starves_rather_than_ending() {
     let mut tap = tap_with(&[]);
 
     let mut out = [0.0f32; 4 * 2];
-    assert_eq!(tap.poll_into(&mut out), Samples::ZERO);
+    assert_eq!(AudioIn::poll_into(&mut tap, &mut out), Samples::ZERO);
     assert_eq!(
-        TapIn::ON_EMPTY,
+        <TapReader as AudioIn>::ON_EMPTY,
         OnEmpty::Starved,
         "the graph does not end; an empty tap is a gap, not a finish"
     );
 }
 
 /// The join this type exists for: a tap consumer satisfies the bound
-/// `Recorder::start` and `pump` require.
+/// `pump` and a recorder require.
 ///
 /// Asserted as a compile-time bound rather than by running a recorder — the
-/// defect it guards against is `TapIn` failing to *be* an `AudioIn`, which
+/// defect it guards against is `TapReader` failing to *be* an `AudioIn`, which
 /// is a type error, not a behaviour.
 #[test]
 fn a_tap_is_accepted_where_a_live_source_is_required() {
@@ -156,7 +162,7 @@ fn a_tap_is_accepted_where_a_live_source_is_required() {
 /// Its layout is the tap's width, not a fixed stereo: a six-lane tap is a
 /// six-channel source.
 ///
-/// Mutation (run, recorded here): `TapIn::layout` returning
+/// Mutation (run, recorded here): `impl AudioIn for TapReader`'s `layout` returning
 /// `ChannelLayout::STEREO` -> a one-lane and a six-lane tap read as stereo
 /// and this fails.
 #[test]
@@ -173,7 +179,7 @@ fn the_layout_follows_the_taps_width() {
             )
             .expect("the sources exist");
         assert_eq!(
-            TapIn::new(reader).layout(),
+            AudioIn::layout(&reader),
             ChannelLayout::try_from(width).expect("a test width is small")
         );
     }
@@ -181,11 +187,15 @@ fn the_layout_follows_the_taps_width() {
 
 /// The frames a tap's rings refused are the source's `take_lost`, once.
 ///
-/// Mutation (run, recorded here): `TapIn::take_lost` returning the trait's
+/// Mutation (run, recorded here): the impl's `take_lost` returning the trait's
 /// zero -> this fails.
 #[test]
 fn a_tap_reports_the_frames_it_lost() {
     let mut tap = tap_with_ring(&[(1.0, 1.0); 8], 5);
-    assert_eq!(tap.take_lost(), Samples(3));
-    assert_eq!(tap.take_lost(), Samples::ZERO, "reading clears");
+    assert_eq!(AudioIn::take_lost(&mut tap), Samples(3));
+    assert_eq!(
+        AudioIn::take_lost(&mut tap),
+        Samples::ZERO,
+        "reading clears"
+    );
 }

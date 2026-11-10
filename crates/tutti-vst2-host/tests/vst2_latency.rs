@@ -162,12 +162,12 @@ fn the_latency_accessor_reads_the_live_field() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.latency_samples(),
+        instance.loaded().latency_samples(),
         Samples(LATE_LATENCY as usize),
         "the accessor must see what the plugin declared during init"
     );
     assert_eq!(
-        instance.latency_samples(),
+        instance.loaded().latency_samples(),
         instance.wiring(&main_thread()).latency_samples,
         "the accessor and the wiring read the same field"
     );
@@ -190,7 +190,10 @@ fn a_sample_rate_change_can_be_followed_by_a_fresh_read() {
     probe.declares_late(LATE_LATENCY);
 
     let mut instance = probe.load();
-    assert_eq!(instance.latency_samples(), Samples(LATE_LATENCY as usize));
+    assert_eq!(
+        instance.loaded().latency_samples(),
+        Samples(LATE_LATENCY as usize)
+    );
 
     // A plugin that halves its filter length at a higher rate.
     let recomputed = LATE_LATENCY / 2;
@@ -198,7 +201,7 @@ fn a_sample_rate_change_can_be_followed_by_a_fresh_read() {
     instance.set_sample_rate(96_000.0);
 
     assert_eq!(
-        instance.latency_samples(),
+        instance.loaded().latency_samples(),
         Samples(recomputed as usize),
         "after a rate change the host must re-ask; the load-time figure is stale"
     );

@@ -292,7 +292,9 @@ pub(super) fn drain_sample_rate(
     }
     match inner.try_lock() {
         Some(mut instance) => {
-            instance.set_sample_rate(main, f64::from_bits(bits));
+            // A refusal is kept in the instance and reported by the control side's next
+            // pump (`take_rate_report`), so the result is not read here.
+            let _ = instance.set_sample_rate(main, f64::from_bits(bits));
             true
         }
         None => {
@@ -426,8 +428,15 @@ impl InProcessVst2Client {
             RateDelivery::InPrepare if changed || self.rate_refused => {
                 match MainThread::current() {
                     Some(main) => {
-                        self.inner.lock().set_sample_rate(&main, sample_rate);
-                        self.rate_refused = false;
+                        match self.inner.lock().set_sample_rate(&main, sample_rate) {
+                            Ok(()) => self.rate_refused = false,
+                            Err(reason) => {
+                                // The plugin keeps its old rate: silence, not audio at
+                                // the wrong one, until a prepare it takes.
+                                self.rate_refused = true;
+                                tracing::error!("a forked VST2 plugin refused its rate: {reason}");
+                            }
+                        }
                     }
                     None => {
                         self.rate_refused = true;

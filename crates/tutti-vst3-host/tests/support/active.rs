@@ -3,9 +3,11 @@
 //!
 //! The Processor and the Controller are separate values on purpose; most of
 //! these suites want "the active plugin", so [`Active`] holds the pair, derefs
-//! to the Controller (and so to `Vst3Loaded`), and forwards the Processor's
-//! calls. [`Active::reconfigure`] is the deactivate/activate pair a rate or
-//! block-size change is.
+//! to the Controller, and forwards the Processor's calls. It does not deref to
+//! `Vst3Loaded`: a call meant for the loaded plugin names [`Active::loaded`], so
+//! a name both have (`Control::set_parameter`) cannot quietly skip what the Controller tells
+//! the Processor. [`Active::reconfigure`] is the deactivate/activate pair a
+//! rate or block-size change is.
 
 // The error carries the whole plugin back, which is the point of it.
 #![allow(clippy::result_large_err, dead_code)]
@@ -285,6 +287,32 @@ impl<T: Vst3Sample> Active<T> {
     }
 }
 
+impl<T: Vst3Sample> Active<T> {
+    /// The Controller, named: a parameter write or a state load that is also
+    /// queued to the Processor. `Deref` reaches it too.
+    pub fn controller_mut(&mut self) -> &mut Vst3Controller {
+        &mut self.pair_mut().1
+    }
+
+    /// The Controller, shared.
+    pub fn controller(&self) -> &Vst3Controller {
+        &self.pair().1
+    }
+}
+
+impl<T: Vst3Sample> Active<T> {
+    /// The loaded plugin under the Controller. A suite names it on purpose:
+    /// a call through it skips what the Controller tells the Processor.
+    pub fn loaded(&self) -> &Vst3Loaded {
+        self.pair().1.loaded()
+    }
+
+    /// [`loaded`](Self::loaded), mutably.
+    pub fn loaded_mut(&mut self) -> &mut Vst3Loaded {
+        self.pair_mut().1.loaded_mut()
+    }
+}
+
 impl<T: Vst3Sample> Deref for Active<T> {
     type Target = Vst3Controller;
 
@@ -342,11 +370,11 @@ impl ParamExt for Vst3Controller {
 
 impl<T: Vst3Sample> ParamExt for Active<T> {
     fn get_parameter(&self, id: u32) -> f64 {
-        ParamExt::get_parameter(&**self, id)
+        ParamExt::get_parameter(self.controller(), id)
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        ParamExt::set_parameter(&mut **self, id, value);
+        ParamExt::set_parameter(self.controller_mut(), id, value);
     }
 }
 
@@ -381,11 +409,11 @@ impl StateExt for Vst3Controller {
 
 impl<T: Vst3Sample> StateExt for Active<T> {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        StateExt::get_state(&mut **self)
+        StateExt::get_state(self.controller_mut())
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
-        StateExt::set_state(&mut **self, bytes)
+        StateExt::set_state(self.controller_mut(), bytes)
     }
 }
 

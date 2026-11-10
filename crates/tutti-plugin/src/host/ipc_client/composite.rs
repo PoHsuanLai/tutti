@@ -2,7 +2,6 @@
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs, Submitted};
 use crate::error::{Delivered, EditorError, Result, StateError};
-use crate::format::gui::PluginEditor;
 use crate::protocol::{
     MidiEventVec, Normalized, NoteExpressionChanges, ParamId, ParameterChanges, ParameterInfo,
     Preset, PresetId, TransportInfo,
@@ -13,8 +12,39 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_plugin_types::Editor;
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
 use tutti_types::SampleRate;
+
+/// Gives the audio instance the editor instance's state when the two differ:
+/// the half of the mirror that carries what the user changed in the editor
+/// and is not a parameter (a sample loaded in the plugin's UI, a mode switch;
+/// design 021 Q8). Parameters already travel as edits.
+///
+/// `audio_state` is the audio instance's state, `None` when it cannot be read
+/// (then the editor's is loaded: a read failure is not evidence the two agree).
+/// Nothing is loaded when the two are equal, so a closed editor that changed
+/// nothing does not reload a playing plugin.
+///
+/// # Errors
+///
+/// The editor's state cannot be read (nothing is loaded), or the audio
+/// instance refuses it.
+fn pull_editor_state(
+    main: &MainThread,
+    gui: &mut dyn Editor,
+    audio_state: impl FnOnce() -> Option<Vec<u8>>,
+    load: impl FnOnce(&[u8]) -> std::result::Result<(), StateError>,
+) -> std::result::Result<bool, String> {
+    let editor = gui
+        .save_state(main)
+        .map_err(|e| format!("reading the editor's state: {e}"))?;
+    if audio_state().as_deref() == Some(editor.as_slice()) {
+        return Ok(false);
+    }
+    load(&editor).map_err(|e| format!("loading it into the audio instance: {e}"))?;
+    Ok(true)
+}
 
 /// Composites an out-of-process audio bridge with a lazily-loaded in-process
 /// GUI instance. Audio processing goes through `AudioBridge` (IPC to
@@ -23,7 +53,7 @@ use tutti_types::SampleRate;
 pub struct PluginBridge {
     audio: AudioBridge,
     plugin_path: PathBuf,
-    gui: Mutex<Option<Box<dyn PluginEditor>>>,
+    gui: Mutex<Option<Box<dyn Editor>>>,
     /// What the realtime setters want the in-process editor to show, applied by
     /// the next [`editor_idle`](Self::editor_idle).
     mirror: GuiMirror,
@@ -427,10 +457,14 @@ impl PluginBridge {
         };
         if let Some(gui) = guard.as_mut() {
             // Flush pending GUI param changes before closing.
-            for (param_id, value) in gui.poll_gui_param_changes(main) {
+            for (param_id, value) in gui.poll_edits(main) {
                 self.audio
                     .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }
+            // What the user changed in the editor that is not a parameter
+            // reaches the audio instance (design 021 Q8). Read while the view
+            // is still attached.
+            self.pull_editor_state(main, gui.as_mut());
             gui.close_editor(main);
             true
         } else {
@@ -457,10 +491,28 @@ impl PluginBridge {
                 gui.set_automation_state(main, mode);
             }
             // Forward GUI-originated parameter changes to the audio bridge.
-            for (param_id, value) in gui.poll_gui_param_changes(main) {
+            for (param_id, value) in gui.poll_edits(main) {
                 self.audio
                     .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }
+            // The plugin said its state changed: give the audio instance the
+            // editor's state now rather than at close.
+            if gui.take_dirty(main) {
+                self.pull_editor_state(main, gui.as_mut());
+            }
+        }
+    }
+
+    /// [`pull_editor_state`] against this bridge's audio instance.
+    fn pull_editor_state(&self, main: &MainThread, gui: &mut dyn Editor) {
+        let pulled = pull_editor_state(
+            main,
+            gui,
+            || self.audio.save_state().ok(),
+            |state| self.audio.load_state(state),
+        );
+        if let Err(e) = pulled {
+            tracing::warn!("[bridge] the editor's state did not reach the audio instance: {e}");
         }
     }
 
@@ -888,5 +940,107 @@ mod gui_mirror_tests {
             applied(&mirror).is_empty(),
             "opening again drops what waited"
         );
+    }
+}
+
+#[cfg(test)]
+mod state_back_tests {
+    //! The editor's state reaching the audio instance (design 021 Q8), on a
+    //! stand-in editor: the decision is the bridge's, and each format's
+    //! `save_state` is its host crate's.
+    use super::*;
+    use std::cell::RefCell;
+    use tutti_plugin_types::{PluginError, PluginResult};
+
+    struct FakeEditor {
+        /// The editor's state, or `None` when it cannot be read.
+        state: Option<Vec<u8>>,
+    }
+
+    impl Editor for FakeEditor {
+        fn open_editor(
+            &mut self,
+            _: &MainThread,
+            _: WindowHandle,
+            _: ContentScale,
+        ) -> PluginResult<EditorSize> {
+            unreachable!("the state-back never opens")
+        }
+        fn close_editor(&mut self, _: &MainThread) {}
+        fn editor_idle(&mut self, _: &MainThread) {}
+        fn set_parameter(&mut self, _: &MainThread, _: ParamId, _: Normalized) {}
+        fn set_state(&mut self, _: &MainThread, _: &[u8]) -> PluginResult<()> {
+            Ok(())
+        }
+        fn poll_edits(&mut self, _: &MainThread) -> Vec<(ParamId, f32)> {
+            Vec::new()
+        }
+        fn save_state(&mut self, _: &MainThread) -> PluginResult<Vec<u8>> {
+            self.state
+                .clone()
+                .ok_or_else(|| PluginError::State("unreadable".into()))
+        }
+    }
+
+    fn main_thread() -> MainThread {
+        MainThread::claim().expect("one test, one process")
+    }
+
+    /// What the audio instance was given, if anything.
+    fn pull(editor: Option<Vec<u8>>, audio: Option<Vec<u8>>) -> Option<Vec<u8>> {
+        let loaded = RefCell::new(None);
+        let mut gui = FakeEditor { state: editor };
+        let _ = pull_editor_state(
+            &main_thread(),
+            &mut gui,
+            || audio,
+            |state| {
+                *loaded.borrow_mut() = Some(state.to_vec());
+                Ok(())
+            },
+        );
+        loaded.into_inner()
+    }
+
+    /// **A state the editor holds and the audio instance does not reaches the
+    /// audio instance.**
+    ///
+    /// Mutation (run): return before `load` in `pull_editor_state` → nothing is
+    /// loaded → fails.
+    #[test]
+    fn a_state_only_the_editor_holds_reaches_the_audio_instance() {
+        let got = pull(Some(b"mode=delay".to_vec()), Some(b"mode=gain".to_vec()));
+        assert_eq!(got.as_deref(), Some(&b"mode=delay"[..]));
+    }
+
+    /// **An editor that changed nothing does not reload the audio instance.**
+    ///
+    /// Mutation (run): drop the equality check → the same state is loaded →
+    /// fails.
+    #[test]
+    fn an_unchanged_editor_reloads_nothing() {
+        assert_eq!(pull(Some(b"same".to_vec()), Some(b"same".to_vec())), None);
+    }
+
+    /// **An unreadable audio state is not taken for agreement.** The editor's
+    /// state is loaded.
+    ///
+    /// Mutation (run): treat `None` as equal (`audio_state().map_or(true, ..)`)
+    /// → nothing is loaded → fails.
+    #[test]
+    fn an_unreadable_audio_state_still_takes_the_editors() {
+        let got = pull(Some(b"editor".to_vec()), None);
+        assert_eq!(got.as_deref(), Some(&b"editor"[..]));
+    }
+
+    /// **An editor whose state cannot be read gives the audio instance
+    /// nothing**, not an empty state.
+    ///
+    /// Mutation (run): `unwrap_or_default()` on the editor's state → an empty
+    /// state is loaded → fails.
+    #[test]
+    fn an_unreadable_editor_state_loads_nothing() {
+        let got = pull(None, Some(b"audio".to_vec()));
+        assert_eq!(got, None);
     }
 }

@@ -130,7 +130,7 @@ fn _surface_compiles() {
     // below were forwarded.
 
     // Recording the graph's output: `io/mod.rs`'s "Recording what the graph is
-    // playing". Needs `TapIn` and `TapReader` (what `open_heard_tap` returns,
+    // playing". Needs `FileOut`, `Format`, `Spec` and `TapReader` (what `open_heard_tap` returns,
     // so a host can write the signature of a function that holds one).
     #[cfg(feature = "audio-io")]
     fn _record_master(
@@ -141,9 +141,13 @@ fn _surface_compiles() {
         // The sink's width must match the source's: the tap's own layout, not a
         // bare `2`. `Recorder::start` rejects a mismatch outright, and `pump`
         // debug-asserts it.
-        let wav =
-            WavOut::create(&path, 48_000.0, reader.layout(), Pcm::Float32).expect("sink opens");
-        Ok(AudioPump::start(TapIn::new(reader), wav, Samples(1024)))
+        let spec = Spec::new(
+            Format::Wav(Pcm::Float32),
+            reader.layout(),
+            SampleRate(48_000.0),
+        );
+        let wav = FileOut::create(&path, &spec).expect("sink opens");
+        Ok(AudioPump::start(reader, wav, Samples(1024)))
     }
 
     // Recording a mic: `io/mod.rs`'s `matching_sink` example.
@@ -154,15 +158,15 @@ fn _surface_compiles() {
     #[cfg(feature = "audio-io")]
     fn _record_mic(path: std::path::PathBuf, rate: SampleRate) -> std::io::Result<AudioPump> {
         let mic = MicIn::open(None, rate).map_err(std::io::Error::other)?;
-        let wav = mic.matching_sink(path, Pcm::Float32)?;
+        let wav = mic.matching_sink(path, Format::Wav(Pcm::Float32))?;
         Ok(AudioPump::start(mic, wav, Samples(1024)))
     }
 
     // Live monitoring: `io/mod.rs`'s graph-wiring example.
     #[cfg(feature = "audio-io")]
     fn _wire_monitor(graph: &mut AudioGraphRes, rate: SampleRate) -> Option<()> {
-        let (_mic, monitor) = MicIn::open_with_monitor(None, rate).ok()?;
-        let (_id, ()) = graph.graph().insert(monitor);
+        let (mic, monitor) = MicIn::open_with_monitor(None, rate).ok()?;
+        let _id = graph.graph().add_inlet(monitor, mic.sample_rate()).ok()?;
         Some(())
     }
 

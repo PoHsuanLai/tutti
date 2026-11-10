@@ -10,7 +10,9 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
-use tutti_plugin_types::{Loaded, MaxBlock, Prepare, RenderMode, Request, SampleRate, Samples};
+use tutti_plugin_types::{
+    Loaded, MaxBlock, Prepare, RenderMode, Request, SampleRate, Samples, standing,
+};
 use tutti_vst2_host::{
     ChannelLayout, MidiEventVec, ParameterChange, PluginInfo, Vst2Controller, Vst2Loaded,
     Vst2ProcessContext, Vst2Processor,
@@ -58,6 +60,12 @@ pub(super) struct Instance {
     /// A rate change happened since the last [`poll_changes`](Self::poll_changes):
     /// the plugin may have recomputed its latency or tail, and VST2 will not say.
     reread: bool,
+    /// What the control side has not yet been told about the plugin's rate:
+    /// `Some(Some(..))` a refusal, `Some(None)` the rate taken again after one.
+    /// Read by [`take_rate_report`](Self::take_rate_report).
+    rate_report: Option<Option<(SampleRate, String)>>,
+    /// The last rate change was refused (the report above says so once).
+    rate_refused: bool,
 }
 
 /// What is done to a plugin that is open and not yet activated.
@@ -98,8 +106,8 @@ impl Instance {
         match loaded.activate(main, prepare) {
             Ok(halves) => {
                 let declared = Declared {
-                    latency: halves.1.latency_samples(),
-                    tail: halves.1.tail(main),
+                    latency: halves.1.loaded().latency_samples(),
+                    tail: halves.1.loaded().tail(main),
                 };
                 Ok((
                     Self {
@@ -109,6 +117,8 @@ impl Instance {
                         prepare,
                         declared,
                         reread: false,
+                        rate_report: None,
+                        rate_refused: false,
                     },
                     restored,
                 ))
@@ -123,8 +133,13 @@ impl Instance {
     /// The Controller. Panics on a lost plugin: the control side asks
     /// [`is_lost`](Self::is_lost) first (it cannot happen unless a rate
     /// rollback fails twice, which `set_sample_rate`'s up-front check rules out).
-    fn controller(&self) -> &Vst2Controller {
+    pub(super) fn controller(&self) -> &Vst2Controller {
         &self.halves.as_ref().expect("the plugin is not lost").1
+    }
+
+    /// [`controller`](Self::controller), mutably.
+    pub(super) fn controller_mut(&mut self) -> &mut Vst2Controller {
+        &mut self.halves.as_mut().expect("the plugin is not lost").1
     }
 
     /// Whether the plugin could not be activated again and renders silence.
@@ -149,7 +164,7 @@ impl Instance {
             RenderMode::Realtime
         });
         if let Some((_, controller)) = &self.halves {
-            controller.set_offline_render(offline);
+            controller.loaded().set_offline_render(offline);
         } else if let Some(plugin) = &self.lost {
             plugin.set_offline_render(offline);
         }
@@ -199,40 +214,80 @@ impl Instance {
     /// A refusal is rolled back: the plugin is activated again at the rate it
     /// already accepted. The figures the plugin recomputes for the new rate are
     /// read by the next [`poll_changes`](Self::poll_changes).
-    pub(super) fn set_sample_rate(&mut self, main: &MainThread, rate: f64) {
+    ///
+    /// # Errors
+    ///
+    /// Why the plugin did not take the rate, worded as the other formats word it
+    /// (`standing`: where the plugin stands). The refusal is also kept for
+    /// [`take_rate_report`](Self::take_rate_report), which is how the control side
+    /// hears of one the audio thread's parked rate caused.
+    pub(super) fn set_sample_rate(&mut self, main: &MainThread, rate: f64) -> Result<(), String> {
+        let result = self.reconfigure(main, rate);
+        match &result {
+            Err(reason) => {
+                self.rate_refused = true;
+                self.rate_report = Some(Some((SampleRate(rate), reason.clone())));
+            }
+            Ok(()) if self.rate_refused => {
+                self.rate_refused = false;
+                self.rate_report = Some(None);
+            }
+            Ok(()) => {}
+        }
+        result
+    }
+
+    /// The refusal (or the recovery from one) not yet reported, once: what the
+    /// control side turns into `PluginInvalidation::RateRefused` or `RateRestored`.
+    pub(super) fn take_rate_report(&mut self) -> Option<Option<(SampleRate, String)>> {
+        self.rate_report.take()
+    }
+
+    fn reconfigure(&mut self, main: &MainThread, rate: f64) -> Result<(), String> {
+        let refused = |this: &Self, why: &str| {
+            format!(
+                "plugin refused sample rate {rate} ({}): {why}",
+                standing(!this.is_lost(), this.prepare.rate())
+            )
+        };
         // Before the plugin is taken apart: a refusal after the rejoin would
         // leave a plugin to put back.
         let Some(wanted) = self.prepare.with_rate(SampleRate(rate)) else {
-            return;
+            return Err(refused(self, "not a positive finite rate"));
         };
         let Some((processor, controller)) = self.halves.take() else {
-            return;
+            return Err(refused(self, "the plugin is lost"));
         };
         let loaded = match Vst2Loaded::deactivate(main, processor, controller) {
             Ok(loaded) => loaded,
             Err(stuck) => {
                 self.halves = Some((stuck.processor, stuck.controller));
-                return;
+                return Err(refused(self, &stuck.reason.to_string()));
             }
         };
+        let mut outcome = Ok(());
         let halves = match loaded.activate(main, wanted) {
             Ok(halves) => {
                 self.prepare = wanted;
                 Some(halves)
             }
-            Err(refused) => match refused.plugin {
-                Some(plugin) => match plugin.activate(main, self.prepare) {
-                    Ok(halves) => Some(halves),
-                    Err(refused) => {
-                        self.lost = refused.plugin;
-                        None
-                    }
-                },
-                None => None,
-            },
+            Err(refused_at) => {
+                outcome = Err(refused_at.reason.to_string());
+                match refused_at.plugin {
+                    Some(plugin) => match plugin.activate(main, self.prepare) {
+                        Ok(halves) => Some(halves),
+                        Err(again) => {
+                            self.lost = again.plugin;
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            }
         };
         self.halves = halves;
         self.reread = true;
+        outcome.map_err(|why| refused(self, &why))
     }
 
     /// Takes the plugin out of its activation, as a failed rollback would.
@@ -259,19 +314,19 @@ impl Instance {
     /// swap.
     pub(super) fn poll_changes(&mut self, main: &MainThread) -> Changes {
         let mut asked = Vec::new();
-        self.controller().take_requests(main, &mut asked);
+        self.controller().loaded().take_requests(main, &mut asked);
         let io = asked.contains(&Request::IoChanged);
         let mut changes = Changes {
             io,
             ..Changes::default()
         };
         if io || std::mem::take(&mut self.reread) {
-            let latency = self.controller().latency_samples();
+            let latency = self.controller().loaded().latency_samples();
             if latency != self.declared.latency {
                 self.declared.latency = latency;
                 changes.latency = Some(latency);
             }
-            let tail = self.controller().tail(main);
+            let tail = self.controller().loaded().tail(main);
             if tail != self.declared.tail {
                 self.declared.tail = tail;
                 changes.tail = Some(tail);
@@ -282,31 +337,34 @@ impl Instance {
 
     /// The pin counts the plugin declares now.
     pub(super) fn pins(&self) -> (ChannelLayout, ChannelLayout) {
-        self.controller().pins()
+        self.controller().loaded().pins()
     }
 
     /// The plugin's identity and declared capabilities.
     pub(super) fn metadata(&self) -> &PluginInfo {
-        self.controller().metadata()
+        self.controller().loaded().metadata()
     }
 
     /// The plugin's parameter edits since the last call.
     pub(super) fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        self.controller().drain_param_changes()
+        self.controller().loaded().drain_param_changes()
     }
 }
 
+/// The loaded plugin, for the format's own surface. The Controller (which
+/// `Vst2Controller` no longer derefs from) is [`Instance::controller`] and
+/// [`Instance::controller_mut`], for what is the `Control` trait's.
 impl Deref for Instance {
-    type Target = Vst2Controller;
+    type Target = Vst2Loaded;
 
-    fn deref(&self) -> &Vst2Controller {
-        self.controller()
+    fn deref(&self) -> &Vst2Loaded {
+        self.controller().loaded()
     }
 }
 
 impl DerefMut for Instance {
-    fn deref_mut(&mut self) -> &mut Vst2Controller {
-        &mut self.halves.as_mut().expect("the plugin is not lost").1
+    fn deref_mut(&mut self) -> &mut Vst2Loaded {
+        self.controller_mut().loaded_mut()
     }
 }
 
@@ -352,28 +410,65 @@ mod tests {
         }
     }
 
-    /// **A rate that is no rate leaves the instance as it was**: the plugin is
-    /// not taken apart (its halves stay, it is not lost) and the configuration is
-    /// the one it had.
+    /// **A rate that is no rate leaves the instance as it was, and says so**: the plugin is
+    /// not taken apart (its halves stay, it is not lost), the configuration is the one it had,
+    /// and the refusal is an error worded as the other formats word it (the rate, where the
+    /// plugin stands, why) and a report for the control side
+    /// (`PluginInvalidation::RateRefused`). A rate the plugin then takes reports the
+    /// recovery once (`RateRestored`).
     ///
     /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every
     /// rate -> the zero rate is activated and kept as the configuration ->
-    /// `prepare` changes -> fails.
+    /// `prepare` changes -> fails. Mutation (run): the `let Some(wanted) .. else` arm of
+    /// `reconfigure` returning `Ok(())` (the old silent return) -> the error assertion fails.
+    /// Mutation (run): `set_sample_rate` not storing `rate_report` -> the report assertion
+    /// fails. Mutation (run): the `Ok(()) if self.rate_refused` arm removed -> the
+    /// restored assertion fails.
     #[test]
-    fn a_rate_that_is_no_rate_leaves_the_instance_alone() {
+    fn a_rate_that_is_no_rate_leaves_the_instance_alone_and_is_reported() {
         let mut instance =
             Instance::load(&main_thread(), probe_path::probe_path(), 48_000.0, 64, None)
                 .expect("loads")
                 .0;
         let before = instance.prepare;
+        assert_eq!(instance.take_rate_report(), None, "nothing to report yet");
         for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            instance.set_sample_rate(&main_thread(), rate);
+            let reason = instance
+                .set_sample_rate(&main_thread(), rate)
+                .expect_err("a rate that is no rate is refused");
+            assert!(
+                reason.contains("running at 48000") && reason.contains("not a positive finite"),
+                "{rate}: {reason}"
+            );
+            let report = instance.take_rate_report().expect("and reported");
+            let (reported, why) = report.expect("a refusal, not a recovery");
+            assert!(
+                reported.0 == rate || (reported.0.is_nan() && rate.is_nan()),
+                "{rate}"
+            );
+            assert_eq!(why, reason);
+            assert_eq!(instance.take_rate_report(), None, "once");
             assert_eq!(instance.prepare, before, "{rate}");
             assert!(instance.halves.is_some(), "{rate}");
             assert!(!instance.is_lost(), "{rate}");
         }
-        instance.set_sample_rate(&main_thread(), 96_000.0);
+        instance
+            .set_sample_rate(&main_thread(), 96_000.0)
+            .expect("a real rate is taken");
         assert_eq!(instance.prepare.rate().0, 96_000.0);
+        assert_eq!(
+            instance.take_rate_report(),
+            Some(None),
+            "the recovery is reported"
+        );
+        instance
+            .set_sample_rate(&main_thread(), 48_000.0)
+            .expect("and again");
+        assert_eq!(
+            instance.take_rate_report(),
+            None,
+            "a plain change reports nothing"
+        );
     }
 
     /// **A plugin that is lost renders silence, and the audio thread does not

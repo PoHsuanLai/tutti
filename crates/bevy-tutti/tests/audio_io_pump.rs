@@ -16,6 +16,22 @@
 #[macro_use]
 mod common;
 
+/// A WAV sink of `layout` at 48 kHz, the way every module below builds one.
+fn wav_out(
+    path: impl AsRef<std::path::Path>,
+    layout: bevy_tutti::io::ChannelLayout,
+) -> std::io::Result<bevy_tutti::io::FileOut> {
+    use bevy_tutti::io::{FileOut, Format, Pcm, Spec};
+    FileOut::create(
+        path,
+        &Spec::new(
+            Format::Wav(Pcm::Float32),
+            layout,
+            tutti_types::SampleRate(48_000.0),
+        ),
+    )
+}
+
 /// The pump's lifetime, which is the only thing this layer owns.
 ///
 /// `pump` itself is the engine's and is tested there. What is asserted here is
@@ -24,7 +40,7 @@ mod common;
 /// the file opens at all. A dropped finalize is not a degraded recording, it is
 /// an unreadable one.
 ///
-/// Every test writes a real `WavOut` into a `tempfile` and reads it back with
+/// Every test writes a real `FileOut` into a `tempfile` and reads it back with
 /// `hound`, so "was it finalized" is answered by the file rather than by a flag
 /// this crate set. No audio device is involved.
 mod audio_pump {
@@ -33,12 +49,11 @@ mod audio_pump {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use crate::wav_out;
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
     // Through `bevy_tutti::io`, not the engine crates directly: a host should not
-    // need to name `tutti-metering` or `tutti-io` to write a pump, and this pins that.
-    use bevy_tutti::io::{AudioIn, ChannelLayout, OnEmpty, Pcm, Samples, WavOut};
-
-    const SAMPLE_RATE: f64 = 48_000.0;
+    // need to name `tutti-metering` or `tutti-session` to write a pump, and this pins that.
+    use bevy_tutti::io::{AudioIn, ChannelLayout, OnEmpty, Samples};
 
     /// A finite source: hands out its frames in bounded chunks, then `0` forever.
     /// The shape a decoded file has.
@@ -103,9 +118,8 @@ mod audio_pump {
             .collect()
     }
 
-    fn sink(path: &PathBuf) -> WavOut {
-        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
-            .expect("sink should open")
+    fn sink(path: &PathBuf) -> bevy_tutti::io::FileOut {
+        wav_out(path, ChannelLayout::STEREO).expect("sink should open")
     }
 
     /// An app with the stereo-`f32` pump drain registered. No engine, no device —
@@ -311,8 +325,7 @@ mod audio_pump {
 
         let mut app = app();
         // A stereo source into a six-channel sink.
-        let wide = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::from(6u16), Pcm::Float32)
-            .expect("sink should open");
+        let wide = wav_out(&path, ChannelLayout::from(6u16)).expect("sink should open");
         let entity = app
             .world_mut()
             .spawn(AudioPump::start(
@@ -350,12 +363,12 @@ mod audio_pump {
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         let cause = error
             .get_ref()
-            .and_then(|e| e.downcast_ref::<tutti_io::Error>())
+            .and_then(|e| e.downcast_ref::<bevy_tutti::io::RecorderError>())
             .expect("the typed refusal rides along as the source");
         assert!(
             matches!(
                 cause,
-                tutti_io::Error::ChannelWidthMismatch { src, sink }
+                bevy_tutti::io::RecorderError::ChannelWidthMismatch { src, sink }
                     if *src == ChannelLayout::STEREO && *sink == ChannelLayout::from(6u16)
             ),
             "got {cause:?}"
@@ -366,7 +379,7 @@ mod audio_pump {
     /// where a clean `Ok(())` used to stand for a short file. The frames it
     /// delivered are kept in a valid WAV.
     ///
-    /// *Mutation:* drop the `source_failed` check in `tutti_io::PumpLoop::finalize`:
+    /// *Mutation:* drop the `source_failed` check in `tutti_session::PumpLoop::finalize`:
     /// the result is `Ok(())` and the `expect_err` fails.
     #[test]
     fn a_dead_source_is_reported_by_the_drain() {
@@ -415,7 +428,10 @@ mod audio_pump {
             .result
             .as_ref()
             .expect_err("a dead source must not read as a clean take");
-        assert_eq!(error.to_string(), tutti_io::Error::SourceFailed.to_string());
+        assert_eq!(
+            error.to_string(),
+            bevy_tutti::io::RecorderError::SourceFailed.to_string()
+        );
         assert_eq!(read_back(&path).len(), 18);
     }
 
@@ -470,8 +486,7 @@ mod audio_pump {
             frames: frames(128),
             pos: 0,
         };
-        let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
-            .expect("could not create WAV");
+        let wav = wav_out(&path, ChannelLayout::STEREO).expect("could not create WAV");
         let pump = app
             .world_mut()
             .spawn(AudioPump::start(src, wav, Samples(1024)))
@@ -497,22 +512,20 @@ mod audio_pump {
 /// reader is not an `AudioIn`, and `AudioPump::start` wants one. The bound
 /// simply did not hold.
 ///
-/// `TapIn` is the join. These pin that it holds, and that audio survives the
+/// A `TapReader` being an `AudioIn` is the join. These pin that it holds, and that audio survives the
 /// trip — a type that satisfied the bound but dropped every frame would compile
 /// just as well.
 mod master_record {
     use std::path::PathBuf;
 
+    use crate::wav_out;
     use bevy_app::prelude::*;
     use bevy_tutti::graph::{AudioGraphRes, AudioPump, AudioPumpAppExt, GraphSource};
-    use bevy_tutti::io::{ChannelLayout, Pcm, Samples, TapIn, WavOut};
+    use bevy_tutti::io::{ChannelLayout, Samples};
     use tutti_nodes::testing::Const;
 
-    const SAMPLE_RATE: f64 = 48_000.0;
-
-    fn sink(path: &PathBuf) -> WavOut {
-        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
-            .expect("sink should open")
+    fn sink(path: &PathBuf) -> bevy_tutti::io::FileOut {
+        wav_out(path, ChannelLayout::STEREO).expect("sink should open")
     }
 
     /// An app with the stereo-`f32` pump drain registered — no engine, no device.
@@ -565,12 +578,10 @@ mod master_record {
         let path = dir.path().join("master.wav");
 
         let mut graph = graph();
-        let src = TapIn::new(
-            graph
-                .graph()
-                .open_output_tap(Samples(4096))
-                .expect("the sources exist"),
-        );
+        let src = graph
+            .graph()
+            .open_output_tap(Samples(4096))
+            .expect("the sources exist");
 
         let mut app = app();
         app.world_mut()
@@ -624,12 +635,10 @@ mod master_record {
         let path = dir.path().join("gappy.wav");
         let mut graph = graph();
         // A 64-frame ring, 256 frames rendered before the pump runs.
-        let src = TapIn::new(
-            graph
-                .graph()
-                .open_output_tap(Samples(64))
-                .expect("the sources exist"),
-        );
+        let src = graph
+            .graph()
+            .open_output_tap(Samples(64))
+            .expect("the sources exist");
         let mut frame = [0.0f32; 2];
         for _ in 0..256 {
             graph.render_frame(&mut frame);
@@ -666,7 +675,7 @@ mod master_record {
     /// A tap that has not been rendered into starves the pump rather than
     /// ending it.
     ///
-    /// `TapIn::ON_EMPTY` is `Starved`, so a pump on a silent graph keeps waiting.
+    /// A tap's `ON_EMPTY` is `Starved`, so a pump on a silent graph keeps waiting.
     /// Were it `EndOfStream`, a recording armed a moment before playback started
     /// would finalize an empty file and look like a bug in the sink.
     #[test]
@@ -675,12 +684,10 @@ mod master_record {
         let path = dir.path().join("silent.wav");
 
         let mut graph = graph();
-        let src = TapIn::new(
-            graph
-                .graph()
-                .open_output_tap(Samples(4096))
-                .expect("the sources exist"),
-        );
+        let src = graph
+            .graph()
+            .open_output_tap(Samples(4096))
+            .expect("the sources exist");
 
         let mut app = app();
         app.world_mut()
@@ -715,7 +722,7 @@ mod master_record {
 ///
 /// `crate::io` re-exports engine types without wrapping them, on the claim that
 /// they are already the right shape for a host to hold directly. That claim is
-/// only worth anything if a `MicMonitorNode` really does reconcile like any
+/// only worth anything if an `InletNode` really does reconcile like any
 /// other node — declared through `PortSources`/`MasterSources`, reached by
 /// `Graph::output_source`, and carrying audio once wired.
 ///
@@ -730,7 +737,7 @@ mod io_graph_composition {
     use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
-    use bevy_tutti::io::{MicMonitorNode, MicRing};
+    use tutti_graph::InletNode;
     use tutti_nodes::testing::Through;
     use tutti_types::NodeKey;
 
@@ -754,12 +761,11 @@ mod io_graph_composition {
     const FEED_RING: usize = 512;
     const _: () = assert!(FED_FRAMES <= FEED_RING);
 
-    fn monitor_with_feed(capacity: usize) -> (MicMonitorNode, tutti_graph::TapWriter) {
-        let (ring, prod) = MicRing::pair(
+    fn monitor_with_feed(capacity: usize) -> (InletNode, tutti_graph::TapWriter) {
+        InletNode::standalone(
             tutti_types::ChannelLayout::STEREO,
             tutti_types::Samples(capacity),
-        );
-        (MicMonitorNode::new(ring), prod)
+        )
     }
 
     fn node_id(app: &App, entity: Entity) -> NodeKey {

@@ -17,7 +17,7 @@ use super::instance::bus_layout;
 use super::loaded::Vst3Loaded;
 
 /// A `Vst3Error` as the shared vocabulary's error.
-pub(super) fn plugin_error(error: Vst3Error) -> PluginError {
+pub(crate) fn plugin_error(error: Vst3Error) -> PluginError {
     match error {
         Vst3Error::LoadFailed { stage, cause, .. } => PluginError::Load {
             stage,

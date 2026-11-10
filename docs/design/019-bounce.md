@@ -227,7 +227,7 @@ is_parallel}`.
 |---|---|---|
 | Range from transport/loop, beats to frames | `tutti-session` (one private conversion over the project tempo source) | Reads session and transport state; `Range::Beats` stays in the API. The tempo model is doc 020 (tempo maps). |
 | Offline clock from the tempo source | `tutti-transport` (doc 020) | It is the clock. |
-| Latency and tail figures | `tutti-graph` (plan latency) and `tutti-types` (`graph_tail`); `tutti-session` resolves them at the fork | The plan owns them; the cap and trim are bounce policy. |
+| Latency and tail figures | `tutti-graph` (plan latency) and `tutti-types` (`graph_tail`, until the graph/latency/tail move into `tutti-graph`, doc 013); `tutti-session` resolves them at the fork | The plan owns them; the cap and trim are bounce policy. |
 | Fork gather/build, pool, root topology, edit hook, plugin Offline/Realtime, export token | `tutti-session` (private `Fork`) | Needs the live graph and hosted plugins. |
 | Opening stem taps on the fork, naming them | `tutti-session` | Needs node keys and the fork's editor; uses `Editor::open_tap`. |
 | Stem placement and channel fold construction | `tutti-session` builds `Placement`; `tutti_types::Fold` does the fold | Control-side build, no allocation on render (CLAUDE.md "Buffers"). |

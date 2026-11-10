@@ -33,7 +33,7 @@ use std::sync::{Arc, Weak};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_rt::RtScope;
-use tutti_types::{ChannelLayout, Samples, TapId};
+use tutti_types::{AudioIn, ChannelLayout, OnEmpty, Samples, TapId};
 
 use crate::slots::AudioSlots;
 
@@ -297,5 +297,49 @@ impl TapReader {
     /// count: nonzero is a gap in what was read.
     pub fn take_lost(&self) -> Samples {
         Samples(usize::try_from(self.lost.swap(0, Ordering::Relaxed)).unwrap_or(usize::MAX))
+    }
+}
+
+/// A tap's reader is an [`AudioIn`], so a [`pump`](tutti_types::pump) or a
+/// recorder takes it as it is: record what the graph is producing.
+///
+/// Drain it from a thread of your own, never from the audio thread. It is as
+/// wide as the tap: a stereo output tap is stereo, a six-lane tap six
+/// channels, so a sink must be built to match.
+///
+/// **A tap that falls behind loses frames, and a recording closes up over the
+/// gap.** The rings are bounded (the capacity named at the open); what the
+/// consumer does not drain in time is dropped and counted
+/// ([`take_lost`](AudioIn::take_lost)), and the stream has no marker where
+/// they were.
+///
+/// Like every [`AudioIn`] it carries no sample rate: a tap runs at the graph's,
+/// so build a sink at that rate or the file plays at the wrong speed.
+impl AudioIn for TapReader {
+    /// The graph does not end.
+    ///
+    /// An empty tap means the graph has not rendered since the last poll (the
+    /// audio thread was between blocks, or the tap was only just opened: it
+    /// flows from the commit that carries it). It never means "finished", the
+    /// way a decoded file's exhaustion does; a consumer that read this zero as
+    /// end-of-stream would stop within a block of starting.
+    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+
+    /// As wide as the tap: one channel a lane.
+    fn layout(&self) -> ChannelLayout {
+        TapReader::layout(self)
+    }
+
+    /// Pops up to `out.len() / width` frames into `out` ([`pop_into`](TapReader::pop_into)),
+    /// returning the frame count. A short or zero count is normal for a live
+    /// source.
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        self.pop_into(out)
+    }
+
+    /// The frames the executor could not push since the last call
+    /// ([`TapReader::take_lost`]).
+    fn take_lost(&mut self) -> Samples {
+        TapReader::take_lost(self)
     }
 }

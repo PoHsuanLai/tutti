@@ -153,7 +153,7 @@ fn placement_gate_applies_src_ratio_exactly_once() {
     let (inner, state) = make_unit(&samples);
     let ring = Arc::clone(inner.read.ring());
     let src = 48_000.0 / 44_100.0;
-    state.set_src_ratio(tutti_types::SrcRatio::new(src as f32));
+    state.set_src_ratio(tutti_types::SrcRatio::new(src));
 
     let mut reader = DiskVoice::new(
         inner,

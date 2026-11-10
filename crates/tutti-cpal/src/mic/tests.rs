@@ -20,7 +20,7 @@ fn fallback(rate: u32) -> cpal::SupportedStreamConfig {
 ///
 /// Before this, `open_inner` took `default_input_config()` unconditionally.
 /// A mic defaulting to 44.1 kHz on a 48 kHz graph opened at 44.1 and
-/// drifted, because `MicMonitorNode` does not resample and nothing
+/// drifted, because an inlet does not resample and nothing
 /// compared the two rates.
 ///
 /// Mutation-checked: returning `fallback` unconditionally fails this.
@@ -126,7 +126,7 @@ fn mic_without_a_device() -> MicIn {
 fn mic_with_ring(width: u16, frames: usize) -> (MicIn, TapWriter) {
     let (reader, writer) = TapReader::standalone(TapId(0), usize::from(width), Samples(frames));
     let mic = MicIn {
-        tap: TapIn::new(reader),
+        tap: reader,
         sample_rate: SampleRate(48_000.0),
         device_inputs: ChannelLayout::from(width),
         faults: Arc::new(StreamFaults::new()),
@@ -152,15 +152,15 @@ fn a_full_ring_counts_the_frames_the_callback_dropped() {
 
 /// A capture of `device` inputs, selecting `inputs`, over rings of room for
 /// `frames` frames; the mic end and the monitor's.
-fn capture(device: u16, inputs: &[usize], frames: usize) -> (Capture, MicIn, tutti_io::MicRing) {
+fn capture(device: u16, inputs: &[usize], frames: usize) -> (Capture, MicIn, TapReader) {
     let select = Fold::select(ChannelLayout::from(device), inputs).expect("a selection");
     let width = select.dst_layout();
     let (reader, rec) =
         TapReader::standalone(TapId(0), usize::from(width.count()), Samples(frames));
-    let (ring, mon) = tutti_io::MicRing::pair(width, Samples(frames));
+    let (ring, mon) = TapReader::standalone(TapId(0), usize::from(width.count()), Samples(frames));
     let capture = Capture::new(select, ChannelLayout::from(device), rec, Some(mon));
     let mic = MicIn {
-        tap: TapIn::new(reader),
+        tap: reader,
         sample_rate: SampleRate(48_000.0),
         device_inputs: ChannelLayout::from(device),
         faults: Arc::new(StreamFaults::new()),
@@ -198,7 +198,7 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
     assert_eq!(out[..6], [2.0, 3.0, 102.0, 103.0, 202.0, 203.0]);
 
     let mut node = tutti_graph::contract::prepared(
-        tutti_io::MicMonitorNode::new(ring),
+        tutti_graph::InletNode::new(ring),
         SampleRate(48_000.0),
         64,
     );
@@ -320,33 +320,44 @@ fn a_disconnect_fails_the_mic_and_a_transient_error_does_not() {
     assert!(AudioIn::is_failed(&mic));
 }
 
-/// A recorder over a mic whose device disconnects ends the take as failed,
-/// after writing the frames the ring still held.
+/// A mic whose device disconnects still hands over the frames its ring held,
+/// and then reads as failed, so a pump that drains before it checks
+/// ([`AudioIn::is_failed`]'s contract; `tutti-session`'s `PumpLoop` is that
+/// pump, and cannot be a dependency here) writes them and ends the take as
+/// failed.
 ///
-/// Mutation: dropping the `is_failed` override in `MicIn` makes the last pass
-/// `Starved` and fails the `Failed` assertion.
+/// Mutation: dropping the `is_failed` override in `MicIn` leaves the last
+/// assertion `false`; `poll_into` returning nothing once faulted fails the
+/// frame count.
 #[test]
-fn a_recorder_on_a_disconnected_mic_fails_the_take() {
-    let (mic, mut prod) = mic_with_ring(2, 8);
+fn a_disconnected_mic_hands_over_its_buffered_frames_then_reads_failed() {
+    let (mut mic, mut prod) = mic_with_ring(2, 8);
     let faults = mic.faults();
-    let path = std::env::temp_dir().join(format!("tutti-mic-fault-{}.wav", std::process::id()));
-    let sink = mic.matching_sink(&path, Pcm::Float32).unwrap();
-    let (driver, pump) = tutti_io::ManualDriver::new();
-    let mut rec = tutti_io::Recorder::start_with(mic, sink, driver).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mic-fault.wav");
+    let mut sink = mic
+        .matching_sink(&path, Format::Wav(tutti_codec::Pcm::Float32))
+        .unwrap();
 
     prod.push_interleaved(&[0.5, -0.5]);
     faults.record(&cpal::StreamError::DeviceNotAvailable);
+    // The pump's pass: the frame the ring held is written first.
+    let mut scratch = [0.0f32; 8];
     assert_eq!(
-        pump.pump_once(),
-        Some(tutti_io::PumpPass::Wrote(Samples(1)))
+        tutti_types::pump(&mut mic, &mut sink, &mut scratch),
+        Samples(1)
     );
-    assert_eq!(pump.pump_once(), Some(tutti_io::PumpPass::Failed));
-    assert!(rec.failed());
+    // Then nothing more comes, and the source says why.
+    assert_eq!(
+        tutti_types::pump(&mut mic, &mut sink, &mut scratch),
+        Samples(0)
+    );
     assert!(
-        matches!(rec.finish_in_place(), Some(Err(_))),
-        "the take reports the failed source"
+        AudioIn::is_failed(&mic),
+        "the take is over: the device is gone"
     );
-    let _ = std::fs::remove_file(&path);
+    tutti_types::AudioOut::finalize(sink).expect("the prefix closes cleanly");
+    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 2);
 }
 
 /// The ALSA shape of an unplugged mic, a backend error repeated with no audio,

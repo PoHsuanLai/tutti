@@ -396,19 +396,19 @@ fn preset_path(id: &PresetId) -> Option<&Path> {
 
 impl Control for ClapController {
     fn info(&self) -> &PluginDescriptor {
-        Control::info(&**self)
+        Control::info(self.loaded())
     }
 
     fn wiring(&self, main: &MainThread) -> LoadedPlugin {
-        Control::wiring(&**self, main)
+        Control::wiring(self.loaded(), main)
     }
 
     fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        Control::parameters(&**self, main)
+        Control::parameters(self.loaded(), main)
     }
 
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        Control::parameter(&**self, main, id)
+        Control::parameter(self.loaded(), main, id)
     }
 
     /// Queued to the Processor and applied at the head of its next block. A full
@@ -418,7 +418,7 @@ impl Control for ClapController {
     }
 
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(&**self, main, id, value)
+        Control::parameter_text(self.loaded(), main, id, value)
     }
 
     fn parameter_value_from_text(
@@ -427,23 +427,23 @@ impl Control for ClapController {
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
-        Control::parameter_value_from_text(&**self, main, id, text)
+        Control::parameter_value_from_text(self.loaded(), main, id, text)
     }
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut **self, main)
+        Control::save_state(self.loaded_mut(), main)
     }
 
     /// Restores the state, and makes the writes queued before it stale.
     fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let result = Control::load_state(&mut **self, main, bytes);
+        let result = Control::load_state(self.loaded_mut(), main, bytes);
         self.reset_edits();
         result
     }
 
     /// Loads the preset, and makes the writes queued before it stale.
     fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        let loaded = Control::load_preset(&mut **self, main, id);
+        let loaded = Control::load_preset(self.loaded_mut(), main, id);
         if loaded {
             self.reset_edits();
         }
@@ -464,15 +464,15 @@ impl Control for ClapController {
     }
 
     fn run_main_thread(&mut self, main: &MainThread) {
-        Control::run_main_thread(&mut **self, main);
+        Control::run_main_thread(self.loaded_mut(), main);
     }
 
     fn run_timer(&mut self, main: &MainThread, id: TimerId) {
-        Control::run_timer(&mut **self, main, id);
+        Control::run_timer(self.loaded_mut(), main, id);
     }
 
     fn service_fd(&mut self, main: &MainThread, id: FdId) {
-        Control::service_fd(&mut **self, main, id);
+        Control::service_fd(self.loaded_mut(), main, id);
     }
 }
 

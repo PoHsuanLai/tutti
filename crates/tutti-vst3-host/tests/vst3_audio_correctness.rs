@@ -232,7 +232,7 @@ fn render(
     params: Option<&ParameterChanges>,
     input_at: impl Fn(usize, usize, usize) -> f32,
 ) -> Rendered {
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
 
     // `AudioBuffer` is flat: bus 0's channels first, then bus 1's, etc. Build
     // the flat vectors while remembering the per-bus split so the result can be
@@ -326,7 +326,7 @@ fn every_bus_and_channel_carries_its_own_audio() {
 
     let rendered = render(&mut inst, FRAMES, &[], None, input_at);
 
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let out_layout = if info.output_bus_channels.is_empty() {
         vec![info.num_outputs.max(1)]
     } else {
@@ -515,7 +515,9 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
     // Ask the plugin to request the restart, then drain the notification the
     // way a host's poll loop does.
     inst.set_parameter(PARAM_REQUEST_IO_CHANGED, 1.0);
-    let restart = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    let restart = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
     assert!(
         restart.io_changed,
         "the probe requested restartComponent(kIoChanged) but it did not reach \
@@ -786,7 +788,7 @@ fn f64_path_carries_the_same_audio() {
     inst.set_parameter(PARAM_MODE, mode(0));
 
     const FRAMES: usize = 64;
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let in_layout = if info.input_bus_channels.is_empty() {
         vec![info.num_inputs.max(1)]
     } else {
@@ -1065,7 +1067,7 @@ fn reported_latency_matches_the_plugins_actual_delay() {
 
     // The probe only reports latency while in latency mode, so this must be
     // read after the mode switch.
-    let reported = inst.latency_samples(&main_thread());
+    let reported = inst.loaded().latency_samples(&main_thread());
     assert_eq!(
         reported, PROBE_LATENCY_SAMPLES,
         "host reported {reported} samples of latency; the plugin declares \
@@ -1136,7 +1138,7 @@ fn note_expression_reaches_the_plugin_with_its_value() {
         },
     ];
 
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let in_layout = if info.input_bus_channels.is_empty() {
         vec![info.num_inputs.max(1)]
     } else {
@@ -1240,7 +1242,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
         quarter_bend(192),
     ];
 
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let in_channels: usize = if info.input_bus_channels.is_empty() {
         info.num_inputs.max(1)
     } else {
@@ -1311,8 +1313,9 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 
     // Drive blocks while sweeping the plugin's parameters: it emits CC when a
     // parameter changes, so a static value produces nothing.
-    let info = inst.plugin_info().clone();
+    let info = inst.loaded().plugin_info().clone();
     let param_ids: Vec<u32> = inst
+        .loaded()
         .parameter_ids(&main_thread())
         .into_iter()
         .map(|id| id.get())
@@ -1412,27 +1415,33 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    let _ = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
 
     for i in 0..=NOTIFICATION_CAPACITY {
-        plugin_perform_edit(&inst, 100, i as f64 / NOTIFICATION_CAPACITY as f64);
+        plugin_perform_edit(inst.loaded(), 100, i as f64 / NOTIFICATION_CAPACITY as f64);
     }
-    assert_eq!(inst.dropped_notifications(), 1);
+    assert_eq!(inst.loaded().dropped_notifications(), 1);
 
     let mut edits = 0;
-    let outcome = inst.poll_plugin_notifications(&main_thread(), |n| {
-        if let PluginNotification::Edit(_) = n {
-            edits += 1;
-        }
-    });
+    let outcome = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |n| {
+            if let PluginNotification::Edit(_) = n {
+                edits += 1;
+            }
+        });
     assert!(
         outcome.notifications_overflowed,
         "a dropped edit must be reported so the host re-reads parameters"
     );
     assert_eq!(edits, NOTIFICATION_CAPACITY, "the oldest are delivered");
 
-    plugin_perform_edit(&inst, 100, 0.5);
-    let outcome = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    plugin_perform_edit(inst.loaded(), 100, 0.5);
+    let outcome = inst
+        .loaded_mut()
+        .poll_plugin_notifications(&main_thread(), |_| {});
     assert!(
         !outcome.notifications_overflowed,
         "reported once, not on every later poll"
@@ -1647,7 +1656,7 @@ mod loaded_writes {
 
         let mut inst = activated(load());
         Control::set_parameter(
-            &mut *inst,
+            inst.controller_mut(),
             &main_thread(),
             ParamId::new(PARAM_RAMP),
             Normalized::of(0.5),
@@ -1655,7 +1664,8 @@ mod loaded_writes {
         for _ in 0..3 {
             render(&mut inst, 64, &[], None, |_, _, _| 0.0);
         }
-        let blob = Control::save_state(&mut *inst, &main_thread()).expect("the probe saves");
+        let blob =
+            Control::save_state(inst.controller_mut(), &main_thread()).expect("the probe saves");
         assert_eq!(blob[VERSION_AT], 1, "a write a block took is not stored");
     }
 
@@ -1676,7 +1686,8 @@ mod loaded_writes {
     fn a_save_between_activation_and_the_first_block_keeps_the_loaded_writes() {
         let _guard = plugin_guard();
         let mut inst = activated(written());
-        let blob = Control::save_state(&mut *inst, &main_thread()).expect("the probe saves");
+        let blob =
+            Control::save_state(inst.controller_mut(), &main_thread()).expect("the probe saves");
 
         let mut restored = load();
         Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
@@ -1699,7 +1710,8 @@ mod loaded_writes {
         let mut source = activated(load());
         write_active(&mut source, PARAM_MODE, MODE_RAMP);
         write_active(&mut source, PARAM_RAMP, RAMP_LEVEL);
-        let blob = Control::save_state(&mut *source, &main_thread()).expect("the probe saves");
+        let blob =
+            Control::save_state(source.controller_mut(), &main_thread()).expect("the probe saves");
 
         let mut restored = load();
         Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
@@ -1713,7 +1725,7 @@ mod loaded_writes {
 
     fn write_active(inst: &mut Active, id: u32, value: f64) {
         Control::set_parameter(
-            &mut **inst,
+            inst.controller_mut(),
             &main_thread(),
             ParamId::new(id),
             Normalized::clamped(value),
@@ -1735,7 +1747,7 @@ mod loaded_writes {
             .activate_at::<f32>(48_000.0, 64)
             .map_err(|(_, e)| e)
             .expect("the probe activates");
-        Control::load_state(&mut *inst, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(inst.controller_mut(), &main_thread(), &blob).expect("the blob loads");
 
         let block = render(&mut inst, 64, &[], None, |_, _, _| 0.0).out[0][0].clone();
         assert!(

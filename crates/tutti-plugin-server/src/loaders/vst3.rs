@@ -21,8 +21,9 @@ use tutti_plugin_types::{
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
-use crate::loaders::common::{Meta, standing};
+use crate::loaders::common::Meta;
 use crate::plugin::AsyncEvent;
+use tutti_plugin_types::standing;
 
 pub use tutti_vst3_host;
 
@@ -308,7 +309,7 @@ impl Vst3Instance {
     fn loaded_ref(&self) -> Option<&Vst3Loaded> {
         match &self.lifecycle {
             Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(controller),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded()),
             Lifecycle::Poisoned => None,
         }
     }
@@ -317,7 +318,7 @@ impl Vst3Instance {
     fn loaded_mut(&mut self) -> Option<&mut Vst3Loaded> {
         match &mut self.lifecycle {
             Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(&mut **controller),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded_mut()),
             Lifecycle::Poisoned => None,
         }
     }

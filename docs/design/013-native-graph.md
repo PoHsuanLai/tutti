@@ -95,6 +95,7 @@ Four layers, each a function of the one before it. The arrows only point down.
 
 ```text
  Topology (value)        tutti-types::graph      pure, Eq+Hash, BTreeMap, author keys
+                         (until the move, below; then tutti-graph)
      │ validate()
  Valid                   proof in the type
      │ compile(&Valid, &Shapes, &Plan_prev) -> (Plan, Delta)      pure, control thread
@@ -470,8 +471,31 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   every output cannot be delayed to it and is read as it leaves, as `Raw`.
 - **The consumers.** `tutti-session`'s `Graph::open_tap` and
   `Graph::open_output_tap` (whose sources follow the outputs when they are
-  re-wired), and `TapIn` over a `TapReader`, as wide as the tap. Offline and
+  re-wired), and the `TapReader` itself as an `AudioIn` (`impl AudioIn for
+  TapReader`, as wide as the tap; there is no adapter type). Offline and
   headless sessions feed them: the op runs wherever the plan runs.
+
+#### Inlets: audio into the graph
+
+The inverse of the tap. `InletNode` has no inputs and one output a channel,
+and copies a standalone ring (`TapReader::standalone`, the writer kept by
+a thread of your own) into the graph: a block pops one frame per output frame,
+and a ring that runs dry writes silence for the frames it lacks. A width other
+than the ring's writes silence on every output and pops nothing. It is
+`Cost::Light`, reports `Tail::Unbounded` (a skipped block would leave frames
+piling in the ring), is not `Clone` and is inserted unforkable (a fork of a
+graph holding one is `ForkError::NotForkable`, naming it). It has no gain: a
+level is a node downstream.
+
+An inlet does not resample, and the producer's clock is not the graph's, so
+the two drift. Nothing corrects it: a producer ahead finds the ring full and
+its writer refuses whole frames, counting them; one behind leaves it empty and
+the node writes silence. Neither side blocks. What the session can check it
+checks once, at open: `Graph::open_inlet(width, capacity, producer_rate)` (and
+`add_inlet` over a ring the producer already built, as `tutti-cpal`'s
+`MicIn::open_with_monitor` does) refuses a producer rate that is not the
+graph's with `InletError::RateMismatch`. A re-prepare to another rate later is
+not checked.
 
 #### Meters: level metering as an op in the plan
 
@@ -1621,7 +1645,7 @@ nothing to move):
 | `DiskVoice` | tutti-sampler | its own `Arc<RtState>` (seeks the live butler; speed, direction, gain, stretch) | a private snapshot (`RtState::detached`), off the ring; `rebind_offline` hands it the stream's file | yes | `a_severed_copy_never_touches_the_live_stream`, `tests/offline_disk_voice.rs` |
 | `PolySynth` | tutti-polysynth | MIDI inbox and source; master volume, unison detune and spread | fresh port, voices cleared, cells detached | yes | `isolate_snapshots_volume_and_unison` |
 | `SoundFontUnit` | tutti-soundfont | MIDI inbox and source (the `SoundFont` is read-only) | fresh port | yes | — |
-| `MicMonitorNode` | tutti-io | the ring consumer | — | **no** | — |
+| `InletNode` (was `MicMonitorNode`) | tutti-graph | the ring consumer | — | **no** | `inlet::tests::the_inlet_refuses_to_fork` |
 | `PluginClient` | tutti-plugin | the plugin process | — | **no**: forks by state transfer through its own `ForkSource` (gap 7) | `clap_fork.rs` |
 | `InProcessVst2Client` | tutti-plugin | the plugin | — | **no**: forks by state transfer through its own `ForkSource`, a second instance in this process ([below](#in-process-vst2-forks-by-state-transfer)) | `vst2_in_process_fork.rs` |
 
@@ -3367,7 +3391,8 @@ and fork suites) and tutti-graph's `graph_render` A/B bench; tutti-sampler's
 
 > **Since design 015** (`docs/design/015-headless-api.md` §9): the
 > pump thread loop `bevy-tutti`'s `AudioPump` ran is gone; the component
-> holds a `tutti_io::Recorder`, the one `AudioIn → AudioOut` loop. The graph
+> holds a `tutti_session::Recorder`, the one `AudioIn → AudioOut` loop (it
+> was `tutti_io::Recorder` until `tutti-io` was dissolved). The graph
 > contract does not change.
 
 ### Port nodes natively
@@ -3946,7 +3971,7 @@ Decisions:
    | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
-   | `MicMonitorNode`, one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
+   | `InletNode` (then `MicMonitorNode`), one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
    | `VbapPannerNode` | moving, the de-zipper advanced in one analytic move per block: 3.6 stereo and 1.7 at 5.1 at 64 frames, 0.9 and 0.7 at 1024 (10.9 and 4.3 when it stepped every frame); held (the de-zipper at its fixed point, the solve reused) 1.5 and 0.6 | `Moderate` (classed by the moving case at 64 frames) |
    | `VoiceNode`, a plain memory voice | 13 | `Moderate` |
    | `MemorySource`, placed or free-running | 16–17 | `Moderate` |
@@ -3987,7 +4012,7 @@ Decisions:
    per node: the curve is fixed at construction, and the declared shape
    reads it.
 
-   `MicMonitorNode`'s row was measured the same way (stereo, a full ring,
+   `InletNode`'s row (then `MicMonitorNode`'s) was measured the same way (stereo, a full ring,
    so every frame is a pop), on a fourth 4-core container, beside both
    references there: a gain 0.05–0.06 and `SvfFilterNode<f64>` 3.9–4.7.
    It copies a block out of the ring with one read of the producer's index
@@ -4950,6 +4975,67 @@ request and a plugin that parallelises its own voices ran them serially.
   A closure cannot leave FTZ/DAZ set on the thread: the restore is not
   something a caller can forget or reorder. Its soundness argument (the FP-environment rule it departs from,
   and the audit of what runs inside it) is its `# Soundness` docs.
+
+### Move `graph`, `latency` and `tail` into `tutti-graph` (planned)
+
+Until this move, `tutti-types/src/{graph,latency,tail}.rs` hold `Topology` and
+its parts, the latency pass and the tail fold (768, 674 and 639 lines). The
+owner decided on 2026-11-07, and confirmed on 2026-11-10, that they move into
+`tutti-graph`. Nothing has moved yet.
+
+- **What moves:** `Topology`, `Valid`/`Invalid`, `OutPort`, `InPort`, `Source`,
+  `Edge`, `FeedbackFrom`, `ParamValue`, `NodeSpec`, the meter and tap specs
+  (`MeterId`, `MeterSpec`, `TapId`, `TapAlign`, `TapSpec`), `latency` (`Feed`,
+  `Compensation`, `Delays`, `plan`, `delays`, `MAX_NODE_LATENCY`) and `tail`
+  (`GraphTail`, `graph_tail`, `MAX_NODE_TAIL`), with their unit tests and
+  `tutti-types/tests/graph_value.rs`.
+- **What stays:** `NodeKey` (about 30 lines of `graph.rs`, which becomes a file
+  of its own), because `bevy-tutti`'s `AudioNode(pub NodeKey)` and the engine
+  and `tutti-session` key nodes by it and a `NodeKey` in `tutti-graph` would
+  make the core-split plan a cycle. `LatencyGraph` and `TailGraph` stay as
+  traits and move with their files; whether they are dead abstraction
+  (two implementors: `Topology` and `GraphSpec`) is a separate decision, not
+  made during the move.
+- **Why:** these are algorithms (`Topology::validate`, `latency::plan` and
+  `delays`, `graph_tail`), not vocabulary, and `tutti-types` is "no new
+  algorithms"; they are the compiler's own domain; `delays` is an oracle for
+  the compiler with no production caller; every user already has the
+  `tutti-graph` edge; and fewer crates rebuild per touch (28 down to 18).
+  The names do not collide in the `tutti-graph` root. The grounds, and the
+  arguments against (churn, 1.4k production lines into `tutti-graph`, the edge
+  rule in `CLAUDE.md`), are in the types-boundary review, section 5.
+- **Blockers:** none found (checked against `scripts/check-layout.sh` and a
+  grep of every workspace crate for these items, 2026-11-10). Every crate that
+  names an item already depends on `tutti-graph` (as a normal edge, or as a
+  dev edge in tests): `tutti-graph` itself, `tutti-nodes`, `tutti-engine`,
+  `tutti-sampler`, `bevy-tutti`, `tutti-io`, `tutti-plugin`, `tutti-cpal`,
+  `tutti-polysynth`, `tutti-midi-runtime`, `tutti-export`, `tutti-soundfont`,
+  `tutti-session`, `tutti-spatial`, `tutti-clap-host`, `tutti-clap-ffi`
+  and `tutti`. The crates below `tutti-graph` (layer 1 and the layer-2
+  siblings: `tutti-dsp`, `tutti-metering`, `tutti-codec`, `tutti-tempo`,
+  `tutti-voicing`, `tutti-modulation`, `tutti-midi-types`) use none of them,
+  and the VST2 and VST3 hosts only mention `LatencyGraph` or `Compensation` in
+  prose. What does need care, none of it a layering break:
+  - `tutti-types` itself: its `lib.rs` re-exports, the doc links in
+    `meter.rs` and `value/{latency,tail}.rs`, `tests/graph_value.rs` and
+    `tests/prelude_surface.rs`;
+  - the `tutti` umbrella re-exports `TapAlign` and `TapId` in its prelude, so
+    `tutti::types::` stops resolving them (an external break; `dawai` uses none
+    of the graph, latency or tail names);
+  - the six crate READMEs that import `tutti_types::graph::{OutPort, Source}`,
+    `scripts/check-layout.sh` (the `tutti-graph` dependency comment) and
+    `CLAUDE.md`, which changes with the code and not before;
+  - about 105 files: 84 name `tutti_types::graph` (68 of them in
+    `tutti-graph`), about 19 name `latency` and 2 name `tail`.
+- **Order:** after the core-split PR 3 and the `AudioNode` decision (done:
+  `bevy-tutti` owns `AudioNode`, the engine and `tutti-session` use `NodeKey`),
+  so no prerequisite is open. Do it after the "one PDC latency solve" item
+  (the compiler at `compile/mod.rs` re-implements `latency::plan`, kept equal
+  only by `tests/compile_passes.rs`): either the compiler calls the solve, or
+  `latency.rs` becomes the test oracle only. Moving first would move two
+  copies, and the second item decides which file keeps the code. This follows
+  "And the two latency solves are one" above, which unified the figures, not
+  the code.
 
 ## Per-node rewrite plan
 
@@ -7704,7 +7790,7 @@ converts at its edges in an f64 graph.
 | `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
 | `SoundFontUnit` | tutti-soundfont | f32 | the voices render in f32 internally |
 | `ClickNode` | tutti-nodes | Both | a generated click; cheap to make generic |
-| `MicMonitorNode` | tutti-io | f32 | it reads the device ring, which is f32; the widen at its edge is exact |
+| `InletNode` | tutti-graph | f32 | it reads the producer's ring, which is f32; the widen at its edge is exact |
 | `PluginClient<Bound>`, `InProcessVst` | tutti-plugin | what the plugin negotiated (below) | |
 | MIDI nodes, `ControlLaneNode`, `NoteEnvelopeNode`, `EnvelopeFollowerNode`'s output | midi, tutti-nodes | no audio output: format does not apply | event-only. `EnvelopeFollowerNode` reads audio, so it is Both on its input |
 
@@ -7759,9 +7845,9 @@ The graph's f32 is converted in the node's batcher today. The changes:
   would), it accumulates in f64 in both formats.
 - **Meters** are readings: computed from the slot in its format, stored
   as f32 (`Amplitude`, `Db`). No change to what they publish.
-- **The analysis tap** (`TapReader`, `TapIn`) stays an f32 ring: analysis
+- **The analysis tap** (`TapReader`) stays an f32 ring: analysis
   does not need f64, and the master is narrowed at `Output` anyway. A
-  recording that must keep f64 takes an f64 `TapIn` (its ring generic over
+  recording that must keep f64 takes an f64 tap reader (its ring generic over
   the sample, as `AudioIn<S>` already is).
 - **`AudioIn` / `AudioOut` edges** are already generic over `S`, so
   `Recorder`, the pump and `SliceSource`/`CountingSink` need nothing.
@@ -7997,7 +8083,7 @@ by width alone.
   where the engine has an order and `Discrete` elsewhere. The mic is a
   `TapReader`/`TapWriter` pair (whole frames, any width), delivers the inputs it
   was opened with (`MicIn::open_inputs`, `Fold::select`) as `Discrete`, and
-  `MicMonitorNode` is as wide as its ring. The sampler places a mono source with
+  `InletNode` is as wide as its ring. The sampler places a mono source with
   `MonoSpread`, the lone-centre rule: the centre of a 6, 8 or 12-wide memory
   voice (a 12-wide one is placed as an 8-wide frame, the most the sampler
   writes; its centre is the same channel), the front pair of a stereo one, and
@@ -8227,6 +8313,10 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
    live edge. The error is `DecodeError`, not `symphonia`'s; the features are
    `decode-wav`/`decode-flac`/`decode-mp3`/`decode-ogg`; `WaveAsset` is
    `bevy-tutti`'s and `tutti-io` has no `bevy` feature.
+   **Revised again (`tutti-io` dissolved):** the crate is gone. `WavOut` is
+   `tutti-codec`'s `FileOut`, the write-side twin of `FileIn` and generic over
+   every `Format`; `TapIn` is `impl AudioIn for TapReader`; `MicMonitorNode`
+   is `tutti-graph`'s `InletNode`; `Recorder` is `tutti-session`'s.
 6. **Events fan-in.** Layering a keyboard and a clip means two producers feed
    one events input, so fan-in is the normal case. Options:
    - allow fan-in on `Events` ports only, with a deterministic merge by

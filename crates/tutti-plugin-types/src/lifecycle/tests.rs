@@ -1718,3 +1718,19 @@ fn a_note_value_keeps_the_range_contract() {
         invalid: &[0, 3, 5, 6, 7, 12, 63, 65, 128, 1 << 31, u32::MAX],
     });
 }
+
+/// **The standing of a refused rate says where the plugin is**: the rate it runs at while
+/// active, "deactivated" otherwise. A refusal that leaves a plugin deactivated is reachable
+/// only after a failed rollback, which no probe forces, so the sentence is pinned here, where
+/// every loader gets it.
+///
+/// Mutation (run): `standing` always taking the active arm -> the "deactivated" assertion
+/// fails; always the inactive arm -> the "running at" assertion fails.
+#[test]
+fn a_standing_says_running_or_deactivated() {
+    assert_eq!(
+        crate::standing(true, SampleRate(48_000.0)),
+        "running at 48000"
+    );
+    assert_eq!(crate::standing(false, SampleRate(48_000.0)), "deactivated");
+}

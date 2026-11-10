@@ -872,7 +872,7 @@ mod tests {
                 &transport,
                 Beat::new(0.0),
                 None,
-                SampleRate::new(session * src.get() as f64),
+                SampleRate::new(session * src.get()),
                 rate.read_rate(SrcRatio::UNITY),
             )
             .expect("inside the window");

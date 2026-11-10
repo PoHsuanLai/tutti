@@ -1,6 +1,39 @@
 use super::*;
+use crate::{Error as CodecError, Format, Pcm};
 use hound::SampleFormat;
-use tutti_codec::Error as CodecError;
+use tutti_types::ChannelTopology;
+
+/// A WAV sink at `rate` and `channels` wide, the way the recorder's callers
+/// build one.
+fn wav(
+    path: impl AsRef<Path>,
+    rate: f64,
+    channels: impl Into<ChannelLayout>,
+    pcm: Pcm,
+) -> std::io::Result<FileOut> {
+    FileOut::create(
+        path,
+        &Spec::new(Format::Wav(pcm), channels.into(), SampleRate(rate)),
+    )
+}
+
+/// A WAV sink for the channels `topology` names, so the header's speaker mask
+/// is that of `topology`.
+fn wav_with_topology(
+    path: impl AsRef<Path>,
+    rate: f64,
+    topology: ChannelTopology,
+    pcm: Pcm,
+) -> std::io::Result<FileOut> {
+    let layout = topology.layout();
+    FileOut::create(
+        path,
+        &Spec {
+            topology: Some(topology),
+            ..Spec::new(Format::Wav(pcm), layout, SampleRate(rate))
+        },
+    )
+}
 
 /// A failed open reports *why*, and takes a path without ceremony.
 ///
@@ -11,7 +44,7 @@ fn a_failed_open_reports_the_cause() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("no-such-dir").join("take.wav");
 
-    let err = WavOut::create(&missing, 48_000.0, 2u16, Pcm::Float32)
+    let err = wav(&missing, 48_000.0, 2u16, Pcm::Float32)
         .expect_err("a file under a missing directory cannot be created");
     assert_eq!(
         err.kind(),
@@ -28,7 +61,7 @@ fn wav_out_writes_incrementally_and_finalizes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("capture.wav");
 
-    let mut sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink should open");
+    let mut sink = wav(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink should open");
 
     // Flat interleaved stereo: 256 frames, 512 samples.
     let block: Vec<f32> = (0..256)
@@ -54,18 +87,17 @@ fn wav_out_writes_incrementally_and_finalizes() {
 /// frame.
 #[test]
 fn six_channel_sink_writes_six_samples_per_frame() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("tutti_wav_out_six_channel.wav");
-    let _ = std::fs::remove_file(&path);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("six_channel.wav");
 
-    let mut sink = WavOut::create(&path, 48_000.0, 6u16, Pcm::Float32).expect("create 6ch sink");
+    let mut sink = wav(&path, 48_000.0, 6u16, Pcm::Float32).expect("create 6ch sink");
     assert_eq!(sink.layout(), ChannelLayout::from(6u16));
 
     let frames: Vec<f32> = (0..128)
         .flat_map(|i| (0..6).map(move |c| (i * 6 + c) as f32 * 0.001))
         .collect();
-    sink.write_interleaved(&frames);
-    AudioOut::finalize(sink).expect("finalize");
+    sink.write(&frames);
+    sink.finalize().expect("finalize");
 
     let reader = hound::WavReader::open(&path).expect("reopen");
     assert_eq!(reader.spec().channels, 6, "header must declare 6 channels");
@@ -74,7 +106,6 @@ fn six_channel_sink_writes_six_samples_per_frame() {
         128 * 6,
         "128 frames of 6 channels must write 768 samples, not 256"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 /// A failed write is reported from `finalize`, not swallowed, with its cause.
@@ -88,14 +119,14 @@ fn six_channel_sink_writes_six_samples_per_frame() {
 /// the buffer through to it, so the failure lands on a write rather than on
 /// the final flush.
 ///
-/// Mutation: storing `std::io::Error::other(e)` in `write_interleaved` flattens the kind to
+/// Mutation: storing `std::io::Error::other(e)` in `write` flattens the kind to
 /// `Other` and fails the kind check (run); dropping the store (`let _ = e;`)
 /// leaves `is_failed` false and fails its assertion (run).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_surfaces_from_finalize() {
-    let mut sink = WavOut::create("/dev/full", 48_000.0, 2u16, Pcm::Float32)
-        .expect("/dev/full opens for writing");
+    let mut sink =
+        wav("/dev/full", 48_000.0, 2u16, Pcm::Float32).expect("/dev/full opens for writing");
 
     // 64 KiB of samples: well past the 8 KiB buffer.
     sink.write(&vec![0.5; 16 * 1024]);
@@ -123,16 +154,16 @@ fn a_failed_write_surfaces_from_finalize() {
 /// Mutation: forgetting the encoder in `finalize` instead of finishing it (`mem::forget`)
 /// leaves the header unpatched and the buffer unflushed, so the prefix is not
 /// readable and the length assertion fails (run). (Removing the early return in
-/// `write_interleaved` is not seen here: once the limit is reached a retried
+/// `write` is not seen here: once the limit is reached a retried
 /// write fails the same way and writes nothing; the recorder's
 /// `a_failed_sink_fails_the_take` covers the pump stopping.)
 #[test]
 fn a_failed_sink_stops_writing_and_leaves_a_readable_prefix() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("partial.wav");
-    let mut sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Int16)
+    let mut sink = wav(&path, 48_000.0, 2u16, Pcm::Int16)
         .expect("create")
-        .with_max_frames_for_test(2);
+        .limit_frames(2);
 
     sink.write(&[0.001, -0.001, 0.001, -0.001]);
     // The third frame is past the limit, so this fails.
@@ -167,7 +198,7 @@ fn sixteen_bit_capture_round_trips() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("i16.wav");
 
-    let mut sink = WavOut::create(&path, 44_100.0, 2u16, Pcm::Int16).expect("sink should open");
+    let mut sink = wav(&path, 44_100.0, 2u16, Pcm::Int16).expect("sink should open");
     sink.write(&[1.0, -1.0, 0.0, 0.0]);
     sink.finalize().expect("finalize");
 
@@ -187,7 +218,7 @@ fn twenty_four_bit_capture_round_trips() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("i24.wav");
 
-    let mut sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Int24).expect("sink should open");
+    let mut sink = wav(&path, 48_000.0, 2u16, Pcm::Int24).expect("sink should open");
     sink.write(&[1.0, -1.0, 0.0, 0.0]);
     sink.finalize().expect("finalize");
 
@@ -225,8 +256,8 @@ fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
         let path = dir
             .path()
             .join(format!("mask_{channels}_{}.wav", depth.bits()));
-        let mut sink = WavOut::create(&path, 48_000.0, channels, depth).unwrap();
-        sink.write_interleaved(&vec![0.25; 5 * channels as usize]);
+        let mut sink = wav(&path, 48_000.0, channels, depth).unwrap();
+        sink.write(&vec![0.25; 5 * channels as usize]);
         sink.finalize().unwrap();
 
         let bytes = std::fs::read(&path).unwrap();
@@ -253,10 +284,11 @@ fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
 fn a_declared_quad_topology_sets_the_quad_mask() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("quad.wav");
-    let sink = WavOut::create_with_topology(&path, 48_000.0, ChannelTopology::quad(), Pcm::Float32)
-        .unwrap();
+    let mut sink =
+        wav_with_topology(&path, 48_000.0, ChannelTopology::quad(), Pcm::Float32).unwrap();
     assert_eq!(sink.layout(), ChannelLayout::from(4u16));
-    sink.write_interleaved_and_finish_for_test();
+    sink.write(&[0.25; 5 * 4]);
+    sink.finalize().unwrap();
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x33);
 }
@@ -269,8 +301,8 @@ fn a_declared_quad_topology_sets_the_quad_mask() {
 fn a_plain_header_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("plain.wav");
-    let mut sink = WavOut::create(&path, 44_100.0, 2u16, Pcm::Int16).unwrap();
-    sink.write_interleaved(&[0.5, -0.5, 0.25, -0.25]);
+    let mut sink = wav(&path, 44_100.0, 2u16, Pcm::Int16).unwrap();
+    sink.write(&[0.5, -0.5, 0.25, -0.25]);
     sink.finalize().unwrap();
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(&bytes[20..22], &1u16.to_le_bytes());
@@ -282,7 +314,7 @@ fn a_plain_header_is_left_alone() {
 /// frames under the limit, with correct header sizes and mask. Later writes
 /// are ignored.
 ///
-/// The limit is lowered through `with_max_frames_for_test`; the real one is
+/// The limit is lowered through `limit_frames`; the real one is
 /// pinned in `tutti-codec`.
 ///
 /// Mutation: taking the whole block (`fits = block.len()`) writes all eight frames and
@@ -291,13 +323,13 @@ fn a_plain_header_is_left_alone() {
 fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("limit.wav");
-    let mut sink = WavOut::create(&path, 48_000.0, 6u16, Pcm::Int24)
+    let mut sink = wav(&path, 48_000.0, 6u16, Pcm::Int24)
         .unwrap()
-        .with_max_frames_for_test(3);
+        .limit_frames(3);
     // Eight frames, in two writes, the limit falling in the first.
     let block: Vec<f32> = (0..5 * 6).map(|i| i as f32 * 0.001).collect();
-    sink.write_interleaved(&block);
-    sink.write_interleaved(&block[..3 * 6]);
+    sink.write(&block);
+    sink.write(&block[..3 * 6]);
     assert!(sink.is_failed());
 
     let err = sink.finalize().expect_err("the limit must be reported");
@@ -329,15 +361,15 @@ fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
 fn a_take_that_ends_at_the_limit_is_clean() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("exact.wav");
-    let mut sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32)
+    let mut sink = wav(&path, 48_000.0, 2u16, Pcm::Float32)
         .unwrap()
-        .with_max_frames_for_test(4);
-    sink.write_interleaved(&[0.1; 8]);
+        .limit_frames(4);
+    sink.write(&[0.1; 8]);
     sink.finalize().expect("exactly the limit is fine");
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 8);
 }
 
-/// A `WavOut` dropped without `finalize` (a recording whose pump thread
+/// A `FileOut` dropped without `finalize` (a recording whose pump thread
 /// panicked) is still a readable file: the writer back-patches on drop.
 ///
 /// Mutation (run): deleting `WavWriter`'s `Drop` leaves both sizes zero and
@@ -346,8 +378,84 @@ fn a_take_that_ends_at_the_limit_is_clean() {
 fn a_dropped_sink_leaves_a_readable_take() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dropped.wav");
-    let mut sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Int16).unwrap();
+    let mut sink = wav(&path, 48_000.0, 2u16, Pcm::Int16).unwrap();
     sink.write(&[0.25; 20]);
     drop(sink);
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 20);
+}
+
+/// Only whole frames are written: a trailing part of a frame is ignored, so an
+/// odd slice cannot rotate the file's channels.
+///
+/// No mutation of `FileOut` breaks this: the whole-frame rule is `Interleaved`'s
+/// (it views `len / width` frames and ignores the remainder), which `FileOut`
+/// builds its block with; the test pins the contract through the sink for WAV
+/// and, in the FLAC round trip below, for a second format.
+#[test]
+fn a_trailing_partial_frame_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("whole.wav");
+    let mut sink = wav(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
+    // Two whole frames and the left sample of a third.
+    sink.write(&[0.1, -0.1, 0.2, -0.2, 0.3]);
+    assert!(!sink.is_failed());
+    sink.finalize().unwrap();
+    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 4);
+}
+
+/// The sink is generic over the format: a FLAC take round-trips through the
+/// codec's own decoder, at the rate and width it declared, within the 16-bit
+/// quantization.
+///
+/// Mutation (run): dropping the last frame of each block in `write`
+/// (`&frames[..whole - stride]`) fails the length assertion.
+#[cfg(all(feature = "encode-flac", feature = "decode-flac"))]
+#[test]
+fn a_flac_take_round_trips_through_the_decoder() {
+    use crate::{FlacLevel, IntDepth, Wave};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("take.flac");
+    let spec = Spec::new(
+        Format::Flac {
+            depth: IntDepth::Int16,
+            level: FlacLevel::Standard,
+        },
+        ChannelLayout::STEREO,
+        SampleRate(44_100.0),
+    );
+    let frames = 2_000;
+    let signal: Vec<f32> = (0..frames)
+        .flat_map(|i| {
+            let x = i as f32 / frames as f32;
+            [x - 0.5, 0.5 - x / 2.0]
+        })
+        .collect();
+
+    let mut sink = FileOut::create(&path, &spec).unwrap();
+    assert_eq!(sink.sample_rate(), SampleRate(44_100.0));
+    // In blocks of 300 frames, the last one short: the sink is incremental.
+    for block in signal.chunks(300 * 2) {
+        sink.write(block);
+    }
+    // The left sample of a frame that never completed: ignored, not a rotated
+    // file.
+    sink.write(&[0.9]);
+    assert!(!sink.is_failed());
+    sink.finalize().unwrap();
+
+    let wave = Wave::read(&path).expect("the codec's own decoder reads the take");
+    assert_eq!(wave.channels(), 2);
+    assert_eq!(wave.sample_rate(), SampleRate(44_100.0));
+    assert_eq!(wave.len(), frames);
+    for i in 0..frames {
+        for c in 0..2 {
+            let want = signal[i * 2 + c];
+            assert!(
+                (wave.at(c, i) - want).abs() < 2.0 / 32_768.0,
+                "frame {i} channel {c}: {} against {want}",
+                wave.at(c, i)
+            );
+        }
+    }
 }

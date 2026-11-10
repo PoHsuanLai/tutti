@@ -11,7 +11,7 @@ use tutti_dsp::{
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode};
-use tutti_nodes::{ControlParams, DesignNode, NodeDesign};
+use tutti_nodes::{ControlParams, DesignNode, DryWet, NodeDesign};
 use tutti_types::{
     ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam,
 };
@@ -145,6 +145,7 @@ impl ControlParams for NoParams {
 
 impl NodeDesign for Echo {
     type Params = NoParams;
+    type Blend = DryWet;
 
     fn params(&self, _: ()) -> NoParams {
         NoParams

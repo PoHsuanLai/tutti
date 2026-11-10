@@ -15,7 +15,7 @@
 
 use tutti_dsp::{
     Ceiling, Channels, Design, Effect, Effort, FreeverbControls, FreeverbDesign, MAX_CHANNELS,
-    Ramp, Range, Realization, Ring, Setup, Sizes, System,
+    Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, ParamSetBuilder, Prepare, Shape,
@@ -25,7 +25,7 @@ use tutti_types::{
     Db, Latency, MaxBlock, Mix, Param, SampleRate, Samples, Tail, UnitAddr, UnitParam,
 };
 
-use crate::dry_align::DryAlign;
+use crate::blend::{Blend, DryWet};
 use crate::ramp::{LastGood, block_driven};
 
 /// The level the wet signal has fallen to when the declared tail ends, and below
@@ -51,7 +51,8 @@ pub trait ControlParams: Clone + Send + 'static {
     type Controls: Copy + PartialEq + Send;
 
     /// The addresses of the params the graph may modulate, in port order after
-    /// the node's mix (port 0), which is the node's and no algorithm's. A method,
+    /// the blend's (the node's mix, port 0, for a [`DryWet`]), which are the node's
+    /// and no algorithm's. A method,
     /// not a constant: a design that can freeze has a freeze param and one that
     /// cannot has none.
     fn addrs(&self) -> &'static [UnitAddr];
@@ -65,7 +66,7 @@ pub trait ControlParams: Clone + Send + 'static {
     /// The controls for this block: each cell, or the value its port carries
     /// when the graph modulates it (the block's last frame), read through
     /// `LastGood` so a non-finite write reads as unchanged. `first` is the
-    /// port of the first address.
+    /// port of the first address: the number of the blend's.
     fn read(&mut self, io: &Io<'_>, first: usize) -> Self::Controls;
 
     /// The controls that ring longest among the values a modulated port takes
@@ -82,10 +83,15 @@ pub trait ControlParams: Clone + Send + 'static {
 }
 
 /// A [`Design`] a [`DesignNode`] can run: the design plus the cells of its
-/// controls.
+/// controls and what the node does with the input around it.
 pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'static {
     /// The cells.
     type Params: ControlParams<Controls = Self::Controls>;
+
+    /// What the node does with its input: [`DryWet`] for a reverb used as an
+    /// insert, [`NoBlend`](crate::NoBlend) for a family that is only ever the
+    /// wet signal.
+    type Blend: Blend;
 
     /// Cells that hold `initial`. Control side; allocates.
     fn params(&self, initial: Self::Controls) -> Self::Params;
@@ -163,6 +169,7 @@ impl ControlParams for FreeverbParams {
 
 impl NodeDesign for FreeverbDesign {
     type Params = FreeverbParams;
+    type Blend = DryWet;
 
     fn params(&self, initial: FreeverbControls) -> FreeverbParams {
         let fallback = FreeverbControls::GENERAL_MIDI;
@@ -223,8 +230,8 @@ pub struct DesignNode<D: NodeDesign> {
     realization: D::Realization,
     params: D::Params,
     mode: Mode<D::Controls>,
-    mix: Param<Mix>,
-    good_mix: LastGood,
+    /// The dry path and its controls.
+    blend: D::Blend,
     /// The model the realization was last retargeted to: designed in place.
     network: Box<D::Model>,
     /// The longest-ringing model of a modulated block, for the tail only.
@@ -245,10 +252,6 @@ pub struct DesignNode<D: NodeDesign> {
     since: u64,
     /// Whether the realization holds exactly silence (reset, nothing since).
     silent: bool,
-    dry: Vec<DryAlign>,
-    dry_buf: Vec<Vec<f32>>,
-    /// The mix the previous block ended on.
-    last_mix: Option<f32>,
 }
 
 impl<D: NodeDesign> std::fmt::Debug for DesignNode<D> {
@@ -292,8 +295,7 @@ impl<D: NodeDesign> DesignNode<D> {
             realization,
             params,
             mode,
-            mix: Param::new(Mix::WET),
-            good_mix: LastGood::fixed(Mix::WET.get()),
+            blend: D::Blend::default(),
             network,
             longest,
             applied: None,
@@ -304,19 +306,9 @@ impl<D: NodeDesign> DesignNode<D> {
             ring: 0,
             since: UNBOUNDED,
             silent: true,
-            dry: Vec::new(),
-            dry_buf: Vec::new(),
-            last_mix: None,
         };
         node.retune(rate, MaxBlock::of(Samples(1)));
         node
-    }
-
-    /// The shared cell of the mix: `0` is the dry input alone, `1` (the
-    /// default) the room alone.
-    #[must_use]
-    pub fn mix(&self) -> Param<Mix> {
-        self.mix.handle()
     }
 
     /// Prepares the realization for `rate` and sizes everything that depends on it.
@@ -345,22 +337,18 @@ impl<D: NodeDesign> DesignNode<D> {
             }
         };
         let inputs = usize::from(self.channels.input.count());
-        let latency = self.realization.latency().get();
-        self.dry = (0..inputs).map(|_| DryAlign::new(latency)).collect();
-        self.dry_buf = vec![vec![0.0; max_block.get()]; inputs];
+        self.blend
+            .prepare(self.realization.latency(), inputs, max_block);
         self.clear();
     }
 
     /// Back to silence: no ring-out owed, no input heard.
     fn clear(&mut self) {
         self.realization.reset();
-        for d in &mut self.dry {
-            d.clear();
-        }
+        self.blend.clear();
         self.silent = true;
         self.ring = 0;
         self.since = UNBOUNDED;
-        self.last_mix = None;
     }
 
     /// Designs `controls` into the node's network and retargets the realization.
@@ -370,6 +358,15 @@ impl<D: NodeDesign> DesignNode<D> {
         self.realization.retarget(&self.network);
         self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
         self.applied = Some(controls);
+    }
+}
+
+impl<D: NodeDesign<Blend = DryWet>> DesignNode<D> {
+    /// The shared cell of the mix: `0` is the dry input alone, `1` (the default)
+    /// the room alone.
+    #[must_use]
+    pub fn mix(&self) -> Param<Mix> {
+        self.blend.mix()
     }
 }
 
@@ -415,7 +412,7 @@ fn cost(effort: Effort) -> Cost {
 
 impl<D: NodeDesign> Node for DesignNode<D> {
     fn shape(&self) -> Shape {
-        let mut addrs = vec![UnitAddr::first(UnitParam::Wet)];
+        let mut addrs = D::Blend::ADDRS.to_vec();
         if matches!(self.mode, Mode::Live) {
             addrs.extend_from_slice(self.params.addrs());
         }
@@ -436,18 +433,19 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             return Status::Modified;
         }
         let inputs = usize::from(self.channels.input.count());
+        let first = D::Blend::ADDRS.len();
 
-        // The controls, and the network when they changed.
+        // The controls, and the model when they changed.
         let target = match self.mode {
             Mode::Fixed(c) => c,
-            Mode::Live => self.params.read(&io, 1),
+            Mode::Live => self.params.read(&io, first),
         };
         if self.applied != Some(target) {
             self.apply(target);
         }
         let mut current = self.current;
         if matches!(self.mode, Mode::Live)
-            && let Some(longest) = self.params.longest(&io, 1)
+            && let Some(longest) = self.params.longest(&io, first)
             && Some(longest) != self.applied
         {
             self.design
@@ -496,7 +494,6 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             }
         };
         let cut = live.min(size as u64) as usize;
-        let pass_through = self.dry.iter().all(DryAlign::is_pass_through);
 
         // Past its tail the room is cut off and parked: its state is below the
         // floor, and the input has been silent for longer than the realization's
@@ -510,15 +507,8 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             return Status::Idle;
         }
 
-        // The mix this block ends on, ramped from where the last one ended.
-        let to = Mix::new_clamped(
-            self.good_mix
-                .read(block_driven(&io, 0).unwrap_or_else(|| self.mix.load().get())),
-        )
-        .get();
-        let from = self.last_mix.unwrap_or(to);
-        self.last_mix = Some(to);
-        let wet_only = from == 1.0 && to == 1.0;
+        // The blend reads its controls only now: an idle block above read none.
+        self.blend.begin(&io);
 
         let (ins, mut outs) = io.split();
         if cut > 0 {
@@ -545,24 +535,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             }
         }
 
-        // The dry path, only when the mix is not all wet (or the dry delay holds
-        // history a later mix would need).
-        if !(wet_only && pass_through) {
-            for (c, dry) in self.dry.iter_mut().enumerate() {
-                for (b, &x) in self.dry_buf[c][..size].iter_mut().zip(&ins.get(c)[..size]) {
-                    *b = dry.step(x);
-                }
-            }
-        }
-        if !wet_only {
-            let ramp = Ramp::new(from, to, size);
-            for (c, ch) in outs.iter_mut().enumerate() {
-                let dry = &self.dry_buf[c % inputs.max(1)];
-                for (i, (o, &d)) in ch[..size].iter_mut().zip(dry).enumerate() {
-                    *o = Mix(ramp.at(i)).blend(d, *o);
-                }
-            }
-        }
+        self.blend.finish(&ins, &mut outs, size);
         Status::Modified
     }
 
@@ -571,9 +544,10 @@ impl<D: NodeDesign> Node for DesignNode<D> {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
+        let first = D::Blend::ADDRS.len();
         match (k, self.mode) {
-            (0, _) => Some(self.mix.load().get()),
-            (k, Mode::Live) => self.params.base(k - 1),
+            (k, _) if k < first => self.blend.base(k),
+            (k, Mode::Live) => self.params.base(k - first),
             _ => None,
         }
     }
@@ -588,8 +562,7 @@ impl<D: NodeDesign> Clone for DesignNode<D> {
             realization: self.realization.fresh(),
             params: self.params.clone(),
             mode: self.mode,
-            mix: self.mix.handle(),
-            good_mix: self.good_mix,
+            blend: self.blend.clone(),
             network: self.network.clone(),
             longest: self.longest.clone(),
             applied: self.applied,
@@ -600,21 +573,17 @@ impl<D: NodeDesign> Clone for DesignNode<D> {
             ring: 0,
             since: UNBOUNDED,
             silent: true,
-            dry: self.dry.clone(),
-            dry_buf: self.dry_buf.clone(),
-            last_mix: None,
         };
-        for d in &mut copy.dry {
-            d.clear();
-        }
+        copy.blend.clear();
         copy
     }
 }
 
 impl<D: NodeDesign> ParamNode for DesignNode<D> {
-    /// The mix, and in a live node the algorithm's cells.
+    /// The blend's (the mix of a [`DryWet`]), and in a live node the algorithm's
+    /// cells.
     fn param_set(&self) -> ParamSet {
-        let set = ParamSet::builder().param(UnitParam::Wet, self.mix.as_atomic());
+        let set = self.blend.bind(ParamSet::builder());
         match self.mode {
             Mode::Live => self.params.bind(set).build(),
             Mode::Fixed(_) => set.build(),
@@ -624,7 +593,7 @@ impl<D: NodeDesign> ParamNode for DesignNode<D> {
     /// A clone with every cell detached (at its value now) and the room empty.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.mix.detach();
+        fork.blend.detach();
         fork.params.detach();
         fork
     }

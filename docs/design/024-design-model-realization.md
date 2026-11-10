@@ -1371,7 +1371,7 @@ consumer; its generic parts go to dsp (consolidation 8) and the unit stays.
 
 ### What gets renamed
 
-Step 1a (PR 1a, renames only) did the rows marked **done**; the rest is PR 1b.
+Step 1a (PR 1a, renames only) did the rows it marks **done**; step 1b (PR 1b, the model) did the rest.
 
 | Today (on `main`) | Becomes |
 |---|---|
@@ -1380,12 +1380,12 @@ Step 1a (PR 1a, renames only) did the rows marked **done**; the rest is PR 1b.
 | `ReverbParams` | `ControlParams`: **done** |
 | `network::contract::{DesignCase, cases}` | `contract::design` (**done**: the crate-root `#[cfg(test)] mod contract`); PR 1b splits out `reverb::cases` for the reverb-only ones |
 | `network::kernel_contract::{KernelCase, Defect, Flawed}`, `kernel_contract!`, `Kernel`, `Design::kernel` | `contract::realization::{RealizationCase, Defect, Flawed}`, `realization_contract!`, `Realization` (non-generic), `Design::realization`: **done** (`network/kernel.rs` is `network/realization.rs`) |
-| `Network` (the model) | unchanged; `Network: Model` |
-| `Ceiling` | `Ceiling<R>`; the reverb's is `Ceiling<MaxDecay>` |
-| `Bounds` (the struct) | stays the reverb's, as `FreeverbDesign::Bounds`; no longer part of the model |
-| `Realization` (non-generic) | `Realization<M>` and `Effect<M>` |
-| `Network::{tail, latency, is_stable}` | `impl System for Network` (`latency`, `tail`) and `impl Lti` (`spectral_radius`, `l1_norm`, `hinf_norm`, `frequency_response`); `is_stable` becomes the provided `Lti::is_stable`; `tail` and `latency` names unchanged |
-| CLAUDE.md "the `tutti-dsp` paragraph names `Design`, `Realization` and `Network`" | names the traits of this module (doc 022 already promised it for 1a) |
+| `Network` (the model) | unchanged; `Network: System + Lti`: **done** |
+| `Ceiling` | `Ceiling<R>`; the reverb's is `Ceiling<MaxDecay>`: **done** |
+| `Bounds` (the struct) | stays the reverb's, as `FreeverbDesign::Bounds`; no longer part of the model (`network/bounds.rs`, `impl Sizes`): **done** |
+| `Realization` (non-generic) | `Realization<M>` (with an associated `type Bounds`) and `Effect<M>`: **done** |
+| `Network::{tail, latency, is_stable}` | `impl System for Network` (`latency`, `tail`) and `impl Lti` (`spectral_radius`, `l1_norm`, `hinf_norm`, `frequency_response`); `is_stable` is `Lti::is_stable`, **overridden** with the network's own logic (the provided `spectral_radius() < 1` would refuse a frozen loop, whose radius is 1 and which is marginally stable, and would not see the hostile figures `lines_hold` refuses by name); `tail` and `latency` names unchanged: **done** |
+| CLAUDE.md "the `tutti-dsp` paragraph names `Design`, `Realization` and `Network`" | names the traits of this module (doc 022 already promised it for 1a): **done** in 1b |
 
 
 ## 10. Staged plan
@@ -1401,13 +1401,89 @@ test compares a render against another reference render.
 |---|---|---|---|---|
 | 0 | This document | | | |
 | 0b | **Split and consolidate the code the survey found (section 9), before step 1.** **The split has landed (#376: `tutti-measure`, layer 3, `check-layout.sh` places it), and so have consolidations 1 (#448), 2 (#451), 3 (#446), 9 (#443) and 10 (#444); the `tutti-dsp` `Error` split (#452) followed as a PR of its own, not a numbered consolidation.** The `tutti-measure` split (layer 3, over `tutti-dsp`; `window`, `geometry`, `grid` and `error` stay), then consolidations 1 (HRIR sinc onto dsp's resampler and `CosineWindow`), 2 (`Smoother`), 3 (delete the width-only folds, callers onto `Fold`), 9 (`LimiterKernel`) and 10 (the phaser sweep mapping and the strip balance law). Each is its own PR, the split first. The split PR updates CLAUDE.md and `scripts/check-layout.sh`; the rest are code moves under existing rules | `tutti-dsp/src/analysis/` to `tutti-measure`; `tutti-spatial` `hrtf/sphere.rs` and `smoothing.rs`; `tutti-types/src/downmix.rs` and its callers; `tutti-nodes` `dynamics/limiter.rs`, `modulation/phaser.rs`, `strip.rs` | The split: the workspace builds and tests with the same tests, unmoved; `check-layout.sh` places the crate. Each consolidation: the moved code's own tests, unchanged (never edited to pass); a digest of the node's render before and after where the output must not change (limiter, strip, phaser; golden-guarded where it calls libm); the HRIR resampler against its analytic anchors (unity DC gain, the response of the windowed sinc), not against the old output | #367 (merged) |
-| 1 | **Generalise on the reverb, which answers as `Lti`. Two PRs: 1a (the renames below marked "renamed in this step", landed as a renames-only PR with the port order pinned first) and 1b (the model).** The neutral `model` module: `Design`'s `type Model`, `blank`, `measure`, engineering `Bounds`/`Range`; the class traits `System` and `Lti` (`Memoryless` and `Autonomous` are not added until they have an implementer); `Realization<M>` and `Effect<M>` (**the code's `Kernel`, on `main` since #367 and reverb only, is renamed `Realization` in this step**, with `Design::kernel` to `Design::realization`, `kernel_contract!` to `realization_contract!` and `KernelCase` to `RealizationCase`; doc 022 and CLAUDE.md are updated in the same PR. `Effect<M>` **keeps its name**: it names the planar block shape (an audio effect), which is engineering, not a term the math conventions use for something else; recommend keeping it), `Ceiling<R>`, `Cadence` (only `Block` used); `Network: System + Lti` (`frequency_response` from the comb sums and the FDN solve over its own lines, `spectral_radius` from `rt60_bound`, `gain_bound` from the L1 bound `peak_bound` already computes, and `hinf_norm` the same figure until a tighter one exists); the `contract` feature with core and `Lti` groups and the reverb-only cases split out, including the three cases the FDN (PR #372) found (section 6.1): **landed**, the **stream clock** for ramps, and the **vacuity** hook; `ReverbNode` to `DesignNode` with `DryWet`, `NoBlend` and `()` as `Readouts`; the renames of section 9. The polysynth's `kernel.rs` is not renamed here: it holds oscillator functions, implements no `Kernel`, and its name is the step 7 PR's to settle | `network/{design,kernel,contract,kernel_contract,queries}.rs` (the files keep their names or are renamed with their types, the PR's choice), `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The GM digest `the_general_midi_send_renders_what_it_always_did` and `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged; every 022 case passes under its new name and still fails its `Defect`; the new `Lti` group passes on Freeverb (response at the comb frequencies, measured decay against `spectral_radius`, linearity and shift invariance) and fails a defective realization; `tests/reverb_node*.rs` pass; port order pinned. The FDN's contract workarounds (fit depth, tone probes, static probes, the 15% RT60 tolerance) exist only because the model has no `frequency_response`; the solve below retires them. Risk named: `Network::frequency_response` for a mixing FDN is a control-side solve per frequency (64x64 at most). If it proves too large, `frequency_response` splits into a sub-trait `Spectral: Lti` and the reverb implements it in 1c | #367 (merged); ideally 1c (PR #372, the FDN) so **two reverb realizations** run the traits; if 1c is not in, the test-only `ToyFdn` is the second |
+| 1 | **Landed: 1a (renames) and 1b (the model; see "Step 1b as built" below).** **Generalise on the reverb, which answers as `Lti`. Two PRs: 1a (the renames below marked "renamed in this step", landed as a renames-only PR with the port order pinned first) and 1b (the model).** The neutral `model` module: `Design`'s `type Model`, `blank`, `measure`, engineering `Bounds`/`Range`; the class traits `System` and `Lti` (`Memoryless` and `Autonomous` are not added until they have an implementer); `Realization<M>` and `Effect<M>` (**the code's `Kernel`, on `main` since #367 and reverb only, is renamed `Realization` in this step**, with `Design::kernel` to `Design::realization`, `kernel_contract!` to `realization_contract!` and `KernelCase` to `RealizationCase`; doc 022 and CLAUDE.md are updated in the same PR. `Effect<M>` **keeps its name**: it names the planar block shape (an audio effect), which is engineering, not a term the math conventions use for something else; recommend keeping it), `Ceiling<R>`, `Cadence` (only `Block` used); `Network: System + Lti` (`frequency_response` from the comb sums and the FDN solve over its own lines, `spectral_radius` from `rt60_bound`, `gain_bound` from the L1 bound `peak_bound` already computes, and `hinf_norm` the same figure until a tighter one exists); the `contract` feature with core and `Lti` groups and the reverb-only cases split out, including the three cases the FDN (PR #372) found (section 6.1): **landed**, the **stream clock** for ramps, and the **vacuity** hook; `ReverbNode` to `DesignNode` with `DryWet`, `NoBlend` and `()` as `Readouts`; the renames of section 9. The polysynth's `kernel.rs` is not renamed here: it holds oscillator functions, implements no `Kernel`, and its name is the step 7 PR's to settle | `network/{design,kernel,contract,kernel_contract,queries}.rs` (the files keep their names or are renamed with their types, the PR's choice), `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The GM digest `the_general_midi_send_renders_what_it_always_did` and `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged; every 022 case passes under its new name and still fails its `Defect`; the new `Lti` group passes on Freeverb (response at the comb frequencies, measured decay against `spectral_radius`, linearity and shift invariance) and fails a defective realization; `tests/reverb_node*.rs` pass; port order pinned. The FDN's contract workarounds (fit depth, tone probes, static probes, the 15% RT60 tolerance) exist only because the model has no `frequency_response`; the solve below retires them. Risk named: `Network::frequency_response` for a mixing FDN is a control-side solve per frequency (64x64 at most). If it proves too large, `frequency_response` splits into a sub-trait `Spectral: Lti` and the reverb implements it in 1c | #367 (merged); ideally 1c (PR #372, the FDN) so **two reverb realizations** run the traits; if 1c is not in, the test-only `ToyFdn` is the second |
 | 2 | **Filters (SVF, ladder, LR crossover), with several realizations of one H(z).** `SvfModel`, `LadderModel` (small signal, class 1 by `Linearised`), `CrossoverModel`; `Cadence::Every(16)` in the node, **or the same ramp inside the realization at `Cadence::Block`** (decided by measurement in this step, Q21); separate the crossover's design from its state; **a transposed-direct-form-II biquad realization and a lattice realization as second and third realizations of `SvfModel`'s response** (test-support realizations in `tutti-dsp`), so the `Lti` group is run on three realizations of one H(z) and the model is shown to be the equivalence class; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Consolidation 4 joins this step**: the SoundFont's RBJ biquad becomes a `tutti-dsp` biquad, a realization of `SvfModel`'s family, since the biquad realization above is its natural home. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | The `Lti` group on all three realizations (mutants: a 2% cutoff error, a `tanh` in the loop); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `Every(16)` is the old schedule; the segment-end case | 1 |
 | 3 | **Composition, first consumer the parametric EQ.** `Series`, `Parallel`, `SeriesN` and their realizations (two realizations in order; two summed), with the algebra as free functions over `Lti` parts that `Network`'s stage fold also uses; a parametric EQ design whose model is `SeriesN<SvfModel, N>`; the `Series` tail bound proof. Reverb step 3b (early reflections as `Parallel<Taps, Network>`) is then unblocked and is doc 022's own PR | `tutti-dsp` `model` module, a new EQ design in `filter/` | The algebra laws as unit tests (response of `Series` is the product of the parts' responses at random points; `Parallel` aligns latency; stability preserved); the composite passes the unchanged `Lti` group; the tail bound against the measured tail on random pairs; mutants: sum the latencies in `Parallel`, drop the alignment | 2 (and the reverb's 1b for the 3b consumer) |
 | 4 | **Dynamics: compressor, gate, limiter, brickwall (class 3 and 4).** `SteadyState`, `Wiener`, `Hammerstein`, `GainControl` (over the memoryless `Memoryless` for the brickwall and the gain maps), `Readout`, `Readouts` publishing through `level_cell`, `Describe::readout`, `Curve::Transfer`. Decide `Driven<M>` against the code (Q3). Gate hold and the limiter's windowed minimum stay inherent (they are class E and a nonlinear operator). **Delivers G9** | `dynamics/*.rs`; the dynamics nodes | The class-4 settled-level sweep and step response (mutants: threshold +1 dB, ratio off, knee ignored); the readout equals the measured gain; node digests; the `multiband` readout test unchanged | 3 (`Wiener`), 2 (the `Describe` plumbing) |
 | 5 | **Delay, chorus, flanger, phaser (class 1 and 2); the waveshaper (class 3).** `Ltv`; the frozen comb and all-pass `frequency_response`; the waveshaper's `Memoryless` with its harmonics and `Fidelity`; `Graded` for oversampling if the realization gains it | `delay.rs`, `swept_delay.rs`, `allpass.rs`, `waveshape.rs` and their nodes | Comb response against the FFT; notch frequencies; the slow-variation case; DC and odd-symmetry cases; the aliasing case; digests | 2 |
 | 6 | **Convolver, HRTF (class 1, published model).** The published control path (5.3), `FirSummary` unified with the convolver's model, `Graded` for the partition; `ReverbKind` gains the convolution variant (doc 022 step 2). Consolidation 8 is struck (owner, 2026-11-10): doc 026 stage 4 deletes the old stretch vocoder, so it is not moved | `convolver.rs`, `ConvolverNode`, `tutti-spatial` hrtf | `frequency_response` against the IR FFT; `latency` = `B`; a `Loan` is never parked; the export-fork test | 1 and doc 022 step 2 |
 | 7 | **The rest, each in the PR that needs it, in this order:** resampler (class 6, own shape trait; `Fidelity`, `Graded`, latency; used by export); panners and fold (class 1 at order 0); envelopes, oscillators, LFOs and noise (class 5: `Autonomous`, `Periodic`, `Piecewise`, `Noise`, in `tutti-polysynth` and `tutti-soundfont`, the latter gated on a `tutti-dsp` edge); stretch; dither | per family | per family, with a mutation record | the step 1 shape |
+
+### Step 1b as built
+
+What PR 1b did, and where it differs from the sketches above.
+
+**The `model` module** (`tutti-dsp/src/model/{system,lti,design,realization,ceiling,cadence}.rs`,
+private, exported at the root, added to the path gate). `System`, `Lti` (with `Complex64`
+re-exported), `Design` with `type Model: System + Clone + Send`, `type Bounds: Sizes`, `type Range: Range`,
+`blank`, `measure` and `const CADENCE`; `Realization<M>` with an associated `type Bounds` (Q16: the
+sizes stay the design's, the realization names the type it is prepared from), `Effect<M>` holding
+`process`; `Ceiling<R>` over `Range` with `MaxDecay` (range-checked, `new -> Option`, `TryFrom`, no serde in
+the library: the range-contract test carries its own serde impl); `#[non_exhaustive] Cadence::Block`
+only. `Bounds` (the reverb's struct) is `network/bounds.rs` and `impl Sizes`. `Ring` moved to `model/system.rs`.
+
+**`Network: System + Lti`** (`network/response.rs`). `frequency_response` composes the stages as a vector transfer
+(pre-delay, taps, all-passes per channel, an FDN solved over its own lines, then the kernel's
+mid and side with width and wet): a diagonal `A` in O(N), a Householder or reflection by a
+rank-one update (Sherman and Morrison) in O(N), a circulant, Hadamard or dense one by Gaussian elimination.
+A stage that takes one signal is handed the mean of its input channels (the kernel's mono sum).
+It is checked against the realization, not against another render: the `RealFft` of the
+kernel's impulse response against the model on the FFT bins is within 4e-4 to 2e-3 relative (L2)
+for Freeverb and for the mixing FDN, so the 1e-2 tolerance of the `response` case has a 5 times margin,
+and a 5% loop gain or a 10% output gain fails it. **No `Spectral` split was needed.**
+`spectral_radius` is `10^(log rho + log sigma)` of the slowest band (`rt60_bound`'s own figure), an
+all-pass's `|g|^(1/D)`, 1 for a lossless loop and infinity for what the analysis refuses; measured decay
+rates of both reverbs are 11 to 28% faster than it says (a bound). `is_stable` keeps its own logic (§9
+corrected: it is not the provided default).
+
+`l1_norm` and `hinf_norm` are sufficient bounds. The all-pass l1 norms are exact (`1 + 2|g|` for the
+lattice, `1 + 1/(1 - |g|)` for Freeverb's, from the impulse responses), taps are `sum |gain|`, the width fold
+`max(1, w)`, a FIR infinity. **A diagonal FDN** is exact: `sum_i |c_ri b_i| / (1 - a_i)`, `a_i` the l1 norm
+of line `i`'s absorption. **A mixing FDN**: the plan's `||B|| m / (1 - q) ||C||` does not follow from
+`||S_(n+m)|| <= q ||S_n|| + m ||B||` (a sup over time of a norm over lines does not survive lines
+of different delay: a factor `sqrt(N)` is lost), so the shipped bound is a different one with a proof in
+`Fdn::l1_gain`: for `0 < r < 1`, Cauchy and Schwarz give `||h||_1 <= (1 - r^2)^(-1/2) sup_(|z|=r) |H|`, and
+`|H|` on that circle is at most `||C|| r^(-m) ||B|| / (1 - q)` with `q = ||A|| max_i |G_i| r^(-m_i)` (a delay of
+`m` has magnitude `r^(-m)` there, an absorption at most its majorant `sum |g_k| r^(-k)`); the smallest over a
+log grid of `1 - r` is returned. It is loose (a Householder FDN of 8 s decay gets some `1e4` against a
+true response of a few; infinity where `q >= 1` for every `r`, as with bands that rise with frequency).
+`hinf_norm` is the resolvent bound at `r = 1`, with the absorption's peak a grid maximum plus a
+Lipschitz margin (the sum of the magnitudes of the three band weights overshoots when the bands rise), and
+never above `l1_norm`: it is 2 to 4 times the measured peak of Freeverb and of the FDN where the grid resolves
+the poles, so the contract's slack is 50.
+
+**The contract** (`contract` feature, off by default, `rand` optional; the one public module):
+`DesignCase`, `RealizationCase`, `LtiCase`, `ReverbCase` (the reverb hooks, which `Defective` forwards),
+`Hook`, `Anchor`, `cases::{design, realization}`, and `design_contract!(d, Lti, reverb)` and
+`realization_contract!(d, Lti, reverb)` (the groups follow the design after commas: a `macro_rules` expression
+cannot be followed by a colon). Files `contract/{basic,design_case,harness,lti,macros,reverb}.rs`
+(`basic`, not `core`, which would shadow the `core` crate) and a `cfg(test)` `flaws.rs` with `Defect`, `Flawed`,
+`Defective`, `Mutant`, `ToyFdn` and the doubles `Scaled`, `Lying` and `Lie` (a model that lies about its `tail`,
+`hinf_norm` or `l1_norm`). `tests/contract_public.rs` runs the macros on a gain outside the crate. New cases, each
+with its mutation as a test: `landed` and `stream_clock` (the ramp cases; they need a realization that ramps, so
+their defects are on the FDN, with two test-only flaws in `FdnKernel`), `vacuity` (`DesignCase::vacant`, a
+list of `(Hook, why)`), and the `Lti` cases (`radius`, `anchors`, `norms`, `ports`, `linear`, `response`,
+`decay`, `tail_tight`). `peak_bound` is retired (`stability` holds the render to `l1_norm`). The FDN's
+workarounds (fit depth, tone probes, static probes, the 15% RT60 tolerance) are kept: the response case holds
+the realization's whole response, but the RT60 cases read the model's `rt60` and do not use it.
+
+**Findings, for the record.**
+
+- `FdnKernel` realizes `Matrix::Diagonal` as the reflection along line 0 (`I - 2 e0 e0^T`, a sign on line 0's
+  loop, so that `v` stays a unit vector through a ramp). That changes no decay and moves line 0's comb teeth
+  half a spacing, so at diffusion 0 the realization's response is not the model's (relative error 0.8). The
+  `response` case leaves the diffusion-0 probe out (`LtiCase::response_probes`) and says why.
+- The kernel rescales a set of band gains whose response exceeds 1 anywhere (to peak at 0.9999), the model
+  does not, and **reachable controls do ask for it** (a mid band that rings far longer than both
+  neighbours: peak 1.015 at corners of the grid, so the kernel lowers the loop gains by 1.5%, which at an 8 s decay is a large share of the decay). The
+  `no_rescale` case holds it on the controls the measured cases run and not on every reachable one, as the
+  plan asked; `Absorption::peak` is what it reads.
+- The slack of `hinf_norm` is checked only where a grid resolves the sharpest pole (its bandwidth is at
+  least twice the bin spacing): a system that rings for seconds has poles narrower than any affordable
+  grid, so its measured peak is under the true one, and the slack would blame the bound.
+
+**Not done, by decision.** `Readouts` (step 4: dynamics is its first consumer); `Cadence::Every` (Q3, step 4); the
+`Ltv` and `Memoryless` traits (no implementer yet); `Describe` and `Curve` (step 2).
 
 **Why this order.** Step 0b goes before step 1 because it moves code the later steps build on: the analysers leave `tutti-dsp` before the class traits arrive in it, so the new `model` module lands in a crate that holds processors only, and the smoother, `LimiterKernel` and the balance law are in dsp before steps 4 and 5 write their models. Step 1 is the only step that changes a shipped API, so it goes
 first and on the family whose behaviour is pinned by a digest; the reverb answers

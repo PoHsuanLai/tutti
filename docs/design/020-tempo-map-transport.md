@@ -7,8 +7,8 @@ three functions convert beats to seconds. A project with a tempo change plays
 one way and exports another. This design makes the map the transport's tempo,
 live and offline, through one pure function, so the two agree by construction.
 
-Status: design only; the open questions are decided (§10). Nothing here is implemented. Doc 019 (bounce)
-depends on §6.
+Status: the open questions are decided (§10). Stage 2 (publishing a constant map) is built; see
+the as-built notes at §9. Doc 019 (bounce) depends on §6.
 
 ## Summary
 
@@ -327,6 +327,37 @@ render bit-identical (stage 0 adds the guards first).
 | 4 | Ramps | Ramp cells, the grid bound, `tempo_at` slope on `TempoMap` if missing. | Ramp tests; block-size independence. |
 | 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the cell. | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
 | 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds`, `duration_to_frames`; `MidiFile::seconds_at` over `TempoMap`; `plugin_midi_export` pins the note frames, not only the length. | Needs lane E4's bounce API; docs 013 updated. |
+
+**As built, stages 0 to 2 (publish a constant map).** Stage 0's guards already
+exist (the closed-form `FrameClock` property, `offline_timeline_agrees_with_transport_clock_sample_for_sample`,
+`env_beat`'s `changes.is_empty()` on both renders) and ran unchanged; stage 1
+(`TempoWalk`) is not a separate step, because a walker that owns a map needs one
+published. What landed:
+
+- `tutti-transport` depends on `tutti-tempo` (layout script and CLAUDE.md say so).
+  `TransportSettings` holds an `ArcLend<TempoMap>` and a publish count;
+  `set_tempo(Bpm)` publishes `TempoMap::constant(bpm)` (the bits as given) and
+  `set_tempo_map(Arc<TempoMap>)` publishes a map. `TransportAudio` registers its
+  `Reader` when it is built (control side) and lends the cell once per block,
+  and only when the count moved. `Session::reclaim` (the `Reclaim` phase) calls
+  `TransportSettings::reclaim_tempo`.
+- **A map that changes is refused** (`NotConstant`) until the walker lands
+  (stage 3): the clock follows one tempo, and following a map wrongly in silence
+  is worse than refusing it.
+- **`TransportCommand::Tempo` is applied on the audio thread, which cannot
+  publish.** Until stage 6 retires it, it stores the scalar mirror
+  (`TransportSettings::tempo`) and the clock keeps it until the next publish,
+  which wins. The scalar mirror stays for `Timeline::tempo` and
+  `samples_per_beat`, and is stored beside every publish under one lock.
+- **`set_tempo` stays infallible.** A denormal tempo is no map (a beat's rate
+  underflows): it reaches `tempo()` readers and not the clock, which keeps the
+  map it had.
+- **The clock's hysteresis is unchanged** (§3 removes it for the map path, which
+  needs the walker; today every tempo still arrives as one scalar).
+- `TempoMap::constant_tempo()` is the one new `tutti-tempo` query.
+- Golden digests: none moved. Not independently testable: that the session's
+  `Reclaim` phase calls `reclaim_tempo` (a loan is held only inside a block);
+  `the_tempo_map_is_swept_by_reclaim_tempo` pins the cell's sweep.
 
 Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's

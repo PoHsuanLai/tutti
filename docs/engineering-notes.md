@@ -109,9 +109,7 @@ crates/             everything shipped, directory name = package name
   tutti-metering    # LoadMeter (level meters are plan ops in tutti-graph)
   tutti-engine      # Engine: the per-block graph render over a transport
   tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
-  tutti-io          # Live I/O edge: mic monitor node, TapIn, WavOut, Recorder.
-                    #   Device-free, so tutti-cpal depends on it, not vice versa.
-  tutti-codec       # File codecs: the encoders, and the decoder (Wave, FileIn).
+  tutti-codec       # File codecs: the encoders and FileOut, the decoder (Wave, FileIn).
   tutti-modulation         # Pure modulation: the route compiler, curves. Audio-free.
   tutti-export      # Offline rendering and export
   tutti-dsp         # Pure algorithms over slices. Names only tutti-types.
@@ -297,7 +295,7 @@ could still load. The soundness argument, in C++20 terms, is in `arc-lend`'s
 pair is the whole argument, and both halves are load-bearing: the loom model
 (`arc-lend/tests/loom.rs`, run against the shipped code: nine models:
 eight exhaustive, and `registering_and_dropping_readers` at a preemption bound
-of 4 in CI and 5 under `just loom-full`) fails with either removed, and so does miri on the
+of 4 in CI and 5 under `cargo xtask loom-full`) fails with either removed, and so does miri on the
 concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 
@@ -340,8 +338,8 @@ The engine has **two** buffer interfaces, and which to use is decided by *what
 the buffer is for*, not by whether the width is known at compile time. Nothing in
 the engine fixes a channel count in a type any more.
 
-- **`AudioIn` / `AudioOut`** (`tutti-types::io`) — engine **edges**: mic in, WAV
-  out, `TapIn`, `FileIn`. Both take a **flat interleaved `&[S]`** and report
+- **`AudioIn` / `AudioOut`** (`tutti-types::io`) — engine **edges**: mic in, file
+  out (`FileOut`), a `TapReader`, `FileIn`. Both take a **flat interleaved `&[S]`** and report
   their width as a runtime `ChannelLayout` from `layout()`. **Every count on this
   boundary is denominated in FRAMES** — `poll_into` and `pump` return a
   `Samples` (the frame count), `write` receives
@@ -409,7 +407,7 @@ Going runtime cost one compile-time guarantee: "a stereo source cannot feed a
 6-channel sink" was a type error, because the two `CH`s had to unify. Per the
 units rule that **an omission must ship with its replacement in the same
 change**, it was replaced by two runtime checks, both landed together: `pump`
-carries a `debug_assert_eq!` on the two layouts, and `tutti_io::Recorder::start`
+carries a `debug_assert_eq!` on the two layouts, and `tutti_session::Recorder::start`
 — the one place both endpoints are in scope before a frame moves — returns an
 error. Neither is optional bookkeeping; deleting either re-opens the hole.
 
@@ -544,7 +542,7 @@ names them directly:
 
 Both are declared in this repo's `[workspace.dependencies]`.
 
-`Cargo.lock` is committed and every CI and `just` cargo command passes
+`Cargo.lock` is committed and every CI and `cargo xtask` cargo command passes
 `--locked`, so a drifted lock fails loudly instead of resolving newer
 dependencies (an unpinned resolve once brought in a deprecation,
 `SystemCondition::and`, that broke a PR's clippy). That protects this repo
@@ -694,7 +692,7 @@ comments and docs, and treat it as a bug when you find it:
   `tutti-core`". Design 015 §3(c) showed the bootstrap needs the sampler's
   streamer, MIDI hardware, the click and plugins, so putting it in
   `tutti-cpal` would make the device layer depend on all of them and pull a
-  device into `tutti-io` and the offline path.)
+  device into the recorder and the offline path.)
   `crates/tutti/tests/no_logic.rs` enforces this by reading `lib.rs`, and
   `scripts/check-canonical-paths.sh` additionally requires every whole-crate
   re-export there to be aliased (`pub use tutti_engine as engine`), so

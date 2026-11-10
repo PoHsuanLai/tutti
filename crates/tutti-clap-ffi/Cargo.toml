@@ -42,7 +42,7 @@ libc = "0.2"
 
 [dev-dependencies]
 # The tests drive the extension wrappers `clap-extras` gates; the library alone
-# is linted without it (`just check-features`).
+# is linted without it (`cargo xtask check-features`).
 tutti-clap-ffi = { path = ".", features = ["clap-extras"] }
 # The reference plugin the wrapper tests load; Cargo builds its cdylib in the
 # same `cargo test` invocation and the tests find the artifact beside the test

@@ -92,8 +92,8 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::graph` | `tutti-graph` | the audio graph: builder, compiler, `Editor` / `Executor` | always |
 | `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation | always |
 | `tutti::device` | `tutti-cpal` | the sound card: CPAL output stream, mic capture, driver lifecycle | `device` |
-| `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders | `codec` (implied by every format) |
-| `tutti::io` | `tutti-io` | the live I/O edge: WAV out, mic monitoring, the analysis tap, recording | `io` |
+| `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders, `FileOut`, the encoders | `codec` (implied by every format) |
+| `tutti::io` | `tutti-session` | recording: `Recorder` and its `PumpLoop` (the sink is `tutti::codec::FileOut`; a graph tap is an `AudioIn` as it is) | `io` |
 | `tutti::export` | `tutti-export` | offline render of a graph to a buffer or a file | `export` |
 | `tutti::sampler` | `tutti-sampler` | sample playback: in-memory and streamed voices, time stretch | `sampler` |
 | `tutti::polysynth` | `tutti-polysynth` | polyphonic subtractive synth node | `synth` |
@@ -122,7 +122,7 @@ None are on by default.
   enables the same decoder in the sampler when `sampler` is on).
 - `codec` — `tutti::codec`. Implied by every format.
 - `io` — `tutti::io`. Implied by `audio-io`.
-- `audio-io` — mic capture and monitoring (implies `io`; the capture stream
+- `audio-io` — mic capture and recording (implies `io`; the capture stream
   itself needs `device`).
 - `export` — `tutti::export`.
 - `midi` — `tutti::midi`, `tutti::midi_runtime`, `tutti::midi_file`.

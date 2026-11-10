@@ -47,8 +47,11 @@ runtime on both: the `Engine` that renders the graph, over the `Transport` of
 `tutti-transport` and the load meter of `tutti-metering` (level meters are
 ops in the graph's plan).
 
-**The edges.** `tutti-cpal` is the only path to a sound card. `tutti-io` is the
-live edge — a microphone monitor, a WAV sink, `Recorder`. `tutti-export` is its
+**The edges.** `tutti-cpal` is the only path to a sound card. The live edge is
+spread over the crates that own its parts: a tap (`TapReader`) is an `AudioIn`
+and an inlet (`InletNode`) copies outside audio into the graph (`tutti-graph`),
+`FileOut` is the file sink (`tutti-codec`), and `Recorder` pumps one into the
+other (`tutti-session`). `tutti-export` is its
 deliberate opposite number: the *offline* edge, rendering a graph faster than
 real time.
 
@@ -123,6 +126,9 @@ cargo check --workspace
 cargo nextest run --workspace     # nextest does NOT run doctests
 cargo test --workspace --doc      # so run these separately
 ```
+
+`cargo xtask help` lists the repo's development commands (the gates CI runs,
+the feature suites, benches); `cargo xtask ci` runs all of CI's checks.
 
 Cloning needs `--recursive`: `tutti-vst3-host` compiles a reference plugin
 against the vendored VST3 SDK, which is a submodule. Without it the build stops

@@ -1647,7 +1647,7 @@ mod loaded_writes {
 
         let mut inst = activated(load());
         Control::set_parameter(
-            &mut *inst,
+            inst.controller_mut(),
             &main_thread(),
             ParamId::new(PARAM_RAMP),
             Normalized::of(0.5),
@@ -1655,7 +1655,8 @@ mod loaded_writes {
         for _ in 0..3 {
             render(&mut inst, 64, &[], None, |_, _, _| 0.0);
         }
-        let blob = Control::save_state(&mut *inst, &main_thread()).expect("the probe saves");
+        let blob =
+            Control::save_state(inst.controller_mut(), &main_thread()).expect("the probe saves");
         assert_eq!(blob[VERSION_AT], 1, "a write a block took is not stored");
     }
 
@@ -1676,7 +1677,8 @@ mod loaded_writes {
     fn a_save_between_activation_and_the_first_block_keeps_the_loaded_writes() {
         let _guard = plugin_guard();
         let mut inst = activated(written());
-        let blob = Control::save_state(&mut *inst, &main_thread()).expect("the probe saves");
+        let blob =
+            Control::save_state(inst.controller_mut(), &main_thread()).expect("the probe saves");
 
         let mut restored = load();
         Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
@@ -1699,7 +1701,8 @@ mod loaded_writes {
         let mut source = activated(load());
         write_active(&mut source, PARAM_MODE, MODE_RAMP);
         write_active(&mut source, PARAM_RAMP, RAMP_LEVEL);
-        let blob = Control::save_state(&mut *source, &main_thread()).expect("the probe saves");
+        let blob =
+            Control::save_state(source.controller_mut(), &main_thread()).expect("the probe saves");
 
         let mut restored = load();
         Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
@@ -1713,7 +1716,7 @@ mod loaded_writes {
 
     fn write_active(inst: &mut Active, id: u32, value: f64) {
         Control::set_parameter(
-            &mut **inst,
+            inst.controller_mut(),
             &main_thread(),
             ParamId::new(id),
             Normalized::clamped(value),
@@ -1735,7 +1738,7 @@ mod loaded_writes {
             .activate_at::<f32>(48_000.0, 64)
             .map_err(|(_, e)| e)
             .expect("the probe activates");
-        Control::load_state(&mut *inst, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(inst.controller_mut(), &main_thread(), &blob).expect("the blob loads");
 
         let block = render(&mut inst, 64, &[], None, |_, _, _| 0.0).out[0][0].clone();
         assert!(

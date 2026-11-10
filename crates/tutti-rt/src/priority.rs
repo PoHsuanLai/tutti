@@ -205,7 +205,7 @@ mod mapping_tests {
     }
 
     /// Windows: `Raised` is `ABOVE_NORMAL`, `Highest` is `HIGHEST`. Compiled
-    /// by `just check-windows`, run only on Windows.
+    /// by `cargo xtask check-windows`, run only on Windows.
     ///
     /// Mutation (not run here): `Raised` mapped to `Max` -> `Highest`, fails.
     #[cfg(windows)]

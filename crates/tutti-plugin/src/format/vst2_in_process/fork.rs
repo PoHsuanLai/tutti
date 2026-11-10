@@ -163,7 +163,7 @@ impl Vst2Fork {
         let (program, state, live_offline) = {
             let mut instance = live.lock();
             let program = (instance.program_count() > 0).then(|| instance.current_program(main));
-            let state = Control::save_state(&mut **instance, main)
+            let state = Control::save_state(instance.controller_mut(), main)
                 .map_err(|e| PluginForkError::SaveState(StateError::Rejected(e.to_string())))?;
             (program, state, instance.is_offline_render())
         };

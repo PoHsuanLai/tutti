@@ -227,7 +227,7 @@ is_parallel}`.
 |---|---|---|
 | Range from transport/loop, beats to frames | `tutti-session` (one private conversion over the project tempo source) | Reads session and transport state; `Range::Beats` stays in the API. The tempo model is doc 020 (tempo maps). |
 | Offline clock from the tempo source | `tutti-transport` (doc 020) | It is the clock. |
-| Latency and tail figures | `tutti-graph` (plan latency) and `tutti-types` (`graph_tail`); `tutti-session` resolves them at the fork | The plan owns them; the cap and trim are bounce policy. |
+| Latency and tail figures | `tutti-graph` (plan latency) and `tutti-types` (`graph_tail`, until the graph/latency/tail move into `tutti-graph`, doc 013); `tutti-session` resolves them at the fork | The plan owns them; the cap and trim are bounce policy. |
 | Fork gather/build, pool, root topology, edit hook, plugin Offline/Realtime, export token | `tutti-session` (private `Fork`) | Needs the live graph and hosted plugins. |
 | Opening stem taps on the fork, naming them | `tutti-session` | Needs node keys and the fork's editor; uses `Editor::open_tap`. |
 | Stem placement and channel fold construction | `tutti-session` builds `Placement`; `tutti_types::Fold` does the fold | Control-side build, no allocation on render (CLAUDE.md "Buffers"). |
@@ -467,7 +467,7 @@ No question is open.
 
 ## 11. Implementation plan
 
-Each step is one PR, keeps `just ci` green, and passes its own tests; E1, E2
+Each step is one PR, keeps `cargo xtask ci` green, and passes its own tests; E1, E2
 and E3 land first or are rebased on. Steps 1 to 4 are `tutti-export` and can
 proceed in parallel with E3.
 

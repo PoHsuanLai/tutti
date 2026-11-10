@@ -93,15 +93,15 @@ larger callback is clamped and its tail silenced rather than reallocating. Every
 other method runs on the control thread.
 
 This crate does not own the graph (rendering a block is `tutti-engine`'s) or
-recording (the pump that drives a mic into a file is `tutti_io::Recorder`,
-which is device-free).
+recording (the pump that drives a mic into a file is `tutti-session`'s
+`Recorder`, which is device-free).
 
 ## Features
 
 No features are enabled by default.
 
-- `capture` — microphone capture (`MicIn`), using `tutti-io`'s ring and
-  monitor node. Without it the crate is output-only.
+- `capture` — microphone capture (`MicIn`), which hands back a monitor ring for an
+  inlet (`tutti-graph`'s `InletNode`) and a `tutti-codec` sink. Without it the crate is output-only.
 - `jack` — the JACK host ([`AudioHost::Jack`]). Linux and the BSDs only, and
   needs libjack at build time; elsewhere, or without the feature, opening JACK
   returns [`Error::HostUnavailable`].

@@ -122,13 +122,14 @@ reports the result.
 app.add_audio_pump::<f32>();
 
 let mic = MicIn::open(None, config.sample_rate)?;
-let wav = mic.matching_sink(&path, Pcm::Float32)?;
+let wav = mic.matching_sink(&path, Format::Wav(Pcm::Float32))?;
 let pump = commands.spawn(AudioPump::start(mic, wav, Samples(1024))).id();
 ```
 
-`TapIn::new(graph.graph().open_output_tap(Samples(144_000)))` records the graph's output the same way (a tap on any ports and any width is `Graph::open_tap`).
-`MicIn::open_with_monitor` also returns a `MicMonitorNode` to hear the input
-through the graph. `Recorder` is the same loop without ECS.
+`graph.graph().open_output_tap(Samples(144_000))?` records the graph's output the same way: a `TapReader` is an `AudioIn` as it is (a tap on any ports and any width is `Graph::open_tap`).
+`MicIn::open_with_monitor` also returns a ring reader that `Graph::add_inlet` turns
+into an inlet node to hear the input through the graph. `Recorder` is the same
+loop without ECS.
 
 ### Sample playback (`sampler`), SoundFonts (`soundfont`), synths (`synth`)
 

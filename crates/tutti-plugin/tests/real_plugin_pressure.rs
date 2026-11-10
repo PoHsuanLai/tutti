@@ -28,7 +28,7 @@
 //! cargo nextest run -p tutti-plugin --features clap --test real_plugin_pressure
 //! ```
 //!
-//! `just pressure` wraps both. Installed third-party plugins are still
+//! `cargo xtask pressure` wraps both. Installed third-party plugins are still
 //! preferred when present; each run prints which of the two it drove, and the
 //! numbers mean different things — see `load_n_from_probe`.
 //!
@@ -302,7 +302,7 @@ fn available_effects() -> Vec<&'static str> {
 /// plugins *installed on the machine*, and `EFFECTS` names macOS system paths
 /// — so on Linux, and on any bare checkout, the only harness that measures the
 /// out-of-process bridge ran **nowhere**, including CI. That is the same
-/// dark-code shape `just check-features` exists to close, on the subsystem
+/// dark-code shape `cargo xtask check-features` exists to close, on the subsystem
 /// with the largest blast radius.
 ///
 /// **Read the resulting numbers as a bridge measurement, not a plugin

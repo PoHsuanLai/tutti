@@ -139,7 +139,7 @@
 //!   implies `midi`.
 //! - `sampler`: clip playback, disk streaming and the `.wav` asset loader (the
 //!   `sampler` module); implies `wav`.
-//! - `audio-io`: microphone capture, WAV writing and recording (the `io`
+//! - `audio-io`: microphone capture, file writing and recording (the `io`
 //!   module).
 //! - `wav`, `flac`, `mp3`, `ogg`: audio file decoders.
 //! - `modulation`: modulation sources, routes, ranges and automation as ECS
@@ -264,7 +264,7 @@ pub mod prelude {
         ExportPlugin, ExportRequest, ExportSource, ExportTarget,
     };
     #[cfg(feature = "audio-io")]
-    pub use crate::io::{MicIn, MicMonitorNode, Pcm, Recorder, TapIn, WavOut};
+    pub use crate::io::{FileOut, Format, MicIn, Pcm, Recorder, Spec};
     #[cfg(feature = "midi")]
     pub use crate::midi::{
         LiveMidi, LiveMidiInput, MidiEngineNodes, MidiRouteRule, MidiSourceInstall, MpeModeRes,

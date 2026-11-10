@@ -79,7 +79,7 @@ pub fn load_client_restoring(
         })?;
 
     let host_meta = inner.metadata().clone();
-    let descriptor = Control::info(&**inner).clone();
+    let descriptor = Control::info(inner.controller()).clone();
     // VST2 feature set — what the host crate's wiring declares, the same set
     // the out-of-process VST2 loader answers: f64 (backed by
     // `processReplacingF64`), MIDI both directions, the editor, and a transport
@@ -90,7 +90,7 @@ pub fn load_client_restoring(
     // honours the claim by draining its transport slot into each
     // `Vst2ProcessContext`, which is what fills the `TimeInfo` that callback
     // serves.
-    let mut loaded: LoadedPlugin = Control::wiring(&**inner, main);
+    let mut loaded: LoadedPlugin = Control::wiring(inner.controller(), main);
     // Both preset bits come from one number: VST2 has no separate "can you
     // load" query, and a plugin declaring programs can always be sent
     // `effProgramChange`. A plugin with none answers `false` to both — a

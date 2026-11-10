@@ -19,8 +19,6 @@
 //!   informs it.
 //! - [`voice::interp`]: the block interpolation and transport-placement
 //!   helpers the voices share.
-//! - [`AudioIn`], [`AudioOut`], [`pump`]: the engine's I/O edge vocabulary,
-//!   re-exported from `tutti-types`; the butler's refill path polls a `FileIn`.
 //!
 //! ## License
 //!
@@ -72,10 +70,6 @@ pub(crate) fn nonempty(layout: tutti_types::ChannelLayout) -> tutti_types::Chann
 // its block's `Env`, and this is what hands it one.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-
-// The I/O edge vocabulary is defined once in `tutti-types`. Re-exported here
-// because the butler's refill path speaks it: `FileIn` is the `AudioIn` it polls.
-pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,
 // `Voice`'s memory tier) is `tutti-codec`'s. Re-exported so a consumer building
@@ -153,6 +147,3 @@ pub use probe::{ProbeError, SampleFacts, probe};
 // service, not a Bevy noun: bevy-tutti wraps it as `DiskStreamerRes` and owns
 // `TuttiPlaybackPlugin`.
 //
-// The live I/O edge — `MicMonitorNode`, `WavOut`, `Recorder` — belongs to
-// `tutti-io`, not here, so that `tutti-cpal` (the device layer) need not depend
-// on a DSP crate to reach it.

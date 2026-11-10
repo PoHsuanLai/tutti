@@ -1,18 +1,16 @@
-//! A `MicMonitorNode` holds a tap reader, whose drop is a debug panic on the
+//! An `InletNode` holds a tap reader, whose drop is a debug panic on the
 //! audio thread. Replacing or removing the node must retire it to the control
 //! side (the executor hands the old unit back; `Editor::collect` drops it), as
 //! a tap's lanes are.
 
-use tutti_graph::{CrossfadeCurve, Editor, Fade, Prepare, TapReader, Transport};
-use tutti_io::{MicMonitorNode, MicRing};
+use tutti_graph::{CrossfadeCurve, Editor, Fade, InletNode, Prepare, TapReader, Transport};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapId};
 
 const KEY: NodeKey = NodeKey(7);
 
-fn monitor() -> (MicMonitorNode, tutti_graph::TapWriter) {
-    let (ring, writer) = MicRing::pair(ChannelLayout::STEREO, Samples(256));
-    (MicMonitorNode::new(ring), writer)
+fn inlet() -> (InletNode, tutti_graph::TapWriter) {
+    InletNode::standalone(ChannelLayout::STEREO, Samples(256))
 }
 
 fn render(exec: &mut tutti_graph::Executor, blocks: usize) {
@@ -30,7 +28,7 @@ fn outputs(ed: &mut Editor) {
         .collect();
 }
 
-/// Replacing a mic monitor through a cut and through a crossfade, then removing
+/// Replacing an inlet through a cut and through a crossfade, then removing
 /// it, drops each ring on the control side: no block drops a tap reader, which
 /// would panic in a debug build.
 ///
@@ -39,10 +37,10 @@ fn outputs(ed: &mut Editor) {
 /// so this rig's scope is armed, and a retirement path that dropped the old unit
 /// in `apply_pending` or a block would fail this test the same way.
 #[test]
-fn replacing_and_removing_a_mic_monitor_drops_it_on_the_control_side() {
+fn replacing_and_removing_an_inlet_drops_it_on_the_control_side() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
-    let (first, mut w1) = monitor();
-    ed.insert(KEY, "mic", first);
+    let (first, mut w1) = inlet();
+    ed.insert(KEY, "inlet", first);
     outputs(&mut ed);
     ed.commit().expect("compiles");
     exec.apply_pending();
@@ -55,7 +53,7 @@ fn replacing_and_removing_a_mic_monitor_drops_it_on_the_control_side() {
         Fade::new(Samples(0), CrossfadeCurve::default()),
         Fade::new(Samples(96), CrossfadeCurve::default()),
     ] {
-        let (next, mut w) = monitor();
+        let (next, mut w) = inlet();
         ed.replace(KEY, next, fade).expect("replaces");
         ed.commit().expect("compiles");
         exec.apply_pending();

@@ -463,7 +463,7 @@ impl ClapInstance {
     fn loaded_ref(&self) -> Option<&ClapLoaded> {
         match &self.lifecycle {
             Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(controller),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded()),
             Lifecycle::Poisoned => None,
         }
     }
@@ -472,7 +472,7 @@ impl ClapInstance {
     fn loaded_mut(&mut self) -> Option<&mut ClapLoaded> {
         match &mut self.lifecycle {
             Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(&mut **controller),
+            Lifecycle::Active { controller, .. } => Some(controller.loaded_mut()),
             Lifecycle::Poisoned => None,
         }
     }

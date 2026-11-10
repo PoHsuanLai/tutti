@@ -336,12 +336,15 @@ fn a_rate_change_that_moves_latency_is_read() {
     let _guard = lock_probe();
     set_late_latency(0);
     let mut instance = load(512);
-    assert_eq!(Controller::latency(&*instance, &main_thread()), Samples(0));
+    assert_eq!(
+        Controller::latency(instance.controller(), &main_thread()),
+        Samples(0)
+    );
     set_late_latency(1537);
     instance.set_sample_rate(96_000.0);
 
     assert_eq!(
-        Controller::latency(&*instance, &main_thread()),
+        Controller::latency(instance.controller(), &main_thread()),
         Samples(1537)
     );
     assert_eq!(
@@ -356,7 +359,10 @@ fn a_rate_change_that_moves_latency_is_read() {
 
     set_late_latency(0);
     instance.set_sample_rate(44_100.0);
-    assert_eq!(Controller::latency(&*instance, &main_thread()), Samples(0));
+    assert_eq!(
+        Controller::latency(instance.controller(), &main_thread()),
+        Samples(0)
+    );
     set_late_latency(0);
 }
 

@@ -146,7 +146,7 @@ impl HostState for InProcessVst2Backend {
     /// This is the whole change on the in-process path: the `Result` was
     /// already in hand and discarded on the previous line.
     fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError> {
-        Control::load_state(&mut **self.inner.lock(), main, data)
+        Control::load_state(self.inner.lock().controller_mut(), main, data)
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 }

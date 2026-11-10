@@ -51,7 +51,9 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
     source that does not exist then with `MissingSource`, and a lane whose port
     goes missing later reads silence, never failing a commit): `Topology.taps`,
     one `Op::Tap` per tap in the plan, any port and width, aligned by the
-    compiler or raw, a `ringbuf` ring per lane written together (the lanes
+    compiler or raw (`TapSpec::Ports`), or the outputs form
+    (`TapSpec::Outputs`, `open_output_tap`: each output channel post-sum and
+    aligned, so a fan-in channel is heard whole, and it follows re-wiring), a `ringbuf` ring per lane written together (the lanes
     cannot tear), the writer riding the commit queue. A closed tap compiles to
     no op; a fork carries none. It sees the graph's signal **before the
     engine's declick fader** and the fold to the device width, so a
@@ -649,12 +651,14 @@ list (normal and build edges; dev-dependencies may go anywhere).
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
   `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
-  pairs and triplets, selected from the published method, doc 028 section 4; the nodes and the
-  smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  pairs and triplets, selected from the published method, doc 028 section 4), the HRTF
+  convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`
+  and the sphere-rate constants; it takes the aimed direction per call, `HRTF_STEP` frames at a
+  time, so the de-zipper is the caller's; the nodes and the smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the realizations
-  and `Cadence::Every(16)` are step 2b's), the dynamics curves, followers and kernels, the partitioned
+  and `Cadence::every(16)` (doc 024 §4.5) are step 2b's), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
@@ -948,8 +952,19 @@ Scalars use `Param<U>`.
   whole-graph fold (a latency plan) against the value.
 - A declaration names an *entity*, the graph keys a `NodeKey`, which `bevy-tutti`'s `AudioNode` component holds; re-binding
   an entity to a new node re-derives its wires (`Changed<AudioNode>`).
-- Keys are sink ports, so fan-in cannot be represented. Summing is a node's
-  job.
+- Keys are sink ports and the value is the set of sources feeding the port
+  (`Topology::edges`: `BTreeMap<InPort, Vec<Edge>>`; `outputs`: one set per
+  global output channel). Several sources into one audio input or output
+  channel sum, in source order (`NodeKey`, then port), bit-identically on every
+  executor (`Op::Sum`); one source is aliased and none is silence. Summing is
+  the graph's job: never add a node to sum (`ChannelSumNode` is going, doc 013
+  "Audio fan-in sums"). The calls that wire **add** a source
+  (`GraphBuilder::connect`, `Graph::add_source`, `add_output_source`); the
+  `set_` forms (`set_source`, `set_sources`, `set_output_source`,
+  `set_output_sources`) replace the set, and `remove_source` /
+  `disconnect_from` take one out. Silence is the empty set, never a stored
+  `Source::Zero`. A source's weight is an edge's, not a node's (doc 013,
+  "Edge gain").
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
   The session's phases run in `SessionPhaseSystems(Phase)`, chained from
   `PHASES` (`Collect` before `Spawn`, `Commit` in `Commit`); schedule a

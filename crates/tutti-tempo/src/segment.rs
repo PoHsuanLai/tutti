@@ -9,22 +9,31 @@
 //!
 //! A negative offset is before the segment: only the first segment is ever
 //! asked, and it extrapolates at its own tempo.
+//!
+//! Positions and spans are units (`Beat`, `BeatDuration`, `Seconds`); each
+//! method takes its offset as one and reads the raw `f64` once at its edge,
+//! because the closed forms mix beats, seconds and rates in one expression.
+//! Two quantities stay bare `f64` because no unit covers them: a rate in
+//! beats per second (`r0`, `r1`; a `Bpm` over 60, kept apart so the forms
+//! read as written above) and a ramp's coefficient (`k`: beats per second
+//! per second for a time ramp, per beat for a beat ramp).
 
 use crate::point::Shape;
-use tutti_types::Bpm;
+use tutti_types::{Beat, BeatDuration, Bpm, Seconds};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Seg {
-    pub beat0: f64,
-    /// Seconds from beat 0 to `beat0`.
-    pub sec0: f64,
+    /// Where the segment starts.
+    pub beat0: Beat,
+    /// Time from beat 0 to `beat0`.
+    pub sec0: Seconds,
     /// Tempo at `beat0`, as given.
     pub bpm0: Bpm,
-    /// `bpm0 / 60`.
+    /// `bpm0 / 60`, in beats per second.
     pub r0: f64,
     pub shape: Shape,
-    /// Seconds in the segment (`INFINITY` for the last).
-    pub dsec: f64,
+    /// How long the segment lasts (`INFINITY` for the last).
+    pub dsec: Seconds,
     /// `a` (time ramp) or `g` (beat ramp); 0 for a step.
     pub k: f64,
 }
@@ -32,7 +41,15 @@ pub(crate) struct Seg {
 impl Seg {
     /// The segment from `beat0`, spanning `dbeats` to a next tempo of `r1`
     /// (`INFINITY` beats for the last segment).
-    pub fn new(beat0: f64, sec0: f64, bpm0: Bpm, r1: f64, shape: Shape, dbeats: f64) -> Self {
+    pub fn new(
+        beat0: Beat,
+        sec0: Seconds,
+        bpm0: Bpm,
+        r1: f64,
+        shape: Shape,
+        dbeats: BeatDuration,
+    ) -> Self {
+        let dbeats = dbeats.get();
         let r0 = bpm0.get() / 60.0;
         let shape = if r0 == r1 { Shape::Step } else { shape };
         let (k, dsec) = match shape {
@@ -52,7 +69,7 @@ impl Seg {
             bpm0,
             r0,
             shape,
-            dsec,
+            dsec: Seconds(dsec),
             k,
         }
     }
@@ -60,16 +77,18 @@ impl Seg {
     /// Whether the closed forms agree with themselves over the whole segment:
     /// the duration is finite and positive and the forward and inverse maps
     /// meet at the far end. An overflowing square or quotient fails it.
-    pub fn is_sound(&self, dbeats: f64) -> bool {
-        let back = self.sec_in(dbeats);
-        self.dsec.is_finite()
-            && self.dsec > 0.0
-            && self.k.is_finite()
-            && (back - self.dsec).abs() <= 1e-9 * self.dsec
+    pub fn is_sound(&self, dbeats: BeatDuration) -> bool {
+        let back = self.sec_in(dbeats).get();
+        let dsec = self.dsec.get();
+        dsec.is_finite() && dsec > 0.0 && self.k.is_finite() && (back - dsec).abs() <= 1e-9 * dsec
     }
 
-    /// Seconds into the segment at `db` beats in.
-    pub fn sec_in(&self, db: f64) -> f64 {
+    /// Time into the segment at `db` beats in.
+    pub fn sec_in(&self, db: BeatDuration) -> Seconds {
+        Seconds(self.raw_sec_in(db.get()))
+    }
+
+    fn raw_sec_in(&self, db: f64) -> f64 {
         if db < 0.0 {
             return db / self.r0;
         }
@@ -82,8 +101,12 @@ impl Seg {
         }
     }
 
-    /// Beats into the segment at `ds` seconds in.
-    pub fn beat_in(&self, ds: f64) -> f64 {
+    /// Beats into the segment at `ds` in.
+    pub fn beat_in(&self, ds: Seconds) -> BeatDuration {
+        BeatDuration(self.raw_beat_in(ds.get()))
+    }
+
+    fn raw_beat_in(&self, ds: f64) -> f64 {
         if ds < 0.0 {
             return self.r0 * ds;
         }
@@ -101,9 +124,10 @@ impl Seg {
         }
     }
 
-    /// Tempo in BPM `ds` seconds in. Written as the given tempo plus a change,
-    /// so offset 0 is that tempo to the bit.
-    pub fn bpm_at_sec(&self, ds: f64) -> Bpm {
+    /// Tempo `ds` in. Written as the given tempo plus a change, so offset 0 is
+    /// that tempo to the bit.
+    pub fn bpm_at_sec(&self, ds: Seconds) -> Bpm {
+        let ds = ds.get();
         if ds < 0.0 {
             return self.bpm0;
         }
@@ -118,7 +142,8 @@ impl Seg {
     /// Tempo in BPM `db` beats in. As [`bpm_at_sec`](Self::bpm_at_sec); the
     /// time ramp's `sqrt(r0^2 + 2 k db) - r0` is `2 k db / (sqrt(..) + r0)`,
     /// which does not cancel.
-    pub fn bpm_at_beat(&self, db: f64) -> Bpm {
+    pub fn bpm_at_beat(&self, db: BeatDuration) -> Bpm {
+        let db = db.get();
         if db < 0.0 {
             return self.bpm0;
         }

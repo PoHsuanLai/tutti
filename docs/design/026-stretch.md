@@ -134,7 +134,7 @@ impl Design for StretchDesign {
     type Realization = LockedVocoder;         // the default; `Varispeed`, `Transposed<_>` are others
     type Bounds = StretchBounds;              // window, channels, max block: the bytes of §2
     type Range = ();
-    const CADENCE: Cadence = Cadence::Block;  // the warp is a signal, not a control (3.4)
+    const CADENCE: Cadence = Cadence::BLOCK;  // the warp is a signal, not a control (3.4)
     // channels, blank, design_into, bounds, measure, realization as 024 §4.1
 }
 impl Graded for StretchDesign { /* quality, with_quality */ }
@@ -206,6 +206,8 @@ pub trait Source { fn read(&self, channel: usize, from: i64, into: &mut [f32]) -
 /// A plain function of output time: where in the source the output frame sits.
 /// Monotone non-decreasing; a constant ratio `r` is `at + frame / r`.
 pub trait Warp { fn position(&self, frame: Frame) -> f64; }
+// Doc 024 §4.5a (2026-11-11) reads a warp as a monotone scalar `Trajectory<f64>`, not a separate
+// trait; this `Warp` is that value's evaluation until stage 1 adopts it.
 /// Source positions of attacks, sorted. Precomputed on the control side; `Unknown` makes
 /// the realization scan ahead itself.
 pub struct Onsets { /* Arc<[Samples]> or Unknown */ }

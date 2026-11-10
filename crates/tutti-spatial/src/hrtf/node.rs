@@ -3,14 +3,15 @@
 //! Construction needs a measured HRIR sphere, so [`HrtfBinauralNode::new`]
 //! takes the dataset bytes.
 
+use tutti_dsp::{HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::ChannelLayout;
 use tutti_types::Latency;
 use tutti_types::{Azimuth, Elevation, Mix, Param, SampleRate, Samples, Tail};
 
-use super::panner::{HrtfBinaural, HrtfBinauralError, LATENCY};
 use crate::SpatialTarget;
 use crate::fork::{FreshFork, fresh_fork_parts};
+use crate::target::AngleSmoother;
 use crate::target::hold_finite;
 
 /// A binaural panner for headphones: FFT convolution against a measured HRIR
@@ -37,6 +38,9 @@ use crate::target::hold_finite;
 #[derive(Debug)]
 pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
+    /// The de-zipper, stepped once per convolution step: the node's, the
+    /// convolver renders the direction it returns.
+    aim: AngleSmoother,
     /// The position and blend cells — the same ones the
     /// [`HrtfBinauralControls`] an insert hands back write.
     controls: HrtfBinauralControls,
@@ -120,7 +124,8 @@ impl Clone for HrtfBinauralNode {
     /// the renderer gets its own, cleared, streaming state.
     fn clone(&self) -> Self {
         Self {
-            panner: self.panner.clone(),
+            panner: self.panner.fresh(self.aim.current()),
+            aim: self.aim.clone(),
             controls: self.controls.clone(),
             sample_rate: self.sample_rate,
             good: self.good,
@@ -136,7 +141,7 @@ impl HrtfBinauralNode {
     /// The sphere is parsed once and resampled to `sample_rate`. The graph
     /// prepares the node at the device rate before its first block,
     /// resampling again if that differs. Either rate is held to at most
-    /// [`MAX_PREPARED_RATE`](crate::MAX_PREPARED_RATE) for the sphere.
+    /// [`MAX_PREPARED_RATE`](tutti_dsp::MAX_PREPARED_RATE) for the sphere.
     /// Clones and forks share the parsed sphere. Allocates; call it on the
     /// control thread.
     ///
@@ -150,8 +155,10 @@ impl HrtfBinauralNode {
         sample_rate: impl Into<SampleRate>,
     ) -> Result<Self, HrtfBinauralError> {
         let sample_rate = sample_rate.into();
+        let aim = AngleSmoother::new(sample_rate, Samples(HRTF_STEP));
         Ok(Self {
-            panner: HrtfBinaural::new(hrir_bytes, sample_rate)?,
+            panner: HrtfBinaural::new(hrir_bytes, sample_rate, aim.current())?,
+            aim,
             controls: HrtfBinauralControls {
                 target: SpatialTarget::new(),
                 blend: Param::new(Mix::WET),
@@ -202,7 +209,7 @@ impl HrtfBinauralNode {
 impl Node for HrtfBinauralNode {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
-            .with_latency(Latency::new(Samples(LATENCY)))
+            .with_latency(Latency::new(Samples(HRTF_LATENCY)))
             .with_tail(match self.panner.ring_out() {
                 0 => Tail::None,
                 n => Tail::Finite(Samples(n)),
@@ -220,7 +227,12 @@ impl Node for HrtfBinauralNode {
     fn prepare(&mut self, p: &Prepare) {
         self.sample_rate = p.sample_rate();
         let target = self.placement();
-        self.panner.set_sample_rate(self.sample_rate, target);
+        self.aim.set_sample_rate(self.sample_rate);
+        let aim = &mut self.aim;
+        self.panner.set_sample_rate(self.sample_rate, || {
+            aim.reset_to_target(target.0, target.1);
+            aim.current()
+        });
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -238,11 +250,12 @@ impl Node for HrtfBinauralNode {
         let mut outs = outputs.iter_mut();
         // The shape declares two outputs, so both are always present.
         if let (Some(out_left), Some(out_right)) = (outs.next(), outs.next()) {
+            let aim = &mut self.aim;
             self.panner.process(
-                target,
                 blend,
                 (left, right),
                 (&mut out_left[..size], &mut out_right[..size]),
+                || aim.step(target.0, target.1),
             );
         }
         Status::Modified
@@ -250,7 +263,8 @@ impl Node for HrtfBinauralNode {
 
     fn reset(&mut self) {
         let target = self.placement();
-        self.panner.reset_state(target);
+        self.aim.reset_to_target(target.0, target.1);
+        self.panner.reset_state(self.aim.current());
     }
 }
 

@@ -14,15 +14,14 @@
 //!   whose rate or response length would make preparing it unbounded; the
 //!   rate it is prepared at is held to a ceiling.
 
+use tutti_dsp::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
-use tutti_spatial::{
-    HrtfBinauralError, HrtfBinauralNode, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE,
-};
+use tutti_spatial::HrtfBinauralNode;
 use tutti_types::{Azimuth, Elevation, SampleRate, Samples, Tail};
 
 const RATE: u32 = 48_000;
-/// The convolution step (`STEP` in `panner.rs`).
+/// The convolution step (`tutti_dsp::HRTF_STEP`).
 const STEP: usize = 128;
 
 /// A sphere in the HRIR byte format. `response(v, ear)` gives vertex `v`'s

@@ -50,6 +50,21 @@
 //! | 56 | overflow (u32): 1 when the host sent more blocks or events than the log keeps or the plugin queues, else 0 |
 //! | 60 | `n` (u32), then the last `n` block sizes (u32 each), oldest first |
 //! | after | `m` (u32), then `m` events of 24 bytes in arrival order |
+//! | after | `t` (u32), the transports received since the activation, then the first `min(t, 16)` of 32 bytes each, in arrival order |
+//!
+//! A transport is what the host told the plugin of its transport, as it was
+//! sent, before the plugin reads anything from it: the process call it came
+//! with (u32, counted from 0 since the activation) and its sample offset in
+//! that block (u32), the flags (u32: `T_PLAYING`, `T_RECORDING`, `T_CYCLE`,
+//! and `T_TEMPO`, `T_BEAT` when the host marked that value valid), a zero
+//! (u32), the tempo in BPM (f64) and the musical position in quarter notes
+//! (f64), both as the host wrote them whatever their flag. A block's own
+//! transport is at offset 0; CLAP also sends one at the frame of each change
+//! inside a block (`CLAP_EVENT_TRANSPORT`), and VST3 and VST2 cannot. VST3
+//! sends a context with every block; a VST2 plugin asks for one
+//! (`audioMasterGetTime`) once per block. The log is separate from the
+//! events, so a host that sends one every block never overflows them; `t`
+//! counts what it did not keep.
 //!
 //! An event is `kind << 32 | offset` (u64; kind 1 parameter, 2 note on, 3 note
 //! off, 4 control change), the parameter id, key or controller number (u64), the
@@ -104,6 +119,18 @@ pub const MAX_EVENTS: usize = 128;
 pub const LOG_EVENTS: usize = 32;
 /// Block sizes kept in the transcript.
 pub const LOG_BLOCKS: usize = 16;
+/// Transports kept in the transcript per activation (the first ones).
+pub const LOG_TRANSPORTS: usize = 16;
+/// A transport's flag: rolling.
+pub const T_PLAYING: u32 = 1;
+/// A transport's flag: capturing.
+pub const T_RECORDING: u32 = 2;
+/// A transport's flag: the loop is on.
+pub const T_CYCLE: u32 = 4;
+/// A transport's flag: the host marked its tempo valid.
+pub const T_TEMPO: u32 = 8;
+/// A transport's flag: the host marked its musical position valid.
+pub const T_BEAT: u32 = 16;
 /// First word of a state blob.
 pub const MAGIC: u32 = 0x3150_5354;
 /// Bytes of a state blob that [`Core::load`] reads.
@@ -159,6 +186,19 @@ impl Ev {
             | Ev::Control { offset, .. } => offset,
         }
     }
+}
+
+/// A transport as the host sent it (see the module's spec, "State").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transport {
+    /// Its sample offset in the block.
+    pub offset: u32,
+    /// `T_*` bits.
+    pub flags: u32,
+    /// Beats per minute, as written.
+    pub tempo: f64,
+    /// Quarter notes from the timeline's start, as written.
+    pub beat: f64,
 }
 
 /// A sample width.
@@ -226,6 +266,8 @@ pub struct Core {
     blocks: [AtomicU32; LOG_BLOCKS],
     log_n: AtomicU32,
     log: [[AtomicU64; 3]; LOG_EVENTS],
+    told_n: AtomicU32,
+    told: [[AtomicU64; 4]; LOG_TRANSPORTS],
 }
 
 impl Default for Core {
@@ -271,6 +313,8 @@ impl Core {
             blocks: std::array::from_fn(|_| z()),
             log_n: z(),
             log: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
+            told_n: z(),
+            told: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
         }
     }
 
@@ -326,6 +370,7 @@ impl Core {
         self.blocks_n.store(0, Relaxed);
         self.overflow.store(0, Relaxed);
         self.log_n.store(0, Relaxed);
+        self.told_n.store(0, Relaxed);
         self.rate.store(rate.to_bits(), Relaxed);
         self.max_block.store(max_block as u32, Relaxed);
         self.prepares.fetch_add(1, Relaxed);
@@ -376,6 +421,20 @@ impl Core {
     /// thread while blocks run can lose an entry.
     pub fn log_set_param(&self, id: u32, value: f64) {
         self.log(1, 0, id, value);
+    }
+
+    /// Records a transport the host sent with the block about to be
+    /// processed. Never allocates; past [`LOG_TRANSPORTS`] it only counts.
+    pub fn log_transport(&self, t: Transport) {
+        let n = self.told_n.load(Relaxed);
+        if let Some(slot) = self.told.get(n as usize) {
+            let call = self.calls.load(Relaxed).min(u64::from(u32::MAX));
+            slot[0].store(call << 32 | u64::from(t.offset), Relaxed);
+            slot[1].store(u64::from(t.flags), Relaxed);
+            slot[2].store(t.tempo.to_bits(), Relaxed);
+            slot[3].store(t.beat.to_bits(), Relaxed);
+        }
+        self.told_n.store(n.saturating_add(1), Release);
     }
 
     fn log(&self, kind: u64, offset: u32, id: u32, value: f64) {
@@ -527,6 +586,17 @@ impl Core {
                 b.extend_from_slice(&w.load(Relaxed).to_le_bytes());
             }
         }
+        let nt = self.told_n.load(Acquire);
+        b.extend_from_slice(&nt.to_le_bytes());
+        for t in &self.told[..(nt as usize).min(LOG_TRANSPORTS)] {
+            let head = t[0].load(Relaxed);
+            b.extend_from_slice(&((head >> 32) as u32).to_le_bytes());
+            b.extend_from_slice(&(head as u32).to_le_bytes());
+            b.extend_from_slice(&(t[1].load(Relaxed) as u32).to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&t[2].load(Relaxed).to_le_bytes());
+            b.extend_from_slice(&t[3].load(Relaxed).to_le_bytes());
+        }
         b
     }
 
@@ -634,6 +704,35 @@ mod tests {
             block(&core, &mut dsp);
         }
         assert_eq!(overflow(&core), 1);
+    }
+
+    fn told(core: &Core) -> (u32, usize) {
+        let t = crate::transcript::Transcript::parse(&core.save());
+        (t.transports_sent, t.transports.len())
+    }
+
+    // Mutation (run): `log_transport` counting only what it keeps fails the
+    // first assertion; `prepare` not clearing the count fails the last.
+    #[test]
+    fn the_transport_log_keeps_the_first_and_counts_the_rest() {
+        let (core, mut dsp) = ready();
+        let t = Transport {
+            offset: 0,
+            flags: T_PLAYING,
+            tempo: 120.0,
+            beat: 0.0,
+        };
+        for _ in 0..=LOG_TRANSPORTS {
+            core.log_transport(t);
+        }
+        assert_eq!(told(&core), (LOG_TRANSPORTS as u32 + 1, LOG_TRANSPORTS));
+        assert_eq!(
+            overflow(&core),
+            0,
+            "the transports never overflow the events"
+        );
+        core.prepare(&mut dsp, 48_000.0, 4);
+        assert_eq!(told(&core), (0, 0));
     }
 
     #[test]

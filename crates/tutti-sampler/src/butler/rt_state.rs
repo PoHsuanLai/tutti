@@ -37,7 +37,10 @@ pub struct PlaybackParams {
     /// 0 = forward, 1 = reverse.
     direction: AtomicU8,
     /// file_sample_rate / session_sample_rate. 1.0 = no conversion.
-    src_ratio: AtomicF32,
+    ///
+    /// A [`Param64`]: [`SrcRatio`] is `f64`, so the cell keeps the bits a
+    /// stream's position accumulates against.
+    src_ratio: Param64<SrcRatio>,
     /// Linear output gain, an [`Amplitude`] in the cell.
     ///
     /// Here rather than on `DiskSource` for the reason `tutti_nodes`' crate docs
@@ -62,7 +65,7 @@ impl Default for PlaybackParams {
         Self {
             speed: AtomicF32::new(1.0),
             direction: AtomicU8::new(0),
-            src_ratio: AtomicF32::new(1.0),
+            src_ratio: Param64::new(SrcRatio::UNITY),
             gain: AtomicF32::new(1.0),
             stretch_rate: Param64::new(ReadRate::UNITY),
         }
@@ -259,7 +262,7 @@ impl RtState {
     /// [`SrcRatio::UNITY`] means the file already plays at the session rate.
     #[inline]
     pub fn src_ratio(&self) -> SrcRatio {
-        SrcRatio::new(self.playback.src_ratio.load(Ordering::Acquire))
+        self.playback.src_ratio.load()
     }
 
     /// Publish the conversion ratio. Written by the butler when a stream starts,
@@ -267,9 +270,7 @@ impl RtState {
     /// — the same derivation the in-memory tier uses, so neither tier can pick
     /// the ratio up backwards.
     pub fn set_src_ratio(&self, ratio: SrcRatio) {
-        self.playback
-            .src_ratio
-            .store(ratio.get(), Ordering::Release);
+        self.playback.src_ratio.store(ratio);
     }
 
     /// Count one frame the ring could not supply. Audio side: a single relaxed

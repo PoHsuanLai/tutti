@@ -176,13 +176,15 @@ fn the_block_read_is_the_same_at_any_block_length() {
         streamer.step_until_settled(512) < 512,
         "the rings never primed"
     );
-    let mut readers: Vec<_> = openings
+    // Each stream's handle is held for the whole render: dropping it would end
+    // the stream.
+    let (_streams, mut readers): (Vec<_>, Vec<_>) = openings
         .into_iter()
         .map(|opening| match opening.poll() {
-            crate::Open::Ready(reader) => Some(reader),
+            crate::Open::Ready(stream, reader) => (stream, Some(reader)),
             other => panic!("a primed stream answers its open: {other:?}"),
         })
-        .collect();
+        .unzip();
     // A stream's reader is its voice's, once: each voice takes its own.
     let mut disk = |stream: usize| {
         let reader = readers[stream]

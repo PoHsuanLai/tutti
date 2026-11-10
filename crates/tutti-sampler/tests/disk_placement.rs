@@ -19,8 +19,8 @@ use std::path::Path;
 use tutti_graph::contract;
 use tutti_sampler::testing::{MockTransport, settle};
 use tutti_sampler::{
-    Command, Direction, DiskStreamer, DiskVoice, LoopSetting, OpenError, PlaceError, Placement,
-    StreamId, StreamReader,
+    ByHand, Direction, DiskStreamer, DiskVoice, LoopSetting, OpenError, PlaceError, Placement,
+    Stream, StreamReader,
 };
 use tutti_types::{
     Beat, Bpm, ChannelLayout, ChannelTopology, FoldEnd, FoldError, SamplePosition, SampleRate,
@@ -79,7 +79,10 @@ fn write_wav(path: &Path, channels: u16, mask: u32) {
 fn open(
     path: &Path,
     width: Option<ChannelLayout>,
-) -> (DiskStreamer, Result<StreamReader, OpenError>) {
+) -> (
+    DiskStreamer<ByHand>,
+    Result<(Stream, StreamReader), OpenError>,
+) {
     let mut streamer = DiskStreamer::manual(SampleRate(SR), Default::default()).expect("builds");
     let opening = match width {
         Some(width) => streamer.open_into(path, Placement::HEAD, width),
@@ -95,13 +98,21 @@ fn open(
     (streamer, reader)
 }
 
+/// A hand-stepped streamer and the handle of the stream it streams: both are
+/// held while the voice plays (dropping the handle ends the stream).
+struct Rig {
+    streamer: DiskStreamer<ByHand>,
+    stream: Stream,
+}
+
 /// A file written to a temp dir and streamed at its own width.
-fn stream(channels: u16, mask: u32) -> (tempfile::TempDir, DiskStreamer, StreamReader) {
+fn stream(channels: u16, mask: u32) -> (tempfile::TempDir, Rig, StreamReader) {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("placed.wav");
     write_wav(&path, channels, mask);
-    let (streamer, reader) = open(&path, None);
-    (dir, streamer, reader.expect("a placeable file opens"))
+    let (streamer, answer) = open(&path, None);
+    let (stream, reader) = answer.expect("a placeable file opens");
+    (dir, Rig { streamer, stream }, reader)
 }
 
 /// The voice that plays `reader`, placed at beat 0 for the file's length.
@@ -235,10 +246,10 @@ fn a_five_one_file_into_a_five_wide_voice_is_refused() {
     let opening = streamer.open_into(&path, Placement::HEAD, ChannelLayout::from(5u16));
     assert_eq!(settle(&mut streamer, opening).err(), refused);
     let opening = streamer.open_into(&path, Placement::HEAD, ChannelLayout::STEREO);
-    let stereo = settle(&mut streamer, opening).expect("5.1 folds to stereo");
+    let (_stereo_stream, stereo) = settle(&mut streamer, opening).expect("5.1 folds to stereo");
     assert_eq!(settled_block(voice_of(stereo)).len(), 2);
     let opening = streamer.open(&path, Placement::HEAD);
-    let own = settle(&mut streamer, opening).expect("and opens at its own width");
+    let (_own_stream, own) = settle(&mut streamer, opening).expect("and opens at its own width");
     assert_eq!(settled_block(voice_of(own)).len(), 6);
 }
 
@@ -381,8 +392,8 @@ fn fixtures() -> [Fixture; 3] {
 }
 
 /// A file with a Fixture's shape, streamed.
-fn stream_fixture(f: &Fixture) -> (tempfile::TempDir, DiskStreamer, StreamReader) {
-    let (dir, streamer, reader) = stream(f.channels, f.mask);
+fn stream_fixture(f: &Fixture) -> (tempfile::TempDir, Rig, StreamReader) {
+    let (dir, rig, reader) = stream(f.channels, f.mask);
     assert_eq!(
         tutti_codec::FileIn::open(dir.path().join("placed.wav"))
             .expect("opens")
@@ -390,7 +401,7 @@ fn stream_fixture(f: &Fixture) -> (tempfile::TempDir, DiskStreamer, StreamReader
             .positions(),
         f.speakers
     );
-    (dir, streamer, reader)
+    (dir, rig, reader)
 }
 
 /// Every sample of `block` is within rounding of `want` (a fold sums in `f32`).
@@ -493,14 +504,11 @@ fn lanes<N: tutti_graph::Node>(direct: &contract::Direct<N>) -> Vec<Vec<f32>> {
     (0..8).map(|c| direct.output(c).to_vec()).collect()
 }
 
-fn loop_1000_3000(stream: StreamId) -> Command {
-    Command::Loop {
-        stream,
-        setting: LoopSetting::On {
-            start: SamplePosition(1_000.0),
-            end: SamplePosition(3_000.0),
-            crossfade_frames: 64,
-        },
+fn loop_1000_3000() -> LoopSetting {
+    LoopSetting::On {
+        start: SamplePosition(1_000.0),
+        end: SamplePosition(3_000.0),
+        crossfade_frames: 64,
     }
 }
 
@@ -518,13 +526,10 @@ fn loop_1000_3000(stream: StreamId) -> Command {
 fn a_fork_places_every_read_path() {
     for f in fixtures() {
         for path in ["forward", "looped", "reversed"] {
-            let (_dir, mut streamer, reader) = stream_fixture(&f);
+            let (_dir, mut rig, reader) = stream_fixture(&f);
             if path == "looped" {
-                streamer
-                    .commands()
-                    .send(loop_1000_3000(reader.id()))
-                    .expect("alive");
-                assert!(streamer.step_until_settled(1_000) < 1_000);
+                rig.stream.set_loop(loop_1000_3000()).expect("alive");
+                assert!(rig.streamer.step_until_settled(1_000) < 1_000);
             }
             let mut voice = voice_of(reader);
             if path == "reversed" {
@@ -556,13 +561,10 @@ fn a_fork_places_every_read_path() {
 fn a_fork_placed_read_is_allocation_free() {
     for f in fixtures() {
         for looped in [false, true] {
-            let (_dir, mut streamer, reader) = stream_fixture(&f);
+            let (_dir, mut rig, reader) = stream_fixture(&f);
             if looped {
-                streamer
-                    .commands()
-                    .send(loop_1000_3000(reader.id()))
-                    .expect("alive");
-                assert!(streamer.step_until_settled(1_000) < 1_000);
+                rig.stream.set_loop(loop_1000_3000()).expect("alive");
+                assert!(rig.streamer.step_until_settled(1_000) < 1_000);
             }
             let voice = voice_of(reader);
             let mut direct =
@@ -596,8 +598,7 @@ fn a_fork_placed_read_is_allocation_free() {
 #[test]
 fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
     for f in fixtures() {
-        let (_dir, mut streamer, reader) = stream_fixture(&f);
-        let id = reader.id();
+        let (_dir, mut rig, reader) = stream_fixture(&f);
         let voice = voice_of(reader);
         let mut direct = contract::Direct::new(voice, SampleRate(SR), BLOCK);
         let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -606,11 +607,11 @@ fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
             // change near the playhead is crossfaded over, so the reader
             // crosses a switch (`cross_switch`).
             if b == 44 {
-                streamer.commands().send(loop_1000_3000(id)).expect("alive");
+                rig.stream.set_loop(loop_1000_3000()).expect("alive");
             }
             assert_no_alloc::assert_no_alloc(|| direct.block_in(&clock.env(BLOCK, SR)));
             clock.advance(BLOCK as i64, SR);
-            let _ = streamer.step_once();
+            let _ = rig.streamer.step_once();
             if b >= 4 {
                 assert_near(
                     &lanes(&direct),

@@ -1,22 +1,14 @@
 //! The streamer's record of what a stream plays (what a fork reads), and the
 //! error a command send reports.
 //!
-//! The command side is [`Commands`](crate::Commands): one mapping from the
-//! public [`Command`](crate::Command) to the streamer's own, sent from control
-//! threads only, waiting while the queue is full. The reader a stream hands
-//! its voice is the reply of its open ([`Opening`](crate::Opening)).
+//! The control side of a stream is [`Stream`](crate::Stream); the reader it
+//! hands its voice is the reply of its open ([`Opening`](crate::Opening)).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(test)]
-use dashmap::DashMap;
 use tutti_types::SampleRate;
 
-#[cfg(test)]
-use super::command::StreamId;
-#[cfg(test)]
-use super::plan::ChannelPlan;
 use crate::voice::LoopSetting;
 
 /// The streamer thread is gone, so a stream-control command was discarded.
@@ -42,39 +34,24 @@ impl core::fmt::Display for StreamerGone {
 
 impl std::error::Error for StreamerGone {}
 
-/// The loop the stream `stream` runs, as its record says; `None` when it
-/// is not open (tests).
-#[cfg(test)]
-pub(crate) fn stream_loop(
-    plans: &DashMap<StreamId, ChannelPlan>,
-    stream: StreamId,
-) -> Option<LoopSetting> {
-    let plan = plans.get(&stream)?;
-    let link = plan.link.as_ref()?;
-    StreamOrigin::new(Arc::clone(&link.record))
-        .describe()
-        .map(|file| file.loop_)
-}
-
 /// A streamer stream's own record of what it plays: the file, the file's rate,
 /// the loop set on it, and whether it is still running.
 ///
-/// Built when the stream starts and held by its [`Link`](super::plan::Link);
-/// every voice taken from the stream holds it too, through a
-/// [`StreamOrigin`]. It is deliberately small: a live voice may be the last
+/// Built when the stream opens and held by its [`Record`](super::record::Record);
+/// the voice of the stream holds it too, through a [`StreamOrigin`]. It is deliberately small: a live voice may be the last
 /// holder, and its drop can land on the audio thread, where it frees a path
 /// and this record (the same class of free as the voice's `Arc<RtState>`),
-/// never the streamer's plan map or a wave. The cache is held weakly for the
+/// never the streamer's table or a wave. The cache is held weakly for the
 /// same reason.
 pub(crate) struct StreamRecord {
     path: PathBuf,
     file_rate: SampleRate,
-    /// The loop the streamer runs, told by [`Link::set_loop`](super::plan::Link::set_loop),
+    /// The loop the streamer runs, told by [`Record::set_loop`](super::record::Record::set_loop),
     /// the one place it changes. A lock, not an atomic: a loop is three
     /// values that change together, and neither side is the audio thread
     /// (the streamer writes; a fork reads, on the control thread).
     loop_: std::sync::Mutex<LoopSetting>,
-    /// Set when the stream's link goes: stopped.
+    /// Set when the stream's record goes: closed.
     ended: std::sync::atomic::AtomicBool,
     /// The streamer's wave cache, to hand a fork the file already decoded
     /// when it holds it (a file that cannot seek is always there, pinned for
@@ -116,7 +93,7 @@ impl StreamRecord {
 /// disk voice can play the same material without the live streamer (see
 /// `DiskVoice::fork_copy`). The description is read when it is asked
 /// for rather than copied into the voice when the voice is built: a loop is
-/// set on the stream later (`Command::Loop`), and a copy would miss it.
+/// set on the stream later (`Stream::set_loop`), and a copy would miss it.
 #[derive(Clone)]
 pub(crate) struct StreamOrigin(Arc<StreamRecord>);
 

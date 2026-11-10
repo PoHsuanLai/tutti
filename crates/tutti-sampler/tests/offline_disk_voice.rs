@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tutti_graph::{Env, ForkHealth, ForkMode, IntoNode, Node, Prepare, TransportChanges, contract};
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
-    Command, DiskStreamer, DiskVoice, LoopSetting, Placement, Playback, StreamReader, Voice,
+    ByHand, DiskStreamer, DiskVoice, LoopSetting, Placement, Playback, Stream, StreamReader, Voice,
     VoiceNode, VoiceSource,
 };
 use tutti_types::{Beat, Bpm, Frame, FrameClock, LoopRange, SamplePosition, SampleRate, Samples};
@@ -48,21 +48,25 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
     w.finalize().expect("writes");
 }
 
+/// A hand-stepped streamer and the handle of the stream it streams: both are
+/// held while the voice plays (dropping the handle ends the stream).
+struct Rig {
+    streamer: DiskStreamer<ByHand>,
+    stream: Stream,
+}
+
 /// A hand-stepped disk streamer streaming `path`, primed, and the stream's
 /// reader.
-fn streamer_on(path: &Path) -> (DiskStreamer, StreamReader) {
+fn streamer_on(path: &Path) -> (Rig, StreamReader) {
     streamer_with(path, Default::default())
 }
 
 /// [`streamer_on`], with `config`.
-fn streamer_with(
-    path: &Path,
-    config: tutti_sampler::DiskStreamerConfig,
-) -> (DiskStreamer, StreamReader) {
+fn streamer_with(path: &Path, config: tutti_sampler::DiskStreamerConfig) -> (Rig, StreamReader) {
     let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
     let opening = streamer.open(path, Placement::HEAD);
-    let reader = settle(&mut streamer, opening).expect("the file opens");
-    (streamer, reader)
+    let (stream, reader) = settle(&mut streamer, opening).expect("the file opens");
+    (Rig { streamer, stream }, reader)
 }
 
 /// The live voice of the stream `reader` reads, placed at `beat`.
@@ -285,23 +289,18 @@ fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, 20_000);
-    let (mut streamer, reader) = streamer_on(&path);
-    let id = reader.id();
+    let (mut rig, reader) = streamer_on(&path);
     let voice = live_voice(reader, 0.0);
 
     for fade in [0usize, 100] {
-        streamer
-            .commands()
-            .send(Command::Loop {
-                stream: id,
-                setting: LoopSetting::On {
-                    start: SamplePosition(1_000.0),
-                    end: SamplePosition(3_000.0),
-                    crossfade_frames: fade,
-                },
+        rig.stream
+            .set_loop(LoopSetting::On {
+                start: SamplePosition(1_000.0),
+                end: SamplePosition(3_000.0),
+                crossfade_frames: fade,
             })
             .expect("the streamer is alive");
-        let _ = streamer.step_until_settled(1_000);
+        let _ = rig.streamer.step_until_settled(1_000);
 
         let clock = clock_at(SR);
         let mut copy = fork(&voice, SR);
@@ -375,8 +374,7 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("sine.wav");
     write_sine(&path, 4_000);
-    let (mut streamer, reader) = streamer_on(&path);
-    let id = reader.id();
+    let (mut rig, reader) = streamer_on(&path);
     let voice = live_voice(reader, 0.0);
     let own = (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32 + 1e-5;
 
@@ -386,18 +384,14 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
         (0.0, 2_281.0, 0, true),
         (0.0, 2_281.0, 256, false),
     ] {
-        streamer
-            .commands()
-            .send(Command::Loop {
-                stream: id,
-                setting: LoopSetting::On {
-                    start: SamplePosition(start),
-                    end: SamplePosition(end),
-                    crossfade_frames: fade,
-                },
+        rig.stream
+            .set_loop(LoopSetting::On {
+                start: SamplePosition(start),
+                end: SamplePosition(end),
+                crossfade_frames: fade,
             })
             .expect("the streamer is alive");
-        let _ = streamer.step_until_settled(1_000);
+        let _ = rig.streamer.step_until_settled(1_000);
 
         let clock = clock_at(SR);
         let mut copy = fork(&voice, SR);
@@ -497,13 +491,13 @@ fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("a.wav");
     write_ramp(&path, SR as u32, 10_000);
-    let (mut streamer, reader) = streamer_on(&path);
-    let id = reader.id();
+    let (rig, reader) = streamer_on(&path);
+    let Rig {
+        mut streamer,
+        stream,
+    } = rig;
     let voice = live_voice(reader, 0.0);
-    streamer
-        .commands()
-        .send(Command::Stop { stream: id })
-        .expect("the streamer is alive");
+    drop(stream);
     let _ = streamer.step_until_settled(1_000);
 
     let clock = clock_at(SR);
@@ -799,37 +793,32 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             // evicts this one.
             config.buffer_config.cache_max_entries = 1;
         }
-        let (mut streamer, reader) = streamer_with(&path, config);
-        let id = reader.id();
+        let (mut rig, reader) = streamer_with(&path, config);
         if case.loop_ != LoopSetting::Off {
-            streamer
-                .commands()
-                .send(Command::Loop {
-                    stream: id,
-                    setting: case.loop_,
-                })
+            rig.stream
+                .set_loop(case.loop_)
                 .expect("the streamer is alive");
-            let _ = streamer.step_until_settled(1_000);
+            let _ = rig.streamer.step_until_settled(1_000);
         }
+        // The second stream's handle, held for the whole case.
+        let mut _second = None;
         if case.paged {
             // A second stream whose crossfaded loop makes the streamer load its
             // own file whole — evicting the first, which the fork then pages.
             let other = dir.path().join("other.wav");
             write_ramp(&other, SR as u32, 1_000);
-            let commands = streamer.commands();
-            let opening = streamer.open(&other, Placement::HEAD);
-            let second = settle(&mut streamer, opening).expect("the file opens");
-            commands
-                .send(Command::Loop {
-                    stream: second.id(),
-                    setting: LoopSetting::On {
-                        start: SamplePosition(500.0),
-                        end: SamplePosition(900.0),
-                        crossfade_frames: 100,
-                    },
+            let opening = rig.streamer.open(&other, Placement::HEAD);
+            let (mut second, second_reader) =
+                settle(&mut rig.streamer, opening).expect("the file opens");
+            second
+                .set_loop(LoopSetting::On {
+                    start: SamplePosition(500.0),
+                    end: SamplePosition(900.0),
+                    crossfade_frames: 100,
                 })
                 .expect("the streamer is alive");
-            let _ = streamer.step_until_settled(1_000);
+            let _ = rig.streamer.step_until_settled(1_000);
+            _second = Some((second, second_reader));
         }
         let mut voice = live_voice(reader, 1.0);
         voice.set_speed(tutti_types::PlaybackRate::new(case.speed));

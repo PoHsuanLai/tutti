@@ -1,6 +1,6 @@
 //! Opening a stream: the request ([`Placement`]), the reply ([`Opening`],
-//! [`Open`], [`OpenError`]) and the value the reply carries, the audio side's
-//! one [`StreamReader`].
+//! [`Open`], [`OpenError`]) and what the reply carries: the control side's
+//! [`Stream`] and the audio side's one [`StreamReader`].
 //!
 //! The ring's width comes from the file's header, so the ring is built on the
 //! streamer's thread after the probe, and a file that cannot seek is decoded
@@ -23,6 +23,7 @@ use super::control::StreamOrigin;
 use super::loops::RingMap;
 use super::prefetch::SharedReader;
 use super::rt_state::RtState;
+use super::stream::{Stream, StreamerPort};
 use crate::PlaceError;
 use crate::voice::interp::Place;
 
@@ -132,8 +133,8 @@ impl std::fmt::Debug for Opened {
 
 /// An open the streamer has not answered yet.
 ///
-/// [`poll`](Self::poll) consumes it: the reader is the reply, and a reply is
-/// received once.
+/// [`poll`](Self::poll) consumes it: the stream and its reader are the reply,
+/// and a reply is received once.
 ///
 /// ```compile_fail
 /// # use tutti_sampler::Opening;
@@ -161,11 +162,18 @@ impl std::fmt::Debug for Opened {
 pub struct Opening {
     id: StreamId,
     reply: Receiver<Result<Opened, OpenError>>,
+    /// The streamer's command queue, which the stream it answers with sends
+    /// on.
+    port: StreamerPort,
 }
 
 impl Opening {
-    pub(crate) fn new(id: StreamId, reply: Receiver<Result<Opened, OpenError>>) -> Self {
-        Self { id, reply }
+    pub(crate) fn new(
+        id: StreamId,
+        reply: Receiver<Result<Opened, OpenError>>,
+        port: StreamerPort,
+    ) -> Self {
+        Self { id, reply, port }
     }
 
     /// The stream this open is for.
@@ -179,7 +187,9 @@ impl Opening {
     /// allocates, so it is here and not on the audio thread).
     pub fn poll(self) -> Open {
         match self.reply.try_recv() {
-            Ok(Ok(opened)) => Open::Ready(StreamReader::new(opened)),
+            Ok(Ok(opened)) => {
+                Open::Ready(Stream::new(opened.id, self.port), StreamReader::new(opened))
+            }
             Ok(Err(error)) => Open::Failed(error),
             Err(TryRecvError::Empty) => Open::Pending(self),
             // The streamer dropped the reply unanswered: its thread is gone.
@@ -190,12 +200,13 @@ impl Opening {
 
 /// An open's answer.
 #[derive(Debug)]
-#[must_use = "a dropped `Pending` abandons the open; a dropped `Ready` closes the stream"]
+#[must_use = "a dropped `Pending` abandons the open; a dropped `Stream` closes it"]
 pub enum Open {
     /// Not answered yet: poll the `Opening` again.
     Pending(Opening),
-    /// The stream is open; the reader is the voice's, by value.
-    Ready(StreamReader),
+    /// The stream is open: the handle is the control thread's, and the reader
+    /// is the voice's, by value. Dropping the [`Stream`] ends the stream.
+    Ready(Stream, StreamReader),
     /// The stream did not open, and will not.
     Failed(OpenError),
 }

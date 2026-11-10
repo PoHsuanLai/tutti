@@ -158,7 +158,7 @@ impl LruCache {
     }
 
     /// Pin the entry at `path` so the LRU will not evict it while the returned
-    /// [`StreamPin`] is alive. Held by an active stream (in `ChannelPlan::Link`)
+    /// [`StreamPin`] is alive. Held by an active stream (in its `Record`)
     /// so a fully-buffered — hence cold — stream is never evicted mid-read.
     ///
     /// If the entry is absent (never admitted: an incremental stream) the

@@ -14,14 +14,13 @@
 //! resize is the only place the interleave stride enters.
 
 use super::super::cache::LruCache;
+#[cfg(test)]
 use super::super::command::StreamId;
 use super::super::loops::{Content, RingMap};
 use super::super::metrics::Metrics;
-use super::super::plan::ChannelPlan;
 use super::super::prefetch::{HISTORY_FRAMES, RegionOut};
-use super::super::region_map::RegionMap;
+use super::super::record::Record;
 use super::super::rt_state::RtState;
-use dashmap::DashMap;
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -71,31 +70,23 @@ fn varifill_chunk(
     chunk_size.max(1024)
 }
 
-/// Refill every streaming channel's ring in turn, serially.
+/// Refill every live stream's ring in turn, serially.
 ///
 /// `interleave_buffer` is the streamer's reusable scratch, passed in so a refill
 /// does not allocate per cycle. Streamer thread throughout — this both blocks on
 /// disk and may grow that buffer, so it must never run on the audio thread.
 pub(crate) fn refill_all(
-    plans: &DashMap<StreamId, ChannelPlan>,
-    regions: &mut RegionMap,
+    records: &mut [Record],
     metrics: &Metrics,
     base_chunk_size: usize,
     buffer_margin: f64,
     interleave_buffer: &mut Vec<f32>,
 ) {
     let read_rate = metrics.read_rate();
-    for entry in plans.iter() {
-        let plan = entry.value();
-        let Some(link) = plan.link.as_ref() else {
-            continue;
-        };
-        let Some(writer) = regions.get_mut(link.region_id) else {
-            continue;
-        };
+    for record in records.iter_mut().filter(|r| r.is_live()) {
         refill_one(
-            writer,
-            &plan.rt_state,
+            &mut record.out,
+            &record.rt_state,
             base_chunk_size,
             buffer_margin,
             read_rate,
@@ -105,48 +96,31 @@ pub(crate) fn refill_all(
 }
 
 /// The same refill across rayon workers, chosen when `parallel_io` is on and
-/// three or more channels are streaming.
+/// three or more streams are open.
 ///
-/// Work items (the writer's index and its channel's `RtState`) are collected
-/// first, so every plan reference is released before the parallel pass;
-/// `par_iter_mut` over the region `Vec` then hands each worker an exclusive
-/// `&mut` to a *different* writer, whose mapping — loop included — travels
-/// with it, so a looped stream refills here exactly as it does serially.
-/// Scratch is a thread-local per worker.
+/// `par_iter_mut` over the records hands each worker an exclusive `&mut` to a
+/// *different* one, whose mapping — loop included — travels with its writer, so
+/// a looped stream refills here exactly as it does serially. Scratch is a
+/// thread-local per worker.
 pub(crate) fn refill_all_parallel(
-    plans: &DashMap<StreamId, ChannelPlan>,
-    regions: &mut RegionMap,
+    records: &mut [Record],
     metrics: &Metrics,
     base_chunk_size: usize,
     buffer_margin: f64,
 ) {
     let read_rate = metrics.read_rate();
-    let work: std::collections::HashMap<usize, Arc<RtState>> = plans
-        .iter()
-        .filter_map(|entry| {
-            let plan = entry.value();
-            let link = plan.link.as_ref()?;
-            let idx = *regions.index().get(&link.region_id)?;
-            Some((idx, plan.rt_state()))
-        })
-        .collect();
-
-    regions
-        .writers_mut()
+    records
         .par_iter_mut()
-        .enumerate()
-        .for_each(|(idx, writer)| {
-            let Some(rt_state) = work.get(&idx) else {
-                return;
-            };
+        .filter(|r| r.is_live())
+        .for_each(|record| {
             thread_local! {
                 static LOCAL_BUF: std::cell::RefCell<Vec<f32>> =
                     std::cell::RefCell::new(Vec::with_capacity(16384));
             }
             LOCAL_BUF.with(|buf| {
                 refill_one(
-                    writer,
-                    rt_state,
+                    &mut record.out,
+                    &record.rt_state,
                     base_chunk_size,
                     buffer_margin,
                     read_rate,

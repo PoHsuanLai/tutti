@@ -5,8 +5,7 @@
 //! summing unit: adding or removing a voice then costs a queued command instead
 //! of a graph edit, which is what keeps voice churn off the commit path.
 
-use crate::ports::Commands;
-use crate::streamer::StreamId;
+use crate::streamer::{StreamId, StreamerPort};
 use crate::stretch;
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
@@ -244,7 +243,7 @@ impl Voice {
 /// except an `Off` with no streamer to tell, which loses nothing (the streamer
 /// was never given a loop to clear).
 pub(crate) fn forward_loop(
-    streamer: Option<&Commands>,
+    streamer: Option<&StreamerPort>,
     addr: Option<StreamAddr>,
     setting: LoopSetting,
     counters: &DrainCounters,
@@ -255,7 +254,7 @@ pub(crate) fn forward_loop(
         }
         return false;
     };
-    if streamer.send_stream_loop(addr.stream, setting).is_err() {
+    if streamer.send_loop(addr.stream, setting).is_err() {
         DrainCounters::bump(&counters.loops_streamer_gone);
         return false;
     }
@@ -345,12 +344,12 @@ pub struct VoicePool {
     /// live path (threaded in from the [`DiskStreamer`](crate::DiskStreamer));
     /// `None` for tests / detached / offline readers with no live streamer. A
     /// streaming voice's loop is streamer-owned and not reachable from the
-    /// reader, so it is forwarded there (`Command::Loop`), always from the
+    /// reader, so it is forwarded there (a loop command naming its stream), always from the
     /// control thread: by [`insert_voice`](Self::insert_voice) while the pool
     /// holds it, then by the handle it moves to
     /// ([`with_handle`](Self::with_handle)). So the node in the graph holds no
     /// streamer sender at all.
-    pub(crate) streamer: Option<Commands>,
+    pub(crate) streamer: Option<StreamerPort>,
 
     /// Output width — the node's audio outputs, fixed at construction.
     ///
@@ -392,7 +391,7 @@ impl VoicePool {
     /// A pool with no command queue and no retirement channel yet (both
     /// dead): [`with_handle`](Self::with_handle) or
     /// [`into_parts`](IntoNode::into_parts) makes them.
-    fn from_parts(streamer: Option<Commands>, channels: impl Into<ChannelLayout>) -> Self {
+    fn from_parts(streamer: Option<StreamerPort>, channels: impl Into<ChannelLayout>) -> Self {
         // A full `bounded(0)` never accepts, so until a handle exists `Remove`
         // falls back to dropping in place — correct for a pool nothing
         // controls (a fork, which owns its voices outright and has no control
@@ -444,7 +443,7 @@ impl VoicePool {
     /// and counted, because the loop-start fadein head lives on the streamer
     /// side and the reader cannot reach it.
     #[must_use]
-    pub fn with_streamer(streamer: Commands) -> Self {
+    pub fn with_streamer(streamer: StreamerPort) -> Self {
         Self::from_parts(Some(streamer), ChannelLayout::STEREO)
     }
 
@@ -459,7 +458,7 @@ impl VoicePool {
     /// and lanes are that wide, so a wider pool would declare outputs it never
     /// writes (a caller reading them sees whatever the buffer held).
     pub fn with_channels(
-        streamer: Option<Commands>,
+        streamer: Option<StreamerPort>,
         channels: impl Into<ChannelLayout>,
     ) -> Result<Self, PoolTooWide> {
         let channels = channels.into();
@@ -692,7 +691,7 @@ impl VoicePool {
     /// # Blocking
     ///
     /// A streaming voice forwards its loop with the streamer's blocking send
-    /// (as [`Commands::send`]): while the streamer's queue is full, this waits
+    /// (as a [`Stream`](crate::Stream)'s commands do): while the streamer's queue is full, this waits
     /// until there is room or the streamer is gone (then the loop is dropped,
     /// counted as [`PoolDrops::loops_streamer_gone`], and not recorded). Two
     /// cases make that wait long:

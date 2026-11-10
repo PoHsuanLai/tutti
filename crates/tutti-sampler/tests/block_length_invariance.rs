@@ -63,8 +63,8 @@ use tutti_codec::Wave;
 use tutti_graph::contract::{self, Direct};
 use tutti_graph::{Env, Node, Transport, TransportChanges};
 use tutti_sampler::{
-    Direction, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback, SlotId,
-    StepOutcome, Voice, VoiceNode, VoicePool, VoiceSource,
+    ByHand, Direction, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback,
+    SlotId, StepOutcome, Stream, Voice, VoiceNode, VoicePool, VoiceSource,
 };
 use tutti_types::{
     Beat, Bpm, Cents, Frame, PlaybackRate, SamplePosition, SampleRate, Samples, StretchFactor,
@@ -338,17 +338,17 @@ fn write_wav(path: &Path, frames: usize) {
 /// A live disk voice streaming `path` from its start, on its own
 /// hand-driven streamer, its ring primed (a file this short is prefilled
 /// whole, so the render never waits on the streamer).
-fn disk_voice(path: &Path) -> (DiskStreamer, tutti_sampler::DiskVoice) {
+fn disk_voice(path: &Path) -> (DiskStreamer<ByHand>, Stream, tutti_sampler::DiskVoice) {
     let mut s = DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
     let opening = s.open(path, tutti_sampler::Placement::HEAD);
-    let reader = tutti_sampler::testing::settle(&mut s, opening).expect("the file opens");
+    let (stream, reader) = tutti_sampler::testing::settle(&mut s, opening).expect("the file opens");
     for _ in 0..4096 {
         if s.step_once() != StepOutcome::Busy {
             break;
         }
     }
     let v = tutti_sampler::DiskVoice::from_reader(reader, Beat::new(0.0), None);
-    (s, v)
+    (s, stream, v)
 }
 
 /// A live disk voice renders the same frames at any block length: as
@@ -362,13 +362,13 @@ fn a_disk_voice_renders_the_same_frames_at_any_block_length() {
     // Each render gets its own stream: a ring is read once.
     let mut streamers = Vec::new();
     assert_block_invariant("disk voice node", || {
-        let (s, v) = disk_voice(&path);
-        streamers.push(s);
+        let (s, stream, v) = disk_voice(&path);
+        streamers.push((s, stream));
         v
     });
     assert_block_invariant("pool, disk voice", || {
-        let (s, v) = disk_voice(&path);
-        streamers.push(s);
+        let (s, stream, v) = disk_voice(&path);
+        streamers.push((s, stream));
         let mut pool = VoicePool::new();
         pool.insert_voice(
             SlotId(1),

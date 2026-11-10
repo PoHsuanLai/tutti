@@ -162,7 +162,8 @@ pub fn play(
 /// The answer to `opening` from a hand-stepped streamer: steps it until the
 /// streamer has answered, then until it has primed (`step_until_settled`), so
 /// the reader's ring holds what the threaded streamer would have read by the
-/// time a voice plays.
+/// time a voice plays. The [`Stream`](crate::Stream) is the caller's to keep
+/// while the voice plays: dropping it ends the stream.
 ///
 /// # Errors
 ///
@@ -173,16 +174,16 @@ pub fn play(
 /// If the streamer has not answered within 1000 steps: a hand-stepped streamer
 /// answers on the first step it takes, so that is a hang, not a slow machine.
 pub fn settle(
-    streamer: &mut crate::DiskStreamer,
+    streamer: &mut crate::DiskStreamer<crate::ByHand>,
     mut opening: crate::Opening,
-) -> Result<crate::StreamReader, crate::OpenError> {
+) -> Result<(crate::Stream, crate::StreamReader), crate::OpenError> {
     for _ in 0..1_000 {
         let _ = streamer.step_once();
         match opening.poll() {
             crate::Open::Pending(again) => opening = again,
-            crate::Open::Ready(reader) => {
+            crate::Open::Ready(stream, reader) => {
                 let _ = streamer.step_until_settled(1_000);
-                return Ok(reader);
+                return Ok((stream, reader));
             }
             crate::Open::Failed(error) => return Err(error),
         }
@@ -202,12 +203,12 @@ pub fn settle(
 /// If the streamer has not answered by then.
 pub fn settle_threaded(
     mut opening: crate::Opening,
-) -> Result<crate::StreamReader, crate::OpenError> {
+) -> Result<(crate::Stream, crate::StreamReader), crate::OpenError> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match opening.poll() {
             crate::Open::Pending(again) => opening = again,
-            crate::Open::Ready(reader) => return Ok(reader),
+            crate::Open::Ready(stream, reader) => return Ok((stream, reader)),
             crate::Open::Failed(error) => return Err(error),
         }
         assert!(

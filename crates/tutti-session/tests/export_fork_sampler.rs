@@ -19,8 +19,8 @@ use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, Rende
 use tutti_graph::NodeKey;
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
-    DiskStreamer, DiskVoice, MemorySource, Placement, Playback, StreamReader, Voice, VoiceNode,
-    VoiceSource,
+    ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, Stream, StreamReader,
+    Voice, VoiceNode, VoiceSource,
 };
 use tutti_session::{
     Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, Session,
@@ -210,17 +210,18 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
 }
 
 /// A hand-stepped streamer at the export's rate streaming `path`, primed, and
-/// the stream's reader. The streamer is held by the test: a fork reads the
-/// file through the streamer's cache while it lives.
-fn streamer_on(path: &Path) -> (DiskStreamer, StreamReader) {
+/// the stream's handle and reader. The streamer and the handle are held by the
+/// test: a fork reads the file through the streamer's cache while the stream
+/// lives, and dropping the handle ends it.
+fn streamer_on(path: &Path) -> ((DiskStreamer<ByHand>, Stream), StreamReader) {
     let mut streamer = DiskStreamer::manual(SampleRate(RATE), Default::default()).expect("builds");
     let opening = streamer.open(path, Placement::HEAD);
-    let reader = settle(&mut streamer, opening).expect("the file opens");
+    let (stream, reader) = settle(&mut streamer, opening).expect("the file opens");
     assert!(
         streamer.step_until_settled(1_000) < 1_000,
         "the ring primes"
     );
-    (streamer, reader)
+    ((streamer, stream), reader)
 }
 
 /// The live voice of the stream `reader` reads, placed at `beat`.
@@ -419,7 +420,7 @@ fn live_disk_playback_is_untouched_while_its_voice_exports() {
     // file while the export renders.
     let len = 30 * RATE as usize;
     write_ramp(&path, RATE as u32, len);
-    let (mut streamer, reader) = streamer_on(&path);
+    let ((mut streamer, _stream), reader) = streamer_on(&path);
     let live_clock = timeline(120.0);
 
     let mut session = session();

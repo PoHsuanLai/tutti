@@ -1,70 +1,60 @@
-//! Streamer thread controller: spawn, stop, and expose shared handles.
+//! The streamer's drivers, as a typestate: a streamer is [`Built`], then
+//! either [`Running`] on its own thread or `ByHand`, stepped on the caller's
+//! (doc 025 §2.5; the `Lifecycle` shape of design 016).
 //!
-//! The controller is UI-side — callers hold a `StreamerThread`, send commands
-//! via `command_sender`, and read metrics / cache / stream states through
-//! accessors. The thread body and command handlers live in sibling modules.
+//! The two drivers own the same streamer-local state (`Local`: the stream
+//! table and the scratch), so a streamer is one or the other for its whole
+//! life, and the type says which. Handing the state to a thread consumes the
+//! `Built`; stepping by hand needs a `ByHand`, which has no thread to race.
+//! What was two runtime flags, two asserts and a `should_panic` test is a
+//! method that exists on one type and not the other.
+//!
+//! The thread body and command handlers live in sibling modules.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
-use dashmap::DashMap;
 use tutti_rt::{PriorityRequest, request_priority};
 use tutti_types::SampleRate;
 
 use super::StreamerSender;
 use super::cache::LruCache;
-#[cfg(test)]
-use super::command::StreamId;
 use super::command::StreamerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, SessionRate};
 use super::loop_body::{Pacing, streamer_loop};
 use super::metrics::Metrics;
-#[cfg(test)]
-use super::plan::ChannelPlan;
 #[cfg(any(test, feature = "test-support"))]
 use super::step::StepOutcome;
 use super::step::StreamerCycle;
 use crossbeam_channel::Receiver;
 
-/// Owner of the streamer thread and of every handle shared with it.
+/// A streamer that is built and drives nothing yet: its queue, its shared
+/// handles and the state a driver will own.
 ///
-/// Control-thread side: build with [`with_config`](Self::with_config), spawn
-/// with [`start`](Self::start), drive through
-/// [`command_sender`](Self::command_sender), and read stream state through
-/// the shared plan map. `Drop` stops the thread and joins it.
-pub struct StreamerThread {
+/// Consumed by [`start`](Self::start) (a thread) or `by_hand` (the caller).
+/// Dropping it drops the queue's one receiver, so a sender is told the
+/// streamer is gone.
+pub(super) struct Built {
     /// The command queue's sending end, cloned for every sender.
     tx: StreamerSender,
-    /// Its receiving end, until a driver takes it: the thread
-    /// [`start`](Self::start) spawns (which drops it on exit, however it
-    /// exits), or `StreamerThread::step_once`. [`stop`](Self::stop) drops
-    /// it. With every receiver dropped a send reports the streamer gone.
-    rx: Option<Receiver<StreamerCommand>>,
-    thread_handle: Option<JoinHandle<()>>,
-    shutdown: Arc<AtomicBool>,
+    /// Its receiving end, until a driver takes it.
+    rx: Receiver<StreamerCommand>,
     shared: Handles,
     config: BufferConfig,
     /// How long the thread parks between cycles.
     pacing: Pacing,
-    /// The synchronous cycle, when this controller is being driven by hand
-    /// rather than by a thread. `Some` only after [`step_once`](Self::step_once)
-    /// has been called on an unstarted controller; `start` refuses once it is
-    /// set, so the two drivers can never both own `Local`.
-    #[cfg(any(test, feature = "test-support"))]
-    manual: Option<StreamerCycle>,
 }
 
-impl StreamerThread {
-    /// Build the controller and its shared handles without spawning anything —
-    /// [`start`](Self::start) does that.
+impl Built {
+    /// Build the queue and the shared handles without spawning anything.
     ///
     /// `channel_capacity` bounds the command queue in messages (at least
     /// one); a send to a full queue waits. `sample_rate` is the
     /// *session* rate, against which each file's own rate becomes the stream's
     /// [`SrcRatio`](tutti_types::SrcRatio).
-    pub fn with_config(
+    pub(super) fn new(
         channel_capacity: usize,
         sample_rate: SampleRate,
         config: BufferConfig,
@@ -72,7 +62,6 @@ impl StreamerThread {
         let (tx, rx) = crossbeam_channel::bounded(channel_capacity.max(1));
 
         let shared = Handles {
-            plans: Arc::new(DashMap::new()),
             cache: Arc::new(LruCache::new(
                 config.cache_max_entries,
                 config.cache_max_bytes,
@@ -83,34 +72,28 @@ impl StreamerThread {
 
         Self {
             tx,
-            rx: Some(rx),
-            thread_handle: None,
-            shutdown: Arc::new(AtomicBool::new(false)),
+            rx,
             shared,
             config,
             pacing: Pacing::DEFAULT,
-            #[cfg(any(test, feature = "test-support"))]
-            manual: None,
         }
-    }
-
-    /// The cycle state a driver owns: the thread [`start`](Self::start)
-    /// spawns, or `StreamerThread::step_once`. Built here, on the control
-    /// thread, by both, so the hand-stepped tests build what the thread runs.
-    fn cycle(&self) -> StreamerCycle {
-        StreamerCycle::new(self.config)
     }
 
     /// A cloneable sender onto the streamer's command queue.
     ///
-    /// Valid before `start`: commands sent then simply queue until the thread
+    /// Valid before a driver exists: commands sent then simply queue until it
     /// drains them. Control threads only: a send waits while the queue is
     /// full.
-    pub(crate) fn command_sender(&self) -> StreamerSender {
+    pub(super) fn command_sender(&self) -> StreamerSender {
         self.tx.clone()
     }
 
-    /// This controller with its thread waiting `pacing` between cycles
+    /// The shared handles, for the control side's own reads.
+    pub(super) fn shared(&self) -> Handles {
+        self.shared.clone()
+    }
+
+    /// This streamer with its thread waiting `pacing` between cycles
     /// (tests: a long wait shows a command does not wait for it).
     #[cfg(test)]
     pub(super) fn with_pacing(mut self, pacing: Pacing) -> Self {
@@ -118,35 +101,20 @@ impl StreamerThread {
         self
     }
 
-    /// Spawn the streamer thread at maximum priority. Idempotent — a second call
-    /// while the thread runs is a no-op.
+    /// Spawn the streamer thread, which owns the cycle state and the queue's
+    /// receiver from here on.
     ///
     /// # Panics
     ///
     /// If the thread cannot be spawned. Every stream and every refill depends on
     /// it, so a failure here (the OS out of threads) would otherwise degrade
     /// into an engine that accepts commands and stays mute.
-    pub fn start(&mut self) {
-        if self.thread_handle.is_some() {
-            return;
-        }
-        // Stopped: nothing to drive.
-        let Some(queue) = self.rx.take() else {
-            return;
-        };
-        // `Local` has exactly one owner. A controller already stepped by hand
-        // holds it here; handing a second copy to a thread would leave two
-        // region maps disagreeing about which rings exist.
-        #[cfg(any(test, feature = "test-support"))]
-        assert!(
-            self.manual.is_none(),
-            "start on a hand-stepped streamer: the cycle state is already owned here"
-        );
-
-        let shutdown = Arc::clone(&self.shutdown);
-        let shared = self.shared.clone();
-        let cycle = self.cycle();
-        let pacing = self.pacing;
+    pub(super) fn start(self) -> Running {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = Arc::clone(&shutdown);
+        let shared = self.shared;
+        let cycle = StreamerCycle::new(self.config);
+        let (queue, pacing) = (self.rx, self.pacing);
 
         let handle = thread::Builder::new()
             .name("tutti-streamer".into())
@@ -163,7 +131,7 @@ impl StreamerThread {
                 // grants (nice -20, HIGHEST) on purpose. A refusal is
                 // harmless, so the outcome is only logged.
                 tracing::debug!("streamer: {}", request_priority(PriorityRequest::Raised));
-                streamer_loop(&queue, shared, cycle, shutdown, pacing);
+                streamer_loop(&queue, shared, cycle, thread_shutdown, pacing);
             })
             // Fatal init: spawning the disk-I/O streamer thread is a prerequisite
             // for all streaming/recording. A spawn failure means the OS is out of
@@ -172,94 +140,109 @@ impl StreamerThread {
             // loudly at startup rather than degrade into a mute engine.
             .expect("Failed to spawn streamer thread");
 
-        self.thread_handle = Some(handle);
+        Running {
+            tx: self.tx,
+            thread_handle: Some(handle),
+            shutdown,
+        }
     }
 
+    /// The caller drives: its cycle is stepped by `ByHand::step_once`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn by_hand(self) -> ByHand {
+        ByHand {
+            rx: Some(self.rx),
+            cycle: StreamerCycle::new(self.config),
+            shared: self.shared,
+        }
+    }
+}
+
+/// The streamer driven by its own thread: what
+/// [`DiskStreamer::new`](crate::DiskStreamer::new) builds.
+///
+/// `Drop` stops the thread and joins it.
+pub struct Running {
+    /// For the `Shutdown` command a stop sends.
+    tx: StreamerSender,
+    thread_handle: Option<JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for Running {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Running")
+            .field("alive", &self.thread_handle.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Running {
     /// Signal shutdown and join the streamer thread, blocking until it exits.
     ///
     /// The flag ends the loop at its next cycle, and a `Shutdown` command,
     /// queued when there is room, ends a wait or a cycle already draining.
-    /// The queue's receivers are gone afterwards (a started streamer's thread
-    /// dropped its own on the way out, and this drops the controller's, for
-    /// one that never started), so a sender still holding the queue, a
-    /// waiting one included, is told the streamer is gone. Called by `Drop`,
-    /// and idempotent — stopping an already-stopped controller does nothing
-    /// more.
-    pub fn stop(&mut self) {
+    /// The queue's receiver is gone afterwards (the thread dropped it on the
+    /// way out), so a sender still holding the queue, a waiting one included,
+    /// is told the streamer is gone. Called by `Drop`, and idempotent.
+    pub(super) fn stop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = self.tx.try_send(StreamerCommand::Shutdown);
 
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
-        self.rx = None;
-    }
-
-    /// Run exactly one streamer cycle on the calling thread: drain every
-    /// queued command, then apply directions and refills.
-    /// Returns once that work is done, reporting what the pacing layer *would*
-    /// have done next.
-    ///
-    /// This is the same [`StreamerCycle::step`] the streamer thread runs — the
-    /// thread adds only pacing — so driving a controller by hand exercises the
-    /// shipped path rather than a parallel one.
-    ///
-    /// Intended for tests, which is what the feature gate says. A streamer-driven
-    /// stream is otherwise observable only through wall clock: send a command,
-    /// sleep, look. Stepping makes it observable by *counting*, so a test can
-    /// state "after three cycles the ring holds audio" rather than "after 50 ms
-    /// it probably does".
-    ///
-    /// # Panics
-    ///
-    /// If the streamer thread is running. Both drivers own the same streamer-local
-    /// state, so a controller is one or the other for its whole life; stepping a
-    /// live controller would race the thread inside `Local`.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn step_once(&mut self) -> StepOutcome {
-        assert!(
-            self.thread_handle.is_none(),
-            "step_once on a started streamer: the thread already owns the cycle state"
-        );
-        if self.manual.is_none() {
-            self.manual = Some(self.cycle());
-        }
-        let cycle = self.manual.as_mut().expect("set just above");
-        let queue = self.rx.as_ref();
-        cycle.step(&self.shared, || queue.and_then(|rx| rx.try_recv().ok()))
-    }
-
-    /// The shared per-stream plan map, keyed by [`StreamId`]. Both the
-    /// streamer and the control thread hold it, so an entry may appear or
-    /// change between two reads.
-    #[cfg(test)]
-    pub(crate) fn plans(&self) -> Arc<DashMap<StreamId, ChannelPlan>> {
-        Arc::clone(&self.shared.plans)
-    }
-
-    /// The streamer's wave cache (tests).
-    #[cfg(test)]
-    pub(crate) fn cache(&self) -> Arc<LruCache> {
-        Arc::clone(&self.shared.cache)
-    }
-
-    /// The session-rate cell, shared: a [`Status`](crate::Status) built from
-    /// it reads the rate as it is, not as it was.
-    pub(crate) fn session_rate(&self) -> SessionRate {
-        self.shared.session_rate.clone()
-    }
-
-    /// Move the session rate, re-deriving every open stream's ratio (see
-    /// [`SessionRate::set`]). Control thread; streams opened later derive
-    /// theirs against it.
-    pub(crate) fn set_session_rate(&self, rate: SampleRate) {
-        self.shared.session_rate.set(rate, &self.shared.plans);
     }
 }
 
-impl Drop for StreamerThread {
+impl Drop for Running {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// The streamer driven by the caller, a cycle at a time: what
+/// `DiskStreamer::manual` builds. Requires the
+/// `test-support` feature.
+///
+/// There is no thread to race, so a test can say "after this many cycles the
+/// ring holds audio"; it is the same [`StreamerCycle::step`] the thread runs.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ByHand {
+    rx: Option<Receiver<StreamerCommand>>,
+    cycle: StreamerCycle,
+    shared: Handles,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl std::fmt::Debug for ByHand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByHand").finish_non_exhaustive()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ByHand {
+    /// One cycle on the calling thread: drain every queued command, then apply
+    /// directions and refills. Returns once that work is done, reporting what
+    /// the pacing layer *would* have done next.
+    pub(super) fn step_once(&mut self) -> StepOutcome {
+        let queue = self.rx.as_ref();
+        self.cycle
+            .step(&self.shared, || queue.and_then(|rx| rx.try_recv().ok()))
+    }
+
+    /// How many streams the streamer holds (tests).
+    #[cfg(test)]
+    pub(super) fn open_streams(&self) -> usize {
+        self.cycle.streams().len()
+    }
+
+    /// Drop the queue's receiver, as a streamer thread that exited does: every
+    /// sender is told the streamer is gone (tests).
+    #[cfg(test)]
+    pub(super) fn gone(&mut self) {
+        self.rx = None;
     }
 }
 
@@ -268,18 +251,20 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::ports::{Command, Commands};
     use crate::streamer::StreamerGone;
+    use crate::streamer::command::StreamId;
     use crate::streamer::loop_body::Pacing;
+    use crate::streamer::stream::StreamerPort;
 
-    /// The controller is `Sync` (a Bevy resource holds it), with its
-    /// hand-stepped cycle held plainly: a compile-time check.
+    /// Both drivers are `Sync` (a Bevy resource holds a `DiskStreamer`), with
+    /// the hand-stepped cycle held plainly: a compile-time check.
     ///
     /// Mutation (run): a `std::cell::Cell<u8>` field in `StreamerCycle` →
     /// does not compile.
     const _: () = {
         fn sync<T: Sync>() {}
-        let _ = sync::<StreamerThread>;
+        let _ = sync::<Running>;
+        let _ = sync::<ByHand>;
     };
 
     /// A streamer that, left alone, would sleep far longer than any test waits.
@@ -287,6 +272,10 @@ mod tests {
         idle: Duration::from_secs(60),
         healthy: Duration::from_secs(60),
     };
+
+    fn built(capacity: usize) -> Built {
+        Built::new(capacity, SampleRate::new(48_000.0), BufferConfig::default())
+    }
 
     /// Polls `done` until it holds or `bound` passes; whether it held.
     fn within(bound: Duration, mut done: impl FnMut() -> bool) -> bool {
@@ -315,14 +304,12 @@ mod tests {
     /// 60 s → fails at the 10 s bound.
     #[test]
     fn a_send_wakes_a_waiting_streamer() {
-        let mut streamer =
-            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default())
-                .with_pacing(LONG_WAIT);
-        let tx = streamer.command_sender();
-        streamer.start();
+        let built = built(8).with_pacing(LONG_WAIT);
+        let tx = built.command_sender();
+        let mut streamer = built.start();
 
         for stream in [StreamId(90), StreamId(91)] {
-            tx.try_send(StreamerCommand::StopStreaming { stream })
+            tx.try_send(StreamerCommand::Close { stream })
                 .expect("room in an empty queue");
             assert!(
                 within(Duration::from_secs(10), || tx.is_empty()),
@@ -334,31 +321,30 @@ mod tests {
         streamer.stop();
     }
 
-    /// A stopped streamer is gone to every sender, started or not.
+    /// A streamer that is gone, in either state, is gone to every sender.
     ///
-    /// A started streamer's thread drops its receiver on the way out, so the
-    /// mutation that bites is on the controller that never started.
-    /// Mutation (run): `stop` without its `self.rx = None` → the unstarted
-    /// half queues into a queue nobody drains, `Ok(())` → fails.
+    /// A started streamer's thread drops its receiver on the way out; a
+    /// built one drops it with itself.
+    /// Mutation (run): `Built::new` leaking a clone of the receiver
+    /// (`std::mem::forget(rx.clone())`) → the queue never disconnects → fails.
     #[test]
     fn a_stopped_streamer_reports_gone() {
-        let mut unstarted =
-            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
-        unstarted.stop();
+        let unstarted = built(8);
+        let port = StreamerPort::new(unstarted.command_sender());
+        drop(unstarted);
         assert_eq!(
-            Commands::new(unstarted.command_sender()).send(Command::Stop {
+            port.send(StreamerCommand::Close {
                 stream: StreamId(0)
             }),
             Err(StreamerGone),
-            "a controller stopped before it started"
+            "a streamer dropped before it started"
         );
 
-        let mut streamer =
-            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
-        streamer.start();
-        let commands = Commands::new(streamer.command_sender());
+        let built = built(8);
+        let port = StreamerPort::new(built.command_sender());
+        let mut streamer = built.start();
         assert_eq!(
-            commands.send(Command::Stop {
+            port.send(StreamerCommand::Close {
                 stream: StreamId(0)
             }),
             Ok(())
@@ -366,34 +352,33 @@ mod tests {
 
         streamer.stop();
         assert_eq!(
-            commands.send(Command::Stop {
+            port.send(StreamerCommand::Close {
                 stream: StreamId(0)
             }),
             Err(StreamerGone)
         );
     }
 
-    /// A send waiting on a full queue returns once the streamer stops,
+    /// A send waiting on a full queue returns once the streamer is gone,
     /// reporting it gone, rather than waiting for good.
     ///
-    /// Mutation (run): `stop` without its `self.rx = None` → the waiting
-    /// send never returns → fails at the 10 s bound.
+    /// Mutation (run): `Built::new` leaking a clone of the receiver → the
+    /// waiting send never returns → fails at the 10 s bound.
     #[test]
     fn a_waiting_send_is_released_when_the_streamer_stops() {
-        let mut streamer =
-            StreamerThread::with_config(1, SampleRate::new(48_000.0), BufferConfig::default());
-        let commands = Commands::new(streamer.command_sender());
+        let streamer = built(1);
+        let port = StreamerPort::new(streamer.command_sender());
         assert_eq!(
-            commands.send(Command::Stop {
+            port.send(StreamerCommand::Close {
                 stream: StreamId(0)
             }),
             Ok(())
         );
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let waiter = {
-            let commands = commands.clone();
+            let port = port.clone();
             thread::spawn(move || {
-                let _ = done_tx.send(commands.send(Command::Stop {
+                let _ = done_tx.send(port.send(StreamerCommand::Close {
                     stream: StreamId(1),
                 }));
             })
@@ -404,7 +389,7 @@ mod tests {
             done_rx.try_recv().is_err(),
             "a send into a full queue waits"
         );
-        streamer.stop();
+        drop(streamer);
         assert_eq!(
             done_rx.recv_timeout(Duration::from_secs(10)),
             Ok(Err(StreamerGone)),
@@ -417,21 +402,19 @@ mod tests {
     /// without its controller's `stop`: a `Shutdown` command ends the loop,
     /// and the thread's receiver goes with it.
     ///
-    /// Mutation (run): `start` handing the thread a clone of the receiver
-    /// and keeping its own → the queue never disconnects → fails at the
-    /// bound.
+    /// Mutation (run): `Built::new` leaking a clone of the receiver → the
+    /// queue never disconnects → fails at the bound.
     #[test]
     fn a_streamer_that_exits_is_gone_to_its_senders() {
-        let mut streamer =
-            StreamerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
-        streamer.start();
-        let tx = streamer.command_sender();
+        let built = built(8);
+        let tx = built.command_sender();
+        let _streamer = built.start();
         tx.try_send(StreamerCommand::Shutdown).unwrap();
         // Probed without waiting, so a queue that never disconnects fails
         // at the bound rather than filling and blocking the probe.
         assert!(
             within(Duration::from_secs(10), || matches!(
-                tx.try_send(StreamerCommand::StopStreaming {
+                tx.try_send(StreamerCommand::Close {
                     stream: StreamId(0)
                 }),
                 Err(crossbeam_channel::TrySendError::Disconnected(_))
@@ -439,7 +422,7 @@ mod tests {
             "the thread exited but the queue still accepts commands"
         );
         assert_eq!(
-            Commands::new(tx).send(Command::Stop {
+            StreamerPort::new(tx).send(StreamerCommand::Close {
                 stream: StreamId(0)
             }),
             Err(StreamerGone)

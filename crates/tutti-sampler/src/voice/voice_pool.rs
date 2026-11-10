@@ -1461,11 +1461,11 @@ fn one_block(pool: &mut VoicePool) {
 fn test_streamer(
     capacity: usize,
 ) -> (
-    crate::ports::Commands,
+    crate::StreamerPort,
     crossbeam_channel::Receiver<crate::streamer::StreamerCommand>,
 ) {
     let (tx, rx) = bounded(capacity);
-    (crate::ports::Commands::new(tx), rx)
+    (crate::StreamerPort::new(tx), rx)
 }
 
 fn looped(mut voice: Voice) -> Voice {
@@ -1534,7 +1534,7 @@ fn a_loop_the_streamer_takes_is_recorded() {
 /// drain records the loop all the same, counting nothing.
 ///
 /// Mutation (run): `apply_loop`'s streaming arm sending
-/// `Command::Loop` on `self.streamer` and returning on an error → the
+/// a loop command on `self.streamer` and returning on an error → the
 /// gone streamer leaves the loop unrecorded → fails.
 #[test]
 fn the_drain_sends_nothing_to_the_streamer() {
@@ -1734,7 +1734,7 @@ fn a_handle_send_waits_for_the_streamer() {
 fn a_control_thread_insert_waits_for_the_streamer() {
     let (commands, streamer) = test_streamer(1);
     commands
-        .send(crate::ports::Command::Stop {
+        .send(crate::streamer::StreamerCommand::Close {
             stream: StreamId(9),
         })
         .expect("room for one");

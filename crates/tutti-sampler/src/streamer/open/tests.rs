@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use tutti_types::{Beat, Bpm, SamplePosition};
 
+use crate::LoopSetting;
+
 use super::*;
 use crate::testing::{MockTransport, play, prepared, settle};
 use crate::{DiskStreamer, DiskVoice};
@@ -26,7 +28,7 @@ fn write_constant(path: &Path, value: f32, frames: usize) {
     w.finalize().expect("writes");
 }
 
-fn manual() -> DiskStreamer {
+fn manual() -> DiskStreamer<crate::ByHand> {
     DiskStreamer::manual(RATE, Default::default()).expect("builds")
 }
 
@@ -77,7 +79,7 @@ fn a_fractional_start_opens_at_its_frame() {
     let start = Placement::new(SamplePosition(4_000.7)).expect("a position");
     assert_eq!(start.frame(), 4_000);
     let opening = streamer.open(&path, start);
-    let reader = settle(&mut streamer, opening).expect("the file opens");
+    let (_stream, reader) = settle(&mut streamer, opening).expect("the file opens");
     assert_eq!(reader.ring.play(), 4_000);
 }
 
@@ -101,10 +103,11 @@ fn an_open_is_pending_until_the_streamer_answers() {
         }
     };
     let _ = streamer.step_once();
-    let Open::Ready(reader) = opening.poll() else {
+    let Open::Ready(stream, reader) = opening.poll() else {
         panic!("the streamer ran and did not answer");
     };
     assert_eq!(reader.id(), id);
+    assert_eq!(stream.id(), id, "the handle steers the stream it opened");
 }
 
 /// A `Ready` reader has registered its map reader already, on the control
@@ -119,7 +122,7 @@ fn a_ready_reader_has_registered_its_map_before_it_is_returned() {
     let (_dir, path) = constant_file(0.25);
     let mut streamer = manual();
     let opening = streamer.open(&path, Placement::HEAD);
-    let reader = settle(&mut streamer, opening).expect("the file opens");
+    let (_stream, reader) = settle(&mut streamer, opening).expect("the file opens");
     assert_eq!(reader.ring.map_readers(), 1, "registered by the open");
     let ring = Arc::clone(&reader.ring);
     let mut voice = prepared(DiskVoice::from_reader(reader, Beat(0.0), None), RATE, 64);
@@ -226,7 +229,7 @@ fn write_extensible_wav(path: &Path, channels: u16, mask: u32) {
 fn an_open_on_a_gone_streamer_fails_with_streamer_gone() {
     let (_dir, path) = constant_file(0.25);
     let mut streamer = manual();
-    streamer.streamer.stop();
+    streamer.driver.gone();
     let mut opening = streamer.open(&path, Placement::HEAD);
     for _ in 0..1_000 {
         match opening.poll() {
@@ -235,18 +238,18 @@ fn an_open_on_a_gone_streamer_fails_with_streamer_gone() {
                 return;
             }
             Open::Pending(again) => opening = again,
-            Open::Ready(_) => panic!("a gone streamer answered an open"),
+            Open::Ready(..) => panic!("a gone streamer answered an open"),
         }
     }
     panic!("a gone streamer left an open pending");
 }
 
 /// A caller that drops its `Opening` abandons the open: the streamer that
-/// answers into nobody closes the stream it opened, and keeps no plan or
+/// answers into nobody closes the stream it opened, and keeps no record or
 /// region for it.
 ///
 /// Mutation (run): `handle_open` not closing the stream when the reply cannot
-/// be sent -> the plan is still held -> fails.
+/// be sent -> the record is still held -> fails.
 #[test]
 fn an_abandoned_open_is_closed() {
     let (_dir, path) = constant_file(0.25);
@@ -254,7 +257,7 @@ fn an_abandoned_open_is_closed() {
     drop(streamer.open(&path, Placement::HEAD));
     let _ = streamer.step_once();
     assert!(
-        streamer.streamer.plans().is_empty(),
+        streamer.driver.open_streams() == 0,
         "the streamer kept a stream nobody can read"
     );
 }
@@ -299,10 +302,10 @@ fn two_opens_each_yield_the_reader_of_their_own_stream() {
     };
 
     let _ = streamer.step_until_settled(1_000);
-    let Open::Ready(a) = first.poll() else {
+    let Open::Ready(stream_a, a) = first.poll() else {
         panic!("the first open was not answered");
     };
-    let Open::Ready(b) = second.poll() else {
+    let Open::Ready(_stream_b, b) = second.poll() else {
         panic!("the second open was not answered");
     };
     assert_eq!(
@@ -333,13 +336,100 @@ fn two_opens_each_yield_the_reader_of_their_own_stream() {
     // The first ring is still its stream's: the second open did not replace
     // it, and the streamer holds it until the stream closes.
     assert!(ring_a.upgrade().is_some(), "the first ring was freed early");
-    streamer
-        .commands()
-        .send(crate::Command::Stop { stream: id_a })
-        .expect("the streamer is alive");
+    drop(stream_a);
     let _ = streamer.step_once();
     assert!(
         ring_a.upgrade().is_none(),
         "the first ring outlived its stream"
+    );
+}
+
+/// **B4 (doc 025 §1.6).** A command meant for one stream cannot reach another.
+/// Two streams of one file: a loop set through A's handle is A's alone (B's
+/// reader, and a fork of it, still see no loop); and then through B's, B's
+/// alone.
+///
+/// Mutation (run): `handle_loop` applying the effect to the first record
+/// (`records_mut().first_mut()`) instead of the one the effect names -> B's
+/// loop is set instead of A's -> fails.
+#[test]
+fn a_loop_set_through_one_stream_leaves_the_other_unchanged() {
+    let (_dir, path) = constant_file(0.25);
+    let mut streamer = manual();
+    let opening = streamer.open(&path, Placement::HEAD);
+    let (mut a, reader_a) = settle(&mut streamer, opening).expect("the file opens");
+    let opening = streamer.open(&path, Placement::HEAD);
+    let (mut b, reader_b) = settle(&mut streamer, opening).expect("the file opens");
+    let loop_of = |reader: &StreamReader| reader.origin.describe().expect("the stream runs").loop_;
+    let looped = |start, end| LoopSetting::On {
+        start: SamplePosition(start),
+        end: SamplePosition(end),
+        crossfade_frames: 0,
+    };
+
+    // B is opened second, so a command that went to "the newest" or to "the
+    // first" would be A's or B's by accident; both directions are checked.
+    a.set_loop(looped(1_000.0, 3_000.0)).expect("alive");
+    let _ = streamer.step_until_settled(1_000);
+    assert_eq!(loop_of(&reader_a), looped(1_000.0, 3_000.0));
+    assert_eq!(loop_of(&reader_b), LoopSetting::Off, "B was not asked");
+
+    b.set_loop(looped(500.0, 900.0)).expect("alive");
+    let _ = streamer.step_until_settled(1_000);
+    assert_eq!(loop_of(&reader_b), looped(500.0, 900.0));
+    assert_eq!(
+        loop_of(&reader_a),
+        looped(1_000.0, 3_000.0),
+        "A is as it was"
+    );
+}
+
+/// A command for a stream the streamer no longer holds is ignored, and
+/// reaches nobody: the handle of a stream that is gone commands nothing. A
+/// stream closed by its handle's drop, then a stale handle (one a late
+/// command could still be sent through) setting a loop beside a stream that
+/// is open: the open one keeps the loop it had, and the streamer neither
+/// panics nor keeps anything of the closed one.
+///
+/// Mutation (run): `handle_loop` applying the loop to the newest record
+/// whatever the step answered -> B takes the stale loop -> fails.
+#[test]
+fn a_stopped_streams_handle_commands_nothing() {
+    let (_dir, path) = constant_file(0.25);
+    let mut streamer = manual();
+    let opening = streamer.open(&path, Placement::HEAD);
+    let (stopped, reader_a) = settle(&mut streamer, opening).expect("the file opens");
+    let id_a = stopped.id();
+    let opening = streamer.open(&path, Placement::HEAD);
+    let (_b, reader_b) = settle(&mut streamer, opening).expect("the file opens");
+
+    drop(stopped);
+    drop(reader_a);
+    let _ = streamer.step_once();
+    assert_eq!(streamer.driver.open_streams(), 1, "A is closed, B is open");
+
+    // The handle of the stream that is gone: what a late command still
+    // reaching the queue looks like.
+    let mut ghost = Stream::new(id_a, streamer.port());
+    ghost
+        .set_loop(LoopSetting::On {
+            start: SamplePosition(1_000.0),
+            end: SamplePosition(3_000.0),
+            crossfade_frames: 0,
+        })
+        .expect("the queue is alive: the command is sent, and ignored");
+    let _ = streamer.step_until_settled(1_000);
+    assert_eq!(
+        reader_b.origin.describe().expect("B runs").loop_,
+        LoopSetting::Off,
+        "a command for a closed stream reached another"
+    );
+    assert_eq!(streamer.driver.open_streams(), 1);
+    drop(ghost);
+    let _ = streamer.step_once();
+    assert_eq!(
+        streamer.driver.open_streams(),
+        1,
+        "the ghost's close found nothing to close"
     );
 }

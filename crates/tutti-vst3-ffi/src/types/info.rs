@@ -28,14 +28,16 @@ impl Default for BusInfo {
 }
 
 impl BusInfo {
-    /// `MediaType` discriminant (`kAudio` or `kEvent`).
-    pub fn media_type(&self) -> i32 {
-        self.inner.mediaType
+    /// What the bus carries, or `None` for a media type the SDK does not
+    /// define.
+    pub fn media_type(&self) -> Option<crate::MediaType> {
+        crate::MediaType::from_raw(self.inner.mediaType)
     }
 
-    /// `BusDirection` (`kInput` or `kOutput`).
-    pub fn direction(&self) -> i32 {
-        self.inner.direction
+    /// Which way the bus faces, or `None` for a direction the SDK does not
+    /// define.
+    pub fn direction(&self) -> Option<crate::BusDirection> {
+        crate::BusDirection::from_raw(self.inner.direction)
     }
 
     /// Number of channels on this bus.

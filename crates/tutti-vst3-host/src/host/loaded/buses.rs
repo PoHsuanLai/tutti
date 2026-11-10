@@ -35,13 +35,13 @@ impl Vst3Loaded {
     /// Tells the plugin the downstream presentation latency (in samples) for a
     /// given bus, via `IAudioPresentationLatency` — the delay between the
     /// plugin's output and what the listener hears, so latency-aware plugins can
-    /// compensate. `dir` is the VST3 `kInput` / `kOutput` bus-direction constant.
+    /// compensate. `dir` is the bus's direction.
     /// Returns `true` if delivered; no-op if the plugin doesn't implement the
     /// interface. Main/UI thread.
     pub fn set_audio_presentation_latency(
         &mut self,
         main: &MainThread,
-        dir: i32,
+        dir: crate::BusDirection,
         bus_index: i32,
         latency_samples: u32,
     ) -> bool {

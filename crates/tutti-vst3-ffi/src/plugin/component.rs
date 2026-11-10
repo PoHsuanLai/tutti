@@ -252,17 +252,20 @@ impl Plugin {
     pub fn set_audio_presentation_latency(
         &self,
         main: &MainThread,
-        direction: i32,
+        direction: BusDirection,
         bus_index: i32,
         latency_samples: u32,
     ) -> bool {
         let _scope = self.scoped(main);
         match &self.ext.audio_presentation_latency {
             Some(p) => {
-                // SAFETY: a plain call on a live interface; the ints are passed
-                // to the plugin as given.
+                // SAFETY: a plain call on a live interface.
                 unsafe {
-                    p.setAudioPresentationLatencySamples(direction, bus_index, latency_samples);
+                    p.setAudioPresentationLatencySamples(
+                        direction.raw(),
+                        bus_index,
+                        latency_samples,
+                    );
                 }
                 true
             }

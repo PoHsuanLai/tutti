@@ -76,13 +76,12 @@ impl Vst3Loaded {
     /// Which unit a given bus channel belongs to, or `None` if the plugin
     /// doesn't implement `IUnitInfo` or maps nothing to that channel.
     ///
-    /// `media_type` and `direction` are the SDK's `MediaTypes` and
-    /// `BusDirections` values. Main/UI thread.
+    /// Main/UI thread.
     pub fn unit_by_bus(
         &self,
         main: &MainThread,
-        media_type: i32,
-        direction: i32,
+        media_type: crate::MediaType,
+        direction: crate::BusDirection,
         bus_index: i32,
         channel: i32,
     ) -> Option<i32> {

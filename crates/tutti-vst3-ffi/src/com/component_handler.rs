@@ -317,10 +317,10 @@ pub enum ParameterEditEvent {
     FinishGroupEdit,
     /// Plugin requests that a bus be activated or deactivated.
     RequestBusActivation {
-        /// VST3 `MediaTypes` value: audio or event.
-        media_type: i32,
-        /// VST3 `BusDirections` value: `kInput` or `kOutput`.
-        direction: i32,
+        /// Audio or event.
+        media_type: crate::MediaType,
+        /// Input or output.
+        direction: crate::BusDirection,
         /// Bus index within that media type and direction.
         index: i32,
         /// `true` to activate the bus, `false` to deactivate it.
@@ -551,9 +551,16 @@ impl IComponentHandlerBusActivationTrait for ComponentHandler {
         state: TBool,
     ) -> tresult {
         guard(vst3::Steinberg::kInternalError, || {
+            // A media type or direction the SDK does not define names no bus.
+            let (Some(media_type), Some(direction)) = (
+                crate::MediaType::from_raw(media_type),
+                crate::BusDirection::from_raw(dir),
+            ) else {
+                return vst3::Steinberg::kInvalidArgument;
+            };
             self.edit(ParameterEditEvent::RequestBusActivation {
                 media_type,
-                direction: dir,
+                direction,
                 index,
                 state: state != 0,
             });

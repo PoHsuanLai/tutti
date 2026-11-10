@@ -302,14 +302,13 @@ impl Plugin {
         is_ok(unsafe { ctrl.selectUnit(unit_id) })
     }
 
-    /// The unit a bus channel belongs to. The ints are the ABI's, passed as
-    /// given.
+    /// The unit a bus channel belongs to.
     #[must_use]
     pub fn unit_by_bus(
         &self,
         main: &MainThread,
-        media_type: i32,
-        direction: i32,
+        media_type: MediaType,
+        direction: BusDirection,
         bus_index: i32,
         channel: i32,
     ) -> Option<i32> {
@@ -318,7 +317,13 @@ impl Plugin {
         let mut unit_id: i32 = 0;
         // SAFETY: `unit_id` is a valid out-parameter.
         check(unsafe {
-            ctrl.getUnitByBus(media_type, direction, bus_index, channel, &mut unit_id)
+            ctrl.getUnitByBus(
+                media_type.raw(),
+                direction.raw(),
+                bus_index,
+                channel,
+                &mut unit_id,
+            )
         })
         .ok()?;
         Some(unit_id)

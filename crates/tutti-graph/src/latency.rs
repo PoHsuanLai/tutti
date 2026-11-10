@@ -90,7 +90,7 @@ use tutti_types::Samples;
 pub const MAX_NODE_LATENCY: Samples = Samples(48_000 * 10);
 
 /// What feeds one input port, as far as latency is concerned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feed<N> {
     /// Another node's output: arrives at that node's departure.
     Node(N),
@@ -486,7 +486,7 @@ mod tests {
     /// Input delays in a deterministic order (topological order is not).
     fn sorted_inputs(d: &Delays<usize>) -> Vec<(usize, u16, Feed<usize>, Samples)> {
         let mut v = d.inputs().to_vec();
-        v.sort_by_key(|&(node, port, feed, _)| (node, port, format!("{feed:?}")));
+        v.sort_by_key(|&(node, port, feed, _)| (node, port, feed));
         v
     }
 

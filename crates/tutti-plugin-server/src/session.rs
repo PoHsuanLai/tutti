@@ -107,6 +107,13 @@ pub(crate) struct Session {
     /// is not. A refused plugin renders silence (no block reaches it) and the
     /// next `SetSampleRate` retries it.
     pub(crate) rate_refused: Option<String>,
+    /// The longest block the loaded plugin was activated for (`LoadPlugin`'s
+    /// `block_size`), 0 with none loaded. A block past it, or past the slab's
+    /// per-channel room, is refused before anything is sized for it.
+    pub(crate) max_block: usize,
+    /// Blocks refused for their length (empty, or past `max_block` or the
+    /// slab's room), since the session began.
+    pub(crate) refused_blocks: u64,
     /// Partially-received `LoadStateChunk` sequence, or `None` between loads.
     ///
     /// On the session rather than threaded through `handle` because a chunk
@@ -133,6 +140,8 @@ impl Session {
             editor: EditorState::Closed,
             clock,
             rate_refused: None,
+            max_block: 0,
+            refused_blocks: 0,
             state_in: None,
             stage_in: None,
             staged: None,
@@ -308,6 +317,16 @@ impl Session {
                 Ok(Reaction::None)
             }
             M::SetSampleRate { rate } => {
+                // The wire's rate is not range-checked on decode: refuse one no
+                // clock can run at before the clock or the plugin sees it. The
+                // plugin keeps the rate it had, and the host is told why.
+                if !(rate.get().is_finite() && rate.get() > 0.0) {
+                    return Ok(BridgeMessage::SampleRateSet {
+                        rate,
+                        error: Some(format!("{} is not a sample rate", rate.get())),
+                    }
+                    .into());
+                }
                 // The clock follows the rate the host runs at, so a plugin
                 // that takes a later rate is on the right one. A refusal
                 // leaves it silent (`handle_process` publishes nothing) and
@@ -366,7 +385,15 @@ impl Session {
             }
 
             M::SetupSharedMemory { shm_name, layout } => {
-                self.shm = Some(AudioSlab::open(shm_name, layout)?);
+                let slab = AudioSlab::open(shm_name, layout)?;
+                // The scratch is sized here, off the audio thread, to the most a
+                // block may carry; `handle_process` refuses any block longer.
+                let layout = slab.layout_ref();
+                self.pipeline.reserve(
+                    layout.input_channels().max(layout.output_channels()),
+                    layout.samples_per_channel,
+                );
+                self.shm = Some(slab);
                 Ok(BridgeMessage::SharedMemoryReady.into())
             }
             M::Shutdown => Ok(Reaction::Shutdown),
@@ -488,6 +515,7 @@ impl Session {
             format: negotiated,
         };
         self.pipeline.set_format(negotiated);
+        self.max_block = block_size;
         // The plugin's own parameter output is held in fixed storage
         // reserved here, off the audio thread: a queue per parameter, each
         // within a block's chunk room (`ParameterChanges::reserved`).
@@ -506,6 +534,25 @@ impl Session {
         .into())
     }
 
+    /// Whether a block of `frames` may reach the plugin: not empty, within the
+    /// length it was activated for, and within the slab's per-channel room
+    /// (the scratch's size). The length is the peer's to choose, so it is
+    /// checked here, once, for every format: unchecked, a long one sized the
+    /// scratch to it on the audio thread, and the formats disagreed past the
+    /// activated length (CLAP refused it, VST2 split it, VST3 passed it to the
+    /// plugin). A refused block is counted and reads back as silence.
+    fn block_fits(&mut self, frames: usize) -> bool {
+        let room = self
+            .shm
+            .as_ref()
+            .map_or(0, |slab| slab.layout_ref().samples_per_channel);
+        let fits = frames > 0 && frames <= self.max_block && frames <= room;
+        if !fits {
+            self.refused_blocks += 1;
+        }
+        fits
+    }
+
     fn handle_process(&mut self, block: AudioBlock<'_>) -> Result<Reaction> {
         // Read before `block` is moved into the pipeline: every reply below
         // echoes it.
@@ -518,17 +565,18 @@ impl Session {
         // Publishing something here to "answer properly" would be actively
         // wrong: it would hand the host a slot full of whatever the previous
         // block left, marked valid.
-        let Some(plugin) = self.plugin.as_mut() else {
+        if self.plugin.is_none() {
             return Ok(BridgeMessage::Error {
                 message: "No plugin loaded".to_string(),
             }
             .into());
-        };
+        }
         // A plugin that refused the rate renders silence: no block reaches it
         // and nothing is published (the host reads an unpublished block as
         // silence). Its MIDI is dropped; the host cut any open SysEx when it
-        // re-prepared.
-        if self.rate_refused.is_some() {
+        // re-prepared. A block of a length the plugin was not activated for,
+        // or the slab cannot hold, is refused the same way (`block_fits`).
+        if self.rate_refused.is_some() || !self.block_fits(block.num_samples) {
             return Ok(BridgeMessage::AudioProcessed {
                 latency_us: 0,
                 seq,
@@ -544,6 +592,14 @@ impl Session {
         // chunk never exceeds `max_buffer_size`, the `block_size` the plugin
         // was loaded with, which nothing here changes. A peer that broke
         // either would splice.
+        // Borrowed here, after `block_fits` needed `&mut self`; the check at
+        // the top already answered a session with no plugin.
+        let Some(plugin) = self.plugin.as_mut() else {
+            return Ok(BridgeMessage::Error {
+                message: "No plugin loaded".to_string(),
+            }
+            .into());
+        };
         let Some(shm) = self.shm.as_mut() else {
             // The process path only ever ran under the full `plugin + shm` pair.
             // Reply so the host's queue stays in step; no publish, so it hears
@@ -1308,6 +1364,98 @@ mod tests {
             resets_at_load + 1,
             "one reset, between the blocks"
         );
+    }
+
+    /// **A block's length is the server's to check (doc 027 D12).** An empty
+    /// block, one past the length the plugin was activated for (`block_size`,
+    /// 512 here), and one past anything memory holds are refused before the
+    /// plugin, or the scratch, sees them. Each is answered, published nothing
+    /// (the host hears silence) and counted. A block within bounds still
+    /// renders afterwards.
+    ///
+    /// Mutation (run): `block_fits` returning `true` → the 2^40-frame block
+    /// sizes the scratch to it (an allocation failure aborts the test), and
+    /// the 513-frame one reaches the plugin's `process` → fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_block_of_a_length_the_plugin_cannot_take_never_reaches_it() {
+        use tutti_clap_test_plugin::Site;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut s, mut shm) = load_clap("block_bounds", SampleFormat::Float32);
+        let visits = |site: Site| clap_probe_sites().sites[site as usize].visits;
+        let processes_at_load = visits(Site::Process);
+
+        let mut block = |s: &mut Session, seq: u64, frames: usize| {
+            for ch in 0..2 {
+                shm.write::<f32>(seq, ch, &[0.0; 512]).unwrap();
+            }
+            shm.publish(seq);
+            let reply = s
+                .handle(
+                    &main_thread(),
+                    HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
+                        seq,
+                        num_samples: frames,
+                        ..Default::default()
+                    })),
+                )
+                .unwrap()
+                .into_reply();
+            assert!(
+                matches!(reply, BridgeMessage::AudioProcessed { .. }),
+                "every block is answered: {reply:?}"
+            );
+            shm.has_output(seq)
+        };
+
+        for (seq, frames) in [(1, 0), (2, 513), (3, 1 << 40)] {
+            assert!(!block(&mut s, seq, frames), "{frames} frames published");
+        }
+        assert_eq!(s.refused_blocks, 3);
+        assert_eq!(
+            visits(Site::Process),
+            processes_at_load,
+            "no refused block reached the plugin"
+        );
+
+        assert!(block(&mut s, 4, 512), "a block within bounds renders");
+        assert_eq!(visits(Site::Process), processes_at_load + 1);
+        assert_eq!(s.refused_blocks, 3);
+    }
+
+    /// **A rate no clock can run at is refused at the edge (doc 027 D13).** The
+    /// wire does not range-check a `SampleRate`; a NaN or zero must not reach
+    /// the plugin or the session's clock, and the host is told why.
+    ///
+    /// Mutation (run): delete the finite-and-positive check → the clock takes
+    /// NaN → fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_rate_that_is_not_a_rate_is_refused() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut s, _shm) = load_clap("bad_rate", SampleFormat::Float32);
+        let before = s.clock.sample_rate;
+        for bad in [f64::NAN, 0.0, -48_000.0, f64::INFINITY] {
+            let reply = s
+                .handle(
+                    &main_thread(),
+                    HostMessage::SetSampleRate {
+                        rate: tutti_plugin_types::SampleRate(bad),
+                    },
+                )
+                .unwrap()
+                .into_reply();
+            assert!(
+                matches!(reply, BridgeMessage::SampleRateSet { error: Some(_), .. }),
+                "{bad}: {reply:?}"
+            );
+            assert_eq!(s.clock.sample_rate.to_bits(), before.to_bits(), "{bad}");
+            assert!(
+                s.rate_refused.is_none(),
+                "{bad}: the plugin keeps rendering"
+            );
+        }
     }
 
     /// What [`clap_round_trip`] observed.
@@ -2107,19 +2255,29 @@ mod tests {
         assert_eq!(s.pipeline.failed_blocks(), 0);
     }
 
-    /// The same for CLAP, whose host refuses a block longer than the activated
-    /// maximum (`BlockTooLarge`), which also used to end the server; the next,
-    /// valid block renders.
+    /// The same for CLAP: a block the plugin fails (`CLAP_PROCESS_ERROR`) is
+    /// silence and is counted, and the next block renders.
     ///
-    /// Mutation (run): as above.
+    /// The failure used to be provoked with a block longer than the activated
+    /// maximum, which the CLAP host refused (`BlockTooLarge`). The server now
+    /// refuses such a block before any plugin sees it (doc 027 D12,
+    /// `a_block_of_a_length_the_plugin_cannot_take_never_reaches_it`), so the
+    /// plugin fails here on its own account, through the probe's status.
+    ///
+    /// Mutation (run): drop `note_failed_block` in the pipeline → the count
+    /// stays 0 → fails.
     #[test]
     #[cfg(feature = "clap")]
     fn a_clap_block_the_plugin_fails_is_silence_and_the_server_goes_on() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, mut shm) = load_clap("fails_clap", SampleFormat::Float32);
-        // The plugin was activated for blocks of up to 512 frames.
-        assert!(!run_silent_block(&mut s, &mut shm, 1, 600));
-        assert_eq!(s.pipeline.failed_blocks(), 1);
+        {
+            let _error = crate::test_utils::clap_probe_status_mode(
+                tutti_clap_test_plugin::StatusMode::Error,
+            );
+            assert!(!run_silent_block(&mut s, &mut shm, 1, 64));
+            assert_eq!(s.pipeline.failed_blocks(), 1);
+        }
         assert!(
             run_silent_block(&mut s, &mut shm, 2, 64),
             "the next block renders"

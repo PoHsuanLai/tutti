@@ -267,6 +267,32 @@ pub(crate) mod test_utils {
         ClapProbeRenderMode
     }
 
+    /// Select the reference plugin's `process` status
+    /// (`tutti_clap_test_plugin::StatusMode`) until the returned guard drops,
+    /// which restores `Continue`. `Error` makes every block fail inside the
+    /// plugin, a failure of the plugin's own and not of the block's shape.
+    #[cfg(feature = "clap")]
+    #[must_use = "the plugin goes back to `Continue` when the guard drops"]
+    pub fn clap_probe_status_mode(mode: tutti_clap_test_plugin::StatusMode) -> ClapProbeStatusMode {
+        set_clap_probe_switch(b"tutti_test_plugin_set_status_mode\0", mode as u32);
+        ClapProbeStatusMode
+    }
+
+    /// Restores the reference plugin's `Continue` status on drop; see
+    /// [`clap_probe_status_mode`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeStatusMode;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeStatusMode {
+        fn drop(&mut self) {
+            set_clap_probe_switch(
+                b"tutti_test_plugin_set_status_mode\0",
+                tutti_clap_test_plugin::StatusMode::Continue as u32,
+            );
+        }
+    }
+
     /// Restores the reference plugin's `Inert` render mode on drop; see
     /// [`clap_probe_render_mode`].
     #[cfg(feature = "clap")]

@@ -37,11 +37,11 @@ pub use atomic_float::{AtomicF32, AtomicF64};
 pub use value::{
     Adsr, Amplitude, ArcDegrees, At, Azimuth, Beat, BeatDuration, Bpm, BpmOutOfRange, Cents,
     CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Frame, Hz,
-    InvalidMaxBlock, Latency, MaxBlock, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan,
-    Param, Param64, ParamAddr, ParamCell, ParamKey, ParamRaw, Phase, PhaseIncrement, PitchClass,
-    PlayReading, PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition, SampleRate,
-    Samples, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit,
-    UnitAddr, UnitParam, UnitParamOutOfRange, Velocity,
+    InvalidMaxBlock, Latency, MaxBlock, Mix, Moment, NotOnMidiScale, Note, NoteNumberOutOfRange,
+    Pan, Param, Param64, ParamAddr, ParamCell, ParamKey, ParamRaw, Phase, PhaseIncrement,
+    PitchClass, PlayReading, PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition,
+    SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail,
+    Unit, UnitAddr, UnitParam, UnitParamOutOfRange, Velocity,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,
@@ -84,9 +84,9 @@ pub use meter::{
 /// types `NotOnMidiScale` / `UnitParamOutOfRange` / `BpmOutOfRange`.
 pub mod prelude {
     pub use crate::value::{
-        Amplitude, Beat, BeatDuration, Bpm, Cents, Db, Depth, Frame, Hz, Note, Param, ParamAddr,
-        Phase, PhaseIncrement, PitchClass, Q, SamplePosition, SampleRate, Samples, Seconds,
-        Semitones, Tail, UnitAddr, UnitParam, Velocity,
+        Amplitude, Beat, BeatDuration, Bpm, Cents, Db, Depth, Frame, Hz, Moment, Note, Param,
+        ParamAddr, Phase, PhaseIncrement, PitchClass, Q, SamplePosition, SampleRate, Samples,
+        Seconds, Semitones, Tail, UnitAddr, UnitParam, Velocity,
     };
 
     pub use crate::channels::ChannelLayout;

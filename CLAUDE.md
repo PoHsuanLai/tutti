@@ -84,6 +84,14 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   rate is not the graph's with `InletError::RateMismatch`. An inlet does not
   resample and two clocks drift; what fills or empties the ring is counted,
   never blocked on. Gain is a node downstream, not the inlet's.
+- Copying events into the graph is the **event inlet**: `EventInletNode`
+  (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
+  `push(At, Ump)` or `push_at(Moment, Ump)`, held on `Env::due` until its frame
+  (late lands at offset 0 and is counted), `Graph::open_event_inlet` /
+  `add_event_inlet` (`tutti-session`). No rate to refuse: a `Moment` carries
+  its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
+  over any other event; four counts (`lost`, `evicted`, `refused`, `late`);
+  its fork is silent, unlike the audio inlet's.
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or

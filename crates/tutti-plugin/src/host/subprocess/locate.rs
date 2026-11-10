@@ -1,12 +1,12 @@
-//! Locate the `plugin-server` binary.
+//! Locate the `plugin-server` and `plugin-probe` binaries.
 //!
 //! Production search order: `TUTTI_PLUGIN_SERVER` env → next to current exe →
 //! parent dir (for `examples/` subdir) → `PATH`.
 //!
-//! That search is wrapped in a [`ServerLocator`] value rather than performed by
+//! That search is wrapped in a `ServerLocator` value rather than performed by
 //! a bare function, because "which binary do we spawn?" is a decision two call
 //! sites make ([`launch`](fn@super::launch) and
-//! [`probe_metadata`](super::probe_metadata)) and a test needs to answer
+//! [`probe_metadata_with`](super::probe_metadata_with)) and a test needs to answer
 //! differently. Reading the environment inside the search made the answer
 //! **process-global**: the only way to point a test at a stand-in server was
 //! `std::env::set_var`, which every other thread in the binary sees. Under a
@@ -74,48 +74,84 @@ impl ServerLocator {
                     Err(BridgeError::ServerNotFound)
                 }
             }
-            Self::Search => search_for_plugin_server(),
+            Self::Search => {
+                search("TUTTI_PLUGIN_SERVER", "plugin-server").ok_or(BridgeError::ServerNotFound)
+            }
         }
     }
 }
 
-/// The environment-and-`PATH` search, unchanged from when it was the only
-/// behaviour.
-fn search_for_plugin_server() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("TUTTI_PLUGIN_SERVER") {
+/// Which `plugin-probe` binary to spawn: the same choice `ServerLocator` makes
+/// for the server, with its own binary and environment variable
+/// (`TUTTI_PLUGIN_PROBE`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub enum ProbeLocator {
+    /// Search the environment, the executable's directory, and `PATH`.
+    #[default]
+    Search,
+    /// Spawn exactly this binary, searching nowhere; a missing file is an
+    /// error, as for `ServerLocator::Explicit`.
+    Explicit(PathBuf),
+}
+
+impl ProbeLocator {
+    /// Spawn `path` and nothing else.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self::Explicit(path.into())
+    }
+
+    /// Resolve to a binary, or explain why none was found.
+    pub(super) fn resolve(&self) -> Result<PathBuf> {
+        match self {
+            Self::Explicit(path) if path.is_file() => Ok(path.clone()),
+            Self::Explicit(_) => Err(BridgeError::ProbeNotFound),
+            Self::Search => {
+                search("TUTTI_PLUGIN_PROBE", "plugin-probe").ok_or(BridgeError::ProbeNotFound)
+            }
+        }
+    }
+}
+
+/// The environment-and-`PATH` search for the binary `name`, which `env_var` may
+/// name outright.
+fn search(env_var: &str, name: &str) -> Option<PathBuf> {
+    let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    if let Ok(p) = std::env::var(env_var) {
         let path = PathBuf::from(&p);
         if path.exists() {
-            return Ok(path);
+            return Some(path);
         }
-        tracing::warn!("TUTTI_PLUGIN_SERVER={p} does not exist, falling back to search");
+        tracing::warn!("{env_var}={p} does not exist, falling back to search");
     }
 
     if let Ok(exe) = std::env::current_exe()
         && let Some(exe_dir) = exe.parent()
     {
-        if let Some(found) = beside(exe_dir) {
-            return Ok(found);
+        if let Some(found) = beside(exe_dir, &name) {
+            return Some(found);
         }
-        if let Some(found) = exe_dir.parent().and_then(beside) {
-            return Ok(found);
+        if let Some(found) = exe_dir.parent().and_then(|dir| beside(dir, &name)) {
+            return Some(found);
         }
     }
 
     if let Ok(path_var) = std::env::var("PATH") {
         let sep = if cfg!(windows) { ';' } else { ':' };
         for dir in path_var.split(sep) {
-            if let Some(found) = beside(Path::new(dir)) {
-                return Ok(found);
+            if let Some(found) = beside(Path::new(dir), &name) {
+                return Some(found);
             }
         }
     }
 
-    Err(BridgeError::ServerNotFound)
+    None
 }
 
-/// `dir/plugin-server`, if it is there.
-fn beside(dir: &Path) -> Option<PathBuf> {
-    let candidate = dir.join("plugin-server");
+/// `dir/name`, if it is there.
+fn beside(dir: &Path, name: &str) -> Option<PathBuf> {
+    let candidate = dir.join(name);
     candidate.exists().then_some(candidate)
 }
 
@@ -159,5 +195,22 @@ mod tests {
     fn the_default_locator_is_the_search() {
         assert_eq!(ServerLocator::default(), ServerLocator::Search);
         assert_eq!(ServerLocator::from_env(), ServerLocator::Search);
+    }
+
+    /// An explicit probe path is spawned verbatim, and a missing one is
+    /// `ProbeNotFound` rather than a fall back to the search: the probe's own
+    /// counterpart of the server locator's pair above.
+    ///
+    /// Mutation (run): `Explicit` resolving through `search` fails both halves.
+    #[test]
+    fn an_explicit_probe_locator_is_that_path_or_not_found() {
+        let this_exe = std::env::current_exe().expect("test binary has a path");
+        assert_eq!(ProbeLocator::at(&this_exe).resolve().unwrap(), this_exe);
+        let missing = std::env::temp_dir().join("tutti-no-such-plugin-probe-XYZZY");
+        assert!(matches!(
+            ProbeLocator::at(&missing).resolve(),
+            Err(BridgeError::ProbeNotFound)
+        ));
+        assert_eq!(ProbeLocator::default(), ProbeLocator::Search);
     }
 }

@@ -151,7 +151,7 @@ use tutti_vst2_test_plugin::{
 ///
 /// Mutation that catches it: making `parameter_properties` return
 /// `Some(decoded)` unconditionally (dropping the `supported != 1` check in
-/// `vst-tutti`'s `parameter_properties`) turns every `None` here into a `Some`
+/// `tutti-vst2-ffi`'s `parameter_properties`) turns every `None` here into a `Some`
 /// full of zeros — exactly the bug of reading an unwritten buffer.
 #[test]
 fn real_world_plugins_decline_these_opcodes() {
@@ -348,7 +348,7 @@ fn midi_program_metadata_round_trips() {
 /// a refusal as success — and, symmetrically, reads a genuine "program 0" as
 /// failure.
 ///
-/// Mutation that catches it: changing the `current < 0` check in `vst-tutti`'s
+/// Mutation that catches it: changing the `current < 0` check in `tutti-vst2-ffi`'s
 /// `current_midi_program` to `current == 0` (the "0 means unsupported" reflex)
 /// turns the probe's valid program 0 into `None`.
 #[test]

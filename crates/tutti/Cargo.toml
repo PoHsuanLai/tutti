@@ -39,6 +39,7 @@ tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-sf2 = { path = "../tutti-sf2", optional = true }
 tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
 tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
+tutti-measure = { path = "../tutti-measure", optional = true }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
@@ -159,8 +160,8 @@ modulation = ["dep:tutti-modulation", "tutti-session?/modulation"]
 convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 
 # Axes bevy-tutti does not have: bevy-tutti does not depend on
-# `tutti-dsp` at all.
-dsp = ["dep:tutti-dsp"]
+# `tutti-dsp` or `tutti-measure` at all. `tutti::dsp` and `tutti::measure` are both.
+dsp = ["dep:tutti-dsp", "dep:tutti-measure"]
 
 # --- plugin hosting ---------------------------------------------------------
 #

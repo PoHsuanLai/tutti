@@ -144,18 +144,17 @@ impl<T: Vst3Sample> Staged<T> {
         // PluginInfo snapshot. `activate_buses` re-resolves the same way from
         // the live component afterward, since some plugins only finalise their
         // arrangement once active.
-        let in_scratch = BusBuffers::new(
-            T::WIDTH,
-            &loaded.info.input_bus_channels,
-            num_input_channels,
-            block_size,
-        );
-        let out_scratch = BusBuffers::new(
-            T::WIDTH,
-            &loaded.info.output_bus_channels,
-            num_output_channels,
-            block_size,
-        );
+        let scratch = |counts: &[usize], layout| {
+            BusBuffers::new(T::WIDTH, counts, layout, block_size)
+                .map_err(|e| Vst3Error::NotSupported(e.to_string()))
+        };
+        let (in_scratch, out_scratch) =
+            match scratch(&loaded.info.input_bus_channels, num_input_channels).and_then(|i| {
+                scratch(&loaded.info.output_bus_channels, num_output_channels).map(|o| (i, o))
+            }) {
+                Ok(both) => both,
+                Err(error) => return Err((loaded, error)),
+            };
 
         // One queue per parameter on every param-change list, built here off
         // the audio thread: the host sends changes only, so one block can
@@ -357,8 +356,14 @@ impl<T: Vst3Sample> Staged<T> {
         // to a channel the plugin never declared.
         let num_in = bus_layout(in_counts.first().copied().unwrap_or(0));
         let num_out = bus_layout(out_counts.first().copied().unwrap_or(0));
-        let in_scratch = BusBuffers::new(T::WIDTH, in_counts, num_in, block_size);
-        let out_scratch = BusBuffers::new(T::WIDTH, out_counts, num_out, block_size);
+        let (Ok(in_scratch), Ok(out_scratch)) = (
+            BusBuffers::new(T::WIDTH, in_counts, num_in, block_size),
+            BusBuffers::new(T::WIDTH, out_counts, num_out, block_size),
+        ) else {
+            // A count the ffi layer already bounds to a layout: keep the scratch
+            // the last layout had.
+            return;
+        };
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;
@@ -434,8 +439,10 @@ impl<T: Vst3Sample> Staged<T> {
         let num_in = bus_layout(in_counts.first().copied().unwrap_or(0));
         let num_out = bus_layout(out_counts.first().copied().unwrap_or(0));
         let block_size = self.audio.config.block_size;
-        let in_scratch = BusBuffers::new(T::WIDTH, &in_counts, num_in, block_size);
-        let out_scratch = BusBuffers::new(T::WIDTH, &out_counts, num_out, block_size);
+        let in_scratch = BusBuffers::new(T::WIDTH, &in_counts, num_in, block_size)
+            .map_err(|e| Vst3Error::NotSupported(e.to_string()))?;
+        let out_scratch = BusBuffers::new(T::WIDTH, &out_counts, num_out, block_size)
+            .map_err(|e| Vst3Error::NotSupported(e.to_string()))?;
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;
@@ -601,5 +608,50 @@ mod default_arrangement_tests {
                 "width {width} should have no canonical arrangement"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scratch_resolution_tests {
+    use super::*;
+
+    /// **A layout no scratch can be built for leaves the old scratch alone.**
+    /// The second bus is wider than a layout holds (the ffi layer never reports
+    /// one), so `BusBuffers::new` refuses it; `resolve_scratch_from_counts` used
+    /// to panic there and now keeps the layout the instance already has.
+    ///
+    /// Mutation (run, fails at the channel assertions): update
+    /// `num_output_channels` in the refusal branch before returning.
+    #[test]
+    fn a_bus_too_wide_for_a_layout_keeps_the_old_scratch() {
+        let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
+        let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
+        let loaded = Vst3Loaded::load(&main, &library, crate::LoadOptions::new())
+            .expect("the shared plugin loads");
+        let mut staged = Staged::<f32>::stage(&main, loaded, 48_000.0, 64, ProcessMode::Realtime)
+            .unwrap_or_else(|(_, error)| panic!("the plugin stages: {error}"));
+        let (buses_in, buses_out) = (
+            staged.audio.input.buses.num_buses(),
+            staged.audio.output.buses.num_buses(),
+        );
+        let (channels_in, channels_out) = (
+            staged.audio.config.num_input_channels,
+            staged.audio.config.num_output_channels,
+        );
+
+        staged.resolve_scratch_from_counts(&[2, 70_000], &[1]);
+
+        assert_eq!(staged.audio.input.buses.num_buses(), buses_in);
+        assert_eq!(staged.audio.output.buses.num_buses(), buses_out);
+        assert_eq!(staged.audio.config.num_input_channels, channels_in);
+        assert_eq!(staged.audio.config.num_output_channels, channels_out);
+
+        // A layout that does fit is taken (so the test is not vacuous).
+        staged.resolve_scratch_from_counts(&[2, 1], &[1]);
+        assert_eq!(staged.audio.input.buses.num_buses(), 2);
+        assert_eq!(
+            staged.audio.config.num_output_channels,
+            ChannelLayout::from(1u16)
+        );
     }
 }

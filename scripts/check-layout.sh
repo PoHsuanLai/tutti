@@ -20,6 +20,7 @@
 # - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
 #   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
 #   `tutti-graph` on those three;
+# - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
 # - `tutti-midi-device` depends on no workspace crate;
 # - `tutti-codec` depends on `tutti-types` alone;
@@ -158,18 +159,18 @@ def rel(p):
 # layer. Derived from the real edges; see CLAUDE.md.
 LAYERS = [
     # no workspace dependency at all
-    ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-ump"],
+    ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump"],
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
     ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-midi-types", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
-    ["tutti-transport", "tutti-plugin-types"],
+    ["tutti-transport", "tutti-plugin-types", "tutti-measure"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
-     "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-host",
+     "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-ffi",
      "tutti-plugin-db"],
     ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-spatial", "tutti-sampler",
      "tutti-polysynth", "tutti-soundfont", "tutti-midi-hardware",
-     "tutti-clap-host", "tutti-vst3-host"],
-    ["tutti-plugin"],
+     "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host"],
+    ["tutti-plugin", "tutti-plugin-probe"],
     ["tutti-plugin-server", "tutti-session"],
     ["tutti", "bevy-tutti"],
 ]
@@ -378,9 +379,22 @@ if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
 if "tutti-plugin-db" in pkgs:
     only("tutti-plugin-db", ["tutti-plugin-types"])
+# The probe binary (design 021 section 2.5) links the format hosts and the
+# descriptor types, and no hosting: not the facade, not the server, and the
+# `-ipc` and `-host` crates it will never gain. Nothing depends on it (a binary).
+if "tutti-plugin-probe" in pkgs:
+    only("tutti-plugin-probe", ["tutti-plugin-types", "tutti-clap-host", "tutti-vst3-host",
+                                "tutti-vst2-host", "tutti-au-host"])
+    if "tutti-plugin" in deps_of("tutti-plugin-probe"):
+        fail("tutti-plugin-probe depends on tutti-plugin, even as a dev-dependency")
+    for name in pkgs:
+        if "tutti-plugin-probe" in deps_of(name):
+            fail(f"{name} depends on tutti-plugin-probe; nothing does, it is a binary")
 for n in ("tutti-dsp", "tutti-modulation"):
     if n in pkgs:
         only(n, ["tutti-types"])
+if "tutti-measure" in pkgs:
+    only("tutti-measure", ["tutti-types", "tutti-dsp"])
 for n in ("tutti-graph", "tutti-midi-types"):
     if n in pkgs:
         only(n, ["tutti-types", "tutti-rt", "tutti-ump"])

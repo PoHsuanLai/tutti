@@ -43,12 +43,6 @@ pub struct StagedState {
 /// Variant order is wire-significant; see the module docs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostMessage {
-    /// Lightweight metadata-only probe — reads factory/descriptor info
-    /// without activating the plugin (avoids license dialogs).
-    ProbePlugin {
-        /// Filesystem path to the plugin bundle or shared library.
-        path: PathBuf,
-    },
     /// Instantiate and activate the plugin, ready to process audio. A state
     /// staged before ([`StageStateChunk`](Self::StageStateChunk)) and declared
     /// in `state` is restored between the two; the server says
@@ -242,14 +236,11 @@ pub enum HostMessage {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
-    /// The plugin was probed or loaded successfully.
+    /// The plugin was loaded successfully.
     PluginLoaded {
         /// Catalog identity (id, name, vendor, version, native class, editor).
-        /// The probe path uses only this half; `loaded` is defaulted for a
-        /// metadata-only probe that never activated the plugin.
         descriptor: Box<PluginDescriptor>,
         /// Engine-wiring data from instantiation (bus widths, latency, f64).
-        /// Empty/default for a `ProbePlugin` reply.
         #[serde(default)]
         loaded: LoadedPlugin,
         /// The sample format actually agreed on, which may differ from the

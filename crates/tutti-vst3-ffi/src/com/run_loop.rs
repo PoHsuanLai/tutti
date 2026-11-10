@@ -41,7 +41,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tutti_plugin_types::MainThread;
 
-use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, ITimerHandler, TimerInterval};
+use vst3::ComRef;
+use vst3::Steinberg::Linux::{
+    FileDescriptor, IEventHandler, IEventHandlerTrait, ITimerHandler, ITimerHandlerTrait,
+    TimerInterval,
+};
 use vst3::Steinberg::tresult;
 use vst3::Steinberg::{kResultFalse, kResultOk};
 
@@ -244,7 +248,10 @@ impl RunLoop {
                     // until it unregisters it (`register_timer`'s contract); it was
                     // still registered a moment ago, on this (the UI) thread, and
                     // no lock is held, so the callback may re-enter the loop.
-                    unsafe { ((*(*handler).vtbl).onTimer)(handler) };
+                    if let Some(timer) = unsafe { ComRef::from_raw(handler) } {
+                        // SAFETY: as above; a plain call on the live handler.
+                        unsafe { timer.onTimer() };
+                    }
                     #[cfg(feature = "conformance")]
                     {
                         self.state().timers_fired += 1;
@@ -254,7 +261,10 @@ impl RunLoop {
                     let _scope = owner.map(|o| self.scope(o));
                     // SAFETY: as for the timer: registered, alive until
                     // unregistered, UI thread, lock released.
-                    unsafe { ((*(*handler).vtbl).onFDIsSet)(handler, fd) };
+                    if let Some(ready) = unsafe { ComRef::from_raw(handler) } {
+                        // SAFETY: as above; a plain call on the live handler.
+                        unsafe { ready.onFDIsSet(fd) };
+                    }
                     #[cfg(feature = "conformance")]
                     {
                         self.state().fds_dispatched += 1;
@@ -405,6 +415,63 @@ impl RunLoop {
         kResultOk
     }
 }
+
+/// `IRunLoopTrait` for a host object that holds `run_loop: Arc<RunLoop>` and
+/// `owner: Option<Owner>`: every method delegates to the one [`RunLoop`], under
+/// the panic guard. One body for the host application and the plug frame.
+macro_rules! delegate_run_loop {
+    ($ty:ty) => {
+        impl ::vst3::Steinberg::Linux::IRunLoopTrait for $ty {
+            unsafe fn registerEventHandler(
+                &self,
+                handler: *mut ::vst3::Steinberg::Linux::IEventHandler,
+                fd: ::vst3::Steinberg::Linux::FileDescriptor,
+            ) -> ::vst3::Steinberg::tresult {
+                $crate::guard::guard(::vst3::Steinberg::kInternalError, || {
+                    // SAFETY: the plugin keeps `handler` alive until it unregisters
+                    // it and calls from the UI thread (the `IRunLoop` contract).
+                    unsafe {
+                        self.run_loop
+                            .register_event_handler(handler, fd, self.owner)
+                    }
+                })
+            }
+
+            unsafe fn unregisterEventHandler(
+                &self,
+                handler: *mut ::vst3::Steinberg::Linux::IEventHandler,
+            ) -> ::vst3::Steinberg::tresult {
+                $crate::guard::guard(::vst3::Steinberg::kInternalError, || {
+                    self.run_loop.unregister_event_handler(handler)
+                })
+            }
+
+            unsafe fn registerTimer(
+                &self,
+                handler: *mut ::vst3::Steinberg::Linux::ITimerHandler,
+                milliseconds: ::vst3::Steinberg::Linux::TimerInterval,
+            ) -> ::vst3::Steinberg::tresult {
+                $crate::guard::guard(::vst3::Steinberg::kInternalError, || {
+                    // SAFETY: as for `registerEventHandler`.
+                    unsafe {
+                        self.run_loop
+                            .register_timer(handler, milliseconds, self.owner)
+                    }
+                })
+            }
+
+            unsafe fn unregisterTimer(
+                &self,
+                handler: *mut ::vst3::Steinberg::Linux::ITimerHandler,
+            ) -> ::vst3::Steinberg::tresult {
+                $crate::guard::guard(::vst3::Steinberg::kInternalError, || {
+                    self.run_loop.unregister_timer(handler)
+                })
+            }
+        }
+    };
+}
+pub(crate) use delegate_run_loop;
 
 #[cfg(test)]
 mod tests {

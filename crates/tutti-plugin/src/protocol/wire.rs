@@ -191,19 +191,19 @@ mod tests {
             param_id: ParamId::new(0x0102_0304),
             value: Normalized::of(0.25),
         };
-        // variant 4, id, 0.25f32
+        // variant 3, id, 0.25f32
         assert_eq!(
             bincode::serialize(&set).unwrap(),
-            [4, 0, 0, 0, 4, 3, 2, 1, 0, 0, 128, 62]
+            [3, 0, 0, 0, 4, 3, 2, 1, 0, 0, 128, 62]
         );
 
         let rate = HostMessage::SetSampleRate {
             rate: SampleRate(48_000.0),
         };
-        // variant 9, 48000.0f64
+        // variant 8, 48000.0f64
         assert_eq!(
             bincode::serialize(&rate).unwrap(),
-            [9, 0, 0, 0, 0, 0, 0, 0, 0, 112, 231, 64]
+            [8, 0, 0, 0, 0, 0, 0, 0, 0, 112, 231, 64]
         );
 
         let set_reply = BridgeMessage::SampleRateSet {
@@ -254,7 +254,7 @@ mod tests {
     fn a_decoded_normalized_is_clamped() {
         use crate::protocol::{HostMessage, Normalized, ParamId};
         for (wire, want) in [(7.5f32, 1.0), (-3.0, 0.0), (f32::NAN, 0.0)] {
-            let mut bytes = vec![4, 0, 0, 0, 1, 0, 0, 0];
+            let mut bytes = vec![3, 0, 0, 0, 1, 0, 0, 0];
             bytes.extend(wire.to_le_bytes());
             match bincode::deserialize::<HostMessage>(&bytes).unwrap() {
                 HostMessage::SetParameter { param_id, value } => {

@@ -2,7 +2,7 @@
 //!
 //! A single [`Plugin`] enum hides which format-host crate is behind each
 //! loaded plugin. All cfg-gating and file-extension dispatch lives here
-//! (`probe`, `load`); the server code above sees only a uniform
+//! (`load`); the server code above sees only a uniform
 //! `&mut dyn PluginInstance`.
 //!
 //! [`Plugin::poll_async_events`] folds the format-specific host-callback fan-out
@@ -104,47 +104,6 @@ pub(crate) enum AsyncEvent {
 }
 
 impl Plugin {
-    /// Read a plugin's catalog metadata without keeping it loaded. Dispatches
-    /// on the file extension.
-    ///
-    /// VST3, CLAP and AU have real probe paths. **VST2 does not** — the
-    /// underlying crate offers none, so this falls through to a full `load` and
-    /// drops the instance. Probing a directory of VST2s is correspondingly
-    /// expensive, and runs the plugin's own init code.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BridgeError::LoadFailed` with `LoadStage::Scanning` if the path
-    /// does not exist, or `LoadStage::Opening` if the extension names no format
-    /// this build supports.
-    #[allow(unreachable_code, unused_variables)] // With no format features, every match arm is cfg'd out.
-    pub(crate) fn probe(main: &MainThread, path: &Path) -> Result<PluginDescriptor> {
-        if !path.exists() {
-            return Err(BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Scanning,
-                reason: "Plugin not found".to_string(),
-            });
-        }
-
-        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        match extension.to_lowercase().as_str() {
-            #[cfg(feature = "vst3")]
-            "vst3" => Vst3Instance::probe(path),
-            #[cfg(feature = "clap")]
-            "clap" => ClapInstance::probe(path),
-            #[cfg(all(feature = "au", target_os = "macos"))]
-            "component" => AuInstance::probe(path),
-            #[cfg(feature = "vst2")]
-            "vst" | "dll" | "so" => Vst2Instance::probe(main, path),
-            _ => Err(BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("Unsupported format: .{extension}"),
-            }),
-        }
-    }
-
     /// Fully load and instantiate a plugin. Returns the wrapped plugin, its
     /// catalog descriptor, its runtime load data, and the negotiated sample
     /// format.
@@ -439,18 +398,6 @@ mod tests {
         }
         eprintln!("no loadable AU found (tried {FALLBACK}); skipping");
         None
-    }
-
-    #[test]
-    fn probe_missing_path_errors() {
-        let result = Plugin::probe(&main_thread(), Path::new("/nonexistent/plugin.vst3"));
-        match result {
-            Err(BridgeError::LoadFailed { stage, reason, .. }) => {
-                assert_eq!(stage, LoadStage::Scanning);
-                assert!(reason.contains("not found"));
-            }
-            other => panic!("expected LoadFailed/Scanning, got {other:?}"),
-        }
     }
 
     #[test]

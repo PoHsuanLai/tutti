@@ -9,14 +9,13 @@ use vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 use vst3::Steinberg::{
     FIDString, IPlugFrame, IPlugView, IPlugViewContentScaleSupport,
     IPlugViewContentScaleSupportTrait, IPlugViewTrait, ViewRect, kInvalidArgument, kResultFalse,
-    kResultOk, kResultTrue,
 };
 use vst3::{ComPtr, ComWrapper};
 
 use tutti_plugin_types::{ContentScale, EditorSize, MainThread, WindowHandle};
 
 use crate::com::HostPlugFrame;
-use crate::error::{Vst3Error, check};
+use crate::error::{Vst3Error, check, is_ok};
 
 /// Why an editor could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +157,7 @@ pub fn send_key_down(
     modifiers: i16,
 ) -> bool {
     // SAFETY: a plain call on a live view.
-    unsafe { view.onKeyDown(key, virtual_key, modifiers) == kResultTrue }
+    is_ok(unsafe { view.onKeyDown(key, virtual_key, modifiers) })
 }
 
 /// Offer a key release to the open editor. See
@@ -173,7 +172,7 @@ pub fn send_key_up(
     modifiers: i16,
 ) -> bool {
     // SAFETY: a plain call on a live view.
-    unsafe { view.onKeyUp(key, virtual_key, modifiers) == kResultTrue }
+    is_ok(unsafe { view.onKeyUp(key, virtual_key, modifiers) })
 }
 
 /// Offer a mouse-wheel movement to the open editor, `distance` in wheel
@@ -185,7 +184,7 @@ pub fn send_key_up(
 #[must_use]
 pub fn send_wheel(_main: &MainThread, view: &ComPtr<IPlugView>, distance: f32) -> bool {
     // SAFETY: a plain call on a live view.
-    unsafe { view.onWheel(distance) == kResultTrue }
+    is_ok(unsafe { view.onWheel(distance) })
 }
 
 /// Tells a view whether it now has keyboard focus.
@@ -281,7 +280,7 @@ impl Editor {
             };
             // SAFETY: `rect` is a valid out-parameter.
             let result = unsafe { view.getSize(&mut rect) };
-            (result == kResultOk).then(|| size_of_rect(&rect)).flatten()
+            is_ok(result).then(|| size_of_rect(&rect)).flatten()
         };
         Ok((Self { view, plug_frame }, size))
     }
@@ -294,7 +293,7 @@ impl Editor {
     /// Whether the view says it can be resized (`kResultOk`).
     pub(crate) fn resizable(&self) -> bool {
         // SAFETY: a plain call on a live view.
-        unsafe { self.view.canResize() == kResultOk }
+        is_ok(unsafe { self.view.canResize() })
     }
 
     /// What the view makes of `requested`: the size it would snap to, if it
@@ -302,7 +301,7 @@ impl Editor {
     pub(crate) fn constrain(&self, requested: EditorSize) -> (EditorSize, bool) {
         let mut rect = rect_of_size(requested);
         // SAFETY: `rect` is a valid in/out parameter.
-        let snapped = unsafe { self.view.checkSizeConstraint(&mut rect) } == kResultTrue;
+        let snapped = is_ok(unsafe { self.view.checkSizeConstraint(&mut rect) });
         // A rect that is not a size is no answer: keep the request, unsnapped.
         match size_of_rect(&rect) {
             Some(size) => (size, snapped),
@@ -315,7 +314,7 @@ impl Editor {
         let requested_rect = rect_of_size(requested);
         let mut constrained = requested_rect;
         // SAFETY: `constrained` is a valid in/out parameter.
-        let snapped = unsafe { self.view.checkSizeConstraint(&mut constrained) } == kResultTrue;
+        let snapped = is_ok(unsafe { self.view.checkSizeConstraint(&mut constrained) });
         let mut rect = if snapped { constrained } else { requested_rect };
         // SAFETY: `rect` is a valid in-parameter for the call.
         check(unsafe { self.view.onSize(&mut rect) })?;
@@ -409,7 +408,7 @@ mod attach_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use vst3::Class;
-    use vst3::Steinberg::{TBool, char16, int16, tresult};
+    use vst3::Steinberg::{TBool, char16, int16, kResultOk, kResultTrue, tresult};
 
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     enum Call {

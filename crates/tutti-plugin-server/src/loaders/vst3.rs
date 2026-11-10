@@ -9,10 +9,10 @@ use std::path::Path;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin::server::{
-    AudioBufferMut, AutomationMode, ContentScale, EditorPresence, EditorSize, LoadedPlugin,
-    Normalized, ParamId, ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost,
-    PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, Preset,
-    PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, AutomationMode, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId,
+    ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
+    PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext,
+    ProcessOutput, RenderMode, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
@@ -60,22 +60,6 @@ fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
 }
 
 impl Vst3Instance {
-    /// Lightweight probe: load library and read factory metadata without activation.
-    pub fn probe(path: &Path) -> Result<PluginDescriptor> {
-        let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let info = Vst3Loaded::probe(&resolved).map_err(|e| BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage: LoadStage::Scanning,
-            reason: e.to_string(),
-        })?;
-        // A probe does not instantiate, and an editor is a property of an
-        // instance, so this genuinely does not know. The load path asks.
-        Ok(tutti_vst3_host::descriptor_of(
-            &info,
-            EditorPresence::Unknown,
-        ))
-    }
-
     /// Load and activate a VST3 plugin.
     ///
     /// If `prefer_f64` is `true` and the plugin advertises 64-bit support, the

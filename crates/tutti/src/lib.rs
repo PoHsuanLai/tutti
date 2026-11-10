@@ -103,11 +103,16 @@ pub use tutti_soundfont as soundfont;
 #[cfg(feature = "spatial")]
 pub use tutti_spatial as spatial;
 
-/// Pure DSP over slices (`tutti-dsp`): the real FFT, waveform, onsets, pitch,
-/// loudness.
+/// Pure DSP over slices (`tutti-dsp`): the real FFT, filters, dynamics,
+/// convolution, delay, reverb, windows and the STFT geometry.
 /// Feature `dsp`.
 #[cfg(feature = "dsp")]
 pub use tutti_dsp as dsp;
+
+/// Measurement over slices (`tutti-measure`): waveform blocks, onsets, pitch,
+/// loudness, spectra, tempo, key. Feature `dsp`, which turns on both crates.
+#[cfg(feature = "dsp")]
+pub use tutti_measure as measure;
 
 /// Modulation (`tutti-modulation`): sources, routes and the compiler that turns
 /// them into one control program per param. Feature

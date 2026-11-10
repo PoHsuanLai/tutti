@@ -34,7 +34,7 @@
 //! truncated at [`PROGRESS_DESCRIPTION_CAPACITY`] bytes), so no callback
 //! allocates, and dropping a queued notification frees nothing.
 
-use crate::guard::guard;
+use crate::guard::{Out, guard};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use tutti_plugin_types::{Normalized, Request, RescanScope};
@@ -56,20 +56,42 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
+/// What an `IProgress` operation is, by the SDK's `ProgressType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressKind {
+    /// The plugin is restoring state asynchronously.
+    AsyncStateRestoration,
+    /// A background task the UI reports.
+    UiBackgroundTask,
+    /// A `ProgressType` the SDK does not define, as the plugin sent it.
+    Other(u32),
+}
+
+impl ProgressKind {
+    fn from_raw(raw: u32) -> Self {
+        use vst3::Steinberg::Vst::IProgress_::ProgressType_;
+        match raw {
+            ProgressType_::AsyncStateRestoration => Self::AsyncStateRestoration,
+            ProgressType_::UIBackgroundTask => Self::UiBackgroundTask,
+            other => Self::Other(other),
+        }
+    }
+}
+
 /// Long-running progress notifications emitted by plugins (sample loading,
 /// offline rendering, etc.). Delivered via
 /// the host's notification poll.
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
     /// A new progress operation has begun. `id` uniquely identifies this
-    /// operation across its lifetime; `progress_type` is the raw VST3
-    /// `ProgressType` value; `description` is a human-readable label.
+    /// operation across its lifetime; `progress_type` is what kind of operation
+    /// it is; `description` is a human-readable label.
     Started {
         /// Identifies this operation across its lifetime; matches the `id` of
         /// the later `Updated` and `Finished` events.
         id: u64,
-        /// The raw VST3 `ProgressType` value.
-        progress_type: u32,
+        /// What kind of operation this is.
+        progress_type: ProgressKind,
         /// Human-readable label supplied by the plugin, truncated to
         /// [`PROGRESS_DESCRIPTION_CAPACITY`] bytes.
         description: ProgressDescription,
@@ -317,10 +339,10 @@ pub enum ParameterEditEvent {
     FinishGroupEdit,
     /// Plugin requests that a bus be activated or deactivated.
     RequestBusActivation {
-        /// VST3 `MediaTypes` value: audio or event.
-        media_type: i32,
-        /// VST3 `BusDirections` value: `kInput` or `kOutput`.
-        direction: i32,
+        /// Audio or event.
+        media_type: crate::MediaType,
+        /// Input or output.
+        direction: crate::BusDirection,
         /// Bus index within that media type and direction.
         index: i32,
         /// `true` to activate the bus, `false` to deactivate it.
@@ -522,17 +544,9 @@ impl IComponentHandler2Trait for ComponentHandler {
 }
 
 impl IComponentHandler3Trait for ComponentHandler {
-    /// Returns `null` to decline building a host context menu.
-    ///
-    /// This is intentional and spec-legal: `IComponentHandler3` lets a plugin
-    /// ask the host for a menu it can populate with host-contributed items (and
-    /// into which the plugin then injects its own), but returning `null` is the
-    /// documented way to say "the host offers no menu here" — the plugin falls
-    /// back to its own built-in menu. Declining is deliberate because nothing in
-    /// the host or frontend contributes plugin context-menu items or consumes an
-    /// `IContextMenu`; building a real host menu object would be dead surface. If
-    /// a frontend consumer is ever added, this becomes a real `IContextMenu`
-    /// implementation gated on that consumer.
+    /// Declines to build a host context menu: `null` is the spec's "the host
+    /// offers no menu here", and the plugin falls back to its own. Nothing in
+    /// the host contributes menu items or consumes an `IContextMenu`.
     unsafe fn createContextMenu(
         &self,
         _plug_view: *mut IPlugView,
@@ -551,9 +565,16 @@ impl IComponentHandlerBusActivationTrait for ComponentHandler {
         state: TBool,
     ) -> tresult {
         guard(vst3::Steinberg::kInternalError, || {
+            // A media type or direction the SDK does not define names no bus.
+            let (Some(media_type), Some(direction)) = (
+                crate::MediaType::from_raw(media_type),
+                crate::BusDirection::from_raw(dir),
+            ) else {
+                return vst3::Steinberg::kInvalidArgument;
+            };
             self.edit(ParameterEditEvent::RequestBusActivation {
                 media_type,
-                direction: dir,
+                direction,
                 index,
                 state: state != 0,
             });
@@ -569,25 +590,19 @@ impl IProgressTrait for ComponentHandler {
         optional_description: *const u16,
         out_id: *mut ID,
     ) -> tresult {
-        // Defined output even if the body panics.
-        if !out_id.is_null() {
-            // SAFETY: a COM out-parameter the plugin passes valid for this call.
-            unsafe { *out_id = 0 };
-        }
+        // SAFETY: a COM out-parameter: null or valid for this call.
+        let out_id = unsafe { Out::new(out_id) };
+        out_id.set(0);
         guard(vst3::Steinberg::kInternalError, || {
             let id = self.next_progress_id.fetch_add(1, Ordering::SeqCst);
             // SAFETY: the interface passes null or a NUL-terminated string.
             let desc = unsafe { ProgressDescription::from_utf16_nul(optional_description) };
             self.push(PluginNotification::Progress(ProgressEvent::Started {
                 id,
-                progress_type: r#type,
+                progress_type: ProgressKind::from_raw(r#type),
                 description: desc,
             }));
-            if !out_id.is_null() {
-                // SAFETY: `out_id` is non-null (just checked) and a valid
-                // out-pointer for the call, as at the top of this method.
-                unsafe { *out_id = id };
-            }
+            out_id.set(id);
             kResultOk
         })
     }

@@ -135,7 +135,7 @@ for id in plugin.parameter_ids(&main) {
         "{} ({}) default {}",
         info.title_string(),
         info.units_string(),
-        info.default_normalized_value,
+        info.default_normalized_value(),
     );
 }
 

@@ -9,9 +9,9 @@
 use std::path::Path;
 use tutti_clap_host::{ClapLoaded, ClapProcessor, LoadOptions};
 use tutti_plugin::server::{
-    ContentScale, EditorPresence, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
-    PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, PresetId, WindowHandle,
+    ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio,
+    PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginPresets,
+    PluginResult, PluginState, PresetId, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
@@ -122,23 +122,6 @@ fn resolve(path: &Path) -> Result<(std::path::PathBuf, bool)> {
 }
 
 impl ClapInstance {
-    /// Lightweight probe: read CLAP descriptor without calling init() or activate().
-    pub fn probe(path: &Path) -> Result<PluginDescriptor> {
-        let (resolved, differs) = resolve(path)?;
-        let library_path = differs.then_some(resolved.as_path());
-        let info = ClapLoaded::probe(path, library_path).map_err(|e| BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage: LoadStage::Scanning,
-            reason: e.to_string(),
-        })?;
-
-        // A probe does not instantiate; the load path below asks.
-        Ok(tutti_clap_host::descriptor_of(
-            &info,
-            EditorPresence::Unknown,
-        ))
-    }
-
     /// Load and activate a CLAP plugin.
     ///
     /// If `prefer_f64` is `true` and the plugin advertises 64-bit support on
@@ -725,7 +708,7 @@ mod tests {
     use tutti_ump::{MidiChannel, MidiGroup};
 
     use tutti_clap_host::ClapLoaded as HostLoaded;
-    use tutti_plugin_types::{Features, PluginTail, Request};
+    use tutti_plugin_types::{EditorPresence, Features, PluginTail, Request};
 
     /// What a pass told the host that is not the layout, as these tests read it.
     #[derive(Debug, Default, PartialEq)]

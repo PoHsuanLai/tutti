@@ -1,0 +1,62 @@
+# tutti-vst2-ffi — the host half of the Tutti fork of the `vst` crate (vst-rs 0.3.0).
+#
+# The fork adds host-side `audioMaster` query callbacks upstream vst-rs
+# swallows in its `host_dispatch` `_ =>` arm (GetSampleRate, SizeWindow,
+# IOChanged, GetInputLatency, GetOutputLatency, GetCurrentProcessLevel,
+# GetAutomationState): the opcodes already exist in `host::OpCode`, so the
+# fork only adds the matching `Host`-trait methods + dispatch arms.
+[package]
+name = "tutti-vst2-ffi"
+version = "0.3.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+resolver = "2"
+description = "VST 2.4 host FFI: the ABI types, the plugin loader and the audioMaster callback (all VST2 unsafe)"
+readme = "README.md"
+keywords = ["vst", "vst2", "plugin"]
+license = "MIT"
+homepage = "https://github.com/PoHsuanLai/Tutti"
+repository = "https://github.com/PoHsuanLai/Tutti"
+authors = [
+    "Marko Mijalkovic <marko.mijalkovic97@gmail.com>",
+    "Boscop",
+    "Alex Zywicki <alexander.zywicki@gmail.com>",
+    "doomy <notdoomy@protonmail.com>",
+    "Ms2ger",
+    "Rob Saunders",
+    "David Lu",
+    "Aske Simon Christensen",
+    "kykc",
+    "Jordan Earls",
+    "xnor104",
+    "Nathaniel Theis",
+    "Colin Wallace",
+    "Henrik Nordvik",
+    "Charles Saracco",
+    "Frederik Halkjær",
+]
+
+[features]
+# `PluginEvents::for_test`: a view of a crafted event list, for the host crate's tests. Off in
+# a production build.
+test-support = []
+
+[dependencies]
+bitflags = "1"
+libc = "0.2"
+libloading = "0.7"
+log = "0.4"
+num-traits = "0.2"
+num_enum = "0.5.2"
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+tutti-midi-types = { path = "../tutti-midi-types" }
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+
+[dev-dependencies]
+tutti-ump = { path = "../tutti-ump", default-features = false }
+# Test-only global allocator: the grown-pins refusal must not allocate.
+assert_no_alloc = { version = "1", default-features = false }
+
+[lints]
+workspace = true

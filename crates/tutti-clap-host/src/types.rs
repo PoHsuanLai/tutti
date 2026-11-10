@@ -441,22 +441,7 @@ pub struct AudioPortInfo {
     pub in_place_pair_id: u32,
 }
 
-bitflags! {
-    /// Audio port capability flags from `clap_audio_port_info`.
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub struct AudioPortFlags: u32 {
-        /// This is the plugin's main port for its direction. At most one
-        /// input and one output port may carry it.
-        const MAIN                      = 1 << 0;
-        /// The port can process 64-bit buffers as well as 32-bit.
-        const SUPPORTS_64BIT            = 1 << 1;
-        /// The port would rather be given 64-bit buffers.
-        const PREFERS_64BIT             = 1 << 2;
-        /// Every port on the plugin must be given the same sample width in a
-        /// given `process` call — 32 and 64 bit cannot be mixed.
-        const REQUIRES_COMMON_SAMPLE_SIZE = 1 << 3;
-    }
-}
+pub use tutti_clap_ffi::AudioPortFlags;
 
 /// Description of a note (MIDI) port exposed by the plugin.
 #[derive(Debug, Clone)]
@@ -581,33 +566,7 @@ pub struct NoteName {
     pub key: i16,
 }
 
-/// Which use-case a state save/load is for, from `CLAP_EXT_STATE_CONTEXT`.
-///
-/// The plugin may serialize differently per context — a preset typically
-/// excludes the project-specific bindings a project save keeps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StateContext {
-    /// Saving or loading a user preset.
-    ForPreset,
-    /// Saving or loading as part of the enclosing project.
-    ForProject,
-    /// Duplicating an existing instance.
-    ForDuplicate,
-}
-
-impl From<StateContext> for clap_sys::ext::state_context::clap_plugin_state_context_type {
-    fn from(ctx: StateContext) -> Self {
-        match ctx {
-            StateContext::ForPreset => clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_PRESET,
-            StateContext::ForProject => {
-                clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_PROJECT
-            }
-            StateContext::ForDuplicate => {
-                clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_DUPLICATE
-            }
-        }
-    }
-}
+pub use tutti_clap_ffi::StateContext;
 
 /// 32-bit ARGB color used by track info and parameter indication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,21 +678,7 @@ pub struct TrackInfo {
     pub is_master: bool,
 }
 
-/// State of automation recording for a given parameter, used by
-/// `CLAP_EXT_PARAM_INDICATION` to drive GUI feedback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParamAutomationState {
-    /// No automation exists for the parameter.
-    None,
-    /// Automation exists but the transport is not applying it.
-    Present,
-    /// Automation is being played back onto the parameter.
-    Playing,
-    /// Automation is being written from the parameter.
-    Recording,
-    /// Automation exists but a live edit is currently overriding it.
-    Overriding,
-}
+pub use tutti_clap_ffi::AutomationState as ParamAutomationState;
 
 /// A page of eight "remote controls" suggested by the plugin, for host
 /// surfaces with physical knobs/faders.
@@ -809,6 +754,7 @@ pub enum ContextMenuTarget {
 /// `EndSubmenu` rather than by nesting, matching CLAP's builder callback
 /// order. The type is the FFI crate's, which builds it from the plugin's
 /// builder calls.
+#[cfg(feature = "clap-extras")]
 pub use tutti_clap_ffi::MenuItem as ContextMenuItem;
 
 /// A request to reconfigure a single audio port's channel count/type.

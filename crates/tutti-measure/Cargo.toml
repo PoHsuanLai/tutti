@@ -1,0 +1,63 @@
+[package]
+name = "tutti-measure"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Audio measurement for Tutti over plain sample slices: waveform blocks, onsets, pitch, EBU R128 loudness, stereo correlation, spectra, tempo, key and chords, silence regions and the STFT"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-measure"
+readme = "README.md"
+keywords = ["audio", "analysis", "pitch", "loudness", "onset"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …),
+# `ChannelLayout`, `Interleaved` and the downmix helpers.
+tutti-types = { path = "../tutti-types", default-features = false }
+
+# `RealFft`/`FftScratch` (the CPU-independent real FFT every kernel here runs
+# on), `Complex`, `StftGeometry`, `Grid` and the `Error` they share with the
+# sampler's vocoder.
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
+
+# EBU R128 loudness metering (`loudness`). An online meter, which is why the
+# streaming Config/State/step shape fits it without buffering the signal.
+ebur128 = "0.1"
+
+# The `Error` enum's Display/Error impls.
+thiserror.workspace = true
+
+[features]
+# No `bevy` feature, and no default features. This crate is a library of
+# measurements over `&[f32]`; a host that wants these results in an ECS wires
+# them up on its own side.
+default = []
+
+[dev-dependencies]
+# The README's "Reading from a running graph" doctest shows the engine-side
+# seam (a graph tap's `TapReader`); nothing in the library reaches tutti-graph.
+tutti-graph = { path = "../tutti-graph" }
+# Reproducible noise for the correlation tests, which otherwise hand-roll a
+# generator. Seeded, so an uncorrelated-input assertion is not flaky.
+#
+# No `assert_no_alloc` here, unlike most sibling crates: everything this crate
+# does is cold-path batch analysis that legitimately allocates its output.
+rand = "0.8"
+# `benches/fft_analyses`.
+criterion.workspace = true
+# An independent YIN, as a second opinion on ours, for `tests/oracle_pitch.rs`.
+# Unmaintained (last release 2022) — see that file's header for why it is still
+# a usable oracle and what is deliberately not compared against it.
+pitch-detection = "0.3"
+
+[[bench]]
+name = "fft_analyses"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

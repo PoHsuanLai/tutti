@@ -443,7 +443,7 @@ fn reconfigure_while_resumed_issues_one_balanced_pair() {
 /// the end-to-end consequence of an unbalanced suspend, which leaves a
 /// powered-down plugin that the host happily keeps feeding blocks.
 ///
-/// The `effStartProcess` / `effStopProcess` dispatch in `vst-tutti/src/host.rs`
+/// The `effStartProcess` / `effStopProcess` dispatch in `tutti-vst2-ffi/src/host.rs`
 /// is *not* covered: `ProcessCapture` has no counter for those opcodes.
 #[test]
 fn plugin_still_renders_after_repeated_reconfigure() {

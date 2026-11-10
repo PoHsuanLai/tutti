@@ -398,11 +398,10 @@ mod tests {
     /// `FLOOR_POINTS + 1` each and `POOLED_QUEUES` blocks of `chunk_room +
     /// 1`), the output list's is the same, and the output queues hold
     /// exactly that budget; each under a third of a full room per
-    /// parameter. (Reworded with the one layout: the output side was the
-    /// plain budget, under a quarter.)
+    /// parameter.
     ///
     /// Mutation (run): `reserve_input_events` back to `params × (room + 1)`
-    /// → the input room is the old product → fails; `reserve_output_params`'
+    /// → the input room is the product of parameters and room → fails; `reserve_output_params`'
     /// room back to `queues * points` → fails.
     #[test]
     fn activation_reserves_the_pool_budget_not_params_times_room() {
@@ -448,8 +447,7 @@ mod tests {
     /// skipped block's carried value prepended to every queue, as the bridge
     /// does (`prepend_carried`, into the slot the set kept, so nothing
     /// grows): every point is handed on, none counted, each parameter's
-    /// points in order. (Reworded with `PointBuf`: the prepend was a `Vec`
-    /// insert that grew a queue the pool could not give room to.)
+    /// points in order.
     ///
     /// Mutation (run): `reserve_input_events` sizing the room without the
     /// carried point of each queue (`point_budget(params, room) - params`)

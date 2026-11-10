@@ -25,7 +25,6 @@ use vst3::Steinberg::{
         IXmlRepresentationControllerTrait, PhysicalUIMap, PhysicalUIMapList, ProcessSetup,
         RepresentationInfo, SpeakerArrangement, String128,
     },
-    kResultOk,
 };
 use vst3::{ComPtr, ComWrapper};
 
@@ -36,7 +35,7 @@ use tutti_types::ChannelLayout;
 
 use crate::audio::{Arrangement, AudioSide, Setup, Shared};
 use crate::com::{BStream, ComponentHandler, HostApplication, HostPlugFrame};
-use crate::error::{Vst3Error, check, check_bool};
+use crate::error::{Vst3Error, check, check_bool, is_ok};
 use crate::module::{CreateError, Module};
 use crate::sdk::{sdk_enum_i32, utf16_to_string, zeroed};
 use crate::types::{
@@ -109,6 +108,14 @@ pub enum MediaType {
 }
 
 impl MediaType {
+    /// The media type an SDK `MediaTypes` value names, or `None` for any other.
+    #[must_use]
+    pub fn from_raw(raw: i32) -> Option<Self> {
+        [Self::Audio, Self::Event]
+            .into_iter()
+            .find(|kind| kind.raw() == raw)
+    }
+
     pub(crate) fn raw(self) -> i32 {
         sdk_enum_i32(match self {
             Self::Audio => vst3::Steinberg::Vst::MediaTypes_::kAudio,
@@ -127,6 +134,14 @@ pub enum BusDirection {
 }
 
 impl BusDirection {
+    /// The direction an SDK `BusDirections` value names, or `None` for any other.
+    #[must_use]
+    pub fn from_raw(raw: i32) -> Option<Self> {
+        [Self::Input, Self::Output]
+            .into_iter()
+            .find(|direction| direction.raw() == raw)
+    }
+
     pub(crate) fn raw(self) -> i32 {
         sdk_enum_i32(match self {
             Self::Input => vst3::Steinberg::Vst::BusDirections_::kInput,

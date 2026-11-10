@@ -102,6 +102,8 @@ tutti-sf2 = { path = "../tutti-sf2" }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
 # `ArcLend` for the tests that publish into a graph.
 tutti-rt = { path = "../tutti-rt" }
+# The tempo map a sampler test publishes through the transport.
+tutti-tempo = { path = "../tutti-tempo" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The in-memory tone a sampler voice test plays (`Wave`).
@@ -249,6 +251,11 @@ required-features = ["export", "sampler"]
 # A voice of either tier arrives where the compiler puts it (doc 025 stage 5).
 [[test]]
 name = "tier_alignment"
+required-features = ["sampler"]
+
+# A sampler node the graph adds reads the session's tempo map (doc 020, stage 5).
+[[test]]
+name = "sampler_tempo"
 required-features = ["sampler"]
 
 # A hosted plugin exported through a fork of its own server: fails without

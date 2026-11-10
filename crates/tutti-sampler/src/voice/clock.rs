@@ -66,6 +66,7 @@
 use std::ops::Range;
 
 use tutti_graph::{Env, Transport};
+use tutti_tempo::TempoMap;
 use tutti_types::{Beat, BeatDuration, Bpm, FrameClock, LoopRange, SampleRate, Samples, Seconds};
 
 /// How long a placed memory voice crossfades across a loop wrap: the tail it
@@ -288,9 +289,23 @@ impl Clock {
         self.next = None;
     }
 
-    /// The block `env` describes, and where it leaves the playhead for the
-    /// next. Call once per block, before reading it.
+    /// [`observe_with`](Self::observe_with) with no tempo map, for the tests.
+    #[cfg(test)]
     pub(crate) fn observe<'e>(&mut self, env: &'e Env) -> BlockClock<'e> {
+        self.observe_with(env, None)
+    }
+
+    /// The block `env` describes, and where it leaves the playhead for the
+    /// next. Call once per block, before reading it. `tempo` is the project's
+    /// tempo map in force for the block, which the readers ask how long the
+    /// playhead took between two beats ([`BlockClock::seconds`]). The map does
+    /// not decide whether the playhead jumped: that is the transport's, as it
+    /// always was.
+    pub(crate) fn observe_with<'e>(
+        &mut self,
+        env: &'e Env,
+        tempo: Option<&'e TempoMap>,
+    ) -> BlockClock<'e> {
         let jump = self
             .next
             .is_some_and(|n| breaks(n, &env.transport, env.sample_rate));
@@ -304,6 +319,7 @@ impl Clock {
             .and_then(|n| n.wrap);
         let mut block = BlockClock {
             env,
+            tempo,
             generation: self.generation + u64::from(jump),
             jump,
             jumps: false,
@@ -363,10 +379,12 @@ fn continuation(run: &Run, t: &Transport) -> Next {
     }
 }
 
-/// One block's transport, as [`Clock::observe`] hands it to the readers.
+/// One block's transport, as [`Clock::observe_with`] hands it to the readers.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BlockClock<'e> {
     env: &'e Env,
+    /// The project's tempo map for the block, when the node reads one.
+    tempo: Option<&'e TempoMap>,
     /// The generation at the block's first frame.
     generation: u64,
     /// Whether the block's first frame is a jump.
@@ -393,6 +411,23 @@ impl<'e> BlockClock<'e> {
     #[inline]
     pub(crate) fn fades(&self) -> bool {
         self.fades
+    }
+
+    /// How long the playhead took, in seconds, to go from beat `from` to
+    /// beat `to` (nothing when `to` is not after `from`): at `tempo`, the
+    /// beats over it, which is exact where the tempo does not change. Over a
+    /// map that does, the map's own seconds between the two beats, so what
+    /// a voice has played since its clip's start does not depend on the
+    /// tempo of the run it is read in. A constant map (and no map) takes the
+    /// first form, bit for bit as before maps.
+    #[inline]
+    pub(crate) fn seconds(&self, from: Beat, to: Beat, tempo: Bpm) -> f64 {
+        match self.tempo {
+            Some(map) if map.constant_tempo().is_none() => {
+                (map.seconds_at(to) - map.seconds_at(from)).get().max(0.0)
+            }
+            _ => (to - from).get().max(0.0) * 60.0 / tempo.get(),
+        }
     }
 
     /// The block's runs, in order, covering it.

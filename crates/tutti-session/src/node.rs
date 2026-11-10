@@ -42,6 +42,21 @@ pub trait SessionNode: IntoNode + Send + 'static {
         let _ = controls;
         None
     }
+
+    /// The node reading the session's tempo map through `tempo` (a reader
+    /// the graph hands each node it takes in [`Graph::add`](crate::Graph::add)
+    /// and [`Graph::crossfade`](crate::Graph::crossfade); the node clones it).
+    /// The identity, the default, for a node that reads no map: a sampler
+    /// node overrides it, so a placed voice stays where the map puts it
+    /// through a step or a ramp (doc 020, stage 5).
+    #[must_use]
+    fn bind_tempo(self, tempo: &tutti_transport::TempoReader) -> Self
+    where
+        Self: Sized,
+    {
+        let _ = tempo;
+        self
+    }
 }
 
 /// A node's control-side reclaim, kept by the graph
@@ -197,6 +212,10 @@ param_session_node!(tutti_polysynth::PolySynth);
 /// gain as set; the placements it replaced freed by its reclaimer.
 #[cfg(feature = "sampler")]
 impl SessionNode for tutti_sampler::VoiceNode {
+    fn bind_tempo(self, tempo: &tutti_transport::TempoReader) -> Self {
+        self.with_tempo(tempo.clone())
+    }
+
     fn params(controls: &tutti_sampler::VoiceNodeHandle) -> Option<ParamSet> {
         Some(controls.params().clone())
     }
@@ -209,11 +228,19 @@ impl SessionNode for tutti_sampler::VoiceNode {
 
 /// A pool as a graph node; its controls are its `VoicePoolHandle`.
 #[cfg(feature = "sampler")]
-impl SessionNode for tutti_sampler::VoicePool {}
+impl SessionNode for tutti_sampler::VoicePool {
+    fn bind_tempo(self, tempo: &tutti_transport::TempoReader) -> Self {
+        self.with_tempo(tempo.clone())
+    }
+}
 
 /// A bare clip reader as a graph node, its gain addressed by its set.
 #[cfg(feature = "sampler")]
 impl SessionNode for tutti_sampler::MemorySource {
+    fn bind_tempo(self, tempo: &tutti_transport::TempoReader) -> Self {
+        self.with_tempo(tempo.clone())
+    }
+
     fn params(controls: &ParamSet) -> Option<ParamSet> {
         Some(controls.clone())
     }
@@ -222,7 +249,11 @@ impl SessionNode for tutti_sampler::MemorySource {
 /// A streamed voice as a graph node; its controls are its
 /// `DiskVoiceControls`.
 #[cfg(feature = "sampler")]
-impl SessionNode for tutti_sampler::DiskVoice {}
+impl SessionNode for tutti_sampler::DiskVoice {
+    fn bind_tempo(self, tempo: &tutti_transport::TempoReader) -> Self {
+        self.with_tempo(tempo.clone())
+    }
+}
 
 #[cfg(test)]
 mod tests {

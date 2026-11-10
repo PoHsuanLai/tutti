@@ -520,7 +520,7 @@ impl SendEventBuffer {
     }
 
     /// Stores events in the buffer, replacing the buffer's current content.
-    /// Use this in [`process_events`](crate::Plugin::process_events) to store received input events, then read them in [`process`](crate::Plugin::process) using [`events`](SendEventBuffer::events).
+    /// Use this in [`process_events`](crate::plugin::Plugin::process_events) to store received input events, then read them in [`process`](crate::plugin::Plugin::process) using [`events`](SendEventBuffer::events).
     #[inline(always)]
     pub fn store_events<T: IntoIterator<Item = U>, U: WriteIntoPlaceholder>(&mut self, events: T) {
         #[allow(clippy::suspicious_map)]

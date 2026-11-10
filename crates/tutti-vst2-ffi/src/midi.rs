@@ -28,7 +28,7 @@ use crate::host::RenderHandle;
 use tutti_midi_types::UmpMessageType;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, SysExAssembler, SysExRef, SysExStep};
 
-/// Per-block MIDI plumbing for one [`crate::Vst2Processor`]: the host→plugin
+/// Per-block MIDI plumbing for one `Vst2Processor` (in `tutti-vst2-host`): the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned
 /// to callers. All RT-reused so steady-state processing never allocates.
 pub struct MidiIo {
@@ -122,7 +122,7 @@ pub fn to_midi(event: &crate::api::MidiEvent) -> Option<MidiEvent> {
 /// `convert.rs`), so no precision is lost beyond MIDI-1's inherent width.
 /// Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
 /// program change (everything with a 3-byte MIDI-1 form). SysEx is not a
-/// `MidiEvent` in VST2: [`MidiSendBuffer::stage`] reassembles it into a
+/// `MidiEvent` in VST2: [`MidiSendBuffer::stage_piece`] reassembles it into a
 /// `SysExEvent`.
 /// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
 /// controllers, per-note management (Detach/Reset), and any resolution beyond

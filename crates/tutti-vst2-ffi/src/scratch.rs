@@ -17,8 +17,8 @@ use tutti_plugin_types::ChannelLayout;
 
 use crate::host::RenderHandle;
 
-/// Pre-allocated audio buffers that [`Vst2Processor::process_f32`] and
-/// [`Vst2Processor::process_f64`] render through.
+/// Pre-allocated audio buffers that `Vst2Processor::process_f32` and
+/// `Vst2Processor::process_f64` render through.
 ///
 /// VST2 wants contiguous pointer tables, which a caller's `&[&[f32]]` cannot
 /// supply, so each block is copied into these buffers and back out. One per
@@ -26,8 +26,7 @@ use crate::host::RenderHandle;
 /// of the [`Prepare`](tutti_plugin_types::Prepare), and reused for every block:
 /// after construction nothing here allocates, so it is safe on the audio thread.
 ///
-/// [`Vst2Processor::process_f32`]: crate::Vst2Processor::process_f32
-/// [`Vst2Processor::process_f64`]: crate::Vst2Processor::process_f64
+
 ///
 /// Carrying both costs `block_size * (in + out) * 12` bytes over one width —
 /// at a 512-sample block and stereo I/O, 24 KiB.

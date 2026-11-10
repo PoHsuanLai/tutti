@@ -1533,12 +1533,15 @@ fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin::handles::Plu
         eprintln!("{path} not installed — skipping");
         return None;
     }
-    let built = tutti_plugin::catalog::Plugin::open(Some(&main_thread()), path, SAMPLE_RATE).map(
-        |plugin| {
-            let handle = plugin.handle().clone();
-            (GraphUnit::from_plugin(plugin), handle)
-        },
-    );
+    let built = tutti_plugin::catalog::Plugin::open(
+        Some(&main_thread()),
+        path,
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .map(|plugin| {
+        let handle = plugin.handle().clone();
+        (GraphUnit::from_plugin(plugin), handle)
+    });
     Some(built.unwrap_or_else(|e| panic!("{path} is installed but failed to load: {e}")))
 }
 

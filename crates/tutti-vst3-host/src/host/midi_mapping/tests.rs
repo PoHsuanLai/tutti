@@ -500,7 +500,7 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(value),
+                value,
             ),
         )
     };
@@ -666,7 +666,7 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(value),
+                value,
             ),
         )
     };
@@ -719,7 +719,7 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(value),
+                value,
             ),
         )
     };

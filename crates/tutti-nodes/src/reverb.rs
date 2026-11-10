@@ -1,21 +1,21 @@
 //! The reverb: any [`Design`] as a graph node (design 022 section 5).
 //!
-//! [`ReverbNode<D>`] is the one node over every reverb algorithm. It is generic
-//! rather than boxed: a [`Design`] has a `Controls` type and a [`Kernel`] of its
+//! [`DesignNode<D>`] is the one node over every reverb algorithm. It is generic
+//! rather than boxed: a [`Design`] has a `Controls` type and a [`Realization`] of its
 //! own, and erasing them would bring back a settings bag. The node holds the
-//! design, its kernel and the algorithm's [`Param`] cells ([`ReverbParams`]),
+//! design, its realization and the algorithm's [`Param`] cells ([`ControlParams`]),
 //! and per block it reads the cells once, designs a [`Network`] when the
-//! controls changed, moves the kernel to it ([`Kernel::retarget`]), renders, and
+//! controls changed, moves the realization to it ([`Realization::retarget`]), renders, and
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
 //!
 //! The node is wet only unless its **mix** ([`UnitParam::Wet`], default 1) is
-//! lowered: then it blends the dry input (aligned to the kernel's latency, never
+//! lowered: then it blends the dry input (aligned to the realization's latency, never
 //! to its pre-delay) against the wet one, for use as an insert.
 //! [`FreeverbNode`] is the General MIDI send of the SoundFont player.
 
 use tutti_dsp::{
-    Ceiling, Channels, Design, Effort, FreeverbControls, FreeverbDesign, Kernel, MAX_CHANNELS,
-    Network, Ramp, Ring, Setup,
+    Ceiling, Channels, Design, Effort, FreeverbControls, FreeverbDesign, MAX_CHANNELS, Network,
+    Ramp, Realization, Ring, Setup,
 };
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, ParamSetBuilder, Prepare, Shape,
@@ -46,7 +46,7 @@ const UNBOUNDED: u64 = u64::MAX;
 /// algorithm exposes, their addresses ([`addrs`](Self::addrs)), and the
 /// function from a block's port values to the algorithm's
 /// [`Controls`](Self::Controls).
-pub trait ReverbParams: Clone + Send + 'static {
+pub trait ControlParams: Clone + Send + 'static {
     /// The algorithm's controls: the design's own `Controls`.
     type Controls: Copy + PartialEq + Send;
 
@@ -81,11 +81,11 @@ pub trait ReverbParams: Clone + Send + 'static {
     fn detach(&mut self);
 }
 
-/// A [`Design`] a [`ReverbNode`] can run: the design plus the cells of its
+/// A [`Design`] a [`DesignNode`] can run: the design plus the cells of its
 /// controls.
-pub trait ReverbDesign: Design + 'static {
+pub trait NodeDesign: Design + 'static {
     /// The cells.
-    type Params: ReverbParams<Controls = Self::Controls>;
+    type Params: ControlParams<Controls = Self::Controls>;
 
     /// Cells that hold `initial`. Control side; allocates.
     fn params(&self, initial: Self::Controls) -> Self::Params;
@@ -99,7 +99,7 @@ pub struct FreeverbParams {
     good: [LastGood; 2],
 }
 
-impl ReverbParams for FreeverbParams {
+impl ControlParams for FreeverbParams {
     type Controls = FreeverbControls;
 
     fn addrs(&self) -> &'static [UnitAddr] {
@@ -161,7 +161,7 @@ impl ReverbParams for FreeverbParams {
     }
 }
 
-impl ReverbDesign for FreeverbDesign {
+impl NodeDesign for FreeverbDesign {
     type Params = FreeverbParams;
 
     fn params(&self, initial: FreeverbControls) -> FreeverbParams {
@@ -178,7 +178,7 @@ impl ReverbDesign for FreeverbDesign {
 }
 
 /// The Freeverb as a graph node: mono in, stereo out.
-pub type FreeverbNode = ReverbNode<FreeverbDesign>;
+pub type FreeverbNode = DesignNode<FreeverbDesign>;
 
 /// Whether a node's controls can change.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -191,15 +191,15 @@ enum Mode<C> {
     Fixed(C),
 }
 
-/// A reverb of any [`ReverbDesign`] as a graph node, [`Design::channels`] wide.
+/// A reverb of any [`NodeDesign`] as a graph node, [`Design::channels`] wide.
 ///
 /// # Controls
 ///
-/// Per block the node reads its cells once ([`ReverbParams::read`]), and when
+/// Per block the node reads its cells once ([`ControlParams::read`]), and when
 /// the controls differ from the last block's it designs the [`Network`] **in
 /// place** into one it owns ([`Design::design_into`]: a network is about 56 KB,
-/// too large to build on an audio thread) and calls [`Kernel::retarget`], which
-/// moves the kernel toward it. An unmodulated, unchanged reverb designs once.
+/// too large to build on an audio thread) and calls [`Realization::retarget`], which
+/// moves the realization toward it. An unmodulated, unchanged reverb designs once.
 /// The audio thread is the only place that sees a modulated value (a lane
 /// writes the port, never the cell), so it is where the design runs, and it
 /// allocates nothing.
@@ -209,23 +209,23 @@ enum Mode<C> {
 /// A graph node ([`IntoNode`], through [`tutti_graph::param_parts`]): inserted,
 /// its controls are a [`ParamSet`] over the mix ([`UnitParam::Wet`]) and the
 /// algorithm's cells, and a fork starts from the values set with a
-/// [`Kernel::fresh`] kernel, silent (the graph's preroll warms it).
+/// [`Realization::fresh`] realization, silent (the graph's preroll warms it).
 ///
-/// **Latency** is the kernel's, never a pre-delay. **The tail** is a ceiling
+/// **Latency** is the realization's, never a pre-delay. **The tail** is a ceiling
 /// ([`Shape::tail`], the design's worst case at the longest decay) that the
 /// node narrows each block with [`Io::report_tail`] to what its current
 /// network rings, held at the longer figure until a shorter decay has been
 /// heard out. Once its input has been silent for the reported tail the node
-/// cuts the room off, resets the kernel and parks ([`Status::Idle`]): the state
+/// cuts the room off, resets the realization and parks ([`Status::Idle`]): the state
 /// is below -60 dB, and an idle node is a fresh one when it wakes.
-pub struct ReverbNode<D: ReverbDesign> {
+pub struct DesignNode<D: NodeDesign> {
     design: D,
-    kernel: D::Kernel,
+    realization: D::Realization,
     params: D::Params,
     mode: Mode<D::Controls>,
     mix: Param<Mix>,
     good_mix: LastGood,
-    /// The network the kernel was last retargeted to: designed in place.
+    /// The network the realization was last retargeted to: designed in place.
     network: Box<Network>,
     /// The longest-ringing network of a modulated block, for the tail only.
     longest: Box<Network>,
@@ -243,7 +243,7 @@ pub struct ReverbNode<D: ReverbDesign> {
     /// Frames since the last non-silent input frame, up to the end of the
     /// previous block (`UNBOUNDED` when there never was one).
     since: u64,
-    /// Whether the kernel holds exactly silence (reset, nothing since).
+    /// Whether the realization holds exactly silence (reset, nothing since).
     silent: bool,
     dry: Vec<DryAlign>,
     dry_buf: Vec<Vec<f32>>,
@@ -251,9 +251,9 @@ pub struct ReverbNode<D: ReverbDesign> {
     last_mix: Option<f32>,
 }
 
-impl<D: ReverbDesign> std::fmt::Debug for ReverbNode<D> {
+impl<D: NodeDesign> std::fmt::Debug for DesignNode<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReverbNode")
+        f.debug_struct("DesignNode")
             .field("rate", &self.rate)
             .field("channels", &self.channels)
             .field("ceiling", &self.ceiling)
@@ -263,7 +263,7 @@ impl<D: ReverbDesign> std::fmt::Debug for ReverbNode<D> {
     }
 }
 
-impl<D: ReverbDesign> ReverbNode<D> {
+impl<D: NodeDesign> DesignNode<D> {
     /// A reverb of `design`, its cells at `controls`, at the default rate (the
     /// graph's `prepare` re-tunes it). The graph may modulate the cells, so
     /// its tail ceiling is the design's worst case. Allocates: build it before
@@ -284,11 +284,11 @@ impl<D: ReverbDesign> ReverbNode<D> {
     fn build(design: D, controls: D::Controls, mode: Mode<D::Controls>) -> Self {
         let rate = SampleRate::DEFAULT;
         let channels = design.channels();
-        let kernel = design.kernel();
+        let realization = design.realization();
         let params = design.params(controls);
         let mut node = Self {
             design,
-            kernel,
+            realization,
             params,
             mode,
             mix: Param::new(Mix::WET),
@@ -318,14 +318,14 @@ impl<D: ReverbDesign> ReverbNode<D> {
         self.mix.handle()
     }
 
-    /// Prepares the kernel for `rate` and sizes everything that depends on it.
+    /// Prepares the realization for `rate` and sizes everything that depends on it.
     fn retune(&mut self, rate: SampleRate, max_block: MaxBlock) {
         let ceiling = Ceiling::new(rate, Ceiling::MAX_DECAY, TAIL_FLOOR)
             .or_else(|| Ceiling::new(SampleRate::DEFAULT, Ceiling::MAX_DECAY, TAIL_FLOOR))
             .expect("the default rate is positive and finite");
         let bounds = self.design.bounds(&ceiling);
         self.rate = ceiling.rate();
-        self.kernel.prepare(
+        self.realization.prepare(
             &bounds,
             &Setup {
                 rate: self.rate,
@@ -344,7 +344,7 @@ impl<D: ReverbDesign> ReverbNode<D> {
             }
         };
         let inputs = usize::from(self.channels.input.count());
-        let latency = self.kernel.latency().get();
+        let latency = self.realization.latency().get();
         self.dry = (0..inputs).map(|_| DryAlign::new(latency)).collect();
         self.dry_buf = vec![vec![0.0; max_block.get()]; inputs];
         self.clear();
@@ -352,7 +352,7 @@ impl<D: ReverbDesign> ReverbNode<D> {
 
     /// Back to silence: no ring-out owed, no input heard.
     fn clear(&mut self) {
-        self.kernel.reset();
+        self.realization.reset();
         for d in &mut self.dry {
             d.clear();
         }
@@ -362,17 +362,17 @@ impl<D: ReverbDesign> ReverbNode<D> {
         self.last_mix = None;
     }
 
-    /// Designs `controls` into the node's network and retargets the kernel.
+    /// Designs `controls` into the node's network and retargets the realization.
     fn apply(&mut self, controls: D::Controls) {
         self.design
             .design_into(&controls, self.rate, &mut self.network);
-        self.kernel.retarget(&self.network);
+        self.realization.retarget(&self.network);
         self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
         self.applied = Some(controls);
     }
 }
 
-impl ReverbNode<FreeverbDesign> {
+impl DesignNode<FreeverbDesign> {
     /// The General MIDI reverb send: Freeverb at room 0.5 and damping 0.5, mono
     /// in and stereo out, wet only. Its controls are fixed, so its tail is the
     /// exact figure of that one network, and it declares no cells but the mix.
@@ -382,7 +382,7 @@ impl ReverbNode<FreeverbDesign> {
     }
 }
 
-impl Default for ReverbNode<FreeverbDesign> {
+impl Default for DesignNode<FreeverbDesign> {
     fn default() -> Self {
         Self::general_midi()
     }
@@ -412,15 +412,15 @@ fn cost(effort: Effort) -> Cost {
     }
 }
 
-impl<D: ReverbDesign> Node for ReverbNode<D> {
+impl<D: NodeDesign> Node for DesignNode<D> {
     fn shape(&self) -> Shape {
         let mut addrs = vec![UnitAddr::first(UnitParam::Wet)];
         if matches!(self.mode, Mode::Live) {
             addrs.extend_from_slice(self.params.addrs());
         }
         Shape::audio(self.channels.input, self.channels.output)
-            .with_cost(cost(self.kernel.effort()))
-            .with_latency(Latency::new(self.kernel.latency()))
+            .with_cost(cost(self.realization.effort()))
+            .with_latency(Latency::new(self.realization.latency()))
             .with_tail(tail_of(self.ceiling))
             .with_param_addrs(&addrs)
     }
@@ -478,12 +478,13 @@ impl<D: ReverbDesign> Node for ReverbNode<D> {
         io.report_tail(tail_of(self.ring));
 
         // How many frames of the block may still sound: the tail after the last
-        // input frame, and the kernel's latency before it starts (a tail
+        // input frame, and the realization's latency before it starts (a tail
         // excludes latency).
         let owed = if self.ring == UNBOUNDED {
             UNBOUNDED
         } else {
-            self.ring.saturating_add(self.kernel.latency().get() as u64)
+            self.ring
+                .saturating_add(self.realization.latency().get() as u64)
         };
         let live = if owed == UNBOUNDED {
             size as u64
@@ -497,12 +498,12 @@ impl<D: ReverbDesign> Node for ReverbNode<D> {
         let pass_through = self.dry.iter().all(DryAlign::is_pass_through);
 
         // Past its tail the room is cut off and parked: its state is below the
-        // floor, and the input has been silent for longer than the kernel's
+        // floor, and the input has been silent for longer than the realization's
         // latency, so the dry path holds only silence too and the output is
         // silent.
         if cut == 0 {
             if !self.silent {
-                self.kernel.reset();
+                self.realization.reset();
                 self.silent = true;
             }
             return Status::Idle;
@@ -530,14 +531,15 @@ impl<D: ReverbDesign> Node for ReverbNode<D> {
                 *slot = &mut ch[..cut];
             }
             let width = usize::from(self.channels.output.count());
-            self.kernel.process(&input[..inputs], &mut output[..width]);
+            self.realization
+                .process(&input[..inputs], &mut output[..width]);
         }
         if cut < size {
             for ch in outs.iter_mut() {
                 ch[cut..size].fill(0.0);
             }
             if !self.silent {
-                self.kernel.reset();
+                self.realization.reset();
                 self.silent = true;
             }
         }
@@ -576,13 +578,13 @@ impl<D: ReverbDesign> Node for ReverbNode<D> {
     }
 }
 
-/// A clone shares the cells and starts silent: a copy of the kernel with its
-/// state empty ([`Kernel::fresh`]).
-impl<D: ReverbDesign> Clone for ReverbNode<D> {
+/// A clone shares the cells and starts silent: a copy of the realization with its
+/// state empty ([`Realization::fresh`]).
+impl<D: NodeDesign> Clone for DesignNode<D> {
     fn clone(&self) -> Self {
         let mut copy = Self {
             design: self.design.clone(),
-            kernel: self.kernel.fresh(),
+            realization: self.realization.fresh(),
             params: self.params.clone(),
             mode: self.mode,
             mix: self.mix.handle(),
@@ -608,7 +610,7 @@ impl<D: ReverbDesign> Clone for ReverbNode<D> {
     }
 }
 
-impl<D: ReverbDesign> ParamNode for ReverbNode<D> {
+impl<D: NodeDesign> ParamNode for DesignNode<D> {
     /// The mix, and in a live node the algorithm's cells.
     fn param_set(&self) -> ParamSet {
         let set = ParamSet::builder().param(UnitParam::Wet, self.mix.as_atomic());
@@ -629,7 +631,7 @@ impl<D: ReverbDesign> ParamNode for ReverbNode<D> {
 
 /// Inserted with its [`ParamSet`] as its controls and a fork that starts from
 /// the values last set through it ([`tutti_graph::param_parts`]).
-impl<D: ReverbDesign> IntoNode for ReverbNode<D> {
+impl<D: NodeDesign> IntoNode for DesignNode<D> {
     type Controls = ParamSet;
 
     fn into_parts(self) -> NodeParts<ParamSet> {

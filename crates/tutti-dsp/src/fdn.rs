@@ -1,4 +1,4 @@
-//! [`FdnKernel`]: the kernel of [`FdnDesign`](crate::FdnDesign) (design 022
+//! [`FdnKernel`]: the realization of [`FdnDesign`](crate::FdnDesign) (design 022
 //! step 1c).
 //!
 //! `N` delay lines read with linear interpolation (so a length may move), a
@@ -27,7 +27,9 @@
 
 use tutti_types::Samples;
 
-use crate::network::{Absorption, Band, Bounds, Effort, Kernel, Matrix, Network, Setup, Stage};
+use crate::network::{
+    Absorption, Band, Bounds, Effort, Matrix, Network, Realization, Setup, Stage,
+};
 
 /// The frames between control updates: every ramp advances once a chunk.
 const CHUNK: usize = 32;
@@ -96,7 +98,7 @@ impl Slew {
     }
 }
 
-/// The kernel of a feedback delay network.
+/// The realization of a feedback delay network.
 #[derive(Clone, Debug)]
 pub struct FdnKernel {
     rate: f64,
@@ -212,7 +214,7 @@ impl FdnKernel {
         std::f64::consts::TAU * j as f64 / self.max_lines.max(1) as f64
     }
 
-    /// Back to silence with every ramp landed: what a fresh kernel is after its
+    /// Back to silence with every ramp landed: what a fresh realization is after its
     /// first retarget.
     fn settle(&mut self) {
         self.buf.fill(0.0);
@@ -355,7 +357,7 @@ fn read(buf: &[f32], w: usize, delay: f32) -> f32 {
     a * (1.0 - frac) + b * frac
 }
 
-impl Kernel for FdnKernel {
+impl Realization for FdnKernel {
     fn prepare(&mut self, bounds: &Bounds, setup: &Setup) {
         let rate = setup.rate.get();
         self.rate = rate;

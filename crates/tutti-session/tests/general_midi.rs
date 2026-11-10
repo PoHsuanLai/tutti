@@ -159,7 +159,7 @@ fn every_stage_declares_its_own_tail() {
 /// full level (CC 91 and CC 93 at 127) so both effects carry the note. "Heard"
 /// is the last frame at or above 1e-4 (-80 dBFS) on either channel.
 ///
-/// Mutation (run): the reverb's tail quartered in `ReverbNode::shape` leaves the
+/// Mutation (run): the reverb's tail quartered in `DesignNode::shape` leaves the
 /// note ringing past the sum and fails the upper bound. The unit's own tail is
 /// pinned by `tutti-soundfont`'s `ring_out` suite.
 #[test]

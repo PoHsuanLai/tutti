@@ -96,6 +96,10 @@ plugin child is a `tutti_plugin_ipc::Reaped` from spawn, which also replaces
 the probe's and `ProcessGuard`'s kill-and-reap copies. Found on the way: the
 `-ipc` test build had no `AllocDisabler`, so its `assert_no_alloc` gates were
 inert from #406 until this change installed it.
+The P2 extras: the socket and slab names come from one `unique_name` with
+one count, and the editor's state pull-back compares against the editor's
+own state taken at open (and moved by each pull), never against the audio
+instance's, which automation can move on its own.
 
 ## 3. The process edge (`tutti-plugin-ipc`, doc 021 step 3)
 

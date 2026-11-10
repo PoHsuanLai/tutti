@@ -25,13 +25,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// If the operating system has no random source to read (`getrandom` fails).
 #[must_use]
 pub fn unique_socket_path() -> PathBuf {
+    std::env::temp_dir().join(format!("{}.sock", unique_name("tutti-bridge")))
+}
+
+/// `stem`, this process's id, a count shared by every name this process
+/// makes, and [`unguessable`]: a name for something in a shared namespace
+/// (the control socket, the audio slab) that is unique and not predictable.
+/// One count for both, so no two names this process makes are alike
+/// whatever their stems.
+///
+/// # Panics
+///
+/// If the operating system has no random source to read.
+pub(crate) fn unique_name(stem: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "tutti-bridge-{}-{}-{}.sock",
+    format!(
+        "{stem}-{}-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed),
         unguessable(),
-    ))
+    )
 }
 
 /// Sixteen hex digits from the operating system's random source, for a name in
@@ -43,7 +56,7 @@ pub fn unique_socket_path() -> PathBuf {
 /// # Panics
 ///
 /// If the operating system has no random source to read.
-pub(crate) fn unguessable() -> String {
+fn unguessable() -> String {
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).expect("the operating system's random source is readable");
     format!("{:016x}", u64::from_ne_bytes(bytes))

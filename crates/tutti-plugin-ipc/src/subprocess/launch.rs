@@ -455,17 +455,10 @@ fn setup_shm(
 }
 
 fn next_shm_name() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SHM_COUNTER: AtomicU64 = AtomicU64::new(0);
     // Unguessable for the same reason as the socket (`unique_socket_path`):
     // `/dev/shm` is shared, and `AudioSlab::create` refuses a name that
     // exists, so a predictable one is a launch another user can block.
-    format!(
-        "tutti_plugin_{}_{}_{}",
-        std::process::id(),
-        SHM_COUNTER.fetch_add(1, Ordering::Relaxed),
-        crate::config::unguessable(),
-    )
+    crate::config::unique_name("tutti_plugin")
 }
 
 #[cfg(test)]

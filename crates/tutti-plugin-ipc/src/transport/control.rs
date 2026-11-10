@@ -43,7 +43,7 @@ pub type ControlStream = Stream;
 /// `BridgeConfig::socket_path` is a filesystem path. On Unix that path is the
 /// socket. On Windows a named pipe lives in the `\\.\pipe\` namespace, which
 /// is not the filesystem, so the pipe is named after the path's **final
-/// component** (`tutti-bridge-<pid>-<n>`, already unique per bridge).
+/// component** (`tutti-bridge-<pid>-<n>-<random>`, already unique per bridge).
 ///
 /// # Errors
 ///

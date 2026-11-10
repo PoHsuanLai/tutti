@@ -127,7 +127,7 @@ pub(crate) struct BlockScratch {
     /// `out`.
     pub(crate) raw: Lanes,
     /// Where each frame of the block reads (`None`: silence). The disk tier
-    /// rewrites them in place to its ring positions (less its preroll).
+    /// rewrites them in place to its ring positions.
     pub(crate) positions: Vec<Option<SamplePosition>>,
     /// The along-time reads' taps (`MemorySource::read_placed_lanes`, a
     /// steady live disk read).

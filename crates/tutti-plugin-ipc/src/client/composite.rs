@@ -9,39 +9,45 @@ use crate::protocol::{
 use crate::transport::shm::AudioSlab;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use tutti_plugin_types::Editor;
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
 use tutti_types::SampleRate;
 
-/// Gives the audio instance the editor instance's state when the two differ:
-/// the half of the mirror that carries what the user changed in the editor
+/// Gives the audio instance the editor instance's state when the user changed
+/// it: the half of the mirror that carries what the user changed in the editor
 /// and is not a parameter (a sample loaded in the plugin's UI, a mode switch;
 /// design 021 Q8). Parameters already travel as edits.
 ///
-/// `audio_state` is the audio instance's state, `None` when it cannot be read
-/// (then the editor's is loaded: a read failure is not evidence the two agree).
-/// Nothing is loaded when the two are equal, so a closed editor that changed
-/// nothing does not reload a playing plugin.
+/// **"Changed" is against `baseline`**, the editor's own state when it was
+/// last in step with the audio instance (read right after the open's sync,
+/// and moved by each pull). Comparing with the audio instance's state instead
+/// took any difference for a user edit: automation or a plugin's volatile
+/// state moved the audio side on its own, and the editor's stale state then
+/// overwrote it (doc 027). With no baseline (the editor's state could not be
+/// read at open) the editor's state is loaded. Nothing is loaded when the
+/// editor is at its baseline, so a closed editor that changed nothing does not
+/// reload a playing plugin.
 ///
 /// # Errors
 ///
 /// The editor's state cannot be read (nothing is loaded), or the audio
-/// instance refuses it.
+/// instance refuses it (the baseline stays, so the next pull tries again).
 fn pull_editor_state(
     main: &MainThread,
     gui: &mut dyn Editor,
-    audio_state: impl FnOnce() -> Option<Vec<u8>>,
+    baseline: &mut Option<Vec<u8>>,
     load: impl FnOnce(&[u8]) -> std::result::Result<(), StateError>,
 ) -> std::result::Result<bool, String> {
     let editor = gui
         .save_state(main)
         .map_err(|e| format!("reading the editor's state: {e}"))?;
-    if audio_state().as_deref() == Some(editor.as_slice()) {
+    if baseline.as_deref() == Some(editor.as_slice()) {
         return Ok(false);
     }
     load(&editor).map_err(|e| format!("loading it into the audio instance: {e}"))?;
+    *baseline = Some(editor);
     Ok(true)
 }
 
@@ -56,6 +62,10 @@ pub struct PluginBridge {
     /// table of formats, which this crate does not depend on.
     load_editor: EditorLoader,
     gui: Mutex<Option<Box<dyn Editor>>>,
+    /// The editor's state when it was last in step with the audio instance:
+    /// what [`pull_editor_state`] compares against. Read and written with the
+    /// `gui` lock held.
+    baseline: Mutex<Option<Vec<u8>>>,
     /// What the realtime setters want the in-process editor to show, applied by
     /// the next [`editor_idle`](Self::editor_idle).
     mirror: GuiMirror,
@@ -180,6 +190,7 @@ impl PluginBridge {
             plugin_path,
             load_editor,
             gui: Mutex::new(None),
+            baseline: Mutex::new(None),
             mirror: GuiMirror::new(),
         });
         Ok((bridge, bridge_thread))
@@ -206,6 +217,7 @@ impl PluginBridge {
             plugin_path,
             load_editor,
             gui: Mutex::new(None),
+            baseline: Mutex::new(None),
             mirror: GuiMirror::new(),
         });
         Ok((bridge, bridge_thread))
@@ -366,6 +378,11 @@ impl PluginBridge {
         self.audio.rate_refusal()
     }
 
+    /// See [`AudioBridge::rate_refused`](super::audio::AudioBridge::rate_refused).
+    pub fn rate_refused(&self) -> bool {
+        self.audio.rate_refused()
+    }
+
     /// See [`AudioBridge::set_rate_timeout`](super::audio::AudioBridge::set_rate_timeout).
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_rate_timeout(&self, timeout: std::time::Duration) {
@@ -447,6 +464,7 @@ impl PluginBridge {
             );
             let _ = gui.set_state(main, &state);
         }
+        self.take_baseline(main, gui.as_mut());
         self.mirror.opened();
 
         Ok(size)
@@ -487,6 +505,7 @@ impl PluginBridge {
         if let Ok(state) = state_to_sync {
             let _ = gui.set_state(main, &state);
         }
+        self.take_baseline(main, gui.as_mut());
         self.mirror.opened();
 
         Ok(())
@@ -510,6 +529,7 @@ impl PluginBridge {
             // is still attached.
             self.pull_editor_state(main, gui.as_mut());
             gui.close_editor(main);
+            *self.baseline.lock().unwrap_or_else(PoisonError::into_inner) = None;
             true
         } else {
             false
@@ -549,14 +569,20 @@ impl PluginBridge {
         }
     }
 
+    /// The editor's state as it stands now, as the baseline for the next
+    /// [`pull_editor_state`]: called once the open has synced it from the
+    /// audio instance. Read back rather than taken from the sync's bytes,
+    /// because a plugin may normalise a state it is given.
+    fn take_baseline(&self, main: &MainThread, gui: &mut dyn Editor) {
+        *self.baseline.lock().unwrap_or_else(PoisonError::into_inner) = gui.save_state(main).ok();
+    }
+
     /// [`pull_editor_state`] against this bridge's audio instance.
     fn pull_editor_state(&self, main: &MainThread, gui: &mut dyn Editor) {
-        let pulled = pull_editor_state(
-            main,
-            gui,
-            || self.audio.save_state().ok(),
-            |state| self.audio.load_state(state),
-        );
+        let mut baseline = self.baseline.lock().unwrap_or_else(PoisonError::into_inner);
+        let pulled = pull_editor_state(main, gui, &mut baseline, |state| {
+            self.audio.load_state(state)
+        });
         if let Err(e) = pulled {
             tracing::warn!("[bridge] the editor's state did not reach the audio instance: {e}");
         }
@@ -816,50 +842,53 @@ mod state_back_tests {
         MainThread::claim().expect("one test, one process")
     }
 
-    /// What the audio instance was given, if anything.
-    fn pull(editor: Option<Vec<u8>>, audio: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    /// What the audio instance was given, if anything, and the baseline after.
+    fn pull(
+        editor: Option<Vec<u8>>,
+        baseline: Option<Vec<u8>>,
+    ) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
         let loaded = RefCell::new(None);
         let mut gui = FakeEditor { state: editor };
-        let _ = pull_editor_state(
-            &main_thread(),
-            &mut gui,
-            || audio,
-            |state| {
-                *loaded.borrow_mut() = Some(state.to_vec());
-                Ok(())
-            },
-        );
-        loaded.into_inner()
+        let mut baseline = baseline;
+        let _ = pull_editor_state(&main_thread(), &mut gui, &mut baseline, |state| {
+            *loaded.borrow_mut() = Some(state.to_vec());
+            Ok(())
+        });
+        (loaded.into_inner(), baseline)
     }
 
-    /// **A state the editor holds and the audio instance does not reaches the
-    /// audio instance.**
+    /// **A state the user changed in the editor reaches the audio instance.**
+    /// (Was "a state only the editor holds", against the audio instance's
+    /// state; the comparison is against the baseline now.)
     ///
     /// Mutation (run): return before `load` in `pull_editor_state` → nothing is
     /// loaded → fails.
     #[test]
     fn a_state_only_the_editor_holds_reaches_the_audio_instance() {
-        let got = pull(Some(b"mode=delay".to_vec()), Some(b"mode=gain".to_vec()));
+        let (got, _) = pull(Some(b"mode=delay".to_vec()), Some(b"mode=gain".to_vec()));
         assert_eq!(got.as_deref(), Some(&b"mode=delay"[..]));
     }
 
-    /// **An editor that changed nothing does not reload the audio instance.**
+    /// **An editor that changed nothing does not reload the audio instance**,
+    /// whatever the audio instance did meanwhile: its state is not consulted,
+    /// so automation that moved it is not overwritten by the editor's stale
+    /// one (doc 027).
     ///
     /// Mutation (run): drop the equality check → the same state is loaded →
     /// fails.
     #[test]
     fn an_unchanged_editor_reloads_nothing() {
-        assert_eq!(pull(Some(b"same".to_vec()), Some(b"same".to_vec())), None);
+        assert_eq!(pull(Some(b"same".to_vec()), Some(b"same".to_vec())).0, None);
     }
 
-    /// **An unreadable audio state is not taken for agreement.** The editor's
-    /// state is loaded.
+    /// **With no baseline the editor's state is taken.** No baseline is not
+    /// evidence the editor changed nothing. (Was "an unreadable audio state".)
     ///
-    /// Mutation (run): treat `None` as equal (`audio_state().map_or(true, ..)`)
-    /// → nothing is loaded → fails.
+    /// Mutation (run): treat `None` as equal (`baseline.as_deref().map_or(true,
+    /// ..)`) → nothing is loaded → fails.
     #[test]
     fn an_unreadable_audio_state_still_takes_the_editors() {
-        let got = pull(Some(b"editor".to_vec()), None);
+        let (got, _) = pull(Some(b"editor".to_vec()), None);
         assert_eq!(got.as_deref(), Some(&b"editor"[..]));
     }
 
@@ -870,7 +899,19 @@ mod state_back_tests {
     /// state is loaded → fails.
     #[test]
     fn an_unreadable_editor_state_loads_nothing() {
-        let got = pull(None, Some(b"audio".to_vec()));
+        let (got, _) = pull(None, Some(b"audio".to_vec()));
         assert_eq!(got, None);
+    }
+
+    /// **A pull moves the baseline**, so the same edit is not loaded again at
+    /// the next dirty tick or at close.
+    ///
+    /// Mutation (run): drop `*baseline = Some(editor)` → the second pull loads
+    /// again → fails.
+    #[test]
+    fn a_pulled_state_is_the_new_baseline() {
+        let (got, baseline) = pull(Some(b"edited".to_vec()), Some(b"opened".to_vec()));
+        assert!(got.is_some());
+        assert_eq!(pull(Some(b"edited".to_vec()), baseline).0, None);
     }
 }

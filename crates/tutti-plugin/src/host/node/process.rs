@@ -7,25 +7,24 @@
 //! drops (i.e., after both the graph has released the node *and* every
 //! user-held handle has dropped).
 
-use std::process::{Child, ExitStatus};
+use std::process::ExitStatus;
 use std::sync::{Mutex, PoisonError};
 use tutti_plugin_ipc::BridgeConfig;
 use tutti_plugin_ipc::BridgeThread;
+use tutti_plugin_ipc::Reaped;
 
 pub(crate) struct ProcessGuard {
     /// Behind a lock only so [`exited`](Self::exited) can ask from `&self`
     /// (`try_wait` takes `&mut`). Never locked on the audio thread.
-    process: Mutex<Option<Child>>,
+    process: Mutex<Option<Reaped>>,
     _bridge_thread: Option<BridgeThread>,
     config: BridgeConfig,
 }
 
 impl ProcessGuard {
-    /// Own `process` from the moment it is launched, before anything else
-    /// that can fail: a bare `Child` dropped on an error path is neither
-    /// killed nor waited (std's `Child` has no `Drop`), which leaks a running
-    /// server and then a zombie.
-    pub(crate) fn launched(process: Child, config: BridgeConfig) -> Self {
+    /// Own the launched `process`; it is killed and reaped when the guard
+    /// drops ([`Reaped`]).
+    pub(crate) fn launched(process: Reaped, config: BridgeConfig) -> Self {
         Self {
             process: Mutex::new(Some(process)),
             _bridge_thread: None,
@@ -40,7 +39,7 @@ impl ProcessGuard {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(Child::id)
+            .map(|process| process.id())
     }
 
     /// Hand over the bridge thread once it exists; it shuts down with the
@@ -89,14 +88,8 @@ impl Drop for ProcessGuard {
             .process
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(mut process) = process.take() {
-            // Skip wait() if kill() failed to avoid hanging on an
-            // unkillable process. (A child `exited` already reaped answers
-            // `kill` with `Ok` and `wait` with its status at once.)
-            if process.kill().is_ok() {
-                let _ = process.wait();
-            }
-        }
+        // Killed and reaped as it drops ([`Reaped`]), before the socket goes.
+        drop(process.take());
         let _ = std::fs::remove_file(&self.config.socket_path);
     }
 }

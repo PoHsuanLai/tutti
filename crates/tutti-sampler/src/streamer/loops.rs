@@ -2,8 +2,7 @@
 //!
 //! A live stream's ring (`prefetch::Ring`) is indexed by straight
 //! position: file frames counted as if the file played straight on, the
-//! position a placed voice's gate and seat give (`interp::Seat`), less the
-//! channel's PDC preroll. What the slot for straight position `s` holds is the
+//! position a placed voice's gate and seat give (`interp::Seat`). What the slot for straight position `s` holds is the
 //! stream's [`Mapping`]: the file frame a loop places `s` on, its fade blended
 //! toward the lead-in (`LoopSpan`'s sequence, the one the memory tier and a
 //! forked disk voice read), or the frame a reversed read mirrors it to. The
@@ -1013,7 +1012,7 @@ mod tests {
         let mut held = vec![0.0f32; 10_000];
         writer.fill_with(&Mapping::plain(LEN), 0, &mut held);
         assert_eq!(writer.push_interleaved(&held), tutti_types::Samples(10_000));
-        let mut reader = shared.take_reader(false).expect("the ring's reader");
+        let mut reader = shared.take_reader().expect("the ring's reader");
         let _ = reader.claim(0, [(0, 64), (0, 0)]);
         assert_eq!(writer.in_flight_end(), 64);
         (writer, reader, wave)

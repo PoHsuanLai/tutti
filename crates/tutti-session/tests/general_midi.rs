@@ -224,7 +224,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
             .expect("room");
     }
     handle
-        .note_on(At::NextBlock, channel, NoteNumber::of(69), U7::of(100))
+        .note_on(At::NextBlock, channel, NoteNumber::of(69), 0xC800)
         .expect("room");
     let mut heard = Vec::new();
     let block = |session: &mut Session, heard: &mut Vec<f32>| {
@@ -324,7 +324,7 @@ fn muting_the_setup_silences_the_wet_path_too() {
     };
     cc(91);
     handle
-        .note_on(at, MidiChannel::FIRST, NoteNumber::of(69), U7::of(100))
+        .note_on(at, MidiChannel::FIRST, NoteNumber::of(69), 0xC800)
         .expect("room");
     for _ in 0..200 {
         peak_of_block(&mut session);

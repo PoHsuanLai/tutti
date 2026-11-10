@@ -89,9 +89,9 @@ fn onset(out: &[f32]) -> Option<usize> {
 /// 8-frame chunk) it sounds exactly 1 000 frames after the same note at
 /// frame 0 does.
 ///
-/// Mutation: `tutti_midi_runtime::gather_midi` dropping the event input → silence → fails.
-/// Mutation: events applied at the block start (offsets ignored) → 1 000
-/// becomes 768 → fails.
+/// Mutation (run): `render_events` reading no event (only the chunks) →
+/// silence → fails. Mutation (run): `render_events` applying every chunk's
+/// events at the block start (offsets ignored) → 1 000 becomes 768 → fails.
 #[test]
 fn a_clip_note_sounds_on_its_frame() {
     let lead = {

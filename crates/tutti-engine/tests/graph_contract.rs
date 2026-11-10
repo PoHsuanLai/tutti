@@ -24,7 +24,8 @@ const SR: f64 = 48_000.0;
 const FPB: u64 = 24_000;
 /// The latent sibling's declared latency: longer than a device block.
 const D: usize = 300;
-const NOTE_ON: EventKind = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
+/// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 1, channel 1.
+const NOTE_ON: EventKind = EventKind::Midi(Ump([0x4090_3c00, 0xC800_0000, 0, 0]));
 
 /// An engine over a graph of two `Pulse`s — `(direct, pdc)` — whose global
 /// outputs are `[pdc, direct]`, the second pulse's event input merged with a

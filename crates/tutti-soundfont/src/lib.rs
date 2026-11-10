@@ -38,20 +38,14 @@ mod fork;
 mod node;
 
 use std::sync::Arc;
-use tutti_graph::Offset;
-use tutti_graph::UmpAt;
-use tutti_midi_protocol::widen;
-use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
+use tutti_graph::{EventKind, SubBlocks};
+use tutti_midi_protocol::{channel_voice, widen};
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Tail};
-use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Unknown, Voice1, decode};
+use tutti_ump::{MidiChannel, NoteNumber, U7, Ump, Voice1};
 
 use crate::player::{Heard, Plane, Planes, Player};
 use crate::render::Render;
-
-/// Capacity of the block's MIDI scratch, in events: past it a block's events
-/// are dropped. Fully initialised, since events are written into its slots.
-const MIDI_BUFFER_CAPACITY: usize = 256;
 
 /// The release velocity of a Note Off that carries none: a SoundFont does not
 /// read it.
@@ -156,8 +150,6 @@ pub struct SoundFontUnit {
     /// audio thread. A block renders into `[..size]` in segments split at each
     /// event's offset.
     planes: [Vec<f32>; Plane::COUNT],
-    /// The block's MIDI, sorted by offset: its event input's.
-    midi_buffer: Vec<UmpAt>,
 }
 
 impl std::fmt::Debug for SoundFontUnit {
@@ -176,7 +168,6 @@ impl SoundFontUnit {
             ring_out: player.ring_out(),
             player,
             planes: std::array::from_fn(|_| vec![0.0; buffers]),
-            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); MIDI_BUFFER_CAPACITY],
         }
     }
 
@@ -265,25 +256,21 @@ impl SoundFontUnit {
     ///
     /// These are MIDI 1.0 values. A `velocity` of 0 reads as a note-off.
     pub fn note_on(&mut self, channel: MidiChannel, key: NoteNumber, velocity: U7) {
-        self.voice1(
-            channel,
-            Voice1::NoteOn {
-                note: key,
-                velocity,
-            },
-        );
+        let on = Voice1::NoteOn {
+            note: key,
+            velocity,
+        };
+        self.player.apply(channel, widen(on));
     }
 
     /// Releases a note directly, bypassing MIDI. Prefer the node's MIDI event
     /// input; see [`note_on`](Self::note_on).
     pub fn note_off(&mut self, channel: MidiChannel, key: NoteNumber) {
-        self.voice1(
-            channel,
-            Voice1::NoteOff {
-                note: key,
-                velocity: NO_RELEASE_VELOCITY,
-            },
-        );
+        let off = Voice1::NoteOff {
+            note: key,
+            velocity: NO_RELEASE_VELOCITY,
+        };
+        self.player.apply(channel, widen(off));
     }
 
     /// Selects the preset a channel plays, bypassing MIDI.
@@ -323,49 +310,32 @@ impl SoundFontUnit {
         self.player.take_heard()
     }
 
-    /// Renders `size` frames into the scratch, applying the first `count`
-    /// (sorted) events of `midi_buffer` at their offsets. An offset at or past
-    /// `size` is clamped to the last frame.
-    fn render_events(&mut self, size: usize, count: usize) {
-        let mut walk = BlockSplitter::new(size, Overrun::ClampToLastFrame);
-        while let Some(step) = walk.step(&self.midi_buffer[..count]) {
-            match step {
-                Step::Event((_, ump)) => self.apply_event(&ump),
-                Step::Span(span) => self.render_range(span),
+    /// Renders a block split at its events (`Io::sub_blocks`) into the
+    /// scratch: each chunk's MIDI is applied, then its frames rendered, so every
+    /// event lands on its frame (to the chunk size).
+    fn render_events(&mut self, blocks: SubBlocks<'_>) {
+        for (range, events) in blocks {
+            for event in events {
+                if let EventKind::Midi(ump) = event.kind {
+                    self.apply_event(ump);
+                }
             }
+            self.render_range(range);
         }
     }
 
-    /// Decodes one packet and applies it. The only place the unit reads the
+    /// Reads one packet and applies it. The only place the unit reads the
     /// wire: everything below takes typed values.
     ///
-    /// The group is ignored: one unit is one instrument, whatever group its
-    /// notes arrive on. This is a sink, so a message it has no use for
-    /// (including one `decode` cannot frame) is unused, not an error.
-    fn apply_event(&mut self, ump: &Ump) {
-        match decode(*ump) {
-            Ok(Message::Midi1(address, voice)) => self.voice1(address.channel, voice),
-            Ok(Message::Midi2(address, voice)) => self.player.apply(address.channel, voice),
-            // Not channel voice: the player has no clock, sysex, flex
-            // data or stream state to follow.
-            Ok(
-                Message::Utility(_)
-                | Message::System(..)
-                | Message::Sysex7(..)
-                | Message::Data128(..)
-                | Message::Flex(..)
-                | Message::Stream(_),
-            ) => {}
-            // A reserved or undefined packet, with its words kept in
-            // `Unknown`: nothing here forwards them, so they are unused.
-            Err(Unknown(_)) => {}
+    /// A MIDI 1.0 channel voice message is read as the MIDI 2.0 one it means
+    /// ([`channel_voice`]), so the player reads one form. The group is
+    /// ignored: one unit is one instrument, whatever group its notes arrive
+    /// on. This is a sink, so a message that is not channel voice (a clock,
+    /// sysex, one `decode` cannot frame) is unused, not an error.
+    fn apply_event(&mut self, ump: Ump) {
+        if let Some((address, voice)) = channel_voice(ump) {
+            self.player.apply(address.channel, voice);
         }
-    }
-
-    /// A MIDI 1.0 channel voice message, widened to the MIDI 2.0 message that
-    /// means the same (M2-104 App. D.3), so the player reads one form.
-    fn voice1(&mut self, channel: MidiChannel, voice: Voice1) {
-        self.player.apply(channel, widen(voice));
     }
 
     /// Lets every voice go into its release and forgets the pedals: a fork
@@ -390,7 +360,6 @@ impl Clone for SoundFontUnit {
             // Scratch, not state: sized fresh rather than copied, since every
             // block overwrites the frames it reads back.
             planes: std::array::from_fn(|_| vec![0.0; self.planes[0].len()]),
-            midi_buffer: vec![(Offset::ZERO, Ump([0; 4])); MIDI_BUFFER_CAPACITY],
         }
     }
 }

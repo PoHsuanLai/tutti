@@ -16,6 +16,6 @@
 pub mod bridge;
 pub mod catalog;
 
-pub(crate) use bridge::unguessable;
+pub(crate) use bridge::unique_name;
 pub use bridge::{BridgeConfig, unique_socket_path};
 pub use catalog::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};

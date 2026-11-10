@@ -13,7 +13,8 @@ use tutti_types::{Beat, Bpm, ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::Ump;
 
 const RATE: SampleRate = SampleRate(48_000.0);
-const NOTE: EventKind = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
+/// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 1, channel 1.
+const NOTE: EventKind = EventKind::Midi(Ump([0x4090_3c00, 0xC800_0000, 0, 0]));
 
 /// One event input, two outputs: output 0 is 1.0 on each event's frame,
 /// output 1 the transport's beat at each frame (`Env::transport_at`), and

@@ -76,6 +76,14 @@ pub enum ChunkError {
         /// The `seq` that was required.
         expected: u32,
     },
+    /// A chunk before `last` carried no bytes. [`split`] never sends one, and
+    /// a sequence of them makes no progress: a peer could keep a reader taking
+    /// them forever while the byte limit never trips (doc 027 D8). Refusing
+    /// them bounds a sequence by its bytes.
+    Empty {
+        /// The `seq` of the empty chunk.
+        seq: u32,
+    },
     /// The accumulated total exceeded [`MAX_STATE_BYTES`].
     TooLarge {
         /// Total after this chunk — what the state would have been.
@@ -109,7 +117,8 @@ impl Reassembler {
     /// # Errors
     ///
     /// Returns [`ChunkError::OutOfOrder`] for a chunk whose `seq` is not the
-    /// next expected one (or that arrives after `last`), and
+    /// next expected one (or that arrives after `last`),
+    /// [`ChunkError::Empty`] for a chunk before `last` with no bytes, and
     /// [`ChunkError::TooLarge`] when the total would exceed the limit.
     pub fn push(&mut self, seq: u32, last: bool, bytes: &[u8]) -> Result<bool, ChunkError> {
         if self.done || seq != self.next_seq {
@@ -117,6 +126,9 @@ impl Reassembler {
                 got: seq,
                 expected: self.next_seq,
             });
+        }
+        if bytes.is_empty() && !last {
+            return Err(ChunkError::Empty { seq });
         }
         let projected = self.buf.len().saturating_add(bytes.len());
         if projected > self.limit {
@@ -271,5 +283,20 @@ mod tests {
             "a state of exactly the limit must complete"
         );
         assert_eq!(r.into_inner().len(), 10);
+    }
+
+    /// **An empty chunk before `last` is refused** (doc 027 D8): it makes no
+    /// progress, so a peer sending them could hold a reader forever under the
+    /// byte limit. An empty `last` chunk is the empty state, and stays valid.
+    ///
+    /// Mutation (run): drop the `Empty` check → the empty chunk is taken → fails.
+    #[test]
+    fn an_empty_chunk_before_the_last_is_refused() {
+        let mut r = Reassembler::default();
+        r.push(0, false, b"a").expect("first chunk");
+        assert_eq!(r.push(1, false, b""), Err(ChunkError::Empty { seq: 1 }));
+
+        let mut empty = Reassembler::default();
+        assert_eq!(empty.push(0, true, b""), Ok(true), "the empty state");
     }
 }

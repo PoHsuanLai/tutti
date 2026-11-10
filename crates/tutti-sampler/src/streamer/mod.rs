@@ -15,7 +15,6 @@ mod loops;
 mod metrics;
 mod plan;
 mod prefetch;
-mod preroll;
 mod region_map;
 mod rt_state;
 mod step;
@@ -56,8 +55,6 @@ pub(crate) use prefetch::RegionBuffer;
 
 use crate::error::Result;
 use crate::ports::{Commands, Status};
-use std::sync::Arc;
-use tutti_graph::PrerollTable;
 use tutti_types::SampleRate;
 
 /// The disk-streaming engine: owns the streamer thread that reads files into
@@ -142,10 +139,6 @@ impl DiskStreamer {
         let mut streamer =
             StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
-        if let Some(ref pdc) = config.pdc {
-            streamer = streamer.with_pdc(Arc::clone(pdc));
-        }
-
         let streamer_tx = streamer.command_sender();
         streamer.start();
 
@@ -182,12 +175,7 @@ impl DiskStreamer {
     /// ```
     #[cfg(any(test, feature = "test-support"))]
     pub fn manual(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let mut streamer =
-            StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
-
-        if let Some(ref pdc) = config.pdc {
-            streamer = streamer.with_pdc(Arc::clone(pdc));
-        }
+        let streamer = StreamerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
         let streamer_tx = streamer.command_sender();
 
@@ -277,141 +265,17 @@ impl DiskStreamer {
 // `streamer` has its own `Drop` impl; auto-drop handles cleanup.
 
 /// Configuration for [`DiskStreamer::new`]. `Default` + struct-update.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DiskStreamerConfig {
     /// Streamer buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
-    /// Subscription to a per-channel delay-compensation table, indexed by
-    /// channel index and denominated in [`Samples`](tutti_types::Samples).
-    ///
-    /// While set, the streamer pre-rolls each stream by its channel's entry so
-    /// downstream effects stay sample-aligned. Published by whoever runs
-    /// `tutti_graph::compensate` over the audio graph — the table is
-    /// [`Compensation::channels`](tutti_graph::Compensation::channels).
-    pub pdc: Option<Arc<PrerollTable>>,
-}
-
-// Hand-rolled: print the buffer config + whether a subscription is set, not
-// the snapshot itself.
-impl std::fmt::Debug for DiskStreamerConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskStreamerConfig")
-            .field("buffer_config", &self.buffer_config)
-            .field("has_pdc", &self.pdc.is_some())
-            .finish()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::Samples;
-
-    /// A backward `Command::Seek` must actually reposition the live stream.
-    ///
-    /// The end-to-end test (`tests/tier_parity.rs`) observes only the audio,
-    /// where a streamer that ignored the seek and one that repositioned while
-    /// the reader drained pre-seek material can look alike. In-crate the
-    /// streamer's own state is visible, so this observes its reposition signal
-    /// directly: a regression that repositioned late (rather than not at all)
-    /// fails here first and unambiguously.
-    ///
-    /// # Why the ring's window
-    ///
-    /// The ring publishes the positions it holds (`Ring::window`), on the
-    /// shared ring the plan's link holds, and nothing but a refill moves it.
-    /// A seek moves where the reader plays (`Ring::set_play`), and the refill
-    /// follows: the window must hold the target within the one cycle that
-    /// applied the command.
-    ///
-    /// Mutation (run): the seek not moving the play position (`set_play`
-    /// dropped from `handle_seek_stream`) → the window stays at 20 s → fails.
-    ///
-    /// # No thread, no timeout
-    ///
-    /// The streamer is stepped by hand, so "has the streamer seen the command yet"
-    /// is answered by *having stepped* rather than by polling a 5 s deadline at
-    /// 10 ms. A step returns only once the command is applied, so the assertions
-    /// below are unconditional: there is no state in which the answer is "not
-    /// yet".
-    #[test]
-    fn a_backward_seek_repositions_the_live_stream() {
-        use crate::ports::Command;
-        use tutti_types::SamplePosition;
-
-        const SR: f64 = 48_000.0;
-
-        // 31 s of tone. `buffer_size_for_file` caps the ring at 30 s and sizes
-        // it to hold the whole file below that, so a shorter file is prefilled
-        // entire and a "seek" moves the writer inside a ring that already holds
-        // everything — nothing to reposition, and the epoch would not move.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("seek_probe.wav");
-        {
-            let spec = hound::WavSpec {
-                channels: 2,
-                sample_rate: SR as u32,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            };
-            let mut w = hound::WavWriter::create(&path, spec).unwrap();
-            for i in 0..(SR * 31.0) as usize {
-                let s = (std::f32::consts::TAU * 440.0 * i as f32 / SR as f32).sin() * 0.4;
-                w.write_sample(s).unwrap();
-                w.write_sample(s).unwrap();
-            }
-            w.finalize().unwrap();
-        }
-
-        let mut sampler = DiskStreamer::manual(SR, Default::default()).unwrap();
-        sampler
-            .commands()
-            .send(Command::Stream {
-                channel_index: 0,
-                file_path: path.clone(),
-                offset: SamplePosition(20.0 * SR),
-            })
-            .expect("the streamer is alive in this test");
-
-        // One step applies the queued `Stream`, which is what installs the link.
-        let _ = sampler.step_once();
-
-        let plans = sampler.streamer.plans();
-        assert!(
-            plans.get(&0).is_some_and(|p| p.link.is_some()),
-            "one streamer cycle after a Stream command and no link is installed"
-        );
-
-        let window = || {
-            plans
-                .get(&0)
-                .and_then(|p| p.link.as_ref().map(|l| l.consumer.window()))
-                .unwrap_or_default()
-        };
-        let target = (5.0 * SR) as u64;
-        let (from, _) = window();
-        assert!(from > target, "the stream starts at 20 s, not holding 5 s");
-
-        // Seek backward, which is the direction a "refill forward from here"
-        // implementation is most likely to drop.
-        sampler
-            .commands()
-            .send(Command::Seek {
-                channel_index: 0,
-                file_position: SamplePosition(5.0 * SR),
-            })
-            .expect("the streamer is alive in this test");
-
-        let _ = sampler.step_once();
-
-        let (from, to) = window();
-        assert!(
-            from <= target && target < to,
-            "the ring holds [{from}, {to}) in the cycle that applied a backward seek to \
-             {target} — the streamer did not reposition the stream"
-        );
-    }
+    use std::sync::Arc;
 
     /// A loop change on a streamed file reads only the frames it needs:
     /// its fade's lead-in and a short loop's body, through the stream's own
@@ -559,6 +423,46 @@ mod tests {
         assert_eq!(ratio(1), SrcRatio::for_rates(44_100.0, 48_000.0));
     }
 
+    /// A stream that a new `Stream` on the same channel replaces is freed:
+    /// its ring (and with it the writer's decoder and any resident wave) goes
+    /// with the old link, as it does on `StopStreaming`.
+    ///
+    /// Mutation (run): `handle_stream_file` not removing the replaced
+    /// stream's region from `local.regions` -> the old ring is still held by
+    /// its writer -> fails.
+    #[test]
+    fn a_replaced_stream_is_freed() {
+        use crate::ports::Command;
+        use tutti_types::SamplePosition;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
+        write_tone(&a, 48_000, 1.0);
+        write_tone(&b, 48_000, 1.0);
+
+        let mut sampler = DiskStreamer::manual(48_000.0, Default::default()).unwrap();
+        let plans = sampler.streamer.plans();
+        let mut stream = |path: &std::path::Path| {
+            sampler
+                .commands()
+                .send(Command::Stream {
+                    channel_index: 0,
+                    file_path: path.to_path_buf(),
+                    offset: SamplePosition(0.0),
+                })
+                .expect("the streamer is alive in this test");
+            let _ = sampler.step_until_settled(1_000);
+        };
+
+        stream(&a);
+        let old = Arc::downgrade(&plans.get(&0).unwrap().link.as_ref().unwrap().consumer);
+        stream(&b);
+        assert!(
+            old.upgrade().is_none(),
+            "the replaced stream's ring is still alive: its region leaked"
+        );
+    }
+
     /// Stepping and threading are exclusive owners of the streamer's local state.
     ///
     /// This is the one thing the hand driver can get wrong that the thread
@@ -572,33 +476,5 @@ mod tests {
             StreamerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
         let _ = streamer.step_once();
         streamer.start();
-    }
-
-    /// The streamer reads the caller's table, not a copy of it: a figure
-    /// the caller sets after the streamer is built reaches the streamer's
-    /// cycle (`manual`), and the threaded streamer (`new`) hands its
-    /// threads the caller's own table.
-    ///
-    /// Mutations (run): `DiskStreamer::manual` handing the streamer a copy of
-    /// the table → the cycle still reads 100, fails; `DiskStreamer::new`
-    /// handing a copy → not the same table, fails.
-    #[test]
-    fn pdc_subscription_is_shared_not_copied() {
-        let pdc = Arc::new(PrerollTable::new(vec![Samples(100), Samples(0)]));
-        let config = DiskStreamerConfig {
-            pdc: Some(Arc::clone(&pdc)),
-            ..Default::default()
-        };
-
-        let mut stepped = DiskStreamer::manual(44100.0, config.clone()).unwrap();
-        let _ = stepped.step_once();
-        assert_eq!(stepped.streamer.manual_preroll(0), Some(100));
-        pdc.set(&[Samples(512), Samples(0)]);
-        let _ = stepped.step_once();
-        assert_eq!(stepped.streamer.manual_preroll(0), Some(512));
-
-        let threaded = DiskStreamer::new(44100.0, config).unwrap();
-        let held = threaded.streamer.pdc_table().expect("subscribed");
-        assert!(Arc::ptr_eq(held, &pdc), "the caller's table, not a copy");
     }
 }

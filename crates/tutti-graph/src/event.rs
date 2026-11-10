@@ -918,11 +918,11 @@ pub struct SubBlocks<'a> {
 impl<'a> SortedEvents<'a> {
     /// Split a block of `frames` at these events' offsets. `frames` is the
     /// length these events were checked against.
-    pub(crate) fn sub_blocks(self, frames: usize) -> SubBlocks<'a> {
+    pub(crate) fn sub_blocks(self, frames: Samples) -> SubBlocks<'a> {
         SubBlocks {
             events: self.events,
             pos: 0,
-            frames,
+            frames: frames.0,
         }
     }
 }
@@ -1414,7 +1414,7 @@ mod tests {
     fn split(events: &[Event], frames: usize) -> Vec<(std::ops::Range<usize>, Vec<Event>)> {
         SortedEvents::new(events, frames)
             .expect("sorted and in the block")
-            .sub_blocks(frames)
+            .sub_blocks(Samples(frames))
             .map(|(r, e)| (r, e.to_vec()))
             .collect()
     }

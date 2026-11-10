@@ -23,8 +23,7 @@
 //! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
 //! one live reader per ring is the type's rule, not a flag's. This module
 //! adds what a disk stream needs on top: the region, the file, the map the
-//! reader reads the slots by, the preroll, and a free-running reader's origin
-//! and seek.
+//! reader reads the slots by.
 //!
 //! A position-indexed ring rather than an SPSC FIFO the reader pops: a FIFO
 //! has to be flushed to move, which drops what was refilled since, leaves the
@@ -45,7 +44,7 @@
 //! out.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_codec::Wave;
@@ -128,23 +127,11 @@ pub(crate) struct Ring {
     /// control thread only (`take_reader`); the audio thread holds the reader
     /// itself.
     reader: Mutex<Option<PosReader>>,
-    /// Streamer → reader: the channel's PDC preroll, in file frames: the reader
-    /// plays straight position `gate - preroll`.
-    preroll: AtomicU64,
-    /// Streamer → reader: where a free-running reader starts (the stream's
-    /// offset).
-    origin: AtomicU64,
-    /// Streamer → reader: a free-running reader's seek, `(epoch, target)`.
-    seek_epoch: AtomicU64,
-    seek_target: AtomicU64,
     /// Streamer → reader: output frames a reader's crossfade lasts.
     fade_frames: AtomicU64,
     /// Streamer → reader: how to read the slots, lent through the reader the
     /// voice registers ([`map_reader`](Self::map_reader)).
     map: Arc<ArcLend<RingMap>>,
-    /// The live reader is a placed voice (it follows its clock, so a relayed
-    /// seek must not move where the streamer fills).
-    placed: AtomicBool,
 }
 
 impl std::fmt::Debug for Ring {
@@ -191,24 +178,6 @@ impl Ring {
         self.map.reader()
     }
 
-    /// The channel's PDC preroll, file frames.
-    #[inline]
-    pub(crate) fn preroll(&self) -> u64 {
-        self.preroll.load(Ordering::Relaxed)
-    }
-
-    /// Where a free-running reader starts.
-    pub(crate) fn origin(&self) -> u64 {
-        self.origin.load(Ordering::Relaxed)
-    }
-
-    /// A free-running reader's pending seek, `(epoch, target)`.
-    #[inline]
-    pub(crate) fn seek_request(&self) -> (u64, u64) {
-        let epoch = self.seek_epoch.load(Ordering::Acquire);
-        (epoch, self.seek_target.load(Ordering::Relaxed))
-    }
-
     /// Output frames a reader's crossfade lasts.
     #[inline]
     pub(crate) fn fade_frames(&self) -> usize {
@@ -240,33 +209,13 @@ impl Ring {
         self.map.retired_len()
     }
 
-    /// Streamer: the channel's PDC preroll.
-    pub(crate) fn set_preroll(&self, preroll: u64) {
-        self.preroll.store(preroll, Ordering::Relaxed);
-    }
-
-    /// Streamer: seek a free-running reader to `target`.
-    pub(crate) fn request_seek(&self, target: u64) {
-        self.seek_target.store(target, Ordering::Relaxed);
-        self.seek_epoch.fetch_add(1, Ordering::Release);
-    }
-
-    /// Take the ring's one live reader, `placed` when it is a voice that
-    /// follows a clock. Control thread.
-    pub(crate) fn take_reader(&self, placed: bool) -> Result<PosReader, TakeVoiceError> {
-        let reader = self
-            .reader
+    /// Take the ring's one live reader. Control thread.
+    pub(crate) fn take_reader(&self) -> Result<PosReader, TakeVoiceError> {
+        self.reader
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-            .ok_or(TakeVoiceError::ReaderTaken)?;
-        self.placed.store(placed, Ordering::Release);
-        Ok(reader)
-    }
-
-    /// Whether the live reader follows a clock.
-    pub(crate) fn placed(&self) -> bool {
-        self.placed.load(Ordering::Acquire)
+            .ok_or(TakeVoiceError::ReaderTaken)
     }
 
     /// Window shrinks and moves so far (the ring's generation).
@@ -375,8 +324,7 @@ impl RegionOut {
         self.writer.reset(start);
     }
 
-    /// Where the reader plays, before one has said (a stream's start, a
-    /// free-running reader's seek), so the window is filled there.
+    /// Where the reader plays, before one has said (a stream's start), so the window is filled there.
     pub(crate) fn set_play(&mut self, play: u64) {
         self.writer.set_play(play);
     }
@@ -493,13 +441,8 @@ impl RegionBuffer {
             topology,
             core: writer.watch(),
             reader: Mutex::new(Some(reader)),
-            preroll: AtomicU64::new(0),
-            origin: AtomicU64::new(0),
-            seek_epoch: AtomicU64::new(0),
-            seek_target: AtomicU64::new(0),
             fade_frames: AtomicU64::new(0),
             map: Arc::new(ArcLend::new(RingMap::plain(Arrangement::plain(len), 0))),
-            placed: AtomicBool::new(false),
         });
         let writer = RegionOut {
             ring: Arc::clone(&ring),
@@ -515,20 +458,12 @@ impl RegionBuffer {
     }
 
     /// Point a fresh ring at `start`: the reader there and the window from
-    /// just behind it (the taps a position reads one frame back), a
-    /// free-running reader's origin, the preroll and the seek fade set.
-    pub(crate) fn place(
-        writer: &mut RegionOut,
-        start: u64,
-        origin: u64,
-        preroll: u64,
-        fade_frames: usize,
-    ) {
+    /// just behind it (the taps a position reads one frame back) and the seek
+    /// fade set.
+    pub(crate) fn place(writer: &mut RegionOut, start: u64, fade_frames: usize) {
         writer.reset(start.saturating_sub(HISTORY_FRAMES));
         writer.set_play(start);
         let ring = &writer.ring;
-        ring.origin.store(origin, Ordering::Relaxed);
-        ring.preroll.store(preroll, Ordering::Relaxed);
         ring.fade_frames
             .store(fade_frames as u64, Ordering::Relaxed);
     }
@@ -566,7 +501,7 @@ mod tests {
         data.extend_from_slice(&[99.0, 99.0, 99.0]);
         assert_eq!(writer.push_interleaved(&data), Samples(12));
         assert_eq!(ring.window(), (0, 12), "twelve whole frames");
-        let mut reader = ring.take_reader(false).expect("the ring's reader");
+        let mut reader = ring.take_reader().expect("the ring's reader");
         let claim = reader.claim(0, [(0, 12), (0, 0)]);
         for s in 0..12u64 {
             for c in 0..6 {
@@ -594,13 +529,11 @@ mod tests {
     #[test]
     fn a_ring_serves_one_live_reader() {
         let (_writer, ring) = ring(64, 2);
-        assert!(ring.take_reader(true).is_ok());
-        assert!(ring.placed());
+        assert!(ring.take_reader().is_ok());
         assert_eq!(
-            ring.take_reader(false).map(|_| ()),
+            ring.take_reader().map(|_| ()),
             Err(TakeVoiceError::ReaderTaken)
         );
-        assert!(ring.placed(), "a refused take changes nothing");
     }
 
     /// `read_file` reports a damaged file. The repo's FLAC fixture cut to

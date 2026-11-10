@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use dashmap::DashMap;
-use tutti_graph::PrerollTable;
 use tutti_rt::{PriorityRequest, request_priority};
 use tutti_types::SampleRate;
 
@@ -21,7 +20,6 @@ use super::handlers::{Handles, SessionRate};
 use super::loop_body::{Pacing, streamer_loop};
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
-use super::preroll::PdcFeed;
 #[cfg(any(test, feature = "test-support"))]
 use super::step::StepOutcome;
 use super::step::StreamerCycle;
@@ -45,9 +43,6 @@ pub struct StreamerThread {
     shutdown: Arc<AtomicBool>,
     shared: Handles,
     config: BufferConfig,
-    /// The delay-compensation table subscribed with
-    /// [`with_pdc`](Self::with_pdc), if any, handed to each cycle built.
-    pdc: Option<Arc<PrerollTable>>,
     /// How long the thread parks between cycles.
     pacing: Pacing,
     /// The synchronous cycle, when this controller is being driven by hand
@@ -90,56 +85,17 @@ impl StreamerThread {
             shutdown: Arc::new(AtomicBool::new(false)),
             shared,
             config,
-            pdc: None,
             pacing: Pacing::DEFAULT,
             #[cfg(any(test, feature = "test-support"))]
             manual: None,
         }
     }
 
-    /// Subscribe to a per-channel delay-compensation table, indexed by channel
-    /// index and denominated in [`Samples`](tutti_types::Samples).
-    ///
-    /// Set by whoever runs `tutti_graph::compensate` over the audio
-    /// graph (a session republishes it with every plan); the streamer reads it
-    /// each refill cycle and pre-rolls each stream by its channel's entry.
-    /// The subscription is shared, not copied, so later sets are observed.
-    ///
-    /// Each cycle is handed the table when it is built: the one
-    /// [`start`](Self::start) runs, and a controller already stepped by hand
-    /// hands it to that cycle here, keeping the cycle's streams (dropping
-    /// the cycle would drop their rings' writers while the plans still name
-    /// them).
-    pub fn with_pdc(mut self, snapshot: Arc<PrerollTable>) -> Self {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(cycle) = self.manual.as_mut() {
-            cycle.set_pdc(PdcFeed::over(Some(&snapshot)));
-        }
-        self.pdc = Some(snapshot);
-        self
-    }
-
     /// The cycle state a driver owns: the thread [`start`](Self::start)
     /// spawns, or `StreamerThread::step_once`. Built here, on the control
-    /// thread, by both, so the hand-stepped tests build what the thread runs,
-    /// the compensation table included.
+    /// thread, by both, so the hand-stepped tests build what the thread runs.
     fn cycle(&self) -> StreamerCycle {
-        StreamerCycle::new(self.config, PdcFeed::over(self.pdc.as_ref()))
-    }
-
-    /// The hand-stepped cycle's preroll for `channel`, `None` before the
-    /// first hand step (tests).
-    #[cfg(test)]
-    pub(crate) fn manual_preroll(&self, channel: usize) -> Option<u64> {
-        self.manual
-            .as_ref()
-            .map(|cycle| cycle.pdc().preroll(channel))
-    }
-
-    /// The table every cycle is handed, if subscribed (tests).
-    #[cfg(test)]
-    pub(crate) fn pdc_table(&self) -> Option<&Arc<PrerollTable>> {
-        self.pdc.as_ref()
+        StreamerCycle::new(self.config)
     }
 
     /// A cloneable sender onto the streamer's command queue.
@@ -237,7 +193,7 @@ impl StreamerThread {
     }
 
     /// Run exactly one streamer cycle on the calling thread: drain every
-    /// queued command, then apply PDC preroll, seeks and refills.
+    /// queued command, then apply directions and refills.
     /// Returns once that work is done, reporting what the pacing layer *would*
     /// have done next.
     ///
@@ -314,7 +270,6 @@ mod tests {
     use crate::ports::{Command, Commands};
     use crate::streamer::StreamerGone;
     use crate::streamer::loop_body::Pacing;
-    use tutti_types::Samples;
 
     /// The controller is `Sync` (a Bevy resource holds it), with its
     /// hand-stepped cycle held plainly: a compile-time check.
@@ -325,23 +280,6 @@ mod tests {
         fn sync<T: Sync>() {}
         let _ = sync::<StreamerThread>;
     };
-
-    /// A table subscribed after the first hand step reaches the cycle:
-    /// the step's cycle is built once and kept, so `with_pdc` must hand the
-    /// new feed to it, not only to cycles built later.
-    ///
-    /// Mutation (run): `with_pdc` not handing the feed to the kept cycle →
-    /// the cycle still reads no table (preroll 0), fails.
-    #[test]
-    fn a_table_subscribed_after_a_hand_step_reaches_the_cycle() {
-        let mut streamer =
-            StreamerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
-        let _ = streamer.step_once();
-        let mut streamer = streamer.with_pdc(Arc::new(PrerollTable::new(vec![Samples(7)])));
-        let _ = streamer.step_once();
-        let cycle = streamer.manual.as_ref().expect("stepped by hand");
-        assert_eq!(cycle.pdc().preroll(0), 7);
-    }
 
     /// A streamer that, left alone, would sleep far longer than any test waits.
     const LONG_WAIT: Pacing = Pacing {

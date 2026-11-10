@@ -107,8 +107,6 @@ struct Setup {
     /// Where the clock starts (the voice is placed at beat 0); the stream is
     /// started there, so the ring holds it before the first block.
     beat: f64,
-    /// The channel's PDC preroll, in frames.
-    preroll: usize,
     /// Other streams on channels 1.., so the streamer refills in parallel.
     neighbours: usize,
 }
@@ -119,7 +117,6 @@ impl Setup {
             loop_,
             speed,
             beat: 0.0,
-            preroll: 0,
             neighbours: 0,
         }
     }
@@ -138,15 +135,10 @@ impl Live {
     }
 
     /// Stream `path` on channel 0 from where the clock starts, with the
-    /// setup's loop and preroll, under the streamer's default config (its seek
+    /// setup's loop, under the streamer's default config (its seek
     /// crossfade included), and take a live voice placed at beat 0.
     fn with(path: &Path, setup: Setup) -> Self {
-        let mut config = DiskStreamerConfig::default();
-        if setup.preroll > 0 {
-            config.pdc = Some(Arc::new(tutti_graph::PrerollTable::new(vec![
-                tutti_types::Samples(setup.preroll),
-            ])));
-        }
+        let config = DiskStreamerConfig::default();
         let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
         for channel in 0..=setup.neighbours {
             streamer
@@ -441,37 +433,32 @@ fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
     }
 }
 
-/// Entering the clip past the loop's end, and with a PDC preroll, plays
-/// the memory tier's frames there, bit for bit: the stream's position counts
-/// the file straight on and the ring places it, so a voice entering at beat 1
-/// (24 000 frames in, well past a loop `[3000, 7001)`) plays what a memory
-/// voice plays there — and with a 12 000-frame preroll on its channel, what
-/// the memory voice plays half a beat earlier.
+/// Entering the clip past the loop's end plays the memory tier's frames there,
+/// bit for bit: the stream's position counts the file straight on and the ring
+/// places it, so a voice entering at beat 1 (24 000 frames in, well past a
+/// loop `[3000, 7001)`) plays what a memory voice plays there.
 ///
 /// Mutation (run): the ring writing the straight position unplaced
-/// (`place_frame` → identity) → fails. Mutation (run): the reader not taking
-/// the preroll off its position → the preroll row plays beat 1's frames →
-/// fails.
+/// (`place_frame` -> identity) -> fails. (The preroll row this test once had
+/// went with the streamer's preroll, doc 025 stage 5 cut 2: the compiler aligns
+/// a graph voice, `tutti-session`'s `tier_alignment` test.)
 #[test]
-fn an_entry_past_the_loop_and_a_preroll_land_where_the_memory_tier_plays() {
+fn an_entry_past_the_loop_lands_where_the_memory_tier_plays() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
     let loop_ = loop_on(3_000.0, 7_001.0, 700);
-    for (preroll, memory_from) in [(0usize, 1.0), (12_000, 0.5)] {
-        let mut live = Live::with(
-            &path,
-            Setup {
-                beat: 1.0,
-                preroll,
-                ..Setup::looped(loop_, 1.0)
-            },
-        );
-        let got = live.render(300);
-        assert_eq!(live.underruns(), 0, "preroll {preroll}: frames went unread");
-        let want = Memory::new(ramp_wave(SR as u32, LEN), loop_, 1.0, memory_from).render(300);
-        assert_same_outside(&format!("preroll {preroll}"), &got, &want, &[]);
-    }
+    let mut live = Live::with(
+        &path,
+        Setup {
+            beat: 1.0,
+            ..Setup::looped(loop_, 1.0)
+        },
+    );
+    let got = live.render(300);
+    assert_eq!(live.underruns(), 0, "frames went unread");
+    let want = Memory::new(ramp_wave(SR as u32, LEN), loop_, 1.0, 1.0).render(300);
+    assert_same_outside("entry past the loop", &got, &want, &[]);
 }
 
 /// Reverse ignores the loop, and mirrors the file as the memory tier's
@@ -958,39 +945,6 @@ fn a_starved_reader_ramps_out_and_back_in() {
     );
 }
 
-/// A `Command::Seek` on a stream a placed voice reads moves nothing:
-/// the voice follows its clock and is the one
-/// that says where the streamer fills; the seek, meant for a free-running
-/// reader, must not drag the window away. The voice plays on, bit for bit
-/// the memory tier, nothing unread.
-///
-/// Mutation (run): `handle_seek_stream` moving the play position regardless
-/// → the window is dragged to the target and the voice underruns → fails.
-#[test]
-fn a_seek_does_not_move_a_placed_voices_window() {
-    // Longer than the ring's 30 s cap, and a target outside the window, so a
-    // dragged window leaves the voice unread.
-    const LONG: usize = 31 * SR as usize;
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("ramp.wav");
-    write_ramp(&path, SR as u32, LONG);
-    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
-    let mut memory = Memory::new(ramp_wave(SR as u32, LONG), LoopSetting::Off, 1.0, 0.0);
-    let mut got = live.render(10);
-    let mut want = memory.render(10);
-    live.streamer
-        .commands()
-        .send(Command::Seek {
-            channel_index: 0,
-            file_position: SamplePosition(30.5 * SR),
-        })
-        .expect("the streamer is alive");
-    got.extend(live.render(100));
-    want.extend(memory.render(100));
-    assert_eq!(live.underruns(), 0, "the window was dragged away");
-    assert_same_outside("across a relayed seek", &got, &want, &[]);
-}
-
 /// A seek inside a block is a jump on its frame: the
 /// block's `Env` carries it as a transport change on frame 32, the voice's
 /// clock reports a jump there (a new generation), and the live read
@@ -1041,83 +995,6 @@ fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     assert_eq!(live.underruns(), 0, "a frame went unread");
     let fade = (at, at + FADE + BLOCK);
     assert_same_outside("across a seek inside a block", &got, &want, &[fade]);
-}
-
-/// A paused source holds no refill back.
-/// A free-running source plays four blocks, stops, and is sought to where
-/// the slots its last block claimed come round again; the streamer moves the
-/// window there while it is stopped. Resumed, it plays the target at once,
-/// nothing unread: a stopped block tells the ring it reads nothing
-/// (`PosReader::idle`), so the ranges of its last block no longer stop the
-/// refill at their aliases.
-///
-/// Mutation (run): the stopped source not idling (`DiskSource::process`'s
-/// stopped branch returning before `read.idle()`) → the refill stops at
-/// once, and the resumed block underruns → fails. (The placed voice's idle,
-/// on a stopped clock in `LiveRead::render`, has no such test: nothing moves
-/// a placed voice's window while its clock is stopped — a seek of the clock
-/// reaches the streamer only through the voice's next claim, and a relayed
-/// `Command::Seek` is ignored for it (see
-/// `a_seek_does_not_move_a_placed_voices_window`). `PosRing`'s
-/// `an_idle_reader_holds_nothing_back` covers `idle` itself.)
-#[test]
-fn a_seek_while_paused_resumes_without_an_underrun() {
-    const LONG: usize = 31 * SR as usize;
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("ramp.wav");
-    write_ramp(&path, SR as u32, LONG);
-    let mut streamer =
-        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
-    streamer
-        .commands()
-        .send(Command::Stream {
-            channel_index: 0,
-            file_path: path.to_path_buf(),
-            offset: SamplePosition(0.0),
-        })
-        .expect("the streamer is alive");
-    assert!(
-        streamer.step_until_settled(1_000) < 1_000,
-        "the ring primes"
-    );
-    let (mut source, state) = streamer
-        .status()
-        .take_free_running(0)
-        .expect("the link is installed");
-    source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
-    let ring_frames = source.read.ring().frames() as u64;
-    let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
-    for _ in 0..4 {
-        block(&mut source, &stopped, SR, BLOCK);
-        let _ = streamer.step_once();
-    }
-    assert_eq!(state.take_underruns(), 0, "the source plays");
-    // Its last block read 192..256: it claimed from 189.
-    let claimed_from = 3 * BLOCK as u64 - 3;
-    source.stop();
-    block(&mut source, &stopped, SR, BLOCK);
-    // The window's new start (the target, less the history the ring keeps)
-    // takes the slot of the first position the last block claimed.
-    let target = claimed_from + ring_frames + 4;
-    streamer
-        .commands()
-        .send(Command::Seek {
-            channel_index: 0,
-            file_position: SamplePosition(target as f64),
-        })
-        .expect("the streamer is alive");
-    for _ in 0..50 {
-        block(&mut source, &stopped, SR, BLOCK);
-        let _ = streamer.step_once();
-    }
-    source.play();
-    let output = block(&mut source, &stopped, SR, BLOCK);
-    assert_eq!(state.take_underruns(), 0, "the resumed block was not there");
-    assert_eq!(
-        output[0][0],
-        value(target as usize),
-        "resumed at the target"
-    );
 }
 
 /// A stream serves one live voice: a

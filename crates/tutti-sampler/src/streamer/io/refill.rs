@@ -4,8 +4,8 @@
 //! The reader publishes the straight position it plays (`Ring::play`); the
 //! refill keeps the ring's window `[from, to)` running from just behind it to
 //! most of the ring ahead of it, in the stream's mapping (`loops`). A reader
-//! that has jumped outside the window — a seek, a PDC change, a varispeed
-//! change, a transport loop — moves the window: it is emptied at the reader's
+//! that has jumped outside the window — a seek, a varispeed change, a
+//! transport loop — moves the window: it is emptied at the reader's
 //! position and filled from there. Nothing is flushed; frames already written
 //! stay valid for their positions, so a jump back inside the window costs
 //! nothing.
@@ -439,7 +439,7 @@ mod tests {
 
         let (mut writer, ring) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::from("t.wav"), 4096, 1u16);
-        let mut reader = ring.take_reader(true).expect("the reader");
+        let mut reader = ring.take_reader().expect("the reader");
         let rt_state = RtState::new();
         let mut buffer = Vec::new();
         for _ in 0..3 {

@@ -11,8 +11,13 @@
 //! Bank Select onto the next Program Change, per group and channel. An input
 //! edge runs it once (`tutti-midi-runtime`'s `MidiInputNode`, and a clip as it
 //! is loaded), so what follows carries MIDI 2.0 channel voice messages. It
-//! calls `widen` for every message that needs no state. A consumer's own call
-//! to `widen` is transitional: stage 3b of design 017 moves it into `dispatch`.
+//! calls `widen` for every message that needs no state.
+//!
+//! [`channel_voice`] is what an instrument reads a packet with: the channel
+//! voice message it carries as a [`Voice2`](tutti_ump::Voice2), a MIDI 1.0 one
+//! widened, or `None`. [`widen_message`] widens a whole
+//! [`Message`](tutti_ump::Message) and passes every other kind through, for an
+//! edge that forwards what it does not read (a plugin host's MIDI output).
 //!
 //! ```
 //! use tutti_midi_protocol::widen;
@@ -75,4 +80,4 @@ mod voice;
 pub use midi1::{midi1, narrow};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use translator::Translator;
-pub use voice::widen;
+pub use voice::{channel_voice, widen, widen_message};

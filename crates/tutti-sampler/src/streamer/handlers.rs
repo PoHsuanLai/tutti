@@ -20,7 +20,6 @@ use super::loops::{LeadIn, Mapping, RingLoop, RingMap, apply_mapping, buffer_siz
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::RegionBuffer;
-use super::preroll::PdcFeed;
 use super::region_map::RegionMap;
 
 /// Arc'd handles shared between `StreamerThread` (controller) and the streamer
@@ -84,21 +83,17 @@ pub(super) struct Local {
     pub next_region_id: u64,
     /// Flat interleaved refill scratch. Streamer-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
-    /// The delay-compensation table this cycle reads, handed to it with the
-    /// cycle (`StreamerThread::cycle`, or `with_pdc` for a hand-stepped one).
-    pub pdc: PdcFeed,
 }
 
 impl Local {
     /// Thread-local state with no regions, a scratch buffer pre-sized for one
-    /// `base_chunk_size` refill, and `pdc` to read compensation through.
-    pub(super) fn new(base_chunk_size: usize, pdc: PdcFeed) -> Self {
+    /// `base_chunk_size` refill.
+    pub(super) fn new(base_chunk_size: usize) -> Self {
         Self {
             regions: RegionMap::new(),
             buffer_margin: 1.0,
             next_region_id: 0,
             interleave_buffer: Vec::with_capacity(base_chunk_size),
-            pdc,
         }
     }
 
@@ -171,24 +166,6 @@ pub(super) fn handle_command(
             stream,
         } => {
             handle_set_stream_loop(channel_index, stream, None, shared, config, local);
-        }
-
-        StreamerCommand::SeekStream {
-            channel_index,
-            file_position,
-        } => {
-            handle_seek_stream(channel_index, file_position, shared, local);
-        }
-
-        StreamerCommand::SetVarispeed {
-            channel_index,
-            direction,
-            speed,
-        } => {
-            if let Some(plan) = shared.plans.get(&channel_index) {
-                plan.rt_state.set_speed(speed);
-                plan.rt_state.set_direction(direction);
-            }
         }
 
         StreamerCommand::Shutdown => {}
@@ -288,7 +265,7 @@ fn handle_stream_file(
     // The ring carries the file at its OWN width and order, and its topology:
     // the voice that reads the ring places it through the same `Place` the
     // in-memory tier uses, so folding or permuting here would only be a second
-    // copy of that placement (and the loop's crossfades, the preroll and an
+    // copy of that placement (and the loop's crossfades and an
     // offline fork's own read of the file all work at the file's width).
     // `mut` is used by the `set_decoder` call below, which every codec feature
     // gates — so a build with none of them on sees an unused `mut` rather than
@@ -311,18 +288,10 @@ fn handle_stream_file(
         producer.set_resident(wave);
     }
 
-    let pdc_preroll = local.pdc.preroll(channel_index);
-
-    // The window starts where the reader will play: the offset, pre-rolled.
-    // A free-running reader starts at the offset; a placed voice at its clock.
-    let start = (offset_samples as u64).saturating_sub(pdc_preroll);
-    RegionBuffer::place(
-        &mut producer,
-        start,
-        offset_samples as u64,
-        pdc_preroll,
-        config.seek_crossfade_frames,
-    );
+    // The window starts where the reader will play: the offset. A placed
+    // voice reads at its clock; the compiler aligns the voice in the graph.
+    let start = offset_samples as u64;
+    RegionBuffer::place(&mut producer, start, config.seek_crossfade_frames);
 
     shared.plans.entry(channel_index).or_default();
     // A channel left reversed streams its new file reversed.
@@ -350,7 +319,11 @@ fn handle_stream_file(
     // `ChannelPlan::start_streaming`) so it releases when streaming stops.
     let cache_pin = Some(shared.cache.pin(&file_path));
 
+    // A stream already on the channel is replaced: its region goes with its
+    // link, as on `StopStreaming`, or its writer and decoder live on.
+    let mut replaced = None;
     if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
+        replaced = plan.link.as_ref().map(|link| link.region_id);
         plan.start_streaming(
             consumer,
             cache_pin,
@@ -359,7 +332,6 @@ fn handle_stream_file(
             file_path,
             Arc::downgrade(&shared.cache),
         );
-        plan.pdc_preroll = pdc_preroll;
         // Same derivation the in-memory tier uses
         // (`MemorySource::set_session_sample_rate`), through the one shared
         // constructor. Hand-rolling the division here instead would leave the
@@ -367,6 +339,9 @@ fn handle_stream_file(
         // holds the plan, which is what `SessionRate::set` relies on.
         plan.rt_state
             .set_src_ratio(SrcRatio::for_rates(file_sr, shared.session_rate.get()));
+    }
+    if let Some(region_id) = replaced {
+        local.regions.remove(region_id);
     }
 }
 
@@ -449,44 +424,13 @@ fn handle_set_stream_loop(
     }
 }
 
-/// Seek a stream's free-running reader to absolute file frame
-/// `file_position`, and move the streamer's window there (less the channel's
-/// PDC preroll) so it is filled before the reader asks.
-///
-/// Free-running readers only. A placed voice follows its clock (seek the
-/// clock), and it is the one that says where it plays: moving the window for
-/// it here would be a second writer of that position, dragging the window away
-/// from the voice until its next block said otherwise. So on a stream whose
-/// live reader is placed, the request is relayed and the window left alone.
-///
-/// No-op when the channel isn't streaming.
-pub(super) fn handle_seek_stream(
-    channel_index: usize,
-    file_position: u64,
-    shared: &Handles,
-    local: &mut Local,
-) {
-    let Some(plan) = shared.plans.get(&channel_index) else {
-        return;
-    };
-    let Some(link) = plan.link.as_ref() else {
-        return;
-    };
-    link.consumer.request_seek(file_position);
-    if !link.consumer.placed()
-        && let Some(writer) = local.regions.get_mut(link.region_id)
-    {
-        writer.set_play(file_position.saturating_sub(plan.pdc_preroll));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_mint_region_id_is_monotonic() {
-        let mut local = Local::new(4096, PdcFeed::default());
+        let mut local = Local::new(4096);
 
         let id1 = local.mint_region_id();
         let id2 = local.mint_region_id();

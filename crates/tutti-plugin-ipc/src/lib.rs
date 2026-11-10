@@ -12,6 +12,13 @@
 //! and the atomics laid over it (`transport/shm`), the control socket's
 //! deadline on Windows, and the launch. Every block carries a `// SAFETY:`.
 
+// The test build's allocator: without it every `assert_no_alloc` gate in
+// this crate's tests is inert (they were, from the crate's extraction until
+// doc 027 D9 found it). Normal builds use the system allocator.
+#[cfg(test)]
+#[global_allocator]
+static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
 mod client;
 mod config;
 mod error;
@@ -37,7 +44,7 @@ pub use protocol::{
     BridgeMessage, HostMessage, MAX_FRAME_BYTES, MAX_STATE_BYTES, PROTOCOL_VERSION,
     ProcessAudioData, STATE_CHUNK_BYTES, SlabLayout, StagedState, check_protocol_version,
 };
-pub use subprocess::{LaunchedServer, launch, resolve_bundle};
+pub use subprocess::{LaunchedServer, Reaped, launch, resolve_bundle};
 pub use transport::control::socket_name;
 pub use transport::shm::{AudioSlab, RING_SLOTS, SlabWriter};
 // Splitting and reassembling plugin state across frames: both ends must chunk

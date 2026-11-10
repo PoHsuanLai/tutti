@@ -32,8 +32,8 @@ are not vendored (`crates/tutti-midi-types/docs/midi2-spec/README.md`).
   them (§8).
 - **One event shape, then the shared steps.** Where MIDI stands today is in §1.4,
   the spec's interfaces as traits (mostly not) in §4.1, and the order the remaining
-  stages run in is §10: `(Offset, Ump)` first, then the `Translator`, `dispatch`
-  and the dedup.
+  stages run in is §10: `(Offset, Ump)` first, then the `Translator`,
+  `channel_voice` and the dedup.
 - **Stages**, each landing on its own (§10).
 
 ## 1. What is wrong today
@@ -119,16 +119,13 @@ host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
 
 **Duplication.**
 
-- *Widening.* `fn widened` is copied at `tutti-clap-host/src/events.rs:123` and
-  `tutti-vst3-host/src/events/midi.rs:356`. The same widen is written in
-  `PolySynth::voice1` (`tutti-polysynth/src/polysynth.rs:373`) and
-  `SoundFontUnit::voice1` (`tutti-soundfont/src/lib.rs:366`). Three more calls to
-  `widen` sit in the VST3 host (`legacy_cc.rs`, `midi_mapping.rs`) and the CLAP
-  host's `from_voice2` path.
-- *Ignoring non-voice messages.* A match with seven arms (the six non-voice
-  `Message` variants and `Err(Unknown)`) is the same in
-  `PolySynth::process_midi_event` (`polysynth.rs:~351-369`) and
-  `SoundFontUnit::apply_event` (`tutti-soundfont/src/lib.rs:~344-364`).
+- *Widening, one place since stage 3b.* An instrument reads a packet with
+  `tutti_midi_protocol::channel_voice` (a `Voice2`, a MIDI 1.0 message widened,
+  or `None`); the polysynth's and the SoundFont's `voice1` copies and their
+  seven-arm match are gone. `tutti_midi_protocol::widen_message` widens a whole
+  `Message` for an edge that forwards what it does not read; the hosts' two
+  `fn widened` copies (`tutti-clap-host/src/events.rs`,
+  `tutti-vst3-host/src/events/midi.rs`) move to it with the plugin lanes.
 - *RPN and NRPN, one place since stage 3a.* The `Translator` assembles; the
   SoundFont, `MpeIngest` and `Voicing` read the `Voice2` registered-controller
   form. (Before: the old translator, the SoundFont's own Data Entry machine and
@@ -363,10 +360,12 @@ The question was whether MIDI should get traits that follow the specification's
 interfaces. Most should not, because the pure-step shape already used here (a value
 in, a value out, no I/O) covers them with less surface. The decisions:
 
-- **Channel-voice receiver: a function first.** `tutti-midi-protocol` gets
-  `dispatch(ump, handler)`: it decodes, widens a MIDI 1.0 message, and routes the
-  `Voice2` to a channel-voice handler. The default handling ignores every
-  non-voice message and `Unknown`, which is the match two crates copy today (§1.4).
+- **Channel-voice receiver: a function first.** `tutti-midi-protocol` has
+  `channel_voice(ump) -> Option<(Address, Voice2)>` (stage 3b): it decodes and
+  widens a MIDI 1.0 message, and is `None` for every non-voice message and
+  `Unknown`, the match two crates copied (§1.4). The plan named it
+  `dispatch(ump, handler)`; returning the message is the same step with no
+  callback.
   It becomes a `VoiceReceiver` trait only when a third crate implements it; two
   implementors do not justify a trait the function already serves. Boundary: a
   `VoiceReceiver` is what turns one channel voice message into a change in an
@@ -786,8 +785,8 @@ the graph. The cycle that keeps `ump` and `translation` together today is mostly
 `message()` calling `normalize`, and it ends with that call.
 
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
-out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox`, routes,
-`gather_midi` and `BlockSplitter`, about 3,100 of its 5,700 production lines. Its
+out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and
+routes (stage 3b deleted `gather_midi` and `BlockSplitter`), about 3,100 of its 5,700 production lines. Its
 layout flattens to match. `negotiate` and `jr_timestamp` move to `tutti-midi-device`,
 `mpe_ingest` to `tutti-midi-protocol`, and the SysEx reassemblers are gone (stage 3c:
 `tutti_ump::SysexAssembler` is the one, and `Sysex8PacketReassembler` had no production
@@ -1045,7 +1044,7 @@ rest is below.
    consumer matches `Voice2` once instead of writing each message twice. A
    Control Change that needs per-channel state (RPN and NRPN data, Bank Select)
    stays a plain Control Change there. A consumer's call is transitional: stages 3a
-   and 3b move it to the input edge and into `dispatch`, and consumers drop it with
+   and 3b move it to the input edge and into `channel_voice`, and consumers drop it with
    their `Voice1` arm. Behaviour change: a MIDI 1.0 Note On at velocity 0 reaches the consumer
    as a Note Off with release velocity `0x8000`, not `0`.
 2. **Consumers move to `Message`,** one per PR: polysynth, SoundFont, then each
@@ -1138,13 +1137,27 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    `RpnRun` and the old `Midi1ToMidi2Translator`, and `MidiInputNode` runs the new
    one. Behaviour change: §4's remaining spec fixes. Oracle: M2-115 and M2-104
    App. D, as analytic tests.
-- **Stage 3b. `dispatch`** (§4.1) in `tutti-midi-protocol`. Deletes the four widen
-   copies (the two `widened` functions and the two `voice1` functions) and the
-   seven-arm match in the polysynth and the SoundFont. Oracle: M2-104 App. D.3.
-   Compare `tutti_graph::Io::sub_blocks` with `tutti_midi_runtime::BlockSplitter`
-   here: both cut a block at its event offsets, and `dispatch` should call one.
-   Keep the one with the tests, and delete the other with its callers moved.
-   The survivor takes its block length as `Samples`, not the `usize` `BlockSplitter::new` takes now.
+- **Stage 3b. `channel_voice`** (§4.1) in `tutti-midi-protocol`. Done.
+   `channel_voice(ump) -> Option<(Address, Voice2)>` and `widen_message` replace
+   the polysynth's and the SoundFont's `voice1` copies and their seven-arm match;
+   the hosts' two `fn widened` copies move to `widen_message` with the plugin
+   lanes. `Io::sub_blocks` survives: the two instruments walk it, so
+   `BlockSplitter`, `Overrun`, `Step` and `gather_midi` are deleted, with the
+   fixed `midi_buffer` each instrument copied its events into (256 events in
+   the SoundFont, 512 in the polysynth, while a port can deliver more; the rest
+   were dropped). `SortedEvents::sub_blocks` takes its block as `Samples`; no
+   graph event is past its block, so `Overrun` had no case left. Behaviour
+   change, the one App. D.3 and §7.4.2 asked of this stage: a MIDI 2.0 Note On
+   at velocity 0 is a Note On in both instruments (the SoundFont strikes it at
+   MIDI 1.0 velocity 1), and `InstrumentHandle::note_on` sends MIDI 2.0 at a
+   16-bit velocity. The graph's contract rows are excited with MIDI 2.0. The
+   plan was: Deletes the four widen copies (the two `widened` functions and the
+   two `voice1` functions) and the seven-arm match in the polysynth and the
+   SoundFont. Oracle: M2-104 App. D.3. Compare `tutti_graph::Io::sub_blocks`
+   with `tutti_midi_runtime::BlockSplitter` here: both cut a block at its event
+   offsets, and `dispatch` should call one. Keep the one with the tests, and
+   delete the other with its callers moved. The survivor takes its block length
+   as `Samples`, not the `usize` `BlockSplitter::new` takes now.
 - **Stage 3c. The MIDI dedup.** Part done (the SysEx and note-identity items below,
    marked); what remains is the Plugins session's (see "Remaining" at the end of this
    stage's list). The AU host reads its bytes with

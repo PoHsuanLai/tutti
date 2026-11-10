@@ -121,6 +121,9 @@ pub(crate) struct Session {
     /// on completion *and* on any failure, so a malformed sequence cannot leave
     /// bytes behind that would corrupt the next load.
     pub(crate) state_in: Option<Reassembler>,
+    /// A load sequence refused part-way, with why: its remaining chunks are
+    /// taken without reply and the refusal is the answer to its `last`.
+    pub(crate) state_in_refused: Option<String>,
     /// A state staged for the next load (`StageStateChunk`), being received.
     pub(crate) stage_in: Option<Reassembler>,
     /// A state received and waiting for the next load, which restores it into
@@ -143,6 +146,7 @@ impl Session {
             max_block: 0,
             refused_blocks: 0,
             state_in: None,
+            state_in_refused: None,
             stage_in: None,
             staged: None,
         }
@@ -715,14 +719,7 @@ impl Session {
             Err(e) => {
                 self.stage_in = None;
                 self.staged = None;
-                let error = match e {
-                    ChunkError::TooLarge { bytes, limit } => {
-                        format!("state is {bytes} bytes, over the {limit}-byte limit")
-                    }
-                    ChunkError::OutOfOrder { got, expected } => {
-                        format!("state chunk {got} arrived where {expected} was expected")
-                    }
-                };
+                let error = chunk_refusal(e);
                 BridgeMessage::StateLoaded { error: Some(error) }.into()
             }
         }
@@ -750,20 +747,35 @@ impl Session {
         last: bool,
         bytes: &[u8],
     ) -> Reaction {
+        // **One answer per sequence, on its `last` chunk**, whatever went
+        // wrong before it: the host reads one `StateLoaded` per load, and an
+        // early answer left every later chunk of the sequence to fail again
+        // (as a new sequence at a `seq` past 0) and answer again, each read
+        // as the reply to a later request. A refusal waits for `last`; a chunk
+        // 0 starts a new sequence.
+        if seq == 0 {
+            self.state_in = None;
+            self.state_in_refused = None;
+        }
+        if let Some(error) = &self.state_in_refused {
+            if !last {
+                return Reaction::None;
+            }
+            let error = error.clone();
+            self.state_in_refused = None;
+            return BridgeMessage::StateLoaded { error: Some(error) }.into();
+        }
         let acc = self.state_in.get_or_insert_with(Reassembler::default);
         let complete = match acc.push(seq, last, bytes) {
             Ok(done) => done,
             Err(e) => {
                 self.state_in = None;
-                let error = match e {
-                    ChunkError::TooLarge { bytes, limit } => {
-                        format!("state is {bytes} bytes, over the {limit}-byte limit")
-                    }
-                    ChunkError::OutOfOrder { got, expected } => {
-                        format!("state chunk {got} arrived where {expected} was expected")
-                    }
-                };
-                return BridgeMessage::StateLoaded { error: Some(error) }.into();
+                let error = chunk_refusal(e);
+                if last {
+                    return BridgeMessage::StateLoaded { error: Some(error) }.into();
+                }
+                self.state_in_refused = Some(error);
+                return Reaction::None;
             }
         };
         if !complete {
@@ -782,6 +794,19 @@ impl Session {
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
         BridgeMessage::StateLoaded { error }.into()
+    }
+}
+
+/// Why a state chunk sequence was refused, as the reply's text.
+fn chunk_refusal(e: ChunkError) -> String {
+    match e {
+        ChunkError::TooLarge { bytes, limit } => {
+            format!("state is {bytes} bytes, over the {limit}-byte limit")
+        }
+        ChunkError::OutOfOrder { got, expected } => {
+            format!("state chunk {got} arrived where {expected} was expected")
+        }
+        ChunkError::Empty { seq } => format!("state chunk {seq} is empty and not the last"),
     }
 }
 
@@ -986,6 +1011,45 @@ mod tests {
                 assert!(msg.contains("no plugin"), "unhelpful message: {msg:?}");
             }
             other => panic!("expected a StateLoaded carrying a refusal, got {other:?}"),
+        }
+    }
+
+    /// **A refused load sequence is answered once, on its `last` chunk.** The
+    /// host reads one `StateLoaded` per load; an answer at the refused chunk
+    /// left every later chunk of the sequence to fail again and answer again,
+    /// each read as the reply to a later request. A chunk 0 starts afresh.
+    ///
+    /// Mutation (run): answering at the refused chunk as before (dropping the
+    /// `if last` wait) → the out-of-order chunk 2 is answered → fails.
+    #[test]
+    fn a_refused_load_sequence_is_answered_once_at_its_end() {
+        let mut s = Session::new();
+        let mut chunk = |seq, last| {
+            s.handle(
+                &main_thread(),
+                HostMessage::LoadStateChunk {
+                    seq,
+                    last,
+                    bytes: vec![1, 2, 3],
+                },
+            )
+            .unwrap()
+        };
+        assert_none(chunk(0, false));
+        assert_none(chunk(2, false)); // out of order: refused, not yet answered
+        assert_none(chunk(3, false));
+        match chunk(4, true).into_reply() {
+            BridgeMessage::StateLoaded { error: Some(msg) } => {
+                assert!(msg.contains("chunk 2"), "the refusal's own reason: {msg:?}");
+            }
+            other => panic!("expected the refusal at `last`, got {other:?}"),
+        }
+        // A new sequence is not refused for the last one's fault.
+        match chunk(0, true).into_reply() {
+            BridgeMessage::StateLoaded { error: Some(msg) } => {
+                assert!(msg.contains("no plugin"), "{msg:?}");
+            }
+            other => panic!("expected the no-plugin refusal, got {other:?}"),
         }
     }
 

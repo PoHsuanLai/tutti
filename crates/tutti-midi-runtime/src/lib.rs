@@ -8,16 +8,13 @@
 // `MpeIngest::translate` sends nothing for an event it drops. The MIDI parse errors live one crate
 // down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
 
-mod gather;
 mod ledger;
 mod live;
 mod negotiate;
 mod outbound;
 mod schedule;
-mod split;
 mod traits;
 
-pub use gather::gather_midi;
 pub use ledger::{NoteLedger, Sending};
 pub use live::{
     CHANNELLESS_PORT, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY,
@@ -38,7 +35,6 @@ pub use schedule::{
     CLIP_EVENT_DENSITY, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode, MidiClipControls,
     MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
-pub use split::{BlockSplitter, Overrun, Step};
 pub use traits::{MidiIn, MidiOut};
 
 // Value types that live one crate down, re-exported so a consumer of the runtime

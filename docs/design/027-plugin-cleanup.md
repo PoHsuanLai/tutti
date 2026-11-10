@@ -53,7 +53,7 @@ whatever else its code is waiting for.
 | D7 | **`recv_reply` restarts its deadline on each unsolicited message**, so a chatty plugin never times out. | `client` dispatch | P2 |
 | D8 | **The `Reassembler` accepts unbounded empty chunks**, and socket sends have no write deadline. | `protocol`, `transport/control` | P2 |
 | D9 | **`rate_refusal()` locks a `Mutex` and clones a `String` on the audio thread.** | `tutti-plugin` `batcher.rs` | P2 |
-| D10 | **`POOL_CAPACITY` is one short.** It must be `COMMAND_QUEUE_SIZE + 1`. | `client::audio` | P2 |
+| D10 | **`POOL_CAPACITY` is short.** It must be `COMMAND_QUEUE_SIZE + 2`: the queue, plus one payload in the bridge thread's hands and one in the audio thread's before a refused push. | `client::audio` | P2 |
 | D11 | **`LaunchedServer` holds a bare `Child`**, so a dropped launch leaks the process. | `subprocess/launch.rs` | P2 |
 | D12 | **`num_samples` from the wire is unbounded.** The server resizes its scratch to `channels × num_samples` on the audio thread before the slab refuses the block. The formats also differ on an over-long block: CLAP and VST3 refuse it (VST3 in `tutti-vst3-ffi`'s `Processor::process`), and VST2 splits it. | `tutti-plugin-server` `session.rs`, `audio_pipeline.rs` | P2 |
 | D13 | **`SetSampleRate` takes any `f64` from the wire.** A NaN, zero or negative rate reaches the clock and the plugin. (Storing a rate the plugin then refuses is benign: `rate_refused` silences every block until a rate is accepted.) | `session.rs` `SetSampleRate` | P2 |
@@ -72,6 +72,34 @@ longer than `max_block` is silence and is counted (the refusal path that
 already exists), and the scratch is sized to `max_block` once, which also
 fixes D14. VST3 already has the same check as defence in depth, in
 `tutti-vst3-ffi` (the audit read it as missing; a host test now pins it).
+
+**Done (D5 to D7):** the server answers strictly in order, so whatever the
+bridge stopped waiting for arrives before the next answer. The bridge keeps
+a queue of what is owed (`Late`: a block's reply, a control reply of a known
+kind, or the rest of a `SaveState`), and every read goes through one function
+that takes the owed frames first, under one deadline, before returning the
+caller's answer. A timeout on a frame boundary owes the reply and answers the
+caller (`None`, `Stalled`); a frame still half-read after `DRAIN_FINISH` is a
+peer that cannot frame, and crashes the bridge as a transport error does. A
+frame of another kind lets an owed item go, so a peer that drops an answer
+cannot swallow the replies after it. The server answers a refused
+`LoadState` sequence once, at its `last` chunk. A full command queue on a
+state request is `StateError::Busy`.
+
+**Done (D8 to D11):** a state chunk before `last` must carry bytes
+(`ChunkError::Empty`), so a sequence is bounded by its byte limit; `connect`
+arms a send deadline (`SEND_TIMEOUT`, Unix; a Windows pipe has none, and the
+hang verdict's kill ends a blocked write there), and a send that misses it
+crashes the bridge. The batcher asks `rate_refused()`, an atomic, and takes
+the reason only to record it. The pool is `COMMAND_QUEUE_SIZE + 2`. Every
+plugin child is a `tutti_plugin_ipc::Reaped` from spawn, which also replaces
+the probe's and `ProcessGuard`'s kill-and-reap copies. Found on the way: the
+`-ipc` test build had no `AllocDisabler`, so its `assert_no_alloc` gates were
+inert from #406 until this change installed it.
+The P2 extras: the socket and slab names come from one `unique_name` with
+one count, and the editor's state pull-back compares against the editor's
+own state taken at open (and moved by each pull), never against the audio
+instance's, which automation can move on its own.
 
 ## 3. The process edge (`tutti-plugin-ipc`, doc 021 step 3)
 

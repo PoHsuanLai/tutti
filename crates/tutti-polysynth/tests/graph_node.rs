@@ -93,9 +93,10 @@ fn lead() -> usize {
 /// note at frame 0. A block late (the mailbox path's delivery) or at the
 /// block's start both miss.
 ///
-/// Mutation: apply the event input's events at offset 0 (`tutti_midi_runtime::gather_midi`
-/// ignoring the offset) → the onset moves to 768 → fails. Mutation: read no
-/// event input (only the port) → silence → fails.
+/// Mutation (run): `render_events` applying every chunk's events before the
+/// first frame (offsets ignored) → the onset moves to 768 → fails. Mutation
+/// (run): `render_events` reading no event (only the chunks) → silence →
+/// fails.
 #[test]
 fn a_clip_note_sounds_on_its_frame_in_the_same_block() {
     let (ed, exec) = graph(1_000);

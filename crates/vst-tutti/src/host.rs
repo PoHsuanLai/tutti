@@ -1580,6 +1580,7 @@ impl RenderEntry {
         ptr: *mut c_void,
         opt: f32,
     ) -> isize {
+        let _rendering = Rendering::enter(self.effect);
         // SAFETY: `effect` is the plugin's `AEffect`, live for as long as the
         // holder keeps the core (see the type's docs).
         let Some(dispatcher) = (unsafe { (*self.effect).dispatcher }) else {
@@ -1631,6 +1632,7 @@ impl RenderEntry {
     /// compiler folded the comparison to `false` under `-O` and the guard shipped
     /// only in debug builds.
     fn process(&self, name: &str, buffer: &mut AudioBuffer<f32>) -> bool {
+        let _rendering = Rendering::enter(self.effect);
         if buffer.input_count() < self.inputs {
             panic!("Too few inputs in AudioBuffer");
         }
@@ -1694,6 +1696,7 @@ impl RenderEntry {
     /// jumping to a null pointer; callers should consult
     /// `get_info().f64_precision` before choosing this path.
     fn process_f64(&self, name: &str, buffer: &mut AudioBuffer<f64>) -> bool {
+        let _rendering = Rendering::enter(self.effect);
         if buffer.input_count() < self.inputs {
             panic!("Too few inputs in AudioBuffer");
         }
@@ -2282,6 +2285,30 @@ static LOADS_IN_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 /// in `PluginLoader::instance` until the core's drop, after `effClose`.
 static ADOPTED: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
+thread_local! {
+    /// The `AEffect` this thread is inside a render entry of (`RenderEntry::process`,
+    /// `process_f64`, `dispatch`), null otherwise. A host callback the plugin makes from
+    /// inside such a call names that effect, which the host adopted before it could
+    /// render, so `callback_wrapper` needs no registry lookup (and no lock) for it.
+    static RENDERING: Cell<*mut AEffect> = const { Cell::new(ptr::null_mut()) };
+}
+
+/// Sets [`RENDERING`] for its lifetime and restores the previous value (a render entry
+/// can nest: `process_events` is dispatched from inside a block's work).
+struct Rendering(*mut AEffect);
+
+impl Rendering {
+    fn enter(effect: *mut AEffect) -> Rendering {
+        Rendering(RENDERING.replace(effect))
+    }
+}
+
+impl Drop for Rendering {
+    fn drop(&mut self) {
+        RENDERING.set(self.0);
+    }
+}
+
 /// Marks a load in progress for its lifetime.
 struct Loading;
 
@@ -2300,7 +2327,13 @@ impl Drop for Loading {
     }
 }
 
+/// Registry lookups, to show in a test that the render path takes none.
+#[cfg(test)]
+static REGISTRY_LOCKS: AtomicUsize = AtomicUsize::new(0);
+
 fn adopted() -> std::sync::MutexGuard<'static, BTreeSet<usize>> {
+    #[cfg(test)]
+    REGISTRY_LOCKS.fetch_add(1, Ordering::SeqCst);
     ADOPTED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2364,11 +2397,16 @@ extern "C" fn callback_wrapper<T: Host>(
     //    non-zero, is the `Box<Arc<T>>` set by `PluginLoader::instance`, kept alive by the
     //    core until after `effClose`; this callback is monomorphised for the same `T`. This
     //    is the steady-state path and takes no lock.
-    // 3. A load is in progress and this thread has no `LOAD_HOST` (a thread the plugin
-    //    spawned during `main`, or an adopted plugin's audio thread during someone else's
-    //    load): `reserved1` is dereferenced only if `effect` is in the registry of adopted
-    //    effects, otherwise the call gets the load-time default answer, `0`. The registry
-    //    is a mutex, taken only in this window. The count covers `main` through adoption
+    // 3. A load is in progress and this thread has no `LOAD_HOST`:
+    //    a. the call comes from inside a render entry of `effect` itself (`RENDERING`, set
+    //       by `RenderEntry` for the duration of the plugin call, per thread): the effect
+    //       was adopted before it could be rendered, so it is ours by construction. No
+    //       registry, no lock: an audio thread playing one plugin is not made to contend
+    //       while another loads.
+    //    b. otherwise (a thread the plugin spawned, during `main` or not; a UI thread):
+    //       `reserved1` is dereferenced only if `effect` is in the registry of adopted
+    //       effects, else the call gets the load-time default answer, `0`. The registry
+    //       is a mutex, taken only by those threads and only in this window. The count covers `main` through adoption
     //    (`instance` holds `Loading` across both), so an effect cannot be both unadopted
     //    and called after the count has dropped, except by a plugin that calls the host
     //    after its load ended with an `AEffect` the host refused or never adopted; that is
@@ -2383,6 +2421,7 @@ extern "C" fn callback_wrapper<T: Host>(
             &*load_ptr
         } else if effect.is_null()
             || (LOADS_IN_PROGRESS.load(Ordering::SeqCst) != 0
+                && effect != RENDERING.get()
                 && !adopted().contains(&(effect as usize)))
         {
             return 0;
@@ -3556,6 +3595,77 @@ mod tests {
             "an adopted effect did not reach its own host"
         );
         drop(first);
+    }
+
+    /// **A callback from inside a render takes no lock and allocates nothing, even
+    /// while another plugin loads.** The render entry marks the effect it is calling
+    /// (`RENDERING`), so `callback_wrapper` does not consult the registry mutex for it.
+    ///
+    /// Mutation (run): drop the `effect != RENDERING.get()` term in `callback_wrapper`:
+    /// the callback takes the registry lock and `REGISTRY_LOCKS` moves, so the second
+    /// assertion fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_callback_from_a_render_takes_no_lock_during_a_load() {
+        use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+        static ANSWER: AtomicIsize = AtomicIsize::new(-1);
+        static RENDERS: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn dispatch(
+            _: *mut AEffect,
+            opcode: i32,
+            _: i32,
+            _: isize,
+            _: *mut c_void,
+            _: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::GetApiVersion as i32 {
+                return 2400;
+            }
+            0
+        }
+        extern "C" fn render(effect: *mut AEffect, _: *const *const f32, _: *mut *mut f32, _: i32) {
+            RENDERS.fetch_add(1, Ordering::SeqCst);
+            // The plugin asks the host something from inside `processReplacing`:
+            // opcode 2 is `audioMasterCurrentId`.
+            ANSWER.store(
+                callback_wrapper::<IdHost>(effect, 2, 0, 0, ptr::null_mut(), 0.0),
+                Ordering::SeqCst,
+            );
+        }
+        extern "C" fn main_fn(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            let effect = fake_effect(dispatch);
+            // SAFETY: the test's leaked `AEffect`.
+            unsafe {
+                (*effect).processReplacing = Some(render);
+                (*effect).flags = PluginFlags::CAN_REPLACING.bits();
+            }
+            effect
+        }
+
+        let instance = loader_over(main_fn, 5).instance().expect("loads");
+        let mut handle = instance.render_handle();
+        let mut host32: HostBuffer<f32> = HostBuffer::new(0, 0);
+        let none: Vec<Vec<f32>> = Vec::new();
+        let mut none_out: Vec<Vec<f32>> = Vec::new();
+
+        // Another plugin is loading.
+        let _loading = Loading::begin();
+        let before = REGISTRY_LOCKS.load(Ordering::SeqCst);
+        assert_no_alloc::assert_no_alloc(|| {
+            handle.process(&mut host32.bind(&none, &mut none_out));
+        });
+        assert_eq!(RENDERS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            ANSWER.load(Ordering::SeqCst),
+            5,
+            "the callback was not answered"
+        );
+        assert_eq!(
+            REGISTRY_LOCKS.load(Ordering::SeqCst),
+            before,
+            "the render path took the registry lock"
+        );
     }
 
     /// **A string sent to the plugin is a C string that fits the opcode's buffer.**

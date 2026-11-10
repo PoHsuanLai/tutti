@@ -165,12 +165,12 @@ impl Vst3Loaded {
     fn program_change_parameter_of(
         &self,
         main: &MainThread,
-        owning_unit: i32,
+        owning_unit: crate::UnitId,
     ) -> Option<(ParamId, i32)> {
         (0..self.parameter_count(main)).find_map(|i| {
             let info = self.parameter_info_at(main, i)?;
-            (info.is_program_change() && info.unit_id == owning_unit)
-                .then_some((ParamId::new(info.id), info.step_count))
+            (info.is_program_change() && info.unit_id() == owning_unit)
+                .then_some((ParamId::new(info.id()), info.step_count()))
         })
     }
 

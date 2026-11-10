@@ -203,7 +203,7 @@ impl Plugin {
     pub fn param_id_for_function_name(
         &self,
         main: &MainThread,
-        unit_id: i32,
+        unit_id: crate::UnitId,
         function_name: &str,
     ) -> Option<u32> {
         let _scope = self.scoped(main);
@@ -213,7 +213,7 @@ impl Plugin {
         // SAFETY: `c_name` is a NUL-terminated string that outlives the call and
         // `param_id` a valid out-parameter.
         check(unsafe {
-            ctrl.getParameterIDFromFunctionName(unit_id, c_name.as_ptr(), &mut param_id)
+            ctrl.getParameterIDFromFunctionName(unit_id.get(), c_name.as_ptr(), &mut param_id)
         })
         .ok()?;
         Some(param_id)
@@ -232,7 +232,7 @@ impl Plugin {
         for i in 0..count {
             let mut raw = zeroed::<vst3::Steinberg::Vst::ProgramListInfo>();
             // SAFETY: `raw` is a valid out-parameter.
-            if unsafe { ctrl.getProgramListInfo(i, &mut raw) } == kResultOk {
+            if is_ok(unsafe { ctrl.getProgramListInfo(i, &mut raw) }) {
                 lists.push(Vst3ProgramListInfo::from_c(&raw));
             }
         }
@@ -254,7 +254,7 @@ impl Plugin {
         for i in 0..count {
             let mut raw = zeroed::<vst3::Steinberg::Vst::UnitInfo>();
             // SAFETY: `raw` is a valid out-parameter.
-            if unsafe { ctrl.getUnitInfo(i, &mut raw) } == kResultOk {
+            if is_ok(unsafe { ctrl.getUnitInfo(i, &mut raw) }) {
                 let mut unit = Vst3UnitInfo::from_c(&raw);
                 unit.resolve_program_list(&known);
                 units.push(unit);
@@ -284,44 +284,49 @@ impl Plugin {
 
     /// The selected unit.
     #[must_use]
-    pub fn selected_unit(&self, main: &MainThread) -> Option<i32> {
+    pub fn selected_unit(&self, main: &MainThread) -> Option<crate::UnitId> {
         let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         // SAFETY: a plain getter on a live interface.
-        Some(unsafe { ctrl.getSelectedUnit() })
+        Some(crate::UnitId::new(unsafe { ctrl.getSelectedUnit() }))
     }
 
     /// Selects a unit; `false` without the interface or if refused.
     #[must_use]
-    pub fn select_unit(&self, main: &MainThread, unit_id: i32) -> bool {
+    pub fn select_unit(&self, main: &MainThread, unit_id: crate::UnitId) -> bool {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return false;
         };
         // SAFETY: a plain call on a live interface.
-        unsafe { ctrl.selectUnit(unit_id) == kResultOk }
+        is_ok(unsafe { ctrl.selectUnit(unit_id.get()) })
     }
 
-    /// The unit a bus channel belongs to. The ints are the ABI's, passed as
-    /// given.
+    /// The unit a bus channel belongs to.
     #[must_use]
     pub fn unit_by_bus(
         &self,
         main: &MainThread,
-        media_type: i32,
-        direction: i32,
+        media_type: MediaType,
+        direction: BusDirection,
         bus_index: i32,
         channel: i32,
-    ) -> Option<i32> {
+    ) -> Option<crate::UnitId> {
         let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         let mut unit_id: i32 = 0;
         // SAFETY: `unit_id` is a valid out-parameter.
         check(unsafe {
-            ctrl.getUnitByBus(media_type, direction, bus_index, channel, &mut unit_id)
+            ctrl.getUnitByBus(
+                media_type.raw(),
+                direction.raw(),
+                bus_index,
+                channel,
+                &mut unit_id,
+            )
         })
         .ok()?;
-        Some(unit_id)
+        Some(crate::UnitId::new(unit_id))
     }
 
     /// `(physical UI type, note-expression type)` for the three physical
@@ -333,7 +338,7 @@ impl Plugin {
         main: &MainThread,
         bus_index: i32,
         channel: i16,
-    ) -> Vec<(u32, u32)> {
+    ) -> Vec<(crate::PhysicalUiType, u32)> {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.physical_ui_mapping.as_ref() else {
             return Vec::new();
@@ -350,12 +355,17 @@ impl Plugin {
         };
         // SAFETY: `list.map` points at `list.count` entries that outlive the
         // call.
-        if unsafe { ctrl.getPhysicalUIMapping(bus_index, channel, &mut list) } != kResultOk {
+        if !is_ok(unsafe { ctrl.getPhysicalUIMapping(bus_index, channel, &mut list) }) {
             return Vec::new();
         }
         entries
             .iter()
-            .map(|e| (e.physicalUITypeID, e.noteExpressionTypeID))
+            .map(|e| {
+                (
+                    crate::PhysicalUiType::from_raw(e.physicalUITypeID),
+                    e.noteExpressionTypeID,
+                )
+            })
             .collect()
     }
 
@@ -390,12 +400,12 @@ impl Plugin {
     }
 
     /// `IAutomationState::setAutomationState`; `false` without the interface.
-    pub fn set_automation_state(&self, main: &MainThread, state: i32) -> bool {
+    pub fn set_automation_state(&self, main: &MainThread, state: crate::AutomationStates) -> bool {
         let _scope = self.scoped(main);
         match &self.ext.automation_state {
             Some(a) => {
                 // SAFETY: a plain call on a live interface.
-                unsafe { a.setAutomationState(state) };
+                unsafe { a.setAutomationState(state.bits()) };
                 true
             }
             None => false,

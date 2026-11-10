@@ -95,6 +95,12 @@ pub(crate) fn check(code: tresult) -> Result<(), Vst3Error> {
     }
 }
 
+/// Whether `code` is `kResultOk`, which `kResultTrue` is too (both are `0`): for
+/// a call whose `kResultFalse` is an answer, not an error to report.
+pub(crate) fn is_ok(code: tresult) -> bool {
+    code == kResultOk
+}
+
 /// For a call whose `kResultFalse` is an answer: `true` for `kResultOk`,
 /// `false` for `kResultFalse`, the error for anything else.
 pub(crate) fn check_bool(code: tresult) -> Result<bool, Vst3Error> {

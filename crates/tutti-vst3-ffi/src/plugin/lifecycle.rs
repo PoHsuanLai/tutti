@@ -120,10 +120,10 @@ impl Plugin {
         // SAFETY: both are live connection points, each given the other as the
         // peer; `connect` does not take ownership.
         unsafe {
-            if comp_conn.connect(ctrl_conn.as_ptr()) != kResultOk {
+            if !is_ok(comp_conn.connect(ctrl_conn.as_ptr())) {
                 return false;
             }
-            if ctrl_conn.connect(comp_conn.as_ptr()) != kResultOk {
+            if !is_ok(ctrl_conn.connect(comp_conn.as_ptr())) {
                 comp_conn.disconnect(ctrl_conn.as_ptr());
                 return false;
             }
@@ -350,7 +350,7 @@ pub(super) fn query_controller(module: &Module, component: &ComPtr<IComponent>) 
     let mut controller_cid: TUID = [0; 16];
     // SAFETY: `controller_cid` is a valid out-parameter.
     let result = unsafe { component.getControllerClassId(&mut controller_cid) };
-    if result == kResultOk && controller_cid != [0i8; 16] {
+    if is_ok(result) && controller_cid != [0i8; 16] {
         match module.create_controller(&controller_cid) {
             Ok(ctrl) => ControllerLink::Separate(ctrl),
             Err(_) => ControllerLink::None,

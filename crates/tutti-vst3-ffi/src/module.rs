@@ -271,12 +271,7 @@ impl Module {
         let mut info: PFactoryInfo = zeroed();
         // SAFETY: `info` is a valid out-parameter for the call.
         let result = unsafe { self.parts.factory.getFactoryInfo(&mut info) };
-        check(result).ok().map(|()| FactoryInfo {
-            vendor: c_str_to_string(&info.vendor),
-            url: c_str_to_string(&info.url),
-            email: c_str_to_string(&info.email),
-            flags: info.flags,
-        })
+        check(result).ok().map(|()| FactoryInfo::from_c(&info))
     }
 
     /// Number of plugin classes exposed by this factory (audio processors,
@@ -459,67 +454,67 @@ pub struct FactoryInfo {
     pub url: String,
     /// Vendor contact email.
     pub email: String,
-    /// Raw `PFactoryInfo::flags` bitmask — see [`factory_flags`] and
+    /// The plugin's `PFactoryInfo::flags`, including bits this host does not
+    /// name (a decode would drop whatever a future SDK adds), see
     /// [`classes_discardable`](Self::classes_discardable).
-    ///
-    /// Carried raw rather than decoded into bools. The four flags this host
-    /// knows are not the four a future SDK defines, and `1 << 2` is already
-    /// absent from the enum — a decode would silently drop whatever lands
-    /// there, whereas a bitmask hands the caller exactly what the plugin said.
-    pub flags: i32,
+    pub flags: FactoryFlags,
 }
 
 impl FactoryInfo {
+    /// Reads the plugin's `PFactoryInfo`, keeping every flag bit it sent.
+    fn from_c(info: &PFactoryInfo) -> Self {
+        Self {
+            vendor: c_str_to_string(&info.vendor),
+            url: c_str_to_string(&info.url),
+            email: c_str_to_string(&info.email),
+            flags: FactoryFlags::from_bits_retain(info.flags),
+        }
+    }
+
     /// The plugin declares that its exported class list can change between
     /// loads (`kClassesDiscardable`), so a host must not answer "what does this
-    /// bundle contain?" from a cache.
-    ///
-    /// **Nothing in tutti acts on this yet.** The scan cache
-    /// (`tutti_plugin_db`) is keyed on file mtime alone, and it
-    /// stores one descriptor per bundle path while `find_audio_class` takes
-    /// only the first audio class — so a bundle's class *list* is not something
-    /// the catalog can currently represent, let alone re-derive. Acting on the
-    /// flag becomes meaningful when that changes; reading it is this crate's
-    /// job either way, and dropping it here would leave the consumer with
-    /// nothing to act on when it arrives.
+    /// bundle contain?" from a cache. Nothing in tutti acts on it yet: the scan
+    /// cache keys on mtime and holds one descriptor per bundle.
     pub fn classes_discardable(&self) -> bool {
-        self.flags & factory_flags::CLASSES_DISCARDABLE != 0
+        self.flags.contains(FactoryFlags::CLASSES_DISCARDABLE)
     }
 
     /// The plugin asks not to be unloaded before process exit
     /// (`kComponentNonDiscardable`).
     pub fn component_non_discardable(&self) -> bool {
-        self.flags & factory_flags::COMPONENT_NON_DISCARDABLE != 0
+        self.flags.contains(FactoryFlags::COMPONENT_NON_DISCARDABLE)
     }
 
     /// The plugin's strings are Unicode (`kUnicode`) — true of every VST3
     /// plugin so far, per the SDK's own note on the flag.
     pub fn unicode_strings(&self) -> bool {
-        self.flags & factory_flags::UNICODE != 0
+        self.flags.contains(FactoryFlags::UNICODE)
     }
 }
 
-/// VST3 `PFactoryInfo::FactoryFlags` constants, mirroring `ipluginbase.h:65-83`.
-///
-/// `kLicenseCheck` (`1 << 1`) is deliberately absent: the SDK marks it
-/// deprecated and says Cubase/Nuendo 12 and later ignore it, so a host that
-/// reads it would be acting on a signal the format has withdrawn. `1 << 2` is
-/// unassigned in the header.
-/// `FactoryFlags` is `DefaultEnumType` — `u32` on unix, `c_int` on Windows —
-/// while `PFactoryInfo::flags` is `int32` on both, so each cast below is a
-/// no-op on one platform and load-bearing on the other. Same reason
-/// [`crate::physical_ui_type`] carries this allow.
-#[allow(clippy::unnecessary_cast)]
-pub mod factory_flags {
-    use vst3::Steinberg::PFactoryInfo_::FactoryFlags_;
+use vst3::Steinberg::PFactoryInfo_::FactoryFlags_;
 
-    /// The exported class list can change each time the module is loaded, so
-    /// class information must not be cached.
-    pub const CLASSES_DISCARDABLE: i32 = FactoryFlags_::kClassesDiscardable as i32;
-    /// The component will not be unloaded until process exit.
-    pub const COMPONENT_NON_DISCARDABLE: i32 = FactoryFlags_::kComponentNonDiscardable as i32;
-    /// The plugin's strings are entirely Unicode-encoded.
-    pub const UNICODE: i32 = FactoryFlags_::kUnicode as i32;
+bitflags::bitflags! {
+    /// `PFactoryInfo::flags`, mirroring `ipluginbase.h:65-83`.
+    ///
+    /// `kLicenseCheck` (`1 << 1`) is deliberately absent: the SDK marks it
+    /// deprecated and says Cubase/Nuendo 12 and later ignore it, so a host that
+    /// reads it would be acting on a signal the format has withdrawn. `1 << 2`
+    /// is unassigned in the header. A set read from a plugin keeps whatever bits
+    /// it sent.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct FactoryFlags: i32 {
+        /// The exported class list can change each time the module is loaded,
+        /// so class information must not be cached.
+        const CLASSES_DISCARDABLE = crate::sdk_enum_i32(FactoryFlags_::kClassesDiscardable);
+        /// The component will not be unloaded until process exit.
+        const COMPONENT_NON_DISCARDABLE =
+            crate::sdk_enum_i32(FactoryFlags_::kComponentNonDiscardable);
+        /// The plugin's strings are entirely Unicode-encoded.
+        const UNICODE = crate::sdk_enum_i32(FactoryFlags_::kUnicode);
+        // The plugin's own bits beyond the ones named.
+        const _ = !0;
+    }
 }
 
 /// Descriptor for a single class (plugin variant) within a factory.
@@ -569,9 +564,25 @@ fn non_empty(s: String) -> Option<String> {
 
 #[cfg(test)]
 mod factory_flag_tests {
-    use super::{FactoryInfo, factory_flags};
+    use super::{FactoryFlags, FactoryInfo};
+    use crate::sdk::zeroed;
 
-    fn with_flags(flags: i32) -> FactoryInfo {
+    /// **A bit the plugin sets that this host does not name survives the
+    /// decode**, so a caller sees exactly what the plugin said.
+    ///
+    /// Mutation (run, fails): `from_bits_truncate` in `FactoryInfo::from_c`
+    /// together with removing `FactoryFlags`'s `const _ = !0` -> the unnamed bit
+    /// is gone (`from_bits_truncate` alone passes: the const names every bit).
+    #[test]
+    fn an_unnamed_factory_flag_bit_survives() {
+        let mut raw: vst3::Steinberg::PFactoryInfo = zeroed();
+        raw.flags = FactoryFlags::UNICODE.bits() | (1 << 9);
+        let info = FactoryInfo::from_c(&raw);
+        assert_eq!(info.flags.bits(), FactoryFlags::UNICODE.bits() | (1 << 9));
+        assert!(info.unicode_strings());
+    }
+
+    fn with_flags(flags: FactoryFlags) -> FactoryInfo {
         FactoryInfo {
             vendor: String::new(),
             url: String::new(),
@@ -589,12 +600,12 @@ mod factory_flag_tests {
     #[test]
     fn each_factory_flag_accessor_reads_its_own_bit() {
         for (flags, want) in [
-            (factory_flags::CLASSES_DISCARDABLE, (true, false, false)),
+            (FactoryFlags::CLASSES_DISCARDABLE, (true, false, false)),
             (
-                factory_flags::COMPONENT_NON_DISCARDABLE,
+                FactoryFlags::COMPONENT_NON_DISCARDABLE,
                 (false, true, false),
             ),
-            (factory_flags::UNICODE, (false, false, true)),
+            (FactoryFlags::UNICODE, (false, false, true)),
         ] {
             let info = with_flags(flags);
             let got = (
@@ -614,18 +625,18 @@ mod factory_flag_tests {
     /// discardable bundle is also a Unicode one.
     #[test]
     fn other_factory_flags_do_not_mask_classes_discardable() {
-        let both = with_flags(factory_flags::CLASSES_DISCARDABLE | factory_flags::UNICODE);
+        let both = with_flags(FactoryFlags::CLASSES_DISCARDABLE | FactoryFlags::UNICODE);
         assert!(both.classes_discardable());
         assert!(both.unicode_strings());
 
-        assert!(!with_flags(factory_flags::UNICODE).classes_discardable());
+        assert!(!with_flags(FactoryFlags::UNICODE).classes_discardable());
     }
 
     /// No flags set means no flag reads as set — pins that the accessors do not
     /// answer from a default.
     #[test]
     fn an_empty_flag_field_reports_nothing_set() {
-        let none = with_flags(0);
+        let none = with_flags(FactoryFlags::empty());
         assert!(!none.classes_discardable());
         assert!(!none.component_non_discardable());
         assert!(!none.unicode_strings());
@@ -636,11 +647,11 @@ mod factory_flag_tests {
     /// Pinned because everything above reads by mask: were a constant ever
     /// wrong, every assertion would still pass while silently matching a
     /// different flag. `1 << 1` (`kLicenseCheck`, deprecated) and `1 << 2`
-    /// (unassigned) are deliberately absent from the module.
+    /// (unassigned) are deliberately absent from `FactoryFlags`.
     #[test]
     fn the_factory_flag_bits_are_the_ones_the_sdk_defines() {
-        assert_eq!(factory_flags::CLASSES_DISCARDABLE, 1 << 0);
-        assert_eq!(factory_flags::COMPONENT_NON_DISCARDABLE, 1 << 3);
-        assert_eq!(factory_flags::UNICODE, 1 << 4);
+        assert_eq!(FactoryFlags::CLASSES_DISCARDABLE.bits(), 1 << 0);
+        assert_eq!(FactoryFlags::COMPONENT_NON_DISCARDABLE.bits(), 1 << 3);
+        assert_eq!(FactoryFlags::UNICODE.bits(), 1 << 4);
     }
 }

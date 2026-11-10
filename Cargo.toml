@@ -78,6 +78,9 @@ members = [
     "crates/tutti-dsp",
     "crates/tutti-plugin",
     "crates/tutti-plugin-server",
+    # The probe binary (design 021 section 2.5): reads a plugin's descriptor into a
+    # result file. Depends on the format hosts, not on a hosting; nothing depends on it.
+    "crates/tutti-plugin-probe",
     "crates/tutti-plugin-types",
     # Plugin discovery: directory walk, scan with crash recovery, the catalog.
     # Depends on `tutti-plugin-types` alone; the probe is a parameter.

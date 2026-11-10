@@ -1,8 +1,10 @@
 //! The subprocess probe, as the probe `tutti-plugin-db` scans with.
 
+use super::subprocess::{DEFAULT_PROBE_TIMEOUT, ProbeLocator, probe_metadata_with};
 use crate::error::{BridgeError, LoadStage};
 use crate::protocol::PluginDescriptor;
 use std::path::Path;
+use std::time::Duration;
 use tracing::debug;
 use tutti_plugin_db::{
     Delta, FileFacts, FileRow, PluginFormat, ProbeFailure, probe_plugin_fallback,
@@ -13,7 +15,7 @@ use tutti_plugin_db::{
 ///
 /// The split is "did we learn something about the plugin, or about our own
 /// environment?" — not severity. A crash and a broken library are equally
-/// informative; a missing `plugin-server` tells us nothing.
+/// informative; a missing `plugin-probe` tells us nothing.
 impl From<BridgeError> for ProbeFailure {
     fn from(e: BridgeError) -> Self {
         match e {
@@ -43,19 +45,23 @@ impl From<BridgeError> for ProbeFailure {
     }
 }
 
-/// Probe a plugin by spawning a plugin-server subprocess and querying its
-/// metadata. Falls back to filename-based metadata if the plugin-server
+/// Probe a plugin by spawning a `plugin-probe` subprocess and reading its
+/// descriptor. Falls back to filename-based metadata if the `plugin-probe`
 /// binary is not available.
 pub(crate) fn probe_plugin(
     path: &Path,
     format: PluginFormat,
 ) -> Result<PluginDescriptor, ProbeFailure> {
-    interpret_probe(super::subprocess::probe_metadata(path), path, format)
+    interpret_probe(
+        probe_metadata_with(&ProbeLocator::Search, path, DEFAULT_PROBE_TIMEOUT),
+        path,
+        format,
+    )
 }
 
 /// Decide what a raw probe result means. Split from [`probe_plugin`] so the
 /// fallback rule is testable without a subprocess — a test that spawns a real
-/// server depends on whether `target/debug/` happens to be warm.
+/// probe depends on whether `target/debug/` happens to be warm.
 fn interpret_probe(
     result: Result<PluginDescriptor, BridgeError>,
     path: &Path,
@@ -65,9 +71,9 @@ fn interpret_probe(
         Ok(descriptor) => Ok(descriptor),
         // The only error that means "we could not look", as opposed to "we looked
         // and this plugin is bad". Widening it would hide real failures.
-        Err(BridgeError::ServerNotFound) => {
+        Err(BridgeError::ProbeNotFound) => {
             debug!(
-                "plugin-server not available, using filename metadata for {:?}",
+                "plugin-probe not available, using filename metadata for {:?}",
                 path
             );
             Ok(probe_plugin_fallback(path, format))
@@ -78,20 +84,36 @@ fn interpret_probe(
 
 /// Probes a plugin file into the delta that records it.
 ///
-/// Spawns a short-lived `plugin-server` subprocess to read the plugin's
+/// Spawns a short-lived `plugin-probe` subprocess to read the plugin's
 /// metadata, so a plugin that crashes while being probed does not take the
-/// caller down. Blocks for up to a few seconds; call it off the audio and
-/// UI threads. The delta puts the same row a scan stores; apply it with
+/// caller down. Blocks for up to the deadline (fifteen seconds by default); call
+/// it off the audio and UI threads. The delta puts the same row a scan stores; apply it with
 /// [`PluginDb::apply`](tutti_plugin_db::PluginDb::apply).
 ///
 /// # Errors
 ///
 /// Returns [`BridgeError::LoadFailed`] for an unrecognized extension or a
-/// plugin the server cannot load,
-/// [`BridgeError::ServerNotFound`] when the `plugin-server` binary cannot
-/// be located, and a timeout, I/O or protocol variant when the subprocess
-/// cannot be reached.
+/// plugin the probe cannot load,
+/// [`BridgeError::ProbeNotFound`] when the `plugin-probe` binary cannot
+/// be located, [`BridgeError::ProcessCrashed`] or [`BridgeError::Timeout`] when
+/// the plugin brought the probe down, and an I/O variant when it cannot be
+/// spawned.
 pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
+    probe_record_with(path, &ProbeLocator::Search, DEFAULT_PROBE_TIMEOUT)
+}
+
+/// [`probe_record`] with the `plugin-probe` binary named by `locator` and the
+/// deadline `timeout` (the default is [`DEFAULT_PROBE_TIMEOUT`], fifteen
+/// seconds, which a plugin that loads slowly from cold may need).
+///
+/// # Errors
+///
+/// As [`probe_record`].
+pub fn probe_record_with(
+    path: impl AsRef<Path>,
+    locator: &ProbeLocator,
+    timeout: Duration,
+) -> Result<Delta, BridgeError> {
     let path = path.as_ref();
     let facts = FileFacts::read(path);
     let format = facts.format.ok_or_else(|| BridgeError::LoadFailed {
@@ -100,7 +122,7 @@ pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
         reason: "unrecognized plugin extension".to_string(),
     })?;
 
-    let descriptor = super::subprocess::probe_metadata(path)?;
+    let descriptor = probe_metadata_with(locator, path, timeout)?;
 
     // Keyed like a scan keys it, by canonical path, so an alias and the real
     // path are one row.
@@ -125,7 +147,7 @@ mod tests {
     ///
     /// The dividing line is whether the failure taught us about the *plugin* or
     /// about the *environment*, not severity: a broken library is as informative
-    /// as a crash, while a missing `plugin-server` is not informative at all.
+    /// as a crash, while a missing `plugin-probe` is not informative at all.
     #[test]
     fn plugin_failures_are_blacklistable_environmental_ones_are_not() {
         use crate::error::BridgeError;
@@ -176,33 +198,32 @@ mod tests {
             .blacklistable
         );
         assert!(
-            !ProbeFailure::from(BridgeError::ServerNotFound).blacklistable,
-            "a missing plugin-server must never blacklist a plugin"
+            !ProbeFailure::from(BridgeError::ProbeNotFound).blacklistable,
+            "a missing plugin-probe must never blacklist a plugin"
         );
     }
 
-    /// A missing `plugin-server` must degrade to filename metadata rather than
+    /// A missing `plugin-probe` must degrade to filename metadata rather than
     /// fail, and must report `Unknown` when it does: name and id come from the
     /// filename, but nothing inspected the plugin, so claiming a category would be
     /// a fabrication.
     ///
-    /// Driven through [`interpret_probe`] rather than by arranging for the server
+    /// Driven through [`interpret_probe`] rather than by arranging for the probe
     /// to be absent. An earlier version called `probe_plugin` and relied on the
-    /// binary not being built — but `find_plugin_server` searches
+    /// binary not being built — but the search covers
     /// `current_exe().parent().parent()`, which for a test binary in
-    /// `target/debug/deps/` is `target/debug/`, where the server lands as soon as
+    /// `target/debug/deps/` is `target/debug/`, where the binary lands as soon as
     /// anything in the workspace builds it. So it passed on a cold target dir and
-    /// failed on a warm one, having found a real server that then reported
-    /// `LoadFailed` on the fake plugin. `TUTTI_PLUGIN_SERVER` is no lever either:
+    /// failed on a warm one, having found a real binary that then reported
+    /// `LoadFailed` on the fake plugin. `TUTTI_PLUGIN_PROBE` is no lever either:
     /// a nonexistent path there warns and falls through to the same search.
     #[test]
-    fn probe_without_a_server_falls_back_to_filename_metadata() {
+    fn probe_without_a_probe_binary_falls_back_to_filename_metadata() {
         use crate::error::BridgeError;
 
         let path = Path::new("/plugins/TAL-NoiseMaker.vst3");
-        let descriptor =
-            interpret_probe(Err(BridgeError::ServerNotFound), path, PluginFormat::Vst3)
-                .expect("a missing plugin-server is a fallback, not an error");
+        let descriptor = interpret_probe(Err(BridgeError::ProbeNotFound), path, PluginFormat::Vst3)
+            .expect("a missing plugin-probe is a fallback, not an error");
 
         assert_eq!(descriptor.name, "TAL-NoiseMaker");
         assert_eq!(descriptor.id, "vst3.tal-noisemaker");
@@ -213,7 +234,7 @@ mod tests {
         );
     }
 
-    /// The counterpart: only `ServerNotFound` falls back. A load failure is a real
+    /// The counterpart: only `ProbeNotFound` falls back. A load failure is a real
     /// answer about a real plugin and must surface as an error, or a broken plugin
     /// would be silently catalogued under its filename as though it had been probed.
     #[test]
@@ -243,7 +264,7 @@ mod tests {
     /// the first of two hardcoded paths (the VST3) and then asserted a *VST2*
     /// class, which `PluginClass` makes unsatisfiable — the enum is per-format
     /// by construction. It also could not reach a real probe at all without the
-    /// `plugin-server` binary, since `probe_plugin` maps `ServerNotFound` to a
+    /// `plugin-probe` binary, since `probe_plugin` maps `ProbeNotFound` to a
     /// filename fallback, so it was really asserting a synth category against
     /// `PluginClass::Unknown`.
     ///
@@ -266,7 +287,7 @@ mod tests {
 
         // The class must match the format probed — never another format's
         // vocabulary. `Unknown` is allowed: it is what the filename fallback
-        // reports when no `plugin-server` is on hand.
+        // reports when no `plugin-probe` is on hand.
         let class_format = descriptor.class.format_name();
         assert!(
             class_format == "unknown" || class_format == format.extension_id(),

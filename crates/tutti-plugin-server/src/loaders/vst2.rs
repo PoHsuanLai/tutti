@@ -59,13 +59,6 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
 }
 
 impl Vst2Instance {
-    /// Lightweight probe: open the plugin and read its identity, without
-    /// activating it.
-    pub fn probe(main: &MainThread, path: &Path) -> Result<PluginDescriptor> {
-        let loaded = Vst2Loaded::load(main, path).map_err(|e| translate_error(e, path))?;
-        Ok(Control::info(&loaded).clone())
-    }
-
     /// Load and activate a VST2 plugin.
     ///
     /// `prefer_f64` is the caller's request for 64-bit blocks: the plugin is told
@@ -1056,23 +1049,5 @@ mod tests {
             .collect();
         assert_eq!(moved.len(), 3, "{moved:?}");
         assert!(p.poll(&main_thread()).is_empty(), "told once");
-    }
-
-    /// **A probe reads the plugin's identity without activating it**: nothing is
-    /// resumed.
-    ///
-    /// Mutation (run): `probe` going through `load` (an activation) -> the
-    /// plugin resumes -> `resume_count` is 1 -> fails.
-    #[test]
-    fn a_probe_does_not_activate() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        reset_probe();
-        let descriptor = Vst2Instance::probe(
-            &main_thread(),
-            Path::new(crate::test_utils::vst2_probe_path()),
-        )
-        .expect("probes");
-        assert_eq!(descriptor.name, "Tutti VST2 Probe");
-        assert_eq!(probe_capture().resume_count, 0);
     }
 }

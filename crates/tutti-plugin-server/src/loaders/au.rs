@@ -324,55 +324,6 @@ impl PropertyWatch {
 // AU at once.
 
 impl AuInstance {
-    /// Lightweight probe: read AU component info without instantiation.
-    pub fn probe(path: &Path) -> Result<PluginDescriptor> {
-        #[cfg(all(target_os = "macos", feature = "au"))]
-        {
-            let bundle_name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-
-            let components = component::enumerate_components();
-            let component_info = components
-                .iter()
-                .find(|c| {
-                    c.name.contains(&bundle_name)
-                        || c.name.ends_with(&bundle_name)
-                        || c.name.split(": ").last().is_some_and(|n| n == bundle_name)
-                })
-                .ok_or_else(|| BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage: LoadStage::Scanning,
-                    reason: format!("No Audio Unit component matching '{}'", bundle_name),
-                })?;
-
-            Ok(PluginDescriptor {
-                id: format!(
-                    "au.{}.{}",
-                    tutti_au_host::types::fourcc_to_string(component_info.manufacturer_code),
-                    tutti_au_host::types::fourcc_to_string(component_info.sub_type),
-                ),
-                name: component_info.name.clone(),
-                vendor: component_info.manufacturer.clone(),
-                version: component_info.version.clone(),
-                class: PluginClass::Au {
-                    component_type: map_au_type(component_info.component_type),
-                },
-                // A probe reads the registry entry without instantiating, and
-                // `AuInstance::has_editor` needs a live unit. The load path asks.
-                editor: EditorPresence::Unknown,
-            })
-        }
-        #[cfg(not(all(target_os = "macos", feature = "au")))]
-        Err(BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage: LoadStage::Opening,
-            reason: "AU support not compiled".to_string(),
-        })
-    }
-
     /// Load an Audio Unit from a `.component` bundle path.
     ///
     /// AU plugins are registered system-wide; the path is used for identification

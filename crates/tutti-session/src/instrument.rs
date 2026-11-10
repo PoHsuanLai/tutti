@@ -20,8 +20,9 @@
 //! whatever the rate has become since, including between the read and the send.
 //!
 //! Everything a handle does is a port or a cell: a message is pushed into the
-//! queue node's ring (allocation-free, never blocking the audio thread; the
-//! handle's clones share one writer behind a lock only control threads take)
+//! queue node's ring (never blocking the audio thread; the handle's clones
+//! share one writer behind a lock only control threads take, which may
+//! allocate on its first use)
 //! stamped with an [`At`], and a gain is a store into the strip's volume cell. Neither takes
 //! `&mut` of anything in the graph.
 //!

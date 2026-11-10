@@ -473,11 +473,12 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
 }
 
 /// The timed queue's audio side takes events from its ring, orders them, and
-/// sends them out of its port without allocating, a send from the control
-/// side included (both inside the gate: the send is lock-free too).
+/// sends them out of its port without allocating. The sends stay outside the
+/// gate: they take the handle's control-side lock, which std's mutex allocates
+/// on its first use on macOS.
 ///
-/// Mutation (run): a `Vec::new()` + push per block in `TimedQueueNode::process`
-/// aborts the gate.
+/// Mutation (run): a `Vec::with_capacity` per block in
+/// `EventInletNode::process` (the node `TimedQueueNode` wraps) aborts the gate.
 #[test]
 fn the_timed_queue_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
@@ -502,17 +503,20 @@ fn the_timed_queue_processes_without_allocating() {
 
     let msg = tutti_ump::Ump([0x2090_3C64, 0, 0, 0]);
     let mut heard = 0;
-    assert_no_alloc::assert_no_alloc(|| {
-        for b in 1..200u64 {
-            // One for this block's middle, one already late, one for the
-            // next block.
-            tx.send(At::Frame(Frame(b * 512 + 200)), msg).unwrap();
-            tx.send(At::Frame(Frame(3)), msg).unwrap();
-            tx.send(At::NextBlock, msg).unwrap();
+    for b in 1..200u64 {
+        // Control side, outside the gate: a send takes the handle's lock,
+        // which only control threads take (std's mutex allocates on its first
+        // lock on macOS). One for this block's middle, one already late, one
+        // for the next block.
+        tx.send(At::Frame(Frame(b * 512 + 200)), msg).unwrap();
+        tx.send(At::Frame(Frame(3)), msg).unwrap();
+        tx.send(At::NextBlock, msg).unwrap();
+        // The audio thread's part, inside the gate.
+        assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
             heard += out.poll_into(&mut drain);
-        }
-    });
+        });
+    }
     assert_eq!(out.dropped(), 0);
     // Every send but the last block's own frame-stamped one was heard.
     assert!(heard >= 199 * 2, "heard only {heard}");
@@ -521,7 +525,7 @@ fn the_timed_queue_processes_without_allocating() {
 /// The full-list path allocates nothing either: with the waiting list full of
 /// far-future events, each block takes a due event (it displaces the latest that
 /// may be lost), a far note-off (it displaces a note-on) and a later note-on (it
-/// is the one dropped), all inside the gate.
+/// is the one dropped), every block's processing inside the gate.
 ///
 /// Mutation (run): a `Vec::new()` + push in `keep`'s full-list branch aborts the
 /// gate.
@@ -553,14 +557,15 @@ fn the_timed_queue_with_a_full_list_processes_without_allocating() {
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
-    assert_no_alloc::assert_no_alloc(|| {
-        for b in 1..100u64 {
-            tx.send(At::NextBlock, on).unwrap();
-            tx.send(At::Frame(Frame(20_000_000 + b)), off).unwrap();
-            tx.send(At::Frame(Frame(30_000_000 + b)), on).unwrap();
+    for b in 1..100u64 {
+        // Control side, outside the gate (the handle's lock; see above).
+        tx.send(At::NextBlock, on).unwrap();
+        tx.send(At::Frame(Frame(20_000_000 + b)), off).unwrap();
+        tx.send(At::Frame(Frame(30_000_000 + b)), on).unwrap();
+        assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
             let _ = out.poll_into(&mut drain);
-        }
-    });
+        });
+    }
     assert!(tx.dropped() >= 99 * 2, "dropped only {}", tx.dropped());
 }
